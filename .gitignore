@@ -1,0 +1,11 @@
+# caches and environments
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# The agent prompt build is kept local: the section sources and the builder are
+# not committed; only the generated agents/dist/*.md artifacts ship.
+agents/src/
+agents/tools/build.py

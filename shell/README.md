@@ -1,0 +1,168 @@
+# shell
+
+The interactive shell environment: one POSIX-first configuration for bash and
+zsh, a PowerShell port, and a set of Windows CMD shims. It adds modern-tool
+wrappers (with graceful fallback), navigation and file helpers, a Python/uv
+workflow, parallel file operations, and CPU/GPU info in the starship prompt.
+
+## Install
+
+Deployed by the bootstrap installer (see `../bootstrap/`):
+
+```
+sh bootstrap/install.sh            # deploy bash/zsh config to ~/.config/shell
+sh bootstrap/install.sh --dry-run  # preview
+pwsh bootstrap/install.ps1         # deploy the PowerShell config to $PROFILE
+```
+
+It copies the config into `~/.config/shell/` (POSIX) or the `$PROFILE` dir
+(PowerShell) and adds a source line to your `~/.bashrc` / `~/.zshrc`.
+
+## The wrapper system
+
+Commands like `ls`, `cat`, `grep`, `find` dispatch through three tiers, in
+order:
+
+1. **modern** tool if installed (`lsd`, `bat`, `rg`, `fd`),
+2. else the **native** command (`ls`, `cat`, `grep`, `find`),
+3. else a **PowerShell fallback** (Windows only, where the native tool is
+   absent).
+
+| Command | modern | native | notes |
+|---------|--------|--------|-------|
+| `ls` `la` `ll` `lla` | `lsd` | `ls` | listing |
+| `lt` `llt` | `lsd --tree` | - | tree view |
+| `cat` | `bat` | `cat` | |
+| `grep` | `rg` | `grep` | |
+| `find` | `fd` | `find` | |
+
+Because the modern tools take different flags and produce different output than
+the native commands, a command written for the native tool can misbehave when a
+wrapper substitutes the modern one. To make that visible, a dim notice prints on
+**every** wrapped call:
+
+```
+[dotfiles] ls -> lsd  | native one-off: command ls ...  | disable: run toggle-wrapper, or export _DOTFILES_WRAPPERS=0
+```
+
+Ways to get the native command:
+
+- **One-off (POSIX):** prefix `command`, e.g. `command ls -la --color=never`.
+  This bypasses the wrapper for that single call.
+- **This session:** run `toggle-wrapper` (flips `_DOTFILES_WRAPPERS`), or
+  `export _DOTFILES_WRAPPERS=0` (PowerShell: `$env:_DOTFILES_WRAPPERS = '0'`).
+- **Silence the notice** (without changing behavior): `_DOTFILES_WRAPPER_LOG=0`.
+
+The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
+tool, ignoring the toggle.
+
+## Command reference
+
+### Navigation
+| Command | What it does |
+|---------|--------------|
+| `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF |
+| `cdi` | zoxide interactive pick |
+| `zd` / `zdi` | always zoxide (ignore the toggle) |
+| `back [N]` | go back to the Nth previous directory (default 1) |
+| `up [N]`, `.1`..`.9` | go up N directories (`..` = up 1) |
+| `mkcd DIR` | `mkdir -p` then `cd` |
+| `cdf` | fuzzy-find a subdirectory and cd into it (needs `fd` + `fzf`) |
+| `c` | clear the screen |
+
+### Files
+| Command | What it does |
+|---------|--------------|
+| `digest {md5\|sha256\|sha512} FILE` | hash a file |
+| `mkfile SIZE PATH` | create a dummy file (e.g. `mkfile 10M test.bin`) |
+| `extract ARCHIVE` | auto-detect and extract |
+| `archive OUT FILES...` | create an archive (format from `OUT` extension) |
+| `y` | yazi file manager (returns you to the dir you exit in) |
+| `again [N]` / `sagain` | re-run the Nth previous command (`sagain` = with sudo) |
+
+### Python / uv
+| Command | What it does |
+|---------|--------------|
+| `py` `python` `python3` | `uv run python` (uses the active venv's version) |
+| `pip` `pip3` | `uv pip` (bypassed inside an active venv) |
+| `uv` | injects `--python` for `uv run` when a venv is active |
+| `va [DIR]` | activate a venv (default `.venv`) |
+| `vd` | deactivate |
+| `vv` / `vva` | `uv venv` (create / create + activate) |
+| `toggle-uv` | flip the uv override (`_DOTFILES_UV_OVERRIDE`) |
+
+### Parallel file ops
+| Command | What it does |
+|---------|--------------|
+| `pcp` `pmv` | parallel copy / move (last arg is the destination) |
+| `prm` | parallel remove (interactive confirm by default) |
+| `ptar` | parallel compress (`pigz`/`pbzip2`/`pxz` when available) |
+| `pxargs` | `xargs` with parallel jobs (POSIX shells only) |
+
+Backed by GNU `parallel` when present, otherwise `xargs -P`. `pcp`/`pmv`/`prm`/
+`ptar` exist in bash/zsh, PowerShell, and CMD; `pxargs` is bash/zsh only.
+
+### System / editor
+| Command | What it does |
+|---------|--------------|
+| `path` | print PATH entries one per line |
+| `ports` | listening TCP ports with the owning process |
+| `code` | `code-insiders`, falling back to `code` |
+| `gu` | gitui (terminal git UI) |
+| `g`, `ga`, `gc`, `gco`, ... | git aliases (see `posix/aliases.sh`) |
+
+PowerShell additionally provides `df`, `env`, `head`, `tail`, `wc`, `which`,
+`touch`, `split` as functions (these are native on Unix). Media helpers live in
+`posix/ffmpeg.sh` / `pwsh/ffmpeg.ps1` (e.g. `strip-audio`); see those files.
+
+## Hardware info in the prompt
+
+The starship prompt shows your CPU and GPU. `hwinfo.sh` detects them once and
+exports `STARSHIP_CPU_*` / `STARSHIP_GPU_*`.
+
+- Detection is cached **machine-locally and per-boot**: POSIX writes
+  `$XDG_RUNTIME_DIR/dotfiles-hwinfo.<machine-id>.sh` (mode 600); PowerShell
+  caches under LocalAppData keyed by `$COMPUTERNAME`. This keeps a shared or
+  synced `$HOME` from showing one machine's hardware on another.
+- `toggle-hwinfo` shows/hides the info in the prompt.
+- `refresh-hwinfo` clears the cache so the next shell re-detects.
+
+## Layout
+
+```
+shell/
+  posix/       core config for bash/zsh (sh-compatible)
+    _helpers.sh   wrapper generator (_wrap), PATH, cache init, toggle-wrapper
+    wrappers.sh   the ls/cat/grep/find wrapper definitions
+    functions.sh  file/navigation/history utilities
+    aliases.sh    navigation / git / docker aliases
+    python.sh     uv + venv workflow
+    parallel.sh   pcp/pmv/prm/ptar
+    ffmpeg.sh     media helpers
+    hwinfo.sh     CPU/GPU detection for the prompt
+  pwsh/        PowerShell port (init.ps1 entry; coreutils.ps1 reimplements UNIX tools)
+  cmd/         Windows CMD command shims (cmd/bin/*.cmd) + starship.lua
+  bash/init.bash   entry point sourced from ~/.bashrc
+  zsh/init.zsh     entry point sourced from ~/.zshrc
+  starship/starship.toml   prompt configuration
+```
+
+## Load flow and caches
+
+`~/.bashrc` -> `init.bash` -> `_helpers.sh` -> `_init_path` -> `_source_all`
+(wrappers, functions, aliases, hwinfo, python, ffmpeg, parallel) -> cached init
+of zoxide and starship. zsh and PowerShell mirror this.
+
+- `~/.cache/shell/` holds the zoxide/starship init caches. They regenerate when
+  the tool binary is newer than the cache, and are sourced only if they are a
+  regular file owned by you (symlink and owner guarded).
+- `reload` rebuilds the caches and re-execs the shell.
+
+## Toggles and environment
+
+| Variable | Effect |
+|----------|--------|
+| `_DOTFILES_WRAPPERS=0` | use native commands instead of modern tools |
+| `_DOTFILES_WRAPPER_LOG=0` | silence the one-time wrapper hint |
+| `_DOTFILES_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv`) |
+| `_DOTFILES_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo`) |

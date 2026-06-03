@@ -1,0 +1,34 @@
+@echo off
+rem toggle-hwinfo — flip hardware info display in starship prompt on/off
+
+if "%_DOTFILES_HWINFO_HIDDEN%"=="1" goto :restore
+
+rem --- Hide: save current values, clear STARSHIP_* vars ---
+set "_DOTFILES_SAVED_CPU_INTEL=%STARSHIP_CPU_INTEL%"
+set "_DOTFILES_SAVED_CPU_AMD=%STARSHIP_CPU_AMD%"
+set "_DOTFILES_SAVED_GPU_NVIDIA=%STARSHIP_GPU_NVIDIA%"
+set "_DOTFILES_SAVED_GPU_AMD=%STARSHIP_GPU_AMD%"
+set "_DOTFILES_SAVED_GPU_INTEL=%STARSHIP_GPU_INTEL%"
+set "STARSHIP_CPU_INTEL="
+set "STARSHIP_CPU_AMD="
+set "STARSHIP_GPU_NVIDIA="
+set "STARSHIP_GPU_AMD="
+set "STARSHIP_GPU_INTEL="
+set "_DOTFILES_HWINFO_HIDDEN=1"
+echo hwinfo: OFF (hidden from prompt)
+goto :eof
+
+:restore
+rem --- Show: restore saved values, clear saved vars ---
+set "STARSHIP_CPU_INTEL=%_DOTFILES_SAVED_CPU_INTEL%"
+set "STARSHIP_CPU_AMD=%_DOTFILES_SAVED_CPU_AMD%"
+set "STARSHIP_GPU_NVIDIA=%_DOTFILES_SAVED_GPU_NVIDIA%"
+set "STARSHIP_GPU_AMD=%_DOTFILES_SAVED_GPU_AMD%"
+set "STARSHIP_GPU_INTEL=%_DOTFILES_SAVED_GPU_INTEL%"
+set "_DOTFILES_SAVED_CPU_INTEL="
+set "_DOTFILES_SAVED_CPU_AMD="
+set "_DOTFILES_SAVED_GPU_NVIDIA="
+set "_DOTFILES_SAVED_GPU_AMD="
+set "_DOTFILES_SAVED_GPU_INTEL="
+set "_DOTFILES_HWINFO_HIDDEN=0"
+echo hwinfo: ON (visible in prompt)

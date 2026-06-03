@@ -1,0 +1,157 @@
+# agents
+
+A prompt system for **weak open-source LLMs** (Llama 7-13B, Qwen 7B, Mistral
+class, small hosted models). Everything here is written to be maximally
+explicit: state the role, the steps, the output format, and a self-check, so a
+model that follows instructions literally still does the right thing.
+
+It ships eight skills in the Anthropic SKILL.md format, a set of parent
+invariants (honesty, language, work discipline, anti-sycophancy, output
+format), a build system that assembles those from sources, and installers that
+deploy the skills into the directories coding agents read.
+
+This is the `agents/` subsystem of the `den` repo: a self-contained unit
+(sources, build, install, tests) that could be used or extracted on its own.
+All commands below are run from this `agents/` directory.
+
+## Three deployment shapes
+
+Pick the one that matches how your tool loads instructions.
+
+| Shape | File(s) | Use when |
+|-------|---------|----------|
+| Standalone prompt | `dist/ASSISTANT.md` | You want a single self-contained system prompt, no skills, one worker. The model answers directly. |
+| Router + skills | `dist/SKILL_ROUTER.md` + `skills/` | Your environment has no native skill loader. You supply the router as the system prompt; it routes each request to exactly one skill and the model reads that `skills/<name>/SKILL.md` on demand. |
+| Parent invariants + native skills | `dist/AGENTS.md` / `dist/CLAUDE.md` + installed `skills/` | Your tool auto-discovers skills from its skill directories (GitHub Copilot, opencode, Claude Code, OpenAI Codex) and reads `AGENTS.md` (or `CLAUDE.md`) as global instructions. The tool does the routing; these files supply the invariants the skills depend on. |
+
+`AGENTS.md` and `CLAUDE.md` have identical content; `AGENTS.md` is the
+cross-tool standard, `CLAUDE.md` is the Claude Code name.
+
+## Layout
+
+```
+agents/
+  skills/<name>/            # the 8 skills
+    SKILL.md                # name + description frontmatter + body
+    examples/               # worked examples (one shape per file)
+    reference/              # only code-review (dimension + rubric files)
+  shared/
+    reference/*.md          # per-language + architecture / testing / schema-design
+    scripts/                # verification scripts (used by coding, code-review)
+      *.py, run-checks.sh
+      tests/                # pytest + bats
+  src/parts/<ARTIFACT>/     # build sources (LOCAL ONLY, not committed)
+    ASSISTANT/  SKILL_ROUTER/  AGENTS/
+  dist/                     # generated parent prompts (committed; do not hand-edit)
+    ASSISTANT.md  SKILL_ROUTER.md  AGENTS.md  CLAUDE.md
+  tools/
+    build.py                # builds dist/ from src/parts/ (LOCAL ONLY, not committed)
+  README.md
+```
+
+The build sources (`src/parts/`) and the builder (`tools/build.py`) are kept
+local and are NOT committed; the repository ships only the generated
+`dist/*.md`. The rest of `agents/` (skills, shared) is committed.
+
+The installer lives one level up in `../bootstrap/` (`skills.sh` / `skills.ps1`,
+invoked by `bootstrap/install.{sh,ps1}`); `agents/` is the content, `bootstrap/`
+is how it gets deployed.
+
+## The eight skills
+
+Each skill detects a mode first, then runs ONE mode per request (weak models
+lose adherence when many instructions fire at once). All skills assume the
+parent invariants (`<honesty_contract>`, `<language_policy>`) are present.
+
+| Skill | Modes | What it does |
+|-------|-------|--------------|
+| coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Go, Rust, Java, C#, or Shell. Uses `shared/` references and verification scripts. |
+| code-review | correctness / security / performance / maintainability / tests | Review existing code one focused dimension at a time; severity-rated findings. |
+| grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. |
+| compressor | summarize / compress | Summarize text, or compress a prompt/context to fewer tokens while preserving every directive. |
+| prompt-engineering | author / improve | Write a new prompt from a goal, or diagnose and rewrite an existing one. |
+| documenter | reference / guide | API reference from code, or a human guide (README/how-to/tutorial). |
+| git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. |
+| translate | translate / review | Translate text into another language, or QA an existing translation. |
+
+`coding` and `code-review` are the heavy skills (they use `shared/reference/`
+and `shared/scripts/`). The other six are light: `SKILL.md` plus two examples,
+no shared dependencies.
+
+## Build (maintainers, local only)
+
+The `dist/*.md` parent prompts are generated; edit the sources under
+`src/parts/`, never the generated files. Both `src/parts/` and `tools/build.py`
+are kept local (not committed), so this step is for whoever holds those sources;
+after editing, rebuild and commit the regenerated `dist/`:
+
+```
+python3 tools/build.py            # rebuild dist/{ASSISTANT,SKILL_ROUTER,AGENTS,CLAUDE}.md
+python3 tools/build.py --check    # verify dist/ is in sync with src/parts/; exit 1 if stale
+```
+
+The build concatenates each `src/parts/<ARTIFACT>/` section in sorted order,
+strips HTML comments (maintainer notes stay in source, never reach the model),
+normalizes em / en / minus dashes to ASCII, and collapses blank runs.
+`AGENTS.md` and `CLAUDE.md` are composites: a neutral role plus the shared
+honesty / language / work-discipline / anti-sycophancy / output-format
+sections from `ASSISTANT`.
+
+## Install
+
+The installer is `../bootstrap/skills.{sh,ps1}` (the `bootstrap/install.{sh,ps1}`
+dispatcher delegates to it for the "LLM agent skills" component). Each skill
+installs as a SELF-CONTAINED unit: it copies a skill, then copies only the
+`shared/` resources that skill references into the skill's own `shared/`, and
+rewrites every `shared/...` reference to an ABSOLUTE path under that skill (weak
+models resolve absolute paths reliably; relative ones are ambiguous). No
+top-level `shared/` tree is created in the target.
+
+```
+sh ../bootstrap/install.sh --skills-only              # install all skills into ~/.agents and ~/.claude
+sh ../bootstrap/skills.sh --with-parent               # skills engine directly; + AGENTS.md/CLAUDE.md
+sh ../bootstrap/skills.sh --target ~/.codex --codex-config   # print the [[skills.config]] TOML for Codex
+sh ../bootstrap/skills.sh --dry-run                   # show actions without writing
+```
+
+PowerShell (same `--xxx-yyy` flags; a single or double dash both bind):
+
+```
+pwsh ../bootstrap/install.ps1 --skills-only
+pwsh ../bootstrap/skills.ps1 --target ~/.codex --codex-config
+```
+
+Where tools read skills:
+
+- GitHub Copilot, opencode, Claude Code: `~/.agents/skills/`, `~/.claude/skills/`
+- OpenAI Codex: register each `SKILL.md` path in `~/.codex/config.toml`
+  (`--codex-config` prints the block)
+
+Convention (do not need source-tree resolvability): a `shared/...` reference is
+written either bare (in prose citations) or as `../../shared/...` (in actionable
+SKILL.md steps). The installer rewrites BOTH forms to an absolute path under the
+skill, so nested example files do not need to resolve as filesystem paths in the
+source tree.
+
+## Conventions
+
+- No em-dash, en-dash, or Unicode minus in any model-facing file; the build
+  normalizes them to ASCII. Math symbols are kept.
+- Semantic line breaks in the sources (break at clause boundaries).
+- One mode per request; detect the mode, then branch.
+- Skills depend on the parent invariants. Deploy with `--with-parent` (or
+  ensure `AGENTS.md` / `CLAUDE.md` is present) so `<honesty_contract>` and the
+  other tags the skills reference are actually defined.
+
+## Tests
+
+The verification scripts under `shared/scripts/` have a test suite:
+
+```
+python3 -m pytest shared/scripts/tests     # 60 tests
+bats shared/scripts/tests/run-checks.bats  # 8 tests
+```
+
+Tooling expected on PATH for the full coding/code-review experience: `ruff`,
+`ty`, `shellcheck`, `shfmt`, `prettier`, `eslint`, `gofmt`, plus the language
+toolchains. Scripts skip gracefully when a tool is absent rather than failing.

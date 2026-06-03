@@ -1,0 +1,83 @@
+# wrappers.ps1 — CLI tool wrapper functions (modern tool → native → PowerShell fallback).
+# Dot-sourced by init.ps1. Requires _helpers.ps1 loaded first.
+
+# Skip in non-interactive sessions
+if (-not [Environment]::UserInteractive) { return }
+
+Remove-Item alias:ls -Force -ErrorAction SilentlyContinue
+
+# Guard: ensure _helpers.ps1 is loaded
+if (-not (Get-Command New-Wrapper -ErrorAction SilentlyContinue)) {
+    $hf = Join-Path $PSScriptRoot '_helpers.ps1'
+    if (Test-Path $hf) { . $hf }
+}
+
+# ===== PowerShell-only fallback helpers (Windows / no-native-command environments) =====
+
+# _grep_ps_fallback — Unix-compatible grep via Select-String (text output)
+function _grep_ps_fallback {
+    $fl=@{};$pa="";$fp=@()
+    foreach($a in $Args){
+        if($a -match "^-([viclnr]+)$"){foreach($c in $Matches[1].ToCharArray()){$fl["$c"]=$true}}
+        elseif($pa -eq ""){$pa=$a}
+        else{$fp+=$a}
+    }
+    $ss=@{Pattern=$pa}
+    if(-not $fl.ContainsKey("i")){$ss.CaseSensitive=$true}
+    if($fl.ContainsKey("v")){$ss.NotMatch=$true}
+    if($fp.Count -gt 0){$r=Select-String @ss -Path $fp}
+    elseif($fl.ContainsKey("r")){$r=Get-ChildItem -Recurse -File|Select-String @ss}
+    else{$r=$input|Select-String @ss}
+    $mf=$fp.Count -gt 1 -or $fl.ContainsKey("r")
+    if($fl.ContainsKey("l")){$r|ForEach-Object{$_.Path}|Sort-Object -Unique}
+    elseif($fl.ContainsKey("c")){
+        if($mf){$r|Group-Object Path|ForEach-Object{"$($_.Name):$($_.Count)"}}
+        else{@($r).Count}
+    }
+    elseif($fl.ContainsKey("n")){
+        if($mf){$r|ForEach-Object{"$($_.Path):$($_.LineNumber):$($_.Line)"}}
+        else{$r|ForEach-Object{"$($_.LineNumber):$($_.Line)"}}
+    }
+    else{
+        if($mf){$r|ForEach-Object{"$($_.Path):$($_.Line)"}}
+        else{$r|ForEach-Object{$_.Line}}
+    }
+}
+
+# _find_ps_fallback — Unix-compatible find via Get-ChildItem (text output)
+function _find_ps_fallback {
+    $fp=".";$nm="";$ty="";$i=0
+    while($i -lt $Args.Count){
+        $a=$Args[$i]
+        if($a -eq "-name" -and $i+1 -lt $Args.Count){$nm=$Args[$i+1];$i+=2}
+        elseif($a -eq "-type" -and $i+1 -lt $Args.Count){$ty=$Args[$i+1];$i+=2}
+        elseif($a -notmatch "^-"){$fp=$a;$i++}
+        else{$i++}
+    }
+    $p=@{Path=$fp;Recurse=$true}
+    if($nm){$p.Filter=$nm}
+    if($ty -eq "f"){$p.File=$true}
+    elseif($ty -eq "d"){$p.Directory=$true}
+    (Get-ChildItem @p).FullName
+}
+
+# ===== Toggle-aware wrappers: modern → native → PS fallback =====
+# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
+
+New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'Get-Content @Args'
+New-Wrapper 'find'    'fd'  ''                              'find' ''                '_find_ps_fallback @Args'
+New-Wrapper 'grep'    'rg'  ''                              'grep' '--color=auto'    '$input | _grep_ps_fallback @Args'
+New-Wrapper 'la'      'lsd' '-a'                            'ls'   '-A --color=auto' 'Get-ChildItem -Force @Args'
+New-Wrapper 'll'      'lsd' '-l'                            'ls'   '-lF --color=auto' 'Get-ChildItem @Args | Format-Table Mode, LastWriteTime, Length, Name'
+New-Wrapper 'lla'     'lsd' '-la'                           'ls'   '-laF --color=auto' 'Get-ChildItem -Force @Args | Format-Table Mode, LastWriteTime, Length, Name'
+New-Wrapper 'llt'     'lsd' '-l --tree'                     ''     ''                'Get-ChildItem -Recurse @Args | Select-Object Mode, LastWriteTime, Length, @{N="Name";E={[IO.Path]::GetRelativePath($PWD.Path, $_.FullName)}}'
+New-Wrapper 'ls'      'lsd' ''                              'ls'   '--color=auto'    '(Get-ChildItem @Args).Name'
+New-Wrapper 'lt'      'lsd' '--tree'                        ''     ''                'Get-ChildItem -Recurse @Args | ForEach-Object { [IO.Path]::GetRelativePath($PWD.Path, $_.FullName) }'
+New-Wrapper 'ripgrep' 'rg'  ''                              ''     ''                ''
+
+# ===== Always-modern w-suffix bypasses (New-WrapperSuffix) =====
+
+New-WrapperSuffix 'catw'  'bat' '--style=plain --paging=never'
+New-WrapperSuffix 'findw' 'fd'  ''
+New-WrapperSuffix 'grepw' 'rg'  ''
+New-WrapperSuffix 'lsw'   'lsd' ''

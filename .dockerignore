@@ -1,0 +1,19 @@
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+*.egg-info
+
+# Documentation & non-essential files
+*.md
+LICENSE
+cheatsheets/
+prompts/
+
+# Build artifacts
+.dockerignore
