@@ -8,6 +8,7 @@ Subcommands:
   memory  read/write workspace session memory (.den/memory.md)
   hook    install per-tool hooks that imprint context every turn
   cheat   view bundled cheatsheets offline
+  install deploy skills (and parent prompts) into agent tool dirs
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ def _usage() -> None:
         "  memory show|save|log|...   workspace session memory\n"
         "  hook   install|run|imprint per-turn imprint hooks\n"
         "  cheat  [name]              view bundled cheatsheets\n"
+        "  install skills [...]       deploy skills into agent tool dirs\n"
         "\n"
         "Run 'den <command> --help' for command-specific options."
     )
@@ -79,6 +81,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "cheat":
         from ._cheat import main as _main
+
+        return _main(rest)
+
+    if cmd == "install":
+        from ._install import main as _main
 
         return _main(rest)
 
