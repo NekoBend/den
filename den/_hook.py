@@ -525,7 +525,33 @@ def _seed_imprint(den_dir: Path) -> bool:
     return True
 
 
+def _pick_tools_interactive() -> list[str] | None:
+    """Ask which tools to install hooks for. Returns --tool flags, or None if
+    nothing was selected."""
+    from ._install import _confirm
+
+    print("den hook install -- per-turn imprint hooks in this workspace.")
+    print("Which tools do you use?")
+    flags: list[str] = []
+    for tool, spec in _TOOLS.items():
+        if spec["verified"] and _confirm(f"  {tool}", tool == "claude"):
+            flags += ["--tool", tool]
+    if not flags:
+        print("  (none selected; nothing to install)")
+        return None
+    return flags
+
+
 def _cmd_install(argv: list[str]) -> int:
+    # In a terminal with no tool selected, ask rather than silently defaulting
+    # to claude.
+    selected = any(a in ("--tool", "--all-tools") for a in argv)
+    if not selected and "--config" not in argv and sys.stdin.isatty():
+        picked = _pick_tools_interactive()
+        if picked is None:
+            return 0
+        argv = picked + list(argv)
+
     tools, override = _parse_tool_args(argv)
     if tools is None:
         return 2

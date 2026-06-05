@@ -344,3 +344,24 @@ def test_run_copilot_per_turn_does_not_inject(tmp_path, monkeypatch, capsys):
 def test_unknown_subcommand(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert hook_main(["frobnicate"]) == 2
+
+
+def test_install_interactive_picks_tools(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    # verified tools order: claude, gemini, copilot, cline
+    answers = iter([True, False, False, True])  # claude Y, gemini N, copilot N, cline Y
+    monkeypatch.setattr("den._install._confirm", lambda *a: next(answers))
+    assert hook_main(["install"]) == 0
+    assert (tmp_path / ".claude" / "settings.json").is_file()
+    assert (tmp_path / ".clinerules" / "hooks").is_dir()
+    assert not (tmp_path / ".gemini").exists()
+
+
+def test_install_interactive_none_selected_installs_nothing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("den._install._confirm", lambda *a: False)
+    assert hook_main(["install"]) == 0
+    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".den").exists()  # not even seeded
