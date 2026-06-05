@@ -177,15 +177,54 @@ if ($doShell) {
 # ============================================================================
 if ($doAgents) {
     Write-Host ''
-    # Skills depend on the parent invariants; default to installing them.
+
+    # --- Which tools to deploy for? ---
+    $toolArgs = @()
+    if (${all}) {
+        $toolArgs = @('--all-tools')
+    } else {
+        Write-Host 'Which tools do you use? (skills installed in each tool'"'"'s correct location)'
+        $toolMap = [ordered]@{
+            claude  = 'Claude Code (-> ~/.claude)'
+            codex   = 'Codex CLI   (-> ~/.agents/skills + ~/.codex/AGENTS.md)'
+            cline   = 'Cline       (-> ~/.cline/skills + ~/.agents/AGENTS.md)'
+            copilot = 'Copilot CLI (-> ~/.copilot/skills + ~/.copilot/copilot-instructions.md)'
+            gemini  = 'Gemini CLI  (-> ~/.gemini/skills + ~/.gemini/GEMINI.md)'
+        }
+        $defaults = @{ claude = 'Y'; codex = 'N'; cline = 'N'; copilot = 'N'; gemini = 'N' }
+        foreach ($entry in $toolMap.GetEnumerator()) {
+            if (Confirm-Component $defaults[$entry.Key] "  $($entry.Value)?") {
+                $toolArgs += @('--tool', $entry.Key)
+            }
+        }
+        if ($toolArgs.Count -eq 0) {
+            Write-Host '  (no tool selected; using default: ~/.agents + ~/.claude)'
+        }
+    }
+
+    # Parent prompt?
     if (${with-parent}) { $useParent = $true }
     elseif (${no-parent}) { $useParent = $false }
-    else { $useParent = Confirm-Component 'Y' 'Install parent AGENTS.md / CLAUDE.md with the skills?' }
+    else { $useParent = Confirm-Component 'Y' 'Install parent prompt with the skills?' }
 
-    $skillArgs = @{}
-    if ($useParent) { $skillArgs['with-parent'] = $true }
-    if (${dry-run}) { $skillArgs['dry-run'] = $true }
-    & "$RepoRoot\bootstrap\skills.ps1" @skillArgs
+    # Build a hashtable to splat into skills.ps1 (handles kebab-named params).
+    $skillsParams = @{}
+    if (${all}) {
+        $skillsParams['all-tools'] = $true
+    } elseif ($toolArgs.Count -gt 0) {
+        # $toolArgs is a flat list: ('--tool','claude','--tool','cline', ...)
+        # Extract just the tool names.
+        $chosenTools = @()
+        $i = 0
+        while ($i -lt $toolArgs.Count) {
+            if ($toolArgs[$i] -eq '--tool') { $chosenTools += $toolArgs[$i+1]; $i += 2 }
+            else { $i++ }
+        }
+        $skillsParams['tool'] = $chosenTools
+    }
+    if ($useParent) { $skillsParams['with-parent'] = $true }
+    if (${dry-run}) { $skillsParams['dry-run']     = $true }
+    & "$RepoRoot\bootstrap\skills.ps1" @skillsParams
 }
 
 Write-Host ''

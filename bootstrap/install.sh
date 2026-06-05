@@ -44,9 +44,9 @@ Components (interactive per-component prompts when no flag is given):
   --agents / --no-agents    install (or skip) the LLM agent skills
   --skills-only             only the skills (= --no-shell --agents)
   --with-parent / --no-parent
-                            install (or skip) AGENTS.md + CLAUDE.md with skills
+                            install (or skip) the parent prompt with the skills
 
-  --all        install everything, no prompts
+  --all        install everything for all tools, no prompts
   --yes, -y    accept defaults, no prompts
   --dry-run, -n   print actions without writing
   -h, --help   show this help
@@ -255,22 +255,49 @@ fi
 # ============================================================================
 if [ "$DO_AGENTS" = 1 ]; then
   echo ""
-  # Skills depend on the parent invariants; default to installing them.
-  parent_flag=""
-  case "$WITH_PARENT" in
-    yes) parent_flag="--with-parent" ;;
-    no) parent_flag="" ;;
-    auto) if confirm Y "Install parent AGENTS.md / CLAUDE.md with the skills?"; then parent_flag="--with-parent"; fi ;;
-  esac
   # skills.sh needs bash (arrays, process substitution, pipefail), not POSIX sh.
   if ! command -v bash >/dev/null 2>&1; then
     echo "ERROR: the skills installer requires bash, which was not found." >&2
     exit 1
   fi
-  set -- "$REPO_DIR/bootstrap/skills.sh"
-  [ -n "$parent_flag" ] && set -- "$@" "$parent_flag"
-  [ "$DRY_RUN" = 1 ] && set -- "$@" --dry-run
-  bash "$@"
+
+  # --- Which tools to deploy for? ---
+  # Each tool has its own skills directory and parent-file location.
+  # Collect as --tool flags passed to skills.sh.
+  skill_tool_flags=""
+  _add_tool() { skill_tool_flags="$skill_tool_flags --tool $1"; }
+
+  if [ "$ALL" = 1 ]; then
+    skill_tool_flags="--all-tools"
+  else
+    echo "Which tools do you use? (skills will be installed in each tool's correct location)"
+    if confirm Y "  Claude Code (-> ~/.claude)"; then _add_tool claude; fi
+    if confirm N "  Codex CLI   (-> ~/.agents/skills + ~/.codex/AGENTS.md)"; then _add_tool codex; fi
+    if confirm N "  Cline       (-> ~/.cline/skills + ~/.agents/AGENTS.md)"; then _add_tool cline; fi
+    if confirm N "  Copilot CLI (-> ~/.copilot/skills + ~/.copilot/copilot-instructions.md)"; then _add_tool copilot; fi
+    if confirm N "  Gemini CLI  (-> ~/.gemini/skills + ~/.gemini/GEMINI.md)"; then _add_tool gemini; fi
+
+    # Fall back to the legacy default if nothing was selected.
+    if [ -z "$skill_tool_flags" ]; then
+      echo "  (no tool selected; using default: ~/.agents + ~/.claude)"
+    fi
+  fi
+
+  # Parent prompt?
+  parent_flag=""
+  case "$WITH_PARENT" in
+    yes) parent_flag="--with-parent" ;;
+    no)  parent_flag="" ;;
+    auto) if confirm Y "Install parent prompt with the skills?"; then parent_flag="--with-parent"; fi ;;
+  esac
+
+  dry_flag=""
+  [ "$DRY_RUN" = 1 ] && dry_flag="--dry-run"
+  # shellcheck disable=SC2086
+  bash "$REPO_DIR/bootstrap/skills.sh" \
+    $skill_tool_flags \
+    $parent_flag \
+    $dry_flag
 fi
 
 echo ""
