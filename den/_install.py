@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from ._content import dist_dir, shared_dir, skills_dir
@@ -42,50 +43,99 @@ def _skill_names() -> list[str]:
     return sorted(d.name for d in root.iterdir() if (d / "SKILL.md").is_file())
 
 
-def _install_skill(name: str, skills_target: Path) -> str:
+class _Writer:
+    """Collect (dest, content) writes, then commit them. New and byte-identical
+    files are written silently; files that already exist and DIFFER are listed
+    and, unless --force, the user is asked once before overwriting (default no,
+    so local edits are kept). Non-interactive: differing files are skipped."""
+
+    def __init__(self, force: bool):
+        self.force = force
+        self._items: list[tuple[Path, bytes]] = []
+
+    def stage(self, dest: Path, content: bytes) -> None:
+        self._items.append((dest, content))
+
+    def commit(self) -> None:
+        changed = [d for d, c in self._items if d.is_file() and d.read_bytes() != c]
+        overwrite = True
+        if changed and not self.force:
+            print(
+                "These files exist and differ from the bundled version:",
+                file=sys.stderr,
+            )
+            for d in changed:
+                print(f"  {d}", file=sys.stderr)
+            if sys.stdin.isatty():
+                overwrite = _confirm("Overwrite them?", False)
+            else:
+                print("  skipped (re-run with --force to overwrite)", file=sys.stderr)
+                overwrite = False
+        kept = 0
+        for dest, content in self._items:
+            if dest.is_file():
+                if dest.read_bytes() == content:
+                    continue
+                if not overwrite:
+                    kept += 1
+                    continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
+        if kept:
+            print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
+
+
+def _install_skill(name: str, skills_target: Path, writer: _Writer) -> str:
+    """Build the self-contained skill in a temp dir (rewriting shared/ refs to
+    its FINAL location), then stage every file for the writer to commit."""
     src = skills_dir() / name
-    dest = skills_target / name
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(src, dest, ignore=_ignore)
-
-    # Scan the copied skill (before shared/ is added) for which shared resources
-    # it references.
-    blob = ""
-    for p in dest.rglob("*"):
-        if p.is_file():
-            blob += p.read_text(encoding="utf-8", errors="ignore")
-    need_scripts = "shared/scripts/" in blob
-    need_all_refs = "shared/reference/<" in blob
-    ref_files = sorted(set(_REF_RE.findall(blob)))
-
-    sh = shared_dir()
-    ref_dest = dest / "shared" / "reference"
-    if need_all_refs:
-        ref_dest.mkdir(parents=True, exist_ok=True)
-        for md in (sh / "reference").glob("*.md"):
-            shutil.copy2(md, ref_dest / md.name)
-    elif ref_files:
-        ref_dest.mkdir(parents=True, exist_ok=True)
-        for rf in ref_files:
-            srcf = sh / "reference" / f"{rf}.md"
-            if srcf.is_file():
-                shutil.copy2(srcf, ref_dest / f"{rf}.md")
-    if need_scripts:
-        shutil.copytree(sh / "scripts", dest / "shared" / "scripts", ignore=_ignore)
-
-    # Rewrite every shared/... reference to an absolute path under dest/shared/.
-    abs_dest = dest.resolve().as_posix()
+    final = skills_target / name
+    abs_final = final.resolve().as_posix()
     rewritten = 0
-    for md in dest.rglob("*.md"):
-        try:
-            orig = md.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue  # not a text .md (binary asset); leave it untouched
-        new = _REWRITE_RE.sub(lambda m: f"{abs_dest}/shared/{m.group(1)}/", orig)
-        if new != orig:
-            md.write_text(new, encoding="utf-8")
-            rewritten += 1
+
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / name
+        shutil.copytree(src, work, ignore=_ignore)
+
+        # Scan the copied skill (before shared/ is added) for what it references.
+        blob = ""
+        for p in work.rglob("*"):
+            if p.is_file():
+                blob += p.read_text(encoding="utf-8", errors="ignore")
+        need_scripts = "shared/scripts/" in blob
+        need_all_refs = "shared/reference/<" in blob
+        ref_files = sorted(set(_REF_RE.findall(blob)))
+
+        sh = shared_dir()
+        ref_dest = work / "shared" / "reference"
+        if need_all_refs:
+            ref_dest.mkdir(parents=True, exist_ok=True)
+            for md in (sh / "reference").glob("*.md"):
+                shutil.copy2(md, ref_dest / md.name)
+        elif ref_files:
+            ref_dest.mkdir(parents=True, exist_ok=True)
+            for rf in ref_files:
+                srcf = sh / "reference" / f"{rf}.md"
+                if srcf.is_file():
+                    shutil.copy2(srcf, ref_dest / f"{rf}.md")
+        if need_scripts:
+            shutil.copytree(sh / "scripts", work / "shared" / "scripts", ignore=_ignore)
+
+        # Rewrite shared/... refs to an absolute path under the skill's FINAL dir.
+        for md in work.rglob("*.md"):
+            try:
+                orig = md.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue  # not a text .md (binary asset); leave it untouched
+            new = _REWRITE_RE.sub(lambda m: f"{abs_final}/shared/{m.group(1)}/", orig)
+            if new != orig:
+                md.write_text(new, encoding="utf-8")
+                rewritten += 1
+
+        for f in sorted(work.rglob("*")):
+            if f.is_file():
+                writer.stage(final / f.relative_to(work), f.read_bytes())
+
     return f"  {name} (rewrote {rewritten} md files)"
 
 
@@ -95,6 +145,7 @@ def _deploy(
     parent_file: str | None,
     with_parent: bool,
     dry_run: bool,
+    writer: _Writer,
 ) -> None:
     names = _skill_names()
     if dry_run:
@@ -104,16 +155,14 @@ def _deploy(
             print(f"[dry-run]   parent -> {parent_dir}/{parent_file}")
         return
 
-    skills_target.mkdir(parents=True, exist_ok=True)
     print(f"installing skills -> {skills_target}")
     for name in names:
-        print(_install_skill(name, skills_target))
+        print(_install_skill(name, skills_target, writer))
 
     if with_parent and parent_dir is not None and parent_file is not None:
         src = dist_dir() / ("CLAUDE.md" if parent_file == "CLAUDE.md" else "AGENTS.md")
         if src.is_file():
-            parent_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, parent_dir / parent_file)
+            writer.stage(parent_dir / parent_file, src.read_bytes())
             print(f"  parent -> {parent_dir}/{parent_file}")
         else:
             print(f"  warning: {src} not found", file=sys.stderr)
@@ -130,7 +179,7 @@ def _codex_config(skills_target: Path) -> None:
 def _parse(argv: list[str]):
     tools: list[str] = []
     targets: list[str] = []
-    with_parent = dry_run = codex_config = False
+    with_parent = dry_run = codex_config = force = False
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -155,43 +204,57 @@ def _parse(argv: list[str]):
         elif a == "--codex-config":
             codex_config = True
             i += 1
+        elif a == "--force":
+            force = True
+            i += 1
         else:
             print(f"den install skills: unexpected arg '{a}'", file=sys.stderr)
             return None
-    return tools, targets, with_parent, dry_run, codex_config
+    return tools, targets, with_parent, dry_run, codex_config, force
 
 
 def _install_skills(argv: list[str]) -> int:
     parsed = _parse(argv)
     if parsed is None:
         return 2
-    tools, targets, with_parent, dry_run, codex_config = parsed
+    tools, targets, with_parent, dry_run, codex_config, force = parsed
+    writer = _Writer(force)
 
     processed: list[Path] = []
     for tool in tools:
         sk, pd, pf = _TOOLS[tool]
         skt = Path(sk).expanduser()
-        _deploy(skt, Path(pd).expanduser(), pf, with_parent, dry_run)
+        _deploy(skt, Path(pd).expanduser(), pf, with_parent, dry_run, writer)
         processed.append(skt)
 
     for t in targets:
         root = Path(t).expanduser()
-        _deploy(root / "skills", root, "AGENTS.md", with_parent, dry_run)
+        _deploy(root / "skills", root, "AGENTS.md", with_parent, dry_run, writer)
         if with_parent and not dry_run:
             # custom targets get both AGENTS.md and CLAUDE.md at the root
             claude = dist_dir() / "CLAUDE.md"
             if claude.is_file():
-                shutil.copy2(claude, root / "CLAUDE.md")
+                writer.stage(root / "CLAUDE.md", claude.read_bytes())
         processed.append(root / "skills")
 
     if not tools and not targets:
         sk, pd, pf = _TOOLS["claude"]
-        _deploy(Path(sk).expanduser(), Path(pd).expanduser(), pf, with_parent, dry_run)
+        _deploy(
+            Path(sk).expanduser(), Path(pd).expanduser(), pf, with_parent, dry_run, writer
+        )
         agents = Path("~/.agents/skills").expanduser()
         _deploy(
-            agents, Path("~/.agents").expanduser(), "AGENTS.md", with_parent, dry_run
+            agents,
+            Path("~/.agents").expanduser(),
+            "AGENTS.md",
+            with_parent,
+            dry_run,
+            writer,
         )
         processed.append(agents)
+
+    if not dry_run:
+        writer.commit()
 
     if codex_config:
         target = processed[0] if processed else Path("~/.agents/skills").expanduser()
@@ -258,8 +321,10 @@ def _usage() -> None:
         "\n"
         "Targets:\n"
         "  skills [--tool T]... [--all-tools] [--target DIR]...\n"
-        "         [--with-parent] [--dry-run] [--codex-config]\n"
-        "  shell  [--dry-run] [--no-extras]\n"
+        "         [--with-parent] [--dry-run] [--codex-config] [--force]\n"
+        "  shell  [--dry-run] [--no-extras] [--force]\n"
+        "\n"
+        "Existing files that differ are kept unless you confirm (or pass --force).\n"
         "\n"
         f"Tools: {', '.join(_TOOLS)}.\n"
         "skills with no --tool/--target deploys to ~/.claude and ~/.agents."

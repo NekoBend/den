@@ -77,7 +77,7 @@ RUN cargo install --locked \
 # =============================================================================
 RUN git clone --depth 1 https://github.com/NekoBend/den.git /tmp/den && \
     uv tool install /tmp/den && \
-    /root/.local/bin/den install shell && \
+    /root/.local/bin/den install shell --force && \
     rm -rf /tmp/den
 
 # =============================================================================

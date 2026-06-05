@@ -86,3 +86,31 @@ def test_interactive_skips_when_declined(monkeypatch):
     )
     assert _install._interactive() == 0
     assert called == []
+
+
+def test_install_keeps_modified_file_non_tty(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    install_main(["skills", "--target", str(tmp_path)])
+    skill = tmp_path / "skills" / "coding" / "SKILL.md"
+    skill.write_text(skill.read_text() + "\nLOCAL EDIT\n")
+    install_main(["skills", "--target", str(tmp_path)])  # non-TTY -> skip changed
+    assert "LOCAL EDIT" in skill.read_text()
+
+
+def test_install_force_overwrites_modified(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    install_main(["skills", "--target", str(tmp_path)])
+    skill = tmp_path / "skills" / "coding" / "SKILL.md"
+    skill.write_text("CLOBBERED")
+    install_main(["skills", "--target", str(tmp_path), "--force"])
+    assert "CLOBBERED" not in skill.read_text()
+
+
+def test_install_interactive_overwrite_on_yes(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    install_main(["skills", "--target", str(tmp_path)])
+    skill = tmp_path / "skills" / "coding" / "SKILL.md"
+    skill.write_text("CLOBBERED")
+    monkeypatch.setattr("den._install._confirm", lambda *a: True)
+    install_main(["skills", "--target", str(tmp_path)])
+    assert "CLOBBERED" not in skill.read_text()

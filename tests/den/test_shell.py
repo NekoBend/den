@@ -117,3 +117,23 @@ def test_install_shell_no_cmd_shims_off_windows(tmp_path, monkeypatch):
 def test_install_shell_unexpected_arg(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     assert install_main(["shell", "--bogus"]) == 2
+
+
+def test_install_shell_keeps_modified_config_non_tty(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    install_main(["shell"])
+    al = tmp_path / ".config" / "shell" / "aliases.sh"
+    al.write_text(al.read_text() + "\n# my edit\n")
+    install_main(["shell"])  # non-TTY -> keep the edited file
+    assert "# my edit" in al.read_text()
+
+
+def test_install_shell_force_overwrites(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    install_main(["shell"])
+    al = tmp_path / ".config" / "shell" / "aliases.sh"
+    al.write_text("CLOBBERED")
+    install_main(["shell", "--force"])
+    assert "CLOBBERED" not in al.read_text()

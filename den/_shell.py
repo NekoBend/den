@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ._install import _Writer
+
 from ._content import shell_dir
 
 _COMMENT = "# ===== den ====="
@@ -91,15 +93,13 @@ def _localappdata() -> Path:
     return Path(env) if env else Path.home() / "AppData" / "Local"
 
 
-def _copy(src: Path, dst: Path, dry_run: bool) -> None:
+def _copy(src: Path, dst: Path, dry_run: bool, writer: _Writer) -> None:
     if not src.is_file():
         return
     if dry_run:
         print(f"  [dry] {dst}")
         return
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    print(f"  [ok] {dst.name}")
+    writer.stage(dst, src.read_bytes())
 
 
 def _wire(rc: Path, line: str, dry_run: bool) -> None:
@@ -122,8 +122,9 @@ def _wire(rc: Path, line: str, dry_run: bool) -> None:
 def install_shell(argv: list[str]) -> int:
     dry_run = "--dry-run" in argv
     extras = "--no-extras" not in argv
+    force = "--force" in argv
     for a in argv:
-        if a not in ("--dry-run", "--no-extras"):
+        if a not in ("--dry-run", "--no-extras", "--force"):
             print(f"den install shell: unexpected arg '{a}'", file=sys.stderr)
             return 2
 
@@ -131,29 +132,36 @@ def install_shell(argv: list[str]) -> int:
     home = Path.home()
     posix_dir = home / ".config" / "shell"
     pwsh_dir = _pwsh_profile_dir()
+    writer = _Writer(force)
 
     print(f"shell (posix) -> {posix_dir}")
     for f in _POSIX_CORE + (_POSIX_EXTRAS if extras else []):
-        _copy(sh / "posix" / f, posix_dir / f, dry_run)
-    _copy(sh / "bash" / "init.bash", posix_dir / "init.bash", dry_run)
-    _copy(sh / "zsh" / "init.zsh", posix_dir / "init.zsh", dry_run)
+        _copy(sh / "posix" / f, posix_dir / f, dry_run, writer)
+    _copy(sh / "bash" / "init.bash", posix_dir / "init.bash", dry_run, writer)
+    _copy(sh / "zsh" / "init.zsh", posix_dir / "init.zsh", dry_run, writer)
     _copy(
-        sh / "starship" / "starship.toml", home / ".config" / "starship.toml", dry_run
+        sh / "starship" / "starship.toml",
+        home / ".config" / "starship.toml",
+        dry_run,
+        writer,
     )
 
     print(f"shell (pwsh) -> {pwsh_dir}")
     for f in _PWSH_CORE + (_PWSH_EXTRAS if extras else []):
-        _copy(sh / "pwsh" / f, pwsh_dir / f, dry_run)
+        _copy(sh / "pwsh" / f, pwsh_dir / f, dry_run, writer)
 
     # cmd / Clink shims (Windows only): bin/*.cmd + starship.lua -> %LOCALAPPDATA%\clink
     if _windows():
         clink = _localappdata() / "clink"
         print(f"cmd/Clink -> {clink}")
-        _copy(sh / "cmd" / "starship.lua", clink / "starship.lua", dry_run)
+        _copy(sh / "cmd" / "starship.lua", clink / "starship.lua", dry_run, writer)
         cmd_bin = sh / "cmd" / "bin"
         if cmd_bin.is_dir():
             for f in sorted(cmd_bin.glob("*.cmd")):
-                _copy(f, clink / "bin" / f.name, dry_run)
+                _copy(f, clink / "bin" / f.name, dry_run, writer)
+
+    if not dry_run:
+        writer.commit()
 
     print("wiring shell rc files")
     if shutil.which("bash") or (home / ".bashrc").is_file():

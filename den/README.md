@@ -31,6 +31,12 @@ den refs    --def|--uses SYM   find a symbol's definitions or usages
 den doc     <file>             docstring / doc-comment coverage
 ```
 
+`den install` never silently clobbers local edits: files that already exist and
+differ from the bundled version are listed and you are asked once before
+overwriting (default no, so your changes are kept). Pass `--force` to overwrite
+without asking; non-interactive runs skip the changed files. `den hook install`
+into a tool's settings.json merges (it preserves foreign hooks and other keys).
+
 Run `den <command> --help` for per-command options.
 
 ## `den memory`
