@@ -41,7 +41,6 @@ jobs:
           shellcheck --severity=error \
             shell/posix/*.sh \
             shell/bash/*.bash \
-            bootstrap/*.sh \
             den/*.sh \
             tests/shell/*.sh
       - name: PSScriptAnalyzer (errors only)
@@ -49,7 +48,7 @@ jobs:
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-          $files = Get-ChildItem shell/pwsh/*.ps1, bootstrap/*.ps1 -File
+          $files = Get-ChildItem shell/pwsh/*.ps1 -File
           $errs = $files | ForEach-Object {
             Invoke-ScriptAnalyzer -Path $_.FullName -Severity Error
           }

@@ -52,9 +52,9 @@ The build sources and builder live in `.private/`, which manages its own
 exclusions via `.private/.gitignore` (`**`). Only the generated `dist/*.md`
 is committed. The rest of `agents/` (skills, shared) is committed.
 
-The installer lives one level up in `../bootstrap/` (`skills.sh` / `skills.ps1`,
-invoked by `bootstrap/install.{sh,ps1}`); `agents/` is the content, `bootstrap/`
-is how it gets deployed.
+This content is deployed by the `den` CLI (`den install skills`); `agents/` is
+the content, `den install` is how it gets deployed. The content ships bundled
+inside the den wheel, so it installs with no source checkout on disk.
 
 ## The eight skills
 
@@ -97,26 +97,18 @@ sections from `ASSISTANT`.
 
 ## Install
 
-The installer is `../bootstrap/skills.{sh,ps1}` (the `bootstrap/install.{sh,ps1}`
-dispatcher delegates to it for the "LLM agent skills" component). Each skill
-installs as a SELF-CONTAINED unit: it copies a skill, then copies only the
-`shared/` resources that skill references into the skill's own `shared/`, and
-rewrites every `shared/...` reference to an ABSOLUTE path under that skill (weak
-models resolve absolute paths reliably; relative ones are ambiguous). No
-top-level `shared/` tree is created in the target.
+`den install skills` deploys the skills (one cross-platform implementation).
+Each skill installs as a SELF-CONTAINED unit: it copies a skill, then copies
+only the `shared/` resources that skill references into the skill's own
+`shared/`, and rewrites every `shared/...` reference to an ABSOLUTE path under
+that skill (weak models resolve absolute paths reliably; relative ones are
+ambiguous). No top-level `shared/` tree is created in the target.
 
 ```
-sh ../bootstrap/install.sh --skills-only              # install all skills into ~/.agents and ~/.claude
-sh ../bootstrap/skills.sh --with-parent               # skills engine directly; + AGENTS.md/CLAUDE.md
-sh ../bootstrap/skills.sh --target ~/.codex --codex-config   # print the [[skills.config]] TOML for Codex
-sh ../bootstrap/skills.sh --dry-run                   # show actions without writing
-```
-
-PowerShell (same `--xxx-yyy` flags; a single or double dash both bind):
-
-```
-pwsh ../bootstrap/install.ps1 --skills-only
-pwsh ../bootstrap/skills.ps1 --target ~/.codex --codex-config
+den install skills --all-tools                        # every tool's correct dirs
+den install skills --tool claude --with-parent        # one tool + AGENTS.md/CLAUDE.md
+den install skills --target ~/.codex --codex-config   # print the [[skills.config]] TOML for Codex
+den install skills --dry-run                          # show actions without writing
 ```
 
 Where tools read skills:

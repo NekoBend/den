@@ -1,36 +1,37 @@
-# tools - the `den` CLI
+# den - the unified CLI
 
-A small, dependency-free toolkit for LLM-assisted development workflows. It
-bundles the verification scripts the skills use (`check`, `verify`, `refs`,
-`doc`) with two workflow features for weak coding agents: a workspace
-`memory` and per-tool `hook` installation that imprints context every turn.
+A small, dependency-free CLI for LLM-assisted development. It bundles the
+deployable content (skills, shared resources, parent prompts, shell sources,
+cheatsheets) into its wheel and installs it, plus verification helpers, a
+workspace `memory`, and per-turn `hook` imprinting for weak coding agents.
 
-This is the `tools/` subsystem of the `den` repo: a self-contained `uv` tool
-package. It has no third-party dependencies (standard library only).
+This is the `den/` package of the `den` repo: a self-contained `uv` tool with
+no third-party dependencies (standard library only).
 
 ## Install
 
-From the repo root:
-
 ```
-uv tool install --editable ./tools     # puts `den` on PATH (~/.local/bin/den)
+uv tool install git+https://github.com/NekoBend/den.git   # no clone needed
+uv tool install .                                          # or from a checkout
 ```
 
-Editable so edits to `tools/*.py` take effect without reinstalling.
+The wheel bundles content under `den/_data/`, so `den install ...` works with no
+source on disk; from a checkout it falls back to the repo root (`_content.py`).
 
 ## Commands
 
 ```
-den check  <file>              lint / format / typecheck a file (dispatches to run-checks.sh)
-den verify <file>              check that imported APIs actually exist
-den refs   --def|--uses SYM    find a symbol's definitions or usages across a tree
-den doc    <file>              report docstring / doc-comment coverage
-den memory show|save|...       workspace session memory (.den/memory.md)
-den hook   install|run|...     per-tool hooks that imprint context every turn
+den install skills|shell       deploy skills (per tool) or the shell environment
+den hook    install|run|...    per-turn imprint hooks, per workspace
+den memory  show|save|...      workspace session memory (.den/memory.md)
+den cheat   [name]             view bundled cheatsheets offline
+den check   <file>             lint / format / typecheck a file (run-checks.sh)
+den verify  <file>             check that imported APIs actually exist
+den refs    --def|--uses SYM   find a symbol's definitions or usages
+den doc     <file>             docstring / doc-comment coverage
 ```
 
-`check`, `verify`, `refs`, and `doc` are ports of `agents/shared/scripts/`
-exposed as a stable CLI. Run `den <command> --help` for per-command options.
+Run `den <command> --help` for per-command options.
 
 ## `den memory`
 
@@ -80,18 +81,21 @@ den hook remove [--tool T ...]                    # unregister
 den hook run --event E --tool T                   # the worker the tool invokes
 ```
 
+Hooks install **per workspace**: run `den hook install` inside a project and it
+writes that tool's project-level hook config under the current directory and
+seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope.
 `install` writes only the hooks den manages (marked by a sentinel) and leaves
 foreign hooks untouched. Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
 
 ### Per-tool support
 
-| Tool | Per-turn inject | Mechanism | Config location |
-|------|-----------------|-----------|-----------------|
-| claude | yes | `hookSpecificOutput.additionalContext` | `~/.claude/settings.json` |
-| gemini | yes | `hookSpecificOutput.additionalContext` | `~/.gemini/settings.json` |
-| cline | yes | `contextModification` (script per event) | `~/Documents/Cline/Hooks/` (VS Code extension) |
-| copilot | session-start only | `additionalContext` (`userPromptSubmitted` is notify-only) | `~/.copilot/hooks/` |
+| Tool | Per-turn inject | Mechanism | Workspace config |
+|------|-----------------|-----------|------------------|
+| claude | yes | `hookSpecificOutput.additionalContext` | `.claude/settings.json` |
+| gemini | yes | `hookSpecificOutput.additionalContext` | `.gemini/settings.json` |
+| cline | yes | `contextModification` (script per event) | `.clinerules/hooks/` |
+| copilot | session-start only | `additionalContext` (`userPromptSubmitted` is notify-only) | `.github/hooks/den.json` |
 | codex | not yet | (hooks ship as a marketplace plugin + trust) | deferred |
 
 For cline, `install` writes one script per event, named for the platform Cline
@@ -100,23 +104,23 @@ expects: extensionless `<Event>` (executable bash) on macOS/Linux, `<Event>.ps1`
 `den` must be on PATH where Cline runs the hook.
 
 claude, gemini, copilot, and the macOS/Linux cline path were verified end to end.
-The Windows cline `.ps1` path is implemented to Cline's documented contract but
-has not been verified against a live Windows install yet. codex is scaffolded but
-disabled (`verified=False`) until the plugin/marketplace delivery is built.
+The Windows cline `.ps1` path follows Cline's documented contract; verify against
+a live Windows install. codex is scaffolded but disabled (`verified=False`).
 
 ## Architecture
 
-Flat package: `den.py` is the dispatcher; each command is a sibling `_xxx.py`
-module (`_check`, `_verify`, `_refs`, `_doc`, `_memory`, `_hook`) with a
-`main(argv)` entry point. `den.py` inserts `tools/` on `sys.path` so the sibling
-imports resolve however `den` is invoked. `den hook` registers a per-format
-installer (`settings_json`, `copilot_json`, `cline_scripts`) and a per-tool
-output emitter.
+`cli.py` is the dispatcher; each command is a sibling `_xxx.py` module
+(`_check`, `_verify`, `_refs`, `_doc`, `_memory`, `_hook`, `_install`, `_shell`,
+`_cheat`) with a `main(argv)` entry point and relative imports. `_content.py`
+locates bundled content (wheel `den/_data/`, or the repo root from a checkout).
+`den hook` registers a per-format installer (`settings_json`, `copilot_json`,
+`cline_scripts`) and a per-tool output emitter; `den install` ports the old bash
+`skills.sh` / shell installers into one cross-platform implementation.
 
 ## Tests
 
 ```
-python3 -m pytest tools/tests     # den memory + den hook (44 tests)
+python3 -m pytest tests/den     # den memory, hook, install, shell, cheat
 ```
 
 CI runs these in the `agents` job alongside `ruff check tools` and
