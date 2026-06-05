@@ -59,6 +59,7 @@ _TOOLS: dict[str, dict] = {
     "claude": {
         "config": "~/.claude/settings.json",
         "emit": "claude",
+        "format": "settings_json",
         "events": {
             "session-start": "SessionStart",
             "per-turn": "UserPromptSubmit",
@@ -71,13 +72,14 @@ _TOOLS: dict[str, dict] = {
     "gemini": {
         "config": "~/.gemini/settings.json",
         "emit": "gemini",
+        "format": "settings_json",
         "events": {
             "session-start": "SessionStart",
             "per-turn": "BeforeAgent",
             "post-tool": "AfterTool",
             "stop": "SessionEnd",
         },
-        "verified": False,
+        "verified": True,
     },
     "codex": {
         "config": "~/.codex/hooks.json",
@@ -153,7 +155,12 @@ def _compose(den_dir: Path) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _emit_claude(event_name: str, text: str) -> None:
+def _emit_hookspecific(event_name: str, text: str) -> None:
+    """stdout JSON with hookSpecificOutput.additionalContext (exit 0).
+
+    Shared by Claude Code and Gemini CLI: both parse exit-0 stdout as JSON and
+    append additionalContext to the turn. Verified end to end against both.
+    """
     if not text:
         return
     out = {
@@ -166,7 +173,8 @@ def _emit_claude(event_name: str, text: str) -> None:
 
 
 _EMITTERS = {
-    "claude": _emit_claude,
+    "claude": _emit_hookspecific,
+    "gemini": _emit_hookspecific,
 }
 
 
@@ -228,7 +236,11 @@ def _parse_run_args(argv: list[str]) -> tuple[str | None, str | None]:
 
 
 # --------------------------------------------------------------------------- #
-# install / list / remove (claude only for now)
+# install / list / remove
+#
+# claude and gemini share format "settings_json": a settings.json with a hooks
+# object keyed by native event name. codex/copilot/cline use other formats and
+# are not wired yet.
 # --------------------------------------------------------------------------- #
 
 
@@ -238,8 +250,8 @@ def _resolve_config(spec: dict, override: str | None) -> Path:
     )
 
 
-def _claude_entries(tool: str, spec: dict) -> dict[str, list]:
-    """Build the per-event hook entries den manages for a claude-format config."""
+def _settings_entries(tool: str, spec: dict) -> dict[str, list]:
+    """Build the per-event hook entries den manages for a settings_json config."""
     entries: dict[str, list] = {}
     for generic, native in spec["events"].items():
         cmd = f"den hook run --event {generic} --tool {tool}"
@@ -264,16 +276,21 @@ def _strip_den_hooks(hooks: dict) -> dict:
     return cleaned
 
 
-def _install_claude(tool: str, spec: dict, config: Path) -> None:
+def _install_settings_json(tool: str, spec: dict, config: Path) -> None:
     data: dict = {}
     if config.is_file():
         data = json.loads(config.read_text(encoding="utf-8"))
     hooks = _strip_den_hooks(data.get("hooks", {}))
-    for event, groups in _claude_entries(tool, spec).items():
+    for event, groups in _settings_entries(tool, spec).items():
         hooks.setdefault(event, []).extend(groups)
     data["hooks"] = hooks
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+_INSTALLERS = {
+    "settings_json": _install_settings_json,
+}
 
 
 def _seed_imprint(den_dir: Path) -> bool:
@@ -298,16 +315,17 @@ def _cmd_install(argv: list[str]) -> int:
     rc = 0
     for tool in tools:
         spec = _TOOLS[tool]
-        if not spec["verified"]:
+        installer = _INSTALLERS.get(spec.get("format", ""))
+        if not spec["verified"] or installer is None:
             print(
                 f"den hook install: '{tool}' is not verified yet; skipping. "
-                f"Only 'claude' is wired end to end so far.",
+                f"Verified so far: claude, gemini.",
                 file=sys.stderr,
             )
             rc = 1
             continue
         config = _resolve_config(spec, override)
-        _install_claude(tool, spec, config)
+        installer(tool, spec, config)
         print(f"installed {tool} hooks -> {config}", file=sys.stderr)
     return rc
 

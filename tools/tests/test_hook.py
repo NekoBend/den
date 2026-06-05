@@ -146,9 +146,28 @@ def test_install_does_not_overwrite_existing_imprint(tmp_path, monkeypatch):
 
 def test_install_refuses_unverified_tool(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    cfg = tmp_path / "gemini.json"
-    assert hook_main(["install", "--tool", "gemini", "--config", str(cfg)]) == 1
+    cfg = tmp_path / "codex.json"
+    assert hook_main(["install", "--tool", "codex", "--config", str(cfg)]) == 1
     assert not cfg.exists()
+
+
+def test_install_gemini_uses_settings_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    assert hook_main(["install", "--tool", "gemini", "--config", str(cfg)]) == 0
+    hooks = json.loads(cfg.read_text())["hooks"]
+    assert set(hooks) == {"SessionStart", "BeforeAgent", "AfterTool", "SessionEnd"}
+    cmd = hooks["BeforeAgent"][0]["hooks"][0]["command"]
+    assert cmd == "den hook run --event per-turn --tool gemini"
+
+
+def test_run_gemini_emits_beforeagent_json(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, imprint="IMP\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "gemini"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hookSpecificOutput"]["hookEventName"] == "BeforeAgent"
+    assert "IMP" in payload["hookSpecificOutput"]["additionalContext"]
 
 
 def test_remove_strips_den_keeps_foreign(tmp_path, monkeypatch):
