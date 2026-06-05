@@ -7,6 +7,7 @@ Subcommands:
   doc     report docstring / doc-comment coverage
   memory  read/write workspace session memory (.den/memory.md)
   hook    install per-tool hooks that imprint context every turn
+  cheat   view bundled cheatsheets offline
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ def _usage() -> None:
         "  doc    <file>              docstring / doc-comment coverage\n"
         "  memory show|save|log|...   workspace session memory\n"
         "  hook   install|run|imprint per-turn imprint hooks\n"
+        "  cheat  [name]              view bundled cheatsheets\n"
         "\n"
         "Run 'den <command> --help' for command-specific options."
     )
@@ -72,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "hook":
         from ._hook import main as _main
+
+        return _main(rest)
+
+    if cmd == "cheat":
+        from ._cheat import main as _main
 
         return _main(rest)
 

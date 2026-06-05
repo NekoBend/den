@@ -14,3 +14,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["den"]
+exclude = ["**/__pycache__", "**/*.pyc", "**/.pytest_cache", "**/tests"]
+
+# Bundle deployable content into the wheel so `den install ...` and `den cheat`
+# work after a sourceless install (uv tool install git+URL). _content.py mirrors
+# this layout, falling back to the repo root when running from a checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"agents/skills" = "den/_data/agents/skills"
+"agents/shared" = "den/_data/agents/shared"
+"agents/dist" = "den/_data/agents/dist"
+"cheatsheets" = "den/_data/cheatsheets"
