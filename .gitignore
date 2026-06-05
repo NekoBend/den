@@ -5,4 +5,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 
+# den's own workspace memory/hooks when dogfooding the den CLI here
+.den/
+
 # agents/.private/ manages its own exclusions via agents/.private/.gitignore.

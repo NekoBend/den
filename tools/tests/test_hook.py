@@ -201,6 +201,87 @@ def test_list_shows_den_managed(tmp_path, monkeypatch, capsys):
     assert "den hook run --event per-turn --tool claude" in out
 
 
+# --------------------------------------------------------------------------- #
+# copilot (flat version:1 JSON, additionalContext, session-start inject only)
+# --------------------------------------------------------------------------- #
+
+
+def test_install_copilot_flat_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "copilot.json"
+    assert hook_main(["install", "--tool", "copilot", "--config", str(cfg)]) == 0
+    data = json.loads(cfg.read_text())
+    assert data["version"] == 1
+    assert set(data["hooks"]) == {"sessionStart", "userPromptSubmitted", "postToolUse"}
+    assert data["hooks"]["sessionStart"][0]["bash"] == (
+        "den hook run --event session-start --tool copilot"
+    )
+
+
+def test_run_copilot_sessionstart_additional_context(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, imprint="IMP\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "session-start", "--tool", "copilot"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "IMP" in payload["additionalContext"]
+
+
+def test_run_copilot_posttool_is_noop_json(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, memory="m\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "post-tool", "--tool", "copilot"]) == 0
+    assert json.loads(capsys.readouterr().out) == {}
+
+
+# --------------------------------------------------------------------------- #
+# cline (executable scripts per event, contextModification)
+# --------------------------------------------------------------------------- #
+
+
+def test_install_cline_writes_executable_scripts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    hooks_dir = tmp_path / "clinehooks"
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    script = hooks_dir / "UserPromptSubmit"
+    assert script.is_file()
+    assert script.stat().st_mode & 0o100  # owner-executable
+    body = script.read_text()
+    assert "den hook run --event per-turn --tool cline" in body
+    assert (hooks_dir / "PostToolUse").is_file()
+
+
+def test_run_cline_per_turn_context_modification(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, memory="MEM\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "cline"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["cancel"] is False
+    assert "MEM" in payload["contextModification"]
+
+
+def test_run_cline_post_tool_cancel_false_only(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "post-tool", "--tool", "cline"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"cancel": False}
+
+
+def test_install_cline_does_not_clobber_foreign_script(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    hooks_dir = tmp_path / "clinehooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "UserPromptSubmit").write_text("#!/bin/sh\necho mine\n")
+    hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)])
+    assert (hooks_dir / "UserPromptSubmit").read_text() == "#!/bin/sh\necho mine\n"
+
+
+def test_remove_cline_deletes_den_scripts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    hooks_dir = tmp_path / "clinehooks"
+    hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)])
+    assert hook_main(["remove", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    assert not (hooks_dir / "UserPromptSubmit").exists()
+
+
 def test_unknown_subcommand(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert hook_main(["frobnicate"]) == 2

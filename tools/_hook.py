@@ -81,9 +81,19 @@ _TOOLS: dict[str, dict] = {
         },
         "verified": True,
     },
+    # codex: DEFERRED. The output contract is the same as claude/gemini
+    # (UserPromptSubmit/SessionStart with hookSpecificOutput.additionalContext;
+    # confirmed in the codex binary's hook schema), so `emit` could reuse the
+    # hookspecific emitter. The blocker is DELIVERY: codex has no direct hooks
+    # config file. Hooks ship only inside a PLUGIN (plugin.json -> hooks.json),
+    # installed from a registered marketplace via `codex plugin marketplace add`
+    # + `codex plugin add NAME@MARKETPLACE`, and gated by hook trust
+    # (`--dangerously-bypass-hook-trust`). Implementing a "codex_plugin" format
+    # means generating that plugin tree + a local marketplace and driving those
+    # commands. Left verified=False until that is built and live-tested.
     "codex": {
-        "config": "~/.codex/hooks.json",
-        "emit": "codex",
+        "config": "~/.codex/plugins",  # plugin install root (not a direct file)
+        "emit": "claude",  # same hookSpecificOutput.additionalContext contract
         "events": {
             "session-start": "SessionStart",
             "per-turn": "UserPromptSubmit",
@@ -93,26 +103,27 @@ _TOOLS: dict[str, dict] = {
         "verified": False,
     },
     "copilot": {
-        "config": "~/.copilot/hooks.json",
+        "config": "~/.copilot/hooks/den.json",
         "emit": "copilot",
+        "format": "copilot_json",
+        # userPromptSubmitted is notification-only (cannot inject), so the
+        # imprint loads once at sessionStart; per-turn only drives checkpoint.
         "events": {
             "session-start": "sessionStart",
             "per-turn": "userPromptSubmitted",
             "post-tool": "postToolUse",
-            "stop": "sessionEnd",
         },
-        "verified": False,
+        "verified": True,
     },
     "cline": {
-        "config": "~/Documents/Cline/Rules/Hooks/den.json",
+        "config": "~/.cline/hooks",
         "emit": "cline",
+        "format": "cline_scripts",
         "events": {
-            "session-start": "TaskStart",
             "per-turn": "UserPromptSubmit",
             "post-tool": "PostToolUse",
-            "stop": "TaskCancel",
         },
-        "verified": False,
+        "verified": True,
     },
 }
 
@@ -172,9 +183,29 @@ def _emit_hookspecific(event_name: str, text: str) -> None:
     print(json.dumps(out))
 
 
+def _emit_copilot(event_name: str, text: str) -> None:
+    """stdout JSON for Copilot CLI. additionalContext injects on sessionStart
+    (and postToolUse); other events ignore output. {} means no-op."""
+    out: dict = {}
+    if text:
+        out["additionalContext"] = text
+    print(json.dumps(out))
+
+
+def _emit_cline(event_name: str, text: str) -> None:
+    """stdout JSON for Cline. contextModification injects into the conversation;
+    cancel=false always allows the turn. Cline expects a JSON response."""
+    out: dict = {"cancel": False}
+    if text:
+        out["contextModification"] = text
+    print(json.dumps(out))
+
+
 _EMITTERS = {
     "claude": _emit_hookspecific,
     "gemini": _emit_hookspecific,
+    "copilot": _emit_copilot,
+    "cline": _emit_cline,
 }
 
 
@@ -202,16 +233,16 @@ def _cmd_run(argv: list[str]) -> int:
     # Cheap and content-gated, so unconditional is fine on every event.
     _do_checkpoint(den_dir)
 
-    if event in _INJECT_EVENTS:
-        emit = _EMITTERS.get(spec["emit"])
-        if emit is None:
-            # Fallback for tools whose emitter is not implemented yet: plain
-            # stdout. Many tools inject stdout on exit 0; verify before relying.
-            text = _compose(den_dir)
-            if text:
-                sys.stdout.write(text + "\n")
-        else:
-            emit(spec["events"][event], _compose(den_dir))
+    # Inject only on inject-events; other events still get an (empty) response
+    # because some tools (cline, copilot) require valid JSON on every hook.
+    text = _compose(den_dir) if event in _INJECT_EVENTS else ""
+    emit = _EMITTERS.get(spec["emit"])
+    if emit is None:
+        # Fallback for tools whose emitter is not implemented yet: plain stdout.
+        if text:
+            sys.stdout.write(text + "\n")
+    else:
+        emit(spec["events"][event], text)
 
     return 0
 
@@ -288,8 +319,143 @@ def _install_settings_json(tool: str, spec: dict, config: Path) -> None:
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-_INSTALLERS = {
-    "settings_json": _install_settings_json,
+def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
+    if not config.is_file():
+        return []
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    lines = []
+    for event, groups in data.get("hooks", {}).items():
+        for g in groups:
+            for h in g.get("hooks", []):
+                if _MARKER in h.get("command", ""):
+                    lines.append(f"{tool}  {event}  {h['command']}")
+    return lines
+
+
+def _remove_settings_json(tool: str, spec: dict, config: Path) -> None:
+    if not config.is_file():
+        return
+    data = json.loads(config.read_text(encoding="utf-8"))
+    if "hooks" not in data:
+        return
+    data["hooks"] = _strip_den_hooks(data["hooks"])
+    if not data["hooks"]:
+        del data["hooks"]
+    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+# --- copilot: flat {version, hooks:{event:[{type,bash}]}}, marker in "bash" --- #
+
+
+def _strip_copilot(hooks: dict) -> dict:
+    cleaned: dict[str, list] = {}
+    for event, arr in hooks.items():
+        kept = [h for h in arr if _MARKER not in h.get("bash", "")]
+        if kept:
+            cleaned[event] = kept
+    return cleaned
+
+
+def _install_copilot(tool: str, spec: dict, config: Path) -> None:
+    data: dict = {}
+    if config.is_file():
+        data = json.loads(config.read_text(encoding="utf-8"))
+    data["version"] = data.get("version", 1)
+    hooks = _strip_copilot(data.get("hooks", {}))
+    for generic, native in spec["events"].items():
+        cmd = f"den hook run --event {generic} --tool {tool}"
+        hooks.setdefault(native, []).append({"type": "command", "bash": cmd})
+    data["hooks"] = hooks
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
+    if not config.is_file():
+        return []
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [
+        f"{tool}  {event}  {h['bash']}"
+        for event, arr in data.get("hooks", {}).items()
+        for h in arr
+        if _MARKER in h.get("bash", "")
+    ]
+
+
+def _remove_copilot(tool: str, spec: dict, config: Path) -> None:
+    if not config.is_file():
+        return
+    data = json.loads(config.read_text(encoding="utf-8"))
+    if "hooks" not in data:
+        return
+    data["hooks"] = _strip_copilot(data["hooks"])
+    if not data["hooks"]:
+        del data["hooks"]
+    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+# --- cline: one executable script per event, named exactly the event name --- #
+
+
+def _install_cline(tool: str, spec: dict, config: Path) -> None:
+    config.mkdir(parents=True, exist_ok=True)
+    for generic, native in spec["events"].items():
+        script = config / native
+        if script.exists() and _MARKER not in script.read_text(
+            encoding="utf-8", errors="ignore"
+        ):
+            print(
+                f"den hook install: {script} exists and is not den-managed; skipping",
+                file=sys.stderr,
+            )
+            continue
+        cmd = f"den hook run --event {generic} --tool {tool}"
+        script.write_text(
+            f"#!/usr/bin/env bash\n# {_MARKER} (den-managed; do not edit)\nexec {cmd}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+
+
+def _cline_scripts(spec: dict, config: Path):
+    for native in spec["events"].values():
+        script = config / native
+        if script.is_file() and _MARKER in script.read_text(
+            encoding="utf-8", errors="ignore"
+        ):
+            yield native, script
+
+
+def _list_cline(tool: str, spec: dict, config: Path) -> list[str]:
+    if not config.is_dir():
+        return []
+    return [
+        f"{tool}  {native}  {script}" for native, script in _cline_scripts(spec, config)
+    ]
+
+
+def _remove_cline(tool: str, spec: dict, config: Path) -> None:
+    if not config.is_dir():
+        return
+    for _native, script in _cline_scripts(spec, config):
+        script.unlink()
+
+
+# format -> (install, list, remove)
+_FORMATS = {
+    "settings_json": (
+        _install_settings_json,
+        _list_settings_json,
+        _remove_settings_json,
+    ),
+    "copilot_json": (_install_copilot, _list_copilot, _remove_copilot),
+    "cline_scripts": (_install_cline, _list_cline, _remove_cline),
 }
 
 
@@ -315,17 +481,17 @@ def _cmd_install(argv: list[str]) -> int:
     rc = 0
     for tool in tools:
         spec = _TOOLS[tool]
-        installer = _INSTALLERS.get(spec.get("format", ""))
-        if not spec["verified"] or installer is None:
+        handlers = _FORMATS.get(spec.get("format", ""))
+        if not spec["verified"] or handlers is None:
             print(
                 f"den hook install: '{tool}' is not verified yet; skipping. "
-                f"Verified so far: claude, gemini.",
+                f"Verified: claude, gemini, copilot, cline.",
                 file=sys.stderr,
             )
             rc = 1
             continue
         config = _resolve_config(spec, override)
-        installer(tool, spec, config)
+        handlers[0](tool, spec, config)
         print(f"installed {tool} hooks -> {config}", file=sys.stderr)
     return rc
 
@@ -336,18 +502,11 @@ def _cmd_list(argv: list[str]) -> int:
         return 2
     for tool in tools:
         spec = _TOOLS[tool]
-        config = _resolve_config(spec, override)
-        if not config.is_file():
+        handlers = _FORMATS.get(spec.get("format", ""))
+        if handlers is None:
             continue
-        try:
-            data = json.loads(config.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        for event, groups in data.get("hooks", {}).items():
-            for g in groups:
-                for h in g.get("hooks", []):
-                    if _MARKER in h.get("command", ""):
-                        print(f"{tool}  {event}  {h['command']}")
+        for line in handlers[1](tool, spec, _resolve_config(spec, override)):
+            print(line)
     return 0
 
 
@@ -357,16 +516,11 @@ def _cmd_remove(argv: list[str]) -> int:
         return 2
     for tool in tools:
         spec = _TOOLS[tool]
+        handlers = _FORMATS.get(spec.get("format", ""))
+        if handlers is None:
+            continue
         config = _resolve_config(spec, override)
-        if not config.is_file():
-            continue
-        data = json.loads(config.read_text(encoding="utf-8"))
-        if "hooks" not in data:
-            continue
-        data["hooks"] = _strip_den_hooks(data["hooks"])
-        if not data["hooks"]:
-            del data["hooks"]
-        config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        handlers[2](tool, spec, config)
         print(f"removed den hooks from {tool} -> {config}", file=sys.stderr)
     return 0
 
@@ -433,7 +587,8 @@ def _usage() -> None:
         "  remove [--tool T] [--config PATH]\n"
         "\n"
         "Events: session-start, per-turn, post-tool, stop.\n"
-        "Only 'claude' is verified end to end; other tools are scaffolded."
+        "Verified: claude, gemini, cline (per-turn inject); copilot "
+        "(session-start inject only). codex is scaffolded (verified=False)."
     )
 
 
