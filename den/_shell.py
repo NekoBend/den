@@ -1,6 +1,6 @@
 """den install shell - deploy the shell environment (bash/zsh + PowerShell).
 
-Python port of the shell-environment component of bootstrap/install.{sh,ps1}.
+Deploys the shell environment (the one cross-platform installer).
 Copies the bundled shell config into place and wires the relevant rc files
 idempotently. Config files are deployed for both shell families; only rc files
 for shells that look relevant (binary on PATH, or rc already present, or native
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -47,7 +48,32 @@ def _windows() -> bool:
     return os.name == "nt"
 
 
+def _query_pwsh_profile() -> Path | None:
+    """Ask the real PowerShell for $PROFILE so we honor OneDrive-redirected
+    Documents and the PS5 (powershell) vs PS7 (pwsh) profile dirs. Returns the
+    profile FILE path, or None when no PowerShell is available."""
+    for exe in ("pwsh", "powershell"):
+        if not shutil.which(exe):
+            continue
+        try:
+            out = subprocess.run(
+                [exe, "-NoProfile", "-Command", "$PROFILE.CurrentUserCurrentHost"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        path = out.stdout.strip()
+        if path:
+            return Path(path)
+    return None
+
+
 def _pwsh_profile_dir() -> Path:
+    queried = _query_pwsh_profile()
+    if queried is not None:
+        return queried.parent
     if _windows():
         return Path("~/Documents/PowerShell").expanduser()
     return Path("~/.config/powershell").expanduser()

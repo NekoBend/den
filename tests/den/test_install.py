@@ -22,7 +22,8 @@ def test_install_skills_rewrites_to_absolute(tmp_path):
     coding = tmp_path / "skills" / "coding"
     text = (coding / "SKILL.md").read_text()
     assert "../shared/" not in text  # no leftover relative refs
-    assert str(coding.resolve()) in text  # absolute path under the skill
+    # rewrite uses forward-slash absolute paths (correct on Windows too)
+    assert coding.resolve().as_posix() in text
 
 
 def test_install_skills_excludes_tests_and_pyc(tmp_path):

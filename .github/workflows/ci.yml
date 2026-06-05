@@ -31,6 +31,42 @@ jobs:
       - name: Bats (run-checks)
         run: bats agents/shared/scripts/tests/run-checks.bats
 
+  packaging:
+    name: packaging (wheel + sourceless install)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        run: pip install uv
+      - name: Build wheel
+        run: uv build --wheel -o dist .
+      - name: Assert wheel has no tests or caches
+        run: |
+          python3 - <<'PY'
+          import glob, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          bad = [n for n in names if "/tests/" in n or n.endswith((".pyc", ".bats"))]
+          assert not bad, f"unwanted files in wheel: {bad}"
+          print(f"wheel clean: {len(names)} entries")
+          PY
+      - name: Sourceless install + smoke test
+        run: |
+          python3 -m venv /tmp/denv
+          /tmp/denv/bin/pip install dist/*.whl
+          # run from /tmp (away from the checkout) so content resolves from the
+          # bundled den/_data, not the repo root -- this is what git+URL gives.
+          cd /tmp
+          /tmp/denv/bin/den --version
+          /tmp/denv/bin/den cheat | grep -q one-liners
+          /tmp/denv/bin/den install skills --target /tmp/sk
+          test -f /tmp/sk/skills/coding/SKILL.md
+          grep -q "/tmp/sk/skills/coding/shared/reference" /tmp/sk/skills/coding/SKILL.md
+          /tmp/denv/bin/den install shell --dry-run | grep -q '\[dry\]'
+
   shell:
     name: shell env
     runs-on: ubuntu-latest

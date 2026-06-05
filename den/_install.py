@@ -1,6 +1,6 @@
 """den install - deploy skills (and parent prompts) into agent tool dirs.
 
-Python port of bootstrap/skills.sh. Each skill installs as a SELF-CONTAINED
+Installs each skill as a SELF-CONTAINED
 unit: the skill's files plus the shared resources it references
 (shared/reference/*.md and, if any script is used, the whole shared/scripts/
 set) are copied under <target>/skills/<name>/shared/, and every shared/...
@@ -195,6 +195,13 @@ def _install_skills(argv: list[str]) -> int:
         if not dry_run:
             target.mkdir(parents=True, exist_ok=True)
         _codex_config(target)
+
+    if not dry_run and not with_parent and processed:
+        print(
+            "\nNote: skills reference a parent prompt (<honesty_contract>, "
+            "<language_policy>, <work_discipline>). Re-run with --with-parent "
+            "to install it into each tool's location."
+        )
     return 0
 
 

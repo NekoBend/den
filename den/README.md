@@ -114,8 +114,8 @@ a live Windows install. codex is scaffolded but disabled (`verified=False`).
 `_cheat`) with a `main(argv)` entry point and relative imports. `_content.py`
 locates bundled content (wheel `den/_data/`, or the repo root from a checkout).
 `den hook` registers a per-format installer (`settings_json`, `copilot_json`,
-`cline_scripts`) and a per-tool output emitter; `den install` ports the old bash
-`skills.sh` / shell installers into one cross-platform implementation.
+`cline_scripts`) and a per-tool output emitter; `den install` is one
+cross-platform implementation of the skill and shell-environment installers.
 
 ## Tests
 
@@ -123,5 +123,5 @@ locates bundled content (wheel `den/_data/`, or the repo root from a checkout).
 python3 -m pytest tests/den     # den memory, hook, install, shell, cheat
 ```
 
-CI runs these in the `agents` job alongside `ruff check tools` and
-`ruff format --check tools`.
+CI runs these alongside `ruff check agents den tests` and a `packaging` job
+that builds the wheel and smoke-tests a sourceless install.
