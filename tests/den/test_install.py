@@ -53,3 +53,36 @@ def test_install_unknown_target(capsys):
 
 def test_install_unknown_tool(capsys):
     assert install_main(["skills", "--tool", "notatool"]) == 2
+
+
+def test_interactive_dispatches(monkeypatch):
+    from den import _install
+
+    # shell?Y extras?N skills?Y claude?Y codex?N cline?N copilot?N gemini?N parent?Y
+    answers = iter([True, False, True, True, False, False, False, False, True])
+    monkeypatch.setattr(_install, "_confirm", lambda *a: next(answers))
+    calls = {}
+    monkeypatch.setattr(
+        "den._shell.install_shell",
+        lambda argv: calls.setdefault("shell", argv) is None and 0 or 0,
+    )
+    monkeypatch.setattr(
+        _install,
+        "_install_skills",
+        lambda argv: calls.setdefault("skills", argv) is None and 0 or 0,
+    )
+    assert _install._interactive() == 0
+    assert calls["shell"] == ["--no-extras"]
+    assert calls["skills"] == ["--tool", "claude", "--with-parent"]
+
+
+def test_interactive_skips_when_declined(monkeypatch):
+    from den import _install
+
+    monkeypatch.setattr(_install, "_confirm", lambda *a: False)  # decline everything
+    called = []
+    monkeypatch.setattr(
+        _install, "_install_skills", lambda argv: called.append("skills") or 0
+    )
+    assert _install._interactive() == 0
+    assert called == []

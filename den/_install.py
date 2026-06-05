@@ -208,9 +208,53 @@ def _install_skills(argv: list[str]) -> int:
     return 0
 
 
+def _confirm(prompt: str, default: bool) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    try:
+        ans = input(f"{prompt} {suffix} ").strip().lower()
+    except EOFError:
+        return default
+    return default if not ans else ans.startswith("y")
+
+
+def _interactive() -> int:
+    """`den install` with no target: ask per component, like the old installer."""
+    print("den install -- interactive setup (Ctrl-C to abort)\n")
+    rc = 0
+    if _confirm("Install the shell environment (bash/zsh + PowerShell, starship)?", True):
+        from ._shell import install_shell
+
+        extras = _confirm("  Include optional helpers (python/ffmpeg/parallel)?", True)
+        rc |= install_shell([] if extras else ["--no-extras"])
+
+    if _confirm("Install the LLM agent skills?", False):
+        print("  Which tools do you use?")
+        flags: list[str] = []
+        for tool, default in (
+            ("claude", True),
+            ("codex", False),
+            ("cline", False),
+            ("copilot", False),
+            ("gemini", False),
+        ):
+            if _confirm(f"    {tool}", default):
+                flags += ["--tool", tool]
+        if _confirm("  Install the parent prompt (AGENTS.md/CLAUDE.md) too?", True):
+            flags.append("--with-parent")
+        rc |= _install_skills(flags)
+
+    print(
+        "\nHooks install per workspace: run 'den hook install' inside a project "
+        "to imprint context every turn there."
+    )
+    return rc
+
+
 def _usage() -> None:
     print(
-        "usage: den install <target> [args]\n"
+        "usage: den install [<target>] [args]\n"
+        "\n"
+        "With no target (in a terminal), den install asks per component.\n"
         "\n"
         "Targets:\n"
         "  skills [--tool T]... [--all-tools] [--target DIR]...\n"
@@ -224,7 +268,12 @@ def _usage() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
-    if not args or args[0] in ("-h", "--help", "help"):
+    if args and args[0] in ("-h", "--help", "help"):
+        _usage()
+        return 0
+    if not args:
+        if sys.stdin.isatty():
+            return _interactive()
         _usage()
         return 0
     target, rest = args[0], args[1:]

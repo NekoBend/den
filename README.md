@@ -19,6 +19,7 @@ uv tool install git+https://github.com/NekoBend/den.git   # or: uv tool install 
 Then deploy what you want:
 
 ```
+den install                        # interactive: asks shell? skills? which tools?
 den install shell                  # shell env (bash/zsh + PowerShell, starship, cmd shims)
 den install skills --all-tools     # LLM agent skills into every tool's dirs
 den install skills --tool claude   # ...or just one tool

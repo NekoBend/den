@@ -21,7 +21,7 @@ source on disk; from a checkout it falls back to the repo root (`_content.py`).
 ## Commands
 
 ```
-den install skills|shell       deploy skills (per tool) or the shell environment
+den install [skills|shell]     interactive setup, or deploy skills / shell directly
 den hook    install|run|...    per-turn imprint hooks, per workspace
 den memory  show|save|...      workspace session memory (.den/memory.md)
 den cheat   [name]             view bundled cheatsheets offline
