@@ -7,7 +7,7 @@ Subcommands:
   doc     report docstring / doc-comment coverage
   memory  read/write workspace session memory (.den/memory.md)
   search  search a codebase          (coming soon)
-  hook    manage agent hook registrations (coming soon)
+  hook    install per-tool hooks that imprint context every turn
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _usage() -> None:
         "  doc    <file>              docstring / doc-comment coverage\n"
         "  memory show|save|log|...   workspace session memory\n"
         "  search <query> [--in DIR]  search a codebase  (coming soon)\n"
-        "  hook   install|list|remove agent hook mgmt    (coming soon)\n"
+        "  hook   install|run|imprint per-turn imprint hooks\n"
         "\n"
         "Run 'den <command> --help' for command-specific options."
     )
@@ -77,7 +77,12 @@ def main(argv: list[str] | None = None) -> int:
 
         return _main(rest)
 
-    if cmd in ("search", "hook"):
+    if cmd == "hook":
+        from _hook import main as _main
+
+        return _main(rest)
+
+    if cmd == "search":
         print(f"den {cmd}: coming soon", file=sys.stderr)
         return 1
 
