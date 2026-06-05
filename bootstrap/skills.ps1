@@ -13,7 +13,9 @@
   Tool-specific locations (verified 2026-06-04):
     claude  : skills -> ~/.claude/skills/    parent -> ~/.claude/CLAUDE.md
     codex   : skills -> ~/.agents/skills/    parent -> ~/.codex/AGENTS.md
-    cline   : skills -> ~/.cline/skills/     parent -> ~/.agents/AGENTS.md
+    cline   : skills -> ~/.agents/skills/    parent -> ~/.agents/AGENTS.md
+              (cline reads ~/.agents/skills; deploying there avoids a duplicate
+              alongside the shared ~/.agents copy that other tools also use)
     copilot : skills -> ~/.copilot/skills/   parent -> ~/.copilot/copilot-instructions.md
     gemini  : skills -> ~/.gemini/skills/    parent -> ~/.gemini/GEMINI.md
 .PARAMETER tool
@@ -72,7 +74,7 @@ function Get-ToolConfig([string]$toolName) {
         (Join-Path $HOME '.codex'),
         'AGENTS.md') }
     'cline'   { return @(
-        (Join-Path $HOME '.cline' 'skills'),
+        (Join-Path $HOME '.agents' 'skills'),
         (Join-Path $HOME '.agents'),
         'AGENTS.md') }
     'copilot' { return @(

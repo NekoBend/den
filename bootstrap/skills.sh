@@ -29,7 +29,9 @@
 # Tool-specific locations (verified 2026-06-04):
 #   claude  : skills -> ~/.claude/skills/     parent -> ~/.claude/CLAUDE.md
 #   codex   : skills -> ~/.agents/skills/     parent -> ~/.codex/AGENTS.md
-#   cline   : skills -> ~/.cline/skills/      parent -> ~/.agents/AGENTS.md
+#   cline   : skills -> ~/.agents/skills/     parent -> ~/.agents/AGENTS.md
+#             (cline reads ~/.agents/skills; deploy there, not ~/.cline/skills,
+#             so it is not loaded twice alongside the shared ~/.agents copy)
 #   copilot : skills -> ~/.copilot/skills/    parent -> ~/.copilot/copilot-instructions.md
 #   gemini  : skills -> ~/.gemini/skills/     parent -> ~/.gemini/GEMINI.md
 #
@@ -51,7 +53,7 @@ _tool_config() {
   case "$1" in
     claude)  printf '%s' "$HOME/.claude/skills|$HOME/.claude|CLAUDE.md" ;;
     codex)   printf '%s' "$HOME/.agents/skills|$HOME/.codex|AGENTS.md" ;;
-    cline)   printf '%s' "$HOME/.cline/skills|$HOME/.agents|AGENTS.md" ;;
+    cline)   printf '%s' "$HOME/.agents/skills|$HOME/.agents|AGENTS.md" ;;
     copilot) printf '%s' "$HOME/.copilot/skills|$HOME/.copilot|copilot-instructions.md" ;;
     gemini)  printf '%s' "$HOME/.gemini/skills|$HOME/.gemini|GEMINI.md" ;;
     *) echo "unknown tool: $1 (valid: claude codex cline copilot gemini)" >&2; exit 2 ;;
