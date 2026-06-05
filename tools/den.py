@@ -1,85 +1,78 @@
 """den - toolkit for LLM-assisted development workflows.
 
 Subcommands:
-  check   lint / format / typecheck a file
+  check   lint / format / typecheck a file (dispatches to run-checks.sh)
   verify  check that imported APIs exist
-  refs    find where a symbol is referenced
-  doc     report docstring coverage
-  search  search a codebase (coming soon)
-  memory  read/write session memory (coming soon)
+  refs    find definitions or usages of a symbol across a source tree
+  doc     report docstring / doc-comment coverage
+  search  search a codebase          (coming soon)
+  memory  read/write session memory  (coming soon)
   hook    manage agent hook registrations (coming soon)
 """
 from __future__ import annotations
 
-import argparse
 import sys
+from pathlib import Path
+
+# Ensure tools/ is on the path so sibling _xxx imports resolve regardless of
+# how den is invoked (uv tool, direct python, or from a hook script).
+_HERE = Path(__file__).parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        prog="den",
-        description="den toolkit for LLM-assisted development",
+def _usage() -> None:
+    print(
+        "usage: den <command> [args]\n"
+        "\n"
+        "Commands:\n"
+        "  check  <file>              lint / format / typecheck a file\n"
+        "  verify <file>              check that imported APIs exist\n"
+        "  refs   --def|-uses|-in ... find symbol definitions or usages\n"
+        "  doc    <file>              docstring / doc-comment coverage\n"
+        "  search <query> [--in DIR]  search a codebase  (coming soon)\n"
+        "  memory show|save|clear     session memory      (coming soon)\n"
+        "  hook   install|list|remove agent hook mgmt    (coming soon)\n"
+        "\n"
+        "Run 'den <command> --help' for command-specific options."
     )
-    ap.add_argument("--version", action="version", version="den 0.1.0")
 
-    sub = ap.add_subparsers(dest="cmd", metavar="<command>")
 
-    # check
-    p_check = sub.add_parser("check", help="lint / format / typecheck a file")
-    p_check.add_argument("file", nargs="?", help="file to check (default: current dir)")
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
 
-    # verify
-    p_verify = sub.add_parser("verify", help="check that imported APIs exist")
-    p_verify.add_argument("file", help="Python file to verify")
-
-    # refs
-    p_refs = sub.add_parser("refs", help="find where a symbol is referenced")
-    p_refs.add_argument("--uses", metavar="SYMBOL", required=True, help="symbol name")
-    p_refs.add_argument("path", nargs="?", default=".", help="search root (default: .)")
-
-    # doc
-    p_doc = sub.add_parser("doc", help="report docstring coverage")
-    p_doc.add_argument("file", help="Python file to check")
-
-    # search (stub)
-    p_search = sub.add_parser("search", help="search a codebase (coming soon)")
-    p_search.add_argument("query", help="search query")
-    p_search.add_argument("--in", dest="root", default=".", metavar="DIR")
-
-    # memory (stub)
-    p_mem = sub.add_parser("memory", help="read/write session memory (coming soon)")
-    p_mem.add_argument("action", choices=["show", "save", "clear"])
-
-    # hook (stub)
-    p_hook = sub.add_parser("hook", help="manage agent hook registrations (coming soon)")
-    p_hook.add_argument("action", choices=["install", "list", "remove"])
-    p_hook.add_argument("--tool", help="tool to manage hooks for")
-
-    args = ap.parse_args()
-
-    if args.cmd is None:
-        ap.print_help()
+    if not args or args[0] in ("-h", "--help", "help"):
+        _usage()
         return 0
 
-    # Dispatch
-    if args.cmd == "check":
-        from _check import run as _check
-        return _check(args.file or ".")
-    if args.cmd == "verify":
-        from _verify import run as _verify
-        return _verify(args.file)
-    if args.cmd == "refs":
-        from _refs import run as _refs
-        return _refs(args.uses, args.path)
-    if args.cmd == "doc":
-        from _doc import run as _doc
-        return _doc(args.file)
-    if args.cmd in ("search", "memory", "hook"):
-        print(f"den {args.cmd}: coming soon", file=sys.stderr)
+    if args[0] == "--version":
+        print("den 0.1.0")
+        return 0
+
+    cmd, rest = args[0], args[1:]
+
+    if cmd == "check":
+        from _check import main as _main
+        return _main(rest)
+
+    if cmd == "verify":
+        from _verify import main as _main
+        return _main(rest)
+
+    if cmd == "refs":
+        from _refs import main as _main
+        return _main(rest)
+
+    if cmd == "doc":
+        from _doc import main as _main
+        return _main(rest)
+
+    if cmd in ("search", "memory", "hook"):
+        print(f"den {cmd}: coming soon", file=sys.stderr)
         return 1
 
-    ap.print_help()
-    return 0
+    print(f"den: unknown command '{cmd}'. Run 'den --help'.", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
