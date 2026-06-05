@@ -291,9 +291,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ext = _normalize_ext(args.lang)
 
-    if args.def_sym:
+    if args.def_sym is not None:
         results = find_definitions(args.def_sym, root, ext)
-    elif args.uses_sym:
+    elif args.uses_sym is not None:
         results = find_usages(args.uses_sym, root, ext)
     else:
         file_path = Path(args.in_file).resolve()

@@ -152,7 +152,11 @@ def _cmd_save(den_dir: Path, argv: list[str]) -> int:
         if len(argv) < 2:
             print("den memory save: --file needs a path", file=sys.stderr)
             return 2
-        content = Path(argv[1]).read_text(encoding="utf-8")
+        try:
+            content = Path(argv[1]).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"den memory save: cannot read {argv[1]}: {exc}", file=sys.stderr)
+            return 2
     else:
         content = sys.stdin.read()
     _do_checkpoint(den_dir)

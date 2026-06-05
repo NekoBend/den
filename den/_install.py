@@ -78,7 +78,10 @@ def _install_skill(name: str, skills_target: Path) -> str:
     abs_dest = dest.resolve().as_posix()
     rewritten = 0
     for md in dest.rglob("*.md"):
-        orig = md.read_text(encoding="utf-8")
+        try:
+            orig = md.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue  # not a text .md (binary asset); leave it untouched
         new = _REWRITE_RE.sub(lambda m: f"{abs_dest}/shared/{m.group(1)}/", orig)
         if new != orig:
             md.write_text(new, encoding="utf-8")

@@ -319,6 +319,28 @@ def test_install_cline_is_workspace_local(tmp_path, monkeypatch):
     assert (tmp_path / ".clinerules" / "hooks" / "UserPromptSubmit").is_file()
 
 
+def test_install_tolerates_malformed_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    cfg.write_text("not json {{{")
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert "UserPromptSubmit" in json.loads(cfg.read_text())["hooks"]
+
+
+def test_install_tolerates_wrong_shape_hooks(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    cfg.write_text('{"hooks": ["oops"]}')
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+
+
+def test_run_copilot_per_turn_does_not_inject(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, imprint="IMP\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "copilot"]) == 0
+    assert json.loads(capsys.readouterr().out) == {}  # notify-only, no inject
+
+
 def test_unknown_subcommand(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert hook_main(["frobnicate"]) == 2

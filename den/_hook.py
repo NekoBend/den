@@ -246,7 +246,10 @@ def _cmd_run(argv: list[str]) -> int:
 
     # Inject only on inject-events; other events still get an (empty) response
     # because some tools (cline, copilot) require valid JSON on every hook.
-    text = _compose(den_dir) if event in _INJECT_EVENTS else ""
+    # copilot's per-turn (userPromptSubmitted) is notification-only, so do not
+    # compose for it -- it injects only at session-start.
+    inject = event in _INJECT_EVENTS and not (tool == "copilot" and event == "per-turn")
+    text = _compose(den_dir) if inject else ""
     emit = _EMITTERS.get(spec["emit"])
     if emit is None:
         # Fallback for tools whose emitter is not implemented yet: plain stdout.
@@ -306,14 +309,31 @@ def _settings_entries(tool: str, spec: dict) -> dict[str, list]:
     return entries
 
 
+def _read_json(config: Path) -> dict:
+    """Load an existing JSON config, or {} if absent/unreadable/not an object.
+    Keeps install/remove from crashing on a malformed or hand-edited file."""
+    if not config.is_file():
+        return {}
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _strip_den_hooks(hooks: dict) -> dict:
     """Drop every hook group whose command contains the den marker."""
+    if not isinstance(hooks, dict):
+        return {}
     cleaned: dict[str, list] = {}
     for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
         kept = [
             g
             for g in groups
-            if not any(_MARKER in h.get("command", "") for h in g.get("hooks", []))
+            if isinstance(g, dict)
+            and not any(_MARKER in h.get("command", "") for h in g.get("hooks", []))
         ]
         if kept:
             cleaned[event] = kept
@@ -321,9 +341,7 @@ def _strip_den_hooks(hooks: dict) -> dict:
 
 
 def _install_settings_json(tool: str, spec: dict, config: Path) -> None:
-    data: dict = {}
-    if config.is_file():
-        data = json.loads(config.read_text(encoding="utf-8"))
+    data = _read_json(config)
     hooks = _strip_den_hooks(data.get("hooks", {}))
     for event, groups in _settings_entries(tool, spec).items():
         hooks.setdefault(event, []).extend(groups)
@@ -351,7 +369,7 @@ def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
 def _remove_settings_json(tool: str, spec: dict, config: Path) -> None:
     if not config.is_file():
         return
-    data = json.loads(config.read_text(encoding="utf-8"))
+    data = _read_json(config)
     if "hooks" not in data:
         return
     data["hooks"] = _strip_den_hooks(data["hooks"])
@@ -364,18 +382,22 @@ def _remove_settings_json(tool: str, spec: dict, config: Path) -> None:
 
 
 def _strip_copilot(hooks: dict) -> dict:
+    if not isinstance(hooks, dict):
+        return {}
     cleaned: dict[str, list] = {}
     for event, arr in hooks.items():
-        kept = [h for h in arr if _MARKER not in h.get("bash", "")]
+        if not isinstance(arr, list):
+            continue
+        kept = [
+            h for h in arr if isinstance(h, dict) and _MARKER not in h.get("bash", "")
+        ]
         if kept:
             cleaned[event] = kept
     return cleaned
 
 
 def _install_copilot(tool: str, spec: dict, config: Path) -> None:
-    data: dict = {}
-    if config.is_file():
-        data = json.loads(config.read_text(encoding="utf-8"))
+    data = _read_json(config)
     data["version"] = data.get("version", 1)
     hooks = _strip_copilot(data.get("hooks", {}))
     for generic, native in spec["events"].items():
@@ -404,7 +426,7 @@ def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
 def _remove_copilot(tool: str, spec: dict, config: Path) -> None:
     if not config.is_file():
         return
-    data = json.loads(config.read_text(encoding="utf-8"))
+    data = _read_json(config)
     if "hooks" not in data:
         return
     data["hooks"] = _strip_copilot(data["hooks"])

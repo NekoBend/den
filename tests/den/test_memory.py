@@ -211,3 +211,9 @@ def test_checkpoint_collision_does_not_clobber(tmp_path, monkeypatch):
     _memory._do_checkpoint(den)
     bodies = {p.read_text() for p in (den / "history").iterdir()}
     assert bodies == {"a\n", "b\n"}
+
+
+def test_save_missing_file_returns_2(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["save", "--file", str(tmp_path / "nope.md")]) == 2
+    assert "cannot read" in capsys.readouterr().err
