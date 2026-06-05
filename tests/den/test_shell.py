@@ -1,6 +1,56 @@
 """Tests for den install shell (den/_shell.py)."""
 
+from den import _shell
 from den._install import main as install_main
+
+
+def test_pwsh_dir_honors_queried_profile_on_windows(tmp_path, monkeypatch):
+    prof = tmp_path / "OneDrive" / "Documents" / "PowerShell" / _shell._PWSH_PROFILE
+    monkeypatch.setattr(_shell, "_windows", lambda: True)
+    monkeypatch.setattr(_shell, "_query_pwsh_profile", lambda: prof)
+    assert _shell._pwsh_profile_dir() == prof.parent
+
+
+def test_pwsh_dir_windows_fallback_without_pwsh(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(_shell, "_windows", lambda: True)
+    monkeypatch.setattr(_shell, "_query_pwsh_profile", lambda: None)
+    assert _shell._pwsh_profile_dir().as_posix().endswith("Documents/PowerShell")
+
+
+def test_pwsh_dir_posix_uses_config(monkeypatch):
+    monkeypatch.setattr(_shell, "_windows", lambda: False)
+    assert _shell._pwsh_profile_dir().as_posix().endswith(".config/powershell")
+
+
+def test_query_pwsh_profile_takes_last_ps1_line(monkeypatch):
+    class _Result:
+        returncode = 0
+        stdout = (
+            "WARNING: a noisy banner line\n"
+            "C:\\Users\\x\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1\n"
+        )
+
+    monkeypatch.setattr(
+        _shell.shutil, "which", lambda e: "/x/pwsh" if e == "pwsh" else None
+    )
+    monkeypatch.setattr(_shell.subprocess, "run", lambda *a, **k: _Result())
+    p = _shell._query_pwsh_profile()
+    assert p is not None
+    assert str(p).endswith(".ps1")
+    assert "WARNING" not in str(p)
+
+
+def test_query_pwsh_profile_rejects_nonzero_returncode(monkeypatch):
+    class _Result:
+        returncode = 1
+        stdout = "garbage that is not a path\n"
+
+    monkeypatch.setattr(
+        _shell.shutil, "which", lambda e: "/x/pwsh" if e == "pwsh" else None
+    )
+    monkeypatch.setattr(_shell.subprocess, "run", lambda *a, **k: _Result())
+    assert _shell._query_pwsh_profile() is None
 
 
 def test_install_shell_deploys_both_families(tmp_path, monkeypatch):

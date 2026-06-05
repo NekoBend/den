@@ -1,10 +1,10 @@
 """den install - deploy skills (and parent prompts) into agent tool dirs.
 
-Installs each skill as a SELF-CONTAINED
-unit: the skill's files plus the shared resources it references
-(shared/reference/*.md and, if any script is used, the whole shared/scripts/
-set) are copied under <target>/skills/<name>/shared/, and every shared/...
-reference is rewritten to an ABSOLUTE path under that skill's own shared/.
+Installs each skill as a SELF-CONTAINED unit: the skill's files plus the shared
+resources it references (shared/reference/*.md and, if any script is used, the
+whole shared/scripts/ set) are copied under <target>/skills/<name>/shared/, and
+every shared/... reference is rewritten to an ABSOLUTE path under that skill's
+own shared/.
 
   den install skills [--tool TOOL]... [--all-tools] [--target DIR]...
                      [--with-parent] [--dry-run] [--codex-config]

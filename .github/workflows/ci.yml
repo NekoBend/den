@@ -21,9 +21,9 @@ jobs:
           pip install ruff pytest
           sudo apt-get update && sudo apt-get install -y bats
       - name: Ruff lint
-        run: ruff check agents den tests
+        run: ruff check agents den tests hatch_build.py
       - name: Ruff format check
-        run: ruff format --check agents den tests
+        run: ruff format --check agents den tests hatch_build.py
       - name: Pytest (verification scripts)
         run: python3 -m pytest agents/shared/scripts/tests
       - name: Pytest (den CLI)
@@ -41,30 +41,39 @@ jobs:
           python-version: "3.13"
       - name: Install uv
         run: pip install uv
-      - name: Build wheel
-        run: uv build --wheel -o dist .
-      - name: Assert wheel has no tests or caches
+      - name: Build sdist + wheel
+        run: uv build -o dist .
+      - name: Assert wheel + sdist are complete and clean
         run: |
           python3 - <<'PY'
-          import glob, zipfile
+          import glob, tarfile, zipfile
           whl = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(whl).namelist()
           bad = [n for n in names if "/tests/" in n or n.endswith((".pyc", ".bats"))]
           assert not bad, f"unwanted files in wheel: {bad}"
-          print(f"wheel clean: {len(names)} entries")
+          # the parent prompts (agents/dist) must survive into the sdist too,
+          # else a sdist-built install loses `--with-parent` (unanchored dist/).
+          sdist = glob.glob("dist/*.tar.gz")[0]
+          members = tarfile.open(sdist).getnames()
+          assert any("/agents/dist/CLAUDE.md" in m for m in members), \
+              "agents/dist missing from sdist"
+          print(f"wheel clean ({len(names)} entries), sdist has agents/dist")
           PY
-      - name: Sourceless install + smoke test
+      - name: Install from sdist + smoke test
         run: |
+          # install from the SDIST (uv tool install git+URL may build via sdist);
+          # this is the path that the unanchored dist/ ignore broke.
           python3 -m venv /tmp/denv
-          /tmp/denv/bin/pip install dist/*.whl
+          /tmp/denv/bin/pip install dist/*.tar.gz
           # run from /tmp (away from the checkout) so content resolves from the
           # bundled den/_data, not the repo root -- this is what git+URL gives.
           cd /tmp
           /tmp/denv/bin/den --version
           /tmp/denv/bin/den cheat | grep -q one-liners
-          /tmp/denv/bin/den install skills --target /tmp/sk
+          /tmp/denv/bin/den install skills --target /tmp/sk --with-parent
           test -f /tmp/sk/skills/coding/SKILL.md
           grep -q "/tmp/sk/skills/coding/shared/reference" /tmp/sk/skills/coding/SKILL.md
+          test -f /tmp/sk/CLAUDE.md   # parent prompt installed (needs agents/dist)
           /tmp/denv/bin/den install shell --dry-run | grep -q '\[dry\]'
 
   shell:

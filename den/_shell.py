@@ -64,17 +64,24 @@ def _query_pwsh_profile() -> Path | None:
             )
         except (OSError, subprocess.SubprocessError):
             continue
-        path = out.stdout.strip()
-        if path:
-            return Path(path)
+        if out.returncode != 0:
+            continue
+        # Take the last non-empty line and require a .ps1 path, so a banner or
+        # warning line on stdout cannot corrupt the result.
+        lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        if lines and lines[-1].lower().endswith(".ps1"):
+            return Path(lines[-1])
     return None
 
 
 def _pwsh_profile_dir() -> Path:
-    queried = _query_pwsh_profile()
-    if queried is not None:
-        return queried.parent
+    # Only query on Windows -- that is where the OneDrive-redirected Documents
+    # and PS5/PS7 profile-dir differences bite. POSIX keeps the fixed path (and
+    # avoids spawning a subprocess on every install).
     if _windows():
+        queried = _query_pwsh_profile()
+        if queried is not None:
+            return queried.parent
         return Path("~/Documents/PowerShell").expanduser()
     return Path("~/.config/powershell").expanduser()
 
