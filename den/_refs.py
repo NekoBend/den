@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _common import DEFINITION_PATTERNS, SKIP_DIRS
+from ._common import DEFINITION_PATTERNS, SKIP_DIRS
 
 Hit = tuple[str, int, str]
 Result = tuple[str, int, str, str]

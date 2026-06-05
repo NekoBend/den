@@ -1,4 +1,4 @@
-"""den - toolkit for LLM-assisted development workflows.
+"""den - unified toolkit CLI for LLM-assisted development.
 
 Subcommands:
   check   lint / format / typecheck a file (dispatches to run-checks.sh)
@@ -12,13 +12,8 @@ Subcommands:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-# Ensure tools/ is on the path so sibling _xxx imports resolve regardless of
-# how den is invoked (uv tool, direct python, or from a hook script).
-_HERE = Path(__file__).parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
+from . import __version__
 
 
 def _usage() -> None:
@@ -45,38 +40,38 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args[0] == "--version":
-        print("den 0.1.0")
+        print(f"den {__version__}")
         return 0
 
     cmd, rest = args[0], args[1:]
 
     if cmd == "check":
-        from _check import main as _main
+        from ._check import main as _main
 
         return _main(rest)
 
     if cmd == "verify":
-        from _verify import main as _main
+        from ._verify import main as _main
 
         return _main(rest)
 
     if cmd == "refs":
-        from _refs import main as _main
+        from ._refs import main as _main
 
         return _main(rest)
 
     if cmd == "doc":
-        from _doc import main as _main
+        from ._doc import main as _main
 
         return _main(rest)
 
     if cmd == "memory":
-        from _memory import main as _main
+        from ._memory import main as _main
 
         return _main(rest)
 
     if cmd == "hook":
-        from _hook import main as _main
+        from ._hook import main as _main
 
         return _main(rest)
 

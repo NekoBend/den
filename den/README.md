@@ -90,11 +90,18 @@ foreign hooks untouched. Generic events map to each tool's own names:
 |------|-----------------|-----------|-----------------|
 | claude | yes | `hookSpecificOutput.additionalContext` | `~/.claude/settings.json` |
 | gemini | yes | `hookSpecificOutput.additionalContext` | `~/.gemini/settings.json` |
-| cline | yes | `contextModification` (script per event) | `~/.cline/hooks/` |
+| cline | yes | `contextModification` (script per event) | `~/Documents/Cline/Hooks/` (VS Code extension) |
 | copilot | session-start only | `additionalContext` (`userPromptSubmitted` is notify-only) | `~/.copilot/hooks/` |
 | codex | not yet | (hooks ship as a marketplace plugin + trust) | deferred |
 
-All four supported tools were verified end to end. codex is scaffolded but
+For cline, `install` writes one script per event, named for the platform Cline
+expects: extensionless `<Event>` (executable bash) on macOS/Linux, `<Event>.ps1`
+(PowerShell) on Windows. Either way the script just calls `den hook run`, so
+`den` must be on PATH where Cline runs the hook.
+
+claude, gemini, copilot, and the macOS/Linux cline path were verified end to end.
+The Windows cline `.ps1` path is implemented to Cline's documented contract but
+has not been verified against a live Windows install yet. codex is scaffolded but
 disabled (`verified=False`) until the plugin/marketplace delivery is built.
 
 ## Architecture

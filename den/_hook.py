@@ -28,10 +28,11 @@ per-turn, post-tool, stop.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
-from _memory import _do_checkpoint, _find_den_dir, _memory_path
+from ._memory import _do_checkpoint, _find_den_dir, _memory_path
 
 _IMPRINT_NAME = "imprint.md"
 
@@ -116,10 +117,15 @@ _TOOLS: dict[str, dict] = {
         "verified": True,
     },
     "cline": {
-        "config": "~/.cline/hooks",
+        # The VS Code extension reads hooks from ~/Documents/Cline/Hooks
+        # (confirmed on Windows, 2026-06-05), NOT ~/.cline/hooks (that is the
+        # CLI). Install to one place only so a single instance does not fire a
+        # hook twice if it happens to scan both.
+        "config": "~/Documents/Cline/Hooks",
         "emit": "cline",
         "format": "cline_scripts",
         "events": {
+            "session-start": "TaskStart",
             "per-turn": "UserPromptSubmit",
             "post-tool": "PostToolUse",
         },
@@ -403,10 +409,22 @@ def _remove_copilot(tool: str, spec: dict, config: Path) -> None:
 # --- cline: one executable script per event, named exactly the event name --- #
 
 
+def _is_windows() -> bool:
+    # Indirection so tests can flip platform without touching os.name globally
+    # (pathlib reads os.name to pick WindowsPath/PosixPath).
+    return os.name == "nt"
+
+
+def _cline_script_name(native: str) -> str:
+    """Cline reads <Event>.ps1 (PowerShell) on Windows, extensionless <Event>
+    (executable bash) on macOS/Linux."""
+    return f"{native}.ps1" if _is_windows() else native
+
+
 def _install_cline(tool: str, spec: dict, config: Path) -> None:
     config.mkdir(parents=True, exist_ok=True)
     for generic, native in spec["events"].items():
-        script = config / native
+        script = config / _cline_script_name(native)
         if script.exists() and _MARKER not in script.read_text(
             encoding="utf-8", errors="ignore"
         ):
@@ -416,20 +434,30 @@ def _install_cline(tool: str, spec: dict, config: Path) -> None:
             )
             continue
         cmd = f"den hook run --event {generic} --tool {tool}"
-        script.write_text(
-            f"#!/usr/bin/env bash\n# {_MARKER} (den-managed; do not edit)\nexec {cmd}\n",
-            encoding="utf-8",
-        )
-        script.chmod(0o755)
+        if _is_windows():
+            # PowerShell hook: Cline runs <Event>.ps1 and reads its stdout JSON.
+            script.write_text(
+                f"# {_MARKER} (den-managed; do not edit)\n{cmd}\n",
+                encoding="utf-8",
+            )
+        else:
+            script.write_text(
+                f"#!/usr/bin/env bash\n# {_MARKER} (den-managed; do not edit)\nexec {cmd}\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
 
 
 def _cline_scripts(spec: dict, config: Path):
+    # Check both names so list/remove work regardless of the platform that
+    # installed (extensionless on Unix, .ps1 on Windows).
     for native in spec["events"].values():
-        script = config / native
-        if script.is_file() and _MARKER in script.read_text(
-            encoding="utf-8", errors="ignore"
-        ):
-            yield native, script
+        for cand in (native, f"{native}.ps1"):
+            script = config / cand
+            if script.is_file() and _MARKER in script.read_text(
+                encoding="utf-8", errors="ignore"
+            ):
+                yield native, script
 
 
 def _list_cline(tool: str, spec: dict, config: Path) -> list[str]:

@@ -1,9 +1,9 @@
-"""Tests for den memory (tools/_memory.py)."""
+"""Tests for den memory (den/_memory.py)."""
 
 import io
 
-import _memory
-from _memory import main as memory_main
+from den import _memory
+from den._memory import main as memory_main
 
 
 def _mem(proj):

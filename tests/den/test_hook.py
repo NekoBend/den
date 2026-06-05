@@ -1,9 +1,9 @@
-"""Tests for den hook (tools/_hook.py)."""
+"""Tests for den hook (den/_hook.py)."""
 
 import json
 
-import _hook
-from _hook import main as hook_main
+from den import _hook
+from den._hook import main as hook_main
 
 
 def _den(proj):
@@ -280,6 +280,29 @@ def test_remove_cline_deletes_den_scripts(tmp_path, monkeypatch):
     hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)])
     assert hook_main(["remove", "--tool", "cline", "--config", str(hooks_dir)]) == 0
     assert not (hooks_dir / "UserPromptSubmit").exists()
+
+
+def test_install_cline_windows_writes_ps1(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_hook, "_is_windows", lambda: True)  # pretend we are on Windows
+    hooks_dir = tmp_path / "clinehooks"
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    ps1 = hooks_dir / "UserPromptSubmit.ps1"
+    assert ps1.is_file()
+    body = ps1.read_text()
+    assert "den hook run --event per-turn --tool cline" in body
+    assert "bash" not in body  # PowerShell, not a bash script
+    assert not (hooks_dir / "UserPromptSubmit").exists()  # no extensionless on Windows
+
+
+def test_remove_cline_windows_deletes_ps1(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_hook, "_is_windows", lambda: True)
+    hooks_dir = tmp_path / "clinehooks"
+    hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)])
+    assert (hooks_dir / "UserPromptSubmit.ps1").exists()
+    assert hook_main(["remove", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    assert not (hooks_dir / "UserPromptSubmit.ps1").exists()
 
 
 def test_unknown_subcommand(tmp_path, monkeypatch):

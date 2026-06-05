@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+*.egg-info/
+dist/
 
 # den's own workspace memory/hooks when dogfooding the den CLI here
 .den/
