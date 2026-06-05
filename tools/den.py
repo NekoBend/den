@@ -5,8 +5,8 @@ Subcommands:
   verify  check that imported APIs exist
   refs    find definitions or usages of a symbol across a source tree
   doc     report docstring / doc-comment coverage
+  memory  read/write workspace session memory (.den/memory.md)
   search  search a codebase          (coming soon)
-  memory  read/write session memory  (coming soon)
   hook    manage agent hook registrations (coming soon)
 """
 
@@ -31,8 +31,8 @@ def _usage() -> None:
         "  verify <file>              check that imported APIs exist\n"
         "  refs   --def|-uses|-in ... find symbol definitions or usages\n"
         "  doc    <file>              docstring / doc-comment coverage\n"
+        "  memory show|save|log|...   workspace session memory\n"
         "  search <query> [--in DIR]  search a codebase  (coming soon)\n"
-        "  memory show|save|clear     session memory      (coming soon)\n"
         "  hook   install|list|remove agent hook mgmt    (coming soon)\n"
         "\n"
         "Run 'den <command> --help' for command-specific options."
@@ -72,7 +72,12 @@ def main(argv: list[str] | None = None) -> int:
 
         return _main(rest)
 
-    if cmd in ("search", "memory", "hook"):
+    if cmd == "memory":
+        from _memory import main as _main
+
+        return _main(rest)
+
+    if cmd in ("search", "hook"):
         print(f"den {cmd}: coming soon", file=sys.stderr)
         return 1
 
