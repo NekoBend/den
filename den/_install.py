@@ -205,9 +205,10 @@ def _usage() -> None:
         "Targets:\n"
         "  skills [--tool T]... [--all-tools] [--target DIR]...\n"
         "         [--with-parent] [--dry-run] [--codex-config]\n"
+        "  shell  [--dry-run] [--no-extras]\n"
         "\n"
         f"Tools: {', '.join(_TOOLS)}.\n"
-        "No --tool/--target deploys to ~/.claude and ~/.agents (default)."
+        "skills with no --tool/--target deploys to ~/.claude and ~/.agents."
     )
 
 
@@ -219,7 +220,14 @@ def main(argv: list[str] | None = None) -> int:
     target, rest = args[0], args[1:]
     if target == "skills":
         return _install_skills(rest)
-    print(f"den install: unknown target '{target}' (try: skills)", file=sys.stderr)
+    if target == "shell":
+        from ._shell import install_shell
+
+        return install_shell(rest)
+    print(
+        f"den install: unknown target '{target}' (try: skills, shell)",
+        file=sys.stderr,
+    )
     return 2
 
 

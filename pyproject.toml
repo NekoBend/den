@@ -24,3 +24,4 @@ exclude = ["**/__pycache__", "**/*.pyc", "**/.pytest_cache", "**/tests"]
 "agents/shared" = "den/_data/agents/shared"
 "agents/dist" = "den/_data/agents/dist"
 "cheatsheets" = "den/_data/cheatsheets"
+"shell" = "den/_data/shell"

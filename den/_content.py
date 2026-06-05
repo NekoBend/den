@@ -31,3 +31,7 @@ def shared_dir() -> Path:
 
 def dist_dir() -> Path:
     return content_root() / "agents" / "dist"
+
+
+def shell_dir() -> Path:
+    return content_root() / "shell"
