@@ -1,0 +1,13 @@
+[project]
+name = "den"
+version = "0.1.0"
+description = "den toolkit: codebase search, memory, verification, and hook management"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+den = "den:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

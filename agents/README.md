@@ -40,18 +40,17 @@ agents/
     scripts/                # verification scripts (used by coding, code-review)
       *.py, run-checks.sh
       tests/                # pytest + bats
-  src/parts/<ARTIFACT>/     # build sources (LOCAL ONLY, not committed)
-    ASSISTANT/  SKILL_ROUTER/  AGENTS/
+  .private/                 # LOCAL ONLY - self-gitignored, never committed
+    parts/<ARTIFACT>/       # build sources: ASSISTANT/  SKILL_ROUTER/  AGENTS/
+    build.py                # builds dist/ from .private/parts/
   dist/                     # generated parent prompts (committed; do not hand-edit)
     ASSISTANT.md  SKILL_ROUTER.md  AGENTS.md  CLAUDE.md
-  tools/
-    build.py                # builds dist/ from src/parts/ (LOCAL ONLY, not committed)
   README.md
 ```
 
-The build sources (`src/parts/`) and the builder (`tools/build.py`) are kept
-local and are NOT committed; the repository ships only the generated
-`dist/*.md`. The rest of `agents/` (skills, shared) is committed.
+The build sources and builder live in `.private/`, which manages its own
+exclusions via `.private/.gitignore` (`**`). Only the generated `dist/*.md`
+is committed. The rest of `agents/` (skills, shared) is committed.
 
 The installer lives one level up in `../bootstrap/` (`skills.sh` / `skills.ps1`,
 invoked by `bootstrap/install.{sh,ps1}`); `agents/` is the content, `bootstrap/`
@@ -81,16 +80,15 @@ no shared dependencies.
 ## Build (maintainers, local only)
 
 The `dist/*.md` parent prompts are generated; edit the sources under
-`src/parts/`, never the generated files. Both `src/parts/` and `tools/build.py`
-are kept local (not committed), so this step is for whoever holds those sources;
-after editing, rebuild and commit the regenerated `dist/`:
+`.private/parts/`, never the generated files. Both live in `.private/` and are
+not committed. After editing, rebuild and commit the regenerated `dist/`:
 
 ```
-python3 tools/build.py            # rebuild dist/{ASSISTANT,SKILL_ROUTER,AGENTS,CLAUDE}.md
-python3 tools/build.py --check    # verify dist/ is in sync with src/parts/; exit 1 if stale
+python3 .private/build.py            # rebuild dist/{ASSISTANT,SKILL_ROUTER,AGENTS,CLAUDE}.md
+python3 .private/build.py --check    # verify dist/ is in sync with .private/parts/
 ```
 
-The build concatenates each `src/parts/<ARTIFACT>/` section in sorted order,
+The build concatenates each `.private/parts/<ARTIFACT>/` section in sorted order,
 strips HTML comments (maintainer notes stay in source, never reach the model),
 normalizes em / en / minus dashes to ASCII, and collapses blank runs.
 `AGENTS.md` and `CLAUDE.md` are composites: a neutral role plus the shared
