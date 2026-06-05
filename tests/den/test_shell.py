@@ -47,6 +47,23 @@ def test_install_shell_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
     assert "[dry]" in capsys.readouterr().out
 
 
+def test_install_shell_cmd_shims_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    monkeypatch.setattr("den._shell._windows", lambda: True)
+    assert install_main(["shell"]) == 0
+    clink = tmp_path / "AppData" / "Local" / "clink"
+    assert (clink / "starship.lua").is_file()
+    assert (clink / "bin" / "ls.cmd").is_file()
+
+
+def test_install_shell_no_cmd_shims_off_windows(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    install_main(["shell"])
+    assert not (tmp_path / "AppData" / "Local" / "clink").exists()
+
+
 def test_install_shell_unexpected_arg(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     assert install_main(["shell", "--bogus"]) == 2

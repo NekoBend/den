@@ -41,10 +41,21 @@ _ZSH_LINE = '[ -f "$HOME/.config/shell/init.zsh" ] && . "$HOME/.config/shell/ini
 _PWSH_LINE = '. "$PSScriptRoot\\init.ps1"'
 
 
+def _windows() -> bool:
+    # Indirection so tests can flip platform without touching os.name globally
+    # (pathlib reads os.name to pick WindowsPath/PosixPath).
+    return os.name == "nt"
+
+
 def _pwsh_profile_dir() -> Path:
-    if os.name == "nt":
+    if _windows():
         return Path("~/Documents/PowerShell").expanduser()
     return Path("~/.config/powershell").expanduser()
+
+
+def _localappdata() -> Path:
+    env = os.environ.get("LOCALAPPDATA")
+    return Path(env) if env else Path.home() / "AppData" / "Local"
 
 
 def _copy(src: Path, dst: Path, dry_run: bool) -> None:
@@ -101,12 +112,22 @@ def install_shell(argv: list[str]) -> int:
     for f in _PWSH_CORE + (_PWSH_EXTRAS if extras else []):
         _copy(sh / "pwsh" / f, pwsh_dir / f, dry_run)
 
+    # cmd / Clink shims (Windows only): bin/*.cmd + starship.lua -> %LOCALAPPDATA%\clink
+    if _windows():
+        clink = _localappdata() / "clink"
+        print(f"cmd/Clink -> {clink}")
+        _copy(sh / "cmd" / "starship.lua", clink / "starship.lua", dry_run)
+        cmd_bin = sh / "cmd" / "bin"
+        if cmd_bin.is_dir():
+            for f in sorted(cmd_bin.glob("*.cmd")):
+                _copy(f, clink / "bin" / f.name, dry_run)
+
     print("wiring shell rc files")
     if shutil.which("bash") or (home / ".bashrc").is_file():
         _wire(home / ".bashrc", _BASH_LINE, dry_run)
     if shutil.which("zsh") or (home / ".zshrc").is_file():
         _wire(home / ".zshrc", _ZSH_LINE, dry_run)
-    if os.name == "nt" or shutil.which("pwsh"):
+    if _windows() or shutil.which("pwsh"):
         _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run)
 
     return 0
