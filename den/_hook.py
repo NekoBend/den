@@ -12,9 +12,14 @@ Because weak models forget on-demand instructions, the per-turn hook re-injects
 both every turn. checkpoint runs first so the previous turn's direct edits to
 memory.md are captured before this turn proceeds.
 
+Hooks install per WORKSPACE: `install` writes each tool's project-level hook
+config (e.g. .claude/settings.json, .clinerules/hooks/) under the current
+directory and seeds <cwd>/.den/imprint.md, so hook + imprint + memory all share
+one .den scope. Run it once inside each workspace you want imprinting in.
+
 Subcommands:
   run --event E --tool T   worker the tool invokes; prints injection for T
-  install [--tool T ...]    register hooks into each tool's config
+  install [--tool T ...]    register hooks into the workspace (cwd)
           [--all-tools] [--config PATH]
   imprint                   print the composed injection (imprint + memory)
   list [--config PATH]      show den-managed hooks per tool
@@ -58,7 +63,7 @@ These directives apply every turn. Do not let them fall out of context.
 # output contract has been checked against the real CLI.
 _TOOLS: dict[str, dict] = {
     "claude": {
-        "config": "~/.claude/settings.json",
+        "config": ".claude/settings.json",
         "emit": "claude",
         "format": "settings_json",
         "events": {
@@ -71,7 +76,7 @@ _TOOLS: dict[str, dict] = {
         "verified": True,
     },
     "gemini": {
-        "config": "~/.gemini/settings.json",
+        "config": ".gemini/settings.json",
         "emit": "gemini",
         "format": "settings_json",
         "events": {
@@ -104,7 +109,7 @@ _TOOLS: dict[str, dict] = {
         "verified": False,
     },
     "copilot": {
-        "config": "~/.copilot/hooks/den.json",
+        "config": ".github/hooks/den.json",
         "emit": "copilot",
         "format": "copilot_json",
         # userPromptSubmitted is notification-only (cannot inject), so the
@@ -117,11 +122,11 @@ _TOOLS: dict[str, dict] = {
         "verified": True,
     },
     "cline": {
-        # The VS Code extension reads hooks from ~/Documents/Cline/Hooks
-        # (confirmed on Windows, 2026-06-05), NOT ~/.cline/hooks (that is the
-        # CLI). Install to one place only so a single instance does not fire a
-        # hook twice if it happens to scan both.
-        "config": "~/Documents/Cline/Hooks",
+        # Workspace-local project hooks: the extension reads .clinerules/hooks/
+        # from the project root. (Global cline hooks live in ~/Documents/Cline/
+        # Hooks, but den installs per workspace so hook+imprint+memory stay in
+        # the same .den scope.)
+        "config": ".clinerules/hooks",
         "emit": "cline",
         "format": "cline_scripts",
         "events": {
@@ -282,9 +287,11 @@ def _parse_run_args(argv: list[str]) -> tuple[str | None, str | None]:
 
 
 def _resolve_config(spec: dict, override: str | None) -> Path:
-    return (
-        Path(override).expanduser() if override else Path(spec["config"]).expanduser()
-    )
+    if override:
+        return Path(override).expanduser()
+    # config is a workspace-relative path; resolve against the current dir so
+    # hooks land in the project being set up (alongside its .den/).
+    return (Path.cwd() / spec["config"]).resolve()
 
 
 def _settings_entries(tool: str, spec: dict) -> dict[str, list]:

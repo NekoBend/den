@@ -305,6 +305,20 @@ def test_remove_cline_windows_deletes_ps1(tmp_path, monkeypatch):
     assert not (hooks_dir / "UserPromptSubmit.ps1").exists()
 
 
+def test_install_is_workspace_local(tmp_path, monkeypatch):
+    """install with no --config writes project-level config under cwd + seeds .den."""
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert (tmp_path / ".claude" / "settings.json").is_file()
+    assert (tmp_path / ".den" / "imprint.md").is_file()
+
+
+def test_install_cline_is_workspace_local(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline"]) == 0
+    assert (tmp_path / ".clinerules" / "hooks" / "UserPromptSubmit").is_file()
+
+
 def test_unknown_subcommand(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert hook_main(["frobnicate"]) == 2
