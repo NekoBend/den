@@ -26,6 +26,8 @@ jobs:
         run: ruff format --check agents tools
       - name: Pytest (verification scripts)
         run: python3 -m pytest agents/shared/scripts/tests
+      - name: Pytest (den CLI)
+        run: python3 -m pytest tools/tests
       - name: Bats (run-checks)
         run: bats agents/shared/scripts/tests/run-checks.bats
 

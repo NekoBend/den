@@ -114,6 +114,10 @@ def _do_checkpoint(den_dir: Path) -> Path | None:
     hist.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime(_STAMP_FORMAT)
     dest = hist / f"{_SNAP_PREFIX}{stamp}{_SNAP_SUFFIX}"
+    n = 1
+    while dest.exists():  # never clobber a same-timestamp snapshot
+        dest = hist / f"{_SNAP_PREFIX}{stamp}_{n:03d}{_SNAP_SUFFIX}"
+        n += 1
     dest.write_bytes(current)
     _rotate(den_dir)
     return dest
