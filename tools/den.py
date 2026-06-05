@@ -9,6 +9,7 @@ Subcommands:
   memory  read/write session memory  (coming soon)
   hook    manage agent hook registrations (coming soon)
 """
+
 from __future__ import annotations
 
 import sys
@@ -53,18 +54,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "check":
         from _check import main as _main
+
         return _main(rest)
 
     if cmd == "verify":
         from _verify import main as _main
+
         return _main(rest)
 
     if cmd == "refs":
         from _refs import main as _main
+
         return _main(rest)
 
     if cmd == "doc":
         from _doc import main as _main
+
         return _main(rest)
 
     if cmd in ("search", "memory", "hook"):
