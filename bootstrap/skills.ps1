@@ -181,7 +181,7 @@ function Deploy-Target([string]$skillsDir, [string]$parentDir, [string]$parentFi
       Copy-Item -LiteralPath $srcFile -Destination (Join-Path $parentDir $parentFile) -Force
       Write-Host "  parent -> $parentDir\$parentFile"
     } else {
-      Write-Warning "$srcFile not found; run tools/build.py first"
+      Write-Warning "$srcFile not found; run agents/.private/build.py first"
     }
   }
 }
@@ -222,7 +222,7 @@ foreach ($t in ${target}) {
       Copy-Item -LiteralPath $a -Destination (Join-Path $abs 'AGENTS.md') -Force
       Copy-Item -LiteralPath $c -Destination (Join-Path $abs 'CLAUDE.md') -Force
       Write-Host "  parent: AGENTS.md + CLAUDE.md -> $abs\"
-    } else { Write-Warning "AGENTS.md/CLAUDE.md not found in $distSrc; run tools/build.py first" }
+    } else { Write-Warning "AGENTS.md/CLAUDE.md not found in $distSrc; run agents/.private/build.py first" }
   }
   if ($null -eq $firstSkillsDir) { $firstSkillsDir = $skillsDir }
   $hasWork = $true

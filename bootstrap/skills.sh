@@ -171,7 +171,7 @@ deploy_target() {
       cp "$src_parent" "$parent_dir/$parent_file"
       echo "  parent -> $parent_dir/$parent_file"
     else
-      echo "  warning: $src_parent not found; run tools/build.py first" >&2
+      echo "  warning: $src_parent not found; run agents/.private/build.py first" >&2
     fi
   fi
 }
@@ -219,7 +219,7 @@ for t in "${targets[@]}"; do
       cp "$SRC/dist/CLAUDE.md" "$local_abs/CLAUDE.md"
       echo "  parent: AGENTS.md + CLAUDE.md -> $local_abs/"
     else
-      echo "  warning: AGENTS.md/CLAUDE.md not found in $SRC/dist; run tools/build.py first" >&2
+      echo "  warning: AGENTS.md/CLAUDE.md not found in $SRC/dist; run agents/.private/build.py first" >&2
     fi
   fi
   has_work=1
