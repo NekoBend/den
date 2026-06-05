@@ -33,12 +33,20 @@ For OpenAI Codex, call the skills installer directly:
 sh den/bootstrap/skills.sh --target ~/.codex --codex-config
 ```
 
-See `agents/README.md` for the skill system and `shell/README.md` for the shell
-environment.
+The `den` CLI (verification helpers plus workspace memory and per-tool imprint
+hooks) installs separately as a `uv` tool:
+
+```
+uv tool install --editable ./den/tools     # puts `den` on PATH
+```
+
+See `agents/README.md` for the skill system, `tools/README.md` for the `den`
+CLI, and `shell/README.md` for the shell environment.
 
 ## Layout
 
 - `agents/`      LLM skill system: 8 skills + parent invariants + generated parent prompts. See `agents/README.md`.
+- `tools/`       the `den` CLI: a dependency-free `uv` tool (`check`, `verify`, `refs`, `doc`, `memory`, `hook`) for LLM-assisted dev. See `tools/README.md`.
 - `bootstrap/`   the installer: one branching entry point (`install.sh`/`install.ps1`) plus the skills engine (`skills.sh`/`skills.ps1`) and the cmd/Clink shim installer.
 - `shell/`       the interactive shell: bash/zsh, a PowerShell port, CMD shims, starship. See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).

@@ -1,7 +1,7 @@
 [project]
 name = "den"
 version = "0.1.0"
-description = "den toolkit: codebase search, memory, verification, and hook management"
+description = "den toolkit: code verification, workspace memory, and per-tool hook management"
 requires-python = ">=3.11"
 dependencies = []
 

@@ -6,7 +6,6 @@ Subcommands:
   refs    find definitions or usages of a symbol across a source tree
   doc     report docstring / doc-comment coverage
   memory  read/write workspace session memory (.den/memory.md)
-  search  search a codebase          (coming soon)
   hook    install per-tool hooks that imprint context every turn
 """
 
@@ -32,7 +31,6 @@ def _usage() -> None:
         "  refs   --def|-uses|-in ... find symbol definitions or usages\n"
         "  doc    <file>              docstring / doc-comment coverage\n"
         "  memory show|save|log|...   workspace session memory\n"
-        "  search <query> [--in DIR]  search a codebase  (coming soon)\n"
         "  hook   install|run|imprint per-turn imprint hooks\n"
         "\n"
         "Run 'den <command> --help' for command-specific options."
@@ -81,10 +79,6 @@ def main(argv: list[str] | None = None) -> int:
         from _hook import main as _main
 
         return _main(rest)
-
-    if cmd == "search":
-        print(f"den {cmd}: coming soon", file=sys.stderr)
-        return 1
 
     print(f"den: unknown command '{cmd}'. Run 'den --help'.", file=sys.stderr)
     return 2
