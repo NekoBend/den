@@ -351,17 +351,18 @@ def _install_settings_json(tool: str, spec: dict, config: Path) -> None:
 
 
 def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
-    if not config.is_file():
-        return []
-    try:
-        data = json.loads(config.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    hooks = _read_json(config).get("hooks", {})
+    if not isinstance(hooks, dict):
         return []
     lines = []
-    for event, groups in data.get("hooks", {}).items():
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
         for g in groups:
+            if not isinstance(g, dict):
+                continue
             for h in g.get("hooks", []):
-                if _MARKER in h.get("command", ""):
+                if isinstance(h, dict) and _MARKER in h.get("command", ""):
                     lines.append(f"{tool}  {event}  {h['command']}")
     return lines
 
@@ -409,17 +410,15 @@ def _install_copilot(tool: str, spec: dict, config: Path) -> None:
 
 
 def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
-    if not config.is_file():
-        return []
-    try:
-        data = json.loads(config.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    hooks = _read_json(config).get("hooks", {})
+    if not isinstance(hooks, dict):
         return []
     return [
         f"{tool}  {event}  {h['bash']}"
-        for event, arr in data.get("hooks", {}).items()
+        for event, arr in hooks.items()
+        if isinstance(arr, list)
         for h in arr
-        if _MARKER in h.get("bash", "")
+        if isinstance(h, dict) and _MARKER in h.get("bash", "")
     ]
 
 

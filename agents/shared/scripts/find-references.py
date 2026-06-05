@@ -65,6 +65,11 @@ def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]
         "--line-number",
         "--with-filename",
         "--no-messages",
+        # match the Python-walk fallback: search everything except SKIP_DIRS,
+        # regardless of .gitignore or hidden-dir status, so results do not
+        # depend on whether rg is installed.
+        "--no-ignore",
+        "--hidden",
         pattern,
         str(root),
     ]

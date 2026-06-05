@@ -30,6 +30,15 @@ jobs:
         run: python3 -m pytest tests/den
       - name: Bats (run-checks)
         run: bats agents/shared/scripts/tests/run-checks.bats
+      - name: Verify den/ and agents/ script copies stay in sync
+        run: |
+          diff den/_common.py agents/shared/scripts/_common.py
+          diff den/_doc.py agents/shared/scripts/doc-coverage.py
+          diff den/_verify.py agents/shared/scripts/verify-imports.py
+          diff den/run-checks.sh agents/shared/scripts/run-checks.sh
+          # _refs.py differs only by the package-relative import line:
+          diff <(sed 's/from \._common/from _common/' den/_refs.py) \
+               agents/shared/scripts/find-references.py
 
   packaging:
     name: packaging (wheel + sourceless install)
