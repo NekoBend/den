@@ -349,9 +349,7 @@ def test_unknown_subcommand(tmp_path, monkeypatch):
 def test_install_interactive_picks_tools(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    # verified tools order: claude, gemini, copilot, cline
-    answers = iter([True, False, False, True])  # claude Y, gemini N, copilot N, cline Y
-    monkeypatch.setattr("den._install._confirm", lambda *a: next(answers))
+    monkeypatch.setattr("den._ui.select", lambda *a, **k: ["claude", "cline"])
     assert hook_main(["install"]) == 0
     assert (tmp_path / ".claude" / "settings.json").is_file()
     assert (tmp_path / ".clinerules" / "hooks").is_dir()
@@ -361,7 +359,7 @@ def test_install_interactive_picks_tools(tmp_path, monkeypatch):
 def test_install_interactive_none_selected_installs_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("den._install._confirm", lambda *a: False)
+    monkeypatch.setattr("den._ui.select", lambda *a, **k: [])
     assert hook_main(["install"]) == 0
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".den").exists()  # not even seeded

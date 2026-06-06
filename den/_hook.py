@@ -526,19 +526,21 @@ def _seed_imprint(den_dir: Path) -> bool:
 
 
 def _pick_tools_interactive() -> list[str] | None:
-    """Ask which tools to install hooks for. Returns --tool flags, or None if
-    nothing was selected."""
-    from ._install import _confirm
+    """Ask which tools to install hooks for (checkbox). Returns --tool flags,
+    or None if nothing was selected."""
+    from . import _ui
 
-    print("den hook install -- per-turn imprint hooks in this workspace.")
-    print("Which tools do you use?")
-    flags: list[str] = []
-    for tool, spec in _TOOLS.items():
-        if spec["verified"] and _confirm(f"  {tool}", tool == "claude"):
-            flags += ["--tool", tool]
-    if not flags:
-        print("  (none selected; nothing to install)")
+    _ui.say("den hook install -- per-turn imprint hooks in this workspace.")
+    chosen = _ui.select(
+        "Which tools? (space to toggle, enter to confirm)",
+        [(t, t == "claude") for t, s in _TOOLS.items() if s["verified"]],
+    )
+    if not chosen:
+        _ui.say("  (none selected; nothing to install)")
         return None
+    flags: list[str] = []
+    for tool in chosen:
+        flags += ["--tool", tool]
     return flags
 
 

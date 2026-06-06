@@ -56,11 +56,12 @@ def test_install_unknown_tool(capsys):
 
 
 def test_interactive_dispatches(monkeypatch):
-    from den import _install
+    from den import _install, _ui
 
-    # shell?Y extras?N skills?Y claude?Y codex?N cline?N copilot?N gemini?N parent?Y
-    answers = iter([True, False, True, True, False, False, False, False, True])
-    monkeypatch.setattr(_install, "_confirm", lambda *a: next(answers))
+    # confirm: shell?Y extras?N skills?Y parent?Y ; select: tools -> [claude]
+    answers = iter([True, False, True, True])
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: next(answers))
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: ["claude"])
     calls = {}
     monkeypatch.setattr(
         "den._shell.install_shell",
@@ -77,9 +78,10 @@ def test_interactive_dispatches(monkeypatch):
 
 
 def test_interactive_skips_when_declined(monkeypatch):
-    from den import _install
+    from den import _install, _ui
 
-    monkeypatch.setattr(_install, "_confirm", lambda *a: False)  # decline everything
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: False)  # decline everything
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: [])
     called = []
     monkeypatch.setattr(
         _install, "_install_skills", lambda argv: called.append("skills") or 0
@@ -111,6 +113,6 @@ def test_install_interactive_overwrite_on_yes(tmp_path, monkeypatch):
     install_main(["skills", "--target", str(tmp_path)])
     skill = tmp_path / "skills" / "coding" / "SKILL.md"
     skill.write_text("CLOBBERED")
-    monkeypatch.setattr("den._install._confirm", lambda *a: True)
+    monkeypatch.setattr("den._ui.confirm", lambda *a, **k: True)
     install_main(["skills", "--target", str(tmp_path)])
     assert "CLOBBERED" not in skill.read_text()

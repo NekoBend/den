@@ -1,12 +1,15 @@
 # den - the unified CLI
 
-A small, dependency-free CLI for LLM-assisted development. It bundles the
-deployable content (skills, shared resources, parent prompts, shell sources,
-cheatsheets) into its wheel and installs it, plus verification helpers, a
-workspace `memory`, and per-turn `hook` imprinting for weak coding agents.
+A small CLI for LLM-assisted development. It bundles the deployable content
+(skills, shared resources, parent prompts, shell sources, cheatsheets) into its
+wheel and installs it, plus verification helpers, a workspace `memory`, and
+per-turn `hook` imprinting for weak coding agents.
 
-This is the `den/` package of the `den` repo: a self-contained `uv` tool with
-no third-party dependencies (standard library only).
+This is the `den/` package of the `den` repo: a self-contained `uv` tool whose
+only runtime deps are `questionary` + `rich`, used purely for the interactive
+UI. Every command degrades to plain stdin prompts and `print()` when those are
+absent (see `den/_ui.py`), so the CLI still works on a stdlib-only interpreter
+and in pipes / CI.
 
 ## Install
 

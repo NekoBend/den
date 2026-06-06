@@ -18,6 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import _ui
 from ._content import dist_dir, shared_dir, skills_dir
 
 # tool -> (skills_dir, parent_dir, parent_file)
@@ -60,14 +61,11 @@ class _Writer:
         changed = [d for d, c in self._items if d.is_file() and d.read_bytes() != c]
         overwrite = True
         if changed and not self.force:
-            print(
-                "These files exist and differ from the bundled version:",
-                file=sys.stderr,
-            )
+            _ui.say("These files exist and differ from the bundled version:", style="yellow")
             for d in changed:
-                print(f"  {d}", file=sys.stderr)
+                _ui.say(f"  {d}", style="yellow")
             if sys.stdin.isatty():
-                overwrite = _confirm("Overwrite them?", False)
+                overwrite = _ui.confirm("Overwrite them?", False)
             else:
                 print("  skipped (re-run with --force to overwrite)", file=sys.stderr)
                 overwrite = False
@@ -271,42 +269,30 @@ def _install_skills(argv: list[str]) -> int:
     return 0
 
 
-def _confirm(prompt: str, default: bool) -> bool:
-    suffix = "[Y/n]" if default else "[y/N]"
-    try:
-        ans = input(f"{prompt} {suffix} ").strip().lower()
-    except EOFError:
-        return default
-    return default if not ans else ans.startswith("y")
-
-
 def _interactive() -> int:
     """`den install` with no target: ask per component, like the old installer."""
-    print("den install -- interactive setup (Ctrl-C to abort)\n")
+    _ui.say("den install -- interactive setup", style="bold cyan")
     rc = 0
-    if _confirm("Install the shell environment (bash/zsh + PowerShell, starship)?", True):
+    if _ui.confirm("Install the shell environment (bash/zsh + PowerShell, starship)?", True):
         from ._shell import install_shell
 
-        extras = _confirm("  Include optional helpers (python/ffmpeg/parallel)?", True)
+        extras = _ui.confirm("  Include optional helpers (python/ffmpeg/parallel)?", True)
         rc |= install_shell([] if extras else ["--no-extras"])
 
-    if _confirm("Install the LLM agent skills?", False):
-        print("  Which tools do you use?")
+    if _ui.confirm("Install the LLM agent skills?", False):
+        chosen = _ui.select(
+            "Which tools do you use? (space to toggle, enter to confirm)",
+            [(tool, tool == "claude") for tool in _TOOLS],
+        )
         flags: list[str] = []
-        for tool, default in (
-            ("claude", True),
-            ("codex", False),
-            ("cline", False),
-            ("copilot", False),
-            ("gemini", False),
-        ):
-            if _confirm(f"    {tool}", default):
-                flags += ["--tool", tool]
-        if _confirm("  Install the parent prompt (AGENTS.md/CLAUDE.md) too?", True):
+        for tool in chosen:
+            flags += ["--tool", tool]
+        if flags and _ui.confirm("Install the parent prompt (AGENTS.md/CLAUDE.md) too?", True):
             flags.append("--with-parent")
-        rc |= _install_skills(flags)
+        if flags:
+            rc |= _install_skills(flags)
 
-    print(
+    _ui.say(
         "\nHooks install per workspace: run 'den hook install' inside a project "
         "to imprint context every turn there."
     )
