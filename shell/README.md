@@ -21,13 +21,18 @@ It copies the config into `~/.config/shell/` (POSIX) or the `$PROFILE` dir
 
 ## The wrapper system
 
-Commands like `ls`, `cat`, `grep`, `find` dispatch through three tiers, in
-order:
+Commands like `ls`, `cat`, `grep`, `find` dispatch through tiers, in order:
 
 1. **modern** tool if installed (`lsd`, `bat`, `rg`, `fd`),
-2. else the **native** command (`ls`, `cat`, `grep`, `find`),
-3. else a **PowerShell fallback** (Windows only, where the native tool is
-   absent).
+2. else **microsoft/coreutils** on Windows when installed (one multi-call binary
+   that provides the Unix commands),
+3. else the **native** command (`ls`/`cat`/`grep`/`find`, including the GNU tools
+   from Git for Windows when present). The exception is names whose Windows
+   System32 namesake behaves differently: those skip the native lookup on Windows
+   so it never resolves to the DOS command. Of the wrapped commands that is only
+   `find`; the skip list (`find`, `sort`, `more`) reserves the other two for any
+   future wrapper with the same collision,
+4. else a **PowerShell fallback** (Windows, when none of the above is present).
 
 | Command | modern | native | notes |
 |---------|--------|--------|-------|
@@ -36,6 +41,25 @@ order:
 | `cat` | `bat` | `cat` | |
 | `grep` | `rg` | `grep` | |
 | `find` | `fd` | `find` | |
+
+On Windows the pwsh side also routes the no-modern-tool commands through
+microsoft/coreutils when it is installed: `head`, `tail`, `wc`, `touch`,
+`split`, `df`, `env`, and the destructive `cp`, `mv`, `rm`, `mkdir`, `rmdir`
+(each falls back to the PowerShell builtin when coreutils is absent, so the
+no-coreutils baseline is unchanged). Install it with `den install shell
+--coreutils` (or answer yes when `den install shell` asks; it is admin/all-user
+only). microsoft/coreutils also inlines a `PSConsoleHostReadLine` rewriter into
+your PowerShell profile that retargets typed `ls`/`cat`/... to coreutils before
+the wrappers run, which would defeat the modern-first order; `den install shell`
+removes that block (backing the profile up to `<profile>.den.bak` first, and
+keeping the binary to drive through the tier above), so re-run `den install shell`
+after updating coreutils if the block comes back. The
+wrappers resolve the binary at its fixed install path
+`%ProgramFiles%\coreutils\coreutils.exe` (the installer does not add it to PATH);
+point them elsewhere with `_DOTFILES_COREUTILS=<path>`, or disable the tier with
+`_DOTFILES_COREUTILS=0`. The tier is Windows + pwsh 7 only (Windows PowerShell 5.1
+skips it); on Linux/macOS these commands keep their native / PowerShell-builtin
+behavior.
 
 Because the modern tools take different flags and produce different output than
 the native commands, a command written for the native tool can misbehave when a
@@ -56,6 +80,12 @@ Ways to get the native command:
 
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
 tool, ignoring the toggle.
+
+On PowerShell, piping objects into a wrapper that resolves to a modern tool,
+microsoft/coreutils, or a native exe (e.g. `Get-ChildItem | wc -l`) sends the
+formatted text representation of those objects, not the objects themselves, so
+counts and matches reflect the rendered output. Use file arguments, or the
+native PowerShell cmdlets, when you need object-accurate results.
 
 ## Command reference
 
@@ -165,5 +195,7 @@ of zoxide and starship. zsh and PowerShell mirror this.
 |----------|--------|
 | `_DOTFILES_WRAPPERS=0` | use native commands instead of modern tools |
 | `_DOTFILES_WRAPPER_LOG=0` | silence the one-time wrapper hint |
+| `_DOTFILES_COREUTILS=<path>` | use a specific microsoft/coreutils binary, e.g. `C:\Program Files\coreutils\coreutils.exe` (Windows) |
+| `_DOTFILES_COREUTILS=0` | disable the microsoft/coreutils tier (Windows) |
 | `_DOTFILES_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv`) |
 | `_DOTFILES_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo`) |

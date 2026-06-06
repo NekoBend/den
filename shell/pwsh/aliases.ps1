@@ -5,6 +5,14 @@
 # Skip in non-interactive sessions to avoid breaking scripts
 if (-not [Environment]::UserInteractive) { return }
 
+# Drop the built-in aliases that would otherwise outrank our same-named git/gitui
+# FUNCTIONS below (alias beats function in command resolution): gc=Get-Content,
+# gcm=Get-Command, gl=Get-Location, gps=Get-Process, gu=Get-Unique. These are
+# default aliases on every platform; -EA SilentlyContinue is a no-op if absent.
+foreach ($a in 'gc', 'gcm', 'gl', 'gps', 'gu') {
+    Remove-Item "alias:$a" -Force -ErrorAction SilentlyContinue
+}
+
 # ===== Git =====
 
 function g {
