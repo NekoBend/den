@@ -6,7 +6,11 @@ idempotently. Config files are deployed for both shell families; only rc files
 for shells that look relevant (binary on PATH, or rc already present, or native
 platform) are wired.
 
-  den install shell [--dry-run] [--no-extras]
+  den install shell [--dry-run] [--no-extras] [--coreutils|--no-coreutils]
+
+On Windows the pwsh wrappers can use microsoft/coreutils as their Unix-command
+tier (see shell/pwsh/_helpers.ps1). `--coreutils` installs it via winget;
+`--no-coreutils` skips it; with neither, an interactive run asks (default no).
 """
 
 from __future__ import annotations
@@ -23,6 +27,11 @@ from ._content import shell_dir
 
 _COMMENT = "# ===== den ====="
 _PWSH_PROFILE = "Microsoft.PowerShell_profile.ps1"
+
+# microsoft/coreutils inlines its PowerShell integration into the profile inside a
+# sentinel-delimited block carrying this fixed GUID. den removes it (see
+# _disable_coreutils_readline) so its own wrappers govern dispatch.
+_COREUTILS_SENTINEL = "60b36fc6-2d59-49df-be51-28dd2f4c3c9a"
 
 _POSIX_CORE = ["_helpers.sh", "wrappers.sh", "aliases.sh", "functions.sh", "hwinfo.sh"]
 _POSIX_EXTRAS = ["python.sh", "ffmpeg.sh", "parallel.sh"]
@@ -160,12 +169,70 @@ def _stage_shell_files(writer, extras: bool, dry_run: bool, announce: bool):
     return posix_dir, pwsh_dir
 
 
+def _disable_coreutils_readline(profile: Path) -> bool:
+    """Remove microsoft/coreutils' PSConsoleHostReadLine integration block(s) from a
+    PowerShell profile. coreutils inlines a readline rewriter that retargets typed
+    `ls`/`cat`/... to coreutils before den's wrappers see them, defeating den's
+    modern-first dispatch. Each block is bracketed by two sentinel comment lines
+    carrying a fixed GUID. Removes each open..close PAIR (plus an adjacent blank on
+    each side), so content sitting BETWEEN two separate blocks is never touched.
+    Backs the original up to <profile>.den.bak before the first edit. Preserves the
+    file's CRLF/LF ending and its encoding (UTF-8, UTF-8-BOM, or UTF-16; a UTF-16
+    profile is normalized to little-endian, which is what PowerShell writes), and
+    leaves the file untouched if it does not decode. Idempotent: returns True only
+    when it removed a block."""
+    if not profile.is_file():
+        return False
+    raw = profile.read_bytes()
+    # Preserve the profile's encoding: re-encoding a UTF-16 profile as UTF-8, or
+    # dropping bytes via errors='ignore', breaks PowerShell parsing. Detect from a
+    # BOM, decode STRICTLY, and bail without editing if it does not decode.
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        enc = "utf-16"
+    elif raw[:3] == b"\xef\xbb\xbf":
+        enc = "utf-8-sig"
+    else:
+        enc = "utf-8"
+    try:
+        text = raw.decode(enc)
+    except (UnicodeError, ValueError):
+        return False
+    crlf = "\r\n" in text
+    lines = text.replace("\r\n", "\n").split("\n")
+    marks = [i for i, ln in enumerate(lines) if _COREUTILS_SENTINEL in ln]
+    # Pair the sentinels (open, close). An odd trailing sentinel (corrupt/partial
+    # block) is left in place rather than guessing where it ends.
+    spans = []
+    for open_i, close_i in zip(marks[0::2], marks[1::2]):
+        start, end = open_i, close_i + 1
+        if end < len(lines) and lines[end] == "":  # trailing blank
+            end += 1
+        if start > 0 and lines[start - 1] == "":  # preceding blank
+            start -= 1
+        spans.append((start, end))
+    if not spans:
+        return False
+    backup = profile.with_suffix(profile.suffix + ".den.bak")
+    if not backup.exists():
+        backup.write_bytes(raw)
+    for start, end in reversed(spans):  # deepest-first keeps earlier indices valid
+        del lines[start:end]
+    new = "\n".join(lines)
+    if crlf:
+        new = new.replace("\n", "\r\n")
+    profile.write_text(new, encoding=enc, newline="")
+    return True
+
+
 def install_shell(argv: list[str]) -> int:
     dry_run = "--dry-run" in argv
     extras = "--no-extras" not in argv
     force = "--force" in argv
+    want_coreutils = "--coreutils" in argv
+    skip_coreutils = "--no-coreutils" in argv
+    allowed = ("--dry-run", "--no-extras", "--force", "--coreutils", "--no-coreutils")
     for a in argv:
-        if a not in ("--dry-run", "--no-extras", "--force"):
+        if a not in allowed:
             print(f"den install shell: unexpected arg '{a}'", file=sys.stderr)
             return 2
 
@@ -184,4 +251,90 @@ def install_shell(argv: list[str]) -> int:
     if _windows() or shutil.which("pwsh"):
         _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run)
 
-    return 0
+    rc = _maybe_install_coreutils(want_coreutils, skip_coreutils, dry_run)
+
+    # coreutils installs a PSConsoleHostReadLine rewriter into the profile that
+    # retargets typed `ls`/`cat`/... to coreutils BEFORE den's wrappers run,
+    # defeating den's modern-first dispatch. den drives coreutils through its own
+    # tier (coreutils.exe), so strip that block to let the wrappers govern. Done
+    # after the install step so a freshly added block is caught too.
+    if not dry_run and (_windows() or shutil.which("pwsh")):
+        for prof in (pwsh_dir / _PWSH_PROFILE, pwsh_dir / "profile.ps1"):
+            if _disable_coreutils_readline(prof):
+                print(f"  [ok] removed coreutils readline integration from {prof}")
+
+    return rc
+
+
+def _coreutils_present() -> bool:
+    """True if microsoft/coreutils is already installed. The binary is normally
+    NOT on PATH (its admin/all-user installer only optionally adds a bin\\ subdir,
+    never the coreutils.exe dir), so also probe the fixed install location. This
+    asks "is the package installed", not "is the tier enabled", so it does not
+    honor $_DOTFILES_COREUTILS=0 (that only disables den's runtime dispatch)."""
+    if shutil.which("coreutils"):
+        return True
+    # Mirror the pwsh resolver (_helpers.ps1 _CoreutilsBin): probe both Program
+    # Files roots so a 32-bit host is covered too.
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(var)
+        if base and (Path(base) / "coreutils" / "coreutils.exe").is_file():
+            return True
+    return False
+
+
+def _maybe_install_coreutils(want: bool, skip: bool, dry_run: bool) -> int:
+    """Decide whether to install microsoft/coreutils, then do it. Windows-only
+    (the pwsh wrappers consult it only there). With --coreutils install without
+    asking; with --no-coreutils skip; otherwise ask on an interactive Windows run
+    and default to no. Returns the winget exit code when an install runs, else 0,
+    so a flag-driven install failure surfaces from `den install shell`."""
+    if skip:
+        return 0
+    if not _windows():
+        if want:
+            print("coreutils: --coreutils is Windows-only; ignoring", file=sys.stderr)
+        return 0
+    if _coreutils_present():
+        print("coreutils: already installed")
+        return 0
+    if not want:
+        if not sys.stdin.isatty():
+            return 0
+        from . import _ui
+
+        if not _ui.confirm(
+            "Install microsoft/coreutils (Unix commands for the pwsh wrappers)?",
+            False,
+        ):
+            return 0
+    return _install_coreutils(dry_run)
+
+
+def _install_coreutils(dry_run: bool) -> int:
+    """winget-install microsoft/coreutils. Assumes a Windows host with winget."""
+    cmd = [
+        "winget",
+        "install",
+        "-e",
+        "--id",
+        "Microsoft.Coreutils",
+        "-s",
+        "winget",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+    ]
+    print("coreutils -> " + " ".join(cmd))
+    if dry_run:
+        return 0
+    if not shutil.which("winget"):
+        print(
+            "coreutils: winget not found; install winget or get coreutils manually",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        return subprocess.run(cmd).returncode
+    except OSError as exc:
+        print(f"coreutils: winget failed: {exc}", file=sys.stderr)
+        return 1

@@ -12,25 +12,89 @@ function _WrapLog([string]$Name, [string]$Tool) {
     Write-Host "[dotfiles] $Name -> $Tool  | disable: run toggle-wrapper, or `$env:_DOTFILES_WRAPPERS = '0'" -ForegroundColor DarkGray
 }
 
+# ========== microsoft/coreutils tier (Windows) ==========
+
+# _OnWindows — true on ANY Windows PowerShell, including Windows PowerShell 5.1
+# (Desktop edition) where the $IsWindows automatic variable does not exist (it is
+# $null there). Used to skip the DOS-colliding native commands (see $winNativeSkip
+# in New-Wrapper) on every Windows host, 5.1 included.
+function _OnWindows {
+    [bool]($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop')
+}
+
+# _CoreutilsBin — path to the microsoft/coreutils multi-call binary, or $null. This
+# is the middle dispatch tier on Windows (modern -> coreutils -> native -> PS
+# fallback): microsoft/coreutils bundles uutils/coreutils + findutils + grep into
+# ONE binary invoked as `<bin> <name> ...`, so real Unix `ls`/`cat`/`grep`/`find`
+# are available. Its installer is admin/all-user only and drops the binary at a
+# FIXED path, %ProgramFiles%\coreutils\coreutils.exe; the optional "add to PATH"
+# task only adds the bin\ subdir (the per-command hardlinks, NOT coreutils.exe), so
+# we resolve the absolute path directly instead of trusting PATH. Restricted to
+# pwsh 7+ on Windows ($IsWindows -eq $true); Windows PowerShell 5.1 and Linux/macOS
+# skip it. Resolution is lazy + cached. Override the binary (name or full path)
+# with $env:_DOTFILES_COREUTILS, or set it to '0' to disable.
+$script:_DotfilesCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
+function _CoreutilsBin {
+    if ($env:_DOTFILES_COREUTILS -eq '0') { return $null }
+    if ($IsWindows -ne $true) { return $null }
+    if ($null -eq $script:_DotfilesCoreutils) {
+        $found = ''
+        if ($env:_DOTFILES_COREUTILS) {
+            $g = (Get-Command $env:_DOTFILES_COREUTILS -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+            if ($g) { $found = $g }
+            elseif (Test-Path -LiteralPath $env:_DOTFILES_COREUTILS -PathType Leaf) { $found = $env:_DOTFILES_COREUTILS }
+        }
+        if (-not $found) {
+            $g = (Get-Command 'coreutils' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+            if ($g) { $found = $g }
+        }
+        if (-not $found) {
+            foreach ($p in @("$env:ProgramFiles\coreutils\coreutils.exe", "${env:ProgramFiles(x86)}\coreutils\coreutils.exe")) {
+                if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { $found = $p; break }
+            }
+        }
+        $script:_DotfilesCoreutils = $found
+    }
+    if ($script:_DotfilesCoreutils) { return $script:_DotfilesCoreutils } else { return $null }
+}
+
 # ========== wrapper generator ==========
 
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
 function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr) {
-    # The native command is resolved LAZILY, on the fallback branch only (i.e.
-    # when the modern tool is absent), not at init time. Pre-resolving it meant
-    # a PATH-scanning Get-Command per wrapper on every shell startup, for a path
-    # most users never hit; lazy resolution keeps startup cheap.
+    # Dispatch order: modern tool -> (Windows) microsoft/coreutils -> native exe on
+    # PATH -> PowerShell fallback. The coreutils and native tiers both reuse
+    # $NativeCmd as the Unix command name ('ls'/'cat'/'grep'/'find'), so on Windows a
+    # real Git-for-Windows GNU tool is still used when coreutils is absent. The one
+    # exception is names whose Windows System32 namesake behaves DIFFERENTLY from the
+    # Unix tool (see $winNativeSkip, e.g. `find`): for those the native lookup is
+    # skipped on Windows so it never resolves to the DOS command -- coreutils or the
+    # PS fallback handles them instead. The coreutils and native lookups are both
+    # LAZY (resolved on the non-modern branch only), so startup stays cheap.
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
+    $winNativeSkip = @('find', 'sort', 'more')
+    $nativeGuard = if ($NativeCmd -and ($NativeCmd -in $winNativeSkip)) {
+        "'$NativeCmd' -and -not (_OnWindows)"
+    } elseif ($NativeCmd) {
+        "'$NativeCmd'"
+    } else {
+        "`$false"
+    }
     $sb = [scriptblock]::Create(@"
 if (`$env:_DOTFILES_WRAPPERS -ne '0' -and (Get-Command '$Modern' -ErrorAction SilentlyContinue)) {
     _WrapLog '$FuncName' '$Modern'
     `$input | & '$Modern' $ModernFlags @Args
 } else {
-    `$__nc = if ('$NativeCmd') { (Get-Command '$NativeCmd' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source } else { `$null }
-    if (`$__nc) {
-        `$input | & `$__nc $NativeCmdFlags @Args
+    `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
+    if (`$__cu) {
+        `$input | & `$__cu $NativeCmd $NativeCmdFlags @Args
     } else {
-        $fallbackCode
+        `$__nc = if ($nativeGuard) { (Get-Command '$NativeCmd' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source } else { `$null }
+        if (`$__nc) {
+            `$input | & `$__nc $NativeCmdFlags @Args
+        } else {
+            $fallbackCode
+        }
     }
 }
 "@)
@@ -44,6 +108,22 @@ if (Get-Command '$Modern' -ErrorAction SilentlyContinue) {
     `$input | & '$Modern' $ModernFlags @Args
 } else {
     Write-Warning "${FuncName}: $Modern is not installed."
+}
+"@)
+    Set-Item -Path "function:global:$FuncName" -Value $sb
+}
+
+# New-CoreutilsWrapper <func> <cmdName> <builtinExpr> — for commands with no modern
+# tool: prefer microsoft/coreutils on Windows, else the PowerShell builtin. Used for
+# the destructive coreutils (cp/mv/rm/mkdir/rmdir). On non-Windows _CoreutilsBin is
+# $null so these collapse to the builtin, matching the stock PowerShell aliases.
+function New-CoreutilsWrapper([string]$FuncName, [string]$CmdName, [string]$BuiltinExpr) {
+    $sb = [scriptblock]::Create(@"
+`$__cu = _CoreutilsBin
+if (`$__cu) {
+    `$input | & `$__cu $CmdName @Args
+} else {
+    $BuiltinExpr
 }
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb

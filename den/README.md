@@ -41,6 +41,12 @@ overwriting (default no, so your changes are kept). Pass `--force` to overwrite
 without asking; non-interactive runs skip the changed files. `den hook install`
 into a tool's settings.json merges (it preserves foreign hooks and other keys).
 
+On Windows, `den install shell --coreutils` also installs microsoft/coreutils via
+winget (an interactive run asks; default no). The pwsh wrappers then use it as
+their Unix-command tier (`ls`/`cat`/`grep`/`find`/`cp`/`rm`/...); see
+`shell/README.md`. It is Windows + pwsh 7 only and falls back to the PowerShell
+builtins when absent.
+
 `den uninstall` is the mirror: it re-derives what `den install` would deploy and
 removes each file ONLY if it is byte-identical to den's version, so a file you
 edited is kept and reported (package-manager semantics). It is stateless (no

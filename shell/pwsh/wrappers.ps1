@@ -4,7 +4,11 @@
 # Skip in non-interactive sessions
 if (-not [Environment]::UserInteractive) { return }
 
-Remove-Item alias:ls -Force -ErrorAction SilentlyContinue
+# Drop the built-in aliases that would otherwise outrank our same-named wrapper
+# FUNCTIONS (alias beats function in command resolution). On Windows `ls` and
+# `cat` are aliases (Get-ChildItem / Get-Content); -EA SilentlyContinue makes
+# this a no-op where they do not exist (e.g. Linux/macOS).
+foreach ($a in 'ls', 'cat') { Remove-Item "alias:$a" -Force -ErrorAction SilentlyContinue }
 
 # Guard: ensure _helpers.ps1 is loaded
 if (-not (Get-Command New-Wrapper -ErrorAction SilentlyContinue)) {
@@ -81,3 +85,24 @@ New-WrapperSuffix 'catw'  'bat' '--style=plain --paging=never'
 New-WrapperSuffix 'findw' 'fd'  ''
 New-WrapperSuffix 'grepw' 'rg'  ''
 New-WrapperSuffix 'lsw'   'lsd' ''
+
+# ===== Destructive coreutils: microsoft/coreutils on Windows, else PS builtin =====
+# Windows-only. On Linux/macOS `cp`/`mv`/`rm`/`mkdir`/`rmdir` keep their stock
+# PowerShell-alias behavior (the builtin cmdlets). With microsoft/coreutils installed
+# these gain real Unix flags (`rm -rf`, `cp -r`, ...); without it they fall back to
+# the same builtin cmdlet, so this never changes the no-coreutils Windows baseline.
+if ($IsWindows) {
+    # cp/mv/rm/rmdir are built-in PowerShell ALIASES on Windows (-> Copy-Item /
+    # Move-Item / Remove-Item), and an alias outranks a function in command
+    # resolution, so the alias must be removed first or the wrapper below never
+    # runs (same reason `ls`/`cd` aliases are removed above / in functions.ps1).
+    # `mkdir` is a function on Windows, not an alias, so a function redefines it.
+    foreach ($a in 'cp', 'mv', 'rm', 'rmdir') {
+        Remove-Item "alias:$a" -Force -ErrorAction SilentlyContinue
+    }
+    New-CoreutilsWrapper 'cp'    'cp'    'Copy-Item @Args'
+    New-CoreutilsWrapper 'mv'    'mv'    'Move-Item @Args'
+    New-CoreutilsWrapper 'rm'    'rm'    'Remove-Item @Args'
+    New-CoreutilsWrapper 'mkdir' 'mkdir' 'New-Item -ItemType Directory @Args'
+    New-CoreutilsWrapper 'rmdir' 'rmdir' 'Remove-Item @Args'
+}

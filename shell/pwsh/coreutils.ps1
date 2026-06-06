@@ -9,6 +9,8 @@ if (-not [Environment]::UserInteractive) { return }
 # df → disk free space
 # Usage: df [path ...]
 function df {
+  $__cu = _CoreutilsBin
+  if ($__cu) { $input | & $__cu df @Args; return }
   $paths = @($Args)
   $result = Get-PSDrive -PSProvider FileSystem |
     Select-Object Name,
@@ -28,6 +30,8 @@ function df {
 # env → list environment variables / run command with modified env
 # Usage: env [VAR=val ...] [command [args ...]], no args = print all
 function env {
+  $__cu = _CoreutilsBin
+  if ($__cu) { $input | & $__cu env @Args; return }
   $assigns = @(); $cmd = $null; $cmdArgs = @()
   $i = 0
   while ($i -lt $Args.Count) {
@@ -62,6 +66,8 @@ function env {
 # head → first N lines of a file (default: 10)
 # Usage: head [-n N] [-n -N] [-N] [-q] [-v] [file ...], supports pipe input
 function head {
+  $__cu = _CoreutilsBin
+  if ($__cu) { $input | & $__cu head @Args; return }
   $lines = 10; $excludeLast = 0; $files = @(); $quiet = $false; $verbose = $false; $i = 0
   while ($i -lt $Args.Count) {
     $a = $Args[$i]
@@ -97,6 +103,8 @@ function head {
 # split → split a file into chunks
 # Usage: split [-l N] [-n l/N] [-b SIZE] [-a LEN] [file] [prefix]
 function split {
+  $__cu = _CoreutilsBin
+  if ($__cu) { $input | & $__cu split @Args; return }
   $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixLen = 2; $i = 0
   while ($i -lt $Args.Count) {
     $a = $Args[$i]
@@ -160,6 +168,8 @@ function split {
 # tail → last N lines of a file (default: 10)
 # Usage: tail [-n N] [-n +N] [-N] [-f] [-q] [-v] [file ...], supports pipe input
 function tail {
+  $__cu = _CoreutilsBin
+  if ($__cu) { $input | & $__cu tail @Args; return }
   $lines = 10; $fromLine = 0; $files = @(); $follow = $false; $quiet = $false; $verbose = $false; $i = 0
   while ($i -lt $Args.Count) {
     $a = $Args[$i]
@@ -198,6 +208,8 @@ function tail {
 # touch → create empty file or update timestamp
 # Usage: touch <file...>
 function touch {
+  $__cu = _CoreutilsBin
+  if ($__cu) { & $__cu touch @Args; return }
   if ($Args.Count -eq 0) { Write-Error "usage: <file...>"; return }
   foreach ($f in $Args) {
     if (Test-Path $f) { (Get-Item $f).LastWriteTime = Get-Date }
@@ -228,6 +240,8 @@ function _wcOne {
 # wc → line, word, and character count (supports -l, -w, -c flags)
 # Usage: wc [-l] [-w] [-c|-m] [file ...], supports pipe input
 function wc {
+  $__cu = _CoreutilsBin
+  if ($__cu) { $input | & $__cu wc @Args; return }
   $flags = @(); $files = @()
   foreach ($a in $Args) {
     if ($a -match '^-[lwcm]+$') { $flags += $a }
