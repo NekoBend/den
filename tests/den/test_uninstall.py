@@ -127,6 +127,24 @@ def test_has_block_ignores_marker_inside_user_comment(tmp_path):
     assert not _has_block(rc, "anything")
 
 
+def test_has_block_requires_marker_followed_by_den_line(tmp_path):
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    # standalone marker, but the next line is the user's own, not den's wire line
+    rc.write_text("# ===== den =====\nmy own note here\n")
+    assert not _has_block(rc, line)
+
+
+def test_strip_block_leaves_stray_marker_untouched(tmp_path):
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    original = "export FOO=1\n\n# ===== den =====\nmy own note here\n"
+    rc.write_text(original)
+    _strip_block(rc, line)
+    # marker not followed by den's line -> nothing removed (incl. preceding blank)
+    assert rc.read_text() == original
+
+
 def test_strip_block_keeps_whitespace_only_user_content(tmp_path):
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
     rc = tmp_path / ".bashrc"

@@ -20,7 +20,7 @@ from . import _ui
 from ._content import dist_dir
 
 
-def _has_block(rc: Path, _line: str) -> bool:
+def _has_block(rc: Path, line: str) -> bool:
     from ._shell import _COMMENT
 
     if not rc.is_file():
@@ -29,9 +29,14 @@ def _has_block(rc: Path, _line: str) -> bool:
         text = rc.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return False
-    # standalone marker line only -- match what _strip_block actually removes,
-    # so the marker buried in a user's own comment is not mis-reported.
-    return any(ln.strip() == _COMMENT for ln in text.splitlines())
+    # den-managed only when the marker line is immediately followed by den's
+    # exact wire line (what _wire writes, and what _strip_block removes). A
+    # stray marker in the user's own content is neither reported nor touched.
+    lines = text.splitlines()
+    return any(
+        ln.strip() == _COMMENT and i + 1 < len(lines) and lines[i + 1] == line
+        for i, ln in enumerate(lines)
+    )
 
 
 def _strip_block(rc: Path, line: str) -> None:
@@ -54,12 +59,12 @@ def _strip_block(rc: Path, line: str) -> None:
     out: list[str] = []
     i = 0
     while i < len(lines):
-        if lines[i].strip() == _COMMENT:
+        # Only den's block: marker immediately followed by den's wire line.
+        # A stray marker (or a user-edited wire line) is left untouched.
+        if lines[i].strip() == _COMMENT and i + 1 < len(lines) and lines[i + 1] == line:
             if out and out[-1] == "":
                 out.pop()
-            i += 1
-            if i < len(lines) and lines[i] == line:
-                i += 1
+            i += 2
             continue
         out.append(lines[i])
         i += 1
