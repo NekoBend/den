@@ -24,7 +24,8 @@ source on disk; from a checkout it falls back to the repo root (`_content.py`).
 ## Commands
 
 ```
-den install [skills|shell]     interactive setup, or deploy skills / shell directly
+den install   [skills|shell]   interactive setup, or deploy skills / shell directly
+den uninstall [skills|shell]   remove den-installed files, keeping ones you changed
 den hook    install|run|...    per-turn imprint hooks, per workspace
 den memory  show|save|...      workspace session memory (.den/memory.md)
 den cheat   [name]             view bundled cheatsheets offline
@@ -39,6 +40,15 @@ differ from the bundled version are listed and you are asked once before
 overwriting (default no, so your changes are kept). Pass `--force` to overwrite
 without asking; non-interactive runs skip the changed files. `den hook install`
 into a tool's settings.json merges (it preserves foreign hooks and other keys).
+
+`den uninstall` is the mirror: it re-derives what `den install` would deploy and
+removes each file ONLY if it is byte-identical to den's version, so a file you
+edited is kept and reported (package-manager semantics). It is stateless (no
+manifest): "unchanged" means "matches what this den version installs". It strips
+the rc-file `# ===== den =====` block and prunes dirs den created that became
+empty. It lists the plan and asks once before deleting (`--yes` to skip,
+`--dry-run` to preview only; non-interactive runs require `--yes`). Hooks are
+per-workspace, so `den uninstall` does not touch them; use `den hook remove`.
 
 Run `den <command> --help` for per-command options.
 

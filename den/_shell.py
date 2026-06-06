@@ -119,22 +119,17 @@ def _wire(rc: Path, line: str, dry_run: bool) -> None:
         print(f"  [ok] created {rc}")
 
 
-def install_shell(argv: list[str]) -> int:
-    dry_run = "--dry-run" in argv
-    extras = "--no-extras" not in argv
-    force = "--force" in argv
-    for a in argv:
-        if a not in ("--dry-run", "--no-extras", "--force"):
-            print(f"den install shell: unexpected arg '{a}'", file=sys.stderr)
-            return 2
-
+def _stage_shell_files(writer, extras: bool, dry_run: bool, announce: bool):
+    """Stage every shell file den deploys (no commit). Returns (posix_dir,
+    pwsh_dir). Shared by install (writes) and uninstall (plans removal), so the
+    dest paths and bundled content match exactly."""
     sh = shell_dir()
     home = Path.home()
     posix_dir = home / ".config" / "shell"
     pwsh_dir = _pwsh_profile_dir()
-    writer = _Writer(force)
 
-    print(f"shell (posix) -> {posix_dir}")
+    if announce:
+        print(f"shell (posix) -> {posix_dir}")
     for f in _POSIX_CORE + (_POSIX_EXTRAS if extras else []):
         _copy(sh / "posix" / f, posix_dir / f, dry_run, writer)
     _copy(sh / "bash" / "init.bash", posix_dir / "init.bash", dry_run, writer)
@@ -146,19 +141,37 @@ def install_shell(argv: list[str]) -> int:
         writer,
     )
 
-    print(f"shell (pwsh) -> {pwsh_dir}")
+    if announce:
+        print(f"shell (pwsh) -> {pwsh_dir}")
     for f in _PWSH_CORE + (_PWSH_EXTRAS if extras else []):
         _copy(sh / "pwsh" / f, pwsh_dir / f, dry_run, writer)
 
     # cmd / Clink shims (Windows only): bin/*.cmd + starship.lua -> %LOCALAPPDATA%\clink
     if _windows():
         clink = _localappdata() / "clink"
-        print(f"cmd/Clink -> {clink}")
+        if announce:
+            print(f"cmd/Clink -> {clink}")
         _copy(sh / "cmd" / "starship.lua", clink / "starship.lua", dry_run, writer)
         cmd_bin = sh / "cmd" / "bin"
         if cmd_bin.is_dir():
             for f in sorted(cmd_bin.glob("*.cmd")):
                 _copy(f, clink / "bin" / f.name, dry_run, writer)
+
+    return posix_dir, pwsh_dir
+
+
+def install_shell(argv: list[str]) -> int:
+    dry_run = "--dry-run" in argv
+    extras = "--no-extras" not in argv
+    force = "--force" in argv
+    for a in argv:
+        if a not in ("--dry-run", "--no-extras", "--force"):
+            print(f"den install shell: unexpected arg '{a}'", file=sys.stderr)
+            return 2
+
+    home = Path.home()
+    writer = _Writer(force)
+    _posix_dir, pwsh_dir = _stage_shell_files(writer, extras, dry_run, announce=True)
 
     if not dry_run:
         writer.commit()

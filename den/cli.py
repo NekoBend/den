@@ -9,6 +9,7 @@ Subcommands:
   hook    install per-tool hooks that imprint context every turn
   cheat   view bundled cheatsheets offline
   install deploy skills, or the shell environment, into place
+  uninstall remove den-installed files (keeping ones you changed)
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ def _usage() -> None:
         "  hook   install|run|imprint per-turn imprint hooks\n"
         "  cheat  [name]              view bundled cheatsheets\n"
         "  install skills|shell       deploy skills or the shell environment\n"
+        "  uninstall skills|shell     remove den-installed files (keeps your edits)\n"
         "\n"
         "Run 'den <command> --help' for command-specific options."
     )
@@ -86,6 +88,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "install":
         from ._install import main as _main
+
+        return _main(rest)
+
+    if cmd == "uninstall":
+        from ._uninstall import main as _main
 
         return _main(rest)
 

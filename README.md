@@ -54,6 +54,10 @@ Python implementation replaces the old bash + PowerShell installers.
 - `den install shell` deploys the bash/zsh config to `~/.config/shell`, the
   PowerShell config to the profile dir, starship, and (on Windows) the cmd/Clink
   shims, then wires the relevant rc files idempotently.
+- `den uninstall skills|shell` mirrors install: it removes a deployed file only
+  when it is byte-identical to den's version (so your edits are kept), strips the
+  rc-file block, and prunes emptied dirs. It is stateless (no manifest), lists
+  the plan and asks before deleting (`--yes`, `--dry-run`).
 - `den hook install` registers per-turn imprint hooks per workspace, and
   `den memory` / `den cheat` / `den check|verify|refs|doc` round out the CLI.
   See `den/README.md`.
