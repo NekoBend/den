@@ -55,16 +55,18 @@ Run `den <command> --help` for per-command options.
 ## `den memory`
 
 Workspace-level session memory that the agent reads and overwrites. It lives at
-`<project>/.den/memory.md`: a single Markdown file the agent owns and rewrites
-wholesale. Because the agent may edit it directly (with its own file tools, not
-only via `den memory save`), a content-hash `checkpoint` snapshots it into
-`.den/history/` whenever it changes, so direct edits are captured and any bad
-overwrite is recoverable.
+`<project>/.den/memory.md`: a single Markdown file the agent owns. It can be
+rewritten wholesale (`save`, or the agent's own file tools) or grown one fact at
+a time with `add` (a low-friction append, so a weak agent records a decision
+without reproducing the whole file). Because the agent may edit it directly, a
+content-hash `checkpoint` snapshots it into `.den/history/` whenever it changes,
+so direct edits are captured and any bad overwrite is recoverable.
 
 | Subcommand | What it does |
 |------------|--------------|
 | `show` | print `memory.md` (empty if absent) |
 | `save [--file F]` | overwrite `memory.md` from stdin or F (snapshots the old content first) |
+| `add <text>` | append one fact to `memory.md` from args or stdin (snapshots first); low-friction counterpart to `save` |
 | `checkpoint` | snapshot `memory.md` into history if it changed |
 | `clear` | delete `memory.md` (snapshots it first) |
 | `log` | list history snapshots, newest first |

@@ -53,8 +53,9 @@ These directives apply every turn. Do not let them fall out of context.
 - Before writing code, check whether a skill applies and read its SKILL.md.
 - For multi step or broad tasks, delegate to a subagent instead of doing
   everything inline.
-- Record durable decisions and project facts in .den/memory.md so they
-  survive across turns; keep it current and overwrite it wholesale.
+- When you make a durable decision or learn a project fact, append it that
+  same turn with: den memory add "<the fact>" (one line, low effort). For a
+  larger cleanup, overwrite .den/memory.md wholesale.
 - State assumptions explicitly; ask before assuming when scope is ambiguous.
 """
 

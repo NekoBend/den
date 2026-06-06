@@ -22,6 +22,50 @@ def _save(proj, monkeypatch, text):
 
 
 # --------------------------------------------------------------------------- #
+# add (low-friction append)
+# --------------------------------------------------------------------------- #
+
+
+def test_add_creates_memory_from_args(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["add", "use", "ruff", "for", "lint"]) == 0
+    assert _mem(tmp_path).read_text() == "use ruff for lint\n"
+
+
+def test_add_appends_with_newline_separation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_text("first fact")  # no trailing newline
+    assert memory_main(["add", "second fact"]) == 0
+    assert _mem(tmp_path).read_text() == "first fact\nsecond fact\n"
+
+
+def test_add_reads_stdin_when_no_args(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO("piped decision\n"))
+    assert memory_main(["add"]) == 0
+    assert _mem(tmp_path).read_text() == "piped decision\n"
+
+
+def test_add_rejects_empty(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO("   \n"))
+    assert memory_main(["add"]) == 2
+    assert not _mem(tmp_path).is_file()
+
+
+def test_add_checkpoints_previous_content(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["add", "v1"]) == 0  # creates, nothing to snapshot yet
+    assert _history(tmp_path) == []
+    assert memory_main(["add", "v2"]) == 0  # snapshots the pre-append content
+    snaps = _history(tmp_path)
+    assert len(snaps) == 1
+    assert snaps[0].read_text() == "v1\n"
+    assert _mem(tmp_path).read_text() == "v1\nv2\n"
+
+
+# --------------------------------------------------------------------------- #
 # den dir resolution
 # --------------------------------------------------------------------------- #
 
