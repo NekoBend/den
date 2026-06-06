@@ -61,7 +61,9 @@ class _Writer:
         changed = [d for d, c in self._items if d.is_file() and d.read_bytes() != c]
         overwrite = True
         if changed and not self.force:
-            _ui.say("These files exist and differ from the bundled version:", style="yellow")
+            _ui.say(
+                "These files exist and differ from the bundled version:", style="yellow"
+            )
             for d in changed:
                 _ui.say(f"  {d}", style="yellow")
             if sys.stdin.isatty():
@@ -238,7 +240,12 @@ def _install_skills(argv: list[str]) -> int:
     if not tools and not targets:
         sk, pd, pf = _TOOLS["claude"]
         _deploy(
-            Path(sk).expanduser(), Path(pd).expanduser(), pf, with_parent, dry_run, writer
+            Path(sk).expanduser(),
+            Path(pd).expanduser(),
+            pf,
+            with_parent,
+            dry_run,
+            writer,
         )
         agents = Path("~/.agents/skills").expanduser()
         _deploy(
@@ -273,10 +280,14 @@ def _interactive() -> int:
     """`den install` with no target: ask per component, like the old installer."""
     _ui.say("den install -- interactive setup", style="bold cyan")
     rc = 0
-    if _ui.confirm("Install the shell environment (bash/zsh + PowerShell, starship)?", True):
+    if _ui.confirm(
+        "Install the shell environment (bash/zsh + PowerShell, starship)?", True
+    ):
         from ._shell import install_shell
 
-        extras = _ui.confirm("  Include optional helpers (python/ffmpeg/parallel)?", True)
+        extras = _ui.confirm(
+            "  Include optional helpers (python/ffmpeg/parallel)?", True
+        )
         rc |= install_shell([] if extras else ["--no-extras"])
 
     if _ui.confirm("Install the LLM agent skills?", False):
@@ -287,7 +298,9 @@ def _interactive() -> int:
         flags: list[str] = []
         for tool in chosen:
             flags += ["--tool", tool]
-        if flags and _ui.confirm("Install the parent prompt (AGENTS.md/CLAUDE.md) too?", True):
+        if flags and _ui.confirm(
+            "Install the parent prompt (AGENTS.md/CLAUDE.md) too?", True
+        ):
             flags.append("--with-parent")
         if flags:
             rc |= _install_skills(flags)

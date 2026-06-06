@@ -129,8 +129,7 @@ class _Remover:
         if not assume_yes:
             if not sys.stdin.isatty():
                 print(
-                    "den uninstall: refusing to delete without --yes "
-                    "(non-interactive)",
+                    "den uninstall: refusing to delete without --yes (non-interactive)",
                     file=sys.stderr,
                 )
                 return 1
@@ -179,7 +178,9 @@ def _stage_skills(remover: _Remover, tools, targets, with_parent) -> None:
             _install_skill(name, skills_target, remover)
         remover.boundary(parent_dir)
         if with_parent and parent_file:
-            src = dist_dir() / ("CLAUDE.md" if parent_file == "CLAUDE.md" else "AGENTS.md")
+            src = dist_dir() / (
+                "CLAUDE.md" if parent_file == "CLAUDE.md" else "AGENTS.md"
+            )
             if src.is_file():
                 remover.stage(parent_dir / parent_file, src.read_bytes())
 
