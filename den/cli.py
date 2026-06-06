@@ -1,4 +1,4 @@
-"""den - toolkit for LLM-assisted development workflows.
+"""den - unified toolkit CLI for LLM-assisted development.
 
 Subcommands:
   check   lint / format / typecheck a file (dispatches to run-checks.sh)
@@ -7,18 +7,16 @@ Subcommands:
   doc     report docstring / doc-comment coverage
   memory  read/write workspace session memory (.den/memory.md)
   hook    install per-tool hooks that imprint context every turn
+  cheat   view bundled cheatsheets offline
+  install deploy skills, or the shell environment, into place
+  uninstall remove den-installed files (keeping ones you changed)
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-# Ensure tools/ is on the path so sibling _xxx imports resolve regardless of
-# how den is invoked (uv tool, direct python, or from a hook script).
-_HERE = Path(__file__).parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
+from . import __version__
 
 
 def _usage() -> None:
@@ -32,6 +30,9 @@ def _usage() -> None:
         "  doc    <file>              docstring / doc-comment coverage\n"
         "  memory show|save|log|...   workspace session memory\n"
         "  hook   install|run|imprint per-turn imprint hooks\n"
+        "  cheat  [name]              view bundled cheatsheets\n"
+        "  install skills|shell       deploy skills or the shell environment\n"
+        "  uninstall skills|shell     remove den-installed files (keeps your edits)\n"
         "\n"
         "Run 'den <command> --help' for command-specific options."
     )
@@ -45,38 +46,53 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args[0] == "--version":
-        print("den 0.1.0")
+        print(f"den {__version__}")
         return 0
 
     cmd, rest = args[0], args[1:]
 
     if cmd == "check":
-        from _check import main as _main
+        from ._check import main as _main
 
         return _main(rest)
 
     if cmd == "verify":
-        from _verify import main as _main
+        from ._verify import main as _main
 
         return _main(rest)
 
     if cmd == "refs":
-        from _refs import main as _main
+        from ._refs import main as _main
 
         return _main(rest)
 
     if cmd == "doc":
-        from _doc import main as _main
+        from ._doc import main as _main
 
         return _main(rest)
 
     if cmd == "memory":
-        from _memory import main as _main
+        from ._memory import main as _main
 
         return _main(rest)
 
     if cmd == "hook":
-        from _hook import main as _main
+        from ._hook import main as _main
+
+        return _main(rest)
+
+    if cmd == "cheat":
+        from ._cheat import main as _main
+
+        return _main(rest)
+
+    if cmd == "install":
+        from ._install import main as _main
+
+        return _main(rest)
+
+    if cmd == "uninstall":
+        from ._uninstall import main as _main
 
         return _main(rest)
 

@@ -12,9 +12,14 @@ Because weak models forget on-demand instructions, the per-turn hook re-injects
 both every turn. checkpoint runs first so the previous turn's direct edits to
 memory.md are captured before this turn proceeds.
 
+Hooks install per WORKSPACE: `install` writes each tool's project-level hook
+config (e.g. .claude/settings.json, .clinerules/hooks/) under the current
+directory and seeds <cwd>/.den/imprint.md, so hook + imprint + memory all share
+one .den scope. Run it once inside each workspace you want imprinting in.
+
 Subcommands:
   run --event E --tool T   worker the tool invokes; prints injection for T
-  install [--tool T ...]    register hooks into each tool's config
+  install [--tool T ...]    register hooks into the workspace (cwd)
           [--all-tools] [--config PATH]
   imprint                   print the composed injection (imprint + memory)
   list [--config PATH]      show den-managed hooks per tool
@@ -28,10 +33,11 @@ per-turn, post-tool, stop.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
-from _memory import _do_checkpoint, _find_den_dir, _memory_path
+from ._memory import _do_checkpoint, _find_den_dir, _memory_path
 
 _IMPRINT_NAME = "imprint.md"
 
@@ -47,8 +53,9 @@ These directives apply every turn. Do not let them fall out of context.
 - Before writing code, check whether a skill applies and read its SKILL.md.
 - For multi step or broad tasks, delegate to a subagent instead of doing
   everything inline.
-- Record durable decisions and project facts in .den/memory.md so they
-  survive across turns; keep it current and overwrite it wholesale.
+- When you make a durable decision or learn a project fact, append it that
+  same turn with: den memory add "<the fact>" (one line, low effort). For a
+  larger cleanup, overwrite .den/memory.md wholesale.
 - State assumptions explicitly; ask before assuming when scope is ambiguous.
 """
 
@@ -57,7 +64,7 @@ These directives apply every turn. Do not let them fall out of context.
 # output contract has been checked against the real CLI.
 _TOOLS: dict[str, dict] = {
     "claude": {
-        "config": "~/.claude/settings.json",
+        "config": ".claude/settings.json",
         "emit": "claude",
         "format": "settings_json",
         "events": {
@@ -70,7 +77,7 @@ _TOOLS: dict[str, dict] = {
         "verified": True,
     },
     "gemini": {
-        "config": "~/.gemini/settings.json",
+        "config": ".gemini/settings.json",
         "emit": "gemini",
         "format": "settings_json",
         "events": {
@@ -103,7 +110,7 @@ _TOOLS: dict[str, dict] = {
         "verified": False,
     },
     "copilot": {
-        "config": "~/.copilot/hooks/den.json",
+        "config": ".github/hooks/den.json",
         "emit": "copilot",
         "format": "copilot_json",
         # userPromptSubmitted is notification-only (cannot inject), so the
@@ -116,10 +123,15 @@ _TOOLS: dict[str, dict] = {
         "verified": True,
     },
     "cline": {
-        "config": "~/.cline/hooks",
+        # Workspace-local project hooks: the extension reads .clinerules/hooks/
+        # from the project root. (Global cline hooks live in ~/Documents/Cline/
+        # Hooks, but den installs per workspace so hook+imprint+memory stay in
+        # the same .den scope.)
+        "config": ".clinerules/hooks",
         "emit": "cline",
         "format": "cline_scripts",
         "events": {
+            "session-start": "TaskStart",
             "per-turn": "UserPromptSubmit",
             "post-tool": "PostToolUse",
         },
@@ -235,7 +247,10 @@ def _cmd_run(argv: list[str]) -> int:
 
     # Inject only on inject-events; other events still get an (empty) response
     # because some tools (cline, copilot) require valid JSON on every hook.
-    text = _compose(den_dir) if event in _INJECT_EVENTS else ""
+    # copilot's per-turn (userPromptSubmitted) is notification-only, so do not
+    # compose for it -- it injects only at session-start.
+    inject = event in _INJECT_EVENTS and not (tool == "copilot" and event == "per-turn")
+    text = _compose(den_dir) if inject else ""
     emit = _EMITTERS.get(spec["emit"])
     if emit is None:
         # Fallback for tools whose emitter is not implemented yet: plain stdout.
@@ -276,9 +291,11 @@ def _parse_run_args(argv: list[str]) -> tuple[str | None, str | None]:
 
 
 def _resolve_config(spec: dict, override: str | None) -> Path:
-    return (
-        Path(override).expanduser() if override else Path(spec["config"]).expanduser()
-    )
+    if override:
+        return Path(override).expanduser()
+    # config is a workspace-relative path; resolve against the current dir so
+    # hooks land in the project being set up (alongside its .den/).
+    return (Path.cwd() / spec["config"]).resolve()
 
 
 def _settings_entries(tool: str, spec: dict) -> dict[str, list]:
@@ -293,14 +310,31 @@ def _settings_entries(tool: str, spec: dict) -> dict[str, list]:
     return entries
 
 
+def _read_json(config: Path) -> dict:
+    """Load an existing JSON config, or {} if absent/unreadable/not an object.
+    Keeps install/remove from crashing on a malformed or hand-edited file."""
+    if not config.is_file():
+        return {}
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _strip_den_hooks(hooks: dict) -> dict:
     """Drop every hook group whose command contains the den marker."""
+    if not isinstance(hooks, dict):
+        return {}
     cleaned: dict[str, list] = {}
     for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
         kept = [
             g
             for g in groups
-            if not any(_MARKER in h.get("command", "") for h in g.get("hooks", []))
+            if isinstance(g, dict)
+            and not any(_MARKER in h.get("command", "") for h in g.get("hooks", []))
         ]
         if kept:
             cleaned[event] = kept
@@ -308,9 +342,7 @@ def _strip_den_hooks(hooks: dict) -> dict:
 
 
 def _install_settings_json(tool: str, spec: dict, config: Path) -> None:
-    data: dict = {}
-    if config.is_file():
-        data = json.loads(config.read_text(encoding="utf-8"))
+    data = _read_json(config)
     hooks = _strip_den_hooks(data.get("hooks", {}))
     for event, groups in _settings_entries(tool, spec).items():
         hooks.setdefault(event, []).extend(groups)
@@ -320,17 +352,18 @@ def _install_settings_json(tool: str, spec: dict, config: Path) -> None:
 
 
 def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
-    if not config.is_file():
-        return []
-    try:
-        data = json.loads(config.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    hooks = _read_json(config).get("hooks", {})
+    if not isinstance(hooks, dict):
         return []
     lines = []
-    for event, groups in data.get("hooks", {}).items():
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
         for g in groups:
+            if not isinstance(g, dict):
+                continue
             for h in g.get("hooks", []):
-                if _MARKER in h.get("command", ""):
+                if isinstance(h, dict) and _MARKER in h.get("command", ""):
                     lines.append(f"{tool}  {event}  {h['command']}")
     return lines
 
@@ -338,7 +371,7 @@ def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
 def _remove_settings_json(tool: str, spec: dict, config: Path) -> None:
     if not config.is_file():
         return
-    data = json.loads(config.read_text(encoding="utf-8"))
+    data = _read_json(config)
     if "hooks" not in data:
         return
     data["hooks"] = _strip_den_hooks(data["hooks"])
@@ -351,18 +384,22 @@ def _remove_settings_json(tool: str, spec: dict, config: Path) -> None:
 
 
 def _strip_copilot(hooks: dict) -> dict:
+    if not isinstance(hooks, dict):
+        return {}
     cleaned: dict[str, list] = {}
     for event, arr in hooks.items():
-        kept = [h for h in arr if _MARKER not in h.get("bash", "")]
+        if not isinstance(arr, list):
+            continue
+        kept = [
+            h for h in arr if isinstance(h, dict) and _MARKER not in h.get("bash", "")
+        ]
         if kept:
             cleaned[event] = kept
     return cleaned
 
 
 def _install_copilot(tool: str, spec: dict, config: Path) -> None:
-    data: dict = {}
-    if config.is_file():
-        data = json.loads(config.read_text(encoding="utf-8"))
+    data = _read_json(config)
     data["version"] = data.get("version", 1)
     hooks = _strip_copilot(data.get("hooks", {}))
     for generic, native in spec["events"].items():
@@ -374,24 +411,22 @@ def _install_copilot(tool: str, spec: dict, config: Path) -> None:
 
 
 def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
-    if not config.is_file():
-        return []
-    try:
-        data = json.loads(config.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    hooks = _read_json(config).get("hooks", {})
+    if not isinstance(hooks, dict):
         return []
     return [
         f"{tool}  {event}  {h['bash']}"
-        for event, arr in data.get("hooks", {}).items()
+        for event, arr in hooks.items()
+        if isinstance(arr, list)
         for h in arr
-        if _MARKER in h.get("bash", "")
+        if isinstance(h, dict) and _MARKER in h.get("bash", "")
     ]
 
 
 def _remove_copilot(tool: str, spec: dict, config: Path) -> None:
     if not config.is_file():
         return
-    data = json.loads(config.read_text(encoding="utf-8"))
+    data = _read_json(config)
     if "hooks" not in data:
         return
     data["hooks"] = _strip_copilot(data["hooks"])
@@ -403,10 +438,22 @@ def _remove_copilot(tool: str, spec: dict, config: Path) -> None:
 # --- cline: one executable script per event, named exactly the event name --- #
 
 
+def _is_windows() -> bool:
+    # Indirection so tests can flip platform without touching os.name globally
+    # (pathlib reads os.name to pick WindowsPath/PosixPath).
+    return os.name == "nt"
+
+
+def _cline_script_name(native: str) -> str:
+    """Cline reads <Event>.ps1 (PowerShell) on Windows, extensionless <Event>
+    (executable bash) on macOS/Linux."""
+    return f"{native}.ps1" if _is_windows() else native
+
+
 def _install_cline(tool: str, spec: dict, config: Path) -> None:
     config.mkdir(parents=True, exist_ok=True)
     for generic, native in spec["events"].items():
-        script = config / native
+        script = config / _cline_script_name(native)
         if script.exists() and _MARKER not in script.read_text(
             encoding="utf-8", errors="ignore"
         ):
@@ -416,20 +463,30 @@ def _install_cline(tool: str, spec: dict, config: Path) -> None:
             )
             continue
         cmd = f"den hook run --event {generic} --tool {tool}"
-        script.write_text(
-            f"#!/usr/bin/env bash\n# {_MARKER} (den-managed; do not edit)\nexec {cmd}\n",
-            encoding="utf-8",
-        )
-        script.chmod(0o755)
+        if _is_windows():
+            # PowerShell hook: Cline runs <Event>.ps1 and reads its stdout JSON.
+            script.write_text(
+                f"# {_MARKER} (den-managed; do not edit)\n{cmd}\n",
+                encoding="utf-8",
+            )
+        else:
+            script.write_text(
+                f"#!/usr/bin/env bash\n# {_MARKER} (den-managed; do not edit)\nexec {cmd}\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
 
 
 def _cline_scripts(spec: dict, config: Path):
+    # Check both names so list/remove work regardless of the platform that
+    # installed (extensionless on Unix, .ps1 on Windows).
     for native in spec["events"].values():
-        script = config / native
-        if script.is_file() and _MARKER in script.read_text(
-            encoding="utf-8", errors="ignore"
-        ):
-            yield native, script
+        for cand in (native, f"{native}.ps1"):
+            script = config / cand
+            if script.is_file() and _MARKER in script.read_text(
+                encoding="utf-8", errors="ignore"
+            ):
+                yield native, script
 
 
 def _list_cline(tool: str, spec: dict, config: Path) -> list[str]:
@@ -469,7 +526,35 @@ def _seed_imprint(den_dir: Path) -> bool:
     return True
 
 
+def _pick_tools_interactive() -> list[str] | None:
+    """Ask which tools to install hooks for (checkbox). Returns --tool flags,
+    or None if nothing was selected."""
+    from . import _ui
+
+    _ui.say("den hook install -- per-turn imprint hooks in this workspace.")
+    chosen = _ui.select(
+        "Which tools? (space to toggle, enter to confirm)",
+        [(t, t == "claude") for t, s in _TOOLS.items() if s["verified"]],
+    )
+    if not chosen:
+        _ui.say("  (none selected; nothing to install)")
+        return None
+    flags: list[str] = []
+    for tool in chosen:
+        flags += ["--tool", tool]
+    return flags
+
+
 def _cmd_install(argv: list[str]) -> int:
+    # In a terminal with no tool selected, ask rather than silently defaulting
+    # to claude.
+    selected = any(a in ("--tool", "--all-tools") for a in argv)
+    if not selected and "--config" not in argv and sys.stdin.isatty():
+        picked = _pick_tools_interactive()
+        if picked is None:
+            return 0
+        argv = picked + list(argv)
+
     tools, override = _parse_tool_args(argv)
     if tools is None:
         return 2

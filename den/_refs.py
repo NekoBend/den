@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _common import DEFINITION_PATTERNS, SKIP_DIRS
+from ._common import DEFINITION_PATTERNS, SKIP_DIRS
 
 Hit = tuple[str, int, str]
 Result = tuple[str, int, str, str]
@@ -65,6 +65,11 @@ def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]
         "--line-number",
         "--with-filename",
         "--no-messages",
+        # match the Python-walk fallback: search everything except SKIP_DIRS,
+        # regardless of .gitignore or hidden-dir status, so results do not
+        # depend on whether rg is installed.
+        "--no-ignore",
+        "--hidden",
         pattern,
         str(root),
     ]
@@ -291,9 +296,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ext = _normalize_ext(args.lang)
 
-    if args.def_sym:
+    if args.def_sym is not None:
         results = find_definitions(args.def_sym, root, ext)
-    elif args.uses_sym:
+    elif args.uses_sym is not None:
         results = find_usages(args.uses_sym, root, ext)
     else:
         file_path = Path(args.in_file).resolve()

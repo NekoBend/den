@@ -166,7 +166,7 @@ def analyze_python(path: Path, text: str) -> list[DocItem]:
 # ---------- TypeScript / JavaScript ----------
 
 _TS_TOP_LEVEL_RE = re.compile(
-    r"""^\s*export\s+
+    r"""^[ \t]*export\s+
         (?:default\s+)?
         (?:async\s+)?
         (?P<kind>function|class|interface|type|enum)
@@ -176,7 +176,7 @@ _TS_TOP_LEVEL_RE = re.compile(
     re.MULTILINE | re.VERBOSE,
 )
 _TS_METHOD_RE = re.compile(
-    r"""^(?P<indent>\s+)
+    r"""^(?P<indent>[ \t]+)
         (?!private\b|protected\b|//|/\*)
         (?:public\s+|static\s+|async\s+|readonly\s+|get\s+|set\s+)*
         (?P<name>\w+)
@@ -269,7 +269,7 @@ def analyze_go(path: Path, text: str) -> list[DocItem]:
 # ---------- Rust ----------
 
 _RUST_DECL_RE = re.compile(
-    r"""^\s*pub\s+
+    r"""^[ \t]*pub\s+
         (?:\([^)]*\)\s+)?
         (?P<kind>fn|struct|enum|trait|type|mod|const|static)
         \s+
@@ -311,7 +311,7 @@ def analyze_rust(path: Path, text: str) -> list[DocItem]:
         if body is None:
             continue
         body_text = text[body[0] : body[1]]
-        for m in re.finditer(r"^\s*pub\s+fn\s+(\w+)", body_text, re.MULTILINE):
+        for m in re.finditer(r"^[ \t]*pub\s+fn\s+(\w+)", body_text, re.MULTILINE):
             method_name = m.group(1)
             absolute_pos = body[0] + m.start()
             lineno = _lineno_of(text, absolute_pos)
@@ -333,7 +333,7 @@ def analyze_rust(path: Path, text: str) -> list[DocItem]:
 # ---------- Java ----------
 
 _JAVA_TOP_RE = re.compile(
-    r"""^\s*public\s+
+    r"""^[ \t]*public\s+
         (?:abstract\s+|final\s+|static\s+|sealed\s+|non-sealed\s+)*
         (?P<kind>class|interface|enum|record)
         \s+
@@ -342,7 +342,7 @@ _JAVA_TOP_RE = re.compile(
     re.MULTILINE | re.VERBOSE,
 )
 _JAVA_METHOD_RE = re.compile(
-    r"""^(?P<indent>\s+)public\s+
+    r"""^(?P<indent>[ \t]+)public\s+
         (?:static\s+|final\s+|abstract\s+|synchronized\s+|default\s+)*
         (?:[\w<>\[\],\s.?]+?\s+)?
         (?P<name>\w+)
@@ -398,7 +398,7 @@ def analyze_java(path: Path, text: str) -> list[DocItem]:
 # ---------- C# ----------
 
 _CS_TOP_RE = re.compile(
-    r"""^\s*public\s+
+    r"""^[ \t]*public\s+
         (?:abstract\s+|sealed\s+|static\s+|partial\s+)*
         (?P<kind>class|interface|struct|record|enum)
         \s+
@@ -407,7 +407,7 @@ _CS_TOP_RE = re.compile(
     re.MULTILINE | re.VERBOSE,
 )
 _CS_METHOD_RE = re.compile(
-    r"""^(?P<indent>\s+)public\s+
+    r"""^(?P<indent>[ \t]+)public\s+
         (?:static\s+|virtual\s+|override\s+|async\s+|abstract\s+|sealed\s+)*
         (?:[\w<>\[\],\s.?]+?\s+)?
         (?P<name>\w+)
@@ -463,7 +463,7 @@ def analyze_csharp(path: Path, text: str) -> list[DocItem]:
 # ---------- Shell ----------
 
 _SHELL_FUNC_RE = re.compile(
-    r"^\s*(?:function\s+)?(?P<name>\w[\w-]*)\s*\(\s*\)\s*\{",
+    r"^[ \t]*(?:function\s+)?(?P<name>\w[\w-]*)\s*\(\s*\)\s*\{",
     re.MULTILINE,
 )
 

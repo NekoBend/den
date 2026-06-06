@@ -13,6 +13,7 @@ Subcommands:
   show              print memory.md (empty if absent)
   checkpoint        snapshot memory.md into history if it changed
   save [--file F]   overwrite memory.md from stdin or F (snapshots first)
+  add <text>        append one fact (from args or stdin), snapshots first
   clear             delete memory.md (snapshots it first)
   log               list history snapshots, newest first
   restore [n]       restore the n-th newest snapshot (default 1)
@@ -152,13 +153,39 @@ def _cmd_save(den_dir: Path, argv: list[str]) -> int:
         if len(argv) < 2:
             print("den memory save: --file needs a path", file=sys.stderr)
             return 2
-        content = Path(argv[1]).read_text(encoding="utf-8")
+        try:
+            content = Path(argv[1]).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"den memory save: cannot read {argv[1]}: {exc}", file=sys.stderr)
+            return 2
     else:
         content = sys.stdin.read()
     _do_checkpoint(den_dir)
     mem = _memory_path(den_dir)
     mem.parent.mkdir(parents=True, exist_ok=True)
     mem.write_text(content, encoding="utf-8")
+    return 0
+
+
+def _cmd_add(den_dir: Path, argv: list[str]) -> int:
+    """Append one fact to memory.md (from args, or stdin if none). Low-friction
+    counterpart to save's wholesale overwrite: a weak agent records a single
+    line without rewriting the whole file. Snapshots the prior content first."""
+    content = " ".join(argv) if argv else sys.stdin.read()
+    if not content.strip():
+        print(
+            "den memory add: nothing to add (give text or pipe it on stdin)",
+            file=sys.stderr,
+        )
+        return 2
+    _do_checkpoint(den_dir)
+    mem = _memory_path(den_dir)
+    mem.parent.mkdir(parents=True, exist_ok=True)
+    existing = mem.read_text(encoding="utf-8") if mem.is_file() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    addition = content if content.endswith("\n") else content + "\n"
+    mem.write_text(existing + addition, encoding="utf-8")
     return 0
 
 
@@ -245,6 +272,7 @@ _HANDLERS = {
     "show": _cmd_show,
     "checkpoint": _cmd_checkpoint,
     "save": _cmd_save,
+    "add": _cmd_add,
     "clear": _cmd_clear,
     "log": _cmd_log,
     "restore": _cmd_restore,
@@ -261,6 +289,7 @@ def _usage() -> None:
         "  show              print memory.md (empty if absent)\n"
         "  checkpoint        snapshot memory.md into history if it changed\n"
         "  save [--file F]   overwrite memory.md from stdin or F\n"
+        "  add <text>        append one fact (from args or stdin)\n"
         "  clear             delete memory.md (snapshots it first)\n"
         "  log               list history snapshots, newest first\n"
         "  restore [n]       restore the n-th newest snapshot (default 1)\n"

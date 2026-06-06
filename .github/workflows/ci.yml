@@ -21,15 +21,69 @@ jobs:
           pip install ruff pytest
           sudo apt-get update && sudo apt-get install -y bats
       - name: Ruff lint
-        run: ruff check agents tools
+        run: ruff check agents den tests hatch_build.py
       - name: Ruff format check
-        run: ruff format --check agents tools
+        run: ruff format --check agents den tests hatch_build.py
       - name: Pytest (verification scripts)
         run: python3 -m pytest agents/shared/scripts/tests
       - name: Pytest (den CLI)
-        run: python3 -m pytest tools/tests
+        run: python3 -m pytest tests/den
       - name: Bats (run-checks)
         run: bats agents/shared/scripts/tests/run-checks.bats
+      - name: Verify den/ and agents/ script copies stay in sync
+        run: |
+          diff den/_common.py agents/shared/scripts/_common.py
+          diff den/_doc.py agents/shared/scripts/doc-coverage.py
+          diff den/_verify.py agents/shared/scripts/verify-imports.py
+          diff den/run-checks.sh agents/shared/scripts/run-checks.sh
+          # _refs.py differs only by the package-relative import line:
+          diff <(sed 's/from \._common/from _common/' den/_refs.py) \
+               agents/shared/scripts/find-references.py
+
+  packaging:
+    name: packaging (wheel + sourceless install)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        run: pip install uv
+      - name: Build sdist + wheel
+        run: uv build -o dist .
+      - name: Assert wheel + sdist are complete and clean
+        run: |
+          python3 - <<'PY'
+          import glob, tarfile, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          bad = [n for n in names if "/tests/" in n or n.endswith((".pyc", ".bats"))]
+          assert not bad, f"unwanted files in wheel: {bad}"
+          # the parent prompts (agents/dist) must survive into the sdist too,
+          # else a sdist-built install loses `--with-parent` (unanchored dist/).
+          sdist = glob.glob("dist/*.tar.gz")[0]
+          members = tarfile.open(sdist).getnames()
+          assert any("/agents/dist/CLAUDE.md" in m for m in members), \
+              "agents/dist missing from sdist"
+          print(f"wheel clean ({len(names)} entries), sdist has agents/dist")
+          PY
+      - name: Install from sdist + smoke test
+        run: |
+          # install from the SDIST (uv tool install git+URL may build via sdist);
+          # this is the path that the unanchored dist/ ignore broke.
+          python3 -m venv /tmp/denv
+          /tmp/denv/bin/pip install dist/*.tar.gz
+          # run from /tmp (away from the checkout) so content resolves from the
+          # bundled den/_data, not the repo root -- this is what git+URL gives.
+          cd /tmp
+          /tmp/denv/bin/den --version
+          /tmp/denv/bin/den cheat | grep -q one-liners
+          /tmp/denv/bin/den install skills --target /tmp/sk --with-parent
+          test -f /tmp/sk/skills/coding/SKILL.md
+          grep -q "/tmp/sk/skills/coding/shared/reference" /tmp/sk/skills/coding/SKILL.md
+          test -f /tmp/sk/CLAUDE.md   # parent prompt installed (needs agents/dist)
+          /tmp/denv/bin/den install shell --dry-run | grep -q '\[dry\]'
 
   shell:
     name: shell env
@@ -41,15 +95,14 @@ jobs:
           shellcheck --severity=error \
             shell/posix/*.sh \
             shell/bash/*.bash \
-            bootstrap/*.sh \
-            tools/*.sh \
+            den/*.sh \
             tests/shell/*.sh
       - name: PSScriptAnalyzer (errors only)
         shell: pwsh
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-          $files = Get-ChildItem shell/pwsh/*.ps1, bootstrap/*.ps1 -File
+          $files = Get-ChildItem shell/pwsh/*.ps1 -File
           $errs = $files | ForEach-Object {
             Invoke-ScriptAnalyzer -Path $_.FullName -Severity Error
           }

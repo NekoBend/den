@@ -9,66 +9,58 @@ worlds: a portable LLM skill system (`agents/`), and the machine environment
 
 ## Quickstart
 
-One installer, branching by component. It asks per component, so you install
-only what you want:
+`den` is the single command. Install it once (no clone needed), then it sets up
+everything from content bundled in the package:
 
 ```
-git clone --depth 1 https://github.com/NekoBend/den.git
-sh den/bootstrap/install.sh            # interactive: shell env? skills?
-pwsh den/bootstrap/install.ps1         # same, on Windows
+uv tool install git+https://github.com/NekoBend/den.git   # or: uv tool install . from a checkout
 ```
 
-Or pick components non-interactively:
+Then deploy what you want:
 
 ```
-sh den/bootstrap/install.sh --shell --no-agents   # just the shell environment
-sh den/bootstrap/install.sh --skills-only         # just the LLM agent skills
-sh den/bootstrap/install.sh --all                 # everything, no prompts
+den install                        # interactive: asks shell? skills? which tools?
+den install shell                  # shell env (bash/zsh + PowerShell, starship, cmd shims)
+den install skills --all-tools     # LLM agent skills into every tool's dirs
+den install skills --tool claude   # ...or just one tool
+den install skills --target ~/.codex --codex-config   # print the Codex TOML block
+den hook install --tool cline      # per-turn imprint hooks (run inside a workspace)
+den cheat                          # browse bundled cheatsheets offline
 ```
 
-The skills land in the directories coding agents read (`~/.agents`, `~/.claude`).
-For OpenAI Codex, call the skills installer directly:
-
-```
-sh den/bootstrap/skills.sh --target ~/.codex --codex-config
-```
-
-The `den` CLI (verification helpers plus workspace memory and per-tool imprint
-hooks) installs separately as a `uv` tool:
-
-```
-uv tool install --editable ./den/tools     # puts `den` on PATH
-```
-
-See `agents/README.md` for the skill system, `tools/README.md` for the `den`
+See `agents/README.md` for the skill system, `den/README.md` for the full `den`
 CLI, and `shell/README.md` for the shell environment.
 
 ## Layout
 
 - `agents/`      LLM skill system: 8 skills + parent invariants + generated parent prompts. See `agents/README.md`.
-- `tools/`       the `den` CLI: a dependency-free `uv` tool (`check`, `verify`, `refs`, `doc`, `memory`, `hook`) for LLM-assisted dev. See `tools/README.md`.
-- `bootstrap/`   the installer: one branching entry point (`install.sh`/`install.ps1`) plus the skills engine (`skills.sh`/`skills.ps1`) and the cmd/Clink shim installer.
-- `shell/`       the interactive shell: bash/zsh, a PowerShell port, CMD shims, starship. See `shell/README.md`.
+- `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `check`, `verify`, `refs`, `doc`, `memory`, `hook`, `cheat`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
+- `shell/`       the interactive shell sources: bash/zsh, a PowerShell port, CMD shims, starship (deployed by `den install shell`). See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).
 - `docker/`      dev container images (Ubuntu, Arch).
 - `tests/`       shell functional tests (bash/zsh/pwsh, via `tests/shell/Dockerfile`).
 
-## The installer
+## The den CLI
 
-Everything installs from `bootstrap/`:
+Installation is `den` itself: `uv tool install` bundles the content (skills,
+shared resources, parent prompts, shell sources, cheatsheets) into the wheel, so
+`den install ...` deploys with no source checkout on disk. One cross-platform
+Python implementation replaces the old bash + PowerShell installers.
 
-- `bootstrap/install.{sh,ps1}` is the single entry point. It branches by
-  component (shell environment, LLM agent skills); skip the ones you do not
-  want. Flags are the same `--xxx-yyy` form on both: `--shell/--no-shell`,
-  `--agents/--no-agents`, `--skills-only`, `--all`, `--yes`, `--dry-run`.
-  (PowerShell accepts a single or a double dash, so `--skills-only` works there
-  too.)
-- `bootstrap/skills.{sh,ps1}` is the skills engine the dispatcher delegates to;
-  run it directly for skill-specific options (`--target`, `--codex-config`). It
-  installs each skill as a self-contained unit, rewriting its shared references
-  to absolute paths.
-- `bootstrap/install.cmd` is a separate, smaller installer for the cmd/Clink
-  shims on Windows.
+- `den install skills` deploys each skill as a self-contained unit (the skill
+  plus only the shared resources it references, with `shared/...` paths
+  rewritten to absolute paths under the skill). `--tool`, `--all-tools`,
+  `--target`, `--with-parent`, `--codex-config`, `--dry-run`.
+- `den install shell` deploys the bash/zsh config to `~/.config/shell`, the
+  PowerShell config to the profile dir, starship, and (on Windows) the cmd/Clink
+  shims, then wires the relevant rc files idempotently.
+- `den uninstall skills|shell` mirrors install: it removes a deployed file only
+  when it is byte-identical to den's version (so your edits are kept), strips the
+  rc-file block, and prunes emptied dirs. It is stateless (no manifest), lists
+  the plan and asks before deleting (`--yes`, `--dry-run`).
+- `den hook install` registers per-turn imprint hooks per workspace, and
+  `den memory` / `den cheat` / `den check|verify|refs|doc` round out the CLI.
+  See `den/README.md`.
 
 ## CI
 
@@ -79,7 +71,9 @@ bash/zsh/pwsh functional tests in Docker).
 ## Status
 
 - `agents/` is complete and verified (build, install, and tests pass in CI).
-- The environment (`bootstrap/`, `shell/`, `cheatsheets/`, `docker/`, `tests/`)
-  has been migrated out of the old dotfiles repo, security- and
-  performance-reviewed, and wired into CI. The shell layer keeps its existing
-  modern -> native -> fallback wrapper design.
+- The environment (`shell/`, `cheatsheets/`, `docker/`, `tests/`) has been
+  migrated out of the old dotfiles repo, security- and performance-reviewed, and
+  wired into CI. The shell layer keeps its existing modern -> native -> fallback
+  wrapper design.
+- The bash/PowerShell installers were retired; `den install` is the one
+  cross-platform installer.

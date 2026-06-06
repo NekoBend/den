@@ -4,6 +4,12 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+*.egg-info/
+# den is installed via `uv tool install git+URL`, which resolves deps fresh from
+# the version constraints and ignores this lock; it only pins local dev.
+uv.lock
+# anchored: only the repo-root build output, NOT agents/dist (bundled content)
+/dist/
 
 # den's own workspace memory/hooks when dogfooding the den CLI here
 .den/

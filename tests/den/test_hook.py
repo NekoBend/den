@@ -1,9 +1,9 @@
-"""Tests for den hook (tools/_hook.py)."""
+"""Tests for den hook (den/_hook.py)."""
 
 import json
 
-import _hook
-from _hook import main as hook_main
+from den import _hook
+from den._hook import main as hook_main
 
 
 def _den(proj):
@@ -282,6 +282,84 @@ def test_remove_cline_deletes_den_scripts(tmp_path, monkeypatch):
     assert not (hooks_dir / "UserPromptSubmit").exists()
 
 
+def test_install_cline_windows_writes_ps1(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_hook, "_is_windows", lambda: True)  # pretend we are on Windows
+    hooks_dir = tmp_path / "clinehooks"
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    ps1 = hooks_dir / "UserPromptSubmit.ps1"
+    assert ps1.is_file()
+    body = ps1.read_text()
+    assert "den hook run --event per-turn --tool cline" in body
+    assert "bash" not in body  # PowerShell, not a bash script
+    assert not (hooks_dir / "UserPromptSubmit").exists()  # no extensionless on Windows
+
+
+def test_remove_cline_windows_deletes_ps1(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_hook, "_is_windows", lambda: True)
+    hooks_dir = tmp_path / "clinehooks"
+    hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)])
+    assert (hooks_dir / "UserPromptSubmit.ps1").exists()
+    assert hook_main(["remove", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    assert not (hooks_dir / "UserPromptSubmit.ps1").exists()
+
+
+def test_install_is_workspace_local(tmp_path, monkeypatch):
+    """install with no --config writes project-level config under cwd + seeds .den."""
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert (tmp_path / ".claude" / "settings.json").is_file()
+    assert (tmp_path / ".den" / "imprint.md").is_file()
+
+
+def test_install_cline_is_workspace_local(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline"]) == 0
+    assert (tmp_path / ".clinerules" / "hooks" / "UserPromptSubmit").is_file()
+
+
+def test_install_tolerates_malformed_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    cfg.write_text("not json {{{")
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert "UserPromptSubmit" in json.loads(cfg.read_text())["hooks"]
+
+
+def test_install_tolerates_wrong_shape_hooks(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    cfg.write_text('{"hooks": ["oops"]}')
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+
+
+def test_run_copilot_per_turn_does_not_inject(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, imprint="IMP\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "copilot"]) == 0
+    assert json.loads(capsys.readouterr().out) == {}  # notify-only, no inject
+
+
 def test_unknown_subcommand(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert hook_main(["frobnicate"]) == 2
+
+
+def test_install_interactive_picks_tools(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("den._ui.select", lambda *a, **k: ["claude", "cline"])
+    assert hook_main(["install"]) == 0
+    assert (tmp_path / ".claude" / "settings.json").is_file()
+    assert (tmp_path / ".clinerules" / "hooks").is_dir()
+    assert not (tmp_path / ".gemini").exists()
+
+
+def test_install_interactive_none_selected_installs_nothing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("den._ui.select", lambda *a, **k: [])
+    assert hook_main(["install"]) == 0
+    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".den").exists()  # not even seeded

@@ -7,12 +7,13 @@ workflow, parallel file operations, and CPU/GPU info in the starship prompt.
 
 ## Install
 
-Deployed by the bootstrap installer (see `../bootstrap/`):
+Deployed by the `den` CLI (see `../den/README.md`):
 
 ```
-sh bootstrap/install.sh            # deploy bash/zsh config to ~/.config/shell
-sh bootstrap/install.sh --dry-run  # preview
-pwsh bootstrap/install.ps1         # deploy the PowerShell config to $PROFILE
+den install shell             # bash/zsh -> ~/.config/shell, PowerShell -> profile dir,
+                              # starship, and (on Windows) cmd/Clink shims; wires rc files
+den install shell --dry-run   # preview
+den install shell --no-extras # skip the optional helper modules
 ```
 
 It copies the config into `~/.config/shell/` (POSIX) or the `$PROFILE` dir
