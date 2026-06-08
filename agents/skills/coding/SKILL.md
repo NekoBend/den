@@ -1,6 +1,6 @@
 ---
 name: coding
-description: Produce code artifacts in Python, TypeScript, Go, Rust, Java, C#, or Shell: implement features, write tests, or design data and API schemas. Use this skill when the user asks to implement / write / build / fix a function, class, or module; to write or add tests for code; or to design a schema, data model, or type definitions. Detects the task mode (implement / test / schema) and the target language, then follows a mode-specific workflow. Uses shared per-language reference files and shared verification scripts. Produces new code; to review existing code, use code-review.
+description: Produce code artifacts (implement features, write tests, or design data and API schemas) in Python, TypeScript, Go, Rust, Java, C#, or Shell. Use this skill when the user asks to implement / write / build / fix a function, class, or module; to write or add tests for code; or to design a schema, data model, or type definitions. Detects the task mode (implement / test / schema) and the target language, then follows a mode-specific workflow. Uses shared per-language reference files and shared verification scripts. Produces new code; to review existing code, use code-review.
 ---
 
 # Coding skill
