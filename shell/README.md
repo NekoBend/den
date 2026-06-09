@@ -180,8 +180,8 @@ shell/
   starship/starship.toml   prompt configuration
 ```
 
-`shell/posix/bin/` holds standalone executables (not sourced config). `den
-install shell` offers to copy them to `~/.local/bin` (already on PATH via
+`shell/posix/bin/` holds standalone executables (not sourced config).
+`den install shell` offers to copy them to `~/.local/bin` (already on PATH via
 `_init_path`): pass `--bin` to install without asking, `--no-bin` to skip, or
 answer the y/N prompt on an interactive POSIX run (default no). They need GNU
 coreutils/findutils and are never installed on Windows. `den uninstall shell`
