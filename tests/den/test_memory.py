@@ -261,3 +261,76 @@ def test_save_missing_file_returns_2(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert memory_main(["save", "--file", str(tmp_path / "nope.md")]) == 2
     assert "cannot read" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# .clinerules mirror (cline CLI memory delivery)
+# --------------------------------------------------------------------------- #
+
+
+def _clinerules_mem(proj):
+    return proj / ".clinerules" / "den-memory.md"
+
+
+def _cline_cli_here(proj):
+    """Simulate `den hook install --tool cline-cli`: a `.clinerules/` with the
+    `den-imprint.md` marker the mirror gates on."""
+    d = proj / ".clinerules"
+    d.mkdir(exist_ok=True)
+    (d / "den-imprint.md").write_text("# imprint\n", encoding="utf-8")
+
+
+def test_add_mirrors_to_clinerules_when_present(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _cline_cli_here(tmp_path)
+    assert memory_main(["add", "use run_job for the entry function"]) == 0
+    mirror = _clinerules_mem(tmp_path)
+    assert mirror.is_file()
+    assert "run_job" in mirror.read_text()
+    assert mirror.read_text().startswith("<!-- den-managed")
+
+
+def test_add_no_clinerules_does_not_create_one(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["add", "a fact"]) == 0
+    assert _mem(tmp_path).is_file()
+    assert not (tmp_path / ".clinerules").exists()  # non-cline workspace untouched
+
+
+def test_add_extension_only_does_not_mirror(tmp_path, monkeypatch):
+    # The cline EXTENSION install makes .clinerules/hooks/ but no den-imprint.md
+    # marker; memory must NOT mirror there (the extension already injects per turn
+    # via its hook -- mirroring too would double-deliver).
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".clinerules" / "hooks").mkdir(parents=True)
+    assert memory_main(["add", "x"]) == 0
+    assert not _clinerules_mem(tmp_path).exists()
+
+
+def test_clear_removes_clinerules_mirror(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _cline_cli_here(tmp_path)
+    memory_main(["add", "x"])
+    assert _clinerules_mem(tmp_path).is_file()
+    memory_main(["clear"])
+    assert not _clinerules_mem(tmp_path).exists()  # stale mirror dropped
+
+
+def test_save_refreshes_clinerules_mirror(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _cline_cli_here(tmp_path)
+    _save(tmp_path, monkeypatch, "# Memory\n\n- v1 fact\n")
+    assert "v1 fact" in _clinerules_mem(tmp_path).read_text()
+    _save(tmp_path, monkeypatch, "# Memory\n\n- v2 fact\n")
+    assert "v2 fact" in _clinerules_mem(tmp_path).read_text()
+    assert "v1 fact" not in _clinerules_mem(tmp_path).read_text()
+
+
+def test_restore_refreshes_clinerules_mirror(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _cline_cli_here(tmp_path)
+    _save(tmp_path, monkeypatch, "v1\n")
+    _save(tmp_path, monkeypatch, "v2\n")  # snapshots v1
+    assert "v2" in _clinerules_mem(tmp_path).read_text()
+    assert memory_main(["restore", "1"]) == 0  # newest snapshot == v1
+    assert "v1" in _clinerules_mem(tmp_path).read_text()

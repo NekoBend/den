@@ -121,18 +121,37 @@ foreign hooks untouched. Generic events map to each tool's own names:
 |------|-----------------|-----------|------------------|
 | claude | yes | `hookSpecificOutput.additionalContext` | `.claude/settings.json` |
 | gemini | yes | `hookSpecificOutput.additionalContext` | `.gemini/settings.json` |
-| cline | yes | `contextModification` (script per event) | `.clinerules/hooks/` |
+| cline | yes (extension) | `contextModification` (script per event) | `.clinerules/hooks/` |
+| cline-cli | session-start | `.clinerules/*.md` rule files (no hook) | `.clinerules/` |
 | copilot | session-start only | `additionalContext` (`userPromptSubmitted` is notify-only) | `.github/hooks/den.json` |
 | codex | not yet | (hooks ship as a marketplace plugin + trust) | deferred |
 
-For cline, `install` writes one script per event, named for the platform Cline
-expects: extensionless `<Event>` (executable bash) on macOS/Linux, `<Event>.ps1`
-(PowerShell) on Windows. Either way the script just calls `den hook run`, so
-`den` must be on PATH where Cline runs the hook.
+`cline` and `cline-cli` are split because the two consume hooks differently. The
+**VS Code extension** (`cline`) runs the per-event hook scripts and injects
+`contextModification` into the conversation each turn (gated by its `hooksEnabled`
+setting). The **CLI** (`cline-cli`) cannot: its file hooks are observe-only
+(`prompt_submit`/`agent_start` are fire-and-forget; only `cancel`/`overrideInput`
+on `tool_call` are applied, and `context`/`contextModification` are parsed then
+ignored). So for the CLI, den does not install a hook; instead it writes the
+imprint and memory as **`.clinerules/` rule files** (`den-imprint.md`,
+`den-memory.md`), which cline loads as always-on context at session start. `den
+memory` keeps `den-memory.md` in sync, but only when cline-cli is installed here
+(detected by the `den-imprint.md` marker) -- so the extension's own
+`.clinerules/hooks/` does not trigger a memory mirror. That gate is what keeps the
+extension from double-delivering memory (it would otherwise inject via the hook
+AND read the `.clinerules` rule); do not install both for the extension.
 
-claude, gemini, copilot, and the macOS/Linux cline path were verified end to end.
-The Windows cline `.ps1` path follows Cline's documented contract; verify against
-a live Windows install. codex is scaffolded but disabled (`verified=False`).
+For `cline` (extension), `install` writes one script per event, named for the
+platform Cline expects: extensionless `<Event>` (executable bash) on macOS/Linux,
+`<Event>.ps1` (PowerShell) on Windows. Either way the script just calls `den hook
+run`, so `den` must be on PATH where Cline runs the hook.
+
+claude, gemini, copilot, and the macOS/Linux cline extension path were verified
+end to end. The cline-cli `.clinerules` delivery was validated manually against
+the real CLI (a seeded rule reached the model); CI is Linux-only and does not run
+the cline CLI runtime. The Windows cline `.ps1` path follows Cline's documented
+contract; verify against a live Windows install. codex is scaffolded but disabled
+(`verified=False`).
 
 ## Architecture
 

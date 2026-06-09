@@ -37,7 +37,15 @@ import os
 import sys
 from pathlib import Path
 
-from ._memory import _do_checkpoint, _find_den_dir, _memory_path
+from ._memory import (
+    _CLINERULES_IMPRINT,
+    _CLINERULES_MEMORY,
+    _clinerules_dir,
+    _do_checkpoint,
+    _find_den_dir,
+    _memory_path,
+    mirror_to_clinerules,
+)
 
 _IMPRINT_NAME = "imprint.md"
 
@@ -123,10 +131,10 @@ _TOOLS: dict[str, dict] = {
         "verified": True,
     },
     "cline": {
-        # Workspace-local project hooks: the extension reads .clinerules/hooks/
-        # from the project root. (Global cline hooks live in ~/Documents/Cline/
-        # Hooks, but den installs per workspace so hook+imprint+memory stay in
-        # the same .den scope.)
+        # The VS Code EXTENSION. It runs workspace project hooks and DOES inject
+        # `contextModification` per turn (apps/vscode .../task: wraps it in a
+        # <hook_context> block), gated by the extension's `hooksEnabled` setting.
+        # Workspace-local so hook + imprint + memory share one .den scope.
         "config": ".clinerules/hooks",
         "emit": "cline",
         "format": "cline_scripts",
@@ -135,6 +143,19 @@ _TOOLS: dict[str, dict] = {
             "per-turn": "UserPromptSubmit",
             "post-tool": "PostToolUse",
         },
+        "verified": True,
+    },
+    "cline-cli": {
+        # The cline CLI canNOT inject context via hooks: its file hooks are
+        # observe-only (prompt_submit/agent_start are fire-and-forget) and the one
+        # applied control is cancel/overrideInput on tool_call -- context /
+        # contextModification are parsed then ignored (verified in cline/cline
+        # sdk/packages/core .../hook-file-hooks.ts). It DOES load .clinerules/*.md
+        # as always-on rules at session start, so den delivers the imprint + memory
+        # as rule files there instead of a hook. There is no `den hook run` for it.
+        "config": ".clinerules",
+        "format": "clinerules",
+        "events": {},
         "verified": True,
     },
 }
@@ -235,6 +256,13 @@ def _cmd_run(argv: list[str]) -> int:
     if spec is None:
         print(f"den hook run: unknown tool '{tool}'", file=sys.stderr)
         return 2
+    if spec.get("format") == "clinerules":
+        print(
+            f"den hook run: '{tool}' delivers via .clinerules rule files, not a "
+            "runtime hook",
+            file=sys.stderr,
+        )
+        return 0
     if event not in spec["events"]:
         print(f"den hook run: tool '{tool}' has no event '{event}'", file=sys.stderr)
         return 2
@@ -504,6 +532,52 @@ def _remove_cline(tool: str, spec: dict, config: Path) -> None:
         script.unlink()
 
 
+# --- cline-cli: deliver imprint + memory as .clinerules rule files (no hook) --- #
+#
+# These ignore the passed `config` and always use the workspace's `.clinerules/`
+# (beside `.den/`), because that is the only place cline reads rules from -- and
+# the memory mirror (`den memory`) targets the same dir, so imprint + memory stay
+# colocated. (`--config` is meaningless for this format.)
+
+_CLINERULES_RULE_HEADER = (
+    "<!-- den-managed. Edit .den/imprint.md, then re-run "
+    "`den hook install --tool cline-cli`. -->\n\n"
+)
+
+
+def _install_clinerules(tool: str, spec: dict, config: Path) -> None:
+    den_dir = _find_den_dir(Path.cwd())
+    rules = _clinerules_dir(den_dir)
+    rules.mkdir(parents=True, exist_ok=True)
+    imprint = _imprint_path(den_dir)
+    if imprint.is_file():
+        # The imprint rule is also the cline-cli marker mirror_to_clinerules gates
+        # on, so write it BEFORE mirroring the memory.
+        (rules / _CLINERULES_IMPRINT).write_text(
+            _CLINERULES_RULE_HEADER + imprint.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+    mirror_to_clinerules(den_dir)
+
+
+def _list_clinerules(tool: str, spec: dict, config: Path) -> list[str]:
+    rules = _clinerules_dir(_find_den_dir(Path.cwd()))
+    out = []
+    for name in (_CLINERULES_IMPRINT, _CLINERULES_MEMORY):
+        p = rules / name
+        if p.is_file():
+            out.append(f"{tool}  {name}  {p}")
+    return out
+
+
+def _remove_clinerules(tool: str, spec: dict, config: Path) -> None:
+    rules = _clinerules_dir(_find_den_dir(Path.cwd()))
+    for name in (_CLINERULES_IMPRINT, _CLINERULES_MEMORY):
+        p = rules / name
+        if p.is_file():
+            p.unlink()
+
+
 # format -> (install, list, remove)
 _FORMATS = {
     "settings_json": (
@@ -513,6 +587,7 @@ _FORMATS = {
     ),
     "copilot_json": (_install_copilot, _list_copilot, _remove_copilot),
     "cline_scripts": (_install_cline, _list_cline, _remove_cline),
+    "clinerules": (_install_clinerules, _list_clinerules, _remove_clinerules),
 }
 
 
