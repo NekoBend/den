@@ -7,10 +7,16 @@ for shells that look relevant (binary on PATH, or rc already present, or native
 platform) are wired.
 
   den install shell [--dry-run] [--no-extras] [--coreutils|--no-coreutils]
+                    [--bin|--no-bin]
 
 On Windows the pwsh wrappers can use microsoft/coreutils as their Unix-command
 tier (see shell/pwsh/_helpers.ps1). `--coreutils` installs it via winget;
 `--no-coreutils` skips it; with neither, an interactive run asks (default no).
+
+`--bin` installs the bundled POSIX helper executables (shell/posix/bin/*, e.g.
+fixids) to ~/.local/bin; `--no-bin` skips them; with neither, an interactive
+POSIX run asks (default no). They are POSIX-only (need GNU coreutils/find) and
+are never installed on Windows.
 """
 
 from __future__ import annotations
@@ -128,7 +134,9 @@ def _wire(rc: Path, line: str, dry_run: bool) -> None:
         print(f"  [ok] created {rc}")
 
 
-def _stage_shell_files(writer, extras: bool, dry_run: bool, announce: bool):
+def _stage_shell_files(
+    writer, extras: bool, dry_run: bool, announce: bool, posix_bin: bool = False
+):
     """Stage every shell file den deploys (no commit). Returns (posix_dir,
     pwsh_dir). Shared by install (writes) and uninstall (plans removal), so the
     dest paths and bundled content match exactly."""
@@ -166,7 +174,45 @@ def _stage_shell_files(writer, extras: bool, dry_run: bool, announce: bool):
             for f in sorted(cmd_bin.glob("*.cmd")):
                 _copy(f, clink / "bin" / f.name, dry_run, writer)
 
+    # POSIX standalone executables (shell/posix/bin/*, e.g. fixids) -> ~/.local/bin,
+    # which den's init already adds to PATH (_init_path). They need GNU
+    # coreutils/find, so they are never staged on Windows (the symmetric Windows
+    # case is the cmd/bin/*.cmd shims above). Optional on install (gated by the
+    # caller's y/N), but always staged on uninstall so prior copies are removed.
+    if posix_bin and not _windows():
+        local_bin = home / ".local" / "bin"
+        src_bin = sh / "posix" / "bin"
+        if src_bin.is_dir():
+            files = sorted(p for p in src_bin.iterdir() if p.is_file())
+            if files and announce:
+                print(f"posix bin -> {local_bin}")
+            for f in files:
+                _copy(f, local_bin / f.name, dry_run, writer)
+
     return posix_dir, pwsh_dir
+
+
+def _decide_posix_bin(want: bool, skip: bool) -> bool:
+    """Whether to install the bundled POSIX helper executables (shell/posix/bin/*,
+    e.g. fixids) to ~/.local/bin. POSIX-only: they need GNU coreutils/find and are
+    not runnable on Windows. With --bin install without asking; with --no-bin skip;
+    otherwise ask on an interactive POSIX run, default no."""
+    if _windows():
+        if want:
+            print("posix bin: POSIX-only; ignoring --bin", file=sys.stderr)
+        return False
+    if skip:
+        return False
+    if want:
+        return True
+    if not sys.stdin.isatty():
+        return False
+    from . import _ui
+
+    return _ui.confirm(
+        "Install POSIX helper executables (shell/posix/bin/*) to ~/.local/bin?",
+        False,
+    )
 
 
 def _disable_coreutils_readline(profile: Path) -> bool:
@@ -230,7 +276,17 @@ def install_shell(argv: list[str]) -> int:
     force = "--force" in argv
     want_coreutils = "--coreutils" in argv
     skip_coreutils = "--no-coreutils" in argv
-    allowed = ("--dry-run", "--no-extras", "--force", "--coreutils", "--no-coreutils")
+    want_bin = "--bin" in argv
+    skip_bin = "--no-bin" in argv
+    allowed = (
+        "--dry-run",
+        "--no-extras",
+        "--force",
+        "--coreutils",
+        "--no-coreutils",
+        "--bin",
+        "--no-bin",
+    )
     for a in argv:
         if a not in allowed:
             print(f"den install shell: unexpected arg '{a}'", file=sys.stderr)
@@ -238,10 +294,25 @@ def install_shell(argv: list[str]) -> int:
 
     home = Path.home()
     writer = _Writer(force)
-    _posix_dir, pwsh_dir = _stage_shell_files(writer, extras, dry_run, announce=True)
+    install_bin = _decide_posix_bin(want_bin, skip_bin)
+    _posix_dir, pwsh_dir = _stage_shell_files(
+        writer, extras, dry_run, announce=True, posix_bin=install_bin
+    )
 
     if not dry_run:
         writer.commit()
+
+    # _copy/_Writer write bytes only; deployed executables need their +x bit.
+    # Only chmod files whose on-disk content is den's: a file the user modified
+    # (and chose to keep at the overwrite prompt) must keep its mode too.
+    if install_bin and not dry_run:
+        local_bin = home / ".local" / "bin"
+        src_bin = shell_dir() / "posix" / "bin"
+        if src_bin.is_dir():
+            for f in src_bin.iterdir():
+                dst = local_bin / f.name
+                if f.is_file() and dst.is_file() and dst.read_bytes() == f.read_bytes():
+                    dst.chmod(0o755)
 
     print("wiring shell rc files")
     if shutil.which("bash") or (home / ".bashrc").is_file():

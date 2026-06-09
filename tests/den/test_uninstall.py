@@ -205,3 +205,29 @@ def test_uninstall_shell_non_tty_refuses_without_yes(tmp_path, monkeypatch):
     assert install_shell(["--no-extras"]) == 0
     assert _uninstall_shell([]) == 1  # no --yes, non-TTY -> refuse
     assert (tmp_path / ".config" / "shell" / "_helpers.sh").is_file()  # untouched
+
+
+def test_uninstall_shell_removes_posix_bin_keeps_local_bin(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell", "--bin"]) == 0
+    local_bin = tmp_path / ".local" / "bin"
+    installed = sorted(p.name for p in local_bin.iterdir())
+    assert installed, "expected at least one helper executable installed"
+    assert uninstall_main(["shell", "--yes"]) == 0
+    for name in installed:
+        assert not (local_bin / name).exists()  # den's helpers removed
+    assert local_bin.is_dir()  # boundary keeps the (now-empty) user dir
+
+
+def test_uninstall_shell_keeps_user_file_in_local_bin(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell", "--bin"]) == 0
+    local_bin = tmp_path / ".local" / "bin"
+    mine = local_bin / "myscript"
+    mine.write_text("#!/bin/sh\necho hi\n")
+    assert uninstall_main(["shell", "--yes"]) == 0
+    assert mine.is_file()  # a file den did not place is never removed

@@ -323,6 +323,7 @@ def _usage() -> None:
         "  skills [--tool T]... [--all-tools] [--target DIR]...\n"
         "         [--with-parent] [--dry-run] [--codex-config] [--force]\n"
         "  shell  [--dry-run] [--no-extras] [--force]\n"
+        "         [--coreutils|--no-coreutils] [--bin|--no-bin]\n"
         "\n"
         "Existing files that differ are kept unless you confirm (or pass --force).\n"
         "\n"
