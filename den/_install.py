@@ -26,6 +26,7 @@ _TOOLS: dict[str, tuple[str, str, str]] = {
     "claude": ("~/.claude/skills", "~/.claude", "CLAUDE.md"),
     "codex": ("~/.agents/skills", "~/.codex", "AGENTS.md"),
     "cline": ("~/.agents/skills", "~/.agents", "AGENTS.md"),
+    "cline-cli": ("~/.agents/skills", "~/.agents", "AGENTS.md"),
     "copilot": ("~/.copilot/skills", "~/.copilot", "copilot-instructions.md"),
     "gemini": ("~/.gemini/skills", "~/.gemini", "GEMINI.md"),
 }

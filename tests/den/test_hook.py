@@ -363,3 +363,42 @@ def test_install_interactive_none_selected_installs_nothing(tmp_path, monkeypatc
     assert hook_main(["install"]) == 0
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".den").exists()  # not even seeded
+
+
+# --------------------------------------------------------------------------- #
+# cline-cli: .clinerules rule files instead of a hook (CLI cannot inject)
+# --------------------------------------------------------------------------- #
+
+
+def test_install_cline_cli_writes_imprint_rule_no_hooks(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 0
+    cr = tmp_path / ".clinerules"
+    assert (cr / "den-imprint.md").is_file()  # imprint as a rule file
+    assert not (cr / "hooks").exists()  # NO hook scripts for the CLI
+    assert "always-on directives" in (cr / "den-imprint.md").read_text()
+
+
+def test_install_cline_cli_mirrors_existing_memory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path, memory="# Memory\n\n- entry function must be run_job\n")
+    hook_main(["install", "--tool", "cline-cli"])
+    mirror = tmp_path / ".clinerules" / "den-memory.md"
+    assert mirror.is_file() and "run_job" in mirror.read_text()
+
+
+def test_hook_run_cline_cli_is_noop(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "cline-cli"]) == 0
+    assert "delivers via .clinerules" in capsys.readouterr().err
+
+
+def test_remove_cline_cli_clears_rule_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path, memory="- a fact\n")
+    hook_main(["install", "--tool", "cline-cli"])
+    cr = tmp_path / ".clinerules"
+    assert (cr / "den-imprint.md").is_file() and (cr / "den-memory.md").is_file()
+    hook_main(["remove", "--tool", "cline-cli"])
+    assert not (cr / "den-imprint.md").exists()
+    assert not (cr / "den-memory.md").exists()

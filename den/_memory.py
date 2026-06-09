@@ -52,6 +52,44 @@ def _memory_path(den_dir: Path) -> Path:
     return den_dir / _MEMORY_NAME
 
 
+_CLINERULES_DIRNAME = ".clinerules"
+_CLINERULES_IMPRINT = "den-imprint.md"  # also the cline-cli "installed here" marker
+_CLINERULES_MEMORY = "den-memory.md"
+_CLINERULES_HEADER = (
+    "<!-- den-managed mirror of .den/memory.md. Edit memory with `den memory`, "
+    "not here. -->\n\n"
+)
+
+
+def _clinerules_dir(den_dir: Path) -> Path:
+    return den_dir.parent / _CLINERULES_DIRNAME
+
+
+def mirror_to_clinerules(den_dir: Path) -> bool:
+    """Mirror memory.md into the sibling `.clinerules/` dir as `den-memory.md`, but
+    only when `den hook install --tool cline-cli` has run here (detected by its
+    `den-imprint.md` rule file). cline loads `.clinerules/*.md` as always-on rules
+    at session start; the cline CLI cannot inject memory via hooks, so this rule
+    file is its memory-delivery channel. Gating on the cline-cli marker (not just
+    the dir) is deliberate: the cline EXTENSION creates `.clinerules/hooks/` too,
+    and it already injects memory per turn via its hook, so mirroring there as well
+    would double-deliver. No-op otherwise. Returns True if it wrote/removed the
+    mirror."""
+    rules = _clinerules_dir(den_dir)
+    if not (rules / _CLINERULES_IMPRINT).is_file():
+        return False
+    dest = rules / _CLINERULES_MEMORY
+    mem = _memory_path(den_dir)
+    text = mem.read_text(encoding="utf-8") if mem.is_file() else ""
+    if text.strip():
+        dest.write_text(_CLINERULES_HEADER + text, encoding="utf-8")
+        return True
+    if dest.exists():  # memory emptied/cleared -> drop the stale mirror
+        dest.unlink()
+        return True
+    return False
+
+
 def _history_dir(den_dir: Path) -> Path:
     return den_dir / _HISTORY_DIRNAME
 
@@ -164,6 +202,7 @@ def _cmd_save(den_dir: Path, argv: list[str]) -> int:
     mem = _memory_path(den_dir)
     mem.parent.mkdir(parents=True, exist_ok=True)
     mem.write_text(content, encoding="utf-8")
+    mirror_to_clinerules(den_dir)
     return 0
 
 
@@ -186,6 +225,7 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
         existing += "\n"
     addition = content if content.endswith("\n") else content + "\n"
     mem.write_text(existing + addition, encoding="utf-8")
+    mirror_to_clinerules(den_dir)
     return 0
 
 
@@ -194,6 +234,7 @@ def _cmd_clear(den_dir: Path, argv: list[str]) -> int:
     mem = _memory_path(den_dir)
     if mem.is_file():
         mem.unlink()
+    mirror_to_clinerules(den_dir)
     return 0
 
 
@@ -225,6 +266,7 @@ def _cmd_restore(den_dir: Path, argv: list[str]) -> int:
     mem = _memory_path(den_dir)
     mem.parent.mkdir(parents=True, exist_ok=True)
     mem.write_bytes(data)
+    mirror_to_clinerules(den_dir)
     print(f"restored #{n} ({_fmt_stamp(stamp)}) -> {mem}", file=sys.stderr)
     return 0
 
