@@ -275,12 +275,16 @@ def _uninstall_shell(argv: list[str]) -> int:
     )
 
     remover = _Remover()
-    # extras=True: stage every file den could have placed; absent ones are skipped.
+    # extras=True, posix_bin=True: stage every file den could have placed (including
+    # the optional shell/posix/bin/* executables in ~/.local/bin); absent ones are
+    # skipped.
     posix_dir, pwsh_dir = _stage_shell_files(
-        remover, extras=True, dry_run=False, announce=False
+        remover, extras=True, dry_run=False, announce=False, posix_bin=True
     )
     home = Path.home()
-    remover.boundary(home / ".config", pwsh_dir.parent)
+    # ~/.local/bin is the user's own dir (den only drops its helper executables in),
+    # so never prune it even when removing them empties it.
+    remover.boundary(home / ".config", pwsh_dir.parent, home / ".local" / "bin")
     if _windows():
         remover.boundary(_localappdata())
     remover.unwire(home / ".bashrc", _BASH_LINE)

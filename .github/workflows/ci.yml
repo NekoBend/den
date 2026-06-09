@@ -60,6 +60,10 @@ jobs:
           names = zipfile.ZipFile(whl).namelist()
           bad = [n for n in names if "/tests/" in n or n.endswith((".pyc", ".bats"))]
           assert not bad, f"unwanted files in wheel: {bad}"
+          # the POSIX helper executables must survive into the wheel bundle,
+          # else `den install shell --bin` installs nothing from a wheel.
+          assert any(n.endswith("_data/shell/posix/bin/fixids") for n in names), \
+              "shell/posix/bin/fixids missing from wheel"
           # the parent prompts (agents/dist) must survive into the sdist too,
           # else a sdist-built install loses `--with-parent` (unanchored dist/).
           sdist = glob.glob("dist/*.tar.gz")[0]
@@ -84,6 +88,9 @@ jobs:
           grep -q "/tmp/sk/skills/coding/shared/reference" /tmp/sk/skills/coding/SKILL.md
           test -f /tmp/sk/CLAUDE.md   # parent prompt installed (needs agents/dist)
           /tmp/denv/bin/den install shell --dry-run | grep -q '\[dry\]'
+          # --bin path works from the wheel bundle (non-tty, so the flag is needed)
+          /tmp/denv/bin/den install shell --no-extras --bin
+          test -x "$HOME/.local/bin/fixids"
 
   shell:
     name: shell env
@@ -96,7 +103,8 @@ jobs:
             shell/posix/*.sh \
             shell/bash/*.bash \
             den/*.sh \
-            tests/shell/*.sh
+            tests/shell/*.sh \
+            shell/posix/bin/*
       - name: PSScriptAnalyzer (errors only)
         shell: pwsh
         run: |

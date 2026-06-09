@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+# fixids - fast, filtered, parallel chown. A drop-in-ish, much faster fixuid.
+#
+# fixuid walks its configured paths and chowns everything single-threaded, which
+# crawls on a home with lots installed (node_modules, caches, ...). fixids is fast
+# because it (1) only touches files that actually need it (owned by --from, or by
+# default anything not already owned by the target), (2) prunes excluded dirs, and
+# (3) runs chown in parallel.
+#
+# Container entrypoint use. fixids only fixes ownership, and it needs root to
+# chown files it does not own. Unlike fixuid it does NOT drop privileges, so run
+# it as root, then drop to the target user yourself (setpriv, or gosu/su-exec)
+# before exec -- otherwise the command runs as root:
+#
+#   #!/bin/sh
+#   # entrypoint.sh -- container started as root (no USER line, or USER root)
+#   fixids --from 1000:1000 -x node_modules -x .cache "$HOME"
+#   exec setpriv --reuid 1000 --regid 1000 --clear-groups "$@"
+#
+#   In a Dockerfile:  COPY shell/posix/bin/fixids /usr/local/bin/fixids
+#                     COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+#                     ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+#
+# Requires: bash, GNU findutils (`find -uid/-gid`), xargs `-P`, GNU coreutils
+# (`chown -hc`). Standard on debian/ubuntu images. On Alpine first run
+# `apk add bash findutils coreutils` (busybox `find` has no `-uid`/`-gid`).
+set -eu
+
+prog=${0##*/}
+
+usage() {
+	cat <<EOF
+$prog - fast, filtered, parallel chown (a faster fixuid).
+
+Usage: $prog [options] [PATH...]
+  PATH...              roots to fix (default: \$HOME). Refuses '/' unless --force.
+
+Options:
+  --from UID[:GID]     only fix files owned by this uid (and, with GID, files
+                       group-owned by that gid; handled independently like
+                       fixuid -- a gid-only match keeps its uid). Default:
+                       any file not already owned by the target (--to).
+  --to UID[:GID]       target owner (default: current \$(id -u):\$(id -g)).
+                       With no GID the group is left unchanged.
+  -x, --exclude NAME   prune directories with this NAME, anywhere in the tree
+                       (repeatable, e.g. -x node_modules -x .cache -x .git).
+  -j, --jobs N         parallel chown workers (default: nproc, capped to the
+                       cgroup CPU quota so a --cpus limit does not over-spawn).
+  -n, --dry-run        print how many files would be selected; change nothing.
+  -v, --verbose        report each path actually chowned.
+  --force              allow operating on '/' (off by default; dangerous).
+  -h, --help           this help.
+
+UID/GID may be numeric or names. Chowning files you do not own needs root (the
+usual entrypoint case). Symlinks are chowned themselves, never their targets.
+EOF
+}
+
+# need_arg ARGC NAME -- fail with a clear message instead of a `$2: unbound` crash
+need_arg() { [ "$1" -ge 2 ] || { echo "$prog: $2 needs a value" >&2; exit 2; }; }
+
+# default_jobs -- worker count for xargs -P. nproc honors --cpuset-cpus but NOT a
+# --cpus / cgroup CFS quota, so under `docker run --cpus 2` nproc still reports all
+# cores and we would over-spawn (more chown procs than usable CPUs = wasted memory
+# and scheduling churn). Cap to the cgroup v2 quota when one is set.
+default_jobs() {
+	local n q="" p="" c
+	n=$(nproc 2>/dev/null || echo 4)
+	if [ -r /sys/fs/cgroup/cpu.max ]; then
+		read -r q p </sys/fs/cgroup/cpu.max 2>/dev/null || true
+		# only trust a well-formed numeric "QUOTA PERIOD"; "max ..." or anything
+		# malformed falls back to plain nproc (never an empty/garbled jobs value)
+		case $q in '' | *[!0-9]*) q="" ;; esac
+		case $p in '' | *[!0-9]*) p="" ;; esac
+		if [ -n "$q" ] && [ -n "$p" ] && [ "$p" -gt 0 ]; then
+			c=$(( (q + p - 1) / p ))
+			[ "$c" -ge 1 ] && [ "$c" -lt "$n" ] && n=$c
+		fi
+	fi
+	echo "$n"
+}
+
+# resolve_owner "UID[:GID]" UVAR GVAR -- set UVAR/GVAR to numeric ids (names ok;
+# GVAR empty when no group given). Exits on an unknown user/group or empty uid.
+resolve_owner() {
+	local spec=$1 u g
+	IFS=: read -r u g <<<"$spec"
+	[ -n "$u" ] || { echo "$prog: empty uid in '$spec'" >&2; exit 2; }
+	case $u in *[!0-9]*) u=$(id -u -- "$u" 2>/dev/null) ||
+		{ echo "$prog: unknown user: ${spec%%:*}" >&2; exit 2; } ;; esac
+	if [ -n "$g" ]; then
+		case $g in *[!0-9]*) g=$(getent group "$g" 2>/dev/null | cut -d: -f3)
+			[ -n "$g" ] || { echo "$prog: unknown group in '$spec'" >&2; exit 2; } ;; esac
+	fi
+	printf -v "$2" '%s' "$u"
+	printf -v "$3" '%s' "$g"
+}
+
+to_spec=""
+to_set=0
+from=""
+from_set=0
+jobs=$(default_jobs)
+dry=0
+verbose=0
+force=0
+excludes=()
+roots=()
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--from) need_arg "$#" "$1"; from=$2; from_set=1; shift 2 ;;
+	--to) need_arg "$#" "$1"; to_spec=$2; to_set=1; shift 2 ;;
+	-x | --exclude) need_arg "$#" "$1"; excludes+=("$2"); shift 2 ;;
+	-j | --jobs) need_arg "$#" "$1"; jobs=$2; shift 2 ;;
+	-n | --dry-run) dry=1; shift ;;
+	-v | --verbose) verbose=1; shift ;;
+	--force) force=1; shift ;;
+	-h | --help) usage; exit 0 ;;
+	--) shift; while [ $# -gt 0 ]; do roots+=("$1"); shift; done ;;
+	-*) echo "$prog: unknown option: $1" >&2; usage >&2; exit 2 ;;
+	*) roots+=("$1"); shift ;;
+	esac
+done
+
+# default root (fail loudly if $HOME is unset rather than walking nothing)
+[ ${#roots[@]} -eq 0 ] && roots=("${HOME:?is unset; pass an explicit PATH}")
+
+# validate --jobs
+case $jobs in '' | *[!0-9]*) echo "$prog: --jobs must be a positive integer: '$jobs'" >&2; exit 2 ;; esac
+[ "$jobs" -ge 1 ] || { echo "$prog: --jobs must be >= 1" >&2; exit 2; }
+
+# validate roots: non-empty, must exist, never '/' (unless --force); guard a
+# leading '-' so find does not read the path as a predicate
+safe_roots=()
+for r in "${roots[@]}"; do
+	[ -n "$r" ] || { echo "$prog: empty PATH argument" >&2; exit 2; }
+	[ -e "$r" ] || { echo "$prog: no such path: $r" >&2; exit 2; }
+	# canonicalize: a root that is itself a symlink (/home/user -> /data/user)
+	# would otherwise be walked as the link target by find -H but chowned as the
+	# LINK object by chown -h -- resolving makes the walk and the chown agree on
+	# the real directory. Also powers the '/' refusal below.
+	rp=$(readlink -f -- "$r" 2>/dev/null) || rp=$r
+	if [ "$rp" = "/" ] && [ "$force" -ne 1 ]; then
+		echo "$prog: refusing to operate on '/' (pass --force to override)" >&2
+		exit 2
+	fi
+	case $rp in -*) rp="./$rp" ;; esac
+	safe_roots+=("$rp")
+done
+roots=("${safe_roots[@]}")
+
+# Resolve the target owner. Default: the invoker's uid:gid. With --to and no
+# GID, only the uid is changed and the group is left as it is.
+if [ "$to_set" -eq 1 ]; then
+	resolve_owner "$to_spec" to_uid to_gid
+else
+	to_uid=$(id -u)
+	to_gid=$(id -g)
+fi
+target=$to_uid${to_gid:+:$to_gid}
+
+# Prune excluded directory names.
+prune=()
+if [ ${#excludes[@]} -gt 0 ]; then
+	prune=('(' -type d '(')
+	first=1
+	for e in "${excludes[@]}"; do
+		[ $first -eq 1 ] || prune+=(-o)
+		first=0
+		prune+=(-name "$e")
+	done
+	prune+=(')' -prune ')' -o)
+fi
+
+tty=0
+[ -t 2 ] && tty=1
+fail=0
+walk_warned=0
+
+# warn_walk -- report an incomplete find walk (unreadable subtree etc.) once,
+# not once per pass, and mark the run failed. Always returns 0 (callers chain
+# it with `||` under set -e).
+warn_walk() {
+	if [ "$walk_warned" -eq 0 ]; then
+		echo "$prog: find reported errors; the walk was incomplete" >&2
+	fi
+	walk_warned=1
+	fail=1
+}
+
+# run_pass VERB QUIET CMD TARGET MATCH... -- find the files matching MATCH under
+# the shared roots (with the prune above) and apply `CMD -h -c TARGET` to them
+# in parallel. `-c` prints one line per CHANGED file; awk counts them (fast, in
+# C) for a live progress total (only to a tty) and a summary; with -v each
+# changed path is printed too. VERB is the past-tense verb for the messages;
+# QUIET=1 suppresses the summary when nothing changed (secondary passes). With
+# --dry-run only the candidate count is printed. A per-file failure does not
+# abort the run (CMD and xargs both continue past it); failures surface AFTER
+# the pipeline via PIPESTATUS (awk is last in the pipe, so xargs' status would
+# otherwise be lost behind awk's exit 0) and mark the whole run failed.
+# stdbuf -oL keeps each parallel worker's lines whole (block-buffered output
+# can split lines mid-path when workers interleave, garbling the count).
+# ${prune[@]+...}: empty-array expansion is an unbound-variable error under
+# `set -u` on bash < 4.4 (centos7-era images), so expand it conditionally.
+run_pass() {
+	local verb=$1 quiet=$2 cmd=$3 tgt=$4
+	shift 4
+	# Roots were canonicalized above; -H covers the corner where readlink -f
+	# failed and a root is still a symlink (better to walk it than to no-op).
+	# Files INSIDE the tree stay lstat-matched and chowned with -h, so inner
+	# symlinks are never followed.
+	local fc=(find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} "$@" -print0)
+	if [ "$dry" -eq 1 ]; then
+		# inspection mode: every pass's count is printed, on stdout. find errors
+		# must not hide behind the count pipeline here either (exit "${PIPESTATUS[0]}"
+		# re-raises find's status out of the substitution; n is still captured).
+		local n
+		n=$("${fc[@]}" | tr -cd '\0' | wc -c; exit "${PIPESTATUS[0]}") || warn_walk
+		echo "$prog: $n file(s) would be $verb to $tgt"
+		return 0
+	fi
+	"${fc[@]}" |
+		xargs -0 -r -P "$jobs" -n 256 stdbuf -oL "$cmd" -h -c "$tgt" |
+		awk -v prog="$prog" -v verbose="$verbose" -v tty="$tty" \
+			-v verb="$verb" -v quiet="$quiet" -v tgt="$tgt" '
+			{
+				n++
+				if (verbose) print
+				else if (tty && n % 200 == 0) printf "\r%s: %d files %s...", prog, n, verb > "/dev/stderr"
+			}
+			END {
+				if (!verbose && tty && n >= 200) printf "\r\033[K" > "/dev/stderr"
+				if (n > 0 || !quiet)
+					printf "%s: %s %d file(s) to %s\n", prog, verb, n + 0, tgt > "/dev/stderr"
+			}'
+	local ps=("${PIPESTATUS[@]}")
+	[ "${ps[0]}" -eq 0 ] || warn_walk
+	if [ "${ps[1]}" -ne 0 ]; then
+		echo "$prog: some files could not be $verb (xargs exit ${ps[1]})" >&2
+		fail=1
+	fi
+	return 0
+}
+
+# Which files to change, and how.
+if [ "$from_set" -eq 1 ]; then
+	[ -n "$from" ] || { echo "$prog: --from given an empty value" >&2; exit 2; }
+	f_uid="" f_gid=""
+	resolve_owner "$from" f_uid f_gid
+	if [ -n "$f_gid" ] && [ -n "$to_gid" ]; then
+		# uid and gid matches are handled independently (fixuid-style), in three
+		# DISJOINT passes so each file gets exactly the change it matched -- a
+		# file matching only by gid must not have its uid taken over. On the
+		# typical tree (everything owned uid:gid) passes 2 and 3 match nothing.
+		run_pass chowned 0 chown "$to_uid:$to_gid" '(' -uid "$f_uid" -gid "$f_gid" ')'
+		run_pass chowned 1 chown "$to_uid" '(' -uid "$f_uid" '!' -gid "$f_gid" ')'
+		run_pass "chgrp'd" 1 chgrp "$to_gid" '(' '!' -uid "$f_uid" -gid "$f_gid" ')'
+	else
+		# uid-only --from; or --to without a GID, where gid matches have no
+		# target gid, so only uid matches are touched (groups stay as they are)
+		run_pass chowned 0 chown "$target" -uid "$f_uid"
+	fi
+else
+	# Anything not already fully owned by the target (uid or gid differs).
+	if [ -n "$to_gid" ]; then
+		run_pass chowned 0 chown "$target" '(' '!' -uid "$to_uid" -o '!' -gid "$to_gid" ')'
+	else
+		run_pass chowned 0 chown "$target" '!' -uid "$to_uid"
+	fi
+fi
+
+exit "$fail"

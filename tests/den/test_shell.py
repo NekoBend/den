@@ -398,3 +398,81 @@ def test_disable_coreutils_readline_aborts_on_undecodable(tmp_path):
         _shell._disable_coreutils_readline(prof) is False
     )  # cannot decode -> leave it
     assert prof.read_bytes() == raw  # untouched, no backup-and-rewrite
+
+
+def _bundled_posix_bin():
+    """The bundled POSIX bin executables den would install (names + bytes)."""
+    from den._content import shell_dir
+
+    src = shell_dir() / "posix" / "bin"
+    return {p.name: p.read_bytes() for p in src.iterdir() if p.is_file()}
+
+
+def test_install_shell_bin_flag_installs_executables(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell", "--bin"]) == 0
+    local_bin = tmp_path / ".local" / "bin"
+    bundled = _bundled_posix_bin()
+    assert bundled, "expected at least one shell/posix/bin/* executable to exist"
+    for name, content in bundled.items():
+        dst = local_bin / name
+        assert dst.read_bytes() == content
+        assert dst.stat().st_mode & 0o111  # executable bit set
+
+
+def test_install_shell_no_bin_skips(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell", "--no-bin"]) == 0
+    assert not (tmp_path / ".local" / "bin").exists()
+
+
+def test_install_shell_bin_default_non_tty_skips(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert install_main(["shell"]) == 0
+    assert not (tmp_path / ".local" / "bin").exists()
+
+
+def test_install_shell_bin_prompt_yes_installs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("den._ui.confirm", lambda *a, **k: True)
+    assert install_main(["shell"]) == 0
+    for name in _bundled_posix_bin():
+        assert (tmp_path / ".local" / "bin" / name).is_file()
+
+
+def test_install_shell_bin_ignored_on_windows(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    monkeypatch.setattr("den._shell._windows", lambda: True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert install_main(["shell", "--bin"]) == 0
+    assert not (tmp_path / ".local" / "bin").exists()
+    assert "ignoring --bin" in capsys.readouterr().err
+
+
+def test_install_shell_bin_dry_run_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell", "--dry-run", "--bin"]) == 0
+    assert not (tmp_path / ".local" / "bin").exists()
+
+
+def test_install_shell_bin_keeps_modified_file_content_and_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    mine = local_bin / "fixids"
+    mine.write_text("#!/bin/sh\n# my own fixids\n")
+    mine.chmod(0o600)
+    assert install_main(["shell", "--bin"]) == 0
+    # non-tty + differing file -> kept as-is: content AND mode untouched
+    assert mine.read_text() == "#!/bin/sh\n# my own fixids\n"
+    assert mine.stat().st_mode & 0o777 == 0o600

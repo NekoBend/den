@@ -171,12 +171,22 @@ shell/
     parallel.sh   pcp/pmv/prm/ptar
     ffmpeg.sh     media helpers
     hwinfo.sh     CPU/GPU detection for the prompt
+    bin/          standalone POSIX executables (fixids: fast, filtered,
+                  parallel chown -- a faster fixuid; self-documented, -h)
   pwsh/        PowerShell port (init.ps1 entry; coreutils.ps1 reimplements UNIX tools)
   cmd/         Windows CMD command shims (cmd/bin/*.cmd) + starship.lua
   bash/init.bash   entry point sourced from ~/.bashrc
   zsh/init.zsh     entry point sourced from ~/.zshrc
   starship/starship.toml   prompt configuration
 ```
+
+`shell/posix/bin/` holds standalone executables (not sourced config). `den
+install shell` offers to copy them to `~/.local/bin` (already on PATH via
+`_init_path`): pass `--bin` to install without asking, `--no-bin` to skip, or
+answer the y/N prompt on an interactive POSIX run (default no). They need GNU
+coreutils/findutils and are never installed on Windows. `den uninstall shell`
+removes them (keeping any you modified, and never deleting `~/.local/bin`
+itself).
 
 ## Load flow and caches
 
