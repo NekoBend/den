@@ -42,7 +42,10 @@ _count_entries() {
                 return
             fi
             remaining=$((limit - total))
-            count="$(find "$p" -print 2>/dev/null | awk -v limit="$remaining" '
+            # `command find`: the bare name resolves to the fd wrapper when fd is
+            # installed (fd's syntax differs -> wrong/zero count), and this count
+            # is shown in prm's destructive [y/N] confirmation.
+            count="$(command find "$p" -print 2>/dev/null | awk -v limit="$remaining" '
                 NR > limit { print limit "+"; exit }
                 END { if (NR <= limit) print NR }
             ')"
