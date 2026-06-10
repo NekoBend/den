@@ -17,6 +17,11 @@ tier (see shell/pwsh/_helpers.ps1). `--coreutils` installs it via winget;
 fixids) to ~/.local/bin; `--no-bin` skips them; with neither, an interactive
 POSIX run asks (default no). They are POSIX-only (need GNU coreutils/find) and
 are never installed on Windows.
+
+On POSIX with zsh + git, the zsh plugins init.zsh sources (zsh-autosuggestions,
+zsh-syntax-highlighting) are cloned into ~/.config/zsh/plugins (clone-if-missing).
+`--no-zsh-plugins` skips that. init.zsh guards each source, so skipping just
+turns the feature off.
 """
 
 from __future__ import annotations
@@ -278,6 +283,7 @@ def install_shell(argv: list[str]) -> int:
     skip_coreutils = "--no-coreutils" in argv
     want_bin = "--bin" in argv
     skip_bin = "--no-bin" in argv
+    skip_zsh_plugins = "--no-zsh-plugins" in argv
     allowed = (
         "--dry-run",
         "--no-extras",
@@ -286,6 +292,7 @@ def install_shell(argv: list[str]) -> int:
         "--no-coreutils",
         "--bin",
         "--no-bin",
+        "--no-zsh-plugins",
     )
     for a in argv:
         if a not in allowed:
@@ -322,6 +329,8 @@ def install_shell(argv: list[str]) -> int:
     if _windows() or shutil.which("pwsh"):
         _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run)
 
+    _maybe_clone_zsh_plugins(skip_zsh_plugins, dry_run)
+
     rc = _maybe_install_coreutils(want_coreutils, skip_coreutils, dry_run)
 
     # coreutils installs a PSConsoleHostReadLine rewriter into the profile that
@@ -335,6 +344,59 @@ def install_shell(argv: list[str]) -> int:
                 print(f"  [ok] removed coreutils readline integration from {prof}")
 
     return rc
+
+
+# zsh plugins den sources from ~/.config/zsh/plugins (see shell/zsh/init.zsh).
+# Cloned rather than vendored so they update independently and stay upstream.
+_ZSH_PLUGINS = (
+    ("zsh-autosuggestions", "https://github.com/zsh-users/zsh-autosuggestions"),
+    ("zsh-syntax-highlighting", "https://github.com/zsh-users/zsh-syntax-highlighting"),
+)
+
+
+def _zsh_plugins_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "zsh" / "plugins"
+
+
+def _maybe_clone_zsh_plugins(skip: bool, dry_run: bool) -> None:
+    """Clone the zsh plugins init.zsh sources (autosuggestions + syntax
+    highlighting) into ~/.config/zsh/plugins, clone-if-missing. POSIX + zsh +
+    git only; init.zsh guards each source with a file test, so a skipped or
+    failed clone just means the feature is off, never a broken shell. These
+    replace the oh-my-zsh framework den used to depend on."""
+    if skip or _windows() or not shutil.which("zsh"):
+        return
+    if not shutil.which("git"):
+        print(
+            "zsh plugins: git not found; skipping (install git for autosuggestions)",
+            file=sys.stderr,
+        )
+        return
+    dest = _zsh_plugins_dir()
+    print(f"zsh plugins -> {dest}")
+    for name, url in _ZSH_PLUGINS:
+        target = dest / name
+        if target.exists():
+            print(f"  [skip] {name} already present")
+            continue
+        if dry_run:
+            print(f"  [dry] git clone {url} -> {target}")
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--quiet", url, str(target)],
+                check=True,
+            )
+            print(f"  [ok] cloned {name}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(
+                f"  warning: clone of {name} failed ({exc}); suggestions stay off "
+                "until it succeeds",
+                file=sys.stderr,
+            )
 
 
 def _coreutils_present() -> bool:

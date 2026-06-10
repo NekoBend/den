@@ -19,6 +19,21 @@ den install shell --no-extras # skip the optional helper modules
 It copies the config into `~/.config/shell/` (POSIX) or the `$PROFILE` dir
 (PowerShell) and adds a source line to your `~/.bashrc` / `~/.zshrc`.
 
+### zsh plugins
+
+`init.zsh` uses zsh's own `compinit` plus two standalone plugins instead of a
+framework like oh-my-zsh (the framework's theme is overridden by starship and
+its git aliases duplicate `aliases.sh`, so it was dead weight):
+
+- [`zsh-autosuggestions`](https://github.com/zsh-users/zsh-autosuggestions) --
+  the fish-style grey suggestion as you type.
+- [`zsh-syntax-highlighting`](https://github.com/zsh-users/zsh-syntax-highlighting)
+  -- colors the command line as you type (sourced last, as it requires).
+
+On a POSIX host with zsh + git, `den install shell` clones them into
+`~/.config/zsh/plugins/` (clone-if-missing); pass `--no-zsh-plugins` to skip.
+`init.zsh` guards each source, so a missing plugin just turns that feature off.
+
 ## The wrapper system
 
 Commands like `ls`, `cat`, `grep`, `find` dispatch through tiers, in order:
