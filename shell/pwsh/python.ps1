@@ -1,7 +1,7 @@
 # python.ps1 — Python/uv helper functions for PowerShell.
 # Dot-sourced by init.ps1.
 
-if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return }
+if (-not (_ResolveCmd 'uv' 'App')) { return }
 
 # ===== uv overrides =====
 
@@ -9,10 +9,10 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return }
 function uv {
   if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and $Args.Count -ge 1 -and $Args[0] -eq 'run') {
     $rest = @($Args | Select-Object -Skip 1)
-    & uv.exe run --python $env:_DOTFILES_VENV_PYTHON -- @rest
+    & (_ResolveCmd 'uv' 'App') run --python $env:_DOTFILES_VENV_PYTHON -- @rest
   }
   else {
-    & uv.exe @Args
+    & (_ResolveCmd 'uv' 'App') @Args
   }
 }
 
@@ -25,70 +25,70 @@ function Show-UvOnlyMessage {
 # pip → uv pip (falls back to system pip; bypassed in active venv)
 function pip {
   if ($env:VIRTUAL_ENV) {
-    & pip.exe @Args
+    & (_ResolveCmd 'pip' 'App') @Args
   }
-  elseif (Get-Command uv -ErrorAction SilentlyContinue) {
+  elseif (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "pip $($Args -join ' ')" "uv pip $($Args -join ' ')"
     & uv pip @Args
   }
   else {
-    & pip.exe @Args
+    & (_ResolveCmd 'pip' 'App') @Args
   }
 }
 
 # pip3 → uv pip (falls back to system pip3; bypassed in active venv)
 function pip3 {
   if ($env:VIRTUAL_ENV) {
-    & pip3.exe @Args
+    & (_ResolveCmd 'pip3' 'App') @Args
   }
-  elseif (Get-Command uv -ErrorAction SilentlyContinue) {
+  elseif (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "pip3 $($Args -join ' ')" "uv pip $($Args -join ' ')"
     & uv pip @Args
   }
   else {
-    & pip3.exe @Args
+    & (_ResolveCmd 'pip3' 'App') @Args
   }
 }
 
 # python → uv run python (uses venv version when active)
 function python {
-  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (Get-Command uv -ErrorAction SilentlyContinue)) {
-    & uv.exe run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
+  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
+    & (_ResolveCmd 'uv' 'App') run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
   }
-  elseif (Get-Command uv -ErrorAction SilentlyContinue) {
+  elseif (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "python $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
-    & uv.exe run -- python @Args
+    & (_ResolveCmd 'uv' 'App') run -- python @Args
   }
   else {
-    & python.exe @Args
+    & (_ResolveCmd 'python' 'App') @Args
   }
 }
 
 # python3 → uv run python (uses venv version when active)
 function python3 {
-  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (Get-Command uv -ErrorAction SilentlyContinue)) {
-    & uv.exe run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
+  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
+    & (_ResolveCmd 'uv' 'App') run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
   }
-  elseif (Get-Command uv -ErrorAction SilentlyContinue) {
+  elseif (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "python3 $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
-    & uv.exe run -- python @Args
+    & (_ResolveCmd 'uv' 'App') run -- python @Args
   }
   else {
-    & python3.exe @Args
+    & (_ResolveCmd 'python3' 'App') @Args
   }
 }
 
 # py → uv run python (uses venv version when active)
 function py {
-  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (Get-Command uv -ErrorAction SilentlyContinue)) {
-    & uv.exe run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
+  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
+    & (_ResolveCmd 'uv' 'App') run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
   }
-  elseif (Get-Command uv -ErrorAction SilentlyContinue) {
+  elseif (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "py $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
-    & uv.exe run -- python @Args
+    & (_ResolveCmd 'uv' 'App') run -- python @Args
   }
   else {
-    & python.exe @Args
+    & (_ResolveCmd 'python' 'App') @Args
   }
 }
 
@@ -129,21 +129,21 @@ function vd {
 
 # vv → uv venv (create only)
 function vv {
-  if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+  if (-not (_ResolveCmd 'uv' 'App')) {
     Write-Error 'uv is not installed'
     return
   }
-  & uv.exe venv @Args
+  & (_ResolveCmd 'uv' 'App') venv @Args
 }
 
 # vva → uv venv + activate (default: .venv)
 function vva {
-  if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+  if (-not (_ResolveCmd 'uv' 'App')) {
     Write-Error 'uv is not installed'
     return
   }
   $name = if ($Args.Count -ge 1) { $Args[0] } else { '.venv' }
-  & uv.exe venv @Args
+  & (_ResolveCmd 'uv' 'App') venv @Args
   if ($LASTEXITCODE -eq 0) { va $name }
 }
 
