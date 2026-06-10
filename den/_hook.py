@@ -58,12 +58,20 @@ _DEFAULT_IMPRINT = """\
 
 These directives apply every turn. Do not let them fall out of context.
 
+- SAVING A STATED RULE IS MANDATORY. When the user states a rule, convention,
+  decision, or fact to remember (signal words: "rule", "always", "never",
+  "from now on", "remember this", or Japanese forms such as "規約", "決定",
+  "覚えておいて"), run this command in that SAME turn, before you finish:
+      den memory add "<the fact, one line>"
+  Example: the user says the retry limit is 7, so you run:
+      den memory add "Retry limit constant: MAX_RETRIES = 7"
+  Saying "I will remember" without running den memory add is a FAILURE: chat
+  memory does not survive the session, only den memory add persists. Do NOT
+  store a rule in a source file instead; it goes in den memory add. For a
+  larger cleanup, overwrite .den/memory.md wholesale.
 - Before writing code, check whether a skill applies and read its SKILL.md.
 - For multi step or broad tasks, delegate to a subagent instead of doing
   everything inline.
-- When you make a durable decision or learn a project fact, append it that
-  same turn with: den memory add "<the fact>" (one line, low effort). For a
-  larger cleanup, overwrite .den/memory.md wholesale.
 - State assumptions explicitly; ask before assuming when scope is ambiguous.
 """
 
