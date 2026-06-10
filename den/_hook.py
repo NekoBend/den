@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -248,7 +249,7 @@ _EMITTERS = {
 
 
 def _cmd_run(argv: list[str]) -> int:
-    event, tool = _parse_run_args(argv)
+    event, tool, den_dir_arg = _parse_run_args(argv)
     if event is None or tool is None:
         return 2
 
@@ -267,7 +268,14 @@ def _cmd_run(argv: list[str]) -> int:
         print(f"den hook run: tool '{tool}' has no event '{event}'", file=sys.stderr)
         return 2
 
-    den_dir = _find_den_dir(Path.cwd())
+    # Prefer the den dir pinned at install time (--den-dir): it binds the hook to
+    # the workspace the user explicitly set up, so a checked-out repo cannot get
+    # its own ancestor/nested .den injected. Fall back to the cwd-ancestor walk
+    # only for hooks installed before pinning existed (backward compat).
+    if den_dir_arg:
+        den_dir = Path(den_dir_arg).expanduser()
+    else:
+        den_dir = _find_den_dir(Path.cwd())
 
     # Always checkpoint: captures the previous turn's direct edits to memory.md.
     # Cheap and content-gated, so unconditional is fine on every event.
@@ -290,8 +298,10 @@ def _cmd_run(argv: list[str]) -> int:
     return 0
 
 
-def _parse_run_args(argv: list[str]) -> tuple[str | None, str | None]:
-    event = tool = None
+def _parse_run_args(
+    argv: list[str],
+) -> tuple[str | None, str | None, str | None]:
+    event = tool = den_dir = None
     i = 0
     while i < len(argv):
         if argv[i] == "--event" and i + 1 < len(argv):
@@ -300,13 +310,16 @@ def _parse_run_args(argv: list[str]) -> tuple[str | None, str | None]:
         elif argv[i] == "--tool" and i + 1 < len(argv):
             tool = argv[i + 1]
             i += 2
+        elif argv[i] == "--den-dir" and i + 1 < len(argv):
+            den_dir = argv[i + 1]
+            i += 2
         else:
             print(f"den hook run: unexpected arg '{argv[i]}'", file=sys.stderr)
-            return None, None
+            return None, None, None
     if event is None or tool is None:
         print("den hook run: --event and --tool are required", file=sys.stderr)
-        return None, None
-    return event, tool
+        return None, None, None
+    return event, tool, den_dir
 
 
 # --------------------------------------------------------------------------- #
@@ -326,16 +339,55 @@ def _resolve_config(spec: dict, override: str | None) -> Path:
     return (Path.cwd() / spec["config"]).resolve()
 
 
-def _settings_entries(tool: str, spec: dict) -> dict[str, list]:
+def _run_command(
+    tool: str, generic: str, den_dir: Path, *, powershell: bool = False
+) -> str:
+    """The `den hook run` line baked into a tool's hook config. `--den-dir` pins
+    the ABSOLUTE workspace .den resolved at install time, so the hook always reads
+    the workspace where `den hook install` ran -- not a .den found by walking the
+    agent's cwd ancestors, which a checked-out repo could plant to inject its own
+    imprint every turn (see _cmd_run). The path is quoted for its target language."""
+    d = str(den_dir)
+    quoted = "'" + d.replace("'", "''") + "'" if powershell else shlex.quote(d)
+    return f"den hook run --event {generic} --tool {tool} --den-dir {quoted}"
+
+
+def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
     """Build the per-event hook entries den manages for a settings_json config."""
     entries: dict[str, list] = {}
     for generic, native in spec["events"].items():
-        cmd = f"den hook run --event {generic} --tool {tool}"
+        cmd = _run_command(tool, generic, den_dir)
         entry: dict = {"hooks": [{"type": "command", "command": cmd}]}
         if generic == "post-tool" and spec.get("post_tool_matcher"):
             entry["matcher"] = spec["post_tool_matcher"]
         entries.setdefault(native, []).append(entry)
     return entries
+
+
+def _backup_if_malformed(config: Path) -> None:
+    """If config exists but is not parseable JSON, copy it to <config>.den.bak
+    before install overwrites it. Without this, _read_json treats a malformed
+    file as {} and install writes back only den's keys -- silently discarding
+    the user's other settings."""
+    if not config.is_file():
+        return
+    try:
+        json.loads(config.read_text(encoding="utf-8"))
+        return
+    except (OSError, json.JSONDecodeError):
+        pass
+    bak = config.with_suffix(config.suffix + ".den.bak")
+    if bak.exists():
+        return
+    try:
+        bak.write_bytes(config.read_bytes())
+        print(
+            f"den hook install: {config} is not valid JSON; backed up to {bak} "
+            "before writing den's hooks",
+            file=sys.stderr,
+        )
+    except OSError:
+        pass
 
 
 def _read_json(config: Path) -> dict:
@@ -369,10 +421,11 @@ def _strip_den_hooks(hooks: dict) -> dict:
     return cleaned
 
 
-def _install_settings_json(tool: str, spec: dict, config: Path) -> None:
+def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
+    _backup_if_malformed(config)
     data = _read_json(config)
     hooks = _strip_den_hooks(data.get("hooks", {}))
-    for event, groups in _settings_entries(tool, spec).items():
+    for event, groups in _settings_entries(tool, spec, den_dir).items():
         hooks.setdefault(event, []).extend(groups)
     data["hooks"] = hooks
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -426,12 +479,13 @@ def _strip_copilot(hooks: dict) -> dict:
     return cleaned
 
 
-def _install_copilot(tool: str, spec: dict, config: Path) -> None:
+def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
+    _backup_if_malformed(config)
     data = _read_json(config)
     data["version"] = data.get("version", 1)
     hooks = _strip_copilot(data.get("hooks", {}))
     for generic, native in spec["events"].items():
-        cmd = f"den hook run --event {generic} --tool {tool}"
+        cmd = _run_command(tool, generic, den_dir)
         hooks.setdefault(native, []).append({"type": "command", "bash": cmd})
     data["hooks"] = hooks
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -478,7 +532,7 @@ def _cline_script_name(native: str) -> str:
     return f"{native}.ps1" if _is_windows() else native
 
 
-def _install_cline(tool: str, spec: dict, config: Path) -> None:
+def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
     config.mkdir(parents=True, exist_ok=True)
     for generic, native in spec["events"].items():
         script = config / _cline_script_name(native)
@@ -490,7 +544,7 @@ def _install_cline(tool: str, spec: dict, config: Path) -> None:
                 file=sys.stderr,
             )
             continue
-        cmd = f"den hook run --event {generic} --tool {tool}"
+        cmd = _run_command(tool, generic, den_dir, powershell=_is_windows())
         if _is_windows():
             # PowerShell hook: Cline runs <Event>.ps1 and reads its stdout JSON.
             script.write_text(
@@ -545,8 +599,9 @@ _CLINERULES_RULE_HEADER = (
 )
 
 
-def _install_clinerules(tool: str, spec: dict, config: Path) -> None:
-    den_dir = _find_den_dir(Path.cwd())
+def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
+    # den_dir is pinned by the caller; clinerules delivers via always-on rule
+    # files (no `den hook run`), so it only needs the dir, not a baked command.
     rules = _clinerules_dir(den_dir)
     rules.mkdir(parents=True, exist_ok=True)
     imprint = _imprint_path(den_dir)
@@ -601,6 +656,28 @@ def _seed_imprint(den_dir: Path) -> bool:
     return True
 
 
+def _surface_existing_imprint(den_dir: Path) -> None:
+    """Show a pre-existing imprint at install time. The imprint is injected every
+    turn as standing directives; if it came from a checked-out repo rather than
+    the user, that is silent instruction injection. Pinning (--den-dir) stops a
+    NESTED/ancestor .den, but the install dir's own imprint is still trusted, so
+    surface it here and let the user see what they are about to make authoritative."""
+    path = _imprint_path(den_dir)
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        return
+    print(
+        f"den hook install: using the existing imprint at {path}.\n"
+        "  It is injected every turn as standing directives -- verify you trust "
+        "it (e.g. if it came from a checked-out repo, not you):",
+        file=sys.stderr,
+    )
+    for line in text.splitlines():
+        print(f"  | {line}", file=sys.stderr)
+
+
 def _pick_tools_interactive() -> list[str] | None:
     """Ask which tools to install hooks for (checkbox). Returns --tool flags,
     or None if nothing was selected."""
@@ -637,6 +714,8 @@ def _cmd_install(argv: list[str]) -> int:
     den_dir = _find_den_dir(Path.cwd())
     if _seed_imprint(den_dir):
         print(f"seeded {_imprint_path(den_dir)}", file=sys.stderr)
+    else:
+        _surface_existing_imprint(den_dir)
 
     rc = 0
     for tool in tools:
@@ -651,7 +730,7 @@ def _cmd_install(argv: list[str]) -> int:
             rc = 1
             continue
         config = _resolve_config(spec, override)
-        handlers[0](tool, spec, config)
+        handlers[0](tool, spec, config, den_dir)
         print(f"installed {tool} hooks -> {config}", file=sys.stderr)
     return rc
 

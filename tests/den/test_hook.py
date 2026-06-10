@@ -1,9 +1,16 @@
 """Tests for den hook (den/_hook.py)."""
 
 import json
+import shlex
 
 from den import _hook
 from den._hook import main as hook_main
+
+
+def _assert_pinned(cmd: str, prefix: str, den_dir) -> None:
+    """The hook command is `<prefix> --den-dir <abs .den>` (path shlex-quoted)."""
+    assert cmd.startswith(prefix + " --den-dir ")
+    assert shlex.split(cmd)[-1] == str(den_dir)
 
 
 def _den(proj):
@@ -57,6 +64,59 @@ def test_run_per_turn_emits_claude_json(tmp_path, monkeypatch, capsys):
     assert "MEM" in hso["additionalContext"]
 
 
+def test_run_pinned_den_dir_beats_ancestor_walk(tmp_path, monkeypatch, capsys):
+    # the pinned --den-dir workspace, and a DIFFERENT .den in a nested cwd that a
+    # cwd-ancestor walk would wrongly pick up (the prompt-injection-by-checkout
+    # vector). --den-dir must win.
+    _seed(tmp_path, imprint="REAL\n")
+    nested = tmp_path / "vendor" / "evil"
+    _seed(nested, imprint="PLANTED\n")
+    monkeypatch.chdir(nested)
+    rc = hook_main(
+        [
+            "run",
+            "--event",
+            "per-turn",
+            "--tool",
+            "claude",
+            "--den-dir",
+            str(_den(tmp_path)),
+        ]
+    )
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "REAL" in ctx and "PLANTED" not in ctx
+
+
+def test_run_falls_back_to_ancestor_walk_without_pin(tmp_path, monkeypatch, capsys):
+    # hooks installed before pinning existed pass no --den-dir; keep working.
+    _seed(tmp_path, imprint="IMP\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "claude"]) == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "IMP" in ctx
+
+
+def test_install_backs_up_malformed_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    cfg.write_text('{ "mySetting": 1,  // not valid json\n')
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    bak = cfg.with_suffix(cfg.suffix + ".den.bak")
+    assert bak.is_file()
+    assert "mySetting" in bak.read_text()  # user's original preserved
+    assert "hooks" in json.loads(cfg.read_text())  # den's hooks written
+
+
+def test_install_surfaces_existing_imprint(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, imprint="SUSPICIOUS RULE\n")  # pre-existing, not seeded by us
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    err = capsys.readouterr().err
+    assert "existing imprint" in err and "SUSPICIOUS RULE" in err
+
+
 def test_run_emits_nothing_when_empty(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert hook_main(["run", "--event", "per-turn", "--tool", "claude"]) == 0
@@ -95,7 +155,9 @@ def test_install_seeds_imprint_and_writes_hooks(tmp_path, monkeypatch):
     hooks = json.loads(cfg.read_text())["hooks"]
     assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"}
     cmd = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
-    assert cmd == "den hook run --event per-turn --tool claude"
+    _assert_pinned(
+        cmd, "den hook run --event per-turn --tool claude", tmp_path / ".den"
+    )
     assert hooks["PostToolUse"][0]["matcher"] == "Write|Edit|MultiEdit"
 
 
@@ -126,7 +188,9 @@ def test_install_preserves_foreign_hooks(tmp_path, monkeypatch):
     groups = json.loads(cfg.read_text())["hooks"]["UserPromptSubmit"]
     commands = [h["command"] for g in groups for h in g["hooks"]]
     assert "echo foreign" in commands
-    assert "den hook run --event per-turn --tool claude" in commands
+    assert any(
+        c.startswith("den hook run --event per-turn --tool claude") for c in commands
+    )
 
 
 def test_install_seeds_default_imprint_content(tmp_path, monkeypatch):
@@ -158,7 +222,9 @@ def test_install_gemini_uses_settings_json(tmp_path, monkeypatch):
     hooks = json.loads(cfg.read_text())["hooks"]
     assert set(hooks) == {"SessionStart", "BeforeAgent", "AfterTool", "SessionEnd"}
     cmd = hooks["BeforeAgent"][0]["hooks"][0]["command"]
-    assert cmd == "den hook run --event per-turn --tool gemini"
+    _assert_pinned(
+        cmd, "den hook run --event per-turn --tool gemini", tmp_path / ".den"
+    )
 
 
 def test_run_gemini_emits_beforeagent_json(tmp_path, monkeypatch, capsys):
@@ -213,8 +279,10 @@ def test_install_copilot_flat_json(tmp_path, monkeypatch):
     data = json.loads(cfg.read_text())
     assert data["version"] == 1
     assert set(data["hooks"]) == {"sessionStart", "userPromptSubmitted", "postToolUse"}
-    assert data["hooks"]["sessionStart"][0]["bash"] == (
-        "den hook run --event session-start --tool copilot"
+    _assert_pinned(
+        data["hooks"]["sessionStart"][0]["bash"],
+        "den hook run --event session-start --tool copilot",
+        tmp_path / ".den",
     )
 
 

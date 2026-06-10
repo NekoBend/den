@@ -312,6 +312,19 @@ def analyze_go(path: Path, text: str) -> list[Import]:
                 )
             )
             continue
+        if target.startswith("-"):
+            # never let an import path lifted from the analyzed file reach `go
+            # list` as a leading-dash argument (it would parse as a build flag).
+            results.append(
+                (
+                    lineno,
+                    "import_module",
+                    target,
+                    "UNVERIFIED",
+                    "refusing a leading-dash import path",
+                )
+            )
+            continue
         proc = subprocess.run(
             ["go", "list", target],
             capture_output=True,
