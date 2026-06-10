@@ -476,3 +476,75 @@ def test_install_shell_bin_keeps_modified_file_content_and_mode(tmp_path, monkey
     # non-tty + differing file -> kept as-is: content AND mode untouched
     assert mine.read_text() == "#!/bin/sh\n# my own fixids\n"
     assert mine.stat().st_mode & 0o777 == 0o600
+
+
+def _stub_which(present):
+    return lambda name: f"/usr/bin/{name}" if name in present else None
+
+
+def test_clone_zsh_plugins_clones_both(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    monkeypatch.setattr("den._shell.shutil.which", _stub_which({"zsh", "git"}))
+    calls = []
+    monkeypatch.setattr(
+        "den._shell.subprocess.run", lambda cmd, **k: calls.append(cmd) or None
+    )
+    _shell._maybe_clone_zsh_plugins(skip=False, dry_run=False)
+    cloned = [c[-1] for c in calls]  # last arg = target dir
+    assert any("zsh-autosuggestions" in t for t in cloned)
+    assert any("zsh-syntax-highlighting" in t for t in cloned)
+    assert all(c[:2] == ["git", "clone"] for c in calls)
+
+
+def test_clone_zsh_plugins_skip_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    monkeypatch.setattr("den._shell.shutil.which", _stub_which({"zsh", "git"}))
+    calls = []
+    monkeypatch.setattr(
+        "den._shell.subprocess.run", lambda cmd, **k: calls.append(cmd) or None
+    )
+    _shell._maybe_clone_zsh_plugins(skip=True, dry_run=False)
+    assert calls == []
+
+
+def test_clone_zsh_plugins_no_zsh_skips(tmp_path, monkeypatch):
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    monkeypatch.setattr("den._shell.shutil.which", _stub_which({"git"}))  # no zsh
+    calls = []
+    monkeypatch.setattr(
+        "den._shell.subprocess.run", lambda cmd, **k: calls.append(cmd) or None
+    )
+    _shell._maybe_clone_zsh_plugins(skip=False, dry_run=False)
+    assert calls == []
+
+
+def test_clone_zsh_plugins_windows_skips(tmp_path, monkeypatch):
+    monkeypatch.setattr("den._shell._windows", lambda: True)
+    monkeypatch.setattr("den._shell.shutil.which", _stub_which({"zsh", "git"}))
+    calls = []
+    monkeypatch.setattr(
+        "den._shell.subprocess.run", lambda cmd, **k: calls.append(cmd) or None
+    )
+    _shell._maybe_clone_zsh_plugins(skip=False, dry_run=False)
+    assert calls == []
+
+
+def test_clone_zsh_plugins_skips_existing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    monkeypatch.setattr("den._shell.shutil.which", _stub_which({"zsh", "git"}))
+    # pre-create one plugin dir
+    (tmp_path / ".config" / "zsh" / "plugins" / "zsh-autosuggestions").mkdir(
+        parents=True
+    )
+    calls = []
+    monkeypatch.setattr(
+        "den._shell.subprocess.run", lambda cmd, **k: calls.append(cmd) or None
+    )
+    _shell._maybe_clone_zsh_plugins(skip=False, dry_run=False)
+    cloned = [c[-1] for c in calls]
+    assert not any("zsh-autosuggestions" in t for t in cloned)  # already present
+    assert any("zsh-syntax-highlighting" in t for t in cloned)  # still cloned

@@ -42,12 +42,9 @@ ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
 # =============================================================================
-# Shell setup (zsh + oh-my-zsh + plugins)
+# Shell setup (zsh; den's zsh plugins are cloned by `den install shell` below)
 # =============================================================================
 RUN chsh -s /bin/zsh
-
-RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended && \
-    git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
 
 # =============================================================================
 # Python tools (astral.sh)
