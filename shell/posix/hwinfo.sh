@@ -11,7 +11,7 @@ case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 # synced $HOME never serves one machine's hardware to another, and the cache
 # auto-refreshes on reboot. Falls back to /tmp, still keyed by machine-id.
 _hwc_dir="${XDG_RUNTIME_DIR:-/tmp}"
-_hwc_mid=$(cat /etc/machine-id 2>/dev/null || hostname 2>/dev/null || echo unknown)
+_hwc_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
 _hwc_f="$_hwc_dir/dotfiles-hwinfo.${_hwc_mid}.sh"
 
 # Source the cache only if a regular file, not a symlink, owned by us.
@@ -123,7 +123,7 @@ unset _hwc_dir _hwc_mid _hwc_f
 
 # refresh-hwinfo → clear the hardware info cache (re-detect on next shell)
 refresh-hwinfo() {
-    _rh_mid=$(cat /etc/machine-id 2>/dev/null || hostname 2>/dev/null || echo unknown)
+    _rh_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
     rm -f "${XDG_RUNTIME_DIR:-/tmp}/dotfiles-hwinfo.${_rh_mid}.sh"
     unset _rh_mid
     echo "hwinfo cache cleared. Restart shell to refresh."
