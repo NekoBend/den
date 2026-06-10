@@ -26,7 +26,7 @@ _source_all "$HOME/.config/shell"
 
 # ===== Cached init =====
 _init_cache zoxide bash --no-cmd
-_init_cache starship bash
+_init_cache starship bash --print-full-init
 
 # ===== Reload =====
 reload() {
