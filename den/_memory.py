@@ -23,7 +23,6 @@ Subcommands:
 
 from __future__ import annotations
 
-import difflib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -282,6 +281,10 @@ def _cmd_diff(den_dir: Path, argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
+    # difflib is only needed by this subcommand; importing it here keeps it off
+    # the den hook run hot path (runs every agent turn).
+    import difflib
+
     old = snaps[n - 1]
     mem = _memory_path(den_dir)
     old_lines = old.read_text(encoding="utf-8").splitlines(keepends=True)
