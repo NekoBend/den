@@ -174,7 +174,7 @@ class _Remover:
 
 
 def _stage_skills(remover: _Remover, tools, targets, with_parent) -> None:
-    from ._install import _TOOLS, _install_skill, _skill_names
+    from ._install import _TOOLS, _install_skill, _skill_names, _tool_paths
 
     names = _skill_names()
 
@@ -199,8 +199,7 @@ def _stage_skills(remover: _Remover, tools, targets, with_parent) -> None:
         )
         return
     for tool in tools:
-        sk, pd, pf = _TOOLS[tool]
-        do(Path(sk).expanduser(), Path(pd).expanduser(), pf)
+        do(*_tool_paths(tool))
     for t in targets:
         root = Path(t).expanduser()
         do(root / "skills", root, "AGENTS.md")
