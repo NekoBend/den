@@ -33,6 +33,36 @@ function _OnWindows {
 # pwsh 7+ on Windows ($IsWindows -eq $true); Windows PowerShell 5.1 and Linux/macOS
 # skip it. Resolution is lazy + cached. Override the binary (name or full path)
 # with $env:_DOTFILES_COREUTILS, or set it to '0' to disable.
+# Per-session command-resolution cache. Get-Command is slow (a MISS especially so
+# on Windows), and the generated wrappers run it on every ls/cat/grep/... call;
+# memoizing per session reaches bash's hashed-command parity. A tool installed
+# mid-session is picked up after `reload` (which re-sources this file and so resets
+# the cache). Keyed "<type>|<name>"; value is the resolved path/name, or '' = absent.
+$script:_DotfilesCmdCache = @{}
+
+# _ResolveCmd <name> [type] — cached Get-Command. Type 'App' resolves to the real
+# executable PATH (CommandType Application), which skips a same-named function or
+# alias -- the wrappers and the uv/pip/python overrides are functions named after
+# the command they wrap, so they MUST call the resolved path to avoid recursion and
+# to work cross-platform (no hardcoded .exe). Any other type returns the NAME if the
+# command exists at all (used only as a boolean existence check). $null when absent.
+function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
+    $key = "$Type|$Name"
+    if (-not $script:_DotfilesCmdCache.ContainsKey($key)) {
+        $val = ''
+        if ($Type -eq 'App') {
+            $src = (Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+            if ($src) { $val = $src }
+        }
+        elseif (Get-Command $Name -ErrorAction SilentlyContinue) {
+            $val = $Name
+        }
+        $script:_DotfilesCmdCache[$key] = $val
+    }
+    $v = $script:_DotfilesCmdCache[$key]
+    if ($v -eq '') { return $null } else { return $v }
+}
+
 $script:_DotfilesCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
 function _CoreutilsBin {
     if ($env:_DOTFILES_COREUTILS -eq '0') { return $null }
@@ -81,7 +111,7 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
         "`$false"
     }
     $sb = [scriptblock]::Create(@"
-if (`$env:_DOTFILES_WRAPPERS -ne '0' -and (Get-Command '$Modern' -ErrorAction SilentlyContinue)) {
+if (`$env:_DOTFILES_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
     _WrapLog '$FuncName' '$Modern'
     `$input | & '$Modern' $ModernFlags @Args
 } else {
@@ -89,7 +119,7 @@ if (`$env:_DOTFILES_WRAPPERS -ne '0' -and (Get-Command '$Modern' -ErrorAction Si
     if (`$__cu) {
         `$input | & `$__cu $NativeCmd $NativeCmdFlags @Args
     } else {
-        `$__nc = if ($nativeGuard) { (Get-Command '$NativeCmd' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source } else { `$null }
+        `$__nc = if ($nativeGuard) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }
         if (`$__nc) {
             `$input | & `$__nc $NativeCmdFlags @Args
         } else {
@@ -104,7 +134,7 @@ if (`$env:_DOTFILES_WRAPPERS -ne '0' -and (Get-Command '$Modern' -ErrorAction Si
 # New-WrapperSuffix <func> <modern> <modernFlags> — always use modern (w-suffix)
 function New-WrapperSuffix([string]$FuncName, [string]$Modern, [string]$ModernFlags) {
     $sb = [scriptblock]::Create(@"
-if (Get-Command '$Modern' -ErrorAction SilentlyContinue) {
+if (_ResolveCmd '$Modern') {
     `$input | & '$Modern' $ModernFlags @Args
 } else {
     Write-Warning "${FuncName}: $Modern is not installed."
