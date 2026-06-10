@@ -274,6 +274,16 @@ def _cmd_run(argv: list[str]) -> int:
     # only for hooks installed before pinning existed (backward compat).
     if den_dir_arg:
         den_dir = Path(den_dir_arg).expanduser()
+        if not den_dir.is_absolute():
+            # install always bakes an ABSOLUTE path; a relative --den-dir resolves
+            # against the agent's cwd, which is exactly the cwd-dependence pinning
+            # exists to remove (a repo could ship a hook with --den-dir .den).
+            # Refuse rather than silently re-open the injection vector.
+            print(
+                f"den hook run: --den-dir must be absolute, got '{den_dir_arg}'",
+                file=sys.stderr,
+            )
+            return 2
     else:
         den_dir = _find_den_dir(Path.cwd())
 
@@ -364,26 +374,29 @@ def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
     return entries
 
 
-def _backup_if_malformed(config: Path) -> None:
-    """If config exists but is not parseable JSON, copy it to <config>.den.bak
-    before install overwrites it. Without this, _read_json treats a malformed
-    file as {} and install writes back only den's keys -- silently discarding
-    the user's other settings."""
+def _backup_if_unmergeable(config: Path) -> None:
+    """Back up config to <config>.den.bak before install overwrites it, UNLESS it
+    is already a JSON object den can merge into. _read_json reads anything else as
+    {} -- a malformed file, a non-UTF-8 file, OR valid-but-non-object JSON (a
+    list/string/number) -- so without this, install would write back only den's
+    keys and silently discard the user's file. ValueError covers both
+    JSONDecodeError and UnicodeDecodeError."""
     if not config.is_file():
         return
     try:
-        json.loads(config.read_text(encoding="utf-8"))
+        mergeable = isinstance(json.loads(config.read_text(encoding="utf-8")), dict)
+    except (OSError, ValueError):
+        mergeable = False
+    if mergeable:
         return
-    except (OSError, json.JSONDecodeError):
-        pass
     bak = config.with_suffix(config.suffix + ".den.bak")
     if bak.exists():
         return
     try:
         bak.write_bytes(config.read_bytes())
         print(
-            f"den hook install: {config} is not valid JSON; backed up to {bak} "
-            "before writing den's hooks",
+            f"den hook install: {config} is not a JSON object den can merge; "
+            f"backed up to {bak} before writing den's hooks",
             file=sys.stderr,
         )
     except OSError:
@@ -397,7 +410,7 @@ def _read_json(config: Path) -> dict:
         return {}
     try:
         data = json.loads(config.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError = JSONDecodeError + UnicodeError
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -422,7 +435,7 @@ def _strip_den_hooks(hooks: dict) -> dict:
 
 
 def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
-    _backup_if_malformed(config)
+    _backup_if_unmergeable(config)
     data = _read_json(config)
     hooks = _strip_den_hooks(data.get("hooks", {}))
     for event, groups in _settings_entries(tool, spec, den_dir).items():
@@ -480,7 +493,7 @@ def _strip_copilot(hooks: dict) -> dict:
 
 
 def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
-    _backup_if_malformed(config)
+    _backup_if_unmergeable(config)
     data = _read_json(config)
     data["version"] = data.get("version", 1)
     hooks = _strip_copilot(data.get("hooks", {}))

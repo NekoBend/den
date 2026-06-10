@@ -97,6 +97,18 @@ def test_run_falls_back_to_ancestor_walk_without_pin(tmp_path, monkeypatch, caps
     assert "IMP" in ctx
 
 
+def test_run_refuses_relative_den_dir(tmp_path, monkeypatch, capsys):
+    # a relative --den-dir resolves against cwd, re-opening the injection vector
+    # a repo could plant (`--den-dir .den`). Must be refused, not used.
+    _seed(tmp_path, imprint="PLANTED\n")
+    monkeypatch.chdir(tmp_path)
+    rc = hook_main(
+        ["run", "--event", "per-turn", "--tool", "claude", "--den-dir", ".den"]
+    )
+    assert rc == 2
+    assert "must be absolute" in capsys.readouterr().err
+
+
 def test_install_backs_up_malformed_json(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "settings.json"
@@ -106,6 +118,27 @@ def test_install_backs_up_malformed_json(tmp_path, monkeypatch):
     assert bak.is_file()
     assert "mySetting" in bak.read_text()  # user's original preserved
     assert "hooks" in json.loads(cfg.read_text())  # den's hooks written
+
+
+def test_install_backs_up_valid_non_object_json(tmp_path, monkeypatch):
+    # valid JSON but not an object (a list): _read_json reads it as {}, so it
+    # must still be backed up before install overwrites.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    cfg.write_text("[1, 2, 3]\n")
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    bak = cfg.with_suffix(cfg.suffix + ".den.bak")
+    assert bak.is_file() and "[1, 2, 3]" in bak.read_text()
+
+
+def test_install_backs_up_non_utf8_config(tmp_path, monkeypatch):
+    # a non-UTF-8 config must not crash install, and must be backed up.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    cfg.write_bytes(b"\xff\xfe not utf-8 \x00")
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    bak = cfg.with_suffix(cfg.suffix + ".den.bak")
+    assert bak.is_file() and bak.read_bytes() == b"\xff\xfe not utf-8 \x00"
 
 
 def test_install_surfaces_existing_imprint(tmp_path, monkeypatch, capsys):
