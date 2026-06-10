@@ -12,8 +12,10 @@ own shared/.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -21,15 +23,81 @@ from pathlib import Path
 from . import _ui
 from ._content import dist_dir, shared_dir, skills_dir
 
-# tool -> (skills_dir, parent_dir, parent_file)
+# tool -> (skills_dir, parent_dir, parent_file). The cline (VS Code extension)
+# parent_dir is dynamic -- see _tool_paths/_cline_rules_dir; the value here is
+# only the fallback shape.
 _TOOLS: dict[str, tuple[str, str, str]] = {
     "claude": ("~/.claude/skills", "~/.claude", "CLAUDE.md"),
     "codex": ("~/.agents/skills", "~/.codex", "AGENTS.md"),
-    "cline": ("~/.agents/skills", "~/.agents", "AGENTS.md"),
+    "cline": ("~/.agents/skills", "~/Documents/Cline/Rules", "AGENTS.md"),
     "cline-cli": ("~/.agents/skills", "~/.agents", "AGENTS.md"),
     "copilot": ("~/.copilot/skills", "~/.copilot", "copilot-instructions.md"),
     "gemini": ("~/.gemini/skills", "~/.gemini", "GEMINI.md"),
 }
+
+
+def _windows() -> bool:
+    # Indirection so tests can flip platform without touching os.name globally
+    # (pathlib reads os.name at instantiation to pick WindowsPath/PosixPath).
+    return os.name == "nt"
+
+
+def _cline_rules_dir() -> Path:
+    """The cline VS Code EXTENSION's global always-on rules dir,
+    <Documents>/Cline/Rules. The extension does NOT read ~/.agents/AGENTS.md
+    (its AGENTS.md support resolves against the workspace cwd only, see
+    getLocalAgentsRules in cline's source), so the parent prompt must go where
+    getGlobalClineRules reads. Resolve Documents the same way cline's own
+    getDocumentsPath does, so den lands exactly where the extension looks:
+    Windows asks PowerShell for MyDocuments (OneDrive-redirect aware), Linux
+    asks xdg-user-dir, anything else uses ~/Documents. The cline CLI does not
+    read this dir (it reads ~/.agents/AGENTS.md), so cline + cline-cli
+    together never double-deliver."""
+    if _windows():
+        for exe in ("pwsh", "powershell"):
+            if not shutil.which(exe):
+                continue
+            try:
+                out = subprocess.run(
+                    [
+                        exe,
+                        "-NoProfile",
+                        "-Command",
+                        "[Environment]::GetFolderPath('MyDocuments')",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+            if out.returncode == 0 and lines:
+                return Path(lines[-1]) / "Cline" / "Rules"
+        return Path.home() / "Documents" / "Cline" / "Rules"
+    if sys.platform == "linux" and shutil.which("xdg-user-dir"):
+        try:
+            out = subprocess.run(
+                ["xdg-user-dir", "DOCUMENTS"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                return Path(out.stdout.strip()) / "Cline" / "Rules"
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return Path.home() / "Documents" / "Cline" / "Rules"
+
+
+def _tool_paths(tool: str) -> tuple[Path, Path, str]:
+    """Resolve a tool's (skills_target, parent_dir, parent_file) to real paths.
+    Single source for install AND uninstall, so removal always mirrors what
+    install wrote."""
+    sk, pd, pf = _TOOLS[tool]
+    parent = _cline_rules_dir() if tool == "cline" else Path(pd).expanduser()
+    return Path(sk).expanduser(), parent, pf
+
 
 _REF_RE = re.compile(r"shared/reference/([A-Za-z0-9_-]+)\.md")
 _REWRITE_RE = re.compile(r"(?:\.\./)*shared/(reference|scripts)/")
@@ -223,9 +291,8 @@ def _install_skills(argv: list[str]) -> int:
 
     processed: list[Path] = []
     for tool in tools:
-        sk, pd, pf = _TOOLS[tool]
-        skt = Path(sk).expanduser()
-        _deploy(skt, Path(pd).expanduser(), pf, with_parent, dry_run, writer)
+        skt, parent_dir, pf = _tool_paths(tool)
+        _deploy(skt, parent_dir, pf, with_parent, dry_run, writer)
         processed.append(skt)
 
     for t in targets:

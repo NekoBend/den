@@ -231,3 +231,14 @@ def test_uninstall_shell_keeps_user_file_in_local_bin(tmp_path, monkeypatch):
     mine.write_text("#!/bin/sh\necho hi\n")
     assert uninstall_main(["shell", "--yes"]) == 0
     assert mine.is_file()  # a file den did not place is never removed
+
+
+def test_uninstall_cline_removes_rules_parent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("den._install.shutil.which", lambda e: None)
+    assert install_main(["skills", "--tool", "cline", "--with-parent"]) == 0
+    rules_parent = tmp_path / "Documents" / "Cline" / "Rules" / "AGENTS.md"
+    assert rules_parent.is_file()
+    assert uninstall_main(["skills", "--tool", "cline", "--with-parent", "--yes"]) == 0
+    assert not rules_parent.exists()

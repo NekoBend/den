@@ -116,3 +116,53 @@ def test_install_interactive_overwrite_on_yes(tmp_path, monkeypatch):
     monkeypatch.setattr("den._ui.confirm", lambda *a, **k: True)
     install_main(["skills", "--target", str(tmp_path)])
     assert "CLOBBERED" not in skill.read_text()
+
+
+def test_install_cline_parent_goes_to_cline_rules_dir(tmp_path, monkeypatch):
+    # the VS Code extension reads global rules from <Documents>/Cline/Rules and
+    # does NOT read ~/.agents/AGENTS.md; no xdg-user-dir -> ~/Documents fallback
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._install.shutil.which", lambda e: None)
+    assert install_main(["skills", "--tool", "cline", "--with-parent"]) == 0
+    assert (tmp_path / "Documents" / "Cline" / "Rules" / "AGENTS.md").is_file()
+    assert not (tmp_path / ".agents" / "AGENTS.md").exists()
+    assert (tmp_path / ".agents" / "skills" / "coding" / "SKILL.md").is_file()
+
+
+def test_install_cline_cli_parent_stays_in_agents(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert install_main(["skills", "--tool", "cline-cli", "--with-parent"]) == 0
+    assert (tmp_path / ".agents" / "AGENTS.md").is_file()
+    assert not (tmp_path / "Documents").exists()
+
+
+def test_cline_rules_dir_uses_xdg_documents(tmp_path, monkeypatch):
+    from den import _install
+
+    monkeypatch.setattr(_install.shutil, "which", lambda e: "/usr/bin/xdg-user-dir")
+
+    class _R:
+        returncode = 0
+        stdout = str(tmp_path / "MyDocs") + "\n"
+
+    monkeypatch.setattr(_install.subprocess, "run", lambda *a, **k: _R())
+    assert _install._cline_rules_dir() == tmp_path / "MyDocs" / "Cline" / "Rules"
+
+
+def test_cline_rules_dir_windows_queries_powershell(tmp_path, monkeypatch):
+    from den import _install
+
+    monkeypatch.setattr(_install, "_windows", lambda: True)
+    monkeypatch.setattr(
+        _install.shutil, "which", lambda e: "/x/pwsh" if e == "pwsh" else None
+    )
+    onedrive = "C:\\Users\\x\\OneDrive\\Documents"
+
+    class _R:
+        returncode = 0
+        stdout = onedrive + "\n"
+
+    monkeypatch.setattr(_install.subprocess, "run", lambda *a, **k: _R())
+    got = _install._cline_rules_dir()
+    assert str(got).startswith(onedrive)
+    assert got.name == "Rules" and got.parent.name == "Cline"
