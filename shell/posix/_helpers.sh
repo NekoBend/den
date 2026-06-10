@@ -87,9 +87,14 @@ _source_all() {
 _init_cache() {
     _ic_t="$1"; _ic_s="$2"; shift 2
     _ic_d="${XDG_CACHE_HOME:-$HOME/.cache}/shell"
-    (umask 077 && mkdir -p -- "$_ic_d") || { unset _ic_t _ic_s _ic_d; return 0; }
-    # Normalise perms on pre-existing dirs created before this hardening landed.
-    chmod 700 -- "$_ic_d" 2>/dev/null
+    # Only fork the subshell+mkdir and the external chmod when the dir is missing;
+    # on the warm path it already exists, and sourcing is guarded per-FILE by the
+    # [ -L ]/[ -O ] checks below regardless of dir perms. Avoids ~4 forks on every
+    # interactive shell (2 cache calls x mkdir+chmod).
+    if [ ! -d "$_ic_d" ]; then
+        (umask 077 && mkdir -p -- "$_ic_d") || { unset _ic_t _ic_s _ic_d; return 0; }
+        chmod 700 -- "$_ic_d" 2>/dev/null
+    fi
     _ic_f="$_ic_d/${_ic_t}-init.${_ic_s}"
     _ic_b=$(command -v "$_ic_t" 2>/dev/null)
     if [ -n "$_ic_b" ]; then

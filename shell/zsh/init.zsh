@@ -29,7 +29,7 @@ _source_all "$HOME/.config/shell"
 
 # ===== Cached init =====
 _init_cache zoxide zsh --no-cmd
-_init_cache starship zsh
+_init_cache starship zsh --print-full-init
 
 # ===== Reload =====
 reload() {
