@@ -161,6 +161,24 @@ PowerShell additionally provides `df`, `env`, `head`, `tail`, `wc`, `which`,
 `touch`, `split` as functions (these are native on Unix). Media helpers live in
 `posix/ffmpeg.sh` / `pwsh/ffmpeg.ps1` (e.g. `strip-audio`); see those files.
 
+### Proxy profiles
+| Command | What it does |
+|---------|--------------|
+| `proxy add <name> <url> [no_proxy]` | register / overwrite a named profile |
+| `proxy rm <name>` | remove a profile |
+| `proxy ls` | list profiles (`*` marks the one active in this shell) |
+| `proxy on <name>` | export `http(s)_proxy` / `all_proxy` / `no_proxy` (lower + upper case) from the profile |
+| `proxy off` | unset those env vars |
+| `proxy` / `proxy status` | show the active profile and current values |
+
+Profiles are stored in `$XDG_CONFIG_HOME/den/proxy.conf`. `on` / `off` only set
+or clear environment variables in the **current shell** (no global tool config
+such as `~/.gitconfig` is touched), so the active profile is tracked per-shell
+in `_DOTFILES_PROXY_ACTIVE` and never disagrees with another shell. bash/zsh
+only. `localhost,127.0.0.1,::1` are always excluded; a profile's own `no_proxy`
+entries (comma-separated, e.g. `.corp.example.com,10.0.0.0/8`) are added on top.
+The one exception is `no_proxy = *`, which stays standalone (bypass everything).
+
 ## Hardware info in the prompt
 
 The starship prompt shows your CPU and GPU. `hwinfo.sh` detects them once and
