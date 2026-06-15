@@ -185,7 +185,7 @@ The starship prompt shows your CPU and GPU. `hwinfo.sh` detects them once and
 exports `STARSHIP_CPU_*` / `STARSHIP_GPU_*`.
 
 - Detection is cached **machine-locally and per-boot**: POSIX writes
-  `$XDG_RUNTIME_DIR/dotfiles-hwinfo.<machine-id>.sh` (mode 600); PowerShell
+  `$XDG_RUNTIME_DIR/den-hwinfo.<machine-id>.sh` (mode 600); PowerShell
   caches under LocalAppData keyed by `$COMPUTERNAME`. This keeps a shared or
   synced `$HOME` from showing one machine's hardware on another.
 - `toggle-hwinfo` shows/hides the info in the prompt.

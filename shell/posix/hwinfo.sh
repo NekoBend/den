@@ -12,7 +12,7 @@ case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 # auto-refreshes on reboot. Falls back to /tmp, still keyed by machine-id.
 _hwc_dir="${XDG_RUNTIME_DIR:-/tmp}"
 _hwc_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
-_hwc_f="$_hwc_dir/dotfiles-hwinfo.${_hwc_mid}.sh"
+_hwc_f="$_hwc_dir/den-hwinfo.${_hwc_mid}.sh"
 
 # Source the cache only if a regular file, not a symlink, owned by us.
 if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
@@ -124,7 +124,7 @@ unset _hwc_dir _hwc_mid _hwc_f
 # refresh-hwinfo → clear the hardware info cache (re-detect on next shell)
 refresh-hwinfo() {
     _rh_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
-    rm -f "${XDG_RUNTIME_DIR:-/tmp}/dotfiles-hwinfo.${_rh_mid}.sh"
+    rm -f "${XDG_RUNTIME_DIR:-/tmp}/den-hwinfo.${_rh_mid}.sh"
     unset _rh_mid
     echo "hwinfo cache cleared. Restart shell to refresh."
 }

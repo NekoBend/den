@@ -1,4 +1,4 @@
-# _helpers.ps1 — DRY helpers for dotfiles PowerShell config.
+# _helpers.ps1 — DRY helpers for den PowerShell config.
 # Dot-sourced first by init.ps1.
 
 # ========== wrapper log ==========

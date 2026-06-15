@@ -1,4 +1,4 @@
-# init.ps1 — Load dotfiles config.
+# init.ps1 — Load den config.
 # Sourced by $PROFILE. Deploy target: alongside aliases.ps1, functions.ps1, hwinfo.ps1.
 
 # ===== Helpers (must load first) =====

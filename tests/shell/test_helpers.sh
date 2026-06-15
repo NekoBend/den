@@ -262,8 +262,8 @@ echo "[pwsh] _WrapLog prints every call"
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:_DEN_WRAPPER_LOG = '1'
     New-Wrapper 'myecho' 'echo' '' '' '' ''
-    \$log1 = myecho test1 6>&1 | Where-Object { \$_ -match 'dotfiles' }
-    \$log2 = myecho test2 6>&1 | Where-Object { \$_ -match 'dotfiles' }
+    \$log1 = myecho test1 6>&1 | Where-Object { \$_ -match '\[den\]' }
+    \$log2 = myecho test2 6>&1 | Where-Object { \$_ -match '\[den\]' }
     Write-Output \"first:\$([bool]\$log1)|second:\$([bool]\$log2)\"
 " 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/_WrapLog prints every call" "first:True|second:True" "$actual"

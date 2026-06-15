@@ -1,5 +1,5 @@
 #!/bin/sh
-# _helpers.sh — DRY helpers for dotfiles shell config.
+# _helpers.sh — DRY helpers for den shell config.
 # Sourced first by init.bash / init.zsh. POSIX sh compatible.
 # Deploy target: ~/.config/shell/_helpers.sh
 
