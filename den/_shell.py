@@ -404,7 +404,7 @@ def _coreutils_present() -> bool:
     NOT on PATH (its admin/all-user installer only optionally adds a bin\\ subdir,
     never the coreutils.exe dir), so also probe the fixed install location. This
     asks "is the package installed", not "is the tier enabled", so it does not
-    honor $_DOTFILES_COREUTILS=0 (that only disables den's runtime dispatch)."""
+    honor $_DEN_COREUTILS=0 (that only disables den's runtime dispatch)."""
     if shutil.which("coreutils"):
         return True
     # Mirror the pwsh resolver (_helpers.ps1 _CoreutilsBin): probe both Program

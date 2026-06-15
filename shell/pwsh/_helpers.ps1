@@ -1,4 +1,4 @@
-# _helpers.ps1 — DRY helpers for dotfiles PowerShell config.
+# _helpers.ps1 — DRY helpers for den PowerShell config.
 # Dot-sourced first by init.ps1.
 
 # ========== wrapper log ==========
@@ -6,10 +6,10 @@
 # _WrapLog <name> <tool> — announce a modern-tool substitution on EVERY wrapped
 # call. The modern tool's flags and output differ from the native command, so a
 # silent substitution is easy to miss (and commands that assume the native
-# behavior then break). Silence the notice with _DOTFILES_WRAPPER_LOG=0.
+# behavior then break). Silence the notice with _DEN_WRAPPER_LOG=0.
 function _WrapLog([string]$Name, [string]$Tool) {
-    if ($env:_DOTFILES_WRAPPER_LOG -eq '0') { return }
-    Write-Host "[dotfiles] $Name -> $Tool  | disable: run toggle-wrapper, or `$env:_DOTFILES_WRAPPERS = '0'" -ForegroundColor DarkGray
+    if ($env:_DEN_WRAPPER_LOG -eq '0') { return }
+    Write-Host "[den] $Name -> $Tool  | disable: run toggle-wrapper, or `$env:_DEN_WRAPPERS = '0'" -ForegroundColor DarkGray
 }
 
 # ========== microsoft/coreutils tier (Windows) ==========
@@ -32,14 +32,14 @@ function _OnWindows {
 # we resolve the absolute path directly instead of trusting PATH. Restricted to
 # pwsh 7+ on Windows ($IsWindows -eq $true); Windows PowerShell 5.1 and Linux/macOS
 # skip it. Resolution is lazy + cached. Override the binary (name or full path)
-# with $env:_DOTFILES_COREUTILS, or set it to '0' to disable.
+# with $env:_DEN_COREUTILS, or set it to '0' to disable.
 # Per-session command-resolution cache. Get-Command is slow (a MISS especially so
 # on Windows), and the generated wrappers run it on every ls/cat/grep/... call;
 # memoizing per session reaches bash's hashed-command parity. A tool installed
 # mid-session is picked up after `reload` (which re-sources this file and so resets
 # the cache). Value is the resolved path/name, or '' = absent. App-lookup keys also
 # carry $VIRTUAL_ENV (see _ResolveCmd) so a venv switch re-resolves pip/python.
-$script:_DotfilesCmdCache = @{}
+$script:_DenCmdCache = @{}
 
 # _ResolveCmd <name> [type] — cached Get-Command. Type 'App' resolves to the real
 # executable PATH (CommandType Application), which skips a same-named function or
@@ -54,7 +54,7 @@ function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
     # venv's pip/python path and install into the wrong environment. 'Any' returns
     # the bare name (an existence check), which is venv-insensitive.
     $key = if ($Type -eq 'App') { "App|$Name|$env:VIRTUAL_ENV" } else { "Any|$Name" }
-    if (-not $script:_DotfilesCmdCache.ContainsKey($key)) {
+    if (-not $script:_DenCmdCache.ContainsKey($key)) {
         $val = ''
         if ($Type -eq 'App') {
             $src = (Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -63,22 +63,22 @@ function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
         elseif (Get-Command $Name -ErrorAction SilentlyContinue) {
             $val = $Name
         }
-        $script:_DotfilesCmdCache[$key] = $val
+        $script:_DenCmdCache[$key] = $val
     }
-    $v = $script:_DotfilesCmdCache[$key]
+    $v = $script:_DenCmdCache[$key]
     if ($v -eq '') { return $null } else { return $v }
 }
 
-$script:_DotfilesCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
+$script:_DenCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
 function _CoreutilsBin {
-    if ($env:_DOTFILES_COREUTILS -eq '0') { return $null }
+    if ($env:_DEN_COREUTILS -eq '0') { return $null }
     if ($IsWindows -ne $true) { return $null }
-    if ($null -eq $script:_DotfilesCoreutils) {
+    if ($null -eq $script:_DenCoreutils) {
         $found = ''
-        if ($env:_DOTFILES_COREUTILS) {
-            $g = (Get-Command $env:_DOTFILES_COREUTILS -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        if ($env:_DEN_COREUTILS) {
+            $g = (Get-Command $env:_DEN_COREUTILS -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
             if ($g) { $found = $g }
-            elseif (Test-Path -LiteralPath $env:_DOTFILES_COREUTILS -PathType Leaf) { $found = $env:_DOTFILES_COREUTILS }
+            elseif (Test-Path -LiteralPath $env:_DEN_COREUTILS -PathType Leaf) { $found = $env:_DEN_COREUTILS }
         }
         if (-not $found) {
             $g = (Get-Command 'coreutils' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -89,9 +89,9 @@ function _CoreutilsBin {
                 if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { $found = $p; break }
             }
         }
-        $script:_DotfilesCoreutils = $found
+        $script:_DenCoreutils = $found
     }
-    if ($script:_DotfilesCoreutils) { return $script:_DotfilesCoreutils } else { return $null }
+    if ($script:_DenCoreutils) { return $script:_DenCoreutils } else { return $null }
 }
 
 # ========== wrapper generator ==========
@@ -117,7 +117,7 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
         "`$false"
     }
     $sb = [scriptblock]::Create(@"
-if (`$env:_DOTFILES_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
+if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
     _WrapLog '$FuncName' '$Modern'
     `$input | & '$Modern' $ModernFlags @Args
 } else {
@@ -168,15 +168,15 @@ if (`$__cu) {
 # ========== toggle ==========
 
 function toggle-wrapper {
-    if ($env:_DOTFILES_WRAPPERS -ne '0') {
-        $env:_DOTFILES_WRAPPERS = '0'
+    if ($env:_DEN_WRAPPERS -ne '0') {
+        $env:_DEN_WRAPPERS = '0'
         $env:STARSHIP_WRAPPER_STATE = 'OFF'
         Write-Host 'wrappers: ' -NoNewline
         Write-Host 'OFF' -ForegroundColor Yellow -NoNewline
         Write-Host ' (using native commands)'
     }
     else {
-        $env:_DOTFILES_WRAPPERS = '1'
+        $env:_DEN_WRAPPERS = '1'
         Remove-Item Env:\STARSHIP_WRAPPER_STATE -ErrorAction SilentlyContinue
         Write-Host 'wrappers: ' -NoNewline
         Write-Host 'ON' -ForegroundColor Green -NoNewline

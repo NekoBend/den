@@ -49,9 +49,9 @@ actual=$(run_bash "$HWINFO_SH" '
     export STARSHIP_CPU_INTEL="i9-13900K"
     export STARSHIP_GPU_NVIDIA="RTX 4090"
     toggle-hwinfo >/dev/null
-    echo "SAVED_CPU=$_DOTFILES_SAVED_CPU_INTEL"
-    echo "SAVED_GPU=$_DOTFILES_SAVED_GPU_NVIDIA"
-    echo "HIDDEN=$_DOTFILES_HWINFO_HIDDEN"
+    echo "SAVED_CPU=$_DEN_SAVED_CPU_INTEL"
+    echo "SAVED_GPU=$_DEN_SAVED_GPU_NVIDIA"
+    echo "HIDDEN=$_DEN_HWINFO_HIDDEN"
 ')
 assert_contains "bash/toggle OFF saved cpu" "SAVED_CPU=i9-13900K" "$actual"
 assert_contains "bash/toggle OFF saved gpu" "SAVED_GPU=RTX 4090" "$actual"
@@ -76,7 +76,7 @@ actual=$(run_bash "$HWINFO_SH" '
     toggle-hwinfo >/dev/null
     echo "CPU=$STARSHIP_CPU_INTEL"
     echo "GPU=$STARSHIP_GPU_NVIDIA"
-    echo "HIDDEN=$_DOTFILES_HWINFO_HIDDEN"
+    echo "HIDDEN=$_DEN_HWINFO_HIDDEN"
 ')
 assert_contains "bash/roundtrip cpu" "CPU=i9-13900K" "$actual"
 assert_contains "bash/roundtrip gpu" "GPU=RTX 4090" "$actual"
@@ -142,8 +142,8 @@ actual=$(run_pwsh "$HWINFO_PS1_TOGGLE" '
     toggle-hwinfo *>$null
     Write-Output "CPU=$env:STARSHIP_CPU_INTEL"
     Write-Output "GPU=$env:STARSHIP_GPU_NVIDIA"
-    Write-Output "SAVED=$env:_DOTFILES_SAVED_CPU_INTEL"
-    Write-Output "HIDDEN=$env:_DOTFILES_HWINFO_HIDDEN"
+    Write-Output "SAVED=$env:_DEN_SAVED_CPU_INTEL"
+    Write-Output "HIDDEN=$env:_DEN_HWINFO_HIDDEN"
 ' | tr -d '\r')
 assert_eq "pwsh/toggle OFF cpu cleared" "CPU=" "$(echo "$actual" | grep '^CPU=')"
 assert_eq "pwsh/toggle OFF gpu cleared" "GPU=" "$(echo "$actual" | grep '^GPU=')"

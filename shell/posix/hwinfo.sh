@@ -12,7 +12,7 @@ case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 # auto-refreshes on reboot. Falls back to /tmp, still keyed by machine-id.
 _hwc_dir="${XDG_RUNTIME_DIR:-/tmp}"
 _hwc_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
-_hwc_f="$_hwc_dir/dotfiles-hwinfo.${_hwc_mid}.sh"
+_hwc_f="$_hwc_dir/den-hwinfo.${_hwc_mid}.sh"
 
 # Source the cache only if a regular file, not a symlink, owned by us.
 if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
@@ -124,34 +124,34 @@ unset _hwc_dir _hwc_mid _hwc_f
 # refresh-hwinfo → clear the hardware info cache (re-detect on next shell)
 refresh-hwinfo() {
     _rh_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
-    rm -f "${XDG_RUNTIME_DIR:-/tmp}/dotfiles-hwinfo.${_rh_mid}.sh"
+    rm -f "${XDG_RUNTIME_DIR:-/tmp}/den-hwinfo.${_rh_mid}.sh"
     unset _rh_mid
     echo "hwinfo cache cleared. Restart shell to refresh."
 }
 
 # toggle-hwinfo → flip hardware info display in starship prompt on/off
 toggle-hwinfo() {
-    if [ "${_DOTFILES_HWINFO_HIDDEN:-0}" = "0" ]; then
-        _DOTFILES_SAVED_CPU_INTEL="$STARSHIP_CPU_INTEL"
-        _DOTFILES_SAVED_CPU_AMD="$STARSHIP_CPU_AMD"
-        _DOTFILES_SAVED_GPU_NVIDIA="$STARSHIP_GPU_NVIDIA"
-        _DOTFILES_SAVED_GPU_AMD="$STARSHIP_GPU_AMD"
-        _DOTFILES_SAVED_GPU_INTEL="$STARSHIP_GPU_INTEL"
-        export _DOTFILES_SAVED_CPU_INTEL _DOTFILES_SAVED_CPU_AMD
-        export _DOTFILES_SAVED_GPU_NVIDIA _DOTFILES_SAVED_GPU_AMD _DOTFILES_SAVED_GPU_INTEL
+    if [ "${_DEN_HWINFO_HIDDEN:-0}" = "0" ]; then
+        _DEN_SAVED_CPU_INTEL="$STARSHIP_CPU_INTEL"
+        _DEN_SAVED_CPU_AMD="$STARSHIP_CPU_AMD"
+        _DEN_SAVED_GPU_NVIDIA="$STARSHIP_GPU_NVIDIA"
+        _DEN_SAVED_GPU_AMD="$STARSHIP_GPU_AMD"
+        _DEN_SAVED_GPU_INTEL="$STARSHIP_GPU_INTEL"
+        export _DEN_SAVED_CPU_INTEL _DEN_SAVED_CPU_AMD
+        export _DEN_SAVED_GPU_NVIDIA _DEN_SAVED_GPU_AMD _DEN_SAVED_GPU_INTEL
         unset STARSHIP_CPU_INTEL STARSHIP_CPU_AMD
         unset STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL
-        export _DOTFILES_HWINFO_HIDDEN=1
+        export _DEN_HWINFO_HIDDEN=1
         echo "hwinfo: OFF (hidden from prompt)"
     else
-        [ -n "$_DOTFILES_SAVED_CPU_INTEL" ]  && export STARSHIP_CPU_INTEL="$_DOTFILES_SAVED_CPU_INTEL"
-        [ -n "$_DOTFILES_SAVED_CPU_AMD" ]    && export STARSHIP_CPU_AMD="$_DOTFILES_SAVED_CPU_AMD"
-        [ -n "$_DOTFILES_SAVED_GPU_NVIDIA" ] && export STARSHIP_GPU_NVIDIA="$_DOTFILES_SAVED_GPU_NVIDIA"
-        [ -n "$_DOTFILES_SAVED_GPU_AMD" ]    && export STARSHIP_GPU_AMD="$_DOTFILES_SAVED_GPU_AMD"
-        [ -n "$_DOTFILES_SAVED_GPU_INTEL" ]  && export STARSHIP_GPU_INTEL="$_DOTFILES_SAVED_GPU_INTEL"
-        unset _DOTFILES_SAVED_CPU_INTEL _DOTFILES_SAVED_CPU_AMD
-        unset _DOTFILES_SAVED_GPU_NVIDIA _DOTFILES_SAVED_GPU_AMD _DOTFILES_SAVED_GPU_INTEL
-        export _DOTFILES_HWINFO_HIDDEN=0
+        [ -n "$_DEN_SAVED_CPU_INTEL" ]  && export STARSHIP_CPU_INTEL="$_DEN_SAVED_CPU_INTEL"
+        [ -n "$_DEN_SAVED_CPU_AMD" ]    && export STARSHIP_CPU_AMD="$_DEN_SAVED_CPU_AMD"
+        [ -n "$_DEN_SAVED_GPU_NVIDIA" ] && export STARSHIP_GPU_NVIDIA="$_DEN_SAVED_GPU_NVIDIA"
+        [ -n "$_DEN_SAVED_GPU_AMD" ]    && export STARSHIP_GPU_AMD="$_DEN_SAVED_GPU_AMD"
+        [ -n "$_DEN_SAVED_GPU_INTEL" ]  && export STARSHIP_GPU_INTEL="$_DEN_SAVED_GPU_INTEL"
+        unset _DEN_SAVED_CPU_INTEL _DEN_SAVED_CPU_AMD
+        unset _DEN_SAVED_GPU_NVIDIA _DEN_SAVED_GPU_AMD _DEN_SAVED_GPU_INTEL
+        export _DEN_HWINFO_HIDDEN=0
         echo "hwinfo: ON (visible in prompt)"
     fi
 }
