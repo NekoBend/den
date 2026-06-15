@@ -4,7 +4,7 @@ rem If VIRTUAL_ENV is set or override disabled, use pip.exe directly; else deleg
 
 where uv.exe >nul 2>&1 || goto :system
 if defined VIRTUAL_ENV goto :system
-if "%_DOTFILES_UV_OVERRIDE%"=="0" goto :system
+if "%_DEN_UV_OVERRIDE%"=="0" goto :system
 
 echo pip %* → uv pip %* >&2
 uv.exe pip %*

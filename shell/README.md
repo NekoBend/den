@@ -71,8 +71,8 @@ keeping the binary to drive through the tier above), so re-run `den install shel
 after updating coreutils if the block comes back. The
 wrappers resolve the binary at its fixed install path
 `%ProgramFiles%\coreutils\coreutils.exe` (the installer does not add it to PATH);
-point them elsewhere with `_DOTFILES_COREUTILS=<path>`, or disable the tier with
-`_DOTFILES_COREUTILS=0`. The tier is Windows + pwsh 7 only (Windows PowerShell 5.1
+point them elsewhere with `_DEN_COREUTILS=<path>`, or disable the tier with
+`_DEN_COREUTILS=0`. The tier is Windows + pwsh 7 only (Windows PowerShell 5.1
 skips it); on Linux/macOS these commands keep their native / PowerShell-builtin
 behavior.
 
@@ -82,16 +82,16 @@ wrapper substitutes the modern one. To make that visible, a dim notice prints on
 **every** wrapped call:
 
 ```
-[dotfiles] ls -> lsd  | native one-off: command ls ...  | disable: run toggle-wrapper, or export _DOTFILES_WRAPPERS=0
+[den] ls -> lsd  | native one-off: command ls ...  | disable: run toggle-wrapper, or export _DEN_WRAPPERS=0
 ```
 
 Ways to get the native command:
 
 - **One-off (POSIX):** prefix `command`, e.g. `command ls -la --color=never`.
   This bypasses the wrapper for that single call.
-- **This session:** run `toggle-wrapper` (flips `_DOTFILES_WRAPPERS`), or
-  `export _DOTFILES_WRAPPERS=0` (PowerShell: `$env:_DOTFILES_WRAPPERS = '0'`).
-- **Silence the notice** (without changing behavior): `_DOTFILES_WRAPPER_LOG=0`.
+- **This session:** run `toggle-wrapper` (flips `_DEN_WRAPPERS`), or
+  `export _DEN_WRAPPERS=0` (PowerShell: `$env:_DEN_WRAPPERS = '0'`).
+- **Silence the notice** (without changing behavior): `_DEN_WRAPPER_LOG=0`.
 
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
 tool, ignoring the toggle.
@@ -135,7 +135,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `va [DIR]` | activate a venv (default `.venv`) |
 | `vd` | deactivate |
 | `vv` / `vva` | `uv venv` (create / create + activate) |
-| `toggle-uv` | flip the uv override (`_DOTFILES_UV_OVERRIDE`) |
+| `toggle-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
 
 ### Parallel file ops
 | Command | What it does |
@@ -174,7 +174,7 @@ PowerShell additionally provides `df`, `env`, `head`, `tail`, `wc`, `which`,
 Profiles are stored in `$XDG_CONFIG_HOME/den/proxy.conf`. `on` / `off` only set
 or clear environment variables in the **current shell** (no global tool config
 such as `~/.gitconfig` is touched), so the active profile is tracked per-shell
-in `_DOTFILES_PROXY_ACTIVE` and never disagrees with another shell. bash/zsh
+in `_DEN_PROXY_ACTIVE` and never disagrees with another shell. bash/zsh
 only. `localhost,127.0.0.1,::1` are always excluded; a profile's own `no_proxy`
 entries (comma-separated, e.g. `.corp.example.com,10.0.0.0/8`) are added on top.
 The one exception is `no_proxy = *`, which stays standalone (bypass everything).
@@ -236,9 +236,9 @@ of zoxide and starship. zsh and PowerShell mirror this.
 
 | Variable | Effect |
 |----------|--------|
-| `_DOTFILES_WRAPPERS=0` | use native commands instead of modern tools |
-| `_DOTFILES_WRAPPER_LOG=0` | silence the one-time wrapper hint |
-| `_DOTFILES_COREUTILS=<path>` | use a specific microsoft/coreutils binary, e.g. `C:\Program Files\coreutils\coreutils.exe` (Windows) |
-| `_DOTFILES_COREUTILS=0` | disable the microsoft/coreutils tier (Windows) |
-| `_DOTFILES_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv`) |
-| `_DOTFILES_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo`) |
+| `_DEN_WRAPPERS=0` | use native commands instead of modern tools |
+| `_DEN_WRAPPER_LOG=0` | silence the one-time wrapper hint |
+| `_DEN_COREUTILS=<path>` | use a specific microsoft/coreutils binary, e.g. `C:\Program Files\coreutils\coreutils.exe` (Windows) |
+| `_DEN_COREUTILS=0` | disable the microsoft/coreutils tier (Windows) |
+| `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv`) |
+| `_DEN_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo`) |

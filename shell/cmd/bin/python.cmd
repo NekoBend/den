@@ -4,7 +4,7 @@ rem If VIRTUAL_ENV is set or override disabled, use python.exe directly; else de
 
 where uv.exe >nul 2>&1 || goto :system
 if defined VIRTUAL_ENV goto :system
-if "%_DOTFILES_UV_OVERRIDE%"=="0" goto :system
+if "%_DEN_UV_OVERRIDE%"=="0" goto :system
 
 echo python %* → uv run -- python %* >&2
 uv.exe run -- python %*

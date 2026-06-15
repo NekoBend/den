@@ -67,7 +67,7 @@ err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV; pip install foo")
 assert_contains "bash/pip redirect" "→ uv pip" "$err"
 
 echo "[bash] python redirect message"
-err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV _DOTFILES_VENV_PYTHON; python -c pass")
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV _DEN_VENV_PYTHON; python -c pass")
 assert_contains "bash/python redirect" "→ uv run" "$err"
 
 echo "[bash] vd no active venv"
@@ -79,7 +79,7 @@ actual=$(run_bash "$PYTHON_SH_TEST" "toggle-uv" 2>/dev/null)
 assert_contains "bash/toggle-uv OFF" "OFF" "$actual"
 
 echo "[bash] toggle-uv sets env var"
-actual=$(run_bash "$PYTHON_SH_TEST" "toggle-uv >/dev/null 2>&1; echo \$_DOTFILES_UV_OVERRIDE")
+actual=$(run_bash "$PYTHON_SH_TEST" "toggle-uv >/dev/null 2>&1; echo \$_DEN_UV_OVERRIDE")
 assert_eq "bash/toggle-uv env" "0" "$actual"
 
 # =============================================================================
@@ -115,7 +115,7 @@ err=$(run_pwsh_stderr "$PYTHON_PS1_TEST" "\$env:VIRTUAL_ENV = \$null; vd" || tru
 assert_contains "pwsh/vd no venv" "No active venv" "$err"
 
 echo "[pwsh] toggle-uv OFF sets env"
-actual=$(run_pwsh "$PYTHON_PS1_TEST" "toggle-uv *>\$null; \$env:_DOTFILES_UV_OVERRIDE" | tr -d '\r')
+actual=$(run_pwsh "$PYTHON_PS1_TEST" "toggle-uv *>\$null; \$env:_DEN_UV_OVERRIDE" | tr -d '\r')
 assert_eq "pwsh/toggle-uv OFF env" "0" "$actual"
 
 echo "[pwsh] toggle-uv removes functions"

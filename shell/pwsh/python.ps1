@@ -7,9 +7,9 @@ if (-not (_ResolveCmd 'uv' 'App')) { return }
 
 # uv → auto-inject --python for 'uv run' when venv is active
 function uv {
-  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and $Args.Count -ge 1 -and $Args[0] -eq 'run') {
+  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and $Args.Count -ge 1 -and $Args[0] -eq 'run') {
     $rest = @($Args | Select-Object -Skip 1)
-    & (_ResolveCmd 'uv' 'App') run --python $env:_DOTFILES_VENV_PYTHON -- @rest
+    & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON -- @rest
   }
   else {
     & (_ResolveCmd 'uv' 'App') @Args
@@ -52,8 +52,8 @@ function pip3 {
 
 # python → uv run python (uses venv version when active)
 function python {
-  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
-    & (_ResolveCmd 'uv' 'App') run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
+  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
+    & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON -- python @Args
   }
   elseif (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "python $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
@@ -66,8 +66,8 @@ function python {
 
 # python3 → uv run python (uses venv version when active)
 function python3 {
-  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
-    & (_ResolveCmd 'uv' 'App') run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
+  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
+    & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON -- python @Args
   }
   elseif (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "python3 $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
@@ -80,8 +80,8 @@ function python3 {
 
 # py → uv run python (uses venv version when active)
 function py {
-  if ($env:VIRTUAL_ENV -and $env:_DOTFILES_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
-    & (_ResolveCmd 'uv' 'App') run --python $env:_DOTFILES_VENV_PYTHON -- python @Args
+  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
+    & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON -- python @Args
   }
   elseif (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "py $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
@@ -108,11 +108,11 @@ function va {
     $pyver = (Get-Content $cfg | Where-Object { $_ -match '^version_info\s*=' } | Select-Object -First 1) -replace '^version_info\s*=\s*' -replace '\s+$'
     # allowlist validation is required - pyvenv.cfg is untrusted (parity with posix python.sh)
     if ($pyver -match '^[0-9A-Za-z.+-]+$') {
-      $env:_DOTFILES_VENV_PYTHON = $pyver
+      $env:_DEN_VENV_PYTHON = $pyver
     }
     else {
       if ($pyver) { Write-Warning "va: rejecting suspicious version_info='$pyver' from pyvenv.cfg" }
-      Remove-Item Env:\_DOTFILES_VENV_PYTHON -ErrorAction SilentlyContinue
+      Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
     }
   }
 }
@@ -124,7 +124,7 @@ function vd {
     return
   }
   deactivate
-  Remove-Item Env:\_DOTFILES_VENV_PYTHON -ErrorAction SilentlyContinue
+  Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
 }
 
 # vv → uv venv (create only)
@@ -151,7 +151,7 @@ function vva {
 
 # toggle-uv → flip uv python/pip override on/off
 function toggle-uv {
-  if ($env:_DOTFILES_UV_OVERRIDE -ne '0') {
+  if ($env:_DEN_UV_OVERRIDE -ne '0') {
     Remove-Item Function:\uv -ErrorAction SilentlyContinue
     Remove-Item Function:\python -ErrorAction SilentlyContinue
     Remove-Item Function:\python3 -ErrorAction SilentlyContinue
@@ -159,7 +159,7 @@ function toggle-uv {
     Remove-Item Function:\pip3 -ErrorAction SilentlyContinue
     Remove-Item Function:\py -ErrorAction SilentlyContinue
     Remove-Item Function:\Show-UvOnlyMessage -ErrorAction SilentlyContinue
-    $env:_DOTFILES_UV_OVERRIDE = '0'
+    $env:_DEN_UV_OVERRIDE = '0'
     Write-Host 'uv override: ' -NoNewline
     Write-Host 'OFF' -ForegroundColor Yellow -NoNewline
     Write-Host ' (using system python/pip)'
@@ -167,7 +167,7 @@ function toggle-uv {
   else {
     $profileDir = Split-Path -Parent $PROFILE
     . "$profileDir\python.ps1"
-    $env:_DOTFILES_UV_OVERRIDE = '1'
+    $env:_DEN_UV_OVERRIDE = '1'
     Write-Host 'uv override: ' -NoNewline
     Write-Host 'ON' -ForegroundColor Green -NoNewline
     Write-Host ' (python/pip → uv)'

@@ -42,11 +42,11 @@ assert_contains "bash/_wsfx missing" "not installed" "$actual"
 
 # --- toggle-wrapper ---
 echo "[bash] toggle-wrapper"
-actual=$(run_bash "$HELPERS_SH" "toggle-wrapper >/dev/null; echo \$_DOTFILES_WRAPPERS")
+actual=$(run_bash "$HELPERS_SH" "toggle-wrapper >/dev/null; echo \$_DEN_WRAPPERS")
 assert_eq "bash/toggle OFF" "0" "$actual"
 
 echo "[bash] toggle-wrapper round trip"
-actual=$(run_bash "$HELPERS_SH" "toggle-wrapper >/dev/null; toggle-wrapper >/dev/null; echo \$_DOTFILES_WRAPPERS")
+actual=$(run_bash "$HELPERS_SH" "toggle-wrapper >/dev/null; toggle-wrapper >/dev/null; echo \$_DEN_WRAPPERS")
 assert_eq "bash/toggle ON again" "1" "$actual"
 
 echo "[bash] toggle sets STARSHIP_WRAPPER_STATE"
@@ -62,7 +62,7 @@ echo "[bash] _wrap respects toggle OFF"
 echo "native test" > "$WORK/toggle_test.txt"
 actual=$(run_bash "$HELPERS_SH" "
     _wrap mycat nonexistent_modern '' cat ''
-    export _DOTFILES_WRAPPERS=0
+    export _DEN_WRAPPERS=0
     mycat '$WORK/toggle_test.txt'
 " 2>/dev/null)
 assert_eq "bash/_wrap toggle OFF uses fallback" "native test" "$actual"
@@ -138,11 +138,11 @@ actual=$(run_zsh "$HELPERS_SH" "_wsfx echow echo ''; type echow" 2>/dev/null)
 assert_contains "zsh/_wsfx creates function" "function" "$actual"
 
 echo "[zsh] toggle-wrapper"
-actual=$(run_zsh "$HELPERS_SH" "toggle-wrapper >/dev/null; echo \$_DOTFILES_WRAPPERS")
+actual=$(run_zsh "$HELPERS_SH" "toggle-wrapper >/dev/null; echo \$_DEN_WRAPPERS")
 assert_eq "zsh/toggle OFF" "0" "$actual"
 
 echo "[zsh] toggle round trip"
-actual=$(run_zsh "$HELPERS_SH" "toggle-wrapper >/dev/null; toggle-wrapper >/dev/null; echo \$_DOTFILES_WRAPPERS")
+actual=$(run_zsh "$HELPERS_SH" "toggle-wrapper >/dev/null; toggle-wrapper >/dev/null; echo \$_DEN_WRAPPERS")
 assert_eq "zsh/toggle ON again" "1" "$actual"
 
 echo "[zsh] _init_path adds to PATH"
@@ -220,26 +220,26 @@ assert_contains "pwsh/New-WrapperSuffix missing" "not installed" "$actual"
 # --- toggle-wrapper sets OFF ---
 echo "[pwsh] toggle-wrapper OFF"
 actual=$(run_pwsh "$HELPERS_PS1" "
-    \$env:_DOTFILES_WRAPPERS = '1'
+    \$env:_DEN_WRAPPERS = '1'
     toggle-wrapper *>\$null
-    \$env:_DOTFILES_WRAPPERS
+    \$env:_DEN_WRAPPERS
 " | tr -d '\r')
 assert_eq "pwsh/toggle OFF" "0" "$actual"
 
 # --- toggle-wrapper round trip ---
 echo "[pwsh] toggle-wrapper round trip"
 actual=$(run_pwsh "$HELPERS_PS1" "
-    \$env:_DOTFILES_WRAPPERS = '1'
+    \$env:_DEN_WRAPPERS = '1'
     toggle-wrapper *>\$null
     toggle-wrapper *>\$null
-    \$env:_DOTFILES_WRAPPERS
+    \$env:_DEN_WRAPPERS
 " | tr -d '\r')
 assert_eq "pwsh/toggle ON again" "1" "$actual"
 
 # --- toggle-wrapper sets STARSHIP_WRAPPER_STATE ---
 echo "[pwsh] toggle sets STARSHIP_WRAPPER_STATE"
 actual=$(run_pwsh "$HELPERS_PS1" "
-    \$env:_DOTFILES_WRAPPERS = '1'
+    \$env:_DEN_WRAPPERS = '1'
     toggle-wrapper *>\$null
     \$env:STARSHIP_WRAPPER_STATE
 " | tr -d '\r')
@@ -250,17 +250,17 @@ echo "[pwsh] New-Wrapper respects toggle OFF"
 echo "toggle test" > "$WORK/pwsh_toggle.txt"
 actual=$(run_pwsh "$HELPERS_PS1" "
     New-Wrapper 'mycat' 'nonexistent_modern' '' 'cat' '' ''
-    \$env:_DOTFILES_WRAPPERS = '0'
+    \$env:_DEN_WRAPPERS = '0'
     mycat '$WORK/pwsh_toggle.txt'
 " 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/New-Wrapper toggle OFF uses native" "toggle test" "$actual"
 
 # --- _WrapLog prints on every call (no once-per-session dedup) ---
 # The hint is intentionally emitted on EVERY wrapped call so a user never misses
-# that a modern tool was substituted; _DOTFILES_WRAPPER_LOG=0 silences it.
+# that a modern tool was substituted; _DEN_WRAPPER_LOG=0 silences it.
 echo "[pwsh] _WrapLog prints every call"
 actual=$(run_pwsh "$HELPERS_PS1" "
-    \$env:_DOTFILES_WRAPPER_LOG = '1'
+    \$env:_DEN_WRAPPER_LOG = '1'
     New-Wrapper 'myecho' 'echo' '' '' '' ''
     \$log1 = myecho test1 6>&1 | Where-Object { \$_ -match 'dotfiles' }
     \$log2 = myecho test2 6>&1 | Where-Object { \$_ -match 'dotfiles' }

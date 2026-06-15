@@ -91,34 +91,34 @@ function refresh-hwinfo {
 
 # toggle-hwinfo → flip hardware info display in starship prompt on/off
 function toggle-hwinfo {
-  if ($env:_DOTFILES_HWINFO_HIDDEN -ne '1') {
-    $env:_DOTFILES_SAVED_CPU_INTEL  = $env:STARSHIP_CPU_INTEL
-    $env:_DOTFILES_SAVED_CPU_AMD    = $env:STARSHIP_CPU_AMD
-    $env:_DOTFILES_SAVED_GPU_NVIDIA = $env:STARSHIP_GPU_NVIDIA
-    $env:_DOTFILES_SAVED_GPU_AMD    = $env:STARSHIP_GPU_AMD
-    $env:_DOTFILES_SAVED_GPU_INTEL  = $env:STARSHIP_GPU_INTEL
+  if ($env:_DEN_HWINFO_HIDDEN -ne '1') {
+    $env:_DEN_SAVED_CPU_INTEL  = $env:STARSHIP_CPU_INTEL
+    $env:_DEN_SAVED_CPU_AMD    = $env:STARSHIP_CPU_AMD
+    $env:_DEN_SAVED_GPU_NVIDIA = $env:STARSHIP_GPU_NVIDIA
+    $env:_DEN_SAVED_GPU_AMD    = $env:STARSHIP_GPU_AMD
+    $env:_DEN_SAVED_GPU_INTEL  = $env:STARSHIP_GPU_INTEL
     Remove-Item Env:\STARSHIP_CPU_INTEL  -ErrorAction SilentlyContinue
     Remove-Item Env:\STARSHIP_CPU_AMD    -ErrorAction SilentlyContinue
     Remove-Item Env:\STARSHIP_GPU_NVIDIA -ErrorAction SilentlyContinue
     Remove-Item Env:\STARSHIP_GPU_AMD    -ErrorAction SilentlyContinue
     Remove-Item Env:\STARSHIP_GPU_INTEL  -ErrorAction SilentlyContinue
-    $env:_DOTFILES_HWINFO_HIDDEN = '1'
+    $env:_DEN_HWINFO_HIDDEN = '1'
     Write-Host 'hwinfo: ' -NoNewline
     Write-Host 'OFF' -ForegroundColor Yellow -NoNewline
     Write-Host ' (hidden from prompt)'
   }
   else {
-    $env:STARSHIP_CPU_INTEL  = $env:_DOTFILES_SAVED_CPU_INTEL
-    $env:STARSHIP_CPU_AMD    = $env:_DOTFILES_SAVED_CPU_AMD
-    $env:STARSHIP_GPU_NVIDIA = $env:_DOTFILES_SAVED_GPU_NVIDIA
-    $env:STARSHIP_GPU_AMD    = $env:_DOTFILES_SAVED_GPU_AMD
-    $env:STARSHIP_GPU_INTEL  = $env:_DOTFILES_SAVED_GPU_INTEL
-    Remove-Item Env:\_DOTFILES_SAVED_CPU_INTEL  -ErrorAction SilentlyContinue
-    Remove-Item Env:\_DOTFILES_SAVED_CPU_AMD    -ErrorAction SilentlyContinue
-    Remove-Item Env:\_DOTFILES_SAVED_GPU_NVIDIA -ErrorAction SilentlyContinue
-    Remove-Item Env:\_DOTFILES_SAVED_GPU_AMD    -ErrorAction SilentlyContinue
-    Remove-Item Env:\_DOTFILES_SAVED_GPU_INTEL  -ErrorAction SilentlyContinue
-    $env:_DOTFILES_HWINFO_HIDDEN = '0'
+    $env:STARSHIP_CPU_INTEL  = $env:_DEN_SAVED_CPU_INTEL
+    $env:STARSHIP_CPU_AMD    = $env:_DEN_SAVED_CPU_AMD
+    $env:STARSHIP_GPU_NVIDIA = $env:_DEN_SAVED_GPU_NVIDIA
+    $env:STARSHIP_GPU_AMD    = $env:_DEN_SAVED_GPU_AMD
+    $env:STARSHIP_GPU_INTEL  = $env:_DEN_SAVED_GPU_INTEL
+    Remove-Item Env:\_DEN_SAVED_CPU_INTEL  -ErrorAction SilentlyContinue
+    Remove-Item Env:\_DEN_SAVED_CPU_AMD    -ErrorAction SilentlyContinue
+    Remove-Item Env:\_DEN_SAVED_GPU_NVIDIA -ErrorAction SilentlyContinue
+    Remove-Item Env:\_DEN_SAVED_GPU_AMD    -ErrorAction SilentlyContinue
+    Remove-Item Env:\_DEN_SAVED_GPU_INTEL  -ErrorAction SilentlyContinue
+    $env:_DEN_HWINFO_HIDDEN = '0'
     Write-Host 'hwinfo: ' -NoNewline
     Write-Host 'ON' -ForegroundColor Green -NoNewline
     Write-Host ' (visible in prompt)'

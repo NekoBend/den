@@ -364,7 +364,7 @@ assert_contains "pwsh/llt fallback file1" "file1.txt" "$actual"
 echo ""
 echo "[pwsh] toggle-wrapper OFF"
 echo "hello wrapper" > "$WORK/wrap_test.txt"
-actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DOTFILES_WRAPPERS='0'; cat '$WORK/wrap_test.txt' | Out-String")
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; cat '$WORK/wrap_test.txt' | Out-String")
 actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
 assert_eq "pwsh/toggle off cat" "hello wrapper" "$actual"
 

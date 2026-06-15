@@ -12,9 +12,9 @@ if command -v uv >/dev/null 2>&1; then
 
 # uv → auto-inject --python for 'uv run' when venv is active
 uv() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DOTFILES_VENV_PYTHON" ] && [ "$1" = "run" ]; then
+    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ] && [ "$1" = "run" ]; then
         shift
-        command uv run --python "$_DOTFILES_VENV_PYTHON" -- "$@"
+        command uv run --python "$_DEN_VENV_PYTHON" -- "$@"
     else
         command uv "$@"
     fi
@@ -47,8 +47,8 @@ pip3() {
 
 # py → uv run python (uses venv version when active)
 py() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DOTFILES_VENV_PYTHON" ]; then
-        command uv run --python "$_DOTFILES_VENV_PYTHON" -- python "$@"
+    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ]; then
+        command uv run --python "$_DEN_VENV_PYTHON" -- python "$@"
     else
         _show_uv_only_message "py${*:+ $*}" "uv run -- python${*:+ $*}"
         command uv run -- python "$@"
@@ -57,8 +57,8 @@ py() {
 
 # python → uv run python (uses venv version when active)
 python() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DOTFILES_VENV_PYTHON" ]; then
-        command uv run --python "$_DOTFILES_VENV_PYTHON" -- python "$@"
+    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ]; then
+        command uv run --python "$_DEN_VENV_PYTHON" -- python "$@"
     else
         _show_uv_only_message "python${*:+ $*}" "uv run -- python${*:+ $*}"
         command uv run -- python "$@"
@@ -67,8 +67,8 @@ python() {
 
 # python3 → uv run python (uses venv version when active)
 python3() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DOTFILES_VENV_PYTHON" ]; then
-        command uv run --python "$_DOTFILES_VENV_PYTHON" -- python "$@"
+    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ]; then
+        command uv run --python "$_DEN_VENV_PYTHON" -- python "$@"
     else
         _show_uv_only_message "python3${*:+ $*}" "uv run -- python${*:+ $*}"
         command uv run -- python "$@"
@@ -95,10 +95,10 @@ va() {
     case "$pyver" in
         ''|*[!0-9A-Za-z.+-]*)
             [ -n "$pyver" ] && echo "va: rejecting suspicious version_info='$pyver' from pyvenv.cfg" >&2
-            unset _DOTFILES_VENV_PYTHON
+            unset _DEN_VENV_PYTHON
             ;;
         *)
-            export _DOTFILES_VENV_PYTHON="$pyver"
+            export _DEN_VENV_PYTHON="$pyver"
             ;;
     esac
 }
@@ -110,7 +110,7 @@ vd() {
         return 1
     fi
     deactivate
-    unset _DOTFILES_VENV_PYTHON
+    unset _DEN_VENV_PYTHON
 }
 
 if command -v uv >/dev/null 2>&1; then
@@ -129,13 +129,13 @@ vva() {
 
 # toggle-uv → flip uv python/pip override on/off
 toggle-uv() {
-    if [ "${_DOTFILES_UV_OVERRIDE:-1}" = "1" ]; then
+    if [ "${_DEN_UV_OVERRIDE:-1}" = "1" ]; then
         unset -f uv python python3 pip pip3 py _show_uv_only_message 2>/dev/null
-        export _DOTFILES_UV_OVERRIDE=0
+        export _DEN_UV_OVERRIDE=0
         echo "uv override: OFF (using system python/pip)"
     else
         . "${HOME}/.config/shell/python.sh"
-        export _DOTFILES_UV_OVERRIDE=1
+        export _DEN_UV_OVERRIDE=1
         echo "uv override: ON (python/pip → uv)"
     fi
 }

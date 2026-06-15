@@ -9,10 +9,10 @@
 # Prints on EVERY wrapped call: the modern tool's flags and output differ from
 # the native command, so a silent substitution is easy to miss (and tools or
 # generated commands that assume the native behavior then break). Silence the
-# notice with _DOTFILES_WRAPPER_LOG=0.
+# notice with _DEN_WRAPPER_LOG=0.
 _wrap_log() {
-    [ "${_DOTFILES_WRAPPER_LOG:-1}" = "0" ] && return 0
-    printf '\033[2m[dotfiles] %s -> %s  | native one-off: command %s ...  | disable: run toggle-wrapper, or export _DOTFILES_WRAPPERS=0\033[0m\n' "$1" "$2" "$1" >&2
+    [ "${_DEN_WRAPPER_LOG:-1}" = "0" ] && return 0
+    printf '\033[2m[den] %s -> %s  | native one-off: command %s ...  | disable: run toggle-wrapper, or export _DEN_WRAPPERS=0\033[0m\n' "$1" "$2" "$1" >&2
 }
 
 # ========== wrapper generator ==========
@@ -21,7 +21,7 @@ _wrap_log() {
 _wrap() {
     _w_name="$1" _w_mod="$2" _w_mf="$3" _w_fb="$4" _w_fbf="$5"
     eval "${_w_name}() {
-        if [ \"\${_DOTFILES_WRAPPERS:-1}\" != \"0\" ] && command -v ${_w_mod} >/dev/null 2>&1; then
+        if [ \"\${_DEN_WRAPPERS:-1}\" != \"0\" ] && command -v ${_w_mod} >/dev/null 2>&1; then
             _wrap_log \"${_w_name}\" \"${_w_mod}\"
             ${_w_mod} ${_w_mf} \"\$@\"
         elif [ -n \"${_w_fb}\" ]; then
@@ -49,12 +49,12 @@ _wsfx() {
 # ========== toggle ==========
 
 toggle-wrapper() {
-    if [ "${_DOTFILES_WRAPPERS:-1}" != "0" ]; then
-        export _DOTFILES_WRAPPERS=0
+    if [ "${_DEN_WRAPPERS:-1}" != "0" ]; then
+        export _DEN_WRAPPERS=0
         export STARSHIP_WRAPPER_STATE="OFF"
         echo "wrappers: OFF (using native commands)"
     else
-        export _DOTFILES_WRAPPERS=1
+        export _DEN_WRAPPERS=1
         unset STARSHIP_WRAPPER_STATE
         echo "wrappers: ON (using modern tools)"
     fi

@@ -281,7 +281,7 @@ back() {
 
 # cd → wrapper ON: __zoxide_z, OFF: builtin cd
 cd() {
-    if [ "${_DOTFILES_WRAPPERS:-1}" != "0" ] && type __zoxide_z >/dev/null 2>&1; then
+    if [ "${_DEN_WRAPPERS:-1}" != "0" ] && type __zoxide_z >/dev/null 2>&1; then
         __zoxide_z "$@"
     else
         builtin cd "$@"
@@ -290,7 +290,7 @@ cd() {
 
 # cdi → wrapper ON: __zoxide_zi (interactive)
 cdi() {
-    if [ "${_DOTFILES_WRAPPERS:-1}" != "0" ] && type __zoxide_zi >/dev/null 2>&1; then
+    if [ "${_DEN_WRAPPERS:-1}" != "0" ] && type __zoxide_zi >/dev/null 2>&1; then
         __zoxide_zi "$@"
     else
         echo "cdi: wrappers are OFF or zoxide is not available" >&2

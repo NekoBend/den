@@ -7,7 +7,7 @@
 #   name<TAB>url<TAB>no_proxy(optional)
 # `proxy on <name>` exports the standard proxy env vars (lower + upper case)
 # into the CURRENT shell; `proxy off` unsets them. The active profile is tracked
-# per-shell in _DOTFILES_PROXY_ACTIVE, so it never disagrees with another shell:
+# per-shell in _DEN_PROXY_ACTIVE, so it never disagrees with another shell:
 # this feature only ever touches env vars, never global tool config.
 
 # Skip in non-interactive shells
@@ -95,7 +95,7 @@ _proxy_rm() {
     if [ "$_pr_found" -eq 1 ]; then
         mv "$_pr_tmp" "$_pr_conf"
         echo "proxy: removed '$1'" >&2
-        if [ "${_DOTFILES_PROXY_ACTIVE:-}" = "$1" ]; then
+        if [ "${_DEN_PROXY_ACTIVE:-}" = "$1" ]; then
             echo "proxy: '$1' is still active in this shell; run 'proxy off'" >&2
         fi
     else
@@ -117,7 +117,7 @@ _proxy_ls() {
     _pl_tab=$(printf '\t')
     while IFS="$_pl_tab" read -r _pl_n _pl_u _pl_p || [ -n "$_pl_n" ]; do
         [ -n "$_pl_n" ] || continue
-        if [ "$_pl_n" = "${_DOTFILES_PROXY_ACTIVE:-}" ]; then
+        if [ "$_pl_n" = "${_DEN_PROXY_ACTIVE:-}" ]; then
             _pl_mark='*'
         else
             _pl_mark=' '
@@ -168,7 +168,7 @@ _proxy_on() {
         all_proxy="$_po_url" no_proxy="$_po_np"
     export HTTP_PROXY="$_po_url" HTTPS_PROXY="$_po_url" \
         ALL_PROXY="$_po_url" NO_PROXY="$_po_np"
-    _DOTFILES_PROXY_ACTIVE="$1"
+    _DEN_PROXY_ACTIVE="$1"
     echo "proxy: on ($1 -> $_po_url)" >&2
     unset _po_conf _po_tab _po_url _po_np _po_found _po_n _po_u _po_p
 }
@@ -176,16 +176,16 @@ _proxy_on() {
 _proxy_off() {
     unset http_proxy https_proxy all_proxy no_proxy
     unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
-    if [ -n "${_DOTFILES_PROXY_ACTIVE:-}" ]; then
-        echo "proxy: off (was $_DOTFILES_PROXY_ACTIVE)" >&2
+    if [ -n "${_DEN_PROXY_ACTIVE:-}" ]; then
+        echo "proxy: off (was $_DEN_PROXY_ACTIVE)" >&2
     else
         echo "proxy: off" >&2
     fi
-    unset _DOTFILES_PROXY_ACTIVE
+    unset _DEN_PROXY_ACTIVE
 }
 
 _proxy_status() {
-    echo "active: ${_DOTFILES_PROXY_ACTIVE:-(none)}"
+    echo "active: ${_DEN_PROXY_ACTIVE:-(none)}"
     echo "http_proxy=${http_proxy:-}"
     echo "https_proxy=${https_proxy:-}"
     echo "all_proxy=${all_proxy:-}"

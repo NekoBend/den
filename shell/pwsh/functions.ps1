@@ -109,7 +109,7 @@ Remove-Item alias:cd -Force -ErrorAction SilentlyContinue
 # cd → wrapper ON: __zoxide_z, OFF: Set-Location
 function cd {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
-  if ($env:_DOTFILES_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
+  if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
     __zoxide_z @Rest
   } else {
     $global:_OLDPWD = $PWD.Path
@@ -120,7 +120,7 @@ function cd {
 # cdi → wrapper ON: __zoxide_zi (interactive)
 function cdi {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
-  if ($env:_DOTFILES_WRAPPERS -ne '0' -and (Get-Command __zoxide_zi -ErrorAction SilentlyContinue)) {
+  if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_zi -ErrorAction SilentlyContinue)) {
     __zoxide_zi @Rest
   } else {
     Write-Warning 'cdi: wrappers are OFF or zoxide is not available'
