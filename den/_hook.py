@@ -357,6 +357,16 @@ def _resolve_config(spec: dict, override: str | None) -> Path:
     return (Path.cwd() / spec["config"]).resolve()
 
 
+def _display_config(spec: dict, config: Path) -> Path:
+    """The path a format actually writes to, for status messages. Most formats
+    operate on `config`, but clinerules ignores it and uses the workspace
+    `.clinerules` beside the resolved `.den` (which may be an ancestor's). Report
+    that real target so the message never names a dir that was not touched."""
+    if spec.get("format") == "clinerules":
+        return _clinerules_dir(_find_den_dir(Path.cwd()))
+    return config
+
+
 def _run_command(
     tool: str, generic: str, den_dir: Path, *, powershell: bool = False
 ) -> str:
@@ -752,7 +762,10 @@ def _cmd_install(argv: list[str]) -> int:
             continue
         config = _resolve_config(spec, override)
         handlers[0](tool, spec, config, den_dir)
-        print(f"installed {tool} hooks -> {config}", file=sys.stderr)
+        print(
+            f"installed {tool} hooks -> {_display_config(spec, config)}",
+            file=sys.stderr,
+        )
     return rc
 
 
@@ -781,7 +794,10 @@ def _cmd_remove(argv: list[str]) -> int:
             continue
         config = _resolve_config(spec, override)
         handlers[2](tool, spec, config)
-        print(f"removed den hooks from {tool} -> {config}", file=sys.stderr)
+        print(
+            f"removed den hooks from {tool} -> {_display_config(spec, config)}",
+            file=sys.stderr,
+        )
     return 0
 
 

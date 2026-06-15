@@ -503,3 +503,22 @@ def test_remove_cline_cli_clears_rule_files(tmp_path, monkeypatch):
     hook_main(["remove", "--tool", "cline-cli"])
     assert not (cr / "den-imprint.md").exists()
     assert not (cr / "den-memory.md").exists()
+
+
+def test_install_cline_cli_message_names_real_dir_with_ancestor_den(
+    tmp_path, monkeypatch, capsys
+):
+    # cwd has no .den of its own; an ancestor does. The clinerules format writes
+    # beside the ANCESTOR .den, so the install message must name that dir, not the
+    # cwd-relative .clinerules that was never touched (the display-path bug).
+    _seed(tmp_path)  # ancestor .den at tmp_path
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    monkeypatch.chdir(sub)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 0
+    # rule landed beside the ancestor .den, not under cwd
+    assert (tmp_path / ".clinerules" / "den-imprint.md").is_file()
+    assert not (sub / ".clinerules").exists()
+    msg = capsys.readouterr().err
+    assert str((tmp_path / ".clinerules").resolve()) in msg
+    assert str(sub / ".clinerules") not in msg
