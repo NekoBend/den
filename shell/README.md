@@ -179,6 +179,24 @@ only. `localhost,127.0.0.1,::1` are always excluded; a profile's own `no_proxy`
 entries (comma-separated, e.g. `.corp.example.com,10.0.0.0/8`) are added on top.
 The one exception is `no_proxy = *`, which stays standalone (bypass everything).
 
+### Command snippets
+Save favorite commands by name and run them later, instead of `history | grep`.
+
+| Command | What it does |
+|---------|--------------|
+| `snippet save <name> <command...>` | save a command (or pipe it via stdin); alias `snip` |
+| `snippet ls` | list saved snippets |
+| `snippet show <name>` | print a snippet's command (no run) |
+| `snippet run <name>` | run a snippet |
+| `snippet rm <name>` | delete a snippet |
+| `snippet pick` / `snippet` | fzf-select a snippet and run it |
+
+Snippets are stored in `$XDG_CONFIG_HOME/den/snippets` (`name<TAB>command`; the
+name is `[A-Za-z0-9_-]`, the command may contain anything on one line). `run` and
+`pick` echo the command, then `eval` it in the **current shell** (you saved it,
+so it is trusted), which lets it `cd`, set vars, and use the current environment.
+`pick` needs `fzf`; without it, use `snippet run <name>`. bash/zsh only.
+
 ## Hardware info in the prompt
 
 The starship prompt shows your CPU and GPU. `hwinfo.sh` detects them once and
