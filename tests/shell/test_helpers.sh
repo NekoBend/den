@@ -30,6 +30,16 @@ echo "[bash] _wrap no fallback error"
 actual=$(run_bash "$HELPERS_SH" "_wrap mytest nonexistent_tool '' '' ''; mytest 2>&1; echo \$?" 2>/dev/null)
 assert_contains "bash/_wrap no fallback" "not installed" "$actual"
 
+# --- _wrap_log native one-off hint names the FALLBACK, not the wrapper name ---
+echo "[bash] _wrap_log native one-off = fallback command"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; myla x >/dev/null")
+assert_contains "bash/native one-off is fallback" "command ls -A" "$actual"
+assert_not_contains "bash/native one-off not wrapper name" "command myla" "$actual"
+
+echo "[bash] _wrap_log native one-off = none when no fallback"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null")
+assert_contains "bash/native one-off none" "(no native equivalent)" "$actual"
+
 # --- _wsfx creates function ---
 echo "[bash] _wsfx creates function"
 actual=$(run_bash "$HELPERS_SH" "_wsfx echow echo ''; type echow" 2>/dev/null)
@@ -132,6 +142,15 @@ echo "[zsh] _wrap fallback"
 echo "hello test" > "$WORK/wrap_test.txt"
 actual=$(run_zsh "$HELPERS_SH" "_wrap mycat nonexistent_tool '' cat ''; mycat '$WORK/wrap_test.txt'" 2>/dev/null)
 assert_eq "zsh/_wrap fallback" "hello test" "$actual"
+
+echo "[zsh] _wrap_log native one-off = fallback command"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; myla x >/dev/null")
+assert_contains "zsh/native one-off is fallback" "command ls -A" "$actual"
+assert_not_contains "zsh/native one-off not wrapper name" "command myla" "$actual"
+
+echo "[zsh] _wrap_log native one-off = none when no fallback"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null")
+assert_contains "zsh/native one-off none" "(no native equivalent)" "$actual"
 
 echo "[zsh] _wsfx creates function"
 actual=$(run_zsh "$HELPERS_SH" "_wsfx echow echo ''; type echow" 2>/dev/null)

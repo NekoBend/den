@@ -6,10 +6,12 @@
 # _WrapLog <name> <tool> — announce a modern-tool substitution on EVERY wrapped
 # call. The modern tool's flags and output differ from the native command, so a
 # silent substitution is easy to miss (and commands that assume the native
-# behavior then break). Silence the notice with _DEN_WRAPPER_LOG=0.
+# behavior then break). No "native one-off" hint here (unlike POSIX): PowerShell
+# has no `command` builtin and the native-bypass idiom is awkward, so we only
+# point at the toggles. Silence just this notice with _DEN_WRAPPER_LOG=0.
 function _WrapLog([string]$Name, [string]$Tool) {
     if ($env:_DEN_WRAPPER_LOG -eq '0') { return }
-    Write-Host "[den] $Name -> $Tool  | disable: run toggle-wrapper, or `$env:_DEN_WRAPPERS = '0'" -ForegroundColor DarkGray
+    Write-Host "[den] $Name -> $Tool  | silence: _DEN_WRAPPER_LOG=0  | disable: toggle-wrapper or `$env:_DEN_WRAPPERS = '0'" -ForegroundColor DarkGray
 }
 
 # ========== microsoft/coreutils tier (Windows) ==========
