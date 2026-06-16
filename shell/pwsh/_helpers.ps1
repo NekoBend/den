@@ -3,13 +3,19 @@
 
 # ========== wrapper log ==========
 
-# _WrapLog <name> <tool> — announce a modern-tool substitution on EVERY wrapped
-# call. The modern tool's flags and output differ from the native command, so a
-# silent substitution is easy to miss (and commands that assume the native
-# behavior then break). Silence the notice with _DEN_WRAPPER_LOG=0.
-function _WrapLog([string]$Name, [string]$Tool) {
+# _WrapLog <name> <modern> <native> <native_flags> — announce a modern-tool
+# substitution on EVERY wrapped call. The modern tool's flags and output differ
+# from the native command, so a silent substitution is easy to miss (and commands
+# that assume the native behavior then break). The "native one-off" hint names the
+# actual native fallback (e.g. `command ls -A` for `la`), not the wrapper name,
+# since wrappers like la/ll/lt have no binary of their own. Silence with
+# _DEN_WRAPPER_LOG=0.
+function _WrapLog([string]$Name, [string]$Tool, [string]$Native, [string]$NativeFlags) {
     if ($env:_DEN_WRAPPER_LOG -eq '0') { return }
-    Write-Host "[den] $Name -> $Tool  | disable: run toggle-wrapper, or `$env:_DEN_WRAPPERS = '0'" -ForegroundColor DarkGray
+    $oneOff = if ($Native) {
+        if ($NativeFlags) { "command $Native $NativeFlags" } else { "command $Native" }
+    } else { '(no native equivalent)' }
+    Write-Host "[den] $Name -> $Tool  | native one-off: $oneOff  | disable: run toggle-wrapper, or `$env:_DEN_WRAPPERS = '0'" -ForegroundColor DarkGray
 }
 
 # ========== microsoft/coreutils tier (Windows) ==========
@@ -118,7 +124,7 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     }
     $sb = [scriptblock]::Create(@"
 if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
-    _WrapLog '$FuncName' '$Modern'
+    _WrapLog '$FuncName' '$Modern' '$NativeCmd' '$NativeCmdFlags'
     `$input | & '$Modern' $ModernFlags @Args
 } else {
     `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
