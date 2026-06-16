@@ -19,7 +19,7 @@ _wrap_log() {
     else
         _wl_native="(no native equivalent)"
     fi
-    printf '\033[2m[den] %s -> %s  | native one-off: %s  | disable: run toggle-wrapper, or export _DEN_WRAPPERS=0\033[0m\n' "$1" "$2" "$_wl_native" >&2
+    printf '\033[2m[den] %s -> %s  | native one-off: %s  | silence: _DEN_WRAPPER_LOG=0  | disable: toggle-wrapper or export _DEN_WRAPPERS=0\033[0m\n' "$1" "$2" "$_wl_native" >&2
     unset _wl_native
 }
 
