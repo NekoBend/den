@@ -65,10 +65,12 @@ _snippet_save() {
     if [ "$#" -gt 0 ]; then
         _ss_cmd="$*"
     else
-        # Keep a populated read even at EOF (a line with no trailing newline);
-        # `|| _ss_cmd=''` would clobber it. A truly empty stdin leaves _ss_cmd
-        # empty, which the next check rejects.
-        IFS= read -r _ss_cmd
+        # Read one line from stdin. `read` returns non-zero at EOF even when it
+        # populated _ss_cmd (a final line with no trailing newline), so `|| true`
+        # keeps that value AND avoids aborting under `set -e`. (The old
+        # `|| _ss_cmd=''` clobbered the no-newline value instead.) A truly empty
+        # stdin leaves _ss_cmd empty, which the next check rejects.
+        IFS= read -r _ss_cmd || true
     fi
     if [ -z "$_ss_cmd" ]; then
         echo "snippet save: empty command" >&2

@@ -60,6 +60,11 @@ snippet_suite() {
     assert_eq "$sh/stdin save no-newline" "echo nonl" "$actual"
 
     reset_store
+    echo "[$sh] save from newline-less stdin does not abort under set -e"
+    actual=$("$sh" -c "set -e; source '$SNIPPET_SH'; printf 'echo errx' | snippet save e >/dev/null 2>&1; snippet show e" | tr -d '\r')
+    assert_eq "$sh/errexit stdin save" "echo errx" "$actual"
+
+    reset_store
     echo "[$sh] save rejects a multi-line command"
     actual=$("$run" "$SNIPPET_SH" "snippet save m \"\$(printf 'echo a\\necho b')\" 2>&1; echo rc=\$?; snippet ls 2>&1" | tr -d '\r')
     assert_contains "$sh/multiline msg" "single line" "$actual"
