@@ -54,7 +54,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     curl -LsSf https://astral.sh/ruff/install.sh | sh
 
 # =============================================================================
-# Shell configuration (clone dotfiles from GitHub)
+# Shell configuration (clone den from GitHub)
 # =============================================================================
 RUN git clone --depth 1 https://github.com/NekoBend/den.git /tmp/den && \
     uv tool install /tmp/den && \

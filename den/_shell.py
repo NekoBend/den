@@ -45,7 +45,7 @@ _PWSH_PROFILE = "Microsoft.PowerShell_profile.ps1"
 _COREUTILS_SENTINEL = "60b36fc6-2d59-49df-be51-28dd2f4c3c9a"
 
 _POSIX_CORE = ["_helpers.sh", "wrappers.sh", "aliases.sh", "functions.sh", "hwinfo.sh"]
-_POSIX_EXTRAS = ["python.sh", "ffmpeg.sh", "parallel.sh"]
+_POSIX_EXTRAS = ["python.sh", "ffmpeg.sh", "parallel.sh", "proxy.sh", "snippet.sh"]
 _PWSH_CORE = [
     "_helpers.ps1",
     "init.ps1",

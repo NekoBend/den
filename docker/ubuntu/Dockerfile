@@ -70,7 +70,7 @@ RUN cargo install --locked \
     && rm -rf /root/.cargo/registry /root/.cargo/git
 
 # =============================================================================
-# Shell configuration (clone dotfiles from GitHub)
+# Shell configuration (clone den from GitHub)
 # =============================================================================
 RUN git clone --depth 1 https://github.com/NekoBend/den.git /tmp/den && \
     uv tool install /tmp/den && \

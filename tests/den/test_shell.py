@@ -1,7 +1,34 @@
 """Tests for den install shell (den/_shell.py)."""
 
+import re
+from pathlib import Path
+
 from den import _shell
 from den._install import main as install_main
+
+_POSIX_DIR = Path(__file__).resolve().parents[2] / "shell" / "posix"
+
+
+def _source_all_files() -> set[str]:
+    """The .sh names that _helpers.sh's _source_all sources at shell startup."""
+    text = (_POSIX_DIR / "_helpers.sh").read_text()
+    m = re.search(r"for _sa_f in ([^\n;]+); do", text)
+    assert m, "could not find the _source_all loop in _helpers.sh"
+    return set(m.group(1).split())
+
+
+def test_every_posix_feature_file_is_installed_and_sourced():
+    # Guard against adding a shell/posix/*.sh that `den install shell` never
+    # copies or init.* never sources (the proxy.sh / snippet.sh delivery bug).
+    feature_files = {p.name for p in _POSIX_DIR.glob("*.sh") if p.name != "_helpers.sh"}
+    installed = set(_shell._POSIX_CORE + _shell._POSIX_EXTRAS)
+    sourced = _source_all_files()
+    assert feature_files <= installed, (
+        f"shell/posix files missing from den install lists: {feature_files - installed}"
+    )
+    assert feature_files <= sourced, (
+        f"shell/posix files not sourced by _source_all: {feature_files - sourced}"
+    )
 
 
 def test_pwsh_dir_honors_queried_profile_on_windows(tmp_path, monkeypatch):
