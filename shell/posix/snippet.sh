@@ -65,10 +65,20 @@ _snippet_save() {
     if [ "$#" -gt 0 ]; then
         _ss_cmd="$*"
     else
-        IFS= read -r _ss_cmd || _ss_cmd=''
+        # Keep a populated read even at EOF (a line with no trailing newline);
+        # `|| _ss_cmd=''` would clobber it. A truly empty stdin leaves _ss_cmd
+        # empty, which the next check rejects.
+        IFS= read -r _ss_cmd
     fi
     if [ -z "$_ss_cmd" ]; then
         echo "snippet save: empty command" >&2
+        unset _ss_name _ss_cmd
+        return 1
+    fi
+    # The store is one record per line, so a newline in the command would split
+    # into phantom rows that `run` could eval; reject multi-line commands.
+    if [ "$(printf '%s' "$_ss_cmd" | wc -l)" -ne 0 ]; then
+        echo "snippet save: command must be a single line" >&2
         unset _ss_name _ss_cmd
         return 1
     fi

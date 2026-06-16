@@ -55,6 +55,18 @@ snippet_suite() {
     assert_eq "$sh/stdin save" "echo piped" "$actual"
 
     reset_store
+    echo "[$sh] save from stdin without a trailing newline"
+    actual=$("$run" "$SNIPPET_SH" "printf 'echo nonl' | snippet save b >/dev/null 2>&1; snippet show b" | tr -d '\r')
+    assert_eq "$sh/stdin save no-newline" "echo nonl" "$actual"
+
+    reset_store
+    echo "[$sh] save rejects a multi-line command"
+    actual=$("$run" "$SNIPPET_SH" "snippet save m \"\$(printf 'echo a\\necho b')\" 2>&1; echo rc=\$?; snippet ls 2>&1" | tr -d '\r')
+    assert_contains "$sh/multiline msg" "single line" "$actual"
+    assert_contains "$sh/multiline rc" "rc=1" "$actual"
+    assert_not_contains "$sh/multiline not saved" "echo a" "$actual"
+
+    reset_store
     echo "[$sh] save overwrites an existing name (no duplicate)"
     actual=$("$run" "$SNIPPET_SH" "snippet save g 'echo old' >/dev/null 2>&1; snippet save g 'echo new' >/dev/null 2>&1; snippet ls" | tr -d '\r')
     assert_contains "$sh/overwrite new" "echo new" "$actual"
