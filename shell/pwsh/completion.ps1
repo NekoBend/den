@@ -57,10 +57,12 @@ function Initialize-Completion([string]$Tool, [string[]]$CompletionArgs) {
     }
 }
 
-# The Tab handler and per-tool completers only matter in INTERACTIVE sessions
-# (where you press Tab). Skip them in non-interactive / automation runs, which
-# also avoids spawning docker/gh/uv/rustup there. Initialize-Completion above is
-# still defined, so it stays reusable + testable. (Matches wrappers/coreutils.)
+# The Tab handler + per-tool completers only matter in INTERACTIVE sessions, so
+# skip them otherwise. NOTE: [Environment]::UserInteractive is reliable only on
+# Windows (it is always $true on non-Windows pwsh), so this mainly spares Windows
+# automation from spawning docker/gh/uv/rustup; on Linux/macOS the gate is a no-op
+# but the completers still no-op when their tool is absent. Initialize-Completion
+# is defined ABOVE this gate, so it stays reusable + testable. (Matches wrappers.)
 if (-not [Environment]::UserInteractive) { return }
 
 # Tab UX: show a completion menu (matches the zsh menu-select on Linux).

@@ -21,10 +21,11 @@ if ! command -v pwsh >/dev/null 2>&1; then
 fi
 
 # completion.ps1 depends on _helpers.ps1 (Test-CacheSafe). Sourcing both must not
-# error and must define Initialize-Completion. The Tab handler + per-tool
-# completers are gated behind `[Environment]::UserInteractive`, so in this
-# non-interactive run only the function definition executes -- exactly what this
-# smoke test checks. Stderr is NOT suppressed, so a load failure is visible.
+# error and must define Initialize-Completion, which is defined ABOVE the
+# `[Environment]::UserInteractive` gate -- so this assertion holds whether or not
+# the gate fires (on Linux pwsh it does not, since UserInteractive is always true;
+# the per-tool completers then no-op anyway because their tools are absent in CI).
+# Stderr is NOT suppressed, so a load failure is visible.
 echo "[pwsh] completion.ps1 sources cleanly and defines Initialize-Completion"
 actual=$(run_pwsh "$HELPERS_PS1" ". '$COMPLETION_PS1'; if (Get-Command Initialize-Completion -ErrorAction SilentlyContinue) { 'DEFINED' } else { 'MISSING' }" | tr -d '\r')
 assert_eq "pwsh/completion defines Initialize-Completion" "DEFINED" "$actual"

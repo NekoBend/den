@@ -217,10 +217,11 @@ extra, installed with `den install shell`):
 - **Tab shows a menu** (`Set-PSReadLineKeyHandler -Key Tab MenuComplete`), like
   the zsh menu-select on Linux, for everything PowerShell completes natively
   (cmdlets, parameters, paths, module argument completers).
-- **Per-tool completers** for `docker`, `gh`, `uv`, `rustup`: their
-  `<tool> completion powershell` script is cached under LocalAppData
-  (`Initialize-Completion`, validated by `Test-CacheSafe`) and sourced, so
-  `docker run <Tab>` etc. complete. Each is skipped when the tool is absent.
+- **Per-tool completers** for `docker`, `gh`, `uv`, `rustup`: each tool's
+  generated PowerShell completion script (the subcommand varies per tool) is
+  cached under LocalAppData (`Initialize-Completion`, validated by
+  `Test-CacheSafe`) and sourced, so `docker run <Tab>` etc. complete. Each is
+  skipped when the tool is absent.
 - **git** branch/remote completion comes from `posh-git`, but only when it is
   already installed (it is a heavy module, so it is never force-installed or
   imported when absent).
