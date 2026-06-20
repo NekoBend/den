@@ -13,6 +13,7 @@
 if (Test-Path "$PSScriptRoot\python.ps1") { . "$PSScriptRoot\python.ps1" }
 if (Test-Path "$PSScriptRoot\ffmpeg.ps1") { . "$PSScriptRoot\ffmpeg.ps1" }
 if (Test-Path "$PSScriptRoot\parallel.ps1") { . "$PSScriptRoot\parallel.ps1" }
+if (Test-Path "$PSScriptRoot\completion.ps1") { . "$PSScriptRoot\completion.ps1" }
 
 # ===== History =====
 if (Get-Module -Name PSReadLine) {

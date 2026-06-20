@@ -55,7 +55,7 @@ _PWSH_CORE = [
     "functions.ps1",
     "hwinfo.ps1",
 ]
-_PWSH_EXTRAS = ["python.ps1", "ffmpeg.ps1", "parallel.ps1"]
+_PWSH_EXTRAS = ["python.ps1", "ffmpeg.ps1", "parallel.ps1", "completion.ps1"]
 
 _BASH_LINE = (
     '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
