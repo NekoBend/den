@@ -20,15 +20,15 @@ if ! command -v pwsh >/dev/null 2>&1; then
     return 0 2>/dev/null || exit 0
 fi
 
-# completion.ps1 depends on _helpers.ps1 (Test-CacheSafe). Sourcing both must not
-# error and must define Initialize-Completion, which is defined ABOVE the
-# `[Environment]::UserInteractive` gate -- so this assertion holds whether or not
-# the gate fires (on Linux pwsh it does not, since UserInteractive is always true;
-# the per-tool completers then no-op anyway because their tools are absent in CI).
-# Stderr is NOT suppressed, so a load failure is visible.
-echo "[pwsh] completion.ps1 sources cleanly and defines Initialize-Completion"
-actual=$(run_pwsh "$HELPERS_PS1" ". '$COMPLETION_PS1'; if (Get-Command Initialize-Completion -ErrorAction SilentlyContinue) { 'DEFINED' } else { 'MISSING' }" | tr -d '\r')
-assert_eq "pwsh/completion defines Initialize-Completion" "DEFINED" "$actual"
+# completion.ps1 uses the shared Initialize-Cache (in _helpers.ps1) and registers
+# the per-tool completers. Sourcing both must not error: the trailing sentinel
+# prints only if completion.ps1 sourced without a terminating error. In CI (Linux
+# pwsh, where UserInteractive is always true so the gate is a no-op) the per-tool
+# completers no-op because their tools are absent. Stderr is NOT suppressed, so a
+# load failure is visible.
+echo "[pwsh] completion.ps1 sources cleanly"
+actual=$(run_pwsh "$HELPERS_PS1" ". '$COMPLETION_PS1'; 'SOURCED-OK'" | tr -d '\r')
+assert_eq "pwsh/completion sources cleanly" "SOURCED-OK" "$actual"
 
 print_summary "test_completion"
 [ "$FAIL" -eq 0 ]
