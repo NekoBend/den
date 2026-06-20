@@ -239,11 +239,12 @@ function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix 
         ((Get-Item -LiteralPath $_cf).LastWriteTime -lt (Get-Item -LiteralPath $toolPath).LastWriteTime)
 
     if ($needsRegen) {
-        # Commit only when the command exits 0 and printed something; otherwise an
-        # empty/failed run writes a cache newer than the binary, so the freshness check
-        # never regenerates and the tool stays broken until a reinstall.
+        # Commit only when the command printed something. An empty run would write a
+        # cache newer than the binary, so the freshness check would never regenerate
+        # and the tool would stay broken until a reinstall. (Non-empty output is the
+        # signal; $LASTEXITCODE is unreliable for shell scripts on non-Windows.)
         $out = & $toolPath @InvokeArgs 2>$null
-        if ($LASTEXITCODE -eq 0 -and $out) {
+        if ($out) {
             $tmpCache = $_cf + '.tmp.' + [guid]::NewGuid().ToString('N')
             try {
                 $out | Set-Content -LiteralPath $tmpCache -Encoding UTF8
