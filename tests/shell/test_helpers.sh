@@ -299,7 +299,7 @@ assert_eq "pwsh/pipeline forwarding" "hello_pipe" "$actual"
 mkdir -p "$WORK/dbgbin"
 cat > "$WORK/dbgbin/dbgtool" <<'EOF'
 #!/bin/sh
-printf "%s\n" "OUT2:$2"
+printf "%s\n" "\$env:PWSH_CACHE_TEST = 'v1:$2'"
 EOF
 chmod +x "$WORK/dbgbin/dbgtool"
 echo "[pwsh] DEBUG initcache"
@@ -307,10 +307,9 @@ run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/dbgbin:' + \$env:PATH
     \$tp = (Get-Command dbgtool -CommandType Application -EA SilentlyContinue | Select-Object -First 1).Source
     \$a = @('init','powershell')
-    \$expl = (& \$tp init powershell 2>&1 | Out-String).Trim()
-    \$splat = (& \$tp @a 2>&1 | Out-String).Trim()
+    \$o = & \$tp @a 2>\$null
     \$ret = Initialize-Cache 'dbgtool' @('init','powershell')
-    Write-Host (\"DBG TP=[{0}] EXPL=[{1}] SPLAT=[{2}] RET=[{3}]\" -f \$tp,\$expl,\$splat,\$ret)
+    Write-Host (\"DBG OUTLEN=[{0}] OUT=[{1}] RET=[{2}]\" -f (\$o | Measure-Object).Count, (\$o -join '|'), \$ret)
 " 2>&1
 
 # --- Initialize-Cache regenerates when binary is newer ---
