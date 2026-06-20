@@ -225,11 +225,14 @@ extra, installed with `den install shell`):
   already installed (it is a heavy module, so it is never force-installed or
   imported when absent).
 
-Add a tool by dropping one `Initialize-Completion '<tool>' @('completion', 'powershell')`
+Add a tool by dropping one
+`$_c = Initialize-Completion '<tool>' @('completion', 'powershell'); if ($_c) { . $_c }`
 line in `completion.ps1` (adjust the subcommand: `gh` uses `completion -s`, `uv`
-uses `generate-shell-completion`, `rustup` uses `completions`). Note that the
-completers are sourced eagerly at startup, so a very large one (e.g. `kubectl`,
-`helm`) adds measurable startup time each session.
+uses `generate-shell-completion`, `rustup` uses `completions`). The dot-source
+must stay at the file's top level (global scope), not inside a function, or some
+completers (docker's) silently fail. Note that the completers are sourced eagerly
+at startup, so a very large one (e.g. `kubectl`, `helm`) adds measurable startup
+time each session.
 
 ## Layout
 

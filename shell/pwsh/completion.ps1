@@ -6,11 +6,13 @@
 #      are cached + sourced (skipped when the tool is absent), so `docker run <Tab>`
 #      etc. complete. git uses posh-git, but only when it is already installed.
 
-# Initialize-Completion <tool> <args> - cache + source a tool's completion script.
-# Like Initialize-Cache, but the completion subcommand varies per tool
-# (completion / completions / generate-shell-completion), so it is passed in.
-# Regenerates when the tool binary is newer; validates with the shared
-# Test-CacheSafe before sourcing.
+# Initialize-Completion <tool> <args> - ensure a fresh, validated cache of a tool's
+# completion script and RETURN its path (or nothing). The CALLER dot-sources it at
+# GLOBAL scope on purpose: some completion scripts (e.g. docker's) register a
+# scriptblock that closes over state which must outlive this call, so sourcing it
+# inside the function would scope that state away and the completer silently fails.
+# The completion subcommand varies per tool, so it is passed in; the cache is
+# regenerated only when the tool binary is newer, and validated by Test-CacheSafe.
 function Initialize-Completion([string]$Tool, [string[]]$CompletionArgs) {
     $toolPath = Get-Command $Tool -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1 -ExpandProperty Source
@@ -45,13 +47,13 @@ function Initialize-Completion([string]$Tool, [string[]]$CompletionArgs) {
         }
     }
 
-    # Source the cache if present (a prior good one, if regen was skipped above).
+    # Return the cache path for the caller to dot-source at GLOBAL scope (a prior
+    # good cache is reused if regen was skipped above).
     if (Test-Path -LiteralPath $_cf -PathType Leaf) {
         if (Test-CacheSafe -Path $_cf) {
-            . $_cf
-        } else {
-            Write-Warning "Initialize-Completion: refusing to source unsafe cache file '$_cf'"
+            return $_cf
         }
+        Write-Warning "Initialize-Completion: refusing to source unsafe cache file '$_cf'"
     }
 }
 
@@ -67,10 +69,12 @@ if (Get-Module -Name PSReadLine) {
 }
 
 # Per-tool completers (cached; each is skipped when its tool is not installed).
-Initialize-Completion 'docker' @('completion', 'powershell')
-Initialize-Completion 'gh'     @('completion', '-s', 'powershell')
-Initialize-Completion 'uv'     @('generate-shell-completion', 'powershell')
-Initialize-Completion 'rustup' @('completions', 'powershell')
+# Dot-source the cache HERE, at this file's (global) scope -- see the note above.
+$_c = Initialize-Completion 'docker' @('completion', 'powershell');               if ($_c) { . $_c }
+$_c = Initialize-Completion 'gh'     @('completion', '-s', 'powershell');          if ($_c) { . $_c }
+$_c = Initialize-Completion 'uv'     @('generate-shell-completion', 'powershell'); if ($_c) { . $_c }
+$_c = Initialize-Completion 'rustup' @('completions', 'powershell');               if ($_c) { . $_c }
+Remove-Variable _c -ErrorAction SilentlyContinue
 
 # git: branch/remote completion via posh-git, but ONLY when it is already
 # installed. posh-git is a heavy module, so we never force-install it or pay an
