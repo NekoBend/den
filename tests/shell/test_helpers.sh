@@ -304,12 +304,13 @@ EOF
 chmod +x "$WORK/dbgbin/dbgtool"
 echo "[pwsh] DEBUG initcache"
 run_pwsh "$HELPERS_PS1" "
+    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'dbgtool-init.ps1') -Force -EA SilentlyContinue
+" >/dev/null 2>&1
+run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/dbgbin:' + \$env:PATH
-    \$tp = (Get-Command dbgtool -CommandType Application -EA SilentlyContinue | Select-Object -First 1).Source
-    \$a = @('init','powershell')
-    \$o = & \$tp @a 2>\$null
-    \$ret = Initialize-Cache 'dbgtool' @('init','powershell')
-    Write-Host (\"DBG OUTLEN=[{0}] OUT=[{1}] RET=[{2}]\" -f (\$o | Measure-Object).Count, (\$o -join '|'), \$ret)
+    \$null = Initialize-Cache 'dbgtool' @('init','powershell')
+    \$cf = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'dbgtool-init.ps1'
+    Write-Host (\"DBG EXISTS=[{0}] CONTENT=[{1}]\" -f (Test-Path -LiteralPath \$cf), (Get-Content -Raw -LiteralPath \$cf -EA SilentlyContinue))
 " 2>&1
 
 # --- Initialize-Cache regenerates when binary is newer ---
