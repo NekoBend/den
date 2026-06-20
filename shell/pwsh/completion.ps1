@@ -26,22 +26,33 @@ function Initialize-Completion([string]$Tool, [string[]]$CompletionArgs) {
         ((Get-Item -LiteralPath $_cf).LastWriteTime -lt (Get-Item -LiteralPath $toolPath).LastWriteTime)
 
     if ($needsRegen) {
-        $tmpCache = $_cf + '.tmp.' + [guid]::NewGuid().ToString('N')
-        try {
-            & $toolPath @CompletionArgs 2>$null | Set-Content -LiteralPath $tmpCache -Encoding UTF8
-            Move-Item -LiteralPath $tmpCache -Destination $_cf -Force
-        } finally {
-            if (Test-Path -LiteralPath $tmpCache -PathType Leaf) {
-                Remove-Item -LiteralPath $tmpCache -Force -ErrorAction SilentlyContinue
+        # Commit the cache ONLY when the command succeeded AND printed something.
+        # A tool that is present but whose completion command fails or prints
+        # nothing (unsupported version, transient error) would otherwise write an
+        # empty file whose mtime is newer than the binary, so the freshness check
+        # never regenerates and completion stays silently broken until a reinstall.
+        $out = & $toolPath @CompletionArgs 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) {
+            $tmpCache = $_cf + '.tmp.' + [guid]::NewGuid().ToString('N')
+            try {
+                $out | Set-Content -LiteralPath $tmpCache -Encoding UTF8
+                Move-Item -LiteralPath $tmpCache -Destination $_cf -Force
+            } finally {
+                if (Test-Path -LiteralPath $tmpCache -PathType Leaf) {
+                    Remove-Item -LiteralPath $tmpCache -Force -ErrorAction SilentlyContinue
+                }
             }
         }
     }
 
-    if (-not (Test-CacheSafe -Path $_cf)) {
-        Write-Warning "Initialize-Completion: refusing to source unsafe cache file '$_cf'"
-        return
+    # Source the cache if present (a prior good one, if regen was skipped above).
+    if (Test-Path -LiteralPath $_cf -PathType Leaf) {
+        if (Test-CacheSafe -Path $_cf) {
+            . $_cf
+        } else {
+            Write-Warning "Initialize-Completion: refusing to source unsafe cache file '$_cf'"
+        }
     }
-    . $_cf
 }
 
 # Tab UX: show a completion menu (matches the zsh menu-select on Linux).

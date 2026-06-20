@@ -227,7 +227,9 @@ extra, installed with `den install shell`):
 
 Add a tool by dropping one `Initialize-Completion '<tool>' @('completion', 'powershell')`
 line in `completion.ps1` (adjust the subcommand: `gh` uses `completion -s`, `uv`
-uses `generate-shell-completion`, `rustup` uses `completions`).
+uses `generate-shell-completion`, `rustup` uses `completions`). Note that the
+completers are sourced eagerly at startup, so a very large one (e.g. `kubectl`,
+`helm`) adds measurable startup time each session.
 
 ## Layout
 
