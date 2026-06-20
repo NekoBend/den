@@ -295,6 +295,24 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/pipeline forwarding" "hello_pipe" "$actual"
 
+# --- DEBUG: diagnose why Initialize-Cache writes an empty cache in CI ---
+mkdir -p "$WORK/dbgbin"
+cat > "$WORK/dbgbin/dbgtool" <<'EOF'
+#!/bin/sh
+printf "%s\n" "OUT2:$2"
+EOF
+chmod +x "$WORK/dbgbin/dbgtool"
+echo "[pwsh] DEBUG initcache"
+run_pwsh "$HELPERS_PS1" "
+    \$env:PATH = '$WORK/dbgbin:' + \$env:PATH
+    \$tp = (Get-Command dbgtool -CommandType Application -EA SilentlyContinue | Select-Object -First 1).Source
+    \$a = @('init','powershell')
+    \$expl = (& \$tp init powershell 2>&1 | Out-String).Trim()
+    \$splat = (& \$tp @a 2>&1 | Out-String).Trim()
+    \$ret = Initialize-Cache 'dbgtool' @('init','powershell')
+    Write-Host (\"DBG TP=[{0}] EXPL=[{1}] SPLAT=[{2}] RET=[{3}]\" -f \$tp,\$expl,\$splat,\$ret)
+" 2>&1
+
 # --- Initialize-Cache regenerates when binary is newer ---
 echo "[pwsh] Initialize-Cache regenerates when binary newer"
 mkdir -p "$WORK/pwsh_icbin"
