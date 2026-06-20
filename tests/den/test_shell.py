@@ -7,6 +7,13 @@ from den import _shell
 from den._install import main as install_main
 
 _POSIX_DIR = Path(__file__).resolve().parents[2] / "shell" / "posix"
+_PWSH_DIR = Path(__file__).resolve().parents[2] / "shell" / "pwsh"
+
+
+def _pwsh_sourced_files() -> set[str]:
+    """The .ps1 names that init.ps1 dot-sources at startup."""
+    text = (_PWSH_DIR / "init.ps1").read_text()
+    return set(re.findall(r"\$PSScriptRoot\\(\w+\.ps1)", text))
 
 
 def _source_all_files() -> set[str]:
@@ -28,6 +35,25 @@ def test_every_posix_feature_file_is_installed_and_sourced():
     )
     assert feature_files <= sourced, (
         f"shell/posix files not sourced by _source_all: {feature_files - sourced}"
+    )
+
+
+def test_every_pwsh_feature_file_is_installed_and_sourced():
+    # Same guard for the pwsh side: every shell/pwsh/*.ps1 (except _helpers.ps1
+    # and the init.ps1 entry point) must be in the install lists AND dot-sourced
+    # by init.ps1, or it never reaches a real install.
+    feature_files = {
+        p.name
+        for p in _PWSH_DIR.glob("*.ps1")
+        if p.name not in ("_helpers.ps1", "init.ps1")
+    }
+    installed = set(_shell._PWSH_CORE + _shell._PWSH_EXTRAS)
+    sourced = _pwsh_sourced_files()
+    assert feature_files <= installed, (
+        f"shell/pwsh files missing from den install lists: {feature_files - installed}"
+    )
+    assert feature_files <= sourced, (
+        f"shell/pwsh files not dot-sourced by init.ps1: {feature_files - sourced}"
     )
 
 
