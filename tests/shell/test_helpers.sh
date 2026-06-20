@@ -295,24 +295,6 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/pipeline forwarding" "hello_pipe" "$actual"
 
-# --- DEBUG: diagnose why Initialize-Cache writes an empty cache in CI ---
-mkdir -p "$WORK/dbgbin"
-cat > "$WORK/dbgbin/dbgtool" <<'EOF'
-#!/bin/sh
-printf "%s\n" "\$env:PWSH_CACHE_TEST = 'v1:$2'"
-EOF
-chmod +x "$WORK/dbgbin/dbgtool"
-echo "[pwsh] DEBUG initcache"
-run_pwsh "$HELPERS_PS1" "
-    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'dbgtool-init.ps1') -Force -EA SilentlyContinue
-" >/dev/null 2>&1
-run_pwsh "$HELPERS_PS1" "
-    \$env:PATH = '$WORK/dbgbin:' + \$env:PATH
-    \$null = Initialize-Cache 'dbgtool' @('init','powershell')
-    \$cf = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'dbgtool-init.ps1'
-    Write-Host (\"DBG EXISTS=[{0}] CONTENT=[{1}]\" -f (Test-Path -LiteralPath \$cf), (Get-Content -Raw -LiteralPath \$cf -EA SilentlyContinue))
-" 2>&1
-
 # --- Initialize-Cache regenerates when binary is newer ---
 echo "[pwsh] Initialize-Cache regenerates when binary newer"
 mkdir -p "$WORK/pwsh_icbin"
@@ -327,7 +309,7 @@ run_pwsh "$HELPERS_PS1" "
 " >/dev/null 2>&1
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/pwsh_icbin:' + \$env:PATH
-    $null = Initialize-Cache 'pwshcachetool' @('init', 'powershell')
+    [void](Initialize-Cache 'pwshcachetool' @('init', 'powershell'))
     \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1'
     Get-Content -Raw -LiteralPath \$cacheFile
 " 2>/dev/null | tr -d '\r')
@@ -340,7 +322,7 @@ EOF
 chmod +x "$WORK/pwsh_icbin/pwshcachetool"
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/pwsh_icbin:' + \$env:PATH
-    $null = Initialize-Cache 'pwshcachetool' @('init', 'powershell')
+    [void](Initialize-Cache 'pwshcachetool' @('init', 'powershell'))
     \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1'
     Get-Content -Raw -LiteralPath \$cacheFile
 " 2>/dev/null | tr -d '\r')
