@@ -103,7 +103,10 @@ function ports {
 }
 
 # ===== Navigation =====
-Initialize-Cache 'zoxide' 'powershell' '--no-cmd'
+# Dot-source zoxide's init HERE (global scope) so __zoxide_z reaches the session.
+$_z = Initialize-Cache 'zoxide' @('init', 'powershell', '--no-cmd')
+if ($_z) { . $_z }
+Remove-Variable _z -ErrorAction SilentlyContinue
 Remove-Item alias:cd -Force -ErrorAction SilentlyContinue
 
 # cd → wrapper ON: __zoxide_z, OFF: Set-Location

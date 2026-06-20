@@ -33,6 +33,7 @@ function reload {
 }
 
 # ===== Init tools (cached) =====
-if (Get-Command starship -ErrorAction SilentlyContinue) {
-  Initialize-Cache 'starship' 'powershell'
-}
+# Dot-source the cached init HERE (global scope); Initialize-Cache returns the path.
+$_s = Initialize-Cache 'starship' @('init', 'powershell')
+if ($_s) { . $_s }
+Remove-Variable _s -ErrorAction SilentlyContinue

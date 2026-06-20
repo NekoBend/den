@@ -217,8 +217,14 @@ function Test-CacheSafe([string]$Path) {
     return $true
 }
 
-# Initialize-Cache <tool> <shell> [extra_args...]
-function Initialize-Cache([string]$Tool, [string]$Shell, [string[]]$ExtraArgs) {
+# Initialize-Cache <tool> <invokeArgs> [suffix='init'] - ensure a fresh, validated
+# cache of `<tool> <invokeArgs>` output and RETURN its path (or nothing). The CALLER
+# dot-sources the path at GLOBAL scope: an init/completion script that defines
+# functions or registers completers (zoxide, docker's completion) must land in the
+# session scope, so dot-sourcing inside THIS function would scope those away and the
+# tool would silently fail. Regenerates only when the tool binary is newer, commits
+# the cache only on success + non-empty output, and validates with Test-CacheSafe.
+function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix = 'init') {
     $toolPath = Get-Command $Tool -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1 -ExpandProperty Source
     if ([string]::IsNullOrWhiteSpace($toolPath)) { return }
@@ -228,26 +234,35 @@ function Initialize-Cache([string]$Tool, [string]$Shell, [string[]]$ExtraArgs) {
         New-Item -ItemType Directory -Path $_cd -Force | Out-Null
     }
 
-    $_cf = Join-Path $_cd "${Tool}-init.ps1"
+    $_cf = Join-Path $_cd "$Tool-$Suffix.ps1"
     $needsRegen = (-not (Test-Path -LiteralPath $_cf -PathType Leaf)) -or
         ((Get-Item -LiteralPath $_cf).LastWriteTime -lt (Get-Item -LiteralPath $toolPath).LastWriteTime)
 
     if ($needsRegen) {
-        $tmpCache = $_cf + '.tmp.' + [guid]::NewGuid().ToString('N')
-        try {
-            & $toolPath init $Shell @ExtraArgs | Set-Content -LiteralPath $tmpCache -Encoding UTF8
-            Move-Item -LiteralPath $tmpCache -Destination $_cf -Force
-        } finally {
-            if (Test-Path -LiteralPath $tmpCache -PathType Leaf) {
-                Remove-Item -LiteralPath $tmpCache -Force -ErrorAction SilentlyContinue
+        # Commit only when the command printed something. An empty run would write a
+        # cache newer than the binary, so the freshness check would never regenerate
+        # and the tool would stay broken until a reinstall. (Non-empty output is the
+        # signal; $LASTEXITCODE is unreliable for shell scripts on non-Windows.)
+        $out = & $toolPath @InvokeArgs 2>$null
+        if ($out) {
+            $tmpCache = $_cf + '.tmp.' + [guid]::NewGuid().ToString('N')
+            try {
+                $out | Set-Content -LiteralPath $tmpCache -Encoding UTF8
+                Move-Item -LiteralPath $tmpCache -Destination $_cf -Force
+            } finally {
+                if (Test-Path -LiteralPath $tmpCache -PathType Leaf) {
+                    Remove-Item -LiteralPath $tmpCache -Force -ErrorAction SilentlyContinue
+                }
             }
         }
     }
 
-    if (-not (Test-CacheSafe -Path $_cf)) {
+    # Return the cache path for the caller to dot-source at GLOBAL scope (a prior good
+    # cache is reused if regen was skipped above).
+    if (Test-Path -LiteralPath $_cf -PathType Leaf) {
+        if (Test-CacheSafe -Path $_cf) {
+            return $_cf
+        }
         Write-Warning "Initialize-Cache: refusing to source unsafe cache file '$_cf'"
-        return
     }
-
-    . $_cf
 }

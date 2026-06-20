@@ -309,7 +309,7 @@ run_pwsh "$HELPERS_PS1" "
 " >/dev/null 2>&1
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/pwsh_icbin:' + \$env:PATH
-    Initialize-Cache 'pwshcachetool' 'powershell'
+    [void](Initialize-Cache 'pwshcachetool' @('init', 'powershell'))
     \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1'
     Get-Content -Raw -LiteralPath \$cacheFile
 " 2>/dev/null | tr -d '\r')
@@ -322,7 +322,7 @@ EOF
 chmod +x "$WORK/pwsh_icbin/pwshcachetool"
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/pwsh_icbin:' + \$env:PATH
-    Initialize-Cache 'pwshcachetool' 'powershell'
+    [void](Initialize-Cache 'pwshcachetool' @('init', 'powershell'))
     \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1'
     Get-Content -Raw -LiteralPath \$cacheFile
 " 2>/dev/null | tr -d '\r')

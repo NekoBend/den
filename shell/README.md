@@ -219,7 +219,7 @@ extra, installed with `den install shell`):
   (cmdlets, parameters, paths, module argument completers).
 - **Per-tool completers** for `docker`, `gh`, `uv`, `rustup`: each tool's
   generated PowerShell completion script (the subcommand varies per tool) is
-  cached under LocalAppData (`Initialize-Completion`, validated by
+  cached under LocalAppData (via the shared `Initialize-Cache`, validated by
   `Test-CacheSafe`) and sourced, so `docker run <Tab>` etc. complete. Each is
   skipped when the tool is absent.
 - **git** branch/remote completion comes from `posh-git`, but only when it is
@@ -227,7 +227,7 @@ extra, installed with `den install shell`):
   imported when absent).
 
 Add a tool by dropping one
-`$_c = Initialize-Completion '<tool>' @('completion', 'powershell'); if ($_c) { . $_c }`
+`$_c = Initialize-Cache '<tool>' @('completion', 'powershell') 'completion'; if ($_c) { . $_c }`
 line in `completion.ps1` (adjust the subcommand: `gh` uses `completion -s`, `uv`
 uses `generate-shell-completion`, `rustup` uses `completions`). The dot-source
 must stay at the file's top level (global scope), not inside a function, or some
