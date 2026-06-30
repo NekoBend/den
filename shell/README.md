@@ -146,7 +146,8 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `pxargs` | `xargs` with parallel jobs (POSIX shells only) |
 
 Backed by GNU `parallel` when present, otherwise `xargs -P`. `pcp`/`pmv`/`prm`/
-`ptar` exist in bash/zsh, PowerShell, and CMD; `pxargs` is bash/zsh only.
+`ptar` exist in bash/zsh and PowerShell (cmd has no parallel file ops); `pxargs`
+is bash/zsh only.
 
 ### System / editor
 | Command | What it does |

@@ -64,9 +64,11 @@ Python implementation replaces the old bash + PowerShell installers.
 
 ## CI
 
-`.github/workflows/ci.yml` runs three jobs: `agents` (ruff, pytest, bats),
-`shell` (shellcheck + PSScriptAnalyzer, errors only), and `shell-tests` (the
-bash/zsh/pwsh functional tests in Docker).
+`.github/workflows/ci.yml` runs four jobs: `agents` (ruff, pytest, bats, and a
+lint of the generated parent prompts), `packaging` (wheel + sdist build,
+completeness asserts, sourceless install), `shell` (shellcheck +
+PSScriptAnalyzer, errors only), and `shell-tests` (the bash/zsh/pwsh functional
+tests in Docker).
 
 ## Status
 
