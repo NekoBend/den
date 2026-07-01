@@ -29,10 +29,6 @@ den uninstall [skills|shell]   remove den-installed files, keeping ones you chan
 den hook    install|run|...    per-turn imprint hooks, per workspace
 den memory  show|save|...      workspace session memory (.den/memory.md)
 den cheat   [name]             view bundled cheatsheets offline
-den check   <file>             lint / format / typecheck a file (run-checks.sh)
-den verify  <file>             check that imported APIs actually exist
-den refs    --def|--uses SYM   find a symbol's definitions or usages
-den doc     <file>             docstring / doc-comment coverage
 ```
 
 `den install` never silently clobbers local edits: files that already exist and
@@ -156,8 +152,9 @@ contract; verify against a live Windows install. codex is scaffolded but disable
 ## Architecture
 
 `cli.py` is the dispatcher; each command is a sibling `_xxx.py` module
-(`_check`, `_verify`, `_refs`, `_doc`, `_memory`, `_hook`, `_install`, `_shell`,
-`_cheat`) with a `main(argv)` entry point and relative imports. `_content.py`
+(`_memory`, `_hook`, `_install`, `_uninstall`, `_cheat`) with a `main(argv)`
+entry point and relative imports (`_shell`/`_ui` are shared helpers).
+`_content.py`
 locates bundled content (wheel `den/_data/`, or the repo root from a checkout).
 `den hook` registers a per-format installer (`settings_json`, `copilot_json`,
 `cline_scripts`) and a per-tool output emitter; `den install` is one
