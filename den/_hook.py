@@ -6,7 +6,7 @@ context and then checkpoints memory:
 
   .den/imprint.md   static, human-owned directives that must not fall out of
                     context (read the skill, use a subagent, record memory).
-  .den/memory.md    agent-owned, overwritable session memory (via den memory).
+  .den/memory.md    agent-owned, overwritable session memory (via den hook memory).
 
 Because weak models forget on-demand instructions, the per-turn hook re-injects
 both every turn. checkpoint runs first so the previous turn's direct edits to
@@ -17,10 +17,11 @@ config (e.g. .claude/settings.json, .clinerules/hooks/) under the current
 directory and seeds <cwd>/.den/imprint.md, so hook + imprint + memory all share
 one .den scope. Run it once inside each workspace you want imprinting in.
 
-Subcommands:
+Subcommands (install/remove are also `den install hook` / `den uninstall hook`):
   run --event E --tool T   worker the tool invokes; prints injection for T
   install [--tool T ...]    register hooks into the workspace (cwd)
           [--all-tools] [--config PATH]
+  memory <subcommand>       workspace session memory (den hook memory -h)
   imprint                   print the composed injection (imprint + memory)
   list [--config PATH]      show den-managed hooks per tool
   remove [--tool T ...]     unregister den-managed hooks
@@ -45,6 +46,7 @@ from ._memory import (
     _do_checkpoint,
     _find_den_dir,
     _memory_path,
+    main as _memory_main,
     mirror_to_clinerules,
 )
 
@@ -63,12 +65,12 @@ These directives apply every turn. Do not let them fall out of context.
   decision, or fact to remember (signal words: "rule", "always", "never",
   "from now on", "remember this", or Japanese forms such as "規約", "決定",
   "覚えておいて"), run this command in that SAME turn, before you finish:
-      den memory add "<the fact, one line>"
+      den hook memory add "<the fact, one line>"
   Example: the user says the retry limit is 7, so you run:
-      den memory add "Retry limit constant: MAX_RETRIES = 7"
-  Saying "I will remember" without running den memory add is a FAILURE: chat
-  memory does not survive the session, only den memory add persists. Do NOT
-  store a rule in a source file instead; it goes in den memory add. For a
+      den hook memory add "Retry limit constant: MAX_RETRIES = 7"
+  Saying "I will remember" without running den hook memory add is a FAILURE: chat
+  memory does not survive the session, only den hook memory add persists. Do NOT
+  store a rule in a source file instead; it goes in den hook memory add. For a
   larger cleanup, overwrite .den/memory.md wholesale.
 - Before writing code, check whether a skill applies and read its SKILL.md.
 - For multi step or broad tasks, delegate to a subagent instead of doing
@@ -626,7 +628,7 @@ def _remove_cline(tool: str, spec: dict, config: Path) -> None:
 
 _CLINERULES_RULE_HEADER = (
     "<!-- den-managed. Edit .den/imprint.md, then re-run "
-    "`den hook install --tool cline-cli`. -->\n\n"
+    "`den install hook --tool cline-cli`. -->\n\n"
 )
 
 
@@ -848,6 +850,7 @@ _HANDLERS = {
     "list": _cmd_list,
     "remove": _cmd_remove,
     "imprint": _cmd_imprint,
+    "memory": _memory_main,
 }
 
 
@@ -857,10 +860,10 @@ def _usage() -> None:
         "\n"
         "Subcommands:\n"
         "  run --event E --tool T   worker the tool invokes (prints injection)\n"
-        "  install [--tool T] [--all-tools] [--config PATH]\n"
+        "  memory <subcommand>      workspace session memory (den hook memory -h)\n"
         "  imprint                  print composed injection (imprint + memory)\n"
         "  list [--config PATH]     show den-managed hooks\n"
-        "  remove [--tool T] [--config PATH]\n"
+        "  install / remove [...]   prefer 'den install hook' / 'den uninstall hook'\n"
         "\n"
         "Events: session-start, per-turn, post-tool, stop.\n"
         "Verified: claude, gemini, cline (per-turn inject); copilot "

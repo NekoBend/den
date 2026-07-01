@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 from . import _ui
-from ._content import dist_dir, shared_dir, skills_dir
+from ._content import cheatsheets_dir, dist_dir, shared_dir, skills_dir
 
 # tool -> (skills_dir, parent_dir, parent_file). The cline (VS Code extension)
 # parent_dir is dynamic -- see _tool_paths/_cline_rules_dir; the value here is
@@ -373,11 +373,54 @@ def _interactive() -> int:
         if flags:
             rc |= _install_skills(flags)
 
+    if _ui.confirm("Install the offline cheatsheets?", False):
+        rc |= _install_cheatsheets([])
+
     _ui.say(
-        "\nHooks install per workspace: run 'den hook install' inside a project "
+        "\nHooks install per workspace: run 'den install hook' inside a project "
         "to imprint context every turn there."
     )
     return rc
+
+
+def _cheatsheets_target() -> Path:
+    base = os.environ.get("XDG_DATA_HOME")
+    root = Path(base) if base else Path.home() / ".local" / "share"
+    return root / "den" / "cheatsheets"
+
+
+def _install_cheatsheets(argv: list[str]) -> int:
+    """Deploy the bundled cheatsheets to the XDG data dir. Browsing is the shell
+    `cheat` function's job (den install shell); this only stages the files."""
+    dry_run = force = False
+    for a in argv:
+        if a == "--dry-run":
+            dry_run = True
+        elif a == "--force":
+            force = True
+        else:
+            print(f"den install cheatsheets: unexpected arg '{a}'", file=sys.stderr)
+            return 2
+
+    src = cheatsheets_dir()
+    if not src.is_dir():
+        print("den install cheatsheets: no cheatsheets are bundled", file=sys.stderr)
+        return 1
+    dest_root = _cheatsheets_target()
+    files = [
+        p
+        for p in sorted(src.rglob("*"))
+        if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+    ]
+    if dry_run:
+        print(f"[dry-run] cheatsheets -> {dest_root}/ ({len(files)} files)")
+        return 0
+    writer = _Writer(force=force)
+    for f in files:
+        writer.stage(dest_root / f.relative_to(src), f.read_bytes())
+    print(f"installing cheatsheets -> {dest_root}")
+    writer.commit()
+    return 0
 
 
 def _usage() -> None:
@@ -391,6 +434,8 @@ def _usage() -> None:
         "         [--with-parent] [--dry-run] [--codex-config] [--force]\n"
         "  shell  [--dry-run] [--no-extras] [--force]\n"
         "         [--coreutils|--no-coreutils] [--bin|--no-bin] [--no-zsh-plugins]\n"
+        "  hook   [--tool T]... [--all-tools] [--config PATH]  per-workspace imprint hooks\n"
+        "  cheatsheets [--dry-run] [--force]                   bundled sheets -> data dir\n"
         "\n"
         "Existing files that differ are kept unless you confirm (or pass --force).\n"
         "\n"
@@ -416,8 +461,15 @@ def main(argv: list[str] | None = None) -> int:
         from ._shell import install_shell
 
         return install_shell(rest)
+    if target == "hook":
+        from ._hook import _cmd_install
+
+        return _cmd_install(rest)
+    if target == "cheatsheets":
+        return _install_cheatsheets(rest)
     print(
-        f"den install: unknown target '{target}' (try: skills, shell)",
+        f"den install: unknown target '{target}' "
+        "(try: skills, shell, hook, cheatsheets)",
         file=sys.stderr,
     )
     return 2
