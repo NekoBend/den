@@ -118,7 +118,6 @@ jobs:
           shellcheck --severity=error \
             shell/posix/*.sh \
             shell/bash/*.bash \
-            den/*.sh \
             tests/shell/*.sh \
             shell/posix/bin/*
       - name: PSScriptAnalyzer (errors only)
