@@ -862,7 +862,7 @@ def _usage() -> None:
         "  run --event E --tool T   worker the tool invokes (prints injection)\n"
         "  memory <subcommand>      workspace session memory (den hook memory -h)\n"
         "  imprint                  print composed injection (imprint + memory)\n"
-        "  list [--config PATH]     show den-managed hooks\n"
+        "  list [--tool T] [--all-tools] [--config PATH]  show den-managed hooks\n"
         "  install / remove [...]   prefer 'den install hook' / 'den uninstall hook'\n"
         "\n"
         "Events: session-start, per-turn, post-tool, stop.\n"

@@ -304,12 +304,16 @@ def _uninstall_cheatsheets(argv: list[str]) -> int:
     from ._install import _cheatsheets_target
 
     src = cheatsheets_dir()
+    if not src.is_dir():
+        # Mirror `den install cheatsheets`: without the bundle we cannot derive
+        # what to remove, so say so instead of reporting a misleading success.
+        print("den uninstall cheatsheets: no cheatsheets are bundled", file=sys.stderr)
+        return 1
     dest_root = _cheatsheets_target()
     remover = _Remover()
-    if src.is_dir():
-        for f in sorted(src.rglob("*")):
-            if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".pyc":
-                remover.stage(dest_root / f.relative_to(src), f.read_bytes())
+    for f in sorted(src.rglob("*")):
+        if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".pyc":
+            remover.stage(dest_root / f.relative_to(src), f.read_bytes())
     # den owns den/cheatsheets/ (and its den/ parent); stop pruning at the XDG
     # data root, which is the user's.
     remover.boundary(dest_root.parent.parent)

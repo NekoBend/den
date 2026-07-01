@@ -110,6 +110,22 @@ def test_cheatsheets_unknown_arg_exits_2(tmp_path, monkeypatch):
     assert uninstall_main(["cheatsheets", "--bogus"]) == 2
 
 
+def test_cheatsheets_missing_bundle_errors(tmp_path, monkeypatch):
+    # install and uninstall both refuse (rc 1) when no bundle is present, instead
+    # of a misleading silent success. _install imports cheatsheets_dir at module
+    # level; _uninstall imports it lazily from _content -- patch both bindings.
+    from den import _content, _install
+    from den._uninstall import main as uninstall_main
+
+    def _no_bundle():
+        return tmp_path / "nope"
+
+    monkeypatch.setattr(_install, "cheatsheets_dir", _no_bundle)
+    monkeypatch.setattr(_content, "cheatsheets_dir", _no_bundle)
+    assert install_main(["cheatsheets"]) == 1
+    assert uninstall_main(["cheatsheets", "--yes"]) == 1
+
+
 def test_interactive_dispatches(monkeypatch):
     from den import _install, _ui
 
