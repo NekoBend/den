@@ -19,7 +19,9 @@ jobs:
       - name: Install tooling
         run: |
           python -m pip install --upgrade pip
-          pip install ruff ty
+          # questionary + rich are den's runtime deps: ty needs them importable to
+          # resolve den/_ui.py's imports (no .venv in a fresh CI checkout).
+          pip install ruff ty questionary rich
           sudo apt-get update && sudo apt-get install -y bats
       - name: Ruff lint
         run: ruff check agents den tests hatch_build.py
