@@ -154,7 +154,7 @@ contract; verify against a live Windows install. codex is scaffolded but disable
 ## Architecture
 
 `cli.py` is the dispatcher; each command is a sibling `_xxx.py` module
-(`_memory`, `_hook`, `_install`, `_uninstall`, `_cheat`) with a `main(argv)`
+(`_memory`, `_hook`, `_install`, `_uninstall`) with a `main(argv)`
 entry point and relative imports (`_shell`/`_ui` are shared helpers).
 `_content.py`
 locates bundled content (wheel `den/_data/`, or the repo root from a checkout).
@@ -165,7 +165,7 @@ cross-platform implementation of the skill and shell-environment installers.
 ## Tests
 
 ```
-python3 -m pytest tests/den     # cli, hook, memory, install, uninstall, shell, cheat
+python3 -m pytest tests/den     # cli, hook, memory, install, uninstall, shell
 ```
 
 CI runs these alongside `ruff check agents den tests` and a `packaging` job

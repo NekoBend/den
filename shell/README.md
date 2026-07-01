@@ -198,6 +198,20 @@ name is `[A-Za-z0-9_-]`, the command may contain anything on one line). `run` an
 so it is trusted), which lets it `cd`, set vars, and use the current environment.
 `pick` needs `fzf`; without it, use `snippet run <name>`. bash/zsh only.
 
+### Cheatsheets
+Browse den's bundled cheatsheets offline. Deploy them first with
+`den install cheatsheets`.
+
+| Command | What it does |
+|---------|--------------|
+| `cheat` | fzf-pick a cheatsheet and render it (needs `fzf`) |
+| `cheat ls` | list available cheatsheets |
+| `cheat <name>` | render the cheatsheet whose path matches `<name>` (fzf-picks when several match) |
+
+Cheatsheets live under `$XDG_DATA_HOME/den/cheatsheets` (default
+`~/.local/share/den/cheatsheets`), rendered with `bat` when available, else
+`cat`. bash/zsh and PowerShell.
+
 ## Hardware info in the prompt
 
 The starship prompt shows your CPU and GPU. `hwinfo.sh` detects them once and

@@ -6,7 +6,6 @@
 Runtime plumbing invoked by installed hooks (not part of the everyday surface):
   hook    the per-turn worker + hook lifecycle (den hook run/list/imprint/memory)
   memory  workspace session memory (also reachable as den hook memory)
-  cheat   print a bundled cheatsheet (interactive browsing moves to the shell)
 """
 
 from __future__ import annotations
@@ -51,11 +50,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "hook":
         from ._hook import main as _main
-
-        return _main(rest)
-
-    if cmd == "cheat":
-        from ._cheat import main as _main
 
         return _main(rest)
 
