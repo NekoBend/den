@@ -55,11 +55,82 @@ def test_install_unknown_tool(capsys):
     assert install_main(["skills", "--tool", "notatool"]) == 2
 
 
+def test_install_cheatsheets_deploys(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert install_main(["cheatsheets"]) == 0
+    dest = tmp_path / "den" / "cheatsheets"
+    assert (dest / "shell" / "one-liners.md").is_file()
+    assert list(dest.rglob("*.py"))  # python cheatsheets too
+
+
+def test_install_cheatsheets_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert install_main(["cheatsheets", "--dry-run"]) == 0
+    assert not (tmp_path / "den").exists()
+    assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_uninstall_cheatsheets_removes_identical(tmp_path, monkeypatch):
+    from den._uninstall import main as uninstall_main
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    install_main(["cheatsheets"])
+    sheet = tmp_path / "den" / "cheatsheets" / "shell" / "one-liners.md"
+    assert sheet.is_file()
+    assert uninstall_main(["cheatsheets", "--yes"]) == 0
+    assert not sheet.exists()
+
+
+def test_install_hook_routes_to_cmd_install(tmp_path, monkeypatch):
+    # `den install hook` is a thin alias for `den hook install`.
+    monkeypatch.chdir(tmp_path)  # seed imprint.md under tmp, not the repo
+    cfg = tmp_path / "settings.json"
+    assert install_main(["hook", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert cfg.is_file()
+    assert "den hook run" in cfg.read_text()
+
+
+def test_uninstall_hook_routes_to_cmd_remove(tmp_path, monkeypatch):
+    from den._uninstall import main as uninstall_main
+
+    monkeypatch.chdir(tmp_path)  # seed imprint.md under tmp, not the repo
+    cfg = tmp_path / "settings.json"
+    install_main(["hook", "--tool", "claude", "--config", str(cfg)])
+    assert "den hook run" in cfg.read_text()
+    assert uninstall_main(["hook", "--tool", "claude", "--config", str(cfg)]) == 0
+    remaining = cfg.read_text() if cfg.is_file() else ""
+    assert "den hook run" not in remaining
+
+
+def test_cheatsheets_unknown_arg_exits_2(tmp_path, monkeypatch):
+    from den._uninstall import main as uninstall_main
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert install_main(["cheatsheets", "--bogus"]) == 2
+    assert uninstall_main(["cheatsheets", "--bogus"]) == 2
+
+
+def test_cheatsheets_missing_bundle_errors(tmp_path, monkeypatch):
+    # install and uninstall both refuse (rc 1) when no bundle is present, instead
+    # of a misleading silent success. _install imports cheatsheets_dir at module
+    # level; _uninstall imports it lazily from _content -- patch both bindings.
+    from den import _content, _install
+    from den._uninstall import main as uninstall_main
+
+    def _no_bundle():
+        return tmp_path / "nope"
+
+    monkeypatch.setattr(_install, "cheatsheets_dir", _no_bundle)
+    monkeypatch.setattr(_content, "cheatsheets_dir", _no_bundle)
+    assert install_main(["cheatsheets"]) == 1
+    assert uninstall_main(["cheatsheets", "--yes"]) == 1
+
+
 def test_interactive_dispatches(monkeypatch):
     from den import _install, _ui
 
-    # confirm: shell?Y extras?N skills?Y parent?Y ; select: tools -> [claude]
-    answers = iter([True, False, True, True])
+    # confirm: shell?Y extras?N skills?Y parent?Y cheatsheets?N ; select -> [claude]
+    answers = iter([True, False, True, True, False])
     monkeypatch.setattr(_ui, "confirm", lambda *a, **k: next(answers))
     monkeypatch.setattr(_ui, "select", lambda *a, **k: ["claude"])
     calls = {}

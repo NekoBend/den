@@ -1,8 +1,8 @@
-"""den memory - workspace-level session memory the agent reads and overwrites.
+"""den hook memory - workspace-level session memory the agent reads and overwrites.
 
 Memory lives at <project>/.den/memory.md, a single Markdown file the agent
 owns: it reads the whole file and rewrites it wholesale. The agent may edit
-memory.md directly with its own file tools (not only via `den memory save`),
+memory.md directly with its own file tools (not only via `den hook memory save`),
 so this module never relies on save being called. Instead a cheap
 content-hash `checkpoint` copies memory.md into .den/history/ whenever the
 content changes since the last snapshot. Hooks drive `checkpoint` every turn
@@ -55,7 +55,7 @@ _CLINERULES_DIRNAME = ".clinerules"
 _CLINERULES_IMPRINT = "den-imprint.md"  # also the cline-cli "installed here" marker
 _CLINERULES_MEMORY = "den-memory.md"
 _CLINERULES_HEADER = (
-    "<!-- den-managed mirror of .den/memory.md. Edit memory with `den memory`, "
+    "<!-- den-managed mirror of .den/memory.md. Edit memory with `den hook memory`, "
     "not here. -->\n\n"
 )
 
@@ -167,7 +167,10 @@ def _parse_index(argv: list[str]) -> int | None:
     try:
         return int(argv[0])
     except ValueError:
-        print(f"den memory: expected a numeric index, got {argv[0]!r}", file=sys.stderr)
+        print(
+            f"den hook memory: expected a numeric index, got {argv[0]!r}",
+            file=sys.stderr,
+        )
         return None
 
 
@@ -188,12 +191,14 @@ def _cmd_checkpoint(den_dir: Path, argv: list[str]) -> int:
 def _cmd_save(den_dir: Path, argv: list[str]) -> int:
     if argv and argv[0] in ("--file", "-f"):
         if len(argv) < 2:
-            print("den memory save: --file needs a path", file=sys.stderr)
+            print("den hook memory save: --file needs a path", file=sys.stderr)
             return 2
         try:
             content = Path(argv[1]).read_text(encoding="utf-8")
         except OSError as exc:
-            print(f"den memory save: cannot read {argv[1]}: {exc}", file=sys.stderr)
+            print(
+                f"den hook memory save: cannot read {argv[1]}: {exc}", file=sys.stderr
+            )
             return 2
     else:
         content = sys.stdin.read()
@@ -212,7 +217,7 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
     content = " ".join(argv) if argv else sys.stdin.read()
     if not content.strip():
         print(
-            "den memory add: nothing to add (give text or pipe it on stdin)",
+            "den hook memory add: nothing to add (give text or pipe it on stdin)",
             file=sys.stderr,
         )
         return 2
@@ -254,7 +259,7 @@ def _cmd_restore(den_dir: Path, argv: list[str]) -> int:
     snaps = _snapshots(den_dir)
     if n < 1 or n > len(snaps):
         print(
-            f"den memory restore: no snapshot #{n} (have {len(snaps)})",
+            f"den hook memory restore: no snapshot #{n} (have {len(snaps)})",
             file=sys.stderr,
         )
         return 1
@@ -277,7 +282,7 @@ def _cmd_diff(den_dir: Path, argv: list[str]) -> int:
     snaps = _snapshots(den_dir)
     if n < 1 or n > len(snaps):
         print(
-            f"den memory diff: no snapshot #{n} (have {len(snaps)})",
+            f"den hook memory diff: no snapshot #{n} (have {len(snaps)})",
             file=sys.stderr,
         )
         return 1
@@ -328,7 +333,7 @@ _HANDLERS = {
 
 def _usage() -> None:
     print(
-        "usage: den memory <subcommand> [args]\n"
+        "usage: den hook memory <subcommand> [args]\n"
         "\n"
         "Subcommands:\n"
         "  show              print memory.md (empty if absent)\n"
@@ -356,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     cmd, rest = args[0], args[1:]
     handler = _HANDLERS.get(cmd)
     if handler is None:
-        print(f"den memory: unknown subcommand '{cmd}'", file=sys.stderr)
+        print(f"den hook memory: unknown subcommand '{cmd}'", file=sys.stderr)
         _usage()
         return 2
 

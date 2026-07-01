@@ -1,11 +1,12 @@
-"""den - unified toolkit CLI for LLM-assisted development.
+"""den - the installer for your LLM skills and machine environment.
 
-Subcommands:
-  memory  read/write workspace session memory (.den/memory.md)
-  hook    install per-tool hooks that imprint context every turn
-  cheat   view bundled cheatsheets offline
-  install deploy skills, or the shell environment, into place
-  uninstall remove den-installed files (keeping ones you changed)
+  install    deploy skills, the shell environment, hooks, or cheatsheets
+  uninstall  remove den-installed files (keeping ones you changed)
+
+Runtime plumbing invoked by installed hooks (not part of the everyday surface):
+  hook    the per-turn worker + hook lifecycle (den hook run/list/imprint/memory)
+  memory  workspace session memory (also reachable as den hook memory)
+  cheat   print a bundled cheatsheet (interactive browsing moves to the shell)
 """
 
 from __future__ import annotations
@@ -19,14 +20,14 @@ def _usage() -> None:
     print(
         "usage: den <command> [args]\n"
         "\n"
-        "Commands:\n"
-        "  memory show|save|log|...   workspace session memory\n"
-        "  hook   install|run|imprint per-turn imprint hooks\n"
-        "  cheat  [name]              view bundled cheatsheets\n"
-        "  install skills|shell       deploy skills or the shell environment\n"
-        "  uninstall skills|shell     remove den-installed files (keeps your edits)\n"
+        "den installs your LLM skills and machine environment.\n"
         "\n"
-        "Run 'den <command> --help' for command-specific options."
+        "Commands:\n"
+        "  install   [skills|shell|hook|cheatsheets]  deploy (interactive if no target)\n"
+        "  uninstall [skills|shell|hook|cheatsheets]  remove den-installed files\n"
+        "\n"
+        "Run 'den <command> --help' for command-specific options.\n"
+        "(den hook / den memory are runtime plumbing invoked by installed hooks.)"
     )
 
 

@@ -292,6 +292,34 @@ def _uninstall_shell(argv: list[str]) -> int:
     return remover.commit(assume_yes, dry_run)
 
 
+def _uninstall_cheatsheets(argv: list[str]) -> int:
+    assume_yes = "--yes" in argv
+    dry_run = "--dry-run" in argv
+    for a in argv:
+        if a not in ("--yes", "--dry-run"):
+            print(f"den uninstall cheatsheets: unexpected arg '{a}'", file=sys.stderr)
+            return 2
+
+    from ._content import cheatsheets_dir
+    from ._install import _cheatsheets_target
+
+    src = cheatsheets_dir()
+    if not src.is_dir():
+        # Mirror `den install cheatsheets`: without the bundle we cannot derive
+        # what to remove, so say so instead of reporting a misleading success.
+        print("den uninstall cheatsheets: no cheatsheets are bundled", file=sys.stderr)
+        return 1
+    dest_root = _cheatsheets_target()
+    remover = _Remover()
+    for f in sorted(src.rglob("*")):
+        if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".pyc":
+            remover.stage(dest_root / f.relative_to(src), f.read_bytes())
+    # den owns den/cheatsheets/ (and its den/ parent); stop pruning at the XDG
+    # data root, which is the user's.
+    remover.boundary(dest_root.parent.parent)
+    return remover.commit(assume_yes, dry_run)
+
+
 def _interactive() -> int:
     from ._install import _TOOLS
 
@@ -315,7 +343,7 @@ def _interactive() -> int:
     else:
         _ui.say("  (no tools selected)")
     _ui.say(
-        "\nHooks are per-workspace: run 'den hook remove' inside a project to "
+        "\nHooks are per-workspace: run 'den uninstall hook' inside a project to "
         "remove them there."
     )
     return rc
@@ -330,12 +358,14 @@ def _usage() -> None:
         "Targets:\n"
         "  skills [--tool T]... [--all-tools] [--target DIR]... [--with-parent]\n"
         "  shell\n"
+        "  hook   [--tool T]... [--all-tools] [--config PATH]\n"
+        "  cheatsheets\n"
         "\n"
         "Common: [--yes] skip the confirm, [--dry-run] show the plan only.\n"
         "\n"
         "Only files identical to den's version are removed; files you changed are\n"
         "kept. The rc-file '# ===== den =====' block is stripped. Hooks are\n"
-        "per-workspace: use 'den hook remove'."
+        "per-workspace: 'den uninstall hook' unregisters them in the current one."
     )
 
 
@@ -354,8 +384,15 @@ def main(argv: list[str] | None = None) -> int:
         return _uninstall_skills(rest)
     if target == "shell":
         return _uninstall_shell(rest)
+    if target == "hook":
+        from ._hook import _cmd_remove
+
+        return _cmd_remove(rest)
+    if target == "cheatsheets":
+        return _uninstall_cheatsheets(rest)
     print(
-        f"den uninstall: unknown target '{target}' (try: skills, shell)",
+        f"den uninstall: unknown target '{target}' "
+        "(try: skills, shell, hook, cheatsheets)",
         file=sys.stderr,
     )
     return 2

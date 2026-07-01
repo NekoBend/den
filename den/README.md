@@ -24,17 +24,18 @@ source on disk; from a checkout it falls back to the repo root (`_content.py`).
 ## Commands
 
 ```
-den install   [skills|shell]   interactive setup, or deploy skills / shell directly
-den uninstall [skills|shell]   remove den-installed files, keeping ones you changed
-den hook    install|run|...    per-turn imprint hooks, per workspace
-den memory  show|save|...      workspace session memory (.den/memory.md)
-den cheat   [name]             view bundled cheatsheets offline
+den install   [skills|shell|hook|cheatsheets]   interactive setup, or one target
+den uninstall [skills|shell|hook|cheatsheets]   remove den files, keeping your edits
+
+# runtime plumbing invoked by installed hooks (not everyday commands):
+den hook   run|list|imprint|memory   the per-turn worker + hook lifecycle
+den hook memory show|add|...          workspace session memory (.den/memory.md)
 ```
 
 `den install` never silently clobbers local edits: files that already exist and
 differ from the bundled version are listed and you are asked once before
 overwriting (default no, so your changes are kept). Pass `--force` to overwrite
-without asking; non-interactive runs skip the changed files. `den hook install`
+without asking; non-interactive runs skip the changed files. `den install hook`
 into a tool's settings.json merges (it preserves foreign hooks and other keys).
 
 On Windows, `den install shell --coreutils` also installs microsoft/coreutils via
@@ -50,11 +51,11 @@ manifest): "unchanged" means "matches what this den version installs". It strips
 the rc-file `# ===== den =====` block and prunes dirs den created that became
 empty. It lists the plan and asks once before deleting (`--yes` to skip,
 `--dry-run` to preview only; non-interactive runs require `--yes`). Hooks are
-per-workspace, so `den uninstall` does not touch them; use `den hook remove`.
+per-workspace, so `den uninstall` does not touch them; use `den uninstall hook`.
 
 Run `den <command> --help` for per-command options.
 
-## `den memory`
+## `den hook memory`
 
 Workspace-level session memory that the agent reads and overwrites. It lives at
 `<project>/.den/memory.md`: a single Markdown file the agent owns. It can be
@@ -86,7 +87,7 @@ Installs per-tool hooks that imprint context every turn. Soft enforcement only:
 the hooks never block a tool call. Each turn the tool runs `den hook run`, which
 
 1. injects `.den/imprint.md` (static, human-owned directives) plus
-   `den memory show` (agent-owned memory) as additional context, and
+   `den hook memory show` (agent-owned memory) as additional context, and
 2. checkpoints memory, capturing the previous turn's direct edits.
 
 Two files, two owners:
@@ -97,14 +98,15 @@ Two files, two owners:
 - `.den/memory.md` - the agent-owned, overwritable memory above.
 
 ```
-den hook install [--tool T ...] [--all-tools]   # register hooks + seed imprint.md
+den install hook [--tool T ...] [--all-tools]    # register hooks + seed imprint.md
+den uninstall hook [--tool T ...]                # unregister
 den hook imprint                                 # print the composed injection
 den hook list                                    # show den-managed hooks
-den hook remove [--tool T ...]                    # unregister
+den hook memory show|add|...                     # workspace session memory
 den hook run --event E --tool T                   # the worker the tool invokes
 ```
 
-Hooks install **per workspace**: run `den hook install` inside a project and it
+Hooks install **per workspace**: run `den install hook` inside a project and it
 writes that tool's project-level hook config under the current directory and
 seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope.
 `install` writes only the hooks den manages (marked by a sentinel) and leaves
@@ -163,7 +165,7 @@ cross-platform implementation of the skill and shell-environment installers.
 ## Tests
 
 ```
-python3 -m pytest tests/den     # den memory, hook, install, shell, cheat
+python3 -m pytest tests/den     # cli, hook, memory, install, uninstall, shell, cheat
 ```
 
 CI runs these alongside `ruff check agents den tests` and a `packaging` job

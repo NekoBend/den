@@ -24,8 +24,8 @@ den install shell                  # shell env (bash/zsh + PowerShell, starship,
 den install skills --all-tools     # LLM agent skills into every tool's dirs
 den install skills --tool claude   # ...or just one tool
 den install skills --target ~/.codex --codex-config   # print the Codex TOML block
-den hook install --tool cline      # per-turn imprint hooks (run inside a workspace)
-den cheat                          # browse bundled cheatsheets offline
+den install hook --tool cline      # per-turn imprint hooks (run inside a workspace)
+den install cheatsheets            # deploy the offline cheatsheets to your data dir
 ```
 
 See `agents/README.md` for the skill system, `den/README.md` for the full `den`
@@ -58,8 +58,9 @@ Python implementation replaces the old bash + PowerShell installers.
   when it is byte-identical to den's version (so your edits are kept), strips the
   rc-file block, and prunes emptied dirs. It is stateless (no manifest), lists
   the plan and asks before deleting (`--yes`, `--dry-run`).
-- `den hook install` registers per-turn imprint hooks per workspace, and
-  `den memory` / `den cheat` round out the CLI. See `den/README.md`.
+- `den install hook` registers per-turn imprint hooks per workspace; `den hook`
+  (run/list/imprint/memory) is the runtime plumbing those hooks invoke. See
+  `den/README.md`.
 
 ## CI
 
