@@ -27,7 +27,9 @@ _cheat_usage() {
 _cheat_list() {
     _cl_dir=$(_cheat_dir)
     [ -d "$_cl_dir" ] || { unset _cl_dir; return 1; }
-    ( cd "$_cl_dir" || exit; find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' ) |
+    # `command` bypasses den's interactive wrappers (find->fd, grep->rg, cat->bat),
+    # which have incompatible flags/output and would break the lookups.
+    ( cd "$_cl_dir" || exit; command find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' ) |
         sed 's|^\./||' | LC_ALL=C sort
     unset _cl_dir
 }
@@ -36,9 +38,9 @@ _cheat_list() {
 _cheat_render() {
     _crf="$(_cheat_dir)/$1"
     if command -v bat >/dev/null 2>&1; then
-        bat --style=plain --paging=auto "$_crf"
+        bat --style=plain --paging=auto -- "$_crf"
     else
-        cat "$_crf"
+        command cat -- "$_crf"
     fi
     unset _crf
 }
@@ -67,17 +69,17 @@ cheat() {
 
     # By name: an exact full-path match wins, otherwise a substring match.
     _ch_all=$(_cheat_list)
-    if printf '%s\n' "$_ch_all" | grep -qxF -- "$1"; then
+    if printf '%s\n' "$_ch_all" | command grep -qxF -- "$1"; then
         _ch_hit=$1
     else
-        _ch_hit=$(printf '%s\n' "$_ch_all" | grep -F -- "$1")
+        _ch_hit=$(printf '%s\n' "$_ch_all" | command grep -F -- "$1")
     fi
     if [ -z "$_ch_hit" ]; then
         echo "cheat: no cheatsheet matching '$1' (cheat ls)" >&2
         unset _ch_all _ch_hit
         return 1
     fi
-    if [ "$(printf '%s\n' "$_ch_hit" | grep -c .)" -gt 1 ]; then
+    if [ "$(printf '%s\n' "$_ch_hit" | command grep -c .)" -gt 1 ]; then
         if command -v fzf >/dev/null 2>&1; then
             _ch_sel=$(printf '%s\n' "$_ch_hit" | fzf --no-multi --prompt='cheat> ') || _ch_sel=''
             [ -n "$_ch_sel" ] && _cheat_render "$_ch_sel"

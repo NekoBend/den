@@ -20,7 +20,7 @@ function _CheatList([string]$Dir) {
 function _CheatRender([string]$Dir, [string]$Rel) {
     $path = Join-Path $Dir $Rel
     if (Get-Command bat -ErrorAction SilentlyContinue) {
-        bat --style=plain --paging=auto $path
+        bat --style=plain --paging=auto -- $path
     } else {
         Get-Content -LiteralPath $path
     }

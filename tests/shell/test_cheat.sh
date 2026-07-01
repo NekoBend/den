@@ -47,6 +47,11 @@ cheat_suite() {
     actual=$("$run" "$CHEAT_SH" "cheat one-liners" | tr -d '\r')
     assert_contains "$sh/render content" "ONELINER_MARKER" "$actual"
 
+    echo "[$sh] cheat bypasses find/grep/cat wrapper functions (uses command)"
+    actual=$("$run" "$CHEAT_SH" "find() { echo WRAPPED; }; grep() { echo WRAPPED; }; cat() { echo WRAPPED; }; cheat one-liners 2>&1" | tr -d '\r')
+    assert_contains "$sh/wrapper bypass renders" "ONELINER_MARKER" "$actual"
+    assert_not_contains "$sh/wrapper not used" "WRAPPED" "$actual"
+
     echo "[$sh] a nested path substring renders the sheet"
     actual=$("$run" "$CHEAT_SH" "cheat regex/syntax" | tr -d '\r')
     assert_contains "$sh/render nested" "regex syntax" "$actual"
