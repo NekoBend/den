@@ -34,7 +34,7 @@ CLI, and `shell/README.md` for the shell environment.
 ## Layout
 
 - `agents/`      LLM skill system: 8 skills + parent invariants + generated parent prompts. See `agents/README.md`.
-- `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `check`, `verify`, `refs`, `doc`, `memory`, `hook`, `cheat`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
+- `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `uninstall`, `memory`, `hook`, `cheat`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
 - `shell/`       the interactive shell sources: bash/zsh, a PowerShell port, CMD shims, starship (deployed by `den install shell`). See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).
 - `docker/`      dev container images (Ubuntu, Arch).
@@ -59,8 +59,7 @@ Python implementation replaces the old bash + PowerShell installers.
   rc-file block, and prunes emptied dirs. It is stateless (no manifest), lists
   the plan and asks before deleting (`--yes`, `--dry-run`).
 - `den hook install` registers per-turn imprint hooks per workspace, and
-  `den memory` / `den cheat` / `den check|verify|refs|doc` round out the CLI.
-  See `den/README.md`.
+  `den memory` / `den cheat` round out the CLI. See `den/README.md`.
 
 ## CI
 
