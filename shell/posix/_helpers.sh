@@ -82,7 +82,7 @@ _init_path() {
 
 _source_all() {
     _sa_d="${1:-$HOME/.config/shell}"
-    for _sa_f in wrappers.sh functions.sh aliases.sh hwinfo.sh python.sh ffmpeg.sh parallel.sh proxy.sh snippet.sh; do
+    for _sa_f in wrappers.sh functions.sh aliases.sh hwinfo.sh python.sh ffmpeg.sh parallel.sh proxy.sh snippet.sh cheat.sh; do
         [ -f "$_sa_d/$_sa_f" ] && . "$_sa_d/$_sa_f"
     done
     unset _sa_d _sa_f

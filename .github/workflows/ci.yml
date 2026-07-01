@@ -98,7 +98,9 @@ jobs:
           # bundled den/_data, not the repo root -- this is what git+URL gives.
           cd /tmp
           /tmp/denv/bin/den --version
-          /tmp/denv/bin/den cheat | grep -q one-liners
+          # cheatsheets deploy from the bundled content (den cheat moved to the shell)
+          XDG_DATA_HOME=/tmp/dendata /tmp/denv/bin/den install cheatsheets
+          test -f /tmp/dendata/den/cheatsheets/shell/one-liners.md
           /tmp/denv/bin/den install skills --target /tmp/sk --with-parent
           test -f /tmp/sk/skills/coding/SKILL.md
           grep -q "/tmp/sk/skills/coding/shared/reference" /tmp/sk/skills/coding/SKILL.md
