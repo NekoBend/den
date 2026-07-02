@@ -2,7 +2,7 @@
 name = "den"
 version = "0.1.0"
 description = "den: unified CLI for LLM-assisted development (verify, memory, hooks)"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 # Only used for the interactive UI; the CLI degrades to plain stdin prompts if
 # they are missing (see den/_ui.py).
 dependencies = [

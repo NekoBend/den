@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Protocol
 
 from . import _ui
 from ._content import cheatsheets_dir, dist_dir, shared_dir, skills_dir
@@ -113,6 +114,13 @@ def _skill_names() -> list[str]:
     return sorted(d.name for d in root.iterdir() if (d / "SKILL.md").is_file())
 
 
+class _Stager(Protocol):
+    """The staging surface _install_skill needs. Both _Writer (install) and
+    _uninstall._Remover satisfy it structurally, so skill staging drives either."""
+
+    def stage(self, dest: Path, content: bytes) -> None: ...
+
+
 class _Writer:
     """Collect (dest, content) writes, then commit them. New and byte-identical
     files are written silently; files that already exist and DIFFER are listed
@@ -154,7 +162,7 @@ class _Writer:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
 
 
-def _install_skill(name: str, skills_target: Path, writer: _Writer) -> str:
+def _install_skill(name: str, skills_target: Path, writer: _Stager) -> str:
     """Build the self-contained skill in a temp dir (rewriting shared/ refs to
     its FINAL location), then stage every file for the writer to commit."""
     src = skills_dir() / name
