@@ -1,6 +1,7 @@
 """Tests for den install shell (den/_shell.py)."""
 
 import re
+import sys
 from pathlib import Path
 
 from den import _shell
@@ -471,7 +472,8 @@ def test_install_shell_bin_flag_installs_executables(tmp_path, monkeypatch):
     for name, content in bundled.items():
         dst = local_bin / name
         assert dst.read_bytes() == content
-        assert dst.stat().st_mode & 0o111  # executable bit set
+        if sys.platform != "win32":
+            assert dst.stat().st_mode & 0o111  # executable bit set (POSIX only)
 
 
 def test_install_shell_no_bin_skips(tmp_path, monkeypatch):
@@ -528,7 +530,8 @@ def test_install_shell_bin_keeps_modified_file_content_and_mode(tmp_path, monkey
     assert install_main(["shell", "--bin"]) == 0
     # non-tty + differing file -> kept as-is: content AND mode untouched
     assert mine.read_text() == "#!/bin/sh\n# my own fixids\n"
-    assert mine.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert mine.stat().st_mode & 0o777 == 0o600
 
 
 def _stub_which(present):
