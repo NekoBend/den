@@ -199,7 +199,10 @@ jobs:
         shell: pwsh
         run: |
           . .\shell\pwsh\init.ps1
-          $expected = 'g', 'cheat', 'pcp'
+          # Assert functions that are NOT behind the [Environment]::UserInteractive
+          # gate (ports=functions.ps1, cheat=cheat.ps1, pcp=parallel.ps1), so the
+          # canary reflects what always loads, not the runner's interactivity.
+          $expected = 'ports', 'cheat', 'pcp'
           $missing = $expected | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
           if ($missing) { throw "init.ps1 did not define at global scope: $($missing -join ', ')" }
           Write-Output "pwsh init.ps1 loaded; global functions present: $($expected -join ', ')"
