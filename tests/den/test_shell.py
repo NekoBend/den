@@ -472,8 +472,7 @@ def test_install_shell_bin_flag_installs_executables(tmp_path, monkeypatch):
     for name, content in bundled.items():
         dst = local_bin / name
         assert dst.read_bytes() == content
-        if sys.platform != "win32":
-            assert dst.stat().st_mode & 0o111  # executable bit set (POSIX only)
+        assert dst.stat().st_mode & 0o111  # executable bit set
 
 
 def test_install_shell_no_bin_skips(tmp_path, monkeypatch):

@@ -2,7 +2,6 @@
 
 import json
 import shlex
-import sys
 
 from den import _hook
 from den._hook import main as hook_main
@@ -346,8 +345,7 @@ def test_install_cline_writes_executable_scripts(tmp_path, monkeypatch):
     assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
     script = hooks_dir / "UserPromptSubmit"
     assert script.is_file()
-    if sys.platform != "win32":
-        assert script.stat().st_mode & 0o100  # owner-executable (POSIX only)
+    assert script.stat().st_mode & 0o100  # owner-executable
     body = script.read_text()
     assert "den hook run --event per-turn --tool cline" in body
     assert (hooks_dir / "PostToolUse").is_file()
