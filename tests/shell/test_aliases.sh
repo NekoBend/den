@@ -38,8 +38,8 @@ actual=$(run_pwsh "$HELPERS_PS1" "
     \$bad = @()
     foreach (\$n in \$names) {
         \$c = Get-Command \$n -ErrorAction SilentlyContinue
-        if (\$null -eq \$c) { \$bad += \"\$n:MISSING\" }
-        elseif (\$c.CommandType -ne 'Function') { \$bad += \"\$n:\$(\$c.CommandType)\" }
+        if (\$null -eq \$c) { \$bad += (\$n + ':MISSING') }
+        elseif (\$c.CommandType -ne 'Function') { \$bad += (\$n + ':' + \$c.CommandType) }
     }
     if (\$bad.Count) { 'SHADOWED ' + (\$bad -join ' ') } else { 'OK' }
 " | tr -d '\r')
