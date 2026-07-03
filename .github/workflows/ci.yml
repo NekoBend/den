@@ -187,7 +187,11 @@ jobs:
       - name: Pytest (den CLI) on native Windows
         # Exercises the Windows code paths (real PowerShell $PROFILE query,
         # LOCALAPPDATA, cmd/Clink staging, coreutils readline strip) that the
-        # ubuntu jobs can only reach through mocks.
+        # ubuntu jobs can only reach through mocks. PYTHONUTF8 runs the suite in
+        # UTF-8 mode (den's text artifacts are UTF-8) so implicit reads don't hit
+        # Windows' cp1252 default.
+        env:
+          PYTHONUTF8: "1"
         run: python -m pytest tests/den
       - name: pwsh init.ps1 loads and defines functions at global scope
         # Catches Windows-only pwsh runtime/load errors and global-scope leaks

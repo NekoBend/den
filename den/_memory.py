@@ -81,7 +81,7 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
     mem = _memory_path(den_dir)
     text = mem.read_text(encoding="utf-8") if mem.is_file() else ""
     if text.strip():
-        dest.write_text(_CLINERULES_HEADER + text, encoding="utf-8")
+        dest.write_text(_CLINERULES_HEADER + text, encoding="utf-8", newline="")
         return True
     if dest.exists():  # memory emptied/cleared -> drop the stale mirror
         dest.unlink()
@@ -205,7 +205,8 @@ def _cmd_save(den_dir: Path, argv: list[str]) -> int:
     _do_checkpoint(den_dir)
     mem = _memory_path(den_dir)
     mem.parent.mkdir(parents=True, exist_ok=True)
-    mem.write_text(content, encoding="utf-8")
+    # newline="" keeps LF on Windows so snapshots/mirrors stay byte-stable.
+    mem.write_text(content, encoding="utf-8", newline="")
     mirror_to_clinerules(den_dir)
     return 0
 
@@ -228,7 +229,7 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
     if existing and not existing.endswith("\n"):
         existing += "\n"
     addition = content if content.endswith("\n") else content + "\n"
-    mem.write_text(existing + addition, encoding="utf-8")
+    mem.write_text(existing + addition, encoding="utf-8", newline="")
     mirror_to_clinerules(den_dir)
     return 0
 
