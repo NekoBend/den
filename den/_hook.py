@@ -685,7 +685,9 @@ def _seed_imprint(den_dir: Path) -> bool:
     if path.is_file():
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_DEFAULT_IMPRINT, encoding="utf-8")
+    # newline="" keeps LF on Windows too, so the seeded file matches the bundled
+    # LF content byte-for-byte (den's text artifacts are LF on every platform).
+    path.write_text(_DEFAULT_IMPRINT, encoding="utf-8", newline="")
     return True
 
 

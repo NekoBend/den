@@ -140,7 +140,9 @@ def test_checkpoint_captures_direct_edit(tmp_path, monkeypatch):
     _save(tmp_path, monkeypatch, "v1\n")
     monkeypatch.chdir(tmp_path)
     memory_main(["checkpoint"])  # snapshot v1
-    _mem(tmp_path).write_text("v2 edited directly\n")  # bypass den memory save
+    # newline="" writes LF (like den + an LF editor) so the byte-compare below
+    # holds on Windows, where write_text would otherwise translate to CRLF.
+    _mem(tmp_path).write_text("v2 edited directly\n", newline="")  # bypass den save
     memory_main(["checkpoint"])  # snapshot v2
     snaps = [
         p.read_bytes() for p in _memory._snapshots(_memory._find_den_dir(tmp_path))
