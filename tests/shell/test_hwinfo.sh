@@ -97,6 +97,26 @@ actual=$(bash -c "
 " | tr -d '\r')
 assert_eq "bash/toggle-hwinfo cached env" "DEFINED" "$actual"
 
+echo "[bash] Intel GPU detection via lspci"
+# Mock lspci and point the cache at an empty dir so live detection runs; pre-fix
+# no block ever set STARSHIP_GPU_INTEL on POSIX (parity gap with hwinfo.ps1).
+HWINFO_MOCKBIN="$WORK/hwinfo-mockbin"
+mkdir -p "$HWINFO_MOCKBIN"
+cat > "$HWINFO_MOCKBIN/lspci" << 'MOCK'
+#!/bin/sh
+echo "00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 620 (rev 07)"
+MOCK
+chmod +x "$HWINFO_MOCKBIN/lspci"
+actual=$(bash -c "
+    export PATH=\"$HWINFO_MOCKBIN:\$PATH\"
+    export XDG_RUNTIME_DIR='$WORK/hwinfo-emptycache'
+    mkdir -p \"\$XDG_RUNTIME_DIR\"
+    unset STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL
+    source '$HWINFO_SH'
+    echo \"GPU_INTEL=\$STARSHIP_GPU_INTEL\"
+" | tr -d '\r')
+assert_contains "bash/Intel GPU via lspci" "GPU_INTEL=UHD Graphics 620" "$actual"
+
 # =============================================================================
 # Zsh tests
 # =============================================================================
