@@ -412,9 +412,11 @@ echo "[pwsh] back returns to the previous directory (Set-Location -)"
 actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "cd '$WORK'; cd /; back *>\$null; (Get-Location).Path" 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/back previous dir" "$WORK" "$actual"
 
-echo "[pwsh] back with no history warns"
-err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "back")
-assert_contains "pwsh/back no history" "no previous directory" "$err"
+echo "[pwsh] back on a fresh session is a graceful no-op (empty Set-Location - history)"
+# With no prior Set-Location, pwsh's location history is empty and `Set-Location -`
+# is a silent no-op (it does not throw), so back stays put and emits no error.
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$before = (Get-Location).Path; back *>\$null; \$after = (Get-Location).Path; if (\$before -eq \$after) { 'unchanged' } else { 'moved' }" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/back fresh no-op" "unchanged" "$actual"
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention

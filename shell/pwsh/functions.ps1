@@ -251,5 +251,7 @@ function back {
   # pwsh keeps a location history that EVERY Set-Location updates (den's cd, up,
   # mkcd, cdf, and zoxide's __zoxide_z), so `Set-Location -` is the reliable `cd -`
   # parity -- the old manual _OLDPWD was only recorded by cd's wrappers-OFF branch.
+  # With no history yet, `Set-Location -` is a silent no-op; the catch only fires on
+  # a genuine failure (e.g. the previous directory was removed).
   try { Set-Location - -ErrorAction Stop } catch { Write-Error 'no previous directory' }
 }
