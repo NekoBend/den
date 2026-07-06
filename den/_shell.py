@@ -68,6 +68,8 @@ _PWSH_EXTRAS = [
     "parallel.ps1",
     "completion.ps1",
     "cheat.ps1",
+    "proxy.ps1",
+    "snippet.ps1",
 ]
 
 _BASH_LINE = (

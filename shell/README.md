@@ -175,8 +175,9 @@ PowerShell additionally provides `df`, `env`, `head`, `tail`, `wc`, `which`,
 Profiles are stored in `$XDG_CONFIG_HOME/den/proxy.conf`. `on` / `off` only set
 or clear environment variables in the **current shell** (no global tool config
 such as `~/.gitconfig` is touched), so the active profile is tracked per-shell
-in `_DEN_PROXY_ACTIVE` and never disagrees with another shell. bash/zsh
-only. `localhost,127.0.0.1,::1` are always excluded; a profile's own `no_proxy`
+in `_DEN_PROXY_ACTIVE` and never disagrees with another shell. bash/zsh and
+PowerShell (a machine's pwsh and bash share the profile store).
+`localhost,127.0.0.1,::1` are always excluded; a profile's own `no_proxy`
 entries (comma-separated, e.g. `.corp.example.com,10.0.0.0/8`) are added on top.
 The one exception is `no_proxy = *`, which stays standalone (bypass everything).
 
@@ -196,7 +197,8 @@ Snippets are stored in `$XDG_CONFIG_HOME/den/snippets` (`name<TAB>command`; the
 name is `[A-Za-z0-9_-]`, the command may contain anything on one line). `run` and
 `pick` echo the command, then `eval` it in the **current shell** (you saved it,
 so it is trusted), which lets it `cd`, set vars, and use the current environment.
-`pick` needs `fzf`; without it, use `snippet run <name>`. bash/zsh only.
+`pick` needs `fzf`; without it, use `snippet run <name>`. bash/zsh and PowerShell
+(a machine's pwsh and bash share the snippet store).
 
 ### Cheatsheets
 Browse den's bundled cheatsheets offline. Deploy them first with
