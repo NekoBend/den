@@ -398,6 +398,15 @@ actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "_find_ps_fallback '$WORK/src' -name 
 assert_contains "pwsh/find -name -type f1" "file1.txt" "$actual"
 assert_contains "pwsh/find -name -type f3" "file3.txt" "$actual"
 
+echo "[pwsh] cat fallback reads stdin (not only file args)"
+# Force the PS fallback branch: wrappers OFF skips bat, and an empty PATH means
+# no native 'cat' resolves either, so the wrapper falls through to the inline
+# 'if ($Args.Count) { Get-Content @Args } else { $input }'. Pre-fix this branch
+# was a bare 'Get-Content @Args', which errors with no path instead of passing
+# stdin through.
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; 'piped-line' | cat" | tr -d '\r')
+assert_eq "pwsh/cat fallback stdin" "piped-line" "$actual"
+
 # =============================================================================
 # Summary
 # =============================================================================

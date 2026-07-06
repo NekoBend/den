@@ -68,7 +68,7 @@ function _find_ps_fallback {
 # ===== Toggle-aware wrappers: modern → native → PS fallback =====
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
 
-New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'Get-Content @Args'
+New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'if ($Args.Count) { Get-Content @Args } else { $input }'
 New-Wrapper 'find'    'fd'  ''                              'find' ''                '_find_ps_fallback @Args'
 New-Wrapper 'grep'    'rg'  ''                              'grep' '--color=auto'    '$input | _grep_ps_fallback @Args'
 New-Wrapper 'la'      'lsd' '-a'                            'ls'   '-A --color=auto' 'Get-ChildItem -Force @Args'
