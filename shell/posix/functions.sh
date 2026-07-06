@@ -233,7 +233,7 @@ again() {
         esac
         _ag_i=$((_ag_i + 1))
     done
-    unset _ag_found _ag_i _ag_try _ag_norm
+    unset _ag_found _ag_i _ag_try _ag_norm _ag_tab
 
     if [ -z "$_ag_cmd" ]; then
         echo "again: no command at position $_ag_n in history" >&2
