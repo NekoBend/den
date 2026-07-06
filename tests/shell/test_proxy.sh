@@ -102,6 +102,33 @@ else
     echo "zsh not found; skipping zsh proxy tests"
 fi
 
+# pwsh port: same proxy.conf store + same no_proxy loopback logic. on/off/status
+# chain inside ONE run_pwsh (env vars only live in that pwsh session). proxy status
+# prints to stdout; add/on/off messages go to stderr (not captured here).
+if command -v pwsh >/dev/null 2>&1; then
+    PROXY_PS1="$DOTFILES/shell/pwsh/proxy.ps1"
+
+    reset_conf
+    echo "[pwsh] add + on sets env and prepends loopback to no_proxy"
+    actual=$(run_pwsh "$PROXY_PS1" "proxy add work http://p:8080 '.corp'; proxy on work; proxy status" | tr -d '\r')
+    assert_contains "pwsh/proxy http_proxy" "http_proxy=http://p:8080" "$actual"
+    assert_contains "pwsh/proxy no_proxy loopback" "no_proxy=localhost,127.0.0.1,::1,.corp" "$actual"
+    assert_contains "pwsh/proxy active" "active: work" "$actual"
+
+    reset_conf
+    echo "[pwsh] off clears env + active"
+    actual=$(run_pwsh "$PROXY_PS1" "proxy add w http://p:1; proxy on w; proxy off; proxy status" | tr -d '\r')
+    assert_contains "pwsh/proxy off active none" "active: (none)" "$actual"
+    assert_not_contains "pwsh/proxy off cleared url" "http://p:1" "$actual"
+
+    reset_conf
+    echo "[pwsh] no_proxy=* stays standalone"
+    actual=$(run_pwsh "$PROXY_PS1" "proxy add all http://p:2 '*'; proxy on all; proxy status" | tr -d '\r')
+    assert_contains "pwsh/proxy star no_proxy" "no_proxy=*" "$actual"
+else
+    echo "pwsh not found; skipping pwsh proxy tests"
+fi
+
 # =============================================================================
 # Summary
 # =============================================================================

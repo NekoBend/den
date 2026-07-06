@@ -15,6 +15,8 @@ if (Test-Path "$PSScriptRoot\ffmpeg.ps1") { . "$PSScriptRoot\ffmpeg.ps1" }
 if (Test-Path "$PSScriptRoot\parallel.ps1") { . "$PSScriptRoot\parallel.ps1" }
 if (Test-Path "$PSScriptRoot\completion.ps1") { . "$PSScriptRoot\completion.ps1" }
 if (Test-Path "$PSScriptRoot\cheat.ps1") { . "$PSScriptRoot\cheat.ps1" }
+if (Test-Path "$PSScriptRoot\proxy.ps1") { . "$PSScriptRoot\proxy.ps1" }
+if (Test-Path "$PSScriptRoot\snippet.ps1") { . "$PSScriptRoot\snippet.ps1" }
 
 # ===== History =====
 if (Get-Module -Name PSReadLine) {

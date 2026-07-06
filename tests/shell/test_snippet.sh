@@ -121,6 +121,34 @@ else
     echo "zsh not found; skipping zsh snippet tests"
 fi
 
+# pwsh port: same store (XDG_CONFIG_HOME), same TAB format. Messages go to the
+# process stderr (bash's $(...) captures stdout only), so data reads stay clean.
+if command -v pwsh >/dev/null 2>&1; then
+    SNIPPET_PS1="$DOTFILES/shell/pwsh/snippet.ps1"
+
+    reset_store
+    echo "[pwsh] save + show"
+    actual=$(run_pwsh "$SNIPPET_PS1" "snippet save greet 'Write-Output hi'; snippet show greet" | tr -d '\r')
+    assert_eq "pwsh/snippet show" "Write-Output hi" "$actual"
+
+    reset_store
+    echo "[pwsh] run evaluates the command"
+    actual=$(run_pwsh "$SNIPPET_PS1" "snippet save g 'Write-Output hello'; snippet run g" | tr -d '\r')
+    assert_eq "pwsh/snippet run output" "hello" "$actual"
+
+    reset_store
+    echo "[pwsh] alias snip saves; rm then show is empty"
+    actual=$(run_pwsh "$SNIPPET_PS1" "snip save z 'Write-Output q'; snippet rm z; snippet show z" | tr -d '\r')
+    assert_eq "pwsh/snip alias + rm" "" "$actual"
+
+    reset_store
+    echo "[pwsh] unknown command fails with usage"
+    actual=$(run_pwsh "$SNIPPET_PS1" "snippet frobnicate" 2>&1 | tr -d '\r')
+    assert_contains "pwsh/snippet unknown cmd" "unknown command" "$actual"
+else
+    echo "pwsh not found; skipping pwsh snippet tests"
+fi
+
 # =============================================================================
 # Summary
 # =============================================================================
