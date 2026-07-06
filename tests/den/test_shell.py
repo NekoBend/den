@@ -9,6 +9,7 @@ from den._install import main as install_main
 
 _POSIX_DIR = Path(__file__).resolve().parents[2] / "shell" / "posix"
 _PWSH_DIR = Path(__file__).resolve().parents[2] / "shell" / "pwsh"
+_CMD_BIN = Path(__file__).resolve().parents[2] / "shell" / "cmd" / "bin"
 
 
 def _pwsh_sourced_files() -> set[str]:
@@ -56,6 +57,36 @@ def test_every_pwsh_feature_file_is_installed_and_sourced():
     assert feature_files <= sourced, (
         f"shell/pwsh files not dot-sourced by init.ps1: {feature_files - sourced}"
     )
+
+
+def test_cmd_core_shims_present():
+    # cmd is intentionally a subset (no parallel/proxy/snippet), but its core
+    # navigation + wrapper + python shims must exist. den globs cmd/bin/*.cmd to
+    # install, so a deleted shim just silently vanishes with no other signal; this
+    # is the cmd counterpart to the posix/pwsh install-and-sourced wiring guards.
+    required = {
+        "ls",
+        "cat",
+        "grep",
+        "find",
+        "la",
+        "ll",  # wrappers
+        "up",
+        "back",
+        "mkcd",
+        "again",  # navigation
+        "python",
+        "pip",
+        "uv",  # python
+        "which",
+        "head",
+        "tail",
+        "path",
+        "toggle-wrapper",  # utils / toggles
+    }
+    present = {p.stem for p in _CMD_BIN.glob("*.cmd")}
+    missing = required - present
+    assert not missing, f"cmd/bin is missing core shims: {sorted(missing)}"
 
 
 def test_pwsh_dir_honors_queried_profile_on_windows(tmp_path, monkeypatch):
