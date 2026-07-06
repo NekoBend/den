@@ -66,7 +66,9 @@ function _SnippetUsage {
 function snippet {
     $stdin = @($input)
     $sub = if ($args.Count) { [string]$args[0] } else { 'pick' }
-    $rest = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @() }
+    # @() at assignment: an if-block that outputs a 1-element array unrolls it to a
+    # scalar string, and then $rest[0] would index the STRING (first char).
+    $rest = @($args | Select-Object -Skip 1)
     switch -Regex ($sub) {
         '^save$' {
             if ($rest.Count -eq 0) {
@@ -91,7 +93,7 @@ function snippet {
             [Console]::Error.WriteLine("snippet: saved '$name'")
         }
         '^(ls|list)$' {
-            $lines = _SnippetLines
+            $lines = @(_SnippetLines)
             if (-not $lines.Count) {
                 [Console]::Error.WriteLine('snippet: no snippets (use: snippet save <name> <command...>)'); return
             }
@@ -106,7 +108,7 @@ function snippet {
         '^(rm|remove)$' {
             if (-not $rest.Count) { [Console]::Error.WriteLine('usage: snippet rm <name>'); return }
             $name = [string]$rest[0]
-            $lines = _SnippetLines
+            $lines = @(_SnippetLines)
             $kept = @($lines | Where-Object { (_SnippetName $_) -ne $name })
             if ($kept.Count -eq $lines.Count) {
                 [Console]::Error.WriteLine("snippet rm: no such snippet '$name'"); return
@@ -126,7 +128,7 @@ function snippet {
             if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
                 [Console]::Error.WriteLine("snippet pick: fzf not found; use 'snippet run <name>'"); return
             }
-            $lines = _SnippetLines
+            $lines = @(_SnippetLines)
             if (-not $lines.Count) {
                 [Console]::Error.WriteLine('snippet: no snippets (use: snippet save <name> <command...>)'); return
             }

@@ -51,7 +51,9 @@ function _ProxyUsage {
 # proxy - register named proxy profiles and toggle them on/off (env vars only).
 function proxy {
     $sub = if ($args.Count) { [string]$args[0] } else { 'status' }
-    $rest = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @() }
+    # @() at assignment: an if-block that outputs a 1-element array unrolls it to a
+    # scalar string, and then $rest[0] would index the STRING (first char).
+    $rest = @($args | Select-Object -Skip 1)
     switch -Regex ($sub) {
         '^add$' {
             if ($rest.Count -lt 2) {
@@ -71,7 +73,7 @@ function proxy {
         '^rm$' {
             if (-not $rest.Count) { [Console]::Error.WriteLine('usage: proxy rm <name>'); return }
             $name = [string]$rest[0]
-            $lines = _ProxyLines
+            $lines = @(_ProxyLines)
             $kept = @($lines | Where-Object { (_ProxyFields $_).Name -ne $name })
             if ($kept.Count -eq $lines.Count) {
                 [Console]::Error.WriteLine("proxy rm: no such profile '$name'"); return
@@ -83,7 +85,7 @@ function proxy {
             }
         }
         '^(ls|list)$' {
-            $lines = _ProxyLines
+            $lines = @(_ProxyLines)
             if (-not $lines.Count) {
                 [Console]::Error.WriteLine('proxy: no profiles (use: proxy add <name> <url> [no_proxy])'); return
             }
