@@ -50,5 +50,9 @@ unset _zp
 reload() {
     rm -f "${XDG_CACHE_HOME:-$HOME/.cache}"/shell/*.zsh
     fc -W
-    exec "$SHELL"
+    # Re-exec zsh explicitly, not $SHELL: $SHELL is the login shell from passwd,
+    # which may be bash even when zsh was launched manually. Mirrors init.bash's
+    # `exec "$BASH"`. Prefer zsh's hashed absolute path ($commands[zsh]) over a
+    # bare PATH lookup, falling back to `zsh` if it is not hashed.
+    exec "${commands[zsh]:-zsh}"
 }

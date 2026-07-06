@@ -76,6 +76,13 @@ actual=$(stat -c%s "$WORK/dummy.bin")
 assert_eq "bash/mkfile size" "1024" "$actual"
 rm -f "$WORK/dummy.bin"
 
+echo "[bash] mkfile neutralizes a leading-dash path"
+# Pre-fix `mkfile 1K -x` ran `truncate -s 1K -x` and truncate parsed -x as an
+# option, so no file was made. The ./ guard makes it create a file named -x.
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && mkfile 1K -dashfile" >/dev/null 2>&1
+assert_exists "bash/mkfile leading-dash created" "$WORK/-dashfile"
+rm -f "$WORK/-dashfile"
+
 # --- archive + extract (tar.gz) ---
 echo "[bash] archive + extract tar.gz"
 setup_fixtures

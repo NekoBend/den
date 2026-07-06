@@ -16,7 +16,8 @@ _hwc_f="$_hwc_dir/den-hwinfo.${_hwc_mid}.sh"
 
 # Source the cache only if a regular file, not a symlink, owned by us.
 if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
-   [ -z "$STARSHIP_GPU_NVIDIA" ] && [ -z "$STARSHIP_GPU_AMD" ]; then
+   [ -z "$STARSHIP_GPU_NVIDIA" ] && [ -z "$STARSHIP_GPU_AMD" ] && \
+   [ -z "$STARSHIP_GPU_INTEL" ]; then
     if [ -f "$_hwc_f" ] && [ ! -L "$_hwc_f" ] && [ -O "$_hwc_f" ]; then
         . "$_hwc_f"
     fi
@@ -24,7 +25,8 @@ fi
 
 # --- Detect hardware live only if still uncached (env + file cache both miss) ---
 if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
-   [ -z "$STARSHIP_GPU_NVIDIA" ] && [ -z "$STARSHIP_GPU_AMD" ]; then
+   [ -z "$STARSHIP_GPU_NVIDIA" ] && [ -z "$STARSHIP_GPU_AMD" ] && \
+   [ -z "$STARSHIP_GPU_INTEL" ]; then
 
     # --- CPU detection from /proc/cpuinfo ---
     if [ -f /proc/cpuinfo ]; then
@@ -101,6 +103,34 @@ if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
             }
         ')
         [ -n "$_hwinfo_gpu_short" ] && export STARSHIP_GPU_AMD="$_hwinfo_gpu_short"
+        unset _hwinfo_gpu_short
+    fi
+
+    # --- GPU detection: lspci (Intel iGPU) ---
+    # Only when no discrete GPU was found, matching the pwsh port's
+    # NVIDIA > AMD > Intel priority (hwinfo.ps1). Without this block Intel GPUs
+    # were plumbed through the cache/toggle but never actually detected on POSIX.
+    if [ -z "$STARSHIP_GPU_NVIDIA" ] && [ -z "$STARSHIP_GPU_AMD" ] && \
+       command -v lspci >/dev/null 2>&1; then
+        _hwinfo_gpu_short=$(lspci 2>/dev/null | awk -F': ' '
+            /VGA compatible controller|3D controller|Display controller/ && /Intel/ {
+                count++
+                if (count == 1) {
+                    short = $NF
+                    gsub(/Intel Corporation[[:space:]]*/, "", short)
+                    gsub(/[[:space:]]*\(rev[^)]*\)/, "", short)
+                    gsub(/[[:space:]]+/, " ", short)
+                    gsub(/^ +| +$/, "", short)
+                }
+            }
+            END {
+                if (count > 0) {
+                    if (count > 1) printf "%s x%d\n", short, count
+                    else print short
+                }
+            }
+        ')
+        [ -n "$_hwinfo_gpu_short" ] && export STARSHIP_GPU_INTEL="$_hwinfo_gpu_short"
         unset _hwinfo_gpu_short
     fi
 

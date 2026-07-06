@@ -39,7 +39,12 @@ mkfile() {
         echo "usage: mkfile <size> <path>  (e.g. mkfile 10M test.bin)" >&2
         return 1
     fi
-    truncate -s "$1" "$2" && echo "Created $2 ($1)"
+    # Neutralise a leading-dash path so truncate cannot parse it as an option
+    # (parity with extract/archive/digest/mkcd).
+    _mf_path="$2"
+    case "$_mf_path" in -*) _mf_path="./$_mf_path" ;; esac
+    truncate -s "$1" "$_mf_path" && echo "Created $_mf_path ($1)"
+    unset _mf_path
 }
 
 # extract → auto-detect and extract archives
@@ -192,13 +197,14 @@ again() {
     # Strip "command ", "builtin ", and leading backslash so the skip cannot
     # be bypassed by e.g. `\again`, `command again`.
     _ag_found=0; _ag_cmd=""
+    _ag_tab="$(printf '\t')"  # real TAB for the leading-whitespace trim below
     _ag_i=1
     while [ "$_ag_i" -le 50 ]; do
         _ag_try="$(fc -ln "-$_ag_i" "-$_ag_i" 2>/dev/null)"
         while :; do
             case "$_ag_try" in
-                ' '*) _ag_try=${_ag_try# } ;;
-		'\t'*) _ag_try=${_ag_try#	} ;;
+                ' '*)        _ag_try="${_ag_try# }" ;;
+                "$_ag_tab"*) _ag_try="${_ag_try#"$_ag_tab"}" ;;
                 *) break ;;
             esac
         done
@@ -227,7 +233,7 @@ again() {
         esac
         _ag_i=$((_ag_i + 1))
     done
-    unset _ag_found _ag_i _ag_try _ag_norm
+    unset _ag_found _ag_i _ag_try _ag_norm _ag_tab
 
     if [ -z "$_ag_cmd" ]; then
         echo "again: no command at position $_ag_n in history" >&2
