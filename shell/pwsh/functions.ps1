@@ -115,7 +115,6 @@ function cd {
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
     __zoxide_z @Rest
   } else {
-    $global:_OLDPWD = $PWD.Path
     if ($Rest.Count -eq 0) { Set-Location ~ } else { Set-Location @Rest }
   }
 }
@@ -245,10 +244,12 @@ function back {
   param([int]$N = 1)
   if ($N -lt 1) { Write-Error 'usage: [N]  (N=positive integer, default 1)'; return }
   if ($N -ne 1) {
-    Write-Error 'only N=1 is supported (uses _OLDPWD)'
+    Write-Error 'only N=1 is supported (uses Set-Location -)'
     Write-Host 'hint: use Push-Location / Pop-Location for deeper history' -ForegroundColor Yellow
     return
   }
-  if (-not $global:_OLDPWD) { Write-Error 'no previous directory'; return }
-  Set-Location $global:_OLDPWD
+  # pwsh keeps a location history that EVERY Set-Location updates (den's cd, up,
+  # mkcd, cdf, and zoxide's __zoxide_z), so `Set-Location -` is the reliable `cd -`
+  # parity -- the old manual _OLDPWD was only recorded by cd's wrappers-OFF branch.
+  try { Set-Location - -ErrorAction Stop } catch { Write-Error 'no previous directory' }
 }

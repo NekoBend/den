@@ -408,13 +408,13 @@ echo "[pwsh] back 2"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "back -N 2")
 assert_contains "pwsh/back 2 unsupported" "only N=1" "$err"
 
-echo "[pwsh] back with _OLDPWD"
-actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$global:_OLDPWD = '/tmp'; back *>\$null; (Get-Location).Path" 2>/dev/null | tr -d '\r')
-assert_eq "pwsh/back _OLDPWD" "/tmp" "$actual"
+echo "[pwsh] back returns to the previous directory (Set-Location -)"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "cd '$WORK'; cd /; back *>\$null; (Get-Location).Path" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/back previous dir" "$WORK" "$actual"
 
-echo "[pwsh] back no _OLDPWD"
-err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Remove-Variable _OLDPWD -Scope Global -ErrorAction SilentlyContinue; back")
-assert_contains "pwsh/back no _OLDPWD" "no previous directory" "$err"
+echo "[pwsh] back with no history warns"
+err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "back")
+assert_contains "pwsh/back no history" "no previous directory" "$err"
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention

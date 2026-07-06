@@ -122,6 +122,12 @@ echo "[pwsh] toggle-uv removes functions"
 actual=$(run_pwsh "$PYTHON_PS1_TEST" "toggle-uv *>\$null; if (Get-Command pip -ErrorAction SilentlyContinue) { 'exists' } else { 'removed' }" | tr -d '\r')
 assert_eq "pwsh/toggle-uv removes pip" "removed" "$actual"
 
+echo "[pwsh] va activates a Linux/macOS venv (bin/Activate.ps1)"
+mkdir -p "$WORK/venvtest/.venv/bin"
+printf '%s\n' '$env:VIRTUAL_ENV = "fakevenv"' > "$WORK/venvtest/.venv/bin/Activate.ps1"
+actual=$(run_pwsh "$PYTHON_PS1_TEST" "Set-Location '$WORK/venvtest'; va *>\$null; \$env:VIRTUAL_ENV" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/va finds bin/Activate.ps1" "fakevenv" "$actual"
+
 # =============================================================================
 # Summary
 # =============================================================================

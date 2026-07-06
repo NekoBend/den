@@ -97,9 +97,13 @@ function py {
 # va → activate Python venv (default: .venv)
 function va {
   param([string]$Name = '.venv')
+  # Scripts/ on Windows, bin/ on Linux/macOS (uv/venv place Activate.ps1 there).
   $activatePath = Join-Path $Name 'Scripts/Activate.ps1'
   if (-not (Test-Path $activatePath)) {
-    Write-Error "activate script not found: $activatePath"
+    $activatePath = Join-Path $Name 'bin/Activate.ps1'
+  }
+  if (-not (Test-Path $activatePath)) {
+    Write-Error "activate script not found under '$Name' (Scripts/ or bin/)"
     return
   }
   . $activatePath
