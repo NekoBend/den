@@ -56,7 +56,8 @@ function proxy {
     $rest = @($args | Select-Object -Skip 1)
     switch -Regex ($sub) {
         '^add$' {
-            if ($rest.Count -lt 2) {
+            if ($rest.Count -lt 2 -or -not [string]$rest[1]) {
+                # Require a non-empty url, like posix ([ -z "$2" ] rejects it).
                 [Console]::Error.WriteLine('usage: proxy add <name> <url> [no_proxy]'); return
             }
             $name = [string]$rest[0]

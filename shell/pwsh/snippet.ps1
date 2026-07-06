@@ -81,7 +81,8 @@ function snippet {
             $cmd = if ($rest.Count -ge 2) {
                 ($rest[1..($rest.Count - 1)] -join ' ')
             } else {
-                ($stdin -join "`n").Trim()
+                # From stdin: take the FIRST line only, like posix `read -r` (no Trim).
+                (($stdin -join "`n") -split "`r?`n")[0]
             }
             if (-not $cmd) { [Console]::Error.WriteLine('snippet save: empty command'); return }
             if ($cmd -match "`n") {

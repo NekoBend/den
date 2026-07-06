@@ -125,6 +125,11 @@ if command -v pwsh >/dev/null 2>&1; then
     echo "[pwsh] no_proxy=* stays standalone"
     actual=$(run_pwsh "$PROXY_PS1" "proxy add all http://p:2 '*'; proxy on all; proxy status" | tr -d '\r')
     assert_contains "pwsh/proxy star no_proxy" "no_proxy=*" "$actual"
+
+    reset_conf
+    echo "[pwsh] add rejects an empty url"
+    actual=$(run_pwsh "$PROXY_PS1" "proxy add x ''; proxy ls" 2>&1 | tr -d '\r')
+    assert_contains "pwsh/proxy empty url rejected" "no profiles" "$actual"
 else
     echo "pwsh not found; skipping pwsh proxy tests"
 fi

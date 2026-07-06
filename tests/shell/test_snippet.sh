@@ -142,6 +142,11 @@ if command -v pwsh >/dev/null 2>&1; then
     assert_eq "pwsh/snip alias + rm" "" "$actual"
 
     reset_store
+    echo "[pwsh] save from stdin takes the first line"
+    actual=$(run_pwsh "$SNIPPET_PS1" "'Write-Output piped' | snippet save p; snippet show p" | tr -d '\r')
+    assert_eq "pwsh/snippet stdin save" "Write-Output piped" "$actual"
+
+    reset_store
     echo "[pwsh] unknown command fails with usage"
     actual=$(run_pwsh "$SNIPPET_PS1" "snippet frobnicate" 2>&1 | tr -d '\r')
     assert_contains "pwsh/snippet unknown cmd" "unknown command" "$actual"
