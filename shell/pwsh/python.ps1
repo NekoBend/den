@@ -98,11 +98,13 @@ function py {
 function va {
   param([string]$Name = '.venv')
   # Scripts/ on Windows, bin/ on Linux/macOS (uv/venv place Activate.ps1 there).
+  # -LiteralPath keeps wildcard chars in $Name (*, ?, []) from glob-expanding to an
+  # unintended script that would then be dot-sourced; -PathType Leaf requires a file.
   $activatePath = Join-Path $Name 'Scripts/Activate.ps1'
-  if (-not (Test-Path $activatePath)) {
+  if (-not (Test-Path -LiteralPath $activatePath -PathType Leaf)) {
     $activatePath = Join-Path $Name 'bin/Activate.ps1'
   }
-  if (-not (Test-Path $activatePath)) {
+  if (-not (Test-Path -LiteralPath $activatePath -PathType Leaf)) {
     Write-Error "activate script not found under '$Name' (Scripts/ or bin/)"
     return
   }

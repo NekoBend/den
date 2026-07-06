@@ -128,6 +128,14 @@ printf '%s\n' '$env:VIRTUAL_ENV = "fakevenv"' > "$WORK/venvtest/.venv/bin/Activa
 actual=$(run_pwsh "$PYTHON_PS1_TEST" "Set-Location '$WORK/venvtest'; va *>\$null; \$env:VIRTUAL_ENV" 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/va finds bin/Activate.ps1" "fakevenv" "$actual"
 
+echo "[pwsh] va treats \$Name literally (no wildcard glob-expansion)"
+# A real 'foobar/bin/Activate.ps1' must NOT be reached by 'va foo*': -LiteralPath
+# rejects the literal 'foo*' dir instead of globbing to foobar and sourcing it.
+mkdir -p "$WORK/wildtest/foobar/bin"
+printf '%s\n' '$env:VIRTUAL_ENV = "leaked"' > "$WORK/wildtest/foobar/bin/Activate.ps1"
+err=$(run_pwsh_stderr "$PYTHON_PS1_TEST" "Set-Location '$WORK/wildtest'; \$env:VIRTUAL_ENV = \$null; va 'foo*'")
+assert_contains "pwsh/va rejects wildcard name" "activate script not found" "$err"
+
 # =============================================================================
 # Summary
 # =============================================================================
