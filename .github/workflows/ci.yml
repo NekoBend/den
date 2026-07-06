@@ -206,3 +206,16 @@ jobs:
           $missing = $expected | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
           if ($missing) { throw "init.ps1 did not define at global scope: $($missing -join ', ')" }
           Write-Output "pwsh init.ps1 loaded; global functions present: $($expected -join ', ')"
+          # When interactive (the runner is), the wrappers/aliases load and den's
+          # functions must WIN over the Windows-only built-in cp/mv/rm/ls/cat/gc
+          # aliases (an alias outranks a function; den removes the builtins). Verify
+          # none is shadowed. Skipped when non-interactive (they correctly do not load).
+          if ([Environment]::UserInteractive) {
+            $collide = 'ls', 'cat', 'cp', 'mv', 'rm', 'gc', 'cd'
+            $shadowed = foreach ($n in $collide) {
+              $c = Get-Command $n -ErrorAction SilentlyContinue
+              if ($c -and $c.CommandType -eq 'Alias') { "$n->$($c.Definition)" }
+            }
+            if ($shadowed) { throw "den functions shadowed by builtin aliases: $($shadowed -join ', ')" }
+            Write-Output "no builtin alias shadows den's wrappers: $($collide -join ', ')"
+          }
