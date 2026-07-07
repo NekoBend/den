@@ -237,3 +237,11 @@ def test_cline_rules_dir_windows_queries_powershell(tmp_path, monkeypatch):
     got = _install._cline_rules_dir()
     assert str(got).startswith(onedrive)
     assert got.name == "Rules" and got.parent.name == "Cline"
+
+
+def test_leaf_help_prints_usage(capsys):
+    # `den install <target> --help` should print usage and exit 0, not error 2.
+    for target in ("skills", "shell", "cheatsheets"):
+        for flag in ("--help", "-h", "help"):
+            assert install_main([target, flag]) == 0
+            assert "usage: den install" in capsys.readouterr().out

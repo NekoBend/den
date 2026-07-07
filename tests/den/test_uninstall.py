@@ -242,3 +242,38 @@ def test_uninstall_cline_removes_rules_parent(tmp_path, monkeypatch):
     assert rules_parent.is_file()
     assert uninstall_main(["skills", "--tool", "cline", "--with-parent", "--yes"]) == 0
     assert not rules_parent.exists()
+
+
+def test_interactive_uninstalls_cheatsheets(monkeypatch):
+    # Parity with `den install` interactive, which offers cheatsheets: the bare
+    # `den uninstall` interactive flow must dispatch _uninstall_cheatsheets too.
+    from den import _ui, _uninstall
+
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: [])  # no skills chosen
+    calls = []
+    monkeypatch.setattr(
+        _uninstall, "_uninstall_shell", lambda argv: calls.append(("shell", argv)) or 0
+    )
+    monkeypatch.setattr(
+        _uninstall,
+        "_uninstall_cheatsheets",
+        lambda argv: calls.append(("cheatsheets", argv)) or 0,
+    )
+    assert _uninstall._interactive() == 0
+    assert ("shell", []) in calls
+    assert ("cheatsheets", []) in calls  # was never dispatched before the fix
+
+
+def test_uninstall_usage_common_flags_scoped(capsys):
+    # The "Common" flags line must not claim --yes/--dry-run apply to every
+    # target: `den uninstall hook` rejects them (exit 2), so the line is scoped.
+    assert uninstall_main(["--help"]) == 0
+    assert "Common (skills/shell/cheatsheets):" in capsys.readouterr().out
+
+
+def test_uninstall_leaf_help_prints_usage(capsys):
+    # `den uninstall <target> --help` should print usage and exit 0, not error 2.
+    for target in ("skills", "shell", "cheatsheets"):
+        for flag in ("--help", "-h", "help"):
+            assert uninstall_main([target, flag]) == 0
+            assert "usage: den uninstall" in capsys.readouterr().out

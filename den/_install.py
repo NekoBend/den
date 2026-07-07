@@ -463,6 +463,13 @@ def main(argv: list[str] | None = None) -> int:
         _usage()
         return 0
     target, rest = args[0], args[1:]
+    # Leaf-level help: `den install skills --help` etc. should print usage, not
+    # error. hook owns its own arg handling in _hook, so it is excluded here.
+    if target in ("skills", "shell", "cheatsheets") and any(
+        a in ("-h", "--help", "help") for a in rest
+    ):
+        _usage()
+        return 0
     if target == "skills":
         return _install_skills(rest)
     if target == "shell":
