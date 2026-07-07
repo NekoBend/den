@@ -342,6 +342,11 @@ def _interactive() -> int:
         rc |= _uninstall_skills(flags)
     else:
         _ui.say("  (no tools selected)")
+    # Mirror `den install`, which offers cheatsheets here. Called unconditionally
+    # like _uninstall_shell above: commit() supplies the per-component confirm and
+    # prints "Nothing to remove." when the user never installed them.
+    _ui.say("\n# offline cheatsheets")
+    rc |= _uninstall_cheatsheets([])
     _ui.say(
         "\nHooks are per-workspace: run 'den uninstall hook' inside a project to "
         "remove them there."
@@ -361,7 +366,8 @@ def _usage() -> None:
         "  hook   [--tool T]... [--all-tools] [--config PATH]\n"
         "  cheatsheets\n"
         "\n"
-        "Common: [--yes] skip the confirm, [--dry-run] show the plan only.\n"
+        "Common (skills/shell/cheatsheets): [--yes] skip the confirm, "
+        "[--dry-run] show the plan only.\n"
         "\n"
         "Only files identical to den's version are removed; files you changed are\n"
         "kept. The rc-file '# ===== den =====' block is stripped. Hooks are\n"
@@ -380,6 +386,13 @@ def main(argv: list[str] | None = None) -> int:
         _usage()
         return 0
     target, rest = args[0], args[1:]
+    # Leaf-level help: `den uninstall skills --help` etc. should print usage, not
+    # error. hook owns its own arg handling in _hook, so it is excluded here.
+    if target in ("skills", "shell", "cheatsheets") and any(
+        a in ("-h", "--help", "help") for a in rest
+    ):
+        _usage()
+        return 0
     if target == "skills":
         return _uninstall_skills(rest)
     if target == "shell":
