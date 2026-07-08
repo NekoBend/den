@@ -24,6 +24,28 @@ function _OnWindows {
     [bool]($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop')
 }
 
+# _DenInteractive — true only for an interactive REPL. den's wrappers/aliases/
+# coreutils/completion load only here, so a `pwsh -File script.ps1` / `pwsh -Command
+# ...` run does NOT get ls/cat/rm/grep/find silently replaced by den's functions.
+# [Environment]::UserInteractive is unreliable for this: it is $true for -File/-Command
+# in a desktop session (which still load $PROFILE) and ALWAYS $true on non-Windows
+# pwsh, so the plain gate was a no-op off Windows. So also inspect the launch switches
+# ([Environment]::GetCommandLineArgs()) for a script/command payload; a REPL has none.
+# Set _DEN_FORCE_INTERACTIVE=1 to force-load (used by the shell tests, which run under
+# `pwsh -NonInteractive -Command`).
+function _DenInteractive {
+    if ($env:_DEN_FORCE_INTERACTIVE -eq '1') { return $true }
+    if (-not [Environment]::UserInteractive) { return $false }
+    foreach ($a in [Environment]::GetCommandLineArgs()) {
+        # -File/-f, -Command/-c, -EncodedCommand/-ec/-e, -NonInteractive/-noni. The $
+        # anchor keeps -ExecutionPolicy / -NoProfile / -NoLogo from matching -e / -noni.
+        if ($a -match '^-(f(ile)?|c(ommand)?|e(ncodedcommand)?|ec|noni(nteractive)?)$') {
+            return $false
+        }
+    }
+    return $true
+}
+
 # _CoreutilsBin — path to the microsoft/coreutils multi-call binary, or $null. This
 # is the middle dispatch tier on Windows (modern -> coreutils -> native -> PS
 # fallback): microsoft/coreutils bundles uutils/coreutils + findutils + grep into

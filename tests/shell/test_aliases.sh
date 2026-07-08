@@ -9,11 +9,11 @@
 # resolve to a Function. (The Windows-only cp/mv/rm collisions are covered by the
 # windows CI job's pwsh smoke.)
 #
-# run_pwsh uses `pwsh -NonInteractive`, but on non-Windows pwsh
-# [Environment]::UserInteractive is always $true, so the interactivity-gated
-# wrappers.ps1/coreutils.ps1/aliases.ps1 still load here. And this test cannot pass
-# silently if they did NOT load: the builtin `gc`/`gl`/... would remain Aliases (and
-# `ls`/`cat` would resolve to the native Application), which the assert rejects.
+# run_pwsh uses `pwsh -NonInteractive -Command`, which the _DenInteractive gate
+# treats as non-interactive, so set _DEN_FORCE_INTERACTIVE=1 to load the gated
+# wrappers.ps1/coreutils.ps1/aliases.ps1. This test cannot pass silently if they did
+# NOT load: the builtin `gc`/`gl`/... would remain Aliases (and `ls`/`cat` would
+# resolve to the native Application), which the assert rejects.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -36,6 +36,7 @@ fi
 # whose builtin pwsh alias exists on Linux resolves to den's Function, not an Alias.
 echo "[pwsh] den commands resolve to functions, not builtin aliases"
 actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
     . '$P/wrappers.ps1'
     . '$P/coreutils.ps1'
     . '$P/functions.ps1'

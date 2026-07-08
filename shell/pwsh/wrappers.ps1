@@ -2,7 +2,7 @@
 # Dot-sourced by init.ps1. Requires _helpers.ps1 loaded first.
 
 # Skip in non-interactive sessions
-if (-not [Environment]::UserInteractive) { return }
+if (-not (_DenInteractive)) { return }
 
 # Drop the built-in aliases that would otherwise outrank our same-named wrapper
 # FUNCTIONS (alias beats function in command resolution). On Windows `ls` and

@@ -3,7 +3,7 @@
 # Dot-sourced by init.ps1.
 
 # Skip in non-interactive sessions to avoid breaking scripts
-if (-not [Environment]::UserInteractive) { return }
+if (-not (_DenInteractive)) { return }
 
 # Drop the built-in aliases that would otherwise outrank our same-named git/gitui
 # FUNCTIONS below (alias beats function in command resolution): gc=Get-Content,

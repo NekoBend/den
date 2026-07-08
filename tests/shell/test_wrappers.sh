@@ -20,21 +20,21 @@ run_zsh_i() {
     zsh -ic "source '$HELPERS_SH' && source '$1' && $2" 2>/dev/null
 }
 
-# wrappers.ps1 has [Environment]::UserInteractive guard.
-# Strip the guard line before dot-sourcing.
+# wrappers.ps1 has a `_DenInteractive` guard (returns early under pwsh -Command).
+# Strip the guard line before dot-sourcing so the wrappers load in the test host.
 # Prepend _helpers.ps1 so New-Wrapper/New-WrapperSuffix are available.
 # Place outside $WORK to avoid deletion by $() subshell EXIT trap.
 WRAPPERS_PS1_STRIPPED="/tmp/wrappers_stripped_$$.ps1"
 {
     echo ". '$HELPERS_PS1'"
-    grep -v 'UserInteractive' "$WRAPPERS_PS1" | sed '/Remove-Item alias:ls/d'
+    grep -v '_DenInteractive' "$WRAPPERS_PS1" | sed '/Remove-Item alias:ls/d'
 } > "$WRAPPERS_PS1_STRIPPED"
 # Combined wrappers + coreutils for pipe chain tests
 COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
 COMBINED_PS1="/tmp/wrappers_combined_$$.ps1"
 {
     cat "$WRAPPERS_PS1_STRIPPED"
-    grep -v 'UserInteractive' "$COREUTILS_PS1"
+    grep -v '_DenInteractive' "$COREUTILS_PS1"
 } > "$COMBINED_PS1"
 
 _cleanup_wrappers() { rm -f "$WRAPPERS_PS1_STRIPPED" "$COMBINED_PS1"; }

@@ -8,11 +8,11 @@
 #      `docker run <Tab>` etc. complete. git uses posh-git, but only when installed.
 
 # This file only matters in INTERACTIVE sessions (where you press Tab), so skip it
-# otherwise. NOTE: [Environment]::UserInteractive is reliable only on Windows (always
-# $true on non-Windows pwsh), so this mainly spares Windows automation from spawning
-# docker/gh/uv/rustup; on Linux/macOS the gate is a no-op but the completers still
-# no-op when their tool is absent. (Matches wrappers/coreutils.)
-if (-not [Environment]::UserInteractive) { return }
+# otherwise. _DenInteractive (in _helpers.ps1) is REPL-only on every platform, unlike
+# the bare [Environment]::UserInteractive this used to gate on (always $true on
+# non-Windows pwsh, so a no-op there), so `pwsh -File`/`-Command` runs no longer spawn
+# the docker/gh/uv/rustup completers. (Matches wrappers/coreutils/aliases.)
+if (-not (_DenInteractive)) { return }
 
 # Tab UX: show a completion menu (matches the zsh menu-select on Linux).
 if (Get-Module -Name PSReadLine) {

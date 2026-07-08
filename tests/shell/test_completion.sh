@@ -22,12 +22,12 @@ fi
 
 # completion.ps1 uses the shared Initialize-Cache (in _helpers.ps1) and registers
 # the per-tool completers. Sourcing both must not error: the trailing sentinel
-# prints only if completion.ps1 sourced without a terminating error. In CI (Linux
-# pwsh, where UserInteractive is always true so the gate is a no-op) the per-tool
-# completers no-op because their tools are absent. Stderr is NOT suppressed, so a
-# load failure is visible.
+# prints only if completion.ps1 sourced without a terminating error. run_pwsh is
+# -NonInteractive, which the _DenInteractive gate treats as non-interactive, so set
+# _DEN_FORCE_INTERACTIVE=1 to exercise the body; the per-tool completers no-op
+# because their tools are absent. Stderr is NOT suppressed, so a load failure shows.
 echo "[pwsh] completion.ps1 sources cleanly"
-actual=$(run_pwsh "$HELPERS_PS1" ". '$COMPLETION_PS1'; 'SOURCED-OK'" | tr -d '\r')
+actual=$(run_pwsh "$HELPERS_PS1" "\$env:_DEN_FORCE_INTERACTIVE='1'; . '$COMPLETION_PS1'; 'SOURCED-OK'" | tr -d '\r')
 assert_eq "pwsh/completion sources cleanly" "SOURCED-OK" "$actual"
 
 print_summary "test_completion"
