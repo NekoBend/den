@@ -5,8 +5,8 @@
 # Purpose: Validate that shell functions work correctly in all three shells.
 #
 # Usage:
-#   docker build -t dotfiles-shell-test -f tests/shell/Dockerfile .
-#   docker run --rm dotfiles-shell-test
+#   docker build -t den-shell-test -f tests/shell/Dockerfile .
+#   docker run --rm den-shell-test
 # =============================================================================
 FROM ubuntu:24.04
 

@@ -82,7 +82,8 @@ def test_cmd_core_shims_present():
         "head",
         "tail",
         "path",
-        "toggle-wrapper",  # utils / toggles
+        "toggle-wrapper",
+        "toggle-uv",  # utils / toggles
     }
     present = {p.stem for p in _CMD_BIN.glob("*.cmd")}
     missing = required - present

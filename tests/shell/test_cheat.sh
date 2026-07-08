@@ -88,6 +88,52 @@ else
     echo "zsh not found; skipping zsh cheat tests"
 fi
 
+# pwsh port: same $XDG_DATA_HOME/den/cheatsheets store and same ls/render/missing/
+# no-store/ambiguous logic as cheat.sh. cheat.ps1's diagnostics use Write-Error, so
+# those cases capture the error stream with a bash-side 2>&1 (as test_snippet.sh does).
+if command -v pwsh >/dev/null 2>&1; then
+    echo "================================================"
+    echo "  Testing cheat.ps1 with pwsh"
+    echo "================================================"
+    CHEAT_PS1="$DOTFILES/shell/pwsh/cheat.ps1"
+    setup_store
+
+    echo "[pwsh] ls lists the relative cheatsheet paths"
+    actual=$(run_pwsh "$CHEAT_PS1" "cheat ls" | tr -d '\r')
+    assert_contains "pwsh/ls shell" "shell/one-liners.md" "$actual"
+    assert_contains "pwsh/ls regex" "python/regex/syntax.md" "$actual"
+
+    echo "[pwsh] a unique name substring renders the sheet"
+    actual=$(run_pwsh "$CHEAT_PS1" "cheat one-liners" | tr -d '\r')
+    assert_contains "pwsh/render content" "ONELINER_MARKER" "$actual"
+
+    echo "[pwsh] a nested path substring renders the sheet"
+    actual=$(run_pwsh "$CHEAT_PS1" "cheat regex/syntax" | tr -d '\r')
+    assert_contains "pwsh/render nested" "regex syntax" "$actual"
+
+    echo "[pwsh] a missing name fails with a message"
+    actual=$(run_pwsh "$CHEAT_PS1" "cheat no-such-sheet-xyz" 2>&1 | tr -d '\r')
+    assert_contains "pwsh/missing msg" "no cheatsheet matching" "$actual"
+
+    echo "[pwsh] no cheatsheets installed fails with a hint"
+    actual=$(run_pwsh "$CHEAT_PS1" "\$env:XDG_DATA_HOME='$EMPTY_XDG'; cheat ls" 2>&1 | tr -d '\r')
+    assert_contains "pwsh/no-store msg" "no cheatsheets installed" "$actual"
+
+    if ! command -v fzf >/dev/null 2>&1; then
+        echo "[pwsh] an ambiguous name without fzf lists candidates"
+        actual=$(run_pwsh "$CHEAT_PS1" "cheat regex" 2>&1 | tr -d '\r')
+        assert_contains "pwsh/ambiguous msg" "is ambiguous" "$actual"
+
+        echo "[pwsh] no-arg cheat without fzf falls back gracefully"
+        actual=$(run_pwsh "$CHEAT_PS1" "cheat" 2>&1 | tr -d '\r')
+        assert_contains "pwsh/no-fzf msg" "fzf not found" "$actual"
+    else
+        echo "  SKIP: fzf present, cannot test the pwsh no-fzf fallbacks non-interactively"
+    fi
+else
+    echo "pwsh not found; skipping pwsh cheat tests"
+fi
+
 # =============================================================================
 # Summary
 # =============================================================================
