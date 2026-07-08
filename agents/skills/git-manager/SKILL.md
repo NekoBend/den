@@ -41,6 +41,15 @@ These override convenience. Apply them every time.
 6. Report honestly. After acting, show what actually happened
    (`git --no-pager status`, `git --no-pager log`). If a command failed, say so
    with its output; do not claim a clean result you did not verify.
+7. Do not self-attribute. Default to omitting tool self-credit from commits and
+   pull requests: no `Co-authored-by:` trailer naming the assistant or tool, no
+   session id or session URL, no promotional footer. Add such a line only if the
+   user explicitly asks; do not proactively prompt about it on every commit (this
+   is a settled low-stakes default, not a decision to surface). This does not
+   restrict trailers the repository's own convention requires (for
+   example `Signed-off-by`, `Change-Id`, `Fixes #123`): preserving those is part
+   of matching convention (Step C3). Once the user states a preference, honor it
+   for the rest of the session (note it in your memory if you keep one).
 
 ## Branching model (default: GitHub Flow)
 
