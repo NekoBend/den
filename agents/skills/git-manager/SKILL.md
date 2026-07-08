@@ -42,7 +42,7 @@ These override convenience. Apply them every time.
    (`git --no-pager status`, `git --no-pager log`). If a command failed, say so
    with its output; do not claim a clean result you did not verify.
 7. Do not self-attribute. Default to omitting tool self-credit from commits and
-   pull requests: no `Co-Authored-By` trailer naming the assistant or tool, no
+   pull requests: no `Co-authored-by:` trailer naming the assistant or tool, no
    session id or session URL, no promotional footer. Add such a line only if the
    user explicitly asks; do not proactively prompt about it on every commit (this
    is a settled low-stakes default, not a decision to surface). This does not
