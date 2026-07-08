@@ -38,7 +38,7 @@ CLI, and `shell/README.md` for the shell environment.
 - `shell/`       the interactive shell sources: bash/zsh, a PowerShell port, CMD shims, starship (deployed by `den install shell`). See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).
 - `docker/`      dev container images (Ubuntu, Arch).
-- `tests/`       shell functional tests (bash/zsh/pwsh, via `tests/shell/Dockerfile`).
+- `tests/`       `tests/den/` pytest suite for the `den` CLI plus `tests/shell/` bash/zsh/pwsh functional tests (via `tests/shell/Dockerfile`).
 
 ## The den CLI
 

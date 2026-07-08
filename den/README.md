@@ -168,5 +168,5 @@ cross-platform implementation of the skill and shell-environment installers.
 python3 -m pytest tests/den     # cli, hook, memory, install, uninstall, shell
 ```
 
-CI runs these alongside `ruff check agents den tests` and a `packaging` job
+CI runs these alongside `ruff check agents den tests hatch_build.py` and a `packaging` job
 that builds the wheel and smoke-tests a sourceless install.

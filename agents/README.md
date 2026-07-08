@@ -138,7 +138,7 @@ source tree.
 The verification scripts under `shared/scripts/` have a test suite:
 
 ```
-python3 -m pytest shared/scripts/tests     # 60 tests
+python3 -m pytest shared/scripts/tests     # 70 tests
 bats shared/scripts/tests/run-checks.bats  # 8 tests
 ```
 
