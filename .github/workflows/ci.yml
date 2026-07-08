@@ -198,24 +198,24 @@ jobs:
         # (the class that broke completion.ps1) which PSScriptAnalyzer cannot see.
         shell: pwsh
         run: |
+          # This job runs via `pwsh -Command`, which the _DenInteractive gate treats
+          # as non-interactive, so force the interactive load path to deterministically
+          # exercise the gated wrappers/aliases/completion (and the de-shadow check).
+          $env:_DEN_FORCE_INTERACTIVE = '1'
           . .\shell\pwsh\init.ps1
-          # Assert functions that are NOT behind the [Environment]::UserInteractive
-          # gate (ports=functions.ps1, cheat=cheat.ps1, pcp=parallel.ps1), so the
-          # canary reflects what always loads, not the runner's interactivity.
+          # ports=functions.ps1, cheat=cheat.ps1, pcp=parallel.ps1 (ports/pcp/cheat are
+          # ungated and load regardless); this asserts init.ps1 defined them globally.
           $expected = 'ports', 'cheat', 'pcp'
           $missing = $expected | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
           if ($missing) { throw "init.ps1 did not define at global scope: $($missing -join ', ')" }
           Write-Output "pwsh init.ps1 loaded; global functions present: $($expected -join ', ')"
-          # When interactive (the runner is), the wrappers/aliases load and den's
-          # functions must WIN over the Windows-only built-in cp/mv/rm/ls/cat/gc
-          # aliases (an alias outranks a function; den removes the builtins). Verify
-          # none is shadowed. Skipped when non-interactive (they correctly do not load).
-          if ([Environment]::UserInteractive) {
-            $collide = 'ls', 'cat', 'cp', 'mv', 'rm', 'gc', 'cd'
-            $shadowed = foreach ($n in $collide) {
-              $c = Get-Command $n -ErrorAction SilentlyContinue
-              if ($c -and $c.CommandType -eq 'Alias') { "$n->$($c.Definition)" }
-            }
-            if ($shadowed) { throw "den functions shadowed by builtin aliases: $($shadowed -join ', ')" }
-            Write-Output "no builtin alias shadows den's wrappers: $($collide -join ', ')"
+          # The forced interactive load above means the wrappers/aliases are present, so
+          # den's functions must WIN over the Windows-only built-in cp/mv/rm/ls/cat/gc/cd
+          # aliases (an alias outranks a function; den removes the builtins).
+          $collide = 'ls', 'cat', 'cp', 'mv', 'rm', 'gc', 'cd'
+          $shadowed = foreach ($n in $collide) {
+            $c = Get-Command $n -ErrorAction SilentlyContinue
+            if ($c -and $c.CommandType -eq 'Alias') { "$n->$($c.Definition)" }
           }
+          if ($shadowed) { throw "den functions shadowed by builtin aliases: $($shadowed -join ', ')" }
+          Write-Output "no builtin alias shadows den's wrappers: $($collide -join ', ')"
