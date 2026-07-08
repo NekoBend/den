@@ -13,11 +13,13 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 - `✓` provided, `—` not provided, `native` the OS already ships it (den does not
   add its own). cmd is a deliberately thinner subset; a `—` in the cmd column is
   usually intentional, not an oversight.
-- In **bash/zsh** every den command is interactive-only. In **pwsh** only the
-  native-command-shadowing wrappers/aliases/coreutils/completion are interactive-
-  gated; the additive helpers (functions, python, ffmpeg, parallel, snippet, cheat,
-  proxy, hwinfo) load whenever the profile is sourced. Many commands also load only
-  when their tool is present (uv, ffmpeg, zoxide, fzf, lsd/bat/fd/rg).
+- These are shell-sourced commands (aliases/functions/wrappers). In **bash/zsh**
+  they are all interactive-only. In **pwsh** only the native-command-shadowing
+  wrappers/aliases/coreutils/completion are interactive-gated; the additive helpers
+  (functions, python, ffmpeg, parallel, snippet, cheat, proxy, hwinfo) load whenever
+  the profile is sourced. Many commands also load only when their tool is present
+  (uv, ffmpeg, zoxide, fzf, lsd/bat/fd/rg). The one exception is the standalone
+  `fixids` executable (below), which lives on `PATH` and runs from any context.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
