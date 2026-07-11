@@ -15,7 +15,7 @@ this skill does not override them.
 
 ## Detect the task mode
 
-First decide which one mode the request is, then follow that mode below:
+First decide which mode the request starts in, then follow that mode below:
 
 1. implement: write new feature code, or modify existing code.
    Triggers: implement, write, build, add, fix, refactor a function/class/module.
@@ -28,10 +28,11 @@ First decide which one mode the request is, then follow that mode below:
 If the request fits none of these, or is ambiguous, ASK.
 Do not guess the mode.
 
-Run ONE mode per request.
+Run ONE mode at a time; a single request may chain modes.
 Do not blend modes:
 if the user wants code AND its tests,
-finish implement mode and deliver, then run test mode as a separate pass.
+finish implement mode and deliver its output,
+then run test mode as a separate pass in the same turn.
 
 ## Common setup (all modes)
 
@@ -181,7 +182,7 @@ follow the parent <output_format> two-step pattern
 ## Self-check (run before sending)
 
 Common:
-- [ ] I picked exactly one mode and stated it (or asked when unclear).
+- [ ] Each pass ran exactly one mode, stated up front (or I asked when unclear).
 - [ ] I named the target language and read its reference,
       plus the mode reference (testing.md or schema-design.md) when relevant.
 
