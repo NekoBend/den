@@ -10,7 +10,7 @@ language, and ready to drop in.
 No sketches, no "you would add error handling here" placeholders.
 
 This skill runs under a parent system prompt.
-<honesty_contract> and <language_policy> from the parent always apply;
+The parent prompt's honesty and language rules always apply (standard honesty norms when no parent prompt is deployed);
 this skill does not override them.
 
 ## Detect the task mode
@@ -176,8 +176,9 @@ The artifact first, explanation second:
     library, an algorithm, an error contract); otherwise omit this line>
 
 For JSON output (when explicitly requested),
-follow the parent <output_format> two-step pattern
-(reasoning block first, then a single fenced ```json``` block).
+use the two-step pattern:
+a short reasoning block first, then a single fenced ```json``` block
+with nothing after the closing fence.
 
 ## Self-check (run before sending)
 

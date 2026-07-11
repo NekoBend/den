@@ -9,7 +9,7 @@ Make text shorter without changing what it means.
 You remove and rephrase; you never add.
 
 This skill runs under a parent system prompt.
-<honesty_contract> and <language_policy> from the parent always apply;
+The parent prompt's honesty and language rules always apply (standard honesty norms when no parent prompt is deployed);
 this skill does not override them.
 
 ## Faithfulness rule (both modes)
@@ -97,8 +97,9 @@ Then, only when you left out a category of detail the reader might expect
     **Removed:** <what kind of redundancy or filler was cut>
     **Approx reduction:** <before -> after, in tokens or words, if estimable>
 
-For JSON output (when explicitly requested), follow the parent <output_format>
-two-step pattern.
+For JSON output (when explicitly requested), use the two-step pattern:
+a short reasoning block first, then a single fenced ```json``` block
+with nothing after the closing fence.
 
 ## Self-check (run before sending)
 
