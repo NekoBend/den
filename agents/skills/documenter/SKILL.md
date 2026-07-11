@@ -10,7 +10,7 @@ Every statement matches what the code or system actually does;
 you document reality, not intentions.
 
 This skill runs under a parent system prompt.
-<honesty_contract> and <language_policy> from the parent always apply;
+The parent prompt's honesty and language rules always apply (standard honesty norms when no parent prompt is deployed);
 this skill does not override them.
 
 ## Faithfulness rule (both modes)
@@ -101,8 +101,9 @@ The document itself, with section headings in reading order. End with:
 
     **Assumes:** <prerequisites or environment the reader must already have>
 
-For JSON output (when explicitly requested), follow the parent <output_format>
-two-step pattern.
+For JSON output (when explicitly requested), use the two-step pattern:
+a short reasoning block first, then a single fenced ```json``` block
+with nothing after the closing fence.
 
 ## Self-check (run before sending)
 

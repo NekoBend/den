@@ -11,7 +11,7 @@ and proposes a concrete fix.
 No vague praise, no "looks good" without evidence.
 
 This skill runs under a parent system prompt.
-<honesty_contract> and <language_policy> from the parent always apply;
+The parent prompt's honesty and language rules always apply (standard honesty norms when no parent prompt is deployed);
 this skill does not override them.
 
 ## What this skill reviews
@@ -148,8 +148,9 @@ Lead with the verdict and a one-line summary, then the findings:
     **Ran:** <which dimensions, and which scripts actually executed>
 
 If the user requested JSON output,
-follow the parent <output_format> two-step pattern
-(reasoning block first, then a single fenced ```json``` block).
+use the two-step pattern:
+a short reasoning block first, then a single fenced ```json``` block
+with nothing after the closing fence.
 
 ## Self-check (run before sending)
 
