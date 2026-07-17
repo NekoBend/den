@@ -26,6 +26,7 @@ source on disk; from a checkout it falls back to the repo root (`_content.py`).
 ```
 den install   [skills|shell|hook|cheatsheets]   interactive setup, or one target
 den uninstall [skills|shell|hook|cheatsheets]   remove den files, keeping your edits
+den upgrade   [--refresh]                       upgrade den via uv (alias: update)
 
 # runtime plumbing invoked by installed hooks and skills (not everyday commands):
 den hook   run|list|imprint|memory   the per-turn worker + hook lifecycle
@@ -55,6 +56,30 @@ empty. It lists the plan and asks once before deleting (`--yes` to skip,
 per-workspace, so `den uninstall` does not touch them; use `den uninstall hook`.
 
 Run `den <command> --help` for per-command options.
+
+## `den upgrade`
+
+`den upgrade` (alias `den update`) runs `uv tool upgrade den`, so it follows
+whatever source den was installed from (the git URL above, or a local path).
+Upgrading swaps the binary and its bundled content, but bundled content only
+reaches disk on `den install ...` - so after an upgrade your deployed skills
+and shell files are still the old version's until redeployed. Two ways:
+
+```
+den upgrade --refresh    # upgrade, then redeploy skills (--with-parent) + shell
+den upgrade              # upgrade only; prints a reminder to redeploy
+```
+
+`--refresh` runs `den install skills --with-parent` and `den install shell` as
+subprocesses of the *new* binary (the running process still has the old package
+imported, so an in-process redeploy would ship stale content). The usual
+install semantics apply: files you edited are never silently overwritten.
+`--dry-run` prints the commands without running anything.
+
+Windows caveat: `den upgrade` runs from the very tool venv uv replaces, and
+Windows locks running executables. If uv reports a file-in-use error there,
+run `uv tool upgrade den` directly from your shell instead (den itself then
+is not running, so nothing is locked).
 
 ## `den hook memory`
 
@@ -183,7 +208,8 @@ Python only; other languages go through the coding skill's `run-checks.sh`.
 ## Architecture
 
 `cli.py` is the dispatcher; each command is a sibling `_xxx.py` module
-(`_memory`, `_hook`, `_install`, `_uninstall`, `_verify`) with a `main(argv)`
+(`_memory`, `_hook`, `_install`, `_uninstall`, `_upgrade`, `_verify`) with a
+`main(argv)`
 entry point and relative imports (`_shell`/`_ui` are shared helpers).
 `_content.py`
 locates bundled content (wheel `den/_data/`, or the repo root from a checkout).
