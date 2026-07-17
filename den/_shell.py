@@ -410,7 +410,7 @@ def _maybe_clone_zsh_plugins(want: bool, dry_run: bool) -> None:
     for name, url, tag, sha in _ZSH_PLUGINS:
         target = dest / name
         if target.exists():
-            print(f"  [skip] {name} already present")
+            print(f"  [skip] {name} already present (pre-existing; pin not verified)")
             continue
         if dry_run:
             print(

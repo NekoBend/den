@@ -129,6 +129,7 @@ def test_cheatsheets_missing_bundle_errors(tmp_path, monkeypatch):
 def test_interactive_dispatches(monkeypatch):
     from den import _install, _ui
 
+    monkeypatch.setattr(_install, "_windows", lambda: False)  # plugins Q is POSIX-only
     # confirm: shell?Y extras?N zsh-plugins?N skills?Y parent?Y cheatsheets?N
     # ; select -> [claude]
     answers = iter([True, False, False, True, True, False])
@@ -147,6 +148,22 @@ def test_interactive_dispatches(monkeypatch):
     assert _install._interactive() == 0
     assert calls["shell"] == ["--no-extras"]
     assert calls["skills"] == ["--tool", "claude", "--with-parent"]
+
+
+def test_interactive_opts_into_zsh_plugins(monkeypatch):
+    from den import _install, _ui
+
+    monkeypatch.setattr(_install, "_windows", lambda: False)
+    # confirm: shell?Y extras?Y zsh-plugins?Y skills?N cheatsheets?N
+    answers = iter([True, True, True, False, False])
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: next(answers))
+    calls = {}
+    monkeypatch.setattr(
+        "den._shell.install_shell",
+        lambda argv: calls.setdefault("shell", argv) is None and 0 or 0,
+    )
+    assert _install._interactive() == 0
+    assert calls["shell"] == ["--zsh-plugins"]
 
 
 def test_interactive_skips_when_declined(monkeypatch):

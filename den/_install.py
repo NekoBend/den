@@ -364,12 +364,12 @@ def _interactive() -> int:
         extras = _ui.confirm(
             "  Include optional helpers (python/ffmpeg/parallel)?", True
         )
-        plugins = _ui.confirm(
+        shell_flags = [] if extras else ["--no-extras"]
+        # zsh plugins are POSIX-only; do not ask a question that no-ops.
+        if not _windows() and _ui.confirm(
             "  Clone the pinned zsh plugins (autosuggestions + highlighting)?",
             False,
-        )
-        shell_flags = [] if extras else ["--no-extras"]
-        if plugins:
+        ):
             shell_flags.append("--zsh-plugins")
         rc |= install_shell(shell_flags)
 

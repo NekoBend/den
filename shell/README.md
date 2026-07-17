@@ -34,6 +34,7 @@ its git aliases duplicate `aliases.sh`, so it was dead weight):
 pinned to reviewed release commits (v0.7.1 / 0.8.0): the clone checks out the
 release tag and is deleted if HEAD does not match the pinned commit. Without
 the flag nothing is fetched -- code sourced at shell startup is opt-in.
+Pre-existing clones are left untouched (the pin applies to new clones only).
 `init.zsh` guards each source, so a missing plugin just turns that feature off.
 
 ## The wrapper system
