@@ -6,9 +6,10 @@ explicit: state the role, the steps, the output format, and a self-check, so a
 model that follows instructions literally still does the right thing.
 
 It ships eight skills in the Anthropic SKILL.md format, a set of parent
-invariants (honesty, language, work discipline, anti-sycophancy, output
-format), a build system that assembles those from sources, and installers that
-deploy the skills into the directories coding agents read.
+invariants (identity, moves, language, work discipline; plus contrastive
+examples, output modes, and a final gate in the standalone shape), a build
+system that assembles those from sources, and installers that deploy the
+skills into the directories coding agents read.
 
 This is the `agents/` subsystem of the `den` repo: a self-contained unit
 (sources, build, install, tests) that could be used or extracted on its own.
@@ -41,7 +42,7 @@ agents/
       *.py, run-checks.sh
       tests/                # pytest + bats
   .private/                 # LOCAL ONLY - self-gitignored, never committed
-    parts/<ARTIFACT>/       # build sources: ASSISTANT/  SKILL_ROUTER/  AGENTS/
+    parts/<ARTIFACT>/       # build sources: ASSISTANT/  SKILL_ROUTER/
     build.py                # builds dist/ from .private/parts/
   dist/                     # generated parent prompts (committed; do not hand-edit)
     ASSISTANT.md  SKILL_ROUTER.md  AGENTS.md  CLAUDE.md
@@ -60,7 +61,8 @@ inside the den wheel, so it installs with no source checkout on disk.
 
 Each skill detects a mode first, then runs ONE mode per request (weak models
 lose adherence when many instructions fire at once). All skills assume the
-parent invariants (`<honesty_contract>`, `<language_policy>`) are present.
+parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
+`<work_discipline>`) are present.
 
 | Skill | Modes | What it does |
 |-------|-------|--------------|
@@ -91,9 +93,9 @@ python3 .private/build.py --check    # verify dist/ is in sync with .private/par
 The build concatenates each `.private/parts/<ARTIFACT>/` section in sorted order,
 strips HTML comments (maintainer notes stay in source, never reach the model),
 normalizes em / en / minus dashes to ASCII, and collapses blank runs.
-`AGENTS.md` and `CLAUDE.md` are composites: a neutral role plus the shared
-honesty / language / work-discipline / anti-sycophancy / output-format
-sections from `ASSISTANT`.
+`AGENTS.md` and `CLAUDE.md` are composites of the shared `ASSISTANT`
+sections: identity, moves, language, and work discipline (the host tool owns
+the conversation shape, so modes/examples/gate stay standalone-only).
 
 ## Install
 
@@ -130,8 +132,9 @@ source tree.
 - Semantic line breaks in the sources (break at clause boundaries).
 - One mode per request; detect the mode, then branch.
 - Skills depend on the parent invariants. Deploy with `--with-parent` (or
-  ensure `AGENTS.md` / `CLAUDE.md` is present) so `<honesty_contract>` and the
-  other tags the skills reference are actually defined.
+  ensure `AGENTS.md` / `CLAUDE.md` is present) so `<language_policy>`,
+  `<work_discipline>`, and the other tags the skills reference are actually
+  defined.
 
 ## Tests
 
