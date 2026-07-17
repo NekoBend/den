@@ -7,8 +7,11 @@ def test_help_centers_on_install_uninstall(capsys):
     assert den_main(["--help"]) == 0
     out = capsys.readouterr().out
     assert "install" in out and "uninstall" in out
-    # the removed dev-tool commands are gone from the surface
-    assert "check" not in out and "verify" not in out and "refs" not in out
+    # the removed dev-tool commands are gone from the surface; verify came
+    # back as runtime plumbing and appears only in the plumbing footer
+    assert "check" not in out and "refs" not in out
+    assert "verify" not in out.split("Run 'den <command>")[0]
+    assert "den verify" in out
 
 
 def test_version(capsys):
@@ -22,7 +25,8 @@ def test_unknown_command_exits_2(capsys):
 
 
 def test_removed_dev_tool_commands_are_unknown(capsys):
-    for cmd in ("check", "verify", "refs", "doc"):
+    # verify is not in this list: it returned as runtime plumbing (task #24)
+    for cmd in ("check", "refs", "doc"):
         assert den_main([cmd, "x"]) == 2
 
 
