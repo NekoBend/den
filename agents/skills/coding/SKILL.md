@@ -100,9 +100,9 @@ If WRITING NEW code, skip 3a-3d.
 Run against the file you produced:
 
 1. ../../shared/scripts/run-checks.sh <file>       # format + lint + typecheck
-2. ../../shared/scripts/verify-imports.py <file>   # imported APIs exist
-3. ../../shared/scripts/doc-coverage.py <file>     # public API has docs
-4. ../../shared/scripts/check-broken-refs.py       # only when modifying
+                                                   # (typecheck verifies imports; lint covers
+                                                   # missing docs when no project ruff config)
+2. ../../shared/scripts/check-broken-refs.py       # only when modifying
 
 Resolve every finding (fix, or suppress with a written reason).
 If a script cannot run, state which and proceed. Do not pretend a check passed.
@@ -155,7 +155,7 @@ State where the schema is validated at the boundary.
 
 ### Step S4: Verify
 For a code schema (types, ORM models):
-run ../../shared/scripts/run-checks.sh and verify-imports.py.
+run ../../shared/scripts/run-checks.sh.
 For a non-code schema (SQL DDL, JSON Schema):
 validate with a tool if one exists, otherwise state it was reviewed by reading.
 
@@ -191,8 +191,7 @@ If implement:
 - [ ] I listed edge cases and each is handled or explicitly out of scope.
 - [ ] If I modified existing code, I ran find-references.py before
       and check-broken-refs.py after (zero remaining, or each explained).
-- [ ] I ran run-checks.sh, verify-imports.py, doc-coverage.py
-      (or stated which could not run).
+- [ ] I ran run-checks.sh (or stated why it could not run).
 - [ ] Every public API has a doc comment.
 - [ ] No untyped escape hatch (any / Any / object / interface{}) without a
       documented exception, and no catch-all handler outside the entry point.
