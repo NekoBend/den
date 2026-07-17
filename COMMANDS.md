@@ -219,6 +219,7 @@ this is the shape.
 |---|---|
 | `den install [skills\|shell\|hook\|cheatsheets]` | deploy a component (no target on a TTY = interactive) |
 | `den uninstall [skills\|shell\|hook\|cheatsheets]` | remove den-identical files for a component |
+| `den upgrade [--refresh]` | upgrade den via uv; `--refresh` redeploys skills + shell with the new binary (alias: `den update`) |
 | `den install shell` | the command in this reference — deploys bash/zsh/pwsh/cmd config |
 | `den hook <install\|remove\|list\|run\|imprint>` | per-workspace per-turn agent imprint hooks (runtime plumbing) |
 | `den hook memory <show\|save\|add\|checkpoint\|log\|restore\|diff\|clear\|path>` | workspace session memory (also `den memory ...`) |

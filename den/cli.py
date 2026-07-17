@@ -2,6 +2,7 @@
 
   install    deploy skills, the shell environment, hooks, or cheatsheets
   uninstall  remove den-installed files (keeping ones you changed)
+  upgrade    upgrade den itself via uv; --refresh redeploys bundled content
 
 Runtime plumbing invoked by installed hooks (not part of the everyday surface):
   hook    the per-turn worker + hook lifecycle (den hook run/list/imprint/memory)
@@ -24,6 +25,7 @@ def _usage() -> None:
         "Commands:\n"
         "  install   [skills|shell|hook|cheatsheets]  deploy (interactive if no target)\n"
         "  uninstall [skills|shell|hook|cheatsheets]  remove den-installed files\n"
+        "  upgrade   [--refresh]                      upgrade den via uv (alias: update)\n"
         "\n"
         "Run 'den <command> --help' for command-specific options.\n"
         "(den hook / den memory are runtime plumbing invoked by installed hooks.)"
@@ -60,6 +62,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "uninstall":
         from ._uninstall import main as _main
+
+        return _main(rest)
+
+    if cmd in ("upgrade", "update"):
+        from ._upgrade import main as _main
 
         return _main(rest)
 
