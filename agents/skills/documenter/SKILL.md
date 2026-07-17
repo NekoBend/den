@@ -101,6 +101,16 @@ The document itself, with section headings in reading order. End with:
 
     **Assumes:** <prerequisites or environment the reader must already have>
 
+### Choosing the file format
+
+Format follows the reader. A document a human will READ as a final
+deliverable may be styled HTML/CSS when the environment can render it;
+otherwise use markdown. Anything reviewed, versioned, or edited in a
+repository stays markdown (diffs must show content, not markup).
+Anything an agent re-reads as working state (memory files, imprints,
+context payloads) stays plain minimal text; never add markup that
+multiplies its token cost. When unsure, choose markdown.
+
 For JSON output (when explicitly requested), use the two-step pattern:
 a short reasoning block first, then a single fenced ```json``` block
 with nothing after the closing fence.
