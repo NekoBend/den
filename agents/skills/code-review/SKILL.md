@@ -75,9 +75,9 @@ When the code is on disk and the language toolchain is available,
 run the shared scripts against the files under review
 and fold the results into the relevant dimension:
 
-- ../../shared/scripts/run-checks.sh <file>      format / lint / typecheck (correctness, maintainability)
-- ../../shared/scripts/verify-imports.py <file>  imported APIs exist (correctness)
-- ../../shared/scripts/doc-coverage.py <file>    public API documentation (maintainability)
+- ../../shared/scripts/run-checks.sh <file>      format / lint / typecheck (correctness, maintainability);
+                                                 typecheck also verifies imports resolve, and lint covers
+                                                 missing public-API docs when the project has no ruff config
 - ../../shared/scripts/find-references.py --uses <symbol>
                                                  blast radius of a changed symbol (correctness)
 
