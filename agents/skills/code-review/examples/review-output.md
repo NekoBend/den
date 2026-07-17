@@ -64,5 +64,5 @@ Fix: add tests for an empty list and for an item whose rate is missing.
 
 **Ran:** correctness, security, performance, maintainability, tests,
 all by reading (the code was pasted in chat,
-so run-checks.sh and verify-imports.py could not run).
+so run-checks.sh could not run).
 Security and performance found nothing material at the expected scale.

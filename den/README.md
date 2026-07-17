@@ -28,9 +28,10 @@ den install   [skills|shell|hook|cheatsheets]   interactive setup, or one target
 den uninstall [skills|shell|hook|cheatsheets]   remove den files, keeping your edits
 den upgrade   [--refresh]                       upgrade den via uv (alias: update)
 
-# runtime plumbing invoked by installed hooks (not everyday commands):
+# runtime plumbing invoked by installed hooks and skills (not everyday commands):
 den hook   run|list|imprint|memory   the per-turn worker + hook lifecycle
 den hook memory show|add|...          workspace session memory (.den/memory.md)
+den verify <file.py>                  format/lint/typecheck one file, config-faithfully
 ```
 
 `den install` never silently clobbers local edits: files that already exist and
@@ -176,10 +177,39 @@ the cline CLI runtime. The Windows cline `.ps1` path follows Cline's documented
 contract; verify against a live Windows install. codex is scaffolded but disabled
 (`verified=False`).
 
+## `den verify`
+
+One entry point the skills call after writing a Python file:
+
+```
+den verify path/to/file.py
+```
+
+It runs `ruff format --check`, `ruff check`, and `ty check` on that one file and
+prints line-oriented `PASS`/`FAIL`/`SKIP` results plus a summary. The design rule
+is "discover like the tools do, make the discovery visible, never override":
+
+- **ruff**: den re-walks ruff's own nearest-wins discovery (`.ruff.toml` >
+  `ruff.toml` > `pyproject.toml` with `[tool.ruff]`, walking up from the file's
+  directory) only to *report* which config wins, on the `config: ruff <- ...`
+  line. ruff itself runs with no config flags, so the project's settings are
+  never stomped - the historical failure mode where a wrapper's injected flags
+  made `pyproject.toml` look ignored. Only when no config exists anywhere up the
+  tree does den add its defaults (`D101,D102,D103`, missing public docstrings).
+- **ty**: import resolution needs a real environment, so den passes the project
+  root explicitly (`--project <nearest pyproject.toml/ty.toml ancestor>`) and
+  the `config: ty` line reports the venv ty will see (`VIRTUAL_ENV`, else
+  `<root>/.venv`, else a hint to run `uv sync`).
+
+Exit codes: 0 = no failures (skips allowed), 1 = a stage failed, 2 = usage.
+Missing tools are `SKIP` lines naming the install command, never failures.
+Python only; other languages go through the coding skill's `run-checks.sh`.
+
 ## Architecture
 
 `cli.py` is the dispatcher; each command is a sibling `_xxx.py` module
-(`_memory`, `_hook`, `_install`, `_uninstall`, `_upgrade`) with a `main(argv)`
+(`_memory`, `_hook`, `_install`, `_uninstall`, `_upgrade`, `_verify`) with a
+`main(argv)`
 entry point and relative imports (`_shell`/`_ui` are shared helpers).
 `_content.py`
 locates bundled content (wheel `den/_data/`, or the repo root from a checkout).

@@ -4,9 +4,12 @@
   uninstall  remove den-installed files (keeping ones you changed)
   upgrade    upgrade den itself via uv; --refresh redeploys bundled content
 
-Runtime plumbing invoked by installed hooks (not part of the everyday surface):
+Runtime plumbing invoked by installed hooks and skills (not part of the
+everyday surface):
   hook    the per-turn worker + hook lifecycle (den hook run/list/imprint/memory)
   memory  workspace session memory (also reachable as den hook memory)
+  verify  format/lint/typecheck one Python file, config-faithfully (skills
+          call this after writing code; see den/_verify.py)
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ def _usage() -> None:
         "  upgrade   [--refresh]                      upgrade den via uv (alias: update)\n"
         "\n"
         "Run 'den <command> --help' for command-specific options.\n"
-        "(den hook / den memory are runtime plumbing invoked by installed hooks.)"
+        "(den hook / den memory / den verify are runtime plumbing for hooks and skills.)"
     )
 
 
@@ -44,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cmd, rest = args[0], args[1:]
+
+    if cmd == "verify":
+        from ._verify import main as _main
+
+        return _main(rest)
 
     if cmd == "memory":
         from ._memory import main as _main

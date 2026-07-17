@@ -223,6 +223,7 @@ this is the shape.
 | `den install shell` | the command in this reference — deploys bash/zsh/pwsh/cmd config |
 | `den hook <install\|remove\|list\|run\|imprint>` | per-workspace per-turn agent imprint hooks (runtime plumbing) |
 | `den hook memory <show\|save\|add\|checkpoint\|log\|restore\|diff\|clear\|path>` | workspace session memory (also `den memory ...`) |
+| `den verify <file.py>` | format/lint/typecheck one Python file, honoring the project's own ruff/ty config (runtime plumbing for skills) |
 | `den --help` / `den --version` | top-level usage / version |
 
 Run `den <command> --help` for a component's flags.

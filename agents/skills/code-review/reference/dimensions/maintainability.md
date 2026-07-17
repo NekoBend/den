@@ -39,8 +39,9 @@ here the code is assumed to work, and the question is how well it reads.
 ## How to verify
 
 - run-checks.sh: format and lint catch style drift
-  and some complexity signals. See SKILL.md Step 3 for invocation.
-- doc-coverage.py: flags public symbols with no documentation.
+  and some complexity signals; for Python without a project ruff config,
+  lint also flags public symbols with no docstring.
+  See SKILL.md Step 3 for invocation.
 - Read for intent: would a new contributor understand this
   in a single pass, without having to run it in their head?
 

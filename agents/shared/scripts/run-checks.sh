@@ -59,10 +59,35 @@ project_only() {
   skipped=$((skipped + 1))
 }
 
+# _py_has_ruff_config <file>
+# Walk up from the file the way ruff itself discovers config (nearest
+# .ruff.toml / ruff.toml / pyproject.toml with [tool.ruff] wins). When a
+# project config exists we pass NO extra flags, so the project's own settings
+# are never overridden; only a config-less file gets den's defaults below.
+_py_has_ruff_config() {
+  d=$(cd "$(dirname "$1")" && pwd)
+  while :; do
+    [ -f "$d/.ruff.toml" ] && return 0
+    [ -f "$d/ruff.toml" ] && return 0
+    if [ -f "$d/pyproject.toml" ] && grep -q '^\[tool\.ruff' "$d/pyproject.toml" 2>/dev/null; then
+      return 0
+    fi
+    [ "$d" = "/" ] && return 1
+    d=$(dirname "$d")
+  done
+}
+
 case "$ext" in
   py)
+    # typecheck (ty) resolves imports against the real environment, which
+    # replaced the retired verify-imports.py; the docstring-presence rules
+    # below replaced the retired doc-coverage.py for Python.
     run_tool "format"    ruff format --check "$file"
-    run_tool "lint"      ruff check "$file"
+    if _py_has_ruff_config "$file"; then
+      run_tool "lint"    ruff check "$file"
+    else
+      run_tool "lint"    ruff check --extend-select D101,D102,D103 "$file"
+    fi
     run_tool "typecheck" ty check "$file"
     ;;
   ts|tsx|js|jsx|mjs|cjs)
