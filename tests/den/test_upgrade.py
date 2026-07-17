@@ -69,6 +69,20 @@ def test_den_missing_after_upgrade_errors(monkeypatch, capsys):
     assert "manually" in capsys.readouterr().err
 
 
+def test_windows_lock_hint_on_failed_upgrade(monkeypatch, capsys):
+    _wire(monkeypatch, rcs={0: 1})
+    monkeypatch.setattr(_upgrade.os, "name", "nt")
+    assert upgrade_main([]) == 1
+    assert "file-in-use" in capsys.readouterr().err
+
+
+def test_no_lock_hint_on_posix(monkeypatch, capsys):
+    _wire(monkeypatch, rcs={0: 1})
+    monkeypatch.setattr(_upgrade.os, "name", "posix")
+    assert upgrade_main([]) == 1
+    assert "file-in-use" not in capsys.readouterr().err
+
+
 def test_dry_run_runs_nothing(monkeypatch, capsys):
     calls = _wire(monkeypatch)
     assert upgrade_main(["--dry-run", "--refresh"]) == 0

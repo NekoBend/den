@@ -11,6 +11,7 @@ OLD package (and its old bundled data) imported.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -67,6 +68,15 @@ def main(argv: list[str] | None = None) -> int:
 
     proc = subprocess.run(upgrade_cmd)
     if proc.returncode != 0:
+        if os.name == "nt":
+            # this process runs from the tool venv uv is replacing; Windows
+            # locks running executables, POSIX does not care
+            print(
+                "hint: if uv reported a file-in-use error, the running den"
+                " process was locking its own install; run"
+                " `uv tool upgrade den` directly instead.",
+                file=sys.stderr,
+            )
         return proc.returncode
 
     if not refresh:

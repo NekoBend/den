@@ -75,6 +75,11 @@ imported, so an in-process redeploy would ship stale content). The usual
 install semantics apply: files you edited are never silently overwritten.
 `--dry-run` prints the commands without running anything.
 
+Windows caveat: `den upgrade` runs from the very tool venv uv replaces, and
+Windows locks running executables. If uv reports a file-in-use error there,
+run `uv tool upgrade den` directly from your shell instead (den itself then
+is not running, so nothing is locked).
+
 ## `den hook memory`
 
 Workspace-level session memory that the agent reads and overwrites. It lives at
