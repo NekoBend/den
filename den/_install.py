@@ -364,7 +364,14 @@ def _interactive() -> int:
         extras = _ui.confirm(
             "  Include optional helpers (python/ffmpeg/parallel)?", True
         )
-        rc |= install_shell([] if extras else ["--no-extras"])
+        plugins = _ui.confirm(
+            "  Clone the pinned zsh plugins (autosuggestions + highlighting)?",
+            False,
+        )
+        shell_flags = [] if extras else ["--no-extras"]
+        if plugins:
+            shell_flags.append("--zsh-plugins")
+        rc |= install_shell(shell_flags)
 
     if _ui.confirm("Install the LLM agent skills?", False):
         chosen = _ui.select(
@@ -441,7 +448,7 @@ def _usage() -> None:
         "  skills [--tool T]... [--all-tools] [--target DIR]...\n"
         "         [--with-parent] [--dry-run] [--codex-config] [--force]\n"
         "  shell  [--dry-run] [--no-extras] [--force]\n"
-        "         [--coreutils|--no-coreutils] [--bin|--no-bin] [--no-zsh-plugins]\n"
+        "         [--coreutils|--no-coreutils] [--bin|--no-bin] [--zsh-plugins]\n"
         "  hook   [--tool T]... [--all-tools] [--config PATH]  per-workspace imprint hooks\n"
         "  cheatsheets [--dry-run] [--force]                   bundled sheets -> data dir\n"
         "\n"

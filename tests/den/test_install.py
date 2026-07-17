@@ -129,8 +129,9 @@ def test_cheatsheets_missing_bundle_errors(tmp_path, monkeypatch):
 def test_interactive_dispatches(monkeypatch):
     from den import _install, _ui
 
-    # confirm: shell?Y extras?N skills?Y parent?Y cheatsheets?N ; select -> [claude]
-    answers = iter([True, False, True, True, False])
+    # confirm: shell?Y extras?N zsh-plugins?N skills?Y parent?Y cheatsheets?N
+    # ; select -> [claude]
+    answers = iter([True, False, False, True, True, False])
     monkeypatch.setattr(_ui, "confirm", lambda *a, **k: next(answers))
     monkeypatch.setattr(_ui, "select", lambda *a, **k: ["claude"])
     calls = {}

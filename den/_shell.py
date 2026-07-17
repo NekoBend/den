@@ -7,7 +7,7 @@ for shells that look relevant (binary on PATH, or rc already present, or native
 platform) are wired.
 
   den install shell [--dry-run] [--no-extras] [--coreutils|--no-coreutils]
-                    [--bin|--no-bin]
+                    [--bin|--no-bin] [--zsh-plugins]
 
 On Windows the pwsh wrappers can use microsoft/coreutils as their Unix-command
 tier (see shell/pwsh/_helpers.ps1). `--coreutils` installs it via winget;
@@ -18,10 +18,11 @@ fixids) to ~/.local/bin; `--no-bin` skips them; with neither, an interactive
 POSIX run asks (default no). They are POSIX-only (need GNU coreutils/find) and
 are never installed on Windows.
 
-On POSIX with zsh + git, the zsh plugins init.zsh sources (zsh-autosuggestions,
-zsh-syntax-highlighting) are cloned into ~/.config/zsh/plugins (clone-if-missing).
-`--no-zsh-plugins` skips that. init.zsh guards each source, so skipping just
-turns the feature off.
+`--zsh-plugins` clones the zsh plugins init.zsh sources (zsh-autosuggestions,
+zsh-syntax-highlighting) into ~/.config/zsh/plugins, PINNED to reviewed release
+commits; without the flag nothing is fetched (shell-startup code is opt-in, and
+an interactive run asks, default no). init.zsh guards each source, so a missing
+plugin just turns the feature off.
 """
 
 from __future__ import annotations
@@ -298,7 +299,7 @@ def install_shell(argv: list[str]) -> int:
     skip_coreutils = "--no-coreutils" in argv
     want_bin = "--bin" in argv
     skip_bin = "--no-bin" in argv
-    skip_zsh_plugins = "--no-zsh-plugins" in argv
+    want_zsh_plugins = "--zsh-plugins" in argv
     allowed = (
         "--dry-run",
         "--no-extras",
@@ -307,7 +308,7 @@ def install_shell(argv: list[str]) -> int:
         "--no-coreutils",
         "--bin",
         "--no-bin",
-        "--no-zsh-plugins",
+        "--zsh-plugins",
     )
     for a in argv:
         if a not in allowed:
@@ -344,7 +345,7 @@ def install_shell(argv: list[str]) -> int:
     if _windows() or shutil.which("pwsh"):
         _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run)
 
-    _maybe_clone_zsh_plugins(skip_zsh_plugins, dry_run)
+    _maybe_clone_zsh_plugins(want_zsh_plugins, dry_run)
 
     rc = _maybe_install_coreutils(want_coreutils, skip_coreutils, dry_run)
 
@@ -362,10 +363,22 @@ def install_shell(argv: list[str]) -> int:
 
 
 # zsh plugins den sources from ~/.config/zsh/plugins (see shell/zsh/init.zsh).
-# Cloned rather than vendored so they update independently and stay upstream.
+# Cloned from upstream but PINNED to a release commit: this code runs at every
+# shell startup, so it must not track a moving HEAD (supply-chain surface). To
+# update a pin, review the upstream diff, then bump the tag and commit sha here.
 _ZSH_PLUGINS = (
-    ("zsh-autosuggestions", "https://github.com/zsh-users/zsh-autosuggestions"),
-    ("zsh-syntax-highlighting", "https://github.com/zsh-users/zsh-syntax-highlighting"),
+    (
+        "zsh-autosuggestions",
+        "https://github.com/zsh-users/zsh-autosuggestions",
+        "v0.7.1",
+        "e52ee8ca55bcc56a17c828767a3f98f22a68d4eb",
+    ),
+    (
+        "zsh-syntax-highlighting",
+        "https://github.com/zsh-users/zsh-syntax-highlighting",
+        "0.8.0",
+        "db085e4661f6aafd24e5acb5b2e17e4dd5dddf3e",
+    ),
 )
 
 
@@ -375,13 +388,16 @@ def _zsh_plugins_dir() -> Path:
     return root / "zsh" / "plugins"
 
 
-def _maybe_clone_zsh_plugins(skip: bool, dry_run: bool) -> None:
-    """Clone the zsh plugins init.zsh sources (autosuggestions + syntax
-    highlighting) into ~/.config/zsh/plugins, clone-if-missing. POSIX + zsh +
-    git only; init.zsh guards each source with a file test, so a skipped or
-    failed clone just means the feature is off, never a broken shell. These
+def _maybe_clone_zsh_plugins(want: bool, dry_run: bool) -> None:
+    """Clone the PINNED zsh plugins init.zsh sources (autosuggestions + syntax
+    highlighting) into ~/.config/zsh/plugins. Opt-in: shell startup sources
+    whatever sits here, so nothing is fetched unless --zsh-plugins was given.
+    Each clone checks out the release tag and is verified against the pinned
+    commit; a mismatch (a moved tag is an attack signal) deletes the clone.
+    init.zsh guards each source with a file test, so a skipped, failed, or
+    rejected clone just means the feature is off, never a broken shell. These
     replace the oh-my-zsh framework den used to depend on."""
-    if skip or _windows() or not shutil.which("zsh"):
+    if not want or _windows() or not shutil.which("zsh"):
         return
     if not shutil.which("git"):
         print(
@@ -391,25 +407,52 @@ def _maybe_clone_zsh_plugins(skip: bool, dry_run: bool) -> None:
         return
     dest = _zsh_plugins_dir()
     print(f"zsh plugins -> {dest}")
-    for name, url in _ZSH_PLUGINS:
+    for name, url, tag, sha in _ZSH_PLUGINS:
         target = dest / name
         if target.exists():
             print(f"  [skip] {name} already present")
             continue
         if dry_run:
-            print(f"  [dry] git clone {url} -> {target}")
+            print(
+                f"  [dry] git clone --branch {tag} {url} -> {target} (pin {sha[:12]})"
+            )
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             subprocess.run(
-                ["git", "clone", "--depth", "1", "--quiet", url, str(target)],
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    tag,
+                    "--quiet",
+                    url,
+                    str(target),
+                ],
                 check=True,
             )
-            print(f"  [ok] cloned {name}")
+            head = subprocess.run(
+                ["git", "-C", str(target), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if head != sha:
+                shutil.rmtree(target, ignore_errors=True)
+                print(
+                    f"  warning: {name} {tag} is not the pinned commit "
+                    f"(got {head[:12]}, want {sha[:12]}); clone removed - the "
+                    "tag may have moved upstream. Feature stays off.",
+                    file=sys.stderr,
+                )
+                continue
+            print(f"  [ok] cloned {name} {tag} ({sha[:12]})")
         except (OSError, subprocess.SubprocessError) as exc:
+            shutil.rmtree(target, ignore_errors=True)
             print(
-                f"  warning: clone of {name} failed ({exc}); suggestions stay off "
-                "until it succeeds",
+                f"  warning: clone of {name} failed ({exc}); feature stays off",
                 file=sys.stderr,
             )
 
