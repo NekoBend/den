@@ -30,16 +30,17 @@ jobs:
       - name: Type check the den package (ty)
         run: ty check den
       - name: Lint generated parent prompts (agents/dist invariants)
-        # build.py + parts/ live in the private agents/.private/ (gitignored), so
-        # CI cannot rebuild dist/ to diff it. Instead assert the invariants build.py
-        # guarantees on the committed output: no leaked HTML comments, ASCII dashes
-        # only (em/en/minus are banned in shipped prompts), and no trailing space.
+        # The dist/*.md parent prompts are generated artifacts; their generator and
+        # sources are not part of this repository, so CI cannot rebuild dist/ to
+        # diff it. Instead assert the invariants the generator guarantees on the
+        # committed output: no leaked HTML comments, ASCII dashes only (em/en/minus
+        # are banned in shipped prompts), and no trailing space.
         run: |
           python3 - <<'PY'
           import glob, sys
           BAD = {chr(0x2014): "em-dash", chr(0x2013): "en-dash", chr(0x2212): "minus-sign"}
           problems = []
-          files = sorted(glob.glob("agents/dist/*.md"))
+          files = sorted(glob.glob("agents/dist/**/*.md", recursive=True))
           for f in files:
               for i, line in enumerate(open(f, encoding="utf-8"), 1):
                   raw = line.rstrip("\n")
@@ -110,6 +111,8 @@ jobs:
           members = tarfile.open(sdist).getnames()
           assert any("/agents/dist/CLAUDE.md" in m for m in members), \
               "agents/dist missing from sdist"
+          assert any("/agents/dist/weak/AGENTS.md" in m for m in members), \
+              "agents/dist/weak (weak-profile parent) missing from sdist"
           print(f"wheel clean ({len(names)} entries), sdist has agents/dist")
           PY
       - name: Install from sdist + smoke test

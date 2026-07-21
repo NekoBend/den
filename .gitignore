@@ -13,5 +13,3 @@ uv.lock
 
 # den's own workspace memory/hooks when dogfooding the den CLI here
 .den/
-
-# agents/.private/ manages its own exclusions via agents/.private/.gitignore.
