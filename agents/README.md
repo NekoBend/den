@@ -41,17 +41,14 @@ agents/
     scripts/                # verification scripts (used by coding, code-review)
       *.py, run-checks.sh
       tests/                # pytest + bats
-  .private/                 # LOCAL ONLY - self-gitignored, never committed
-    parts/<ARTIFACT>/       # build sources: ASSISTANT/  SKILL_ROUTER/
-    build.py                # builds dist/ from .private/parts/
   dist/                     # generated parent prompts (committed; do not hand-edit)
     ASSISTANT.md  SKILL_ROUTER.md  AGENTS.md  CLAUDE.md
   README.md
 ```
 
-The build sources and builder live in `.private/`, which manages its own
-exclusions via `.private/.gitignore` (`**`). Only the generated `dist/*.md`
-is committed. The rest of `agents/` (skills, shared) is committed.
+The `dist/*.md` parent prompts are generated artifacts; their sources and
+generator are maintained outside this repository, and only the output is
+committed. The rest of `agents/` (skills, shared) is authored in place.
 
 This content is deployed by the `den` CLI (`den install skills`); `agents/` is
 the content, `den install` is how it gets deployed. The content ships bundled
@@ -79,23 +76,17 @@ parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
 and `shared/scripts/`). The other six are light: `SKILL.md` plus two examples,
 no shared dependencies.
 
-## Build (maintainers, local only)
+## Generated parent prompts
 
-The `dist/*.md` parent prompts are generated; edit the sources under
-`.private/parts/`, never the generated files. Both live in `.private/` and are
-not committed. After editing, rebuild and commit the regenerated `dist/`:
+The `dist/*.md` parent prompts are generated artifacts: do not hand-edit them
+(edits would be overwritten by the next build). The generator guarantees, and
+CI asserts, the shipped invariants: no HTML comments, ASCII dashes only, and
+no trailing whitespace.
 
-```
-python3 .private/build.py            # rebuild dist/{ASSISTANT,SKILL_ROUTER,AGENTS,CLAUDE}.md
-python3 .private/build.py --check    # verify dist/ is in sync with .private/parts/
-```
-
-The build concatenates each `.private/parts/<ARTIFACT>/` section in sorted order,
-strips HTML comments (maintainer notes stay in source, never reach the model),
-normalizes em / en / minus dashes to ASCII, and collapses blank runs.
-`AGENTS.md` and `CLAUDE.md` are composites of the shared `ASSISTANT`
-sections: identity, moves, language, and work discipline (the host tool owns
-the conversation shape, so modes/examples/gate stay standalone-only).
+`AGENTS.md` and `CLAUDE.md` are composites of the same invariant sections
+that open `ASSISTANT.md` (identity, moves, language, work discipline); the
+host tool owns the conversation shape, so modes/examples/gate stay
+standalone-only.
 
 ## Install
 
