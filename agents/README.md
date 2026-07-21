@@ -1,15 +1,16 @@
 # agents
 
-A prompt system for **weak open-source LLMs** (Llama 7-13B, Qwen 7B, Mistral
-class, small hosted models). Everything here is written to be maximally
+A prompt system for LLM agents, in two profiles: **frontier** (parents for
+models that follow instructions natively and auto-fire skills) and **weak**
+(maximal scaffolding for small open-source models: Llama 7-13B, Qwen 7B,
+Mistral class). Everything in both profiles is written to be maximally
 explicit: state the role, the steps, the output format, and a self-check, so a
 model that follows instructions literally still does the right thing.
 
-It ships eight skills in the Anthropic SKILL.md format, a set of parent
+It ships eight skills in the Anthropic SKILL.md format and a set of parent
 invariants (identity, moves, language, work discipline; plus contrastive
-examples, output modes, and a final gate in the standalone shape), a build
-system that assembles those from sources, and installers that deploy the
-skills into the directories coding agents read.
+examples, output modes, and a final gate in the standalone shape), with
+installers that deploy the skills into the directories coding agents read.
 
 This is the `agents/` subsystem of the `den` repo: a self-contained unit
 (sources, build, install, tests) that could be used or extracted on its own.
@@ -21,12 +22,13 @@ Pick the one that matches how your tool loads instructions.
 
 | Shape | File(s) | Use when |
 |-------|---------|----------|
-| Standalone prompt | `dist/ASSISTANT.md` | You want a single self-contained system prompt, no skills, one worker. The model answers directly. |
-| Router + skills | `dist/SKILL_ROUTER.md` + `skills/` | Your environment has no native skill loader. You supply the router as the system prompt; it routes each request to exactly one skill and the model reads that `skills/<name>/SKILL.md` on demand. |
-| Parent invariants + native skills | `dist/AGENTS.md` / `dist/CLAUDE.md` + installed `skills/` | Your tool auto-discovers skills from its skill directories (GitHub Copilot, opencode, Claude Code, OpenAI Codex) and reads `AGENTS.md` (or `CLAUDE.md`) as global instructions. The tool does the routing; these files supply the invariants the skills depend on. |
+| Standalone chat prompt | `dist/ASSISTANT.md` | You want a single self-contained system prompt, no skills, one worker. The model answers directly. Single variant, all model tiers. |
+| Frontier coding parent | `dist/AGENTS.md` / `dist/CLAUDE.md` + installed `skills/` | Your tool auto-discovers skills from its skill directories (GitHub Copilot, opencode, Claude Code, OpenAI Codex) and reads `AGENTS.md` (or `CLAUDE.md`) as global instructions. The tool does the routing; these files supply the invariants the skills depend on. |
+| Weak coding parent (router + skills) | `dist/weak/AGENTS.md` + `skills/` | Your model is weak and/or the tool has no native skill loader. Deploy this as that environment's `AGENTS.md`: it routes each request to exactly one skill and the model reads that `skills/<name>/SKILL.md` on demand. |
 
 `AGENTS.md` and `CLAUDE.md` have identical content; `AGENTS.md` is the
-cross-tool standard, `CLAUDE.md` is the Claude Code name.
+cross-tool standard, `CLAUDE.md` is the Claude Code name. The dist root is
+the frontier profile; `dist/weak/` is the weak profile.
 
 ## Layout
 
@@ -42,7 +44,8 @@ agents/
       *.py, run-checks.sh
       tests/                # pytest + bats
   dist/                     # generated parent prompts (committed; do not hand-edit)
-    ASSISTANT.md  SKILL_ROUTER.md  AGENTS.md  CLAUDE.md
+    ASSISTANT.md  AGENTS.md  CLAUDE.md    # standalone chat + frontier parents
+    weak/AGENTS.md                        # weak parent (the skill router)
   README.md
 ```
 
