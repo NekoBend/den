@@ -44,8 +44,8 @@ jobs:
           for f in files:
               for i, line in enumerate(open(f, encoding="utf-8"), 1):
                   raw = line.rstrip("\n")
-                  if "<!--" in raw:
-                      problems.append(f"{f}:{i}: HTML comment leaked into shipped prompt")
+                  if "<!--" in raw or "-->" in raw:
+                      problems.append(f"{f}:{i}: HTML comment (or fragment) leaked into shipped prompt")
                   for ch, name in BAD.items():
                       if ch in raw:
                           problems.append(f"{f}:{i}: {name} U+{ord(ch):04X} (parent prompts must use ASCII dashes)")
