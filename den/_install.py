@@ -7,7 +7,13 @@ every shared/... reference is rewritten to an ABSOLUTE path under that skill's
 own shared/.
 
   den install skills [--tool TOOL]... [--all-tools] [--target DIR]...
-                     [--with-parent] [--dry-run] [--codex-config]
+                     [--with-parent] [--profile weak|frontier]
+                     [--dry-run] [--codex-config]
+
+The parent prompt comes in two profiles: frontier (the default; invariants
+for models that follow instructions natively and auto-fire skills) and weak
+(the skill router, maximal scaffolding). The profile picks WHICH parent
+content is deployed; the file name each tool reads stays the tool's own.
 """
 
 from __future__ import annotations
@@ -98,6 +104,21 @@ def _tool_paths(tool: str) -> tuple[Path, Path, str]:
     sk, pd, pf = _TOOLS[tool]
     parent = _cline_rules_dir() if tool == "cline" else Path(pd).expanduser()
     return Path(sk).expanduser(), parent, pf
+
+
+# Tools whose model varies per session (local/weak models are plausible), so
+# the interactive flow asks which parent profile to deploy. claude/codex/
+# gemini only run frontier-class models and are not asked.
+_MIXED_MODEL_TOOLS = {"cline", "cline-cli", "copilot"}
+
+
+def _parent_source(parent_file: str, profile: str) -> Path:
+    """The dist file a parent deploy copies for this profile. The weak profile
+    has ONE parent content (the skill router); parent_file only names the file
+    the tool reads, never the content."""
+    if profile == "weak":
+        return dist_dir() / "weak" / "AGENTS.md"
+    return dist_dir() / ("CLAUDE.md" if parent_file == "CLAUDE.md" else "AGENTS.md")
 
 
 _REF_RE = re.compile(r"shared/reference/([A-Za-z0-9_-]+)\.md")
@@ -223,13 +244,14 @@ def _deploy(
     with_parent: bool,
     dry_run: bool,
     writer: _Writer,
+    profile: str = "frontier",
 ) -> None:
     names = _skill_names()
     if dry_run:
         print(f"[dry-run] skills -> {skills_target}/<name>/")
         print(f"[dry-run]   skills: {' '.join(names)}")
         if with_parent and parent_dir is not None:
-            print(f"[dry-run]   parent -> {parent_dir}/{parent_file}")
+            print(f"[dry-run]   parent ({profile}) -> {parent_dir}/{parent_file}")
         return
 
     print(f"installing skills -> {skills_target}")
@@ -237,10 +259,10 @@ def _deploy(
         print(_install_skill(name, skills_target, writer))
 
     if with_parent and parent_dir is not None and parent_file is not None:
-        src = dist_dir() / ("CLAUDE.md" if parent_file == "CLAUDE.md" else "AGENTS.md")
+        src = _parent_source(parent_file, profile)
         if src.is_file():
             writer.stage(parent_dir / parent_file, src.read_bytes())
-            print(f"  parent -> {parent_dir}/{parent_file}")
+            print(f"  parent ({profile}) -> {parent_dir}/{parent_file}")
         else:
             print(f"  warning: {src} not found", file=sys.stderr)
 
@@ -257,6 +279,7 @@ def _parse(argv: list[str]):
     tools: list[str] = []
     targets: list[str] = []
     with_parent = dry_run = codex_config = force = False
+    profile = "frontier"
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -271,6 +294,15 @@ def _parse(argv: list[str]):
             i += 1
         elif a == "--target" and i + 1 < len(argv):
             targets.append(argv[i + 1])
+            i += 2
+        elif a == "--profile" and i + 1 < len(argv):
+            if argv[i + 1] not in ("weak", "frontier"):
+                print(
+                    f"den install: unknown profile '{argv[i + 1]}' (weak or frontier)",
+                    file=sys.stderr,
+                )
+                return None
+            profile = argv[i + 1]
             i += 2
         elif a == "--with-parent":
             with_parent = True
@@ -287,28 +319,30 @@ def _parse(argv: list[str]):
         else:
             print(f"den install skills: unexpected arg '{a}'", file=sys.stderr)
             return None
-    return tools, targets, with_parent, dry_run, codex_config, force
+    return tools, targets, with_parent, dry_run, codex_config, force, profile
 
 
 def _install_skills(argv: list[str]) -> int:
     parsed = _parse(argv)
     if parsed is None:
         return 2
-    tools, targets, with_parent, dry_run, codex_config, force = parsed
+    tools, targets, with_parent, dry_run, codex_config, force, profile = parsed
     writer = _Writer(force)
 
     processed: list[Path] = []
     for tool in tools:
         skt, parent_dir, pf = _tool_paths(tool)
-        _deploy(skt, parent_dir, pf, with_parent, dry_run, writer)
+        _deploy(skt, parent_dir, pf, with_parent, dry_run, writer, profile)
         processed.append(skt)
 
     for t in targets:
         root = Path(t).expanduser()
-        _deploy(root / "skills", root, "AGENTS.md", with_parent, dry_run, writer)
+        _deploy(
+            root / "skills", root, "AGENTS.md", with_parent, dry_run, writer, profile
+        )
         if with_parent and not dry_run:
             # custom targets get both AGENTS.md and CLAUDE.md at the root
-            claude = dist_dir() / "CLAUDE.md"
+            claude = _parent_source("CLAUDE.md", profile)
             if claude.is_file():
                 writer.stage(root / "CLAUDE.md", claude.read_bytes())
         processed.append(root / "skills")
@@ -322,6 +356,7 @@ def _install_skills(argv: list[str]) -> int:
             with_parent,
             dry_run,
             writer,
+            profile,
         )
         agents = Path("~/.agents/skills").expanduser()
         _deploy(
@@ -331,6 +366,7 @@ def _install_skills(argv: list[str]) -> int:
             with_parent,
             dry_run,
             writer,
+            profile,
         )
         processed.append(agents)
 
@@ -385,6 +421,15 @@ def _interactive() -> int:
             "Install the parent prompt (AGENTS.md/CLAUDE.md) too?", True
         ):
             flags.append("--with-parent")
+        # Only tools that plausibly run weak/local models get the question;
+        # the answer applies to this whole install (split runs to mix).
+        if flags and any(t in _MIXED_MODEL_TOOLS for t in chosen):
+            if _ui.confirm(
+                "  Deploy the weak-model parent (the skill router) instead of"
+                " the frontier parent?",
+                False,
+            ):
+                flags += ["--profile", "weak"]
         if flags:
             rc |= _install_skills(flags)
 
@@ -446,7 +491,8 @@ def _usage() -> None:
         "\n"
         "Targets:\n"
         "  skills [--tool T]... [--all-tools] [--target DIR]...\n"
-        "         [--with-parent] [--dry-run] [--codex-config] [--force]\n"
+        "         [--with-parent] [--profile weak|frontier]\n"
+        "         [--dry-run] [--codex-config] [--force]\n"
         "  shell  [--dry-run] [--no-extras] [--force]\n"
         "         [--coreutils|--no-coreutils] [--bin|--no-bin] [--zsh-plugins]\n"
         "  hook   [--tool T]... [--all-tools] [--config PATH]  per-workspace imprint hooks\n"
@@ -455,7 +501,9 @@ def _usage() -> None:
         "Existing files that differ are kept unless you confirm (or pass --force).\n"
         "\n"
         f"Tools: {', '.join(_TOOLS)}.\n"
-        "skills with no --tool/--target deploys to ~/.claude and ~/.agents."
+        "skills with no --tool/--target deploys to ~/.claude and ~/.agents.\n"
+        "--profile frontier (default) deploys the frontier parent; weak deploys\n"
+        "the skill router (for weak/local models; typically with --target)."
     )
 
 

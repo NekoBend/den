@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 from . import _ui
-from ._content import dist_dir
 
 
 def _has_block(rc: Path, line: str) -> bool:
@@ -174,20 +173,39 @@ class _Remover:
 
 
 def _stage_skills(remover: _Remover, tools, targets, with_parent) -> None:
-    from ._install import _TOOLS, _install_skill, _skill_names, _tool_paths
+    from ._install import (
+        _TOOLS,
+        _install_skill,
+        _parent_source,
+        _skill_names,
+        _tool_paths,
+    )
 
     names = _skill_names()
+
+    def parent_bytes(dest: Path, parent_file: str) -> bytes | None:
+        """The parent content to treat as den-identical at dest. den install
+        writes either profile, so accept whichever one matches the disk;
+        with no match, stage the frontier bytes (the remover then keeps the
+        file and reports it as modified)."""
+        sources = [_parent_source(parent_file, p) for p in ("frontier", "weak")]
+        for src in sources:
+            if (
+                src.is_file()
+                and dest.is_file()
+                and dest.read_bytes() == src.read_bytes()
+            ):
+                return src.read_bytes()
+        return sources[0].read_bytes() if sources[0].is_file() else None
 
     def do(skills_target: Path, parent_dir: Path, parent_file: str | None) -> None:
         for name in names:
             _install_skill(name, skills_target, remover)
         remover.boundary(parent_dir)
         if with_parent and parent_file:
-            src = dist_dir() / (
-                "CLAUDE.md" if parent_file == "CLAUDE.md" else "AGENTS.md"
-            )
-            if src.is_file():
-                remover.stage(parent_dir / parent_file, src.read_bytes())
+            content = parent_bytes(parent_dir / parent_file, parent_file)
+            if content is not None:
+                remover.stage(parent_dir / parent_file, content)
 
     if not tools and not targets:
         sk, pd, pf = _TOOLS["claude"]
@@ -204,9 +222,9 @@ def _stage_skills(remover: _Remover, tools, targets, with_parent) -> None:
         root = Path(t).expanduser()
         do(root / "skills", root, "AGENTS.md")
         if with_parent:
-            claude = dist_dir() / "CLAUDE.md"
-            if claude.is_file():
-                remover.stage(root / "CLAUDE.md", claude.read_bytes())
+            content = parent_bytes(root / "CLAUDE.md", "CLAUDE.md")
+            if content is not None:
+                remover.stage(root / "CLAUDE.md", content)
 
 
 def _parse_skills(argv: list[str]):

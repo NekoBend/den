@@ -217,7 +217,7 @@ this is the shape.
 
 | Command | Does |
 |---|---|
-| `den install [skills\|shell\|hook\|cheatsheets]` | deploy a component (no target on a TTY = interactive) |
+| `den install [skills\|shell\|hook\|cheatsheets]` | deploy a component (no target on a TTY = interactive); `skills --profile weak\|frontier` picks the parent-prompt profile (frontier default) |
 | `den uninstall [skills\|shell\|hook\|cheatsheets]` | remove den-identical files for a component |
 | `den upgrade [--refresh]` | upgrade den via uv; `--refresh` redeploys skills + shell with the new binary (alias: `den update`) |
 | `den install shell` | the command in this reference — deploys bash/zsh/pwsh/cmd config |
