@@ -40,6 +40,31 @@ overwriting (default no, so your changes are kept). Pass `--force` to overwrite
 without asking; non-interactive runs skip the changed files. `den install hook`
 into a tool's settings.json merges (it preserves foreign hooks and other keys).
 
+### Parent profiles (frontier / weak)
+
+The parent prompt ships in two profiles. `--profile frontier` (the default)
+deploys the compact invariants parent for models that follow instructions
+natively and auto-fire skills. `--profile weak` deploys the skill router:
+maximal scaffolding for weak/local models, written to whatever parent file
+the tool reads. Every tool defaults to frontier; the interactive flow asks
+about weak only for cline / cline-cli / copilot (the tools where local or
+weak models are plausible).
+
+For mixed usage (the same tool running frontier today and a weak model
+tomorrow), keep the global parent frontier and give the weak-model project
+its own workspace deploy:
+
+```
+den install skills --target . --with-parent --profile weak
+```
+
+Double-load caveat: cline (extension) reads its global Rules dir AND a
+workspace `AGENTS.md`; Copilot reads its global instructions AND a repo
+`.github/copilot-instructions.md`. In a weak workspace both parents load;
+that is safe (the rules agree) but costs the weak model input budget -
+cline's Rules UI can toggle the global parent off per workspace. codex,
+cline-cli, and gemini read a single global file, so no double load.
+
 On Windows, `den install shell --coreutils` also installs microsoft/coreutils via
 winget (an interactive run asks; default no). The pwsh wrappers then use it as
 their Unix-command tier (`ls`/`cat`/`grep`/`find`/`cp`/`rm`/...); see

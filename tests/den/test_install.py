@@ -26,6 +26,41 @@ def test_install_skills_rewrites_to_absolute(tmp_path):
     assert coding.resolve().as_posix() in text
 
 
+def test_install_profile_weak_deploys_router_parent(tmp_path):
+    rc = install_main(
+        ["skills", "--target", str(tmp_path), "--with-parent", "--profile", "weak"]
+    )
+    assert rc == 0
+    agents = (tmp_path / "AGENTS.md").read_text()
+    claude = (tmp_path / "CLAUDE.md").read_text()
+    assert "<skill_catalog>" in agents  # the router IS the weak parent
+    assert agents == claude  # one weak content, whatever the file name
+
+
+def test_install_default_profile_is_frontier(tmp_path):
+    install_main(["skills", "--target", str(tmp_path), "--with-parent"])
+    text = (tmp_path / "AGENTS.md").read_text()
+    assert "<precedence>" in text
+    assert "<skill_catalog>" not in text
+
+
+def test_install_unknown_profile_exits_2(tmp_path):
+    assert install_main(["skills", "--target", str(tmp_path), "--profile", "mid"]) == 2
+
+
+def test_uninstall_removes_weak_parent(tmp_path):
+    from den._uninstall import main as uninstall_main
+
+    install_main(
+        ["skills", "--target", str(tmp_path), "--with-parent", "--profile", "weak"]
+    )
+    assert "<skill_catalog>" in (tmp_path / "AGENTS.md").read_text()
+    rc = uninstall_main(["skills", "--target", str(tmp_path), "--with-parent", "--yes"])
+    assert rc == 0
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert not (tmp_path / "CLAUDE.md").exists()
+
+
 def test_install_skills_excludes_tests_and_pyc(tmp_path):
     install_main(["skills", "--target", str(tmp_path)])
     scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
@@ -164,6 +199,24 @@ def test_interactive_opts_into_zsh_plugins(monkeypatch):
     )
     assert _install._interactive() == 0
     assert calls["shell"] == ["--zsh-plugins"]
+
+
+def test_interactive_weak_profile_question_for_mixed_tools(monkeypatch):
+    from den import _install, _ui
+
+    monkeypatch.setattr(_install, "_windows", lambda: False)
+    # shell?N skills?Y -> select [cline] -> parent?Y weak-profile?Y cheatsheets?N
+    answers = iter([False, True, True, True, False])
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: next(answers))
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: ["cline"])
+    calls = {}
+    monkeypatch.setattr(
+        _install,
+        "_install_skills",
+        lambda argv: calls.setdefault("skills", argv) is None and 0 or 0,
+    )
+    assert _install._interactive() == 0
+    assert calls["skills"] == ["--tool", "cline", "--with-parent", "--profile", "weak"]
 
 
 def test_interactive_skips_when_declined(monkeypatch):
