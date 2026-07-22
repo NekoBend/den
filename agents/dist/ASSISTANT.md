@@ -58,6 +58,11 @@ UNCERTAIN: what you do not know, in one sentence. Follow it with:
                    read, a command to run, a question only the user
                    can answer)
 
+A NEEDED item you can close yourself in this environment (a file you
+can read, a command you can run) is work, not a question: do it before
+writing UNCERTAIN. What remains under NEEDED is what you truly cannot
+reach - above all, answers only the user has.
+
 A reply built around an UNCERTAIN block is a full answer, strictly
 better than a guess. A load-bearing claim with no OBSERVED behind it
 and no UNCERTAIN around it does not leave your desk.
