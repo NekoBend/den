@@ -90,6 +90,26 @@ def test_install_unknown_tool(capsys):
     assert install_main(["skills", "--tool", "notatool"]) == 2
 
 
+def test_install_gemini_tool_is_retired(capsys):
+    # retired with gemini-cli's upstream EOL; Antigravity reads the
+    # cross-tool ~/.agents/skills + AGENTS.md that den already deploys
+    assert install_main(["skills", "--tool", "gemini"]) == 2
+
+
+def test_uninstall_sweeps_legacy_gemini_skills(tmp_path, monkeypatch):
+    from den._uninstall import main as uninstall_main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # windows expanduser
+    # simulate an old den deploy into ~/.gemini/skills by installing there
+    install_main(["skills", "--target", str(tmp_path / ".gemini")])
+    legacy = tmp_path / ".gemini" / "skills" / "coding" / "SKILL.md"
+    assert legacy.is_file()
+    assert uninstall_main(["skills", "--yes"]) == 0
+    assert not legacy.exists()  # den-identical legacy copies are removed
+    assert (tmp_path / ".gemini").is_dir()  # the tool dir itself is kept
+
+
 def test_install_cheatsheets_deploys(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert install_main(["cheatsheets"]) == 0

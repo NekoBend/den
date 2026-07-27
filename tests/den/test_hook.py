@@ -248,25 +248,15 @@ def test_install_refuses_unverified_tool(tmp_path, monkeypatch):
     assert not cfg.exists()
 
 
-def test_install_gemini_uses_settings_json(tmp_path, monkeypatch):
+def test_gemini_tool_is_retired(tmp_path, monkeypatch, capsys):
+    # gemini-cli hit upstream EOL; its successor (Antigravity) reads the
+    # cross-tool files den already deploys, so the tool entry is gone and
+    # both install and run treat it as unknown.
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "settings.json"
-    assert hook_main(["install", "--tool", "gemini", "--config", str(cfg)]) == 0
-    hooks = json.loads(cfg.read_text())["hooks"]
-    assert set(hooks) == {"SessionStart", "BeforeAgent", "AfterTool", "SessionEnd"}
-    cmd = hooks["BeforeAgent"][0]["hooks"][0]["command"]
-    _assert_pinned(
-        cmd, "den hook run --event per-turn --tool gemini", tmp_path / ".den"
-    )
-
-
-def test_run_gemini_emits_beforeagent_json(tmp_path, monkeypatch, capsys):
-    _seed(tmp_path, imprint="IMP\n")
-    monkeypatch.chdir(tmp_path)
-    assert hook_main(["run", "--event", "per-turn", "--tool", "gemini"]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["hookSpecificOutput"]["hookEventName"] == "BeforeAgent"
-    assert "IMP" in payload["hookSpecificOutput"]["additionalContext"]
+    assert hook_main(["install", "--tool", "gemini", "--config", str(cfg)]) != 0
+    assert not cfg.exists()
+    assert hook_main(["run", "--event", "per-turn", "--tool", "gemini"]) != 0
 
 
 def test_remove_strips_den_keeps_foreign(tmp_path, monkeypatch):

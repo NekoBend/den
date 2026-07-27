@@ -39,7 +39,10 @@ _TOOLS: dict[str, tuple[str, str, str]] = {
     "cline": ("~/.agents/skills", "~/Documents/Cline/Rules", "AGENTS.md"),
     "cline-cli": ("~/.agents/skills", "~/.agents", "AGENTS.md"),
     "copilot": ("~/.copilot/skills", "~/.copilot", "copilot-instructions.md"),
-    "gemini": ("~/.gemini/skills", "~/.gemini", "GEMINI.md"),
+    # gemini: RETIRED (2026-07). gemini-cli hit upstream EOL for individual
+    # accounts; its successor Antigravity reads ~/.agents/skills + AGENTS.md,
+    # which den already deploys for codex/cline. den uninstall sweeps the
+    # legacy ~/.gemini/skills copies (see _uninstall._stage_skills).
 }
 
 
@@ -107,8 +110,8 @@ def _tool_paths(tool: str) -> tuple[Path, Path, str]:
 
 
 # Tools whose model varies per session (local/weak models are plausible), so
-# the interactive flow asks which parent profile to deploy. claude/codex/
-# gemini only run frontier-class models and are not asked.
+# the interactive flow asks which parent profile to deploy. claude/codex
+# only run frontier-class models and are not asked.
 _MIXED_MODEL_TOOLS = {"cline", "cline-cli", "copilot"}
 
 
