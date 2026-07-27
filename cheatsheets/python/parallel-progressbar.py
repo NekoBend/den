@@ -367,7 +367,7 @@ if __name__ == "__main__":
     import asyncio
     import time
 
-    def your_function(item: int) -> int:  # noqa: F811
+    def your_function(item: int) -> int:  # ruff: ignore[redefined-while-unused]
         """Dummy task — replace with your real logic."""
         time.sleep(0.05)
         return item * 2

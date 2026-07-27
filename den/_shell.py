@@ -300,7 +300,7 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     return True
 
 
-def install_shell(  # ruff: ignore[too-many-branches, too-many-locals]  # one per flag
+def install_shell(  # ruff: ignore[too-many-branches, too-many-locals]  # one branch per flag
     argv: list[str],
 ) -> int:
     dry_run = "--dry-run" in argv

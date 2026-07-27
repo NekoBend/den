@@ -28,7 +28,9 @@ def say(message: str, *, style: str | None = None) -> None:
         print(message)
 
 
-def confirm(prompt: str, default: bool = False) -> bool:  # ruff: ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+# ruff: ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+# The bool IS the question's default; callers read confirm(prompt, default=False).
+def confirm(prompt: str, default: bool = False) -> bool:
     if sys.stdin.isatty():
         try:
             import questionary
