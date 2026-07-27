@@ -601,7 +601,7 @@ def test_clone_zsh_plugins_clones_both_pinned(tmp_path, monkeypatch):
     _shell._maybe_clone_zsh_plugins(want=True, dry_run=False)
     clones = [c for c in calls if c[:2] == ["git", "clone"]]
     assert len(clones) == 2
-    for (name, _url, tag, _sha), cmd in zip(_shell._ZSH_PLUGINS, clones):
+    for (name, _url, tag, _sha), cmd in zip(_shell._ZSH_PLUGINS, clones, strict=True):
         assert "--branch" in cmd and tag in cmd  # pinned tag, not HEAD
         assert name in cmd[-1]
     # every clone is followed by a rev-parse verification

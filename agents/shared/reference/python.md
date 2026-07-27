@@ -99,7 +99,9 @@ ruff flags PEP 8 naming violations under the `N` ruleset.
 ```python
 MAX_RETRIES = 5
 
+
 class CustomerOrderRepository: ...
+
 
 def fetch_customer_order(order_id: int) -> CustomerOrder: ...
 ```
@@ -311,7 +313,7 @@ class CreateCustomerOrderRequest(BaseModel):
 
 def create_customer_order_endpoint(payload: dict) -> Response:
     request = CreateCustomerOrderRequest.model_validate(payload)  # boundary
-    return _create_customer_order(request)                         # trust the type
+    return _create_customer_order(request)  # trust the type
 
 
 def _create_customer_order(request: CreateCustomerOrderRequest) -> Response:

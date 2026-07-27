@@ -33,9 +33,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ._install import _Writer
-
 from ._content import shell_dir
+from ._install import _Writer
 
 _COMMENT = "# ===== den ====="
 _PWSH_PROFILE = "Microsoft.PowerShell_profile.ps1"
@@ -270,7 +269,7 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     # Pair the sentinels (open, close). An odd trailing sentinel (corrupt/partial
     # block) is left in place rather than guessing where it ends.
     spans = []
-    for open_i, close_i in zip(marks[0::2], marks[1::2]):
+    for open_i, close_i in zip(marks[0::2], marks[1::2], strict=False):
         start, end = open_i, close_i + 1
         if end < len(lines) and lines[end] == "":  # trailing blank
             end += 1

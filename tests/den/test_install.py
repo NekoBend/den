@@ -193,12 +193,12 @@ def test_interactive_dispatches(monkeypatch):
     calls = {}
     monkeypatch.setattr(
         "den._shell.install_shell",
-        lambda argv: calls.setdefault("shell", argv) is None and 0 or 0,
+        lambda argv: (calls.setdefault("shell", argv) is None and 0) or 0,
     )
     monkeypatch.setattr(
         _install,
         "_install_skills",
-        lambda argv: calls.setdefault("skills", argv) is None and 0 or 0,
+        lambda argv: (calls.setdefault("skills", argv) is None and 0) or 0,
     )
     assert _install._interactive() == 0
     assert calls["shell"] == ["--no-extras"]
@@ -215,7 +215,7 @@ def test_interactive_opts_into_zsh_plugins(monkeypatch):
     calls = {}
     monkeypatch.setattr(
         "den._shell.install_shell",
-        lambda argv: calls.setdefault("shell", argv) is None and 0 or 0,
+        lambda argv: (calls.setdefault("shell", argv) is None and 0) or 0,
     )
     assert _install._interactive() == 0
     assert calls["shell"] == ["--zsh-plugins"]
@@ -233,7 +233,7 @@ def test_interactive_weak_profile_question_for_mixed_tools(monkeypatch):
     monkeypatch.setattr(
         _install,
         "_install_skills",
-        lambda argv: calls.setdefault("skills", argv) is None and 0 or 0,
+        lambda argv: (calls.setdefault("skills", argv) is None and 0) or 0,
     )
     assert _install._interactive() == 0
     assert calls["skills"] == ["--tool", "cline", "--with-parent", "--profile", "weak"]

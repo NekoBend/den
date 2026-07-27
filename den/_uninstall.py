@@ -13,6 +13,7 @@ mirroring `den install`.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -49,10 +50,8 @@ def _strip_block(rc: Path, line: str) -> None:
     crlf = "\r\n" in text
     norm = text.replace("\r\n", "\n")
     if norm == f"{_COMMENT}\n{line}\n":
-        try:
+        with contextlib.suppress(OSError):
             rc.unlink()
-        except OSError:
-            pass
         return
     lines = norm.split("\n")
     out: list[str] = []
@@ -304,7 +303,7 @@ def _uninstall_shell(argv: list[str]) -> int:
     # extras=True, posix_bin=True: stage every file den could have placed (including
     # the optional shell/posix/bin/* executables in ~/.local/bin); absent ones are
     # skipped.
-    posix_dir, pwsh_dir = _stage_shell_files(
+    _posix_dir, pwsh_dir = _stage_shell_files(
         remover, extras=True, dry_run=False, announce=False, posix_bin=True
     )
     home = Path.home()

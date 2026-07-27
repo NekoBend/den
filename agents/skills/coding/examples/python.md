@@ -100,9 +100,7 @@ class CustomerOrderRepository:
         initial: dict[int, CustomerOrder] | None = None,
     ) -> None:
         # Defensive copy: the caller's dict must not alias the store.
-        self._store: dict[int, CustomerOrder] = (
-            dict(initial) if initial else {}
-        )
+        self._store: dict[int, CustomerOrder] = dict(initial) if initial else {}
 
     def create(self, request: CreateCustomerOrderRequest) -> CustomerOrder:
         next_id = max(self._store, default=0) + 1
@@ -119,9 +117,7 @@ class CustomerOrderRepository:
         try:
             return self._store[order_id]
         except KeyError as exc:
-            raise CustomerOrderNotFoundError(
-                f"customer order {order_id}"
-            ) from exc
+            raise CustomerOrderNotFoundError(f"customer order {order_id}") from exc
 ```
 
 `CustomerOrderRepository.__init__` uses `None` as the sentinel for `initial`

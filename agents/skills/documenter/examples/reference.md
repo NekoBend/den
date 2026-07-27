@@ -38,9 +38,9 @@ keyword-only) - returned when header is missing or unparseable (1.0). cap
 
 **Example:**
 ```python
-parse_retry_after("5")     # 5.0
-parse_retry_after("bad")   # 1.0  (unparseable, falls back to default)
-parse_retry_after(None)    # 1.0
+parse_retry_after("5")  # 5.0
+parse_retry_after("bad")  # 1.0  (unparseable, falls back to default)
+parse_retry_after(None)  # 1.0
 ```
 
 **Could not determine:** none.

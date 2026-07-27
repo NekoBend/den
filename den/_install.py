@@ -426,13 +426,16 @@ def _interactive() -> int:
             flags.append("--with-parent")
         # Only tools that plausibly run weak/local models get the question;
         # the answer applies to this whole install (split runs to mix).
-        if flags and any(t in _MIXED_MODEL_TOOLS for t in chosen):
-            if _ui.confirm(
+        if (
+            flags
+            and any(t in _MIXED_MODEL_TOOLS for t in chosen)
+            and _ui.confirm(
                 "  Deploy the weak-model parent (the skill router) instead of"
                 " the frontier parent?",
                 False,
-            ):
-                flags += ["--profile", "weak"]
+            )
+        ):
+            flags += ["--profile", "weak"]
         if flags:
             rc |= _install_skills(flags)
 

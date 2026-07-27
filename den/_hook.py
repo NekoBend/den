@@ -46,8 +46,10 @@ from ._memory import (
     _do_checkpoint,
     _find_den_dir,
     _memory_path,
-    main as _memory_main,
     mirror_to_clinerules,
+)
+from ._memory import (
+    main as _memory_main,
 )
 
 _IMPRINT_NAME = "imprint.md"

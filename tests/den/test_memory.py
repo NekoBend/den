@@ -248,7 +248,7 @@ def test_checkpoint_collision_does_not_clobber(tmp_path, monkeypatch):
         def now(tz=None):
             import datetime as _dt
 
-            return _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
+            return _dt.datetime(2026, 1, 1, tzinfo=_dt.UTC)
 
     monkeypatch.setattr(_memory, "datetime", _Fixed)
     mem.write_text("a\n")
