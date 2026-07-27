@@ -35,9 +35,11 @@ def _usage() -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag parse plus one exit per failure mode
+    argv: list[str] | None = None,
+) -> int:
     args = argv if argv is not None else sys.argv[1:]
-    if args and args[0] in ("-h", "--help", "help"):
+    if args and args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
     refresh = dry_run = False
