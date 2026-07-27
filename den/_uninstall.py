@@ -215,6 +215,15 @@ def _stage_skills(remover: _Remover, tools, targets, with_parent) -> None:
             Path("~/.agents").expanduser(),
             "AGENTS.md",
         )
+        # Legacy sweep: den used to deploy gemini skills to ~/.gemini/skills;
+        # gemini-cli is EOL upstream and its successor (Antigravity) reads
+        # ~/.agents/skills, so stage the old copies for removal too. Only
+        # den-identical files are ever deleted, so user edits survive.
+        legacy = Path("~/.gemini/skills").expanduser()
+        if legacy.is_dir():
+            for name in names:
+                _install_skill(name, legacy, remover)
+            remover.boundary(legacy.parent)
         return
     for tool in tools:
         do(*_tool_paths(tool))

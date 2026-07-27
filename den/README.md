@@ -62,8 +62,8 @@ Double-load caveat: cline (extension) reads its global Rules dir AND a
 workspace `AGENTS.md`; Copilot reads its global instructions AND a repo
 `.github/copilot-instructions.md`. In a weak workspace both parents load;
 that is safe (the rules agree) but costs the weak model input budget -
-cline's Rules UI can toggle the global parent off per workspace. codex,
-cline-cli, and gemini read a single global file, so no double load.
+cline's Rules UI can toggle the global parent off per workspace. codex
+and cline-cli read a single global file, so no double load.
 
 On Windows, `den install shell --coreutils` also installs microsoft/coreutils via
 winget (an interactive run asks; default no). The pwsh wrappers then use it as
@@ -169,7 +169,6 @@ foreign hooks untouched. Generic events map to each tool's own names:
 | Tool | Per-turn inject | Mechanism | Workspace config |
 |------|-----------------|-----------|------------------|
 | claude | yes | `hookSpecificOutput.additionalContext` | `.claude/settings.json` |
-| gemini | yes | `hookSpecificOutput.additionalContext` | `.gemini/settings.json` |
 | cline | yes (extension) | `contextModification` (script per event) | `.clinerules/hooks/` |
 | cline-cli | session-start | `.clinerules/*.md` rule files (no hook) | `.clinerules/` |
 | copilot | session-start only | `additionalContext` (`userPromptSubmitted` is notify-only) | `.github/hooks/den.json` |
@@ -195,8 +194,12 @@ platform Cline expects: extensionless `<Event>` (executable bash) on macOS/Linux
 `<Event>.ps1` (PowerShell) on Windows. Either way the script just calls `den hook
 run`, so `den` must be on PATH where Cline runs the hook.
 
-claude, gemini, copilot, and the macOS/Linux cline extension path were verified
-end to end. The cline-cli `.clinerules` delivery was validated manually against
+claude, copilot, and the macOS/Linux cline extension path were verified
+end to end. gemini support is retired: gemini-cli hit upstream end-of-life
+for individual accounts (2026-06), and its successor (Antigravity) reads
+the cross-tool `~/.agents/skills` + `AGENTS.md` that den already deploys -
+a tool-specific entry returns only after verification against the real
+CLI. `den uninstall` sweeps legacy `~/.gemini/skills` copies. The cline-cli `.clinerules` delivery was validated manually against
 the real CLI (a seeded rule reached the model); CI is Linux-only and does not run
 the cline CLI runtime. The Windows cline `.ps1` path follows Cline's documented
 contract; verify against a live Windows install. codex is scaffolded but disabled

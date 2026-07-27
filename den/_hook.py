@@ -95,19 +95,13 @@ _TOOLS: dict[str, dict] = {
         "post_tool_matcher": "Write|Edit|MultiEdit",
         "verified": True,
     },
-    "gemini": {
-        "config": ".gemini/settings.json",
-        "emit": "gemini",
-        "format": "settings_json",
-        "events": {
-            "session-start": "SessionStart",
-            "per-turn": "BeforeAgent",
-            "post-tool": "AfterTool",
-            "stop": "SessionEnd",
-        },
-        "verified": True,
-    },
-    # codex: DEFERRED. The output contract is the same as claude/gemini
+    # gemini: RETIRED (2026-07). gemini-cli hit upstream EOL for individual
+    # accounts (2026-06-18); its successor Antigravity reads the cross-tool
+    # ~/.agents/skills + AGENTS.md that den already deploys, so no
+    # tool-specific entry is needed. Existing workspace .gemini hook configs
+    # only fire inside the dead CLI, so they are inert. Re-add a verified
+    # entry only after checking the real Antigravity CLI's hook contract.
+    # codex: DEFERRED. The output contract is the same as claude
     # (UserPromptSubmit/SessionStart with hookSpecificOutput.additionalContext;
     # confirmed in the codex binary's hook schema), so `emit` could reuse the
     # hookspecific emitter. The blocker is DELIVERY: codex has no direct hooks
@@ -247,7 +241,6 @@ def _emit_cline(event_name: str, text: str) -> None:
 
 _EMITTERS = {
     "claude": _emit_hookspecific,
-    "gemini": _emit_hookspecific,
     "copilot": _emit_copilot,
     "cline": _emit_cline,
 }
@@ -345,9 +338,8 @@ def _parse_run_args(
 # --------------------------------------------------------------------------- #
 # install / list / remove
 #
-# claude and gemini share format "settings_json": a settings.json with a hooks
-# object keyed by native event name. codex/copilot/cline use other formats and
-# are not wired yet.
+# claude uses format "settings_json": a settings.json with a hooks object
+# keyed by native event name. codex/copilot/cline use other formats.
 # --------------------------------------------------------------------------- #
 
 
@@ -759,7 +751,7 @@ def _cmd_install(argv: list[str]) -> int:
         if not spec["verified"] or handlers is None:
             print(
                 f"den hook install: '{tool}' is not verified yet; skipping. "
-                f"Verified: claude, gemini, copilot, cline.",
+                f"Verified: claude, copilot, cline.",
                 file=sys.stderr,
             )
             rc = 1
@@ -868,8 +860,9 @@ def _usage() -> None:
         "  install / remove [...]   prefer 'den install hook' / 'den uninstall hook'\n"
         "\n"
         "Events: session-start, per-turn, post-tool, stop.\n"
-        "Verified: claude, gemini, cline (per-turn inject); copilot "
-        "(session-start inject only). codex is scaffolded (verified=False)."
+        "Verified: claude, cline (per-turn inject); copilot "
+        "(session-start inject only). codex is scaffolded (verified=False);\n"
+        "gemini is retired (upstream EOL; Antigravity reads the cross-tool files)."
     )
 
 
