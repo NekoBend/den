@@ -33,7 +33,8 @@ def test_skill_frontmatter_is_strict_yaml(skill):
     data = yaml.safe_load(_frontmatter(skill.read_text(encoding="utf-8")))
     assert isinstance(data, dict), f"{name}: frontmatter did not parse to a mapping"
     assert data.get("name") == name, (
-        f"{name}: frontmatter `name` must equal the directory name (got {data.get('name')!r})"
+        f"{name}: frontmatter `name` must equal the directory name"
+        f" (got {data.get('name')!r})"
     )
     desc = data.get("description")
     assert isinstance(desc, str) and desc.strip(), (

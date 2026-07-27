@@ -98,8 +98,9 @@ def _extract_defs(text: str, ext: str) -> set[str]:
     defs: set[str] = set()
     for template in templates:
         pattern = template.replace("{name}", r"(\w+)")
-        for match in re.finditer(pattern, text, re.MULTILINE):
-            defs.add(match.group(1))
+        defs.update(
+            match.group(1) for match in re.finditer(pattern, text, re.MULTILINE)
+        )
     return defs
 
 
@@ -124,7 +125,9 @@ def _ripgrep_available() -> bool:
     return shutil.which("rg") is not None
 
 
-def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
+def _search_for_usages(  # ruff: ignore[too-many-branches]  # one branch per file type scanned
+    symbol: str, root: Path
+) -> list[tuple[str, int, str]]:
     """Find every occurrence of `symbol` as a whole word under `root`."""
     word_pattern = rf"\b{re.escape(symbol)}\b"
     if _ripgrep_available():
@@ -202,7 +205,9 @@ def _normalize_ext(value: str | None) -> str | None:
     return value if value.startswith(".") else f".{value}"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
+    argv: list[str] | None = None,
+) -> int:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         description=__doc__,

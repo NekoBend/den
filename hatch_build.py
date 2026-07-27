@@ -21,7 +21,7 @@ _SKIP_DIRS = {"__pycache__", ".pytest_cache", "tests"}
 
 
 class CustomBuildHook(BuildHookInterface):
-    def initialize(self, version, build_data):
+    def initialize(self, version: str, build_data: dict) -> None:
         root = Path(self.root)
         force = build_data.setdefault("force_include", {})
         for src, dest in _BUNDLE.items():

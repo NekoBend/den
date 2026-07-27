@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 from ._content import shell_dir
-from ._install import _Writer
+from ._install import _Stager, _Writer
 
 _COMMENT = "# ===== den ====="
 _PWSH_PROFILE = "Microsoft.PowerShell_profile.ps1"
@@ -128,7 +128,7 @@ def _localappdata() -> Path:
     return Path(env) if env else Path.home() / "AppData" / "Local"
 
 
-def _copy(src: Path, dst: Path, dry_run: bool, writer: _Writer) -> None:
+def _copy(src: Path, dst: Path, writer: _Stager, *, dry_run: bool) -> None:
     if not src.is_file():
         return
     if dry_run:
@@ -137,7 +137,7 @@ def _copy(src: Path, dst: Path, dry_run: bool, writer: _Writer) -> None:
     writer.stage(dst, src.read_bytes())
 
 
-def _wire(rc: Path, line: str, dry_run: bool) -> None:
+def _wire(rc: Path, line: str, *, dry_run: bool) -> None:
     if rc.is_file() and line in rc.read_text(encoding="utf-8", errors="ignore"):
         print(f"  [skip] {rc} already configured")
         return
@@ -155,8 +155,13 @@ def _wire(rc: Path, line: str, dry_run: bool) -> None:
 
 
 def _stage_shell_files(
-    writer, extras: bool, dry_run: bool, announce: bool, posix_bin: bool = False
-):
+    writer: _Stager,
+    *,
+    extras: bool,
+    dry_run: bool,
+    announce: bool,
+    posix_bin: bool = False,
+) -> tuple[Path, Path]:
     """Stage every shell file den deploys (no commit). Returns (posix_dir,
     pwsh_dir). Shared by install (writes) and uninstall (plans removal), so the
     dest paths and bundled content match exactly."""
@@ -168,31 +173,36 @@ def _stage_shell_files(
     if announce:
         print(f"shell (posix) -> {posix_dir}")
     for f in _POSIX_CORE + (_POSIX_EXTRAS if extras else []):
-        _copy(sh / "posix" / f, posix_dir / f, dry_run, writer)
-    _copy(sh / "bash" / "init.bash", posix_dir / "init.bash", dry_run, writer)
-    _copy(sh / "zsh" / "init.zsh", posix_dir / "init.zsh", dry_run, writer)
+        _copy(sh / "posix" / f, posix_dir / f, writer, dry_run=dry_run)
+    _copy(sh / "bash" / "init.bash", posix_dir / "init.bash", writer, dry_run=dry_run)
+    _copy(sh / "zsh" / "init.zsh", posix_dir / "init.zsh", writer, dry_run=dry_run)
     _copy(
         sh / "starship" / "starship.toml",
         home / ".config" / "starship.toml",
-        dry_run,
         writer,
+        dry_run=dry_run,
     )
 
     if announce:
         print(f"shell (pwsh) -> {pwsh_dir}")
     for f in _PWSH_CORE + (_PWSH_EXTRAS if extras else []):
-        _copy(sh / "pwsh" / f, pwsh_dir / f, dry_run, writer)
+        _copy(sh / "pwsh" / f, pwsh_dir / f, writer, dry_run=dry_run)
 
     # cmd / Clink shims (Windows only): bin/*.cmd + starship.lua -> %LOCALAPPDATA%\clink
     if _windows():
         clink = _localappdata() / "clink"
         if announce:
             print(f"cmd/Clink -> {clink}")
-        _copy(sh / "cmd" / "starship.lua", clink / "starship.lua", dry_run, writer)
+        _copy(
+            sh / "cmd" / "starship.lua",
+            clink / "starship.lua",
+            writer,
+            dry_run=dry_run,
+        )
         cmd_bin = sh / "cmd" / "bin"
         if cmd_bin.is_dir():
             for f in sorted(cmd_bin.glob("*.cmd")):
-                _copy(f, clink / "bin" / f.name, dry_run, writer)
+                _copy(f, clink / "bin" / f.name, writer, dry_run=dry_run)
 
     # POSIX standalone executables (shell/posix/bin/*, e.g. fixids) -> ~/.local/bin,
     # which den's init already adds to PATH (_init_path). They need GNU
@@ -207,12 +217,12 @@ def _stage_shell_files(
             if files and announce:
                 print(f"posix bin -> {local_bin}")
             for f in files:
-                _copy(f, local_bin / f.name, dry_run, writer)
+                _copy(f, local_bin / f.name, writer, dry_run=dry_run)
 
     return posix_dir, pwsh_dir
 
 
-def _decide_posix_bin(want: bool, skip: bool) -> bool:
+def _decide_posix_bin(*, want: bool, skip: bool) -> bool:
     """Whether to install the bundled POSIX helper executables (shell/posix/bin/*,
     e.g. fixids) to ~/.local/bin. POSIX-only: they need GNU coreutils/find and are
     not runnable on Windows. With --bin install without asking; with --no-bin skip;
@@ -231,7 +241,7 @@ def _decide_posix_bin(want: bool, skip: bool) -> bool:
 
     return _ui.confirm(
         "Install POSIX helper executables (shell/posix/bin/*) to ~/.local/bin?",
-        False,
+        default=False,
     )
 
 
@@ -253,7 +263,7 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     # Preserve the profile's encoding: re-encoding a UTF-16 profile as UTF-8, or
     # dropping bytes via errors='ignore', breaks PowerShell parsing. Detect from a
     # BOM, decode STRICTLY, and bail without editing if it does not decode.
-    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+    if raw[:2] in {b"\xff\xfe", b"\xfe\xff"}:
         enc = "utf-16"
     elif raw[:3] == b"\xef\xbb\xbf":
         enc = "utf-8-sig"
@@ -290,7 +300,9 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     return True
 
 
-def install_shell(argv: list[str]) -> int:
+def install_shell(  # ruff: ignore[too-many-branches, too-many-locals]  # one per flag
+    argv: list[str],
+) -> int:
     dry_run = "--dry-run" in argv
     extras = "--no-extras" not in argv
     force = "--force" in argv
@@ -315,10 +327,14 @@ def install_shell(argv: list[str]) -> int:
             return 2
 
     home = Path.home()
-    writer = _Writer(force)
-    install_bin = _decide_posix_bin(want_bin, skip_bin)
+    writer = _Writer(force=force)
+    install_bin = _decide_posix_bin(want=want_bin, skip=skip_bin)
     _posix_dir, pwsh_dir = _stage_shell_files(
-        writer, extras, dry_run, announce=True, posix_bin=install_bin
+        writer,
+        extras=extras,
+        dry_run=dry_run,
+        announce=True,
+        posix_bin=install_bin,
     )
 
     if not dry_run:
@@ -338,15 +354,17 @@ def install_shell(argv: list[str]) -> int:
 
     print("wiring shell rc files")
     if shutil.which("bash") or (home / ".bashrc").is_file():
-        _wire(home / ".bashrc", _BASH_LINE, dry_run)
+        _wire(home / ".bashrc", _BASH_LINE, dry_run=dry_run)
     if shutil.which("zsh") or (home / ".zshrc").is_file():
-        _wire(home / ".zshrc", _ZSH_LINE, dry_run)
+        _wire(home / ".zshrc", _ZSH_LINE, dry_run=dry_run)
     if _windows() or shutil.which("pwsh"):
-        _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run)
+        _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run=dry_run)
 
-    _maybe_clone_zsh_plugins(want_zsh_plugins, dry_run)
+    _maybe_clone_zsh_plugins(want=want_zsh_plugins, dry_run=dry_run)
 
-    rc = _maybe_install_coreutils(want_coreutils, skip_coreutils, dry_run)
+    rc = _maybe_install_coreutils(
+        want=want_coreutils, skip=skip_coreutils, dry_run=dry_run
+    )
 
     # coreutils installs a PSConsoleHostReadLine rewriter into the profile that
     # retargets typed `ls`/`cat`/... to coreutils BEFORE den's wrappers run,
@@ -387,7 +405,7 @@ def _zsh_plugins_dir() -> Path:
     return root / "zsh" / "plugins"
 
 
-def _maybe_clone_zsh_plugins(want: bool, dry_run: bool) -> None:
+def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
     """Clone the PINNED zsh plugins init.zsh sources (autosuggestions + syntax
     highlighting) into ~/.config/zsh/plugins. Opt-in: shell startup sources
     whatever sits here, so nothing is fetched unless --zsh-plugins was given.
@@ -473,7 +491,7 @@ def _coreutils_present() -> bool:
     return False
 
 
-def _maybe_install_coreutils(want: bool, skip: bool, dry_run: bool) -> int:
+def _maybe_install_coreutils(*, want: bool, skip: bool, dry_run: bool) -> int:
     """Decide whether to install microsoft/coreutils, then do it. Windows-only
     (the pwsh wrappers consult it only there). With --coreutils install without
     asking; with --no-coreutils skip; otherwise ask on an interactive Windows run
@@ -495,13 +513,13 @@ def _maybe_install_coreutils(want: bool, skip: bool, dry_run: bool) -> int:
 
         if not _ui.confirm(
             "Install microsoft/coreutils (Unix commands for the pwsh wrappers)?",
-            False,
+            default=False,
         ):
             return 0
-    return _install_coreutils(dry_run)
+    return _install_coreutils(dry_run=dry_run)
 
 
-def _install_coreutils(dry_run: bool) -> int:
+def _install_coreutils(*, dry_run: bool) -> int:
     """winget-install microsoft/coreutils. Assumes a Windows host with winget."""
     cmd = [
         "winget",

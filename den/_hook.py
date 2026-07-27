@@ -38,6 +38,10 @@ import os
 import shlex
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 from ._memory import (
     _CLINERULES_IMPRINT,
@@ -470,9 +474,11 @@ def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
         for g in groups:
             if not isinstance(g, dict):
                 continue
-            for h in g.get("hooks", []):
-                if isinstance(h, dict) and _MARKER in h.get("command", ""):
-                    lines.append(f"{tool}  {event}  {h['command']}")
+            lines.extend(
+                f"{tool}  {event}  {h['command']}"
+                for h in g.get("hooks", [])
+                if isinstance(h, dict) and _MARKER in h.get("command", "")
+            )
     return lines
 
 
@@ -580,13 +586,14 @@ def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
             )
         else:
             script.write_text(
-                f"#!/usr/bin/env bash\n# {_MARKER} (den-managed; do not edit)\nexec {cmd}\n",
+                "#!/usr/bin/env bash\n"
+                f"# {_MARKER} (den-managed; do not edit)\nexec {cmd}\n",
                 encoding="utf-8",
             )
             script.chmod(0o755)
 
 
-def _cline_scripts(spec: dict, config: Path):
+def _cline_scripts(spec: dict, config: Path) -> Iterator[tuple[str, Path]]:
     # Check both names so list/remove work regardless of the platform that
     # installed (extensionless on Unix, .ps1 on Windows).
     for native in spec["events"].values():
@@ -729,7 +736,7 @@ def _pick_tools_interactive() -> list[str] | None:
 def _cmd_install(argv: list[str]) -> int:
     # In a terminal with no tool selected, ask rather than silently defaulting
     # to claude.
-    selected = any(a in ("--tool", "--all-tools") for a in argv)
+    selected = any(a in {"--tool", "--all-tools"} for a in argv)
     if not selected and "--config" not in argv and sys.stdin.isatty():
         picked = _pick_tools_interactive()
         if picked is None:
@@ -808,7 +815,7 @@ def _cmd_imprint(argv: list[str]) -> int:
 
 
 def _parse_tool_args(
-    argv: list[str], default_all: bool = False
+    argv: list[str], *, default_all: bool = False
 ) -> tuple[list[str] | None, str | None]:
     tools: list[str] = []
     override: str | None = None
@@ -871,7 +878,7 @@ def _usage() -> None:
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
 
-    if not args or args[0] in ("-h", "--help", "help"):
+    if not args or args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
 

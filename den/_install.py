@@ -151,7 +151,7 @@ class _Writer:
     and, unless --force, the user is asked once before overwriting (default no,
     so local edits are kept). Non-interactive: differing files are skipped."""
 
-    def __init__(self, force: bool):
+    def __init__(self, *, force: bool) -> None:
         self.force = force
         self._items: list[tuple[Path, bytes]] = []
 
@@ -168,7 +168,7 @@ class _Writer:
             for d in changed:
                 _ui.say(f"  {d}", style="yellow")
             if sys.stdin.isatty():
-                overwrite = _ui.confirm("Overwrite them?", False)
+                overwrite = _ui.confirm("Overwrite them?", default=False)
             else:
                 print("  skipped (re-run with --force to overwrite)", file=sys.stderr)
                 overwrite = False
@@ -186,7 +186,9 @@ class _Writer:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
 
 
-def _install_skill(name: str, skills_target: Path, writer: _Stager) -> str:
+def _install_skill(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
+    name: str, skills_target: Path, writer: _Stager
+) -> str:
     """Build the self-contained skill in a temp dir (rewriting shared/ refs to
     its FINAL location), then stage every file for the writer to commit."""
     src = skills_dir() / name
@@ -244,9 +246,10 @@ def _deploy(
     skills_target: Path,
     parent_dir: Path | None,
     parent_file: str | None,
+    writer: _Writer,
+    *,
     with_parent: bool,
     dry_run: bool,
-    writer: _Writer,
     profile: str = "frontier",
 ) -> None:
     names = _skill_names()
@@ -278,7 +281,9 @@ def _codex_config(skills_target: Path) -> None:
         print("enabled = true\n")
 
 
-def _parse(argv: list[str]):
+def _parse(
+    argv: list[str],
+) -> tuple[list[str], list[str], bool, bool, bool, bool, str] | None:
     tools: list[str] = []
     targets: list[str] = []
     with_parent = dry_run = codex_config = force = False
@@ -299,7 +304,7 @@ def _parse(argv: list[str]):
             targets.append(argv[i + 1])
             i += 2
         elif a == "--profile" and i + 1 < len(argv):
-            if argv[i + 1] not in ("weak", "frontier"):
+            if argv[i + 1] not in {"weak", "frontier"}:
                 print(
                     f"den install: unknown profile '{argv[i + 1]}' (weak or frontier)",
                     file=sys.stderr,
@@ -325,23 +330,37 @@ def _parse(argv: list[str]):
     return tools, targets, with_parent, dry_run, codex_config, force, profile
 
 
-def _install_skills(argv: list[str]) -> int:
+def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  # per-target staging
     parsed = _parse(argv)
     if parsed is None:
         return 2
     tools, targets, with_parent, dry_run, codex_config, force, profile = parsed
-    writer = _Writer(force)
+    writer = _Writer(force=force)
 
     processed: list[Path] = []
     for tool in tools:
         skt, parent_dir, pf = _tool_paths(tool)
-        _deploy(skt, parent_dir, pf, with_parent, dry_run, writer, profile)
+        _deploy(
+            skt,
+            parent_dir,
+            pf,
+            writer,
+            with_parent=with_parent,
+            dry_run=dry_run,
+            profile=profile,
+        )
         processed.append(skt)
 
     for t in targets:
         root = Path(t).expanduser()
         _deploy(
-            root / "skills", root, "AGENTS.md", with_parent, dry_run, writer, profile
+            root / "skills",
+            root,
+            "AGENTS.md",
+            writer,
+            with_parent=with_parent,
+            dry_run=dry_run,
+            profile=profile,
         )
         if with_parent and not dry_run:
             # custom targets get both AGENTS.md and CLAUDE.md at the root
@@ -356,20 +375,20 @@ def _install_skills(argv: list[str]) -> int:
             Path(sk).expanduser(),
             Path(pd).expanduser(),
             pf,
-            with_parent,
-            dry_run,
             writer,
-            profile,
+            with_parent=with_parent,
+            dry_run=dry_run,
+            profile=profile,
         )
         agents = Path("~/.agents/skills").expanduser()
         _deploy(
             agents,
             Path("~/.agents").expanduser(),
             "AGENTS.md",
-            with_parent,
-            dry_run,
             writer,
-            profile,
+            with_parent=with_parent,
+            dry_run=dry_run,
+            profile=profile,
         )
         processed.append(agents)
 
@@ -396,23 +415,23 @@ def _interactive() -> int:
     _ui.say("den install -- interactive setup", style="bold cyan")
     rc = 0
     if _ui.confirm(
-        "Install the shell environment (bash/zsh + PowerShell, starship)?", True
+        "Install the shell environment (bash/zsh + PowerShell, starship)?", default=True
     ):
         from ._shell import install_shell
 
         extras = _ui.confirm(
-            "  Include optional helpers (python/ffmpeg/parallel)?", True
+            "  Include optional helpers (python/ffmpeg/parallel)?", default=True
         )
         shell_flags = [] if extras else ["--no-extras"]
         # zsh plugins are POSIX-only; do not ask a question that no-ops.
         if not _windows() and _ui.confirm(
             "  Clone the pinned zsh plugins (autosuggestions + highlighting)?",
-            False,
+            default=False,
         ):
             shell_flags.append("--zsh-plugins")
         rc |= install_shell(shell_flags)
 
-    if _ui.confirm("Install the LLM agent skills?", False):
+    if _ui.confirm("Install the LLM agent skills?", default=False):
         chosen = _ui.select(
             "Which tools do you use? (space to toggle, enter to confirm)",
             [(tool, tool == "claude") for tool in _TOOLS],
@@ -421,7 +440,7 @@ def _interactive() -> int:
         for tool in chosen:
             flags += ["--tool", tool]
         if flags and _ui.confirm(
-            "Install the parent prompt (AGENTS.md/CLAUDE.md) too?", True
+            "Install the parent prompt (AGENTS.md/CLAUDE.md) too?", default=True
         ):
             flags.append("--with-parent")
         # Only tools that plausibly run weak/local models get the question;
@@ -432,14 +451,14 @@ def _interactive() -> int:
             and _ui.confirm(
                 "  Deploy the weak-model parent (the skill router) instead of"
                 " the frontier parent?",
-                False,
+                default=False,
             )
         ):
             flags += ["--profile", "weak"]
         if flags:
             rc |= _install_skills(flags)
 
-    if _ui.confirm("Install the offline cheatsheets?", False):
+    if _ui.confirm("Install the offline cheatsheets?", default=False):
         rc |= _install_cheatsheets([])
 
     _ui.say(
@@ -501,8 +520,10 @@ def _usage() -> None:
         "         [--dry-run] [--codex-config] [--force]\n"
         "  shell  [--dry-run] [--no-extras] [--force]\n"
         "         [--coreutils|--no-coreutils] [--bin|--no-bin] [--zsh-plugins]\n"
-        "  hook   [--tool T]... [--all-tools] [--config PATH]  per-workspace imprint hooks\n"
-        "  cheatsheets [--dry-run] [--force]                   bundled sheets -> data dir\n"
+        "  hook   [--tool T]... [--all-tools] [--config PATH]"
+        "  per-workspace imprint hooks\n"
+        "  cheatsheets [--dry-run] [--force]                  "
+        " bundled sheets -> data dir\n"
         "\n"
         "Existing files that differ are kept unless you confirm (or pass --force).\n"
         "\n"
@@ -513,9 +534,9 @@ def _usage() -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-statements]  # target dispatch
     args = argv if argv is not None else sys.argv[1:]
-    if args and args[0] in ("-h", "--help", "help"):
+    if args and args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
     if not args:
@@ -526,8 +547,8 @@ def main(argv: list[str] | None = None) -> int:
     target, rest = args[0], args[1:]
     # Leaf-level help: `den install skills --help` etc. should print usage, not
     # error. hook owns its own arg handling in _hook, so it is excluded here.
-    if target in ("skills", "shell", "cheatsheets") and any(
-        a in ("-h", "--help", "help") for a in rest
+    if target in {"skills", "shell", "cheatsheets"} and any(
+        a in {"-h", "--help", "help"} for a in rest
     ):
         _usage()
         return 0

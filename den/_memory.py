@@ -189,7 +189,7 @@ def _cmd_checkpoint(den_dir: Path, argv: list[str]) -> int:
 
 
 def _cmd_save(den_dir: Path, argv: list[str]) -> int:
-    if argv and argv[0] in ("--file", "-f"):
+    if argv and argv[0] in {"--file", "-f"}:
         if len(argv) < 2:
             print("den hook memory save: --file needs a path", file=sys.stderr)
             return 2
@@ -355,7 +355,7 @@ def _usage() -> None:
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
 
-    if not args or args[0] in ("-h", "--help", "help"):
+    if not args or args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
 
