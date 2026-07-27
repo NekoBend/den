@@ -47,7 +47,7 @@ def test_every_pwsh_feature_file_is_installed_and_sourced():
     feature_files = {
         p.name
         for p in _PWSH_DIR.glob("*.ps1")
-        if p.name not in ("_helpers.ps1", "init.ps1")
+        if p.name not in {"_helpers.ps1", "init.ps1"}
     }
     installed = set(_shell._PWSH_CORE + _shell._PWSH_EXTRAS)
     sourced = _pwsh_sourced_files()
@@ -461,7 +461,7 @@ def test_disable_coreutils_readline_preserves_utf16(tmp_path):
     )
     assert _shell._disable_coreutils_readline(prof) is True
     data = prof.read_bytes()
-    assert data[:2] in (b"\xff\xfe", b"\xfe\xff")  # still UTF-16 with a BOM
+    assert data[:2] in {b"\xff\xfe", b"\xfe\xff"}  # still UTF-16 with a BOM
     text = data.decode("utf-16")
     assert "60b36fc6" not in text
     assert "keep" in text
@@ -601,7 +601,7 @@ def test_clone_zsh_plugins_clones_both_pinned(tmp_path, monkeypatch):
     _shell._maybe_clone_zsh_plugins(want=True, dry_run=False)
     clones = [c for c in calls if c[:2] == ["git", "clone"]]
     assert len(clones) == 2
-    for (name, _url, tag, _sha), cmd in zip(_shell._ZSH_PLUGINS, clones):
+    for (name, _url, tag, _sha), cmd in zip(_shell._ZSH_PLUGINS, clones, strict=True):
         assert "--branch" in cmd and tag in cmd  # pinned tag, not HEAD
         assert name in cmd[-1]
     # every clone is followed by a rev-parse verification

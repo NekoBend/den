@@ -24,7 +24,7 @@ Subcommands:
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 HISTORY_LIMIT = 20
@@ -112,7 +112,7 @@ def _snap_stamp(snap: Path) -> str:
 
 def _fmt_stamp(stamp: str) -> str:
     try:
-        dt = datetime.strptime(stamp, _STAMP_FORMAT).replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(stamp, _STAMP_FORMAT).replace(tzinfo=UTC)
     except ValueError:
         return stamp
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -150,7 +150,7 @@ def _do_checkpoint(den_dir: Path) -> Path | None:
         return None
     hist = _history_dir(den_dir)
     hist.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime(_STAMP_FORMAT)
+    stamp = datetime.now(UTC).strftime(_STAMP_FORMAT)
     dest = hist / f"{_SNAP_PREFIX}{stamp}{_SNAP_SUFFIX}"
     n = 1
     while dest.exists():  # never clobber a same-timestamp snapshot
@@ -189,7 +189,7 @@ def _cmd_checkpoint(den_dir: Path, argv: list[str]) -> int:
 
 
 def _cmd_save(den_dir: Path, argv: list[str]) -> int:
-    if argv and argv[0] in ("--file", "-f"):
+    if argv and argv[0] in {"--file", "-f"}:
         if len(argv) < 2:
             print("den hook memory save: --file needs a path", file=sys.stderr)
             return 2
@@ -355,7 +355,7 @@ def _usage() -> None:
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
 
-    if not args or args[0] in ("-h", "--help", "help"):
+    if not args or args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
 

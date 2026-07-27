@@ -75,7 +75,10 @@ def _venv_line(root: Path) -> str:
         return f"venv: {env} (VIRTUAL_ENV)"
     if (root / ".venv").is_dir():
         return f"venv: {root / '.venv'}"
-    return "venv: none found (third-party imports may be unresolvable; run `uv sync` or set VIRTUAL_ENV)"
+    return (
+        "venv: none found (third-party imports may be unresolvable;"
+        " run `uv sync` or set VIRTUAL_ENV)"
+    )
 
 
 def _stage(label: str, cmd: list[str], counts: dict[str, int]) -> None:
@@ -111,7 +114,7 @@ def _usage() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
-    if not args or args[0] in ("-h", "--help", "help"):
+    if not args or args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
     if len(args) != 1:
@@ -123,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if file.suffix != ".py":
         print(
-            f"den verify: only Python files are supported (got {file.suffix or 'no extension'});"
+            "den verify: only Python files are supported"
+            f" (got {file.suffix or 'no extension'});"
             " for other languages use the coding skill's run-checks.sh",
             file=sys.stderr,
         )

@@ -16,6 +16,8 @@ each function gets one reason to be modified.
 ```python
 def fetch_user(user_id: int) -> User: ...
 def send_welcome_email(user: User) -> None: ...
+
+
 # Caller composes:
 send_welcome_email(fetch_user(uid))
 ```
@@ -48,6 +50,7 @@ where shared state is mutated unexpectedly across call sites.
 ```python
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class Money:
     amount: int
@@ -69,6 +72,7 @@ mixing the two makes both halves hard to test.
 def normalize_user(raw: dict) -> User:
     return User(id=int(raw["id"]), name=raw["name"].strip())  # pure
 
+
 def load_user(repo: UserRepository, user_id: int) -> User:
     return normalize_user(repo.fetch(user_id))  # I/O at the edge
 ```
@@ -86,6 +90,7 @@ narrow catches document intent.
 ```python
 class OrderNotFoundError(LookupError):
     """Raised when an order ID does not resolve."""
+
 
 def get_order(order_id: int) -> Order:
     try:
@@ -158,7 +163,8 @@ Concentrating it at boundaries lets internal layers assume well-formed data.
 ```python
 def public_endpoint(payload: dict) -> Response:
     request = parse_request(payload)  # validation lives here
-    return _handle(request)           # trust the type
+    return _handle(request)  # trust the type
+
 
 def _handle(request: Request) -> Response:
     # No defensive re-check of request fields; they are typed.

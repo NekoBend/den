@@ -13,6 +13,7 @@ mirroring `den install`.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -49,10 +50,8 @@ def _strip_block(rc: Path, line: str) -> None:
     crlf = "\r\n" in text
     norm = text.replace("\r\n", "\n")
     if norm == f"{_COMMENT}\n{line}\n":
-        try:
+        with contextlib.suppress(OSError):
             rc.unlink()
-        except OSError:
-            pass
         return
     lines = norm.split("\n")
     out: list[str] = []
@@ -95,7 +94,7 @@ class _Remover:
         for d in dirs:
             self._boundaries.add(Path(d))
 
-    def _plan(self):
+    def _plan(self) -> tuple[list[Path], list[Path], list[tuple[Path, str]]]:
         delete: list[Path] = []
         keep: list[Path] = []
         seen: set[Path] = set()
@@ -113,7 +112,7 @@ class _Remover:
         unwire = [(rc, line) for rc, line in self._unwire if _has_block(rc, line)]
         return delete, keep, unwire
 
-    def commit(self, assume_yes: bool, dry_run: bool) -> int:
+    def commit(self, *, assume_yes: bool, dry_run: bool) -> int:
         delete, keep, unwire = self._plan()
         if keep:
             _ui.say("Keeping files you changed (no longer den's):", style="yellow")
@@ -137,7 +136,7 @@ class _Remover:
                     file=sys.stderr,
                 )
                 return 1
-            if not _ui.confirm("Remove them?", False):
+            if not _ui.confirm("Remove them?", default=False):
                 _ui.say("aborted; nothing removed.")
                 return 0
         for d in delete:
@@ -156,7 +155,7 @@ class _Remover:
         # deepest first, so a dir is only checked after its children were emptied
         for f in sorted(deleted, key=lambda p: len(p.parts), reverse=True):
             cur = f.parent
-            while cur not in self._boundaries and cur != home and cur != cur.parent:
+            while cur not in self._boundaries and cur not in {home, cur.parent}:
                 try:
                     next(cur.iterdir())
                     break  # not empty
@@ -172,7 +171,13 @@ class _Remover:
                 cur = parent
 
 
-def _stage_skills(remover: _Remover, tools, targets, with_parent) -> None:
+def _stage_skills(
+    remover: _Remover,
+    tools: list[str],
+    targets: list[str],
+    *,
+    with_parent: bool,
+) -> None:
     from ._install import (
         _TOOLS,
         _install_skill,
@@ -236,7 +241,9 @@ def _stage_skills(remover: _Remover, tools, targets, with_parent) -> None:
                 remover.stage(root / "CLAUDE.md", content)
 
 
-def _parse_skills(argv: list[str]):
+def _parse_skills(
+    argv: list[str],
+) -> tuple[list[str], list[str], bool, bool, bool] | None:
     from ._install import _TOOLS
 
     tools: list[str] = []
@@ -278,15 +285,15 @@ def _uninstall_skills(argv: list[str]) -> int:
         return 2
     tools, targets, with_parent, assume_yes, dry_run = parsed
     remover = _Remover()
-    _stage_skills(remover, tools, targets, with_parent)
-    return remover.commit(assume_yes, dry_run)
+    _stage_skills(remover, tools, targets, with_parent=with_parent)
+    return remover.commit(assume_yes=assume_yes, dry_run=dry_run)
 
 
 def _uninstall_shell(argv: list[str]) -> int:
     assume_yes = "--yes" in argv
     dry_run = "--dry-run" in argv
     for a in argv:
-        if a not in ("--yes", "--dry-run"):
+        if a not in {"--yes", "--dry-run"}:
             print(f"den uninstall shell: unexpected arg '{a}'", file=sys.stderr)
             return 2
 
@@ -304,7 +311,7 @@ def _uninstall_shell(argv: list[str]) -> int:
     # extras=True, posix_bin=True: stage every file den could have placed (including
     # the optional shell/posix/bin/* executables in ~/.local/bin); absent ones are
     # skipped.
-    posix_dir, pwsh_dir = _stage_shell_files(
+    _posix_dir, pwsh_dir = _stage_shell_files(
         remover, extras=True, dry_run=False, announce=False, posix_bin=True
     )
     home = Path.home()
@@ -316,14 +323,14 @@ def _uninstall_shell(argv: list[str]) -> int:
     remover.unwire(home / ".bashrc", _BASH_LINE)
     remover.unwire(home / ".zshrc", _ZSH_LINE)
     remover.unwire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE)
-    return remover.commit(assume_yes, dry_run)
+    return remover.commit(assume_yes=assume_yes, dry_run=dry_run)
 
 
 def _uninstall_cheatsheets(argv: list[str]) -> int:
     assume_yes = "--yes" in argv
     dry_run = "--dry-run" in argv
     for a in argv:
-        if a not in ("--yes", "--dry-run"):
+        if a not in {"--yes", "--dry-run"}:
             print(f"den uninstall cheatsheets: unexpected arg '{a}'", file=sys.stderr)
             return 2
 
@@ -344,7 +351,7 @@ def _uninstall_cheatsheets(argv: list[str]) -> int:
     # den owns den/cheatsheets/ (and its den/ parent); stop pruning at the XDG
     # data root, which is the user's.
     remover.boundary(dest_root.parent.parent)
-    return remover.commit(assume_yes, dry_run)
+    return remover.commit(assume_yes=assume_yes, dry_run=dry_run)
 
 
 def _interactive() -> int:
@@ -402,9 +409,9 @@ def _usage() -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-statements]  # target dispatch
     args = argv if argv is not None else sys.argv[1:]
-    if args and args[0] in ("-h", "--help", "help"):
+    if args and args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
     if not args:
@@ -415,8 +422,8 @@ def main(argv: list[str] | None = None) -> int:
     target, rest = args[0], args[1:]
     # Leaf-level help: `den uninstall skills --help` etc. should print usage, not
     # error. hook owns its own arg handling in _hook, so it is excluded here.
-    if target in ("skills", "shell", "cheatsheets") and any(
-        a in ("-h", "--help", "help") for a in rest
+    if target in {"skills", "shell", "cheatsheets"} and any(
+        a in {"-h", "--help", "help"} for a in rest
     ):
         _usage()
         return 0

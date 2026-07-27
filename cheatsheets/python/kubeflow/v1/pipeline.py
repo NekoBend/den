@@ -50,7 +50,7 @@ Note:
 from __future__ import annotations
 
 import kfp
-from container import Container  # noqa: F401  # used in docstring examples
+from container import Container  # ruff: ignore[unused-import]  # docstring examples
 from kfp import compiler
 
 # =============================================================================

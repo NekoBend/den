@@ -13,6 +13,68 @@ dependencies = [
 [project.scripts]
 den = "den.cli:main"
 
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+preview = true
+# Explicit, so a ruff release that widens its defaults cannot turn CI red on
+# code that did not change (ruff 0.16.0 did exactly that).
+select = [
+    "A",
+    "ANN",
+    "B",
+    "BLE",
+    "C4",
+    "DTZ",
+    "E",
+    "F",
+    "FAST",
+    "FBT",
+    "FURB",
+    "G",
+    "I",
+    "ICN",
+    "N",
+    "PERF",
+    "PIE",
+    "PLR",
+    "PT",
+    "PTH",
+    "RSE",
+    "RUF",
+    "S",
+    "SIM",
+    "SLF",
+    "TCH",
+    "UP",
+    "W",
+]
+ignore = [
+    "ANN204",
+    "CPY",
+    "INP",
+    "PLR0913",
+    "PLR0917",
+    "PLR2004",
+    "T",
+    # den's job is invoking other programs (git, uv, ruff, winget, pwsh) by
+    # name from PATH, so these fire on every import and call site by design
+    # rather than marking anything exceptional.
+    "S404",
+    "S603",
+    "S607",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert (S101), reach into private helpers on purpose (SLF001), and
+# gain nothing from annotating every fixture-taking function (ANN).
+"tests/**" = ["ANN", "B903", "PT018", "S101", "SLF001"]
+"agents/shared/scripts/tests/**" = ["ANN", "PT018", "S101", "SLF001"]
+# _ui.py IS the optional-dependency fallback layer: questionary and rich are
+# probed and any failure degrades to plain stdin prompts on purpose.
+"den/_ui.py" = ["BLE001", "S110"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

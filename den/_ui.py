@@ -8,9 +8,10 @@ and print(), so the CLI works with no third-party deps and in pipes / CI.
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 
-def _console():
+def _console() -> Any:  # ruff: ignore[any-type]  # rich Console or None
     try:
         from rich.console import Console
     except Exception:
@@ -27,7 +28,9 @@ def say(message: str, *, style: str | None = None) -> None:
         print(message)
 
 
-def confirm(prompt: str, default: bool) -> bool:
+# ruff: ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+# The bool IS the question's default; callers read confirm(prompt, default=False).
+def confirm(prompt: str, default: bool = False) -> bool:
     if sys.stdin.isatty():
         try:
             import questionary

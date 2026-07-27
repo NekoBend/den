@@ -26,19 +26,23 @@ def _usage() -> None:
         "den installs your LLM skills and machine environment.\n"
         "\n"
         "Commands:\n"
-        "  install   [skills|shell|hook|cheatsheets]  deploy (interactive if no target)\n"
-        "  uninstall [skills|shell|hook|cheatsheets]  remove den-installed files\n"
-        "  upgrade   [--refresh]                      upgrade den via uv (alias: update)\n"
+        "  install   [skills|shell|hook|cheatsheets]"
+        "  deploy (interactive if no target)\n"
+        "  uninstall [skills|shell|hook|cheatsheets]"
+        "  remove den-installed files\n"
+        "  upgrade   [--refresh]                     "
+        " upgrade den via uv (alias: update)\n"
         "\n"
         "Run 'den <command> --help' for command-specific options.\n"
-        "(den hook / den memory / den verify are runtime plumbing for hooks and skills.)"
+        "(den hook / den memory / den verify are runtime plumbing"
+        " for hooks and skills.)"
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-statements]  # command dispatch
     args = argv if argv is not None else sys.argv[1:]
 
-    if not args or args[0] in ("-h", "--help", "help"):
+    if not args or args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
 
@@ -73,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return _main(rest)
 
-    if cmd in ("upgrade", "update"):
+    if cmd in {"upgrade", "update"}:
         from ._upgrade import main as _main
 
         return _main(rest)
