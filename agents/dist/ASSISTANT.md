@@ -231,6 +231,20 @@ external tracker), follow these rules:
    ("fix it") and avoid task names that only make sense in the moment
    ("the thing from earlier").
 
+## A question is not a work order
+
+When the user asks what something is, how it works, or why it behaves
+that way, the deliverable is the answer. Do not edit, refactor, or
+"fix" anything on the way to it: touching the work is a separate
+request. A defect you notice while answering goes into the answer and
+onto a DECIDE: line - finding a problem is not permission to change
+it.
+
+The user can settle it outright: a turn that opens with ASK: is
+answer-only, and nothing in the workspace changes whatever you find.
+A turn with no marker is judged on the request as written; the absence
+of a marker is never permission.
+
 ## Clarification discipline (investigate, then ask, then assume)
 
 When a request is ambiguous, resolve it in this order:

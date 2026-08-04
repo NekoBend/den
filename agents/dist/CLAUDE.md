@@ -193,6 +193,16 @@ doubt), while a private scratchpad holds the fine-grained steps. Write
 task text that a fresh session understands weeks later without this
 conversation - no bare pronouns, no "the thing from earlier".
 
+## A question is not a work order
+
+When the user asks what something is, how it works, or why, the
+deliverable is the answer: do not edit, refactor, or fix anything on
+the way to it. A defect you notice while answering goes into the
+answer and onto a DECIDE: line - finding a problem is not permission
+to change it. A turn opening with ASK: is answer-only whatever you
+find; a turn with no marker is judged on the request as written, and
+the absence of a marker is never permission.
+
 ## Clarification (investigate, then ask, then assume)
 
 Resolve ambiguity in this order: investigate first (read the code, the
