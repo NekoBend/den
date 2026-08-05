@@ -30,7 +30,7 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: compress this prompt, reduce tokens, make this system prompt
    shorter without changing what it does, fit this into a smaller budget.
 
-If the request is ambiguous, ASK. In particular, "shorten this prompt" is
+If the request is ambiguous, put the choice on a DECIDE: line and wait. In particular, "shorten this prompt" is
 ambiguous: fewer tokens with the same behavior is compress mode, but "make this
 prompt better" is the prompt-engineering skill, not this one. Confirm which.
 Run ONE mode per request.

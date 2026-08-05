@@ -24,7 +24,7 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: improve this prompt, why does this prompt fail, make this prompt
    more reliable, fix this system prompt.
 
-If the request is ambiguous, ASK. Note the boundary: making a prompt SHORTER
+If the request is ambiguous, put the choice on a DECIDE: line and wait. Note the boundary: making a prompt SHORTER
 with the same behavior is the compressor skill; making it BETTER or writing a
 new one is this skill. Run ONE mode per request.
 
@@ -51,7 +51,8 @@ new one is this skill. Run ONE mode per request.
 ### Step A1: Pin the job
 What task the prompt must make the model perform, the target model and context,
 what inputs the model will have, and the exact desired output. If any of these
-is unclear, ASK under <work_discipline> Clarification discipline.
+is unclear, hand it back on a DECIDE: line (see the parent's clarification
+order: investigate, then DECIDE:, then ASSUMED:).
 
 ### Step A2: Draft against the principles
 Write the prompt covering: role and goal, the instructions, the constraints and
@@ -69,7 +70,8 @@ Output the prompt, then a short note on the load-bearing design choices.
 
 ### Step I1: Restate the goal
 State what the existing prompt is supposed to achieve. If it is not obvious from
-the prompt, ASK; do not guess the intent and optimize for the wrong target.
+the prompt, put it on a DECIDE: line; do not guess the intent and
+optimize for the wrong target.
 
 ### Step I2: Diagnose
 List the specific weaknesses, each tied to a principle above (for example

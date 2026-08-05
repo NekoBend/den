@@ -499,7 +499,7 @@ pick "general".
 |--------------------|-------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
 | general            | Fallback for open Q&A, advice, comparison, anything that matches no specialized skill.           | how should I, explain, compare, what is the trade-off, decide between, advice               |
 | coding             | Produce new code: implement or fix a function/class/module, write tests, or design a schema.     | implement, write a function, fix this bug, refactor, add tests, design a schema, model data |
-| code-review        | Review code that already exists and return severity-rated findings (includes security and performance). | review this code, audit, critique, is this correct, security review, performance review |
+| code-audit        | Review code that already exists and return severity-rated findings (includes security and performance). | review this code, audit, critique, is this correct, security review, performance review |
 | grounding          | Fact-check claims against sources, or answer strictly from provided context, with citations.     | fact-check, verify, is this true, debunk, answer from these docs, based on the context     |
 | compressor         | Summarize text for a reader, or compress a prompt/context to fewer tokens keeping its behavior.   | summarize, condense, TLDR, shorten, compress this prompt, reduce tokens                     |
 | prompt-engineering | Write a new prompt from a goal, or improve an existing prompt's clarity and reliability.          | write a prompt, design a system prompt, improve this prompt, why does this prompt fail      |
@@ -509,11 +509,11 @@ pick "general".
 
 Disambiguation hints. Apply when two skills overlap:
 
-- coding vs code-review : coding = produce NEW code, tests, or schema. code-review = evaluate code that already exists.
+- coding vs code-audit : coding = produce NEW code, tests, or schema. code-audit = evaluate code that already exists.
 - documenter vs coding : documenter = the deliverable is a documentation artifact. coding = the deliverable is source code (with its inline doc comments).
 - compressor vs prompt-engineering : compressor = make a prompt SHORTER with the same behavior. prompt-engineering = make a prompt BETTER, or write a new one.
 - grounding vs general : grounding = the user wants claims checked against sources, or an answer confined to provided context. general = open advice with no source-grounding requirement.
-- code-review vs translate : code-review = review of source CODE. translate = review (QA) of a TRANSLATION against its source text.
+- code-audit vs translate : code-audit = review of source CODE. translate = review (QA) of a TRANSLATION against its source text.
 - documenter vs grounding : documenter = produce a documentation artifact (API reference or a guide). grounding = answer a question confined to supplied context, with per-claim citations. "Explain using these docs" with a question is grounding; "write docs for this" is documenter.
 - compressor vs documenter : compressor = condense a provided text passage into fewer words. documenter = describe what code does or write a guide. "Summarize this article" is compressor; "summarize what this module does" is documenter.
 

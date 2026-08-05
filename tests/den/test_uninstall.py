@@ -15,7 +15,7 @@ def test_uninstall_removes_unmodified_keeps_modified(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path)
     coding = tmp_path / "skills" / "coding" / "SKILL.md"
-    review = tmp_path / "skills" / "code-review" / "SKILL.md"
+    review = tmp_path / "skills" / "code-audit" / "SKILL.md"
     coding.write_text(coding.read_text() + "\nMINE\n")  # user edit -> keep
     assert uninstall_main(["skills", "--target", str(tmp_path), "--yes"]) == 0
     assert coding.is_file() and "MINE" in coding.read_text()  # kept
@@ -25,7 +25,7 @@ def test_uninstall_removes_unmodified_keeps_modified(tmp_path, monkeypatch):
 def test_uninstall_prunes_emptied_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path)
-    assert (tmp_path / "skills" / "code-review").is_dir()
+    assert (tmp_path / "skills" / "code-audit").is_dir()
     assert uninstall_main(["skills", "--target", str(tmp_path), "--yes"]) == 0
     # every skill was den's -> whole skills tree gone, but the target root stays
     assert not (tmp_path / "skills").exists()

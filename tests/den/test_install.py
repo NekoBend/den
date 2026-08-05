@@ -1,5 +1,7 @@
 """Tests for den install (den/_install.py)."""
 
+import os
+
 from den._install import main as install_main
 
 
@@ -8,7 +10,7 @@ def test_install_skills_to_target(tmp_path):
     assert rc == 0
     skills = tmp_path / "skills"
     assert (skills / "coding" / "SKILL.md").is_file()
-    assert (skills / "code-review" / "SKILL.md").is_file()
+    assert (skills / "code-audit" / "SKILL.md").is_file()
     # coding references shared resources -> self-contained shared/ tree
     assert (skills / "coding" / "shared" / "reference").is_dir()
     assert (skills / "coding" / "shared" / "scripts").is_dir()
@@ -59,6 +61,18 @@ def test_uninstall_removes_weak_parent(tmp_path):
     assert rc == 0
     assert not (tmp_path / "AGENTS.md").exists()
     assert not (tmp_path / "CLAUDE.md").exists()
+
+
+def test_install_skills_keeps_scripts_executable(tmp_path):
+    # the skills invoke these by absolute path; a 0644 copy dies on permission
+    # denied at every call site
+    install_main(["skills", "--target", str(tmp_path)])
+    scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
+    assert os.access(scripts / "run-checks.sh", os.X_OK)
+    assert os.access(scripts / "find-references.py", os.X_OK)
+    # content files are not marked executable
+    skill = tmp_path / "skills" / "coding" / "SKILL.md"
+    assert not os.access(skill, os.X_OK)
 
 
 def test_install_skills_excludes_tests_and_pyc(tmp_path):

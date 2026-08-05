@@ -47,13 +47,13 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: check this translation, proofread / QA this translation, is this
    translation accurate, did I translate this correctly.
 
-If the request is ambiguous, ASK. Run ONE mode per request.
+If the request is ambiguous, put the choice on a DECIDE: line and wait. Run ONE mode per request.
 
 ## Mode: translate
 
 ### Step T1: Pin source and target
 Detect the source language. Confirm the target language, and any register,
-audience, or locale, from the user. If the target is unclear, ASK.
+audience, or locale, from the user. If the target is unclear, put it on a DECIDE: line.
 
 ### Step T2: Mark the non-translatables
 Identify the code, identifiers, placeholders, URLs, and markup that must carry

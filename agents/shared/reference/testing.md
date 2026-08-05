@@ -3,7 +3,7 @@
 The single source of test-quality knowledge.
 Two consumers use it:
 the coding skill's test mode (how to WRITE good tests),
-and the code-review skill's tests dimension (how to JUDGE tests).
+and the code-audit skill's tests dimension (how to JUDGE tests).
 Both apply the same criteria below.
 
 ## What a good test has (the criteria)
