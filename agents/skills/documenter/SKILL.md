@@ -63,6 +63,25 @@ determine and need confirmed.
 
 ## Mode: guide
 
+### Step G0: Pick the format before you write
+
+Markdown by default. Choose HTML when the document's own structure is what
+makes it hard to read as plain text:
+
+- a specification, or anything with numbered requirements that get
+  cross-referenced
+- a summary that has to hold several dimensions at once (comparison tables,
+  a matrix, results per case)
+- anything carrying a diagram, or where layout is part of the meaning
+
+Markdown stays right for a README, an API reference, CONTRIBUTING, and
+anything that lives in a repository and gets diffed in review.
+
+When you pick HTML, write ONE self-contained file: styles inline, no external
+fonts, scripts, or images, readable by opening it in a browser with no
+server. Say which format you chose and why in one line, so the user can ask
+for the other one.
+
 ### Step G1: Pin audience and goal
 Who reads this (new user, integrator, contributor) and what they should be able
 to DO after reading. Pin the scope (README vs quickstart vs tutorial vs concept
@@ -136,6 +155,8 @@ If reference:
 - [ ] I listed anything I could not determine from the code.
 
 If guide:
+- [ ] I chose Markdown or HTML on the document's structure, said which and
+      why, and any HTML I wrote is one self-contained file.
 - [ ] The audience and goal are pinned (or I asked).
 - [ ] Sections are in reading order and cover the goal.
 - [ ] Every command and example is runnable; prerequisites are stated.
