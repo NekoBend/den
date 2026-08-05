@@ -100,7 +100,15 @@ First decide which one mode the request is, then follow that mode below:
    rebase, squash, split a commit, reorder, drop a commit, reset, revert,
    undo my last commit, cherry-pick.
 
-If the request is ambiguous, put the choice on a DECIDE: line and wait. Run ONE mode per request.
+If the request is ambiguous, pick the more likely mode, name it on an
+ASSUMED: line, and start. Reserve a DECIDE: line for the case where the
+two modes would produce materially different deliverables.
+
+Run one mode per pass, not one mode per request. A request that needs two
+modes gets two passes in the same turn: finish the first, deliver its
+output, then start the second. This chain is the common case here, not the
+exception - "commit this and open a PR" is commit mode followed by pr mode,
+and stopping after the commit leaves the request half done.
 
 ## Mode: commit
 

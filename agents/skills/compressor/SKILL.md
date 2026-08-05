@@ -30,10 +30,17 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: compress this prompt, reduce tokens, make this system prompt
    shorter without changing what it does, fit this into a smaller budget.
 
-If the request is ambiguous, put the choice on a DECIDE: line and wait. In particular, "shorten this prompt" is
-ambiguous: fewer tokens with the same behavior is compress mode, but "make this
-prompt better" is the prompt-engineering skill, not this one. Confirm which.
-Run ONE mode per request.
+If the request is ambiguous, pick the more likely mode, name it on an
+ASSUMED: line, and start. Reserve a DECIDE: line for the case where the
+two modes would produce materially different deliverables.
+In particular, "shorten this prompt" is ambiguous:
+fewer tokens with the same behavior is compress mode,
+while "make this prompt better" belongs to prompt-engineering. Take the shorter reading,
+say which you took, and deliver; if the user wanted the other one, hand off
+when you deliver, not before you start.
+Run one mode per pass, not one mode per request. A request that needs
+two modes gets two passes in the same turn: finish the first, deliver
+its output, then start the second.
 
 ## Mode: summarize
 

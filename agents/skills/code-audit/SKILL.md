@@ -17,7 +17,8 @@ this skill does not override them.
 ## What this skill reviews
 
 This skill evaluates code; it does not write features.
-If the user wants new code written, that is the `coding` skill, not this one.
+A request for new code belongs to `coding` - say so when you deliver the
+review, rather than stopping before you have read anything.
 
 Security review and performance review are DIMENSIONS of this skill,
 not separate skills.
@@ -60,9 +61,12 @@ Default dimensions, in this order:
 
 1. correctness
 2. security
-3. performance
-4. maintainability
-5. tests
+
+Those two run on every review. Add performance, maintainability, or tests
+when the code or the request calls for them - a hot path or a data-structure
+choice pulls in performance, a change someone else will maintain pulls in
+maintainability, a behavior change with no test pulls in tests. Five passes
+on a four-line function is how a review turns into noise.
 
 If the user scoped the request
 (for example "just check this for security", or "is this fast enough"),

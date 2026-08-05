@@ -59,15 +59,16 @@ inside the den wheel, so it installs with no source checkout on disk.
 
 ## The eight skills
 
-Each skill detects a mode first, then runs ONE mode per request (weak models
-lose adherence when many instructions fire at once). All skills assume the
+Each skill detects a mode first, then runs one mode per PASS (weak models
+lose adherence when many instructions fire at once). A request that needs two
+modes gets two passes in the same turn, not a refusal to do the second. All skills assume the
 parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
 `<work_discipline>`) are present.
 
 | Skill | Modes | What it does |
 |-------|-------|--------------|
 | coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Go, Rust, Java, C#, or Shell. Uses `shared/` references and verification scripts. |
-| code-audit | correctness / security / performance / maintainability / tests | Review existing code one focused dimension at a time; severity-rated findings. |
+| code-audit | correctness / security (+ performance / maintainability / tests on demand) | Review existing code one focused dimension at a time; severity-rated findings. |
 | grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. |
 | compressor | summarize / compress | Summarize text, or compress a prompt/context to fewer tokens while preserving every directive. |
 | prompt-engineering | author / improve | Write a new prompt from a goal, or diagnose and rewrite an existing one. |
