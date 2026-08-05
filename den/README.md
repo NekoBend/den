@@ -80,6 +80,12 @@ empty. It lists the plan and asks once before deleting (`--yes` to skip,
 `--dry-run` to preview only; non-interactive runs require `--yes`). Hooks are
 per-workspace, so `den uninstall` does not touch them; use `den uninstall hook`.
 
+Being stateless has one cost: when den stops deploying something (a retired
+tool, a renamed skill, a deleted script), the old copy is no longer anything
+den knows about, so no den command removes it.
+[`MIGRATIONS.md`](../MIGRATIONS.md) lists every such leftover with the command
+that clears it.
+
 Run `den <command> --help` for per-command options.
 
 ## `den upgrade`
