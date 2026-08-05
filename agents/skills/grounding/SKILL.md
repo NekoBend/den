@@ -33,9 +33,12 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: answer using these docs, based on the context, according to the
    passage, RAG, answer only from what I gave you.
 
-If the request fits neither, or is ambiguous, put the choice on a DECIDE:
-line. Do not guess the mode.
-Run ONE mode per request.
+If the request fits neither, or is ambiguous, pick the more likely mode,
+name it on an ASSUMED: line, and start. Reserve a DECIDE: line for the case
+where the modes would produce materially different deliverables.
+Run one mode per pass, not one mode per request. A request that needs
+two modes gets two passes in the same turn: finish the first, deliver
+its output, then start the second.
 
 ## Source rules (both modes)
 

@@ -24,9 +24,16 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: improve this prompt, why does this prompt fail, make this prompt
    more reliable, fix this system prompt.
 
-If the request is ambiguous, put the choice on a DECIDE: line and wait. Note the boundary: making a prompt SHORTER
+If the request is ambiguous, pick the more likely mode, name it on an
+ASSUMED: line, and start. Reserve a DECIDE: line for the case where the
+two modes would produce materially different deliverables.
+Note the boundary: making a prompt SHORTER
 with the same behavior is the compressor skill; making it BETTER or writing a
-new one is this skill. Run ONE mode per request.
+new one is this skill.
+
+Run one mode per pass, not one mode per request. A request that needs
+two modes gets two passes in the same turn: finish the first, deliver
+its output, then start the second.
 
 ## Principles of a strong prompt (apply in both modes)
 

@@ -47,7 +47,13 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: check this translation, proofread / QA this translation, is this
    translation accurate, did I translate this correctly.
 
-If the request is ambiguous, put the choice on a DECIDE: line and wait. Run ONE mode per request.
+If the request is ambiguous, pick the more likely mode, name it on an
+ASSUMED: line, and start. Reserve a DECIDE: line for the case where the
+two modes would produce materially different deliverables.
+
+Run one mode per pass, not one mode per request. A request that needs
+two modes gets two passes in the same turn: finish the first, deliver
+its output, then start the second.
 
 ## Mode: translate
 

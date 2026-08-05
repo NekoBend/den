@@ -25,9 +25,9 @@ First decide which mode the request starts in, then follow that mode below:
    Triggers: design a schema, model this data, define the types,
    design the table / the API shape.
 
-If the request fits none of these, or is ambiguous, put the choice on a
-DECIDE: line with your recommendation and wait.
-Do not guess the mode.
+If the request fits none of these, or is ambiguous, pick the more likely
+mode, name it on an ASSUMED: line, and start. Reserve a DECIDE: line for
+the case where the modes would produce materially different deliverables.
 
 Run ONE mode at a time; a single request may chain modes.
 Do not blend modes:
