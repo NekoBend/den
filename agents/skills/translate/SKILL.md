@@ -1,6 +1,6 @@
 ---
 name: translate
-description: Translate text from one language to another, or review an existing translation against its source. Use this skill when the user asks to translate / render / put into <language> a passage, OR to check / proofread / QA a translation for accuracy. Detects the mode (translate, or review). Preserves meaning, formatting, and non-translatable tokens (code, identifiers, URLs, placeholders); never adds or drops content. The translated content goes into the requested target language even when the surrounding conversation is in another language.
+description: Translates text into another language, or checks an existing translation against its source. Use when the user asks to translate, localize, or render a passage into another language, or to proofread or QA a translation. Keeps code, identifiers, URLs, and placeholders untranslated.
 ---
 
 # Translate skill

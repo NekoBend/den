@@ -1,6 +1,6 @@
 ---
 name: documenter
-description: Produce documentation as a deliverable. Write an API reference for existing code (functions, classes, modules) faithfully from the code, OR write a human-facing guide (README, how-to, tutorial, concept explanation) for a project or feature. Use this skill when the user asks to document / write docs / write a README / write API docs / explain how to use something as a standalone document. Detects the mode (code-derived reference, or human-facing guide). Documents only what the code or system actually does; it does not invent behavior. Distinct from coding, which writes code and its inline doc comments; route here when the deliverable is a documentation artifact, not source code.
+description: Writes documentation as the deliverable. Produces an API reference derived from existing code, or a human-facing guide such as a README, how-to, tutorial, or concept explanation. Use when the user asks to document something, write docs, write a README, write API docs, or explain how to use a project or a feature as a standalone document.
 ---
 
 # Documenter skill

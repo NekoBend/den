@@ -498,14 +498,14 @@ pick "general".
 | Skill              | What it does                                                                                    | Top trigger words                                                                          |
 |--------------------|-------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
 | general            | Fallback for open Q&A, advice, comparison, anything that matches no specialized skill.           | how should I, explain, compare, what is the trade-off, decide between, advice               |
-| coding             | Produce new code: implement or fix a function/class/module, write tests, or design a schema.     | implement, write a function, fix this bug, refactor, add tests, design a schema, model data |
-| code-audit        | Review code that already exists and return severity-rated findings (includes security and performance). | review this code, audit, critique, is this correct, security review, performance review |
+| coding             | Produce new code: implement or fix a function/class/module, write tests, or design a schema.     | implement, write a function, fix this bug, it crashes, refactor, add tests, design a schema |
+| code-audit        | Review code that already exists and return severity-rated findings (includes security and performance). | review this code, audit, critique, any bugs, does this look right, feedback on my PR |
 | grounding          | Fact-check claims against sources, or answer strictly from provided context, with citations.     | fact-check, verify, is this true, debunk, answer from these docs, based on the context     |
 | compressor         | Summarize text for a reader, or compress a prompt/context to fewer tokens keeping its behavior.   | summarize, condense, TLDR, shorten, compress this prompt, reduce tokens                     |
 | prompt-engineering | Write a new prompt from a goal, or improve an existing prompt's clarity and reliability.          | write a prompt, design a system prompt, improve this prompt, why does this prompt fail      |
 | documenter         | Produce a documentation artifact: API reference from code, or a README/how-to/tutorial.          | document this, write API docs, write a README, write a how-to, explain how to use           |
-| git-manager        | Run git safely: make commits, prepare a PR, or change history (amend, rebase, revert, undo).      | commit, write a commit message, open a PR, rebase, amend, squash, undo my last commit       |
-| translate          | Translate text into another language, or QA an existing translation against its source.          | translate, render in another language, put into Spanish, proofread this translation         |
+| git-manager        | Run git safely: make commits, prepare a PR, or change history (amend, rebase, revert, undo).      | commit, write a commit message, open a PR, push, merge, conflict, rebase, amend, undo       |
+| translate          | Translate text into another language, or QA an existing translation against its source.          | translate, localize, render in another language, proofread this translation         |
 
 Disambiguation hints. Apply when two skills overlap:
 
