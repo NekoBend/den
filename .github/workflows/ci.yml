@@ -10,6 +10,7 @@ jobs:
   agents:
     name: agents (skills)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -96,6 +97,7 @@ jobs:
   tests:
     name: tests (py ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -118,6 +120,7 @@ jobs:
   packaging:
     name: packaging (wheel + sourceless install)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -175,6 +178,7 @@ jobs:
   shell:
     name: shell env
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: ShellCheck (errors only)
@@ -202,16 +206,31 @@ jobs:
   shell-tests:
     name: shell functional tests (bash/zsh/pwsh)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Build and run the shell test image
-        run: |
-          docker build -t den-shell-test -f tests/shell/Dockerfile .
-          docker run --rm den-shell-test
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      # The image installs two apt layers, one of them PowerShell from
+      # packages.microsoft.com. Uncached, that step took 39m8s, 29m36s, and
+      # 11m52s on three of the last twelve runs (it succeeded every time; the
+      # cost was waiting, not failing). The layers only change when the
+      # Dockerfile does, so cache them across runs.
+      - name: Build the shell test image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: tests/shell/Dockerfile
+          tags: den-shell-test
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run the shell tests
+        run: docker run --rm den-shell-test
 
   windows:
     name: windows (pytest + pwsh smoke)
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
