@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 from den._install import main as install_main
 
 
@@ -63,16 +65,17 @@ def test_uninstall_removes_weak_parent(tmp_path):
     assert not (tmp_path / "CLAUDE.md").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no execute bit")
 def test_install_skills_keeps_scripts_executable(tmp_path):
     # the skills invoke these by absolute path; a 0644 copy dies on permission
     # denied at every call site
     install_main(["skills", "--target", str(tmp_path)])
     scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
-    assert os.access(scripts / "run-checks.sh", os.X_OK)
-    assert os.access(scripts / "find-references.py", os.X_OK)
+    assert (scripts / "run-checks.sh").stat().st_mode & 0o111
+    assert (scripts / "find-references.py").stat().st_mode & 0o111
     # content files are not marked executable
     skill = tmp_path / "skills" / "coding" / "SKILL.md"
-    assert not os.access(skill, os.X_OK)
+    assert not skill.stat().st_mode & 0o111
 
 
 def test_install_skills_excludes_tests_and_pyc(tmp_path):
