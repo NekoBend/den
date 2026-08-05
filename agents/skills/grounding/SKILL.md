@@ -1,6 +1,6 @@
 ---
 name: grounding
-description: Verify factual claims against sources, or answer a question strictly from provided context, with per-claim citations and explicit abstention when support is missing. Use this skill when the user asks to fact-check / verify / confirm whether a claim or statement is true, OR to answer using only supplied documents / context / passages (retrieval-augmented answering) without relying on outside knowledge. Detects the mode (verify existing claims against sources, or ground a new answer in given context). Labels every claim Supported / Contradicted / Not enough information and cites the exact source span. Does not write code (that is coding) or review code (that is code-review).
+description: Verify factual claims against sources, or answer a question strictly from provided context, with per-claim citations and explicit abstention when support is missing. Use this skill when the user asks to fact-check / verify / confirm whether a claim or statement is true, OR to answer using only supplied documents / context / passages (retrieval-augmented answering) without relying on outside knowledge. Detects the mode (verify existing claims against sources, or ground a new answer in given context). Labels every claim Supported / Contradicted / Not enough information and cites the exact source span. Does not write code (that is coding) or review code (that is code-audit).
 ---
 
 # Grounding skill
@@ -33,7 +33,8 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: answer using these docs, based on the context, according to the
    passage, RAG, answer only from what I gave you.
 
-If the request fits neither, or is ambiguous, ASK. Do not guess the mode.
+If the request fits neither, or is ambiguous, put the choice on a DECIDE:
+line. Do not guess the mode.
 Run ONE mode per request.
 
 ## Source rules (both modes)

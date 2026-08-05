@@ -425,7 +425,7 @@ WRONG: producing a plausible-sounding default from the name, unmarked.
 RIGHT:
     Abstention: I cannot verify frobnicate_v2's retry_policy default.
     KNOWN:
-    - v1 defaulted to no retries (docs/frobnicate.md:88)
+    - the v1 API had no retry setting at all
     - the v2 changelog does not mention retry_policy
     NEEDED:
     - the v2 source or reference page; point me at it and I will read it

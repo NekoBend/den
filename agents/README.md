@@ -37,10 +37,10 @@ agents/
   skills/<name>/            # the 8 skills
     SKILL.md                # name + description frontmatter + body
     examples/               # worked examples (one shape per file)
-    reference/              # only code-review (dimension + rubric files)
+    reference/              # only code-audit (dimension + rubric files)
   shared/
     reference/*.md          # per-language + architecture / testing / schema-design
-    scripts/                # verification scripts (used by coding, code-review)
+    scripts/                # verification scripts (used by coding, code-audit)
       *.py, run-checks.sh
       tests/                # pytest + bats
   dist/                     # generated parent prompts (committed; do not hand-edit)
@@ -67,7 +67,7 @@ parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
 | Skill | Modes | What it does |
 |-------|-------|--------------|
 | coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Go, Rust, Java, C#, or Shell. Uses `shared/` references and verification scripts. |
-| code-review | correctness / security / performance / maintainability / tests | Review existing code one focused dimension at a time; severity-rated findings. |
+| code-audit | correctness / security / performance / maintainability / tests | Review existing code one focused dimension at a time; severity-rated findings. |
 | grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. |
 | compressor | summarize / compress | Summarize text, or compress a prompt/context to fewer tokens while preserving every directive. |
 | prompt-engineering | author / improve | Write a new prompt from a goal, or diagnose and rewrite an existing one. |
@@ -75,7 +75,7 @@ parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
 | git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. |
 | translate | translate / review | Translate text into another language, or QA an existing translation. |
 
-`coding` and `code-review` are the heavy skills (they use `shared/reference/`
+`coding` and `code-audit` are the heavy skills (they use `shared/reference/`
 and `shared/scripts/`). The other six are light: `SKILL.md` plus two examples,
 no shared dependencies.
 
@@ -139,6 +139,6 @@ python3 -m pytest shared/scripts/tests     # 25 tests
 bats shared/scripts/tests/run-checks.bats  # 8 tests
 ```
 
-Tooling expected on PATH for the full coding/code-review experience: `ruff`,
+Tooling expected on PATH for the full coding/code-audit experience: `ruff`,
 `ty`, `shellcheck`, `shfmt`, `prettier`, `eslint`, `gofmt`, plus the language
 toolchains. Scripts skip gracefully when a tool is absent rather than failing.

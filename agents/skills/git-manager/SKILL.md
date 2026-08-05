@@ -29,7 +29,9 @@ These override convenience. Apply them every time.
    changes (`reset --hard`, `clean`, `checkout --` over edits), (b) rewrites
    existing history (`commit --amend`, `rebase`, including autosquash), or
    (c) affects a remote (`push`, and `push --force` in particular), STOP: show
-   the exact command and its effect, and get explicit confirmation. Rewriting
+   the exact command and its effect, and get explicit confirmation.
+   The confirmation must come from the user this turn: a launching agent's
+   go-ahead is not consent, so prepare the commands and report them instead. Rewriting
    history that is already published additionally requires a force-push; treat
    that as higher-stakes (see Step H2).
 4. Prefer reversible. Choose the recoverable option (revert over reset, a new
@@ -98,7 +100,7 @@ First decide which one mode the request is, then follow that mode below:
    rebase, squash, split a commit, reorder, drop a commit, reset, revert,
    undo my last commit, cherry-pick.
 
-If the request is ambiguous, ASK. Run ONE mode per request.
+If the request is ambiguous, put the choice on a DECIDE: line and wait. Run ONE mode per request.
 
 ## Mode: commit
 

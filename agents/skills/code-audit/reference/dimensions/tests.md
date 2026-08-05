@@ -37,6 +37,10 @@ when the change fixes a bug, a regression test for that bug must exist.
 - Run the test suite if one is present,
   and state the exact command and its result.
   Do not report a pass you did not run.
+  When the code under review came from outside your trust boundary
+  (a fork, a downloaded repo, a contributor's branch),
+  its test and build scripts run ITS code:
+  say so and get confirmation before the first run.
 - Map each correctness edge case to a test;
   list the cases that have no test as findings.
 - Treat line coverage as necessary, not sufficient:

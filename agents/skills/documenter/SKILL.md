@@ -30,7 +30,7 @@ First decide which one mode the request is, then follow that mode below:
    Triggers: write a README, write a getting-started / how-to / tutorial,
    explain how to use this, write docs for this feature.
 
-If the request is ambiguous, ASK. Note the boundary: adding doc comments while
+If the request is ambiguous, put the choice on a DECIDE: line and wait. Note the boundary: adding doc comments while
 writing the code is the coding skill; producing a standalone documentation
 artifact is this skill. Run ONE mode per request.
 

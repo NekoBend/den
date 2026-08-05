@@ -31,7 +31,9 @@ den install cheatsheets            # deploy the offline cheatsheets to your data
 See `agents/README.md` for the skill system, `den/README.md` for the full `den`
 CLI, and `shell/README.md` for the shell environment. [`COMMANDS.md`](COMMANDS.md)
 is a one-page reference of every command den adds, with per-shell (bash/zsh, pwsh,
-cmd) availability.
+cmd) availability. [`MIGRATIONS.md`](MIGRATIONS.md) lists what past changes left
+behind in your tool directories, and the command that clears each one, since a
+stateless uninstall cannot reach files den no longer deploys.
 
 ## Layout
 

@@ -1,6 +1,6 @@
 ---
 name: coding
-description: Produce code artifacts (implement features, write tests, or design data and API schemas) in Python, TypeScript, Go, Rust, Java, C#, or Shell. Use this skill when the user asks to implement / write / build / fix a function, class, or module; to write or add tests for code; or to design a schema, data model, or type definitions. Detects the task mode (implement / test / schema) and the target language, then follows a mode-specific workflow. Uses shared per-language reference files and shared verification scripts. Produces new code; to review existing code, use code-review.
+description: Produce code artifacts (implement features, write tests, or design data and API schemas) in Python, TypeScript, Go, Rust, Java, C#, or Shell. Use this skill when the user asks to implement / write / build / fix a function, class, or module; to write or add tests for code; or to design a schema, data model, or type definitions. Detects the task mode (implement / test / schema) and the target language, then follows a mode-specific workflow. Uses shared per-language reference files and shared verification scripts. Produces new code; to review existing code, use code-audit.
 ---
 
 # Coding skill
@@ -25,7 +25,8 @@ First decide which mode the request starts in, then follow that mode below:
    Triggers: design a schema, model this data, define the types,
    design the table / the API shape.
 
-If the request fits none of these, or is ambiguous, ASK.
+If the request fits none of these, or is ambiguous, put the choice on a
+DECIDE: line with your recommendation and wait.
 Do not guess the mode.
 
 Run ONE mode at a time; a single request may chain modes.
@@ -43,7 +44,8 @@ Pick the language in this order:
 1. Explicit user instruction.
 2. File extension (.py / .ts / .go / .rs / .java / .cs / .sh).
 3. Project context (existing imports, build files, lockfiles).
-4. If none of the above resolves it: ASK the user. Do not guess.
+4. If none of the above resolves it: DECIDE: line, options and a
+   recommendation. Do not guess.
 
 | Language   | Reference (read when working in this language) |
 |------------|------------------------------------------------|

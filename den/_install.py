@@ -182,6 +182,12 @@ class _Writer:
                     continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(content)
+            # The skills tell the model to run these by absolute path, so the
+            # deployed copy has to keep the source's executable bit; a plain
+            # write_bytes lands 0644 and every invocation dies on permission
+            # denied. Only scripts are marked; content files stay 0644.
+            if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
+                dest.chmod(0o755)
         if kept:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
 
