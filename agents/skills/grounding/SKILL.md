@@ -1,6 +1,6 @@
 ---
 name: grounding
-description: Verify factual claims against sources, or answer a question strictly from provided context, with per-claim citations and explicit abstention when support is missing. Use this skill when the user asks to fact-check / verify / confirm whether a claim or statement is true, OR to answer using only supplied documents / context / passages (retrieval-augmented answering) without relying on outside knowledge. Detects the mode (verify existing claims against sources, or ground a new answer in given context). Labels every claim Supported / Contradicted / Not enough information and cites the exact source span. Does not write code (that is coding) or review code (that is code-audit).
+description: Checks claims against sources, or answers strictly from supplied documents, labeling every claim Supported, Contradicted, or Not enough information and citing the exact source span. Use when the user asks to fact-check, verify, or confirm whether something is true, or wants an answer that uses only the context they provided.
 ---
 
 # Grounding skill

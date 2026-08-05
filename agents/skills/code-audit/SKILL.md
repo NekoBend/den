@@ -1,6 +1,6 @@
 ---
 name: code-audit
-description: Review existing code (a diff, a file, a set of files, or a pull request) and return severity-rated, actionable findings. Use this skill when the user asks to review, audit, critique, check, or give feedback on code they already have, including security review and performance review (both are dimensions of this skill, not separate skills). Runs one focused dimension at a time (correctness, security, performance, maintainability, tests) so each pass stays narrow. Reuses the shared verification scripts to ground findings in tool output.
+description: Reviews code that already exists and returns findings rated blocker, major, minor, or nit, each with a location and a concrete fix. Use when the user asks to review, audit, critique, or check code, wants feedback on a diff or a pull request, asks whether code is correct, safe, or fast enough, or asks what is wrong with it. Security review and performance review are dimensions of this review, not separate skills.
 ---
 
 # Code audit skill

@@ -1,6 +1,6 @@
 ---
 name: prompt-engineering
-description: Author a new prompt from a goal, or improve an existing prompt's clarity and reliability. Use this skill when the user asks to write / design / draft a prompt or system prompt, OR to improve / fix / debug / make more reliable a prompt they already have. Detects the mode (author from a goal, or improve an existing prompt) and applies explicit prompt-design principles tuned for models that follow instructions literally. Distinct from compressor, which shortens a prompt without changing behavior; route here when the goal is a better or new prompt, not a shorter one. Does not write application code (that is coding).
+description: Writes a new prompt from a goal, or diagnoses and rewrites a prompt that is not working. Use when the user asks to write, design, or draft a prompt or a system prompt, or asks why a prompt misbehaves and how to make it more reliable.
 ---
 
 # Prompt-engineering skill

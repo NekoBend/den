@@ -1,6 +1,6 @@
 ---
 name: compressor
-description: Shorten existing text without changing its meaning. Summarize a document, article, transcript, or conversation into fewer words, OR compress a prompt / instruction / context payload to fewer tokens while preserving every directive's effect. Use this skill when the user asks to summarize / condense / shorten / tighten / TLDR a passage, OR to compress / reduce the token count of a prompt or context while keeping its behavior. Detects the mode (summarize general text for a reader, or compress a prompt/context preserving all instructions). Never adds information absent from the source. Distinct from prompt-engineering, which authors or improves a prompt's quality rather than shortening it; route there when the goal is to make a prompt work better, not shorter.
+description: Makes existing text shorter without changing what it means. Summarizes a document, article, transcript, or conversation, or compresses a prompt or context payload to fewer tokens while keeping every instruction's effect. Use when the user asks to summarize, condense, shorten, tighten, or TLDR something, or to cut a prompt's token count.
 ---
 
 # Compressor skill

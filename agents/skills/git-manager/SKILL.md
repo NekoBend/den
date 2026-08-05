@@ -1,6 +1,6 @@
 ---
 name: git-manager
-description: Run git operations safely. Create well-formed commits from working changes, prepare a pull request for a branch, or perform history operations (amend, fixup into an earlier commit, rebase, squash, split, reorder, drop, reset, revert, cherry-pick, undo). Use this skill when the user asks to commit / stage changes, write a commit message, open or prepare a PR, manage branches, or change git history. Detects the mode (commit, pr, history). Inspects the real repository state before acting, derives messages from the actual diff, defaults to a GitHub Flow branching model, and never runs a destructive, history-rewriting, or remote-affecting command without showing the plan and getting explicit confirmation first.
+description: Runs git operations safely. Builds commits from the working changes, prepares a pull request, and rewrites history (amend, fixup, rebase, squash, split, reorder, drop, reset, revert, cherry-pick, undo). Use when the user asks to commit, stage, write a commit message, open or update a PR, push, merge, branch, resolve a conflict, or change history. Shows the exact commands and gets confirmation before anything destructive or remote-affecting.
 ---
 
 # Git-manager skill
