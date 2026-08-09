@@ -1,6 +1,6 @@
 ---
 name: documenter
-description: Writes documentation as the deliverable. Produces an API reference derived from existing code, or a human-facing guide such as a README, how-to, tutorial, or concept explanation. Use when the user asks to document something, write docs, write a README, write API docs, or explain how to use a project or a feature as a standalone document.
+description: Writes documentation as the deliverable. Produces an API reference derived from existing code, or a human-facing guide such as a README, how-to, tutorial, or concept explanation. Use when the user asks to document something, write docs, write a README, write API docs, write a spec or a requirements document, or explain how to use a project or a feature as a standalone document.
 ---
 
 # Documenter skill
@@ -62,6 +62,28 @@ Every documented behavior is backed by the code. List anything you could not
 determine and need confirmed.
 
 ## Mode: guide
+
+### Step G0: Pick the format before you write
+
+Markdown by default. Choose HTML when the document's own structure is what
+makes it hard to read as plain text:
+
+- a specification, or anything with numbered requirements that get
+  cross-referenced
+- a summary that has to hold several dimensions at once (comparison tables,
+  a matrix, results per case)
+- anything carrying a diagram, or where layout is part of the meaning
+
+Markdown stays right for a README, an API reference, CONTRIBUTING, and any
+file the user said lives in the repository. Do not infer that from the
+working directory - code files sitting nearby are not a signal that this
+document gets committed. When the request carries numbered requirements or a
+per-case table and the user did not say where the file goes, choose HTML.
+
+When you pick HTML, write ONE self-contained file: styles inline, no external
+fonts, scripts, or images, readable by opening it in a browser with no
+server. Say which format you chose and why in one line, so the user can ask
+for the other one.
 
 ### Step G1: Pin audience and goal
 Who reads this (new user, integrator, contributor) and what they should be able
@@ -136,6 +158,8 @@ If reference:
 - [ ] I listed anything I could not determine from the code.
 
 If guide:
+- [ ] I chose Markdown or HTML on the document's structure, said which and
+      why, and any HTML I wrote is one self-contained file.
 - [ ] The audience and goal are pinned (or I asked).
 - [ ] Sections are in reading order and cover the goal.
 - [ ] Every command and example is runnable; prerequisites are stated.
