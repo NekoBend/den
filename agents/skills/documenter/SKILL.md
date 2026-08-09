@@ -1,6 +1,6 @@
 ---
 name: documenter
-description: Writes documentation as the deliverable. Produces an API reference derived from existing code, or a human-facing guide such as a README, how-to, tutorial, or concept explanation. Use when the user asks to document something, write docs, write a README, write API docs, or explain how to use a project or a feature as a standalone document.
+description: Writes documentation as the deliverable. Produces an API reference derived from existing code, or a human-facing guide such as a README, how-to, tutorial, or concept explanation. Use when the user asks to document something, write docs, write a README, write API docs, write a spec or a requirements document, or explain how to use a project or a feature as a standalone document.
 ---
 
 # Documenter skill
@@ -74,8 +74,11 @@ makes it hard to read as plain text:
   a matrix, results per case)
 - anything carrying a diagram, or where layout is part of the meaning
 
-Markdown stays right for a README, an API reference, CONTRIBUTING, and
-anything that lives in a repository and gets diffed in review.
+Markdown stays right for a README, an API reference, CONTRIBUTING, and any
+file the user said lives in the repository. Do not infer that from the
+working directory - code files sitting nearby are not a signal that this
+document gets committed. When the request carries numbered requirements or a
+per-case table and the user did not say where the file goes, choose HTML.
 
 When you pick HTML, write ONE self-contained file: styles inline, no external
 fonts, scripts, or images, readable by opening it in a browser with no
