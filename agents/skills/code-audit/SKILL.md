@@ -79,9 +79,11 @@ When the code is on disk and the language toolchain is available,
 run the shared scripts against the files under review
 and fold the results into the relevant dimension:
 
-- ../../shared/scripts/run-checks.sh <file>      format / lint / typecheck (correctness, maintainability);
-                                                 typecheck also verifies imports resolve, and lint covers
-                                                 missing public-API docs when the project has no ruff config
+- den verify <file>                             Python: format / lint / typecheck (correctness,
+                                                 maintainability). Resolves the project's ruff config
+                                                 and venv from the FILE's path, so a review run from
+                                                 outside the project still typechecks correctly
+- ../../shared/scripts/run-checks.sh <file>      other languages, or when den is not on PATH
 - ../../shared/scripts/find-references.py --uses <symbol>
                                                  blast radius of a changed symbol (correctness)
 
