@@ -101,9 +101,12 @@ If WRITING NEW code, skip 3a-3d.
 ### Step 4: Verify with scripts
 Run against the file you produced:
 
-1. ../../shared/scripts/run-checks.sh <file>       # format + lint + typecheck
-                                                   # (typecheck verifies imports; lint covers
-                                                   # missing docs when no project ruff config)
+1. Python:  den verify <file>                      # format + lint + typecheck
+                                                   # resolves the project's own ruff config and
+                                                   # venv from the FILE's path, so it is correct
+                                                   # from any working directory
+   other:   ../../shared/scripts/run-checks.sh <file>
+                                                   # also the fallback when den is not on PATH
 2. ../../shared/scripts/check-broken-refs.py       # only when modifying
 
 Resolve every finding (fix, or suppress with a written reason).
@@ -133,7 +136,7 @@ Cover every case from T1, including negative and error-path tests.
 ### Step T4: Run them
 Execute the suite; report the exact command and its result.
 If you cannot run it, say so. Do not report a pass you did not run.
-Also run ../../shared/scripts/run-checks.sh on the test file.
+Also verify the test file (den verify for Python, run-checks.sh otherwise).
 
 ### Step T5: Compare against examples/testing.md
 
@@ -157,7 +160,7 @@ State where the schema is validated at the boundary.
 
 ### Step S4: Verify
 For a code schema (types, ORM models):
-run ../../shared/scripts/run-checks.sh.
+run den verify (Python) or ../../shared/scripts/run-checks.sh.
 For a non-code schema (SQL DDL, JSON Schema):
 validate with a tool if one exists, otherwise state it was reviewed by reading.
 
@@ -193,7 +196,7 @@ If implement:
 - [ ] I listed edge cases and each is handled or explicitly out of scope.
 - [ ] If I modified existing code, I ran find-references.py before
       and check-broken-refs.py after (zero remaining, or each explained).
-- [ ] I ran run-checks.sh (or stated why it could not run).
+- [ ] I ran den verify (Python) or run-checks.sh (or stated why neither ran).
 - [ ] Every public API has a doc comment.
 - [ ] No untyped escape hatch (any / Any / object / interface{}) without a
       documented exception, and no catch-all handler outside the entry point.
