@@ -506,7 +506,6 @@ pick "general".
 | prompt-engineering | Write a new prompt from a goal, or improve an existing prompt's clarity and reliability.          | write a prompt, design a system prompt, improve this prompt, why does this prompt fail      |
 | documenter         | Produce a documentation artifact: API reference from code, or a README/how-to/tutorial.          | document this, write API docs, write a README, write a how-to, explain how to use           |
 | git-manager        | Run git safely: make commits, prepare a PR, or change history (amend, rebase, revert, undo).      | commit, write a commit message, open a PR, push, merge, conflict, rebase, amend, undo       |
-| translate          | Translate text into another language, or QA an existing translation against its source.          | translate, localize, render in another language, proofread this translation         |
 
 Disambiguation hints. Apply when two skills overlap:
 
@@ -515,7 +514,6 @@ Disambiguation hints. Apply when two skills overlap:
 - documenter vs coding : documenter = the deliverable is a documentation artifact. coding = the deliverable is source code (with its inline doc comments).
 - compressor vs prompt-engineering : compressor = make a prompt SHORTER with the same behavior. prompt-engineering = make a prompt BETTER, or write a new one.
 - grounding vs general : grounding = the user wants claims checked against sources, or an answer confined to provided context. general = open advice with no source-grounding requirement.
-- code-audit vs translate : code-audit = review of source CODE. translate = review (QA) of a TRANSLATION against its source text.
 - documenter vs grounding : documenter = produce a documentation artifact (API reference or a guide). grounding = answer a question confined to supplied context, with per-claim citations. "Explain using these docs" with a question is grounding; "write docs for this" is documenter.
 - compressor vs documenter : compressor = condense a provided text passage into fewer words. documenter = describe what code does or write a guide. "Summarize this article" is compressor; "summarize what this module does" is documenter.
 

@@ -87,6 +87,31 @@ find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
      \( -name verify-imports.py -o -name doc-coverage.py \) -delete
 ```
 
+## 5. translate retired; Go / Java / C# references dropped (2026-08, #64)
+
+The owner's languages are Python (primary), Rust (aspirational), and the
+shells; there is no translation work and the repo has zero lines of Go,
+Java, or C#. The `translate` skill and the three language references (plus
+their coding examples) were removed; the translation rules survive as
+`agents/shared/reference/translation.md`, which is repo-only knowledge and
+is not deployed.
+
+Deployed machines keep the old copies:
+
+```sh
+rm -rf ~/.claude/skills/translate ~/.agents/skills/translate \
+       ~/.copilot/skills/translate ~/.codex/skills/translate
+find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
+     \( -name go.md -o -name java.md -o -name csharp.md \) -delete
+```
+
+Codex registers skills by path, so also re-print and replace the
+`[[skills.config]]` block (drops the translate entry):
+
+```sh
+den install skills --target ~/.codex --codex-config
+```
+
 ## Why there is no `den prune`
 
 Deliberate: a prune command needs a durable record of everything den has

@@ -110,10 +110,7 @@ shared reference for the target language:
 |------------|--------------------------------------|
 | Python     | ../../shared/reference/python.md      |
 | TypeScript | ../../shared/reference/typescript.md  |
-| Go         | ../../shared/reference/go.md          |
 | Rust       | ../../shared/reference/rust.md        |
-| Java       | ../../shared/reference/java.md        |
-| C#         | ../../shared/reference/csharp.md      |
 | Shell      | ../../shared/reference/shell.md       |
 
 ### Step 5: Assign severity
