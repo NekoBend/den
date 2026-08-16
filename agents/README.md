@@ -7,7 +7,7 @@ Mistral class). Everything in both profiles is written to be maximally
 explicit: state the role, the steps, the output format, and a self-check, so a
 model that follows instructions literally still does the right thing.
 
-It ships eight skills in the Anthropic SKILL.md format and a set of parent
+It ships nine skills in the Anthropic SKILL.md format and a set of parent
 invariants (identity, moves, language, work discipline; plus contrastive
 examples, output modes, and a final gate in the standalone shape), with
 installers that deploy the skills into the directories coding agents read.
@@ -34,7 +34,7 @@ the frontier profile; `dist/weak/` is the weak profile.
 
 ```
 agents/
-  skills/<name>/            # the 8 skills
+  skills/<name>/            # the 9 skills
     SKILL.md                # name + description frontmatter + body
     examples/               # worked examples (one shape per file)
     reference/              # only code-audit (dimension + rubric files)
@@ -57,7 +57,7 @@ This content is deployed by the `den` CLI (`den install skills`); `agents/` is
 the content, `den install` is how it gets deployed. The content ships bundled
 inside the den wheel, so it installs with no source checkout on disk.
 
-## The eight skills
+## The nine skills
 
 Each skill detects a mode first, then runs one mode per PASS (weak models
 lose adherence when many instructions fire at once). A request that needs two
@@ -69,6 +69,7 @@ parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
 |-------|-------|--------------|
 | coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Go, Rust, Java, C#, or Shell. Uses `shared/` references and verification scripts. |
 | code-audit | correctness / security (+ performance / maintainability / tests on demand) | Review existing code one focused dimension at a time; severity-rated findings. |
+| troubleshoot | reproduce / diagnose / repair | Find why something that worked is failing (bug, crash, failing test, broken build, works-on-my-machine), then fix the cause and leave a regression test. |
 | grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. |
 | compressor | summarize / compress | Summarize text, or compress a prompt/context to fewer tokens while preserving every directive. |
 | prompt-engineering | author / improve | Write a new prompt from a goal, or diagnose and rewrite an existing one. |
