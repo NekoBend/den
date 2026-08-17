@@ -390,3 +390,61 @@ import from `typing_extensions` (for typing symbols)
 or the third-party backport (`tomli` for TOML read).
 A single project should consistently use either the stdlib or the backport gated on section 13,
 not both.
+
+## 15. Testing: pytest
+
+**Rule:** New tests use pytest
+unless the project already uses another framework
+(an existing unittest suite wins; do not mix styles in one project).
+
+These are the ecosystem-standard choices; pin them:
+
+- Plain `assert` with an expressive expression; no `self.assertEqual`.
+- Temporary files and directories come from the `tmp_path` fixture,
+  never from `tempfile` calls inside the test body.
+- Environment variables, attributes, and cwd change through `monkeypatch`
+  (`setenv`, `setattr`, `chdir`);
+  mutating `os.environ` directly leaks into every later test.
+- Captured stdout/stderr is read from `capsys`,
+  not by patching `sys.stdout`.
+- Repeating a test over inputs is `@pytest.mark.parametrize`,
+  not a for-loop in the test body
+  (a loop stops at the first failure and hides the rest).
+- Shared setup is a fixture,
+  scoped as narrowly as correctness allows (function scope by default).
+- Platform-conditional tests use `pytest.mark.skipif` with the reason stated,
+  not an if-return that silently passes.
+- Optional dependencies gate with `pytest.importorskip`.
+
+Determinism rules (seeds, clocks, network) are language-neutral
+and live in the testing reference; they apply unchanged.
+
+## 16. Environments and packaging: uv
+
+**Rule:** Default tool for environments, dependencies, builds,
+and tool installs is `uv`.
+Defer to what the project already chose:
+a `poetry.lock` means poetry, a `Pipfile` means pipenv,
+and a plain `requirements.txt` still installs fine via `uv pip`.
+
+- Project metadata lives in `pyproject.toml`;
+  do not add `setup.py` or `setup.cfg` to new projects.
+- One-off developer tools run with `uvx <tool>`
+  (or `uv tool install` for permanent ones);
+  do not `pip install` linters into the project venv.
+- Reproducibility comes from the lockfile
+  (`uv.lock`, or the chosen tool's own),
+  not from hand-pinning every transitive dependency in `pyproject.toml`.
+
+## 17. Subprocess hygiene
+
+- Build argv as a list.
+  `shell=True` with interpolated input is command injection;
+  when a shell feature is genuinely required,
+  `shlex.quote` every substituted value.
+- Always pass `timeout=`; a hung child otherwise hangs the caller.
+- Decide error handling explicitly:
+  `check=True` (raise) or a branch on `returncode`.
+  Silently ignoring the return code is the bug.
+- `text=True` (or an explicit encoding) for string I/O,
+  and remember Windows children emit `\r\n`.
