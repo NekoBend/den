@@ -69,3 +69,24 @@ teardown() {
   [[ "$output" == *"golangci-lint operates at module level"* ]]
   [[ "$output" == *"Go has no file-level typecheck"* ]]
 }
+
+@test "PowerShell file: parse passes on valid script (or skips without pwsh)" {
+  printf 'function Get-Widget {\n    param([string]$Name)\n    $Name\n}\n' > "$WORK/good.ps1"
+  run "$SCRIPT" "$WORK/good.ps1"
+  [ "$status" -eq 0 ]
+  if command -v pwsh >/dev/null 2>&1; then
+    [[ "$output" == *"[parse    ] PASS"* ]]
+  else
+    [[ "$output" == *"SKIPPED"* ]]
+  fi
+  [[ "$output" == *"no static typecheck"* ]]
+}
+
+@test "PowerShell file: parse error fails with a line number" {
+  command -v pwsh >/dev/null 2>&1 || skip "pwsh not installed"
+  printf 'function Broken {\n  if ($x) {\n' > "$WORK/bad.ps1"
+  run "$SCRIPT" "$WORK/bad.ps1"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[parse    ] FAIL"* ]]
+  [[ "$output" == *"line "* ]]
+}

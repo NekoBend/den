@@ -123,6 +123,24 @@ case "$ext" in
     run_tool "lint"      checkstyle "$file"
     project_only "typecheck" "javac requires classpath context; run a build (gradle/maven) in project root"
     ;;
+  ps1|psm1)
+    # PSScriptAnalyzer at Error severity is the same bar den's own CI applies
+    # to shell/pwsh. Parse errors surface as their own check so a syntax break
+    # reads as one line, not a wall of analyzer output. The file path travels
+    # in an env var, never interpolated into the pwsh command string, so a
+    # hostile filename cannot become pwsh code.
+    export RC_FILE="$file"
+    # shellcheck disable=SC2016  # the $-expressions are pwsh code, expanded by pwsh, not bash
+    run_tool "parse" pwsh -NoProfile -Command '$t=$null;$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $env:RC_FILE).Path,[ref]$t,[ref]$e);if($e.Count){$e|ForEach-Object{"line $($_.Extent.StartLineNumber): $($_.Message)"};exit 1}'
+    if command -v pwsh >/dev/null 2>&1 && ! pwsh -NoProfile -Command 'if(Get-Module -ListAvailable PSScriptAnalyzer){exit 0};exit 1' >/dev/null 2>&1; then
+      printf '[%-9s] SKIPPED   PSScriptAnalyzer module not installed\n' "lint"
+      skipped=$((skipped + 1))
+    else
+      # shellcheck disable=SC2016  # same: pwsh expands, bash must not
+      run_tool "lint" pwsh -NoProfile -Command '$r=Invoke-ScriptAnalyzer -Path $env:RC_FILE -Severity Error;if($r){$r|ForEach-Object{"$($_.Line): $($_.RuleName): $($_.Message)"};exit 1}'
+    fi
+    project_only "typecheck" "PowerShell has no static typecheck; parse + PSScriptAnalyzer are the gate"
+    ;;
   cs)
     project_only "format"    "dotnet format operates at project level; run 'dotnet format --verify-no-changes' in project root"
     project_only "lint"      "dotnet analyzers run during build; run 'dotnet build' in project root"

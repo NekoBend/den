@@ -47,6 +47,7 @@ the gap that matters is an untested behavior, not an untested line.
 | TypeScript | vitest (or jest)         | vitest run            |
 | Rust       | built-in #[test]         | cargo test            |
 | Shell      | bats                     | bats <dir>            |
+| PowerShell | Pester 5                 | Invoke-Pester         |
 
 For framework-specific idioms (fixtures, parametrization, table tests),
 consult the per-language reference.

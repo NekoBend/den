@@ -127,3 +127,26 @@ def test_skip_dirs_are_not_searched(tmp_path: Path) -> None:
     proc = run("--def", "widget", "--root", str(tmp_path))
     assert proc.returncode == 0
     assert not any("node_modules" in ln for ln in proc.stdout.splitlines())
+
+
+def test_def_finds_powershell_function(tmp_path: Path) -> None:
+    # Verb-Noun names contain a hyphen; the pattern must still anchor on the
+    # function keyword and the whole name, not the first \w+ run.
+    write(tmp_path, "mod.ps1", "function Get-Widget {\n    param()\n}\n")
+    proc = run("--def", "Get-Widget", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    lines = [ln for ln in proc.stdout.splitlines() if ln]
+    assert len(lines) == 1
+    file, lineno, kind, _context = lines[0].split(":", 3)
+    assert file.endswith("mod.ps1")
+    assert lineno == "1"
+    assert kind == "def"
+
+
+def test_uses_finds_powershell_call_sites(tmp_path: Path) -> None:
+    write(tmp_path, "mod.psm1", "function Get-Widget {\n    param()\n}\n")
+    write(tmp_path, "caller.ps1", "$w = Get-Widget\n")
+    proc = run("--uses", "Get-Widget", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    assert "caller.ps1" in out

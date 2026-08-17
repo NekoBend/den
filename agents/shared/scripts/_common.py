@@ -63,11 +63,18 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         r"^\s*{name}\s*=",
     ],
 }
+DEFINITION_PATTERNS[".ps1"] = [
+    r"^\s*function\s+{name}\b",
+    r"^\s*filter\s+{name}\b",
+    r"^\s*class\s+{name}\b",
+    r"^\s*\$(?:script:|global:)?{name}\s*=",
+]
 # Extensions that share patterns with the canonical one.
 DEFINITION_PATTERNS[".tsx"] = DEFINITION_PATTERNS[".ts"]
 DEFINITION_PATTERNS[".js"] = DEFINITION_PATTERNS[".ts"]
 DEFINITION_PATTERNS[".jsx"] = DEFINITION_PATTERNS[".ts"]
 DEFINITION_PATTERNS[".mjs"] = DEFINITION_PATTERNS[".ts"]
+DEFINITION_PATTERNS[".psm1"] = DEFINITION_PATTERNS[".ps1"]
 DEFINITION_PATTERNS[".cjs"] = DEFINITION_PATTERNS[".ts"]
 DEFINITION_PATTERNS[".bash"] = DEFINITION_PATTERNS[".sh"]
 
