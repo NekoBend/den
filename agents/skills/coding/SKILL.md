@@ -42,7 +42,7 @@ then run test mode as a separate pass in the same turn.
 Pick the language in this order:
 
 1. Explicit user instruction.
-2. File extension (.py / .ts / .go / .rs / .java / .cs / .sh).
+2. File extension (.py / .ts / .rs / .sh).
 3. Project context (existing imports, build files, lockfiles).
 4. If none of the above resolves it: DECIDE: line, options and a
    recommendation. Do not guess.

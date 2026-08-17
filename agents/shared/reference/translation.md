@@ -1,4 +1,4 @@
-# Translation reference (retired skill, kept as knowledge)
+# Translation notes (from the retired translate skill)
 
 The `translate` skill was retired in 2026-08: the owner has no translation
 work, so a routed skill was not earning its catalog line. The rules below are

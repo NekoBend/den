@@ -19,6 +19,10 @@ ls -d ~/.claude/skills/code-review ~/.agents/skills/code-review \
       ~/.copilot/skills/code-review ~/.codex/skills/code-review 2>/dev/null
 find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
      \( -name verify-imports.py -o -name doc-coverage.py \) 2>/dev/null
+ls -d ~/.claude/skills/translate ~/.agents/skills/translate \
+      ~/.copilot/skills/translate ~/.codex/skills/translate 2>/dev/null
+find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
+     \( -name go.md -o -name java.md -o -name csharp.md \) 2>/dev/null
 ```
 
 ## 1. `code-review` renamed to `code-audit` (2026-08, #57)
@@ -89,12 +93,15 @@ find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
 
 ## 5. translate retired; Go / Java / C# references dropped (2026-08, #64)
 
-The owner's languages are Python (primary), Rust (aspirational), and the
-shells; there is no translation work and the repo has zero lines of Go,
-Java, or C#. The `translate` skill and the three language references (plus
-their coding examples) were removed; the translation rules survive as
-`agents/shared/reference/translation.md`, which is repo-only knowledge and
-is not deployed.
+Removed because the owner named their languages - Python (primary), Rust
+(aspirational), and the shells - and has no translation work. That call,
+not any property of this repository, is the criterion: the skills are
+global, so what den's own tree happens to contain proves nothing either
+way. (TypeScript material remains: the owner has not ruled on it.)
+The `translate` skill and the three language references (plus their coding
+examples) were removed; the translation rules survive as
+`agents/shared/reference/translation.md`, a repo-only note that no skill
+references, so it is never deployed.
 
 Deployed machines keep the old copies:
 
@@ -110,6 +117,14 @@ Codex registers skills by path, so also re-print and replace the
 
 ```sh
 den install skills --target ~/.codex --codex-config
+```
+
+```powershell
+Remove-Item -Recurse -Force ~/.claude/skills/translate, `
+  ~/.agents/skills/translate, ~/.copilot/skills/translate, `
+  ~/.codex/skills/translate -ErrorAction SilentlyContinue
+Get-ChildItem ~/.claude/skills, ~/.agents/skills, ~/.copilot/skills, `
+  ~/.codex/skills -Recurse -Include go.md, java.md, csharp.md | Remove-Item
 ```
 
 ## Why there is no `den prune`
