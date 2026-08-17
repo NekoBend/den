@@ -393,27 +393,37 @@ not both.
 
 ## 15. Testing: pytest
 
-**Rule:** New tests use pytest
-unless the project already uses another framework
-(an existing unittest suite wins; do not mix styles in one project).
+**Rule:** New tests use pytest.
+An existing unittest suite keeps its style
+(pytest runs `unittest.TestCase` natively,
+so adopting pytest as the runner without rewriting old tests is normal);
+do not write NEW tests in unittest style alongside pytest ones.
 
-These are the ecosystem-standard choices; pin them:
+**Why:** one assertion idiom and one fixture model per project.
+These pins are the ecosystem's settled choices;
+the model knows all the alternatives equally well,
+and this section decides which one applies.
 
 - Plain `assert` with an expressive expression; no `self.assertEqual`.
-- Temporary files and directories come from the `tmp_path` fixture,
-  never from `tempfile` calls inside the test body.
+- Exception checks are `pytest.raises(SomeError, match=...)`.
+- Temporary files and directories default to the `tmp_path` fixture
+  (`tmp_path_factory` when a wider scope is genuinely needed),
+  not `tempfile` calls in the test body.
 - Environment variables, attributes, and cwd change through `monkeypatch`
   (`setenv`, `setattr`, `chdir`);
   mutating `os.environ` directly leaks into every later test.
-- Captured stdout/stderr is read from `capsys`,
-  not by patching `sys.stdout`.
+  Note `monkeypatch` is function-scoped:
+  it cannot serve a module- or session-scoped fixture.
+- Captured stdout/stderr is read from `capsys`;
+  output written by child PROCESSES needs `capfd`
+  (`capsys` sees only Python-level writes).
 - Repeating a test over inputs is `@pytest.mark.parametrize`,
   not a for-loop in the test body
   (a loop stops at the first failure and hides the rest).
 - Shared setup is a fixture,
   scoped as narrowly as correctness allows (function scope by default).
-- Platform-conditional tests use `pytest.mark.skipif` with the reason stated,
-  not an if-return that silently passes.
+- Platform-conditional tests use `pytest.mark.skipif` with the reason
+  stated, not an if-return that silently passes.
 - Optional dependencies gate with `pytest.importorskip`.
 
 Determinism rules (seeds, clocks, network) are language-neutral
@@ -421,30 +431,50 @@ and live in the testing reference; they apply unchanged.
 
 ## 16. Environments and packaging: uv
 
-**Rule:** Default tool for environments, dependencies, builds,
-and tool installs is `uv`.
+**Rule:** Default tool for environments, dependencies, builds, and tool
+installs is `uv`, driven through `uv add` / `uv sync` / `uv run` -
+the interface that maintains `uv.lock`.
+(`uv pip` is the compatibility surface for projects staying on
+`requirements.txt`; it never writes a lockfile.)
 Defer to what the project already chose:
 a `poetry.lock` means poetry, a `Pipfile` means pipenv,
-and a plain `requirements.txt` still installs fine via `uv pip`.
+and converting a project's packaging uninvited is out of scope.
+
+**Why:** the model knows every packaging tool;
+this section decides which one,
+and the lockfile is what makes that choice reproducible.
 
 - Project metadata lives in `pyproject.toml`;
-  do not add `setup.py` or `setup.cfg` to new projects.
-- One-off developer tools run with `uvx <tool>`
-  (or `uv tool install` for permanent ones);
-  do not `pip install` linters into the project venv.
-- Reproducibility comes from the lockfile
-  (`uv.lock`, or the chosen tool's own),
-  not from hand-pinning every transitive dependency in `pyproject.toml`.
+  no `setup.py` or `setup.cfg` in new pure-Python projects
+  (a native-extension build is the exception that still needs one).
+- Applications commit their lockfile; libraries do not.
+- Linters and dev tools: a version-pinned dev-dependency group run via
+  `uv run`, or ephemeral `uvx` for one-offs - both are legitimate.
+  What must exist somewhere is the PIN:
+  an unpinned linter turns CI red on code that did not change.
 
 ## 17. Subprocess hygiene
 
-- Build argv as a list.
-  `shell=True` with interpolated input is command injection;
-  when a shell feature is genuinely required,
-  `shlex.quote` every substituted value.
-- Always pass `timeout=`; a hung child otherwise hangs the caller.
+**Rule:** `subprocess.run` with argv as a list,
+and `sys.executable` (never a literal `"python"`) for Python children.
+`os.system` and `os.popen` do not appear in new code.
+
+**Why:** each pin below closes an injection, a hang, or a silent
+failure the model knows about but reliably under-applies.
+
+- `shell=True` with interpolated input is command injection.
+  When a shell feature is genuinely required,
+  `shlex.quote` every substituted value - POSIX only:
+  there is no safe quoting for `cmd.exe`,
+  so on Windows keep `shell=False`.
+- Pass `timeout=` on bounded operations.
+  A child that is legitimately long-running or interactive
+  (a network install, a watch mode) has no sane fixed timeout;
+  leaving it off is then a decision to state, not an oversight.
 - Decide error handling explicitly:
   `check=True` (raise) or a branch on `returncode`.
   Silently ignoring the return code is the bug.
-- `text=True` (or an explicit encoding) for string I/O,
-  and remember Windows children emit `\r\n`.
+- Text versus bytes is a decision, not a default:
+  `text=True` normalizes `\r\n` to `\n`, which is right for parsing;
+  bytes mode preserves the child's exact output,
+  which is what hashing or byte-faithful round-trips need.
