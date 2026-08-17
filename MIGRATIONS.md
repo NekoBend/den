@@ -97,7 +97,7 @@ Removed because the owner named their languages - Python (primary), Rust
 (aspirational), and the shells - and has no translation work. That call,
 not any property of this repository, is the criterion: the skills are
 global, so what den's own tree happens to contain proves nothing either
-way. (TypeScript material remains: the owner has not ruled on it.)
+way. (TypeScript stays, by the owner's explicit call.)
 The `translate` skill and the three language references (plus their coding
 examples) were removed; the translation rules survive as
 `agents/shared/reference/translation.md`, a repo-only note that no skill
