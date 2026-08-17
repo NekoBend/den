@@ -1,6 +1,6 @@
 ---
 name: coding
-description: Writes code that does not exist yet. Implements a function, class, module, or feature; writes or adds tests; designs a schema, data model, or type definitions. Use when the user asks to implement, write, build, add, or fix code, asks for tests to be written, or asks for a data model or an API schema. Covers Python, TypeScript, Rust, Go, Java, C#, and shell.
+description: Writes code that does not exist yet. Implements a function, class, module, or feature; writes or adds tests; designs a schema, data model, or type definitions. Use when the user asks to implement, write, build, add, or fix code, asks for tests to be written, or asks for a data model or an API schema. Covers Python, TypeScript, Rust, and shell.
 ---
 
 # Coding skill
@@ -42,7 +42,7 @@ then run test mode as a separate pass in the same turn.
 Pick the language in this order:
 
 1. Explicit user instruction.
-2. File extension (.py / .ts / .go / .rs / .java / .cs / .sh).
+2. File extension (.py / .ts / .rs / .sh).
 3. Project context (existing imports, build files, lockfiles).
 4. If none of the above resolves it: DECIDE: line, options and a
    recommendation. Do not guess.
@@ -51,10 +51,7 @@ Pick the language in this order:
 |------------|------------------------------------------------|
 | Python     | ../../shared/reference/python.md               |
 | TypeScript | ../../shared/reference/typescript.md           |
-| Go         | ../../shared/reference/go.md                   |
 | Rust       | ../../shared/reference/rust.md                 |
-| Java       | ../../shared/reference/java.md                 |
-| C#         | ../../shared/reference/csharp.md               |
 | Shell      | ../../shared/reference/shell.md                |
 
 ### Read the relevant references

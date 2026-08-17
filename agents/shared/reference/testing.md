@@ -45,10 +45,7 @@ the gap that matters is an untested behavior, not an untested line.
 |------------|--------------------------|-----------------------|
 | Python     | pytest                   | pytest                |
 | TypeScript | vitest (or jest)         | vitest run            |
-| Go         | standard testing package | go test ./...         |
 | Rust       | built-in #[test]         | cargo test            |
-| Java       | JUnit 5                  | mvn test              |
-| C#         | xUnit                    | dotnet test           |
 | Shell      | bats                     | bats <dir>            |
 
 For framework-specific idioms (fixtures, parametrization, table tests),
