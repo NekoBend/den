@@ -6,7 +6,8 @@ shape, do not copy the wording.
 
 ## Input from the user
 
-> Two PRs are ready. Have a few agents review them before I merge.
+> Two PRs are ready. Have a few agents review them, fix whatever is
+> real, and push the fixes so I can merge.
 
 ## Worked output
 
@@ -48,6 +49,9 @@ declined, which a reviewer cannot know. Conflict between A
 (merge-safe) and the dissent (blocker) resolved by the artifacts, not
 by rank: the dissent had the evidence.
 
-**Changed:** both branches fixed and re-pushed; the false verification
-line removed from the PR body; `git status` clean before and after the
-reviewers ran, confirming read-only held.
+**Changed:** both branches fixed and re-pushed - covered by the user's
+explicit "fix and push" in the request; on a review-only request this
+section would end at "fixes prepared, push awaiting your go-ahead"
+(rule 6). The false verification line removed from the PR body;
+`git status` clean before and after the reviewers ran, confirming
+read-only held.

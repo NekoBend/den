@@ -22,9 +22,10 @@ do for something any worker could have done.
 
 The inverse keeps the pattern honest: delegation is overhead.
 Each worker re-establishes context and reports back, and a multi-agent
-run costs several times the tokens of doing the work directly (the
-vendor's own figure is 3-10x). Work that fits in a handful of tool
-calls is done directly, never delegated.
+run costs several times the tokens of an equivalent single-agent run
+(the vendor's published figure is 3-10x for equivalent tasks). Work
+that fits in a handful of tool calls is done directly, never
+delegated.
 
 ## What this skill is for
 
@@ -177,7 +178,12 @@ And delegation POSTURE follows the master's model, because the
 vendor's guidance points opposite directions: a Fable-class master
 delegates freely, communicates asynchronously, and uses fresh-context
 verifier workers; an Opus-5-class master delegates sparingly, keeps
-spawn counts low, and never delegates verification of its own output.
+spawn counts low, and keeps ROUTINE double-checking in its own loop
+instead of spawning verifiers for it. Rule 2 is the deliberate
+exception on every tier, posture notwithstanding: a deliverable the
+master authored gets independent read-only review before it ships,
+because the author's own re-check is the one review that reliably
+misses.
 
 Provenance note: the widely cited orchestrator result (an Opus lead
 with Sonnet workers beating a single Opus by 90%) is a 2025 study on
