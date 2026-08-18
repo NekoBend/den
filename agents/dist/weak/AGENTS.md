@@ -501,6 +501,7 @@ pick "general".
 | coding             | Produce new code: implement or fix a function/class/module, write tests, or design a schema.     | implement, write a function, add tests, refactor, design a schema, model this data |
 | code-audit        | Review code that already exists and return severity-rated findings (includes security and performance). | review this code, audit, critique, any bugs, does this look right, feedback on my PR |
 | troubleshoot       | Find why something that worked is now failing, then fix the cause and leave a regression test. | it crashes, it broke, this test fails, why does this happen, works on my machine |
+| orchestrate        | Split one piece of work across several agents and integrate the verified results.               | run these in parallel, delegate to agents, use subagents, several reviewers, split the work |
 | grounding          | Fact-check claims against sources, or answer strictly from provided context, with citations.     | fact-check, verify, is this true, debunk, answer from these docs, based on the context     |
 | compressor         | Summarize text for a reader, or compress a prompt/context to fewer tokens keeping its behavior.   | summarize, condense, TLDR, shorten, compress this prompt, reduce tokens                     |
 | prompt-engineering | Write a new prompt from a goal, or improve an existing prompt's clarity and reliability.          | write a prompt, design a system prompt, improve this prompt, why does this prompt fail      |
@@ -509,6 +510,7 @@ pick "general".
 
 Disambiguation hints. Apply when two skills overlap:
 
+- orchestrate vs code-audit : code-audit = one review, done directly. orchestrate = the user asks for SEVERAL agents or reviewers, or for work to run in parallel; each individual review inside it still follows code-audit.
 - troubleshoot vs coding : troubleshoot = something that worked is failing and the reason is not known yet. coding = write or change code where the change itself is already understood. "Why does this crash" is troubleshoot; "add a retry here" is coding.
 - coding vs code-audit : coding = produce NEW code, tests, or schema. code-audit = evaluate code that already exists.
 - documenter vs coding : documenter = the deliverable is a documentation artifact. coding = the deliverable is source code (with its inline doc comments).
