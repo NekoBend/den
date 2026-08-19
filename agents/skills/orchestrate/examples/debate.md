@@ -5,6 +5,12 @@ fact turns out to be a broken instrument. This is the shape rules 3
 and 4 of SKILL.md should produce together. Adapt the shape, do not
 copy the wording.
 
+## Input from the user
+
+> The two review reports contradict each other. Settle it, fix
+> whichever side is actually broken, and correct the claim we already
+> published if it turns out to be wrong.
+
 ## Situation
 
 An earlier review round left two contradicting conclusions on the
@@ -47,7 +53,8 @@ log files confirm 0 bytes. Both advocates' central claims reproduce.
 built on the broken number in a different way. Adopted instead: fix
 the instrument first, re-measure, and only then decide the feature
 question. The published claim that used the wrong number was
-retracted at its source, not just corrected going forward.
+retracted at its source, not just corrected going forward - an
+outward-facing act covered by the user's request above (rule 6).
 
 **Changed:** the harness captures the right stream now; the decision
 record states the falsifier ("revisit only if the re-measured rate

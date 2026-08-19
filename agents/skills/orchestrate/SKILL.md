@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Runs one piece of work as a team of agents while the master session stays in dialogue with the user. Use when the user asks to parallelize work, delegate to subagents or to another agent CLI, get independent reviews from several agents, settle contradictory findings with a debate, or keep long work running in the background while the conversation continues. The master decomposes the work, briefs each worker once, keeps answering the user while workers run, verifies every report against the artifacts it names, and integrates what survives.
+description: Runs one piece of work as a team of agents while the master session stays in dialogue with the user. Use when the user asks to parallelize work, spawn or delegate to subagents or to another agent CLI such as Codex, get independent reviews from several agents, settle contradictory findings with a debate, or keep long work running in the background while the conversation continues. The master decomposes the work, briefs each worker once, keeps answering the user while workers run, verifies every report against the artifacts it names, and integrates what survives.
 ---
 
 # Orchestrate skill
@@ -23,7 +23,8 @@ do for something any worker could have done.
 The inverse keeps the pattern honest: delegation is overhead.
 Each worker re-establishes context and reports back, and a multi-agent
 run costs several times the tokens of an equivalent single-agent run
-(the vendor's published figure is 3-10x for equivalent tasks). Work
+(Anthropic's published figure, 2026: 3-10x over a single agent
+for equivalent tasks). Work
 that fits in a handful of tool calls is done directly, never
 delegated.
 
@@ -137,9 +138,12 @@ the result. Asked about a worker before it returns, the answer is that
 it is still running.
 
 ### Step R4: Steer or stop early
-A worker that the notifications show off-track, or whose subtask the
-conversation has made obsolete, is stopped or re-briefed now, not
-after it finishes wasting its budget.
+A worker whose subtask the conversation has made obsolete is stopped
+or re-briefed now, not after it finishes wasting its budget.
+Off-track detection needs an interim signal; a background worker's
+only notification is its completion, so where the host provides
+nothing in between, the lever is what the conversation learns, not
+worker telemetry.
 
 ## Mode: integrate
 
@@ -170,10 +174,10 @@ judgment are its whole job. Workers are picked per role:
 |-----------------------------------------|------------------------|
 | wide exploration, mechanical transforms | smallest (haiku-class) |
 | implementation on a scoped brief        | mid (sonnet-class)     |
-| review, verification, judging           | the master's own tier  |
+| independent review (rule 2), judging    | the master's own tier  |
 
-Two measured caveats. Small-model workers do not reliably load skills,
-so their briefs must be self-contained - never "use the coding skill".
+Two caveats. Small-model workers do not reliably load skills
+(measured), so their briefs must be self-contained - never "use the coding skill".
 And delegation POSTURE follows the master's model, because the
 vendor's guidance points opposite directions: a Fable-class master
 delegates freely, communicates asynchronously, and uses fresh-context
@@ -181,9 +185,9 @@ verifier workers; an Opus-5-class master delegates sparingly, keeps
 spawn counts low, and keeps ROUTINE double-checking in its own loop
 instead of spawning verifiers for it. Rule 2 is the deliberate
 exception on every tier, posture notwithstanding: a deliverable the
-master authored gets independent read-only review before it ships,
-because the author's own re-check is the one review that reliably
-misses.
+master authored gets independent read-only review before it ships, and
+that review is also the one delegation exempt from the
+handful-of-tool-calls test.
 
 Provenance note: the widely cited orchestrator result (an Opus lead
 with Sonnet workers beating a single Opus by 90%) is a 2025 study on
@@ -197,12 +201,11 @@ server. For Codex:
 
     claude mcp add codex -- codex mcp-server
 
-This registers two tools: `codex` starts a session and takes per-call
-`model`, `cwd`, `sandbox`, `approval-policy`, and `base-instructions`;
-`codex-reply` continues that session by its returned `threadId` - a
-stateful worker, not a one-shot. Set the sandbox and approval policy
-explicitly on every call, and treat its reports like any worker's
-(rule 3). Upstream marks this server experimental: trust what a probe
+This registers two tools: `codex` starts a session, `codex-reply`
+continues it by its returned `threadId` - a stateful worker, not a
+one-shot. Sandbox, approval policy, and model are per-call parameters:
+set the first two explicitly on every call, and treat its reports like
+any worker's (rule 3). Upstream marks this server experimental: trust what a probe
 of its `tools/list` returns today over what anyone remembers about it.
 
 Fallback where no MCP client exists: one-shot `codex exec` -
@@ -216,19 +219,27 @@ itself as an MCP server plugs in the same way.
   "spawn, then use the result" as one step: end the turn and continue
   on the notification, or run the worker in the foreground when the
   result is needed in-turn.
-- Agent teams (experimental) change what spawning means: with teams
+- Agent teams (experimental, as of writing) change what spawning
+  means: with teams
   enabled, subagents launch as teammates whose completion notices
   carry no output, which stalls a waiting orchestration. This skill
   assumes teams are off.
-- A headless worker loads the project's `.mcp.json` without asking.
+- A headless worker loads the project's `.mcp.json` without asking
+  (as of writing).
   In a repository the user does not control, that is code execution:
   check what the workspace configures before pointing a worker at it.
+- Skill names are not agent types. Spawn workers as general agents
+  and let each load the skill its brief calls for; asking the host for
+  an agent TYPE named after a skill fails (measured: three spawn
+  attempts of type "code-audit" all errored before the master
+  corrected course).
 - Spawn counts stay small - a handful, launched deliberately. Dozens
   need the user to have asked for that scale.
 
 ## Output format
 
-    **Launched:** <one line per worker - lens, engine, read-only or not>
+    **Launched:** <who, on what, engine, read-only or not - one or
+                   two lines total>
     **Returned:** <one-line conclusion per worker>
     **Verified:** <which claims were checked against which artifacts,
                    and which failed the check>
@@ -242,7 +253,8 @@ Drop the lines a single-mode pass did not reach.
 - [ ] Nothing was delegated that fit in a handful of tool calls.
 - [ ] Each brief was complete the first time; no re-brief round trips.
 - [ ] The user heard what was launched, and the conversation continued
-      while workers ran.
+      while backgrounded workers ran - or a foreground or sequential
+      run was the deliberate, stated choice.
 - [ ] Every load-bearing claim from a report was verified against the
       artifact it names, or is explicitly carried as unverified.
 - [ ] Contradictions were debated and judged, not averaged.

@@ -61,7 +61,9 @@ inside the den wheel, so it installs with no source checkout on disk.
 
 Each skill detects a mode first, then runs one mode per PASS (weak models
 lose adherence when many instructions fire at once). A request that needs two
-modes gets two passes in the same turn, not a refusal to do the second. All skills assume the
+modes gets two passes in the same turn, not a refusal to do the second
+(orchestrate's run pass is the exception: it may stay open across turns
+while background workers run). All skills assume the
 parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
 `<work_discipline>`) are present.
 

@@ -37,7 +37,7 @@ stateless uninstall cannot reach files den no longer deploys.
 
 ## Layout
 
-- `agents/`      LLM skill system: 8 skills + parent invariants + generated parent prompts. See `agents/README.md`.
+- `agents/`      LLM skill system: 9 skills + parent invariants + generated parent prompts. See `agents/README.md`.
 - `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `uninstall`, `hook`, `memory`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
 - `shell/`       the interactive shell sources: bash/zsh, a PowerShell port, CMD shims, starship (deployed by `den install shell`). See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).

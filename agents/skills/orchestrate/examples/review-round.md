@@ -20,7 +20,7 @@ adversarial pass is well past a handful of tool calls):
 - reviewer B - PR 2 only: is every factual claim in the new content
   true? Read-only, told to measure rather than assert.
 - dissent seat - both PRs: the strongest honest case that merging
-  either is a mistake, including what both authors passed over.
+  either is a mistake, including what the author passed over.
   Read-only.
 - All three engines: the master's own tier (rule of the model table:
   review runs on the master's tier, not on a cheaper one).
@@ -49,9 +49,10 @@ declined, which a reviewer cannot know. Conflict between A
 (merge-safe) and the dissent (blocker) resolved by the artifacts, not
 by rank: the dissent had the evidence.
 
-**Changed:** both branches fixed and re-pushed - covered by the user's
-explicit "fix and push" in the request; on a review-only request this
-section would end at "fixes prepared, push awaiting your go-ahead"
-(rule 6). The false verification line removed from the PR body;
+**Changed:** both branches fixed; the fixes - now the master's own
+work - went to a fresh read-only reviewer before shipping (rule 2),
+then were pushed, covered by the user's explicit "fix and push" in the
+request. On a review-only request this section would end at "fixes
+prepared, push awaiting your go-ahead" (rule 6). The false verification line removed from the PR body;
 `git status` clean before and after the reviewers ran, confirming
 read-only held.
