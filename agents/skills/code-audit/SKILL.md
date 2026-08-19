@@ -112,6 +112,7 @@ shared reference for the target language:
 | TypeScript | ../../shared/reference/typescript.md  |
 | Rust       | ../../shared/reference/rust.md        |
 | Shell      | ../../shared/reference/shell.md       |
+| PowerShell | ../../shared/reference/powershell.md  |
 
 ### Step 5: Assign severity
 

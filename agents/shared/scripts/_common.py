@@ -62,12 +62,32 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         r"^\s*(?:function\s+)?{name}\s*\(\s*\)",
         r"^\s*{name}\s*=",
     ],
+    ".ps1": [
+        r"^\s*function\s+(?:global:|script:|local:|private:)?{name}\b",
+        r"^\s*filter\s+{name}\b",
+        r"^\s*class\s+{name}\b",
+        r"^\s*enum\s+{name}\b",
+        r"^\s*\$(?:script:|global:)?{name}\s*=",
+    ],
 }
+
+# The {name} capture used when DISCOVERING definitions (check-broken-refs,
+# find-references --in). The default \w+ would truncate PowerShell's
+# Verb-Noun names at the hyphen, so "function New-Wrapper" becomes a
+# definition of "New" - measured to both flood false broken_refs (a deleted
+# Test-* symbol collides with every Test-Path call) and hide real ones
+# (New-Wrapper deleted stays "defined" through New-WrapperSuffix).
+DEFINITION_CAPTURE: dict[str, str] = {
+    ".ps1": r"([\w-]+)",
+    ".psm1": r"([\w-]+)",
+}
+DEFAULT_CAPTURE = r"(\w+)"
 # Extensions that share patterns with the canonical one.
 DEFINITION_PATTERNS[".tsx"] = DEFINITION_PATTERNS[".ts"]
 DEFINITION_PATTERNS[".js"] = DEFINITION_PATTERNS[".ts"]
 DEFINITION_PATTERNS[".jsx"] = DEFINITION_PATTERNS[".ts"]
 DEFINITION_PATTERNS[".mjs"] = DEFINITION_PATTERNS[".ts"]
+DEFINITION_PATTERNS[".psm1"] = DEFINITION_PATTERNS[".ps1"]
 DEFINITION_PATTERNS[".cjs"] = DEFINITION_PATTERNS[".ts"]
 DEFINITION_PATTERNS[".bash"] = DEFINITION_PATTERNS[".sh"]
 

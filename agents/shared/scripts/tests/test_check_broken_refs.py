@@ -143,3 +143,36 @@ def test_lang_filter_limits_to_extension(tmp_path: Path) -> None:
     # Only the .py removal is considered, so only `widget` is reported.
     assert "broken_ref:widget" in proc.stdout
     assert "broken_ref:Widget" not in proc.stdout
+
+
+def test_powershell_names_survive_the_hyphen(tmp_path: Path) -> None:
+    # The discovery capture must anchor the WHOLE Verb-Noun name. With the
+    # default \w+ capture, "function New-Wrapper" defines "New": deleting
+    # New-Wrapper stayed invisible behind New-WrapperSuffix (false negative),
+    # and deleting a Test-* symbol collided with every Test-Path call
+    # (false-positive flood). Measured on this repo's own shell/pwsh tree.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "helpers.ps1",
+        "function New-Wrapper {\n    param()\n}\n"
+        "function New-WrapperSuffix {\n    param()\n}\n",
+    )
+    write(tmp_path, "caller.ps1", "New-Wrapper\nNew-WrapperSuffix\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    write(
+        tmp_path,
+        "helpers.ps1",
+        "function New-WrapperSuffix {\n    param()\n}\n",
+    )
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    assert "broken_ref:New-Wrapper:" in out.replace("caller.ps1:1:", "x:") or (
+        "New-Wrapper" in out
+    ), f"full name not reported: {out!r}"
+    # the surviving suffix symbol must NOT be flagged
+    assert "New-WrapperSuffix" not in [
+        ln.split(":")[3] for ln in out.splitlines() if ln.count(":") >= 3
+    ]

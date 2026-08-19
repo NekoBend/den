@@ -69,3 +69,44 @@ teardown() {
   [[ "$output" == *"golangci-lint operates at module level"* ]]
   [[ "$output" == *"Go has no file-level typecheck"* ]]
 }
+
+@test "PowerShell file: parse passes on valid script (or skips without pwsh)" {
+  printf 'function Get-Widget {\n    param([string]$Name)\n    $Name\n}\n' > "$WORK/good.ps1"
+  run "$SCRIPT" "$WORK/good.ps1"
+  [ "$status" -eq 0 ]
+  if command -v pwsh >/dev/null 2>&1; then
+    [[ "$output" == *"[parse    ] PASS"* ]]
+  else
+    [[ "$output" == *"SKIPPED"* ]]
+  fi
+  [[ "$output" == *"no static typecheck"* ]]
+}
+
+@test "PowerShell file: parse error fails with a line number" {
+  command -v pwsh >/dev/null 2>&1 || skip "pwsh not installed"
+  printf 'function Broken {\n  if ($x) {\n' > "$WORK/bad.ps1"
+  run "$SCRIPT" "$WORK/bad.ps1"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[parse    ] FAIL"* ]]
+  [[ "$output" == *"line "* ]]
+}
+
+@test "PowerShell file: an Error-severity analyzer finding fails lint" {
+  command -v pwsh >/dev/null 2>&1 || skip "pwsh not installed"
+  pwsh -NoProfile -Command 'if(Get-Module -ListAvailable PSScriptAnalyzer){exit 0};exit 1' \
+    || skip "PSScriptAnalyzer not installed"
+  printf '$s = ConvertTo-SecureString "pw" -AsPlainText -Force\n' > "$WORK/err.ps1"
+  run "$SCRIPT" "$WORK/err.ps1"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[lint     ] FAIL"* ]]
+}
+
+@test "PowerShell file: wildcard characters in the name are treated literally" {
+  command -v pwsh >/dev/null 2>&1 || skip "pwsh not installed"
+  # regression: Resolve-Path/-Path expanded [n] as a glob, so a valid file
+  # false-FAILED the parse and lint silently analyzed zero (or other) files
+  printf 'function Get-Widget {\n    param()\n}\n' > "$WORK/clea[n].ps1"
+  run "$SCRIPT" "$WORK/clea[n].ps1"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[parse    ] PASS"* ]]
+}

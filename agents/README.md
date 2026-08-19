@@ -67,7 +67,7 @@ parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
 
 | Skill | Modes | What it does |
 |-------|-------|--------------|
-| coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Rust, or Shell. Uses `shared/` references and verification scripts. |
+| coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Rust, Shell, or PowerShell. Uses `shared/` references and verification scripts. |
 | code-audit | correctness / security (+ performance / maintainability / tests on demand) | Review existing code one focused dimension at a time; severity-rated findings. |
 | troubleshoot | reproduce / diagnose / repair | Find why something that worked is failing (bug, crash, failing test, broken build, works-on-my-machine), then fix the cause and leave a regression test. |
 | grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. |

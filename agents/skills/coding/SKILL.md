@@ -1,6 +1,6 @@
 ---
 name: coding
-description: Writes code that does not exist yet. Implements a function, class, module, or feature; writes or adds tests; designs a schema, data model, or type definitions. Use when the user asks to implement, write, build, add, or fix code, asks for tests to be written, or asks for a data model or an API schema. Covers Python, TypeScript, Rust, and shell.
+description: Writes code that does not exist yet. Implements a function, class, module, or feature; writes or adds tests; designs a schema, data model, or type definitions. Use when the user asks to implement, write, build, add, or fix code, asks for tests to be written, or asks for a data model or an API schema. Covers Python, TypeScript, Rust, shell, and PowerShell.
 ---
 
 # Coding skill
@@ -42,7 +42,7 @@ then run test mode as a separate pass in the same turn.
 Pick the language in this order:
 
 1. Explicit user instruction.
-2. File extension (.py / .ts / .rs / .sh).
+2. File extension (.py / .ts / .rs / .sh / .ps1).
 3. Project context (existing imports, build files, lockfiles).
 4. If none of the above resolves it: DECIDE: line, options and a
    recommendation. Do not guess.
@@ -53,6 +53,7 @@ Pick the language in this order:
 | TypeScript | ../../shared/reference/typescript.md           |
 | Rust       | ../../shared/reference/rust.md                 |
 | Shell      | ../../shared/reference/shell.md                |
+| PowerShell | ../../shared/reference/powershell.md           |
 
 ### Read the relevant references
 
