@@ -13,7 +13,7 @@ Modes:
              elsewhere in the tree.
 
 Languages supported (best-effort via regex):
-    .py .ts .tsx .js .jsx .mjs .cjs .go .rs .java .cs .sh .bash
+    .py .ts .tsx .js .jsx .mjs .cjs .go .rs .java .cs .sh .bash .ps1 .psm1
 
 Backend:
     Uses ripgrep (rg) if available for fast search. Falls back to Python
@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _common import DEFINITION_PATTERNS, SKIP_DIRS
+from _common import DEFAULT_CAPTURE, DEFINITION_CAPTURE, DEFINITION_PATTERNS, SKIP_DIRS
 
 Hit = tuple[str, int, str]
 Result = tuple[str, int, str, str]
@@ -222,8 +222,9 @@ def list_in_file(file_path: Path, root: Path) -> list[Result]:
 
     text = file_path.read_text(encoding="utf-8", errors="ignore")
     local_defs: dict[str, list[tuple[int, str]]] = {}
+    capture = DEFINITION_CAPTURE.get(ext, DEFAULT_CAPTURE)
     for template in templates:
-        capturing = template.replace("{name}", r"(\w+)")
+        capturing = template.replace("{name}", capture)
         rx = re.compile(capturing, re.MULTILINE)
         for match in rx.finditer(text):
             symbol = match.group(1)

@@ -131,13 +131,13 @@ case "$ext" in
     # hostile filename cannot become pwsh code.
     export RC_FILE="$file"
     # shellcheck disable=SC2016  # the $-expressions are pwsh code, expanded by pwsh, not bash
-    run_tool "parse" pwsh -NoProfile -Command '$t=$null;$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $env:RC_FILE).Path,[ref]$t,[ref]$e);if($e.Count){$e|ForEach-Object{"line $($_.Extent.StartLineNumber): $($_.Message)"};exit 1}'
+    run_tool "parse" pwsh -NoProfile -Command '$t=$null;$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $env:RC_FILE).Path,[ref]$t,[ref]$e);if($e.Count){$e|ForEach-Object{"line $($_.Extent.StartLineNumber): $($_.Message)"};exit 1}'
     if command -v pwsh >/dev/null 2>&1 && ! pwsh -NoProfile -Command 'if(Get-Module -ListAvailable PSScriptAnalyzer){exit 0};exit 1' >/dev/null 2>&1; then
       printf '[%-9s] SKIPPED   PSScriptAnalyzer module not installed\n' "lint"
       skipped=$((skipped + 1))
     else
       # shellcheck disable=SC2016  # same: pwsh expands, bash must not
-      run_tool "lint" pwsh -NoProfile -Command '$r=Invoke-ScriptAnalyzer -Path $env:RC_FILE -Severity Error;if($r){$r|ForEach-Object{"$($_.Line): $($_.RuleName): $($_.Message)"};exit 1}'
+      run_tool "lint" pwsh -NoProfile -Command '$p=[System.Management.Automation.WildcardPattern]::Escape((Resolve-Path -LiteralPath $env:RC_FILE).Path);$r=Invoke-ScriptAnalyzer -Path $p -Severity Error;if($r){$r|ForEach-Object{"$($_.Line): $($_.RuleName): $($_.Message)"};exit 1}'
     fi
     project_only "typecheck" "PowerShell has no static typecheck; parse + PSScriptAnalyzer are the gate"
     ;;

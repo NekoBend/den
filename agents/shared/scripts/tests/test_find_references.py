@@ -150,3 +150,24 @@ def test_uses_finds_powershell_call_sites(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
     assert "caller.ps1" in out
+
+
+def test_in_reports_full_powershell_names(tmp_path: Path) -> None:
+    # --in discovers definitions with a capturing group; the capture must not
+    # stop at the hyphen (New-Wrapper reported as "New" made two symbols
+    # sharing a verb indistinguishable).
+    write(
+        tmp_path,
+        "mod.ps1",
+        "function New-Wrapper {\n    param()\n}\n"
+        "enum WidgetKind {\n    A\n}\n",
+    )
+    write(tmp_path, "caller.ps1", "New-Wrapper\n")
+    proc = run("--in", str(tmp_path / "mod.ps1"), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "New-Wrapper" in proc.stdout
+    assert "WidgetKind" in proc.stdout
+    owners = [
+        ln.split(":", 2)[1] for ln in proc.stdout.splitlines() if ln.startswith(("def:", "use:"))
+    ]
+    assert "New" not in owners, proc.stdout

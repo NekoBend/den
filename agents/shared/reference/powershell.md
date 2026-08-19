@@ -24,11 +24,15 @@ costs the features that make cross-platform scripts tractable.
 
 ## 2. Tooling: PSScriptAnalyzer + Pester
 
-**Rule:** Lint gate is `Invoke-ScriptAnalyzer` clean at `-Severity Error`.
-Tests are Pester 5 (`Describe` / `It` / `Should`), in `*.Tests.ps1` files.
+**Rule:** Lint gate is `Invoke-ScriptAnalyzer` clean at `-Severity Error` -
+eight rules, the same bar den's CI applies. The conventions in sections
+3, 5, 6, and 7 report at Warning severity: review enforces them, the
+gate does not. Tests are Pester 5 (`Describe` / `It` / `Should`) in
+`*.Tests.ps1` files, invoked separately (`Invoke-Pester`); the gate
+lints test files, it does not run them.
 
-**Why:** both are the ecosystem defaults and both run on Linux,
-so the gate works in CI without a Windows runner.
+**Why:** both tools are the ecosystem defaults and run on Linux, so the
+gate works in CI without a Windows runner.
 
 ## 3. Naming
 
@@ -37,8 +41,11 @@ singular noun, PascalCase. Parameters PascalCase; locals camelCase.
 
 - Unapproved verbs trigger analyzer warnings and break discoverability
   (`Get-Command -Verb`).
-- Aliases (`ls`, `%`, `?`) are interactive conveniences:
+- Aliases (`dir`, `%`, `?`) are interactive conveniences:
   scripts spell out `Get-ChildItem`, `ForEach-Object`, `Where-Object`.
+  On Linux and macOS, `ls` / `cat` / `cp` are NOT aliases - they resolve
+  to the native binaries, so in a script they are native-command calls
+  under section 4's `$LASTEXITCODE` rule.
 
 ## 4. Strict posture
 
@@ -80,9 +87,9 @@ discarded the structure every downstream consumer needs.
   `-match`); use the `c`-prefixed forms (`-ceq`) when case matters.
 - `-eq` against an array FILTERS it (returns matching elements) rather
   than testing equality; put the scalar on the left, or test `.Count`.
-- `$null` comparisons put `$null` on the LEFT (`$null -eq $x`), which
-  the analyzer enforces, because the array-filter rule above makes
-  `$x -eq $null` wrong for arrays.
+- `$null` comparisons put `$null` on the LEFT (`$null -eq $x`), because
+  the array-filter rule above makes `$x -eq $null` wrong for arrays
+  (the analyzer flags the wrong order at Warning severity).
 
 ## 7. Strings and injection
 
@@ -99,6 +106,7 @@ not appear in new code - it is PowerShell's `shell=True`.
 ## 8. When the toolchain runs this file
 
 `run-checks.sh` dispatches `.ps1` / `.psm1` to a syntax parse plus
-`Invoke-ScriptAnalyzer -Severity Error`, and `find-references.py`
-resolves `function Verb-Noun` definitions. Both degrade to SKIPPED when
-pwsh is absent; say so rather than claiming a check that did not run.
+`Invoke-ScriptAnalyzer -Severity Error`; those checks degrade to SKIPPED
+when pwsh or PSScriptAnalyzer is absent - say so rather than claiming a
+check that did not run. `find-references.py` resolves `function` /
+`filter` / `class` / `enum` definitions with no pwsh dependency.

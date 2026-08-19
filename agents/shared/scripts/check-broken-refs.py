@@ -41,7 +41,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _common import DEFINITION_PATTERNS, SKIP_DIRS
+from _common import DEFAULT_CAPTURE, DEFINITION_CAPTURE, DEFINITION_PATTERNS, SKIP_DIRS
 
 
 class GitError(RuntimeError):
@@ -95,9 +95,10 @@ def _changed_files(base: str, root: Path, lang_ext: str | None) -> list[Path]:
 def _extract_defs(text: str, ext: str) -> set[str]:
     """Return the set of top-level symbol names defined in `text`."""
     templates = DEFINITION_PATTERNS.get(ext, [])
+    capture = DEFINITION_CAPTURE.get(ext, DEFAULT_CAPTURE)
     defs: set[str] = set()
     for template in templates:
-        pattern = template.replace("{name}", r"(\w+)")
+        pattern = template.replace("{name}", capture)
         defs.update(
             match.group(1) for match in re.finditer(pattern, text, re.MULTILINE)
         )

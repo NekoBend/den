@@ -90,3 +90,23 @@ teardown() {
   [[ "$output" == *"[parse    ] FAIL"* ]]
   [[ "$output" == *"line "* ]]
 }
+
+@test "PowerShell file: an Error-severity analyzer finding fails lint" {
+  command -v pwsh >/dev/null 2>&1 || skip "pwsh not installed"
+  pwsh -NoProfile -Command 'if(Get-Module -ListAvailable PSScriptAnalyzer){exit 0};exit 1' \
+    || skip "PSScriptAnalyzer not installed"
+  printf '$s = ConvertTo-SecureString "pw" -AsPlainText -Force\n' > "$WORK/err.ps1"
+  run "$SCRIPT" "$WORK/err.ps1"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[lint     ] FAIL"* ]]
+}
+
+@test "PowerShell file: wildcard characters in the name are treated literally" {
+  command -v pwsh >/dev/null 2>&1 || skip "pwsh not installed"
+  # regression: Resolve-Path/-Path expanded [n] as a glob, so a valid file
+  # false-FAILED the parse and lint silently analyzed zero (or other) files
+  printf 'function Get-Widget {\n    param()\n}\n' > "$WORK/clea[n].ps1"
+  run "$SCRIPT" "$WORK/clea[n].ps1"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[parse    ] PASS"* ]]
+}
