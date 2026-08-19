@@ -159,8 +159,7 @@ def test_in_reports_full_powershell_names(tmp_path: Path) -> None:
     write(
         tmp_path,
         "mod.ps1",
-        "function New-Wrapper {\n    param()\n}\n"
-        "enum WidgetKind {\n    A\n}\n",
+        "function New-Wrapper {\n    param()\n}\nenum WidgetKind {\n    A\n}\n",
     )
     write(tmp_path, "caller.ps1", "New-Wrapper\n")
     proc = run("--in", str(tmp_path / "mod.ps1"), "--root", str(tmp_path))
@@ -168,6 +167,8 @@ def test_in_reports_full_powershell_names(tmp_path: Path) -> None:
     assert "New-Wrapper" in proc.stdout
     assert "WidgetKind" in proc.stdout
     owners = [
-        ln.split(":", 2)[1] for ln in proc.stdout.splitlines() if ln.startswith(("def:", "use:"))
+        ln.split(":", 2)[1]
+        for ln in proc.stdout.splitlines()
+        if ln.startswith(("def:", "use:"))
     ]
     assert "New" not in owners, proc.stdout
