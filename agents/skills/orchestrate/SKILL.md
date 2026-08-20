@@ -187,7 +187,7 @@ vendor's guidance points opposite directions: a Fable-class master
 delegates freely, communicates asynchronously, and uses fresh-context
 verifier workers; an Opus-5-class master delegates sparingly, keeps
 spawn counts low, and keeps its own verification in its own loop -
-the vendor's words are do NOT use subagents to verify your own work.
+the vendor's words are "do NOT use subagents to verify your own work".
 Rule 2 deliberately overrides that on every tier, posture
 notwithstanding: a deliverable the
 master authored gets independent read-only review before it ships, and
