@@ -58,6 +58,10 @@ normal chain here, not an exception.
 The command that was run, the full error text, the stack trace, the exit
 code, the version. Not a paraphrase. If the report is second-hand, say
 which parts are the user's own observation and which are relayed.
+If the workspace has `.den/board/reports.jsonl`, read its newest lines
+before asking the user to restate anything: each line is a report the
+user filed from the den board while exercising the thing under test (a
+timestamped button press plus a note), and it is first-hand.
 
 ### Step R2: Reproduce it yourself
 Run it. Note whether it fails every time or sometimes; an intermittent

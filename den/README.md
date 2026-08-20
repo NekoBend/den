@@ -27,6 +27,7 @@ source on disk; from a checkout it falls back to the repo root (`_content.py`).
 den install   [skills|shell|hook|cheatsheets]   interactive setup, or one target
 den uninstall [skills|shell|hook|cheatsheets]   remove den files, keeping your edits
 den upgrade   [--refresh]                       upgrade den via uv (alias: update)
+den board     [--port N] [--open] [--dir PATH]  serve the project's report board
 
 # runtime plumbing invoked by installed hooks and skills (not everyday commands):
 den hook   run|list|imprint|memory   the per-turn worker + hook lifecycle
@@ -111,6 +112,31 @@ Windows caveat: `den upgrade` runs from the very tool venv uv replaces, and
 Windows locks running executables. If uv reports a file-in-use error there,
 run `uv tool upgrade den` directly from your shell instead (den itself then
 is not running, so nothing is locked).
+
+## `den board`
+
+A per-project localhost page for reporting observations back to an agent
+while you exercise the thing under test (a game, a build, a device) - so a
+debug session does not round-trip through chat for every "ran it again,
+here is what happened". Press a button, optionally attach a note; each
+report is appended as one JSON line (`{ts, button, text}`) to
+`.den/board/reports.jsonl`. Agents never talk to the server: they read
+that file (the troubleshoot skill checks for it by name).
+
+```
+den board                 # serve http://127.0.0.1:8484 for the nearest .den project
+den board --open          # ...and open it in the browser
+den board --port 9000     # prefer another port
+den board --dir ~/proj    # serve a specific project root
+```
+
+Multiple boards coexist: each project has its own server, file, and lock.
+If the preferred port is busy the next free one is used; a second
+`den board` in the same project just reprints the live instance's URL; the
+page titles itself after the project so parallel tabs stay apart. The
+server binds 127.0.0.1 only. Edit `.den/board/board.json` to rename the
+board or change its button set (`{id, label, color}` per button); delete
+`reports.jsonl` (or ask the agent to) when a session is done.
 
 ## `den hook memory`
 

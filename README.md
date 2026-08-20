@@ -65,6 +65,10 @@ Python implementation replaces the old bash + PowerShell installers.
 - `den install hook` registers per-turn imprint hooks per workspace; `den hook`
   (run/list/imprint/memory) is the runtime plumbing those hooks invoke. See
   `den/README.md`.
+- `den board` serves a per-project localhost page where you file observations
+  (a button press plus a note) while testing something an agent cannot run
+  itself; each report lands as one JSON line in `.den/board/reports.jsonl`,
+  which agents read directly (the troubleshoot skill checks for it by name).
 
 ## CI
 
