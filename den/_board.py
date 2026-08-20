@@ -124,6 +124,11 @@ class _BoardServer(ThreadingHTTPServer):
     """ThreadingHTTPServer carrying the per-project state handlers need."""
 
     daemon_threads = True
+    # On Windows SO_REUSEADDR lets a second bind seize a port that is in
+    # active use (unlike POSIX, where it only relaxes TIME_WAIT), so the
+    # busy-port fallback would never fire and two boards would fight over
+    # one port. Bind exclusively there; POSIX keeps quick restarts.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, root: Path, config: dict[str, object], port: int) -> None:
         super().__init__(("127.0.0.1", port), _Handler)
