@@ -33,7 +33,7 @@ def _usage() -> None:
         "  remove den-installed files\n"
         "  upgrade   [--refresh]                     "
         " upgrade den via uv (alias: update)\n"
-        "  board     [--port N] [--open]             "
+        "  board     [--port N] [--open] [--dir PATH]"
         " serve the local report board\n"
         "\n"
         "Run 'den <command> --help' for command-specific options.\n"

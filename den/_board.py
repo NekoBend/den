@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import threading
+import time
 import webbrowser
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -101,14 +102,18 @@ def _tail_lines(path: Path, max_bytes: int) -> list[str]:
         with path.open("rb") as f:
             f.seek(0, 2)
             size = f.tell()
-            f.seek(max(0, size - max_bytes))
+            if size <= max_bytes:
+                f.seek(0)
+                return f.read().decode("utf-8", errors="replace").splitlines()
+            # Read ONE extra byte before the window: splitting on it makes
+            # the first split-line the partial (or, when the extra byte is a
+            # newline, an empty marker), so dropping lines[0] is exact even
+            # when the window happens to start at a line boundary.
+            f.seek(size - max_bytes - 1)
             data = f.read()
     except OSError:
         return []
-    lines = data.decode("utf-8", errors="replace").splitlines()
-    if size > max_bytes and lines:
-        return lines[1:]  # the first line in the window is a partial one
-    return lines
+    return data.decode("utf-8", errors="replace").splitlines()[1:]
 
 
 def _title(root: Path, config: dict[str, object]) -> str:
@@ -132,7 +137,11 @@ def _existing_instance(root: Path) -> str | None:
             data = json.loads(resp.read().decode("utf-8"))
         finally:
             conn.close()
-        if data.get("den_board") and data.get("root") == str(root):
+        if (
+            isinstance(data, dict)
+            and data.get("den_board")
+            and data.get("root") == str(root)
+        ):
             return f"http://127.0.0.1:{port}/"
     with suppress(OSError):
         lock.unlink()
@@ -149,6 +158,22 @@ def _release_lock(root: Path) -> None:
             lock.unlink()
 
 
+def _claim_lock(root: Path) -> bool:
+    """Atomically create the lock file; False when another process holds it.
+
+    The O_EXCL create is what makes two simultaneous `den board` launches
+    safe: exactly one wins the claim and binds, the other finds the winner
+    (or a stale claim) and never starts a shadow server.
+    """
+    lock = _lock_path(root)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return False
+    return True
+
+
 class _BoardServer(ThreadingHTTPServer):
     """ThreadingHTTPServer carrying the per-project state handlers need."""
 
@@ -159,24 +184,34 @@ class _BoardServer(ThreadingHTTPServer):
     # one port. Bind exclusively there; POSIX keeps quick restarts.
     allow_reuse_address = os.name != "nt"
 
-    def __init__(self, root: Path, config: dict[str, object], port: int) -> None:
+    def __init__(
+        self, root: Path, config: dict[str, object], html: bytes, port: int
+    ) -> None:
         super().__init__(("127.0.0.1", port), _Handler)
         self.board_root = root
         self.board_config = config
-        self.board_html = (Path(__file__).parent / "board.html").read_bytes()
+        self.board_html = html
         self.append_lock = threading.Lock()
+
+
+_PAGE_PATH = Path(__file__).parent / "board.html"
 
 
 def make_server(
     root: Path, config: dict[str, object], preferred_port: int
 ) -> _BoardServer:
     """Bind the preferred port, else the next free one, else an OS-picked one."""
+    # Read the page before the bind loop: a missing board.html raises its own
+    # FileNotFoundError here instead of being swallowed as 21 "port busy"
+    # OSErrors and misreported as "no free port found".
+    html = _PAGE_PATH.read_bytes()
     candidates = [preferred_port]
     if preferred_port != 0:
-        candidates += [*range(preferred_port + 1, preferred_port + _PORT_TRIES), 0]
+        upper = min(preferred_port + _PORT_TRIES, _MAX_PORT + 1)
+        candidates += [*range(preferred_port + 1, upper), 0]
     for port in candidates:
         try:
-            return _BoardServer(root, config, port)
+            return _BoardServer(root, config, html, port)
         except OSError:
             continue
     msg = "no free port found"
@@ -196,8 +231,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _host_ok(self) -> bool:
         """Reject DNS-rebinding: the Host header must be a loopback name."""
         host = self.headers.get("Host", "")
-        hostname = host.rsplit(":", 1)[0] if not host.startswith("[") else "[::1]"
-        return hostname in {"127.0.0.1", "localhost", "[::1]"}
+        if host.startswith("["):
+            end = host.find("]")
+            return end > 0 and host[1:end] == "::1"
+        return host.rsplit(":", 1)[0] in {"127.0.0.1", "localhost"}
 
     def _origin_ok(self) -> bool:
         """Reject cross-site writes. A browser sends Origin on every fetch
@@ -356,6 +393,35 @@ def _parse_args(args: list[str]) -> tuple[int | None, bool, Path | None] | None:
     return port, open_browser, root
 
 
+def _acquire(root: Path, *, open_browser: bool) -> int | None:
+    """Claim the project's board lock; an int is main()'s early exit code."""
+    existing = _existing_instance(root)
+    if existing is not None:
+        print(f"den board: already running for {root.name}: {existing}")
+        if open_browser:
+            with suppress(webbrowser.Error):
+                webbrowser.open(existing)
+        return 0
+    if _claim_lock(root):
+        return None
+    # Lost the claim to a twin launched in the same instant: wait for it to
+    # finish starting and reprint its URL instead of racing it.
+    for _ in range(10):
+        time.sleep(0.2)
+        existing = _existing_instance(root)
+        if existing is not None:
+            print(f"den board: already running for {root.name}: {existing}")
+            return 0
+    # No live twin materialized: the claim is a corpse (a crash between
+    # claim and lock write). Take it over.
+    with suppress(OSError):
+        _lock_path(root).unlink()
+    if not _claim_lock(root):
+        print("den board: another instance is starting; try again", file=sys.stderr)
+        return 1
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     if args and args[0] in {"-h", "--help", "help"}:
@@ -370,13 +436,17 @@ def main(argv: list[str] | None = None) -> int:
     root = (root_arg or _find_den_dir(Path.cwd()).parent).resolve()
     config = ensure_scaffold(root)
 
-    existing = _existing_instance(root)
-    if existing is not None:
-        print(f"den board: already running for {root.name}: {existing}")
-        if open_browser:
-            with suppress(webbrowser.Error):
-                webbrowser.open(existing)
-        return 0
+    # Windows consoles and redirected pipes can carry a narrow code page
+    # (cp932/cp1252); the note echo below must never crash the server over
+    # an unencodable character.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        with suppress(OSError, ValueError):
+            reconfigure(errors="replace")
+
+    early_exit = _acquire(root, open_browser=open_browser)
+    if early_exit is not None:
+        return early_exit
 
     cfg_port = config.get("port")
     preferred = (
@@ -389,7 +459,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         server = make_server(root, config, preferred)
     except OSError as exc:
-        print(f"den board: cannot bind a port: {exc}", file=sys.stderr)
+        with suppress(OSError):
+            _lock_path(root).unlink()  # release the claim we hold
+        print(f"den board: cannot start: {exc}", file=sys.stderr)
         return 1
 
     port = server.server_address[1]
