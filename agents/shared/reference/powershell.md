@@ -25,7 +25,9 @@ costs the features that make cross-platform scripts tractable.
 ## 2. Tooling: PSScriptAnalyzer + Pester
 
 **Rule:** Lint gate is `Invoke-ScriptAnalyzer` clean at `-Severity Error` -
-eight rules, the same bar den's CI applies. The conventions in sections
+the same bar den's CI applies. (Eight rules nominally; for a non-DSC
+script the live set is four, none of which cover the conventions
+below.) The conventions in sections
 3, 5, 6, and 7 report at Warning severity: review enforces them, the
 gate does not. Tests are Pester 5 (`Describe` / `It` / `Should`) in
 `*.Tests.ps1` files, invoked separately (`Invoke-Pester`); the gate
@@ -56,8 +58,13 @@ singular noun, PascalCase. Parameters PascalCase; locals camelCase.
 errors continue) turn typos into silent wrong behavior;
 strict mode turns them into failures at the fault line.
 
-- Native executables do NOT throw: check `$LASTEXITCODE` after every
-  native call, always. `$?` is a last-command boolean, not an exit code.
+- Native-command failures are a pinned DECISION, not a language fact:
+  since 7.4, `$PSNativeCommandUseErrorActionPreference = $true` makes
+  native commands throw under `$ErrorActionPreference`. Pin: leave it
+  at its default (`$false`) and check `$LASTEXITCODE` after every
+  native call - identical behavior on 7.0-7.3, and the failure
+  handling stays visible at the call site. `$?` is a last-command
+  boolean, not an exit code.
 - Terminating vs non-terminating matters: cmdlet failures obey
   `$ErrorActionPreference`; add `-ErrorAction Stop` on the calls whose
   failure must be caught even if a caller relaxed the preference.
