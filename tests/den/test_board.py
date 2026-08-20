@@ -225,7 +225,9 @@ def test_release_lock_only_removes_own(tmp_path):
 def test_tail_lines_boundaries(tmp_path):
     path = tmp_path / "reports.jsonl"
     entries = [json.dumps({"n": i, "pad": "x" * 20}) + "\n" for i in range(5)]
-    path.write_text("".join(entries), encoding="utf-8")
+    # write_bytes: text mode would translate \n to \r\n on Windows and shift
+    # every byte-window boundary this test pins.
+    path.write_bytes("".join(entries).encode("utf-8"))
     full = [e.rstrip("\n") for e in entries]
     line = len(entries[0])
 
