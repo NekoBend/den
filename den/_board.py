@@ -49,6 +49,7 @@ _MAX_BUTTON_LEN = 64
 _MAX_TEXT_LEN = 16000
 _MAX_LIST_LIMIT = 500
 _MAX_LIST_BYTES = 512 * 1024
+_MAX_DRAIN_BYTES = 2 * 1024 * 1024
 _MAX_PORT = 65535
 
 _DEFAULT_CONFIG: dict[str, object] = {
@@ -220,6 +221,7 @@ def make_server(
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = f"den-board/{__version__}"
+    timeout = 10  # a stalled or lying client must not pin a handler thread
 
     @property
     def board(self) -> _BoardServer:
@@ -316,6 +318,19 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             length = 0
         if length <= 0 or length > _MAX_BODY_BYTES:
+            # Drain a bounded amount before answering: rejecting mid-upload
+            # aborts the connection on Windows (WinError 10053) and the
+            # client never sees the 413 - it would misread a healthy server
+            # as offline. Past the drain cap the connection is desynced, so
+            # close it.
+            remaining = min(max(length, 0), _MAX_DRAIN_BYTES)
+            with suppress(OSError):
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            self.close_connection = True
             self._send_json(413, {"error": "body size"})
             return
         try:
