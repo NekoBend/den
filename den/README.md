@@ -134,7 +134,9 @@ Multiple boards coexist: each project has its own server, file, and lock.
 If the preferred port is busy the next free one is used; a second
 `den board` in the same project just reprints the live instance's URL; the
 page titles itself after the project so parallel tabs stay apart. The
-server binds 127.0.0.1 only. Edit `.den/board/board.json` to rename the
+server binds 127.0.0.1 only, refuses non-loopback Host headers (DNS
+rebinding), and refuses browser writes whose Origin is not the board
+itself. Edit `.den/board/board.json` to rename the
 board or change its button set (`{id, label, color}` per button); delete
 `reports.jsonl` (or ask the agent to) when a session is done.
 

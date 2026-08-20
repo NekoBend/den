@@ -25,12 +25,13 @@ def served(tmp_path):
     thread.join(timeout=5)
 
 
-def _request(port, method, path, body=None):
+def _request(port, method, path, body=None, headers=None):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         payload = None if body is None else json.dumps(body).encode()
-        headers = {} if body is None else {"Content-Type": "application/json"}
-        conn.request(method, path, body=payload, headers=headers)
+        all_headers = {} if body is None else {"Content-Type": "application/json"}
+        all_headers.update(headers or {})
+        conn.request(method, path, body=payload, headers=all_headers)
         resp = conn.getresponse()
         return resp.status, resp.read()
     finally:
@@ -165,3 +166,69 @@ def test_main_usage_errors():
     assert _board.main(["--bogus"]) == 2
     assert _board.main(["--port", "abc"]) == 2
     assert _board.main(["--help"]) == 0
+
+
+def test_port_out_of_range_is_usage_error():
+    assert _board.main(["--port", "-1"]) == 2
+    assert _board.main(["--port", "70000"]) == 2
+
+
+def test_cross_origin_post_rejected(served):
+    root, _server, port = served
+    status, _ = _request(
+        port,
+        "POST",
+        "/api/report",
+        {"button": "bug", "text": "forged"},
+        headers={"Origin": "http://evil.example"},
+    )
+    assert status == 403
+    assert not (root / ".den" / "board" / "reports.jsonl").exists()
+
+    status, _ = _request(
+        port,
+        "POST",
+        "/api/report",
+        {"button": "bug", "text": "own page"},
+        headers={"Origin": f"http://127.0.0.1:{port}"},
+    )
+    assert status == 200
+
+
+def test_rebinding_host_rejected(served):
+    _root, _server, port = served
+    status, _ = _request(port, "GET", "/api/reports", headers={"Host": "evil.example"})
+    assert status == 403
+    status, _ = _request(
+        port,
+        "POST",
+        "/api/report",
+        {"button": "bug"},
+        headers={"Host": "evil.example:80"},
+    )
+    assert status == 403
+
+
+def test_release_lock_only_removes_own(tmp_path):
+    lock = tmp_path / ".den" / "board" / "server.json"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(json.dumps({"pid": 999_999_999, "port": 1}))
+    _board._release_lock(tmp_path)
+    assert lock.is_file(), "a twin's lock is left alone"
+    lock.write_text(json.dumps({"pid": __import__("os").getpid(), "port": 1}))
+    _board._release_lock(tmp_path)
+    assert not lock.exists(), "our own lock is removed"
+
+
+def test_tail_lines_returns_only_complete_lines(tmp_path):
+    path = tmp_path / "reports.jsonl"
+    entries = [json.dumps({"n": i, "pad": "x" * 20}) + "\n" for i in range(5)]
+    path.write_text("".join(entries), encoding="utf-8")
+
+    assert _board._tail_lines(path, 10_000) == [e.rstrip("\n") for e in entries]
+
+    window = len(entries[0]) * 2 + 10  # cuts into entry 2 -> partial dropped
+    tail = _board._tail_lines(path, window)
+    assert 0 < len(tail) < 5
+    assert all(json.loads(line) for line in tail), "every returned line parses"
+    assert json.loads(tail[-1])["n"] == 4

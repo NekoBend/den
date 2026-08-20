@@ -47,6 +47,8 @@ _MAX_BODY_BYTES = 64 * 1024
 _MAX_BUTTON_LEN = 64
 _MAX_TEXT_LEN = 16000
 _MAX_LIST_LIMIT = 500
+_MAX_LIST_BYTES = 512 * 1024
+_MAX_PORT = 65535
 
 _DEFAULT_CONFIG: dict[str, object] = {
     "title": None,
@@ -92,6 +94,23 @@ def ensure_scaffold(root: Path) -> dict[str, object]:
     return {**_DEFAULT_CONFIG, **loaded}
 
 
+def _tail_lines(path: Path, max_bytes: int) -> list[str]:
+    """Last complete lines within the trailing max_bytes of the file, so a
+    long-lived board never loads an unbounded file per 5s poll."""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes and lines:
+        return lines[1:]  # the first line in the window is a partial one
+    return lines
+
+
 def _title(root: Path, config: dict[str, object]) -> str:
     title = config.get("title")
     return title if isinstance(title, str) and title.strip() else root.name
@@ -118,6 +137,16 @@ def _existing_instance(root: Path) -> str | None:
     with suppress(OSError):
         lock.unlink()
     return None
+
+
+def _release_lock(root: Path) -> None:
+    """Remove the lock only if this process owns it (a concurrent start may
+    have overwritten it; deleting a twin's lock would orphan that server)."""
+    lock = _lock_path(root)
+    with suppress(OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        info = json.loads(lock.read_text(encoding="utf-8"))
+        if int(info.get("pid", -1)) == os.getpid():
+            lock.unlink()
 
 
 class _BoardServer(ThreadingHTTPServer):
@@ -164,6 +193,20 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:  # ruff: ignore[builtin-argument-shadowing]  # stdlib signature
         """Silence the default per-request stderr line."""
 
+    def _host_ok(self) -> bool:
+        """Reject DNS-rebinding: the Host header must be a loopback name."""
+        host = self.headers.get("Host", "")
+        hostname = host.rsplit(":", 1)[0] if not host.startswith("[") else "[::1]"
+        return hostname in {"127.0.0.1", "localhost", "[::1]"}
+
+    def _origin_ok(self) -> bool:
+        """Reject cross-site writes. A browser sends Origin on every fetch
+        POST; a foreign page's POST (a no-preflight text/plain "simple
+        request" included) carries its own origin and is refused. Requests
+        without Origin (curl, scripts) are local tools, not browsers."""
+        origin = self.headers.get("Origin")
+        return origin is None or origin == f"http://{self.headers.get('Host', '')}"
+
     def _send_json(self, code: int, obj: dict[str, object]) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -174,6 +217,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
+        if not self._host_ok():
+            self._send_json(403, {"error": "bad host"})
+            return
         url = urlparse(self.path)
         if url.path == "/":
             body = self.board.board_html
@@ -214,10 +260,7 @@ class _Handler(BaseHTTPRequestHandler):
             limit = max(1, min(int(raw_limit), _MAX_LIST_LIMIT))
         except ValueError:
             limit = 100
-        path = _reports_path(self.board.board_root)
-        lines: list[str] = []
-        with suppress(OSError):
-            lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _tail_lines(_reports_path(self.board.board_root), _MAX_LIST_BYTES)
         reports: list[object] = []
         for line in lines[-limit:]:
             with suppress(json.JSONDecodeError):
@@ -225,6 +268,9 @@ class _Handler(BaseHTTPRequestHandler):
         return {"reports": reports, "total": len(lines)}
 
     def do_POST(self) -> None:
+        if not self._host_ok() or not self._origin_ok():
+            self._send_json(403, {"error": "cross-site request refused"})
+            return
         if urlparse(self.path).path != "/api/report":
             self._send_json(404, {"error": "not found"})
             return
@@ -298,6 +344,8 @@ def _parse_args(args: list[str]) -> tuple[int | None, bool, Path | None] | None:
                 port = int(args[i + 1])
             except ValueError:
                 return None
+            if not 0 <= port <= _MAX_PORT:
+                return None
             i += 1
         elif arg == "--dir" and i + 1 < len(args):
             root = Path(args[i + 1]).expanduser()
@@ -335,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         port_arg
         if port_arg is not None
         else cfg_port
-        if isinstance(cfg_port, int)
+        if isinstance(cfg_port, int) and 0 <= cfg_port <= _MAX_PORT
         else _PREFERRED_PORT
     )
     try:
@@ -373,8 +421,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        with suppress(OSError):
-            lock.unlink()
+        _release_lock(root)
         server.server_close()
     return 0
 
