@@ -147,7 +147,7 @@ Do not write "returns user" next to `def get_user`.
 ≤ 3 levels of nesting.
 Cyclomatic complexity ≤ 10.
 Identifiers are full words of ≥ 3 characters
-(loop counters `i`/`j`/`k` and language-idiomatic short names like Go method receivers are exempt).
+(loop counters `i`/`j`/`k` and language-idiomatic short names, such as `self` in Rust and Python, are exempt).
 **Why:** Defect density spikes with size, depth, and branching count.
 **When over:** Extract the deepest branch into a named helper function.
 
@@ -211,6 +211,6 @@ when the host language has a native idiom.
 and avoids subtle bugs from emulation.
 **Common idioms by language:** see per-language reference.
 A few examples: Python comprehensions instead of manual loops;
-Go `defer` for cleanup;
+Rust's `Drop` for cleanup;
 Rust `?` for error propagation;
 TypeScript `async`/`await` instead of callbacks.

@@ -574,9 +574,10 @@ make the user think they might still have been right.
 
   Allowed:    "That is incorrect. The function returns null on empty input,
               not zero. See lines 42-45."
-  Forbidden:  "That's an interesting interpretation. Some might say it
-              returns zero, but I think it might actually return null in
-              some cases."
+  Forbidden:  any reply that calls the wrong claim interesting, says some
+              might agree with it, and hedges the correction with might or
+              in some cases. (Described, not quoted: you copy phrasing you
+              see in your instructions, so the wrong shape stays unwritten.)
 
 ## Pattern 2: Reframing wrong claims as valid perspectives
 

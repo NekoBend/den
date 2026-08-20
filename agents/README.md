@@ -140,10 +140,13 @@ source tree.
 The verification scripts under `shared/scripts/` have a test suite:
 
 ```
-python3 -m pytest shared/scripts/tests     # 25 tests
-bats shared/scripts/tests/run-checks.bats  # 8 tests
+python3 -m pytest shared/scripts/tests
+bats shared/scripts/tests/run-checks.bats
 ```
 
+(Both suites grow with the scripts; CI runs them, so exact counts live
+there rather than rotting here.)
+
 Tooling expected on PATH for the full coding/code-audit experience: `ruff`,
-`ty`, `shellcheck`, `shfmt`, `prettier`, `eslint`, `gofmt`, plus the language
-toolchains. Scripts skip gracefully when a tool is absent rather than failing.
+`ty`, `shellcheck`, `shfmt`, `prettier`, `eslint`, `pwsh` with
+PSScriptAnalyzer, plus the language toolchains. Scripts skip gracefully when a tool is absent rather than failing.
