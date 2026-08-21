@@ -71,6 +71,12 @@ failure changes what every later step is allowed to conclude.
 If you cannot reproduce it, stop and report that as the finding - what you
 ran, what you got instead, and what you would need to see it fail.
 A cause proposed for a failure you never observed is a guess.
+When only the user can exercise the thing (a game, a device, another
+machine) and the workspace uses the den board, file the check instead of
+asking in chat: `den board task "<exactly what to try>"` prints a task
+id, and the user's reaction arrives in `.den/board/reports.jsonl` as a
+line whose `re` field equals that id. Answer a specific report with
+`den board reply <report-id> "<text>"`.
 
 ### Step R3: Shrink it
 Remove inputs, steps, and files until removing anything more makes the

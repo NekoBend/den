@@ -336,6 +336,169 @@ def test_existing_instance_survives_non_dict_ping(tmp_path):
         srv.server_close()
 
 
+def test_report_gets_auto_id_and_re(served):
+    root, _server, port = served
+    status, body = _request(
+        port,
+        "POST",
+        "/api/report",
+        {"button": "task-done", "text": "cleared", "re": "abc12345"},
+    )
+    assert status == 200
+    rid = json.loads(body)["id"]
+    assert isinstance(rid, str) and len(rid) == 8
+
+    entry = json.loads(
+        (root / ".den" / "board" / "reports.jsonl").read_text().splitlines()[-1]
+    )
+    assert entry["id"] == rid
+    assert entry["re"] == "abc12345"
+
+
+def test_report_re_validation(served):
+    _root, _server, port = served
+    status, _ = _request(port, "POST", "/api/report", {"button": "bug", "re": 7})
+    assert status == 400
+    status, _ = _request(port, "POST", "/api/report", {"button": "bug", "re": "x" * 65})
+    assert status == 400
+
+
+def test_agent_endpoint_serves_and_derives_ids(served):
+    root, _server, port = served
+    agent = root / ".den" / "board" / "agent.jsonl"
+    agent.write_text(
+        json.dumps({"id": "fixedid1", "type": "task", "text": "with id"})
+        + "\n"
+        + json.dumps({"type": "task", "text": "no id"})
+        + "\n"
+        + "not json\n",
+        encoding="utf-8",
+    )
+    status, body = _request(port, "GET", "/api/agent")
+    assert status == 200
+    entries = json.loads(body)["entries"]
+    assert len(entries) == 2, "broken line skipped"
+    assert entries[0]["id"] == "fixedid1"
+    derived = entries[1]["id"]
+    assert isinstance(derived, str) and len(derived) == 8
+
+    _status, body2 = _request(port, "GET", "/api/agent")
+    assert json.loads(body2)["entries"][1]["id"] == derived, "derived id stable"
+
+
+def test_cli_task_and_reply(tmp_path, capsys):
+    assert _board.main(["task", "--dir", str(tmp_path), "boss", "crash?"]) == 0
+    task_id = capsys.readouterr().out.strip()
+    assert len(task_id) == 8
+
+    assert _board.main(["reply", "--dir", str(tmp_path), task_id, "fixed"]) == 0
+    reply_id = capsys.readouterr().out.strip()
+    assert len(reply_id) == 8 and reply_id != task_id
+
+    lines = [
+        json.loads(ln)
+        for ln in (tmp_path / ".den" / "board" / "agent.jsonl").read_text().splitlines()
+    ]
+    assert lines[0] == {
+        **lines[0],
+        "type": "task",
+        "text": "boss crash?",
+        "id": task_id,
+    }
+    assert lines[1] == {
+        **lines[1],
+        "type": "reply",
+        "re": task_id,
+        "text": "fixed",
+        "id": reply_id,
+    }
+
+
+def test_cli_agent_usage_errors(tmp_path):
+    assert _board.main(["task", "--dir", str(tmp_path)]) == 2, "no text"
+    assert _board.main(["reply", "--dir", str(tmp_path)]) == 2, "no id"
+    assert _board.main(["reply", "--dir", str(tmp_path), "x" * 65, "t"]) == 2
+    assert not (tmp_path / ".den" / "board" / "agent.jsonl").exists()
+
+
+def test_page_has_tasks_section(served):
+    _root, _server, port = served
+    _status, body = _request(port, "GET", "/")
+    assert b"Tasks from the agent" in body
+
+
+def test_line_separator_chars_stay_visible(served):
+    root, _server, port = served
+    _board._append_agent(root, "task", "plan A\u2028plan B\u2029end\u0085.", None)
+    _status, body = _request(port, "GET", "/api/agent")
+    entries = json.loads(body)["entries"]
+    assert len(entries) == 1, "U+2028/29/85 must not shred the line"
+    assert "plan A\u2028plan B" in entries[0]["text"]
+
+
+def test_cli_rejects_flag_like_input(tmp_path):
+    assert _board.main(["task", "--dir", str(tmp_path), "--port", "9000"]) == 2
+    assert _board.main(["task", "--dir"]) == 2, "valueless --dir"
+    assert _board.main(["task", "--help"]) == 0, "help shows usage"
+    assert not (tmp_path / ".den" / "board" / "agent.jsonl").exists()
+
+    assert _board.main(["task", "--dir", str(tmp_path), "--", "--literal"]) == 0
+    line = json.loads(
+        (tmp_path / ".den" / "board" / "agent.jsonl").read_text().splitlines()[0]
+    )
+    assert line["text"] == "--literal", "-- terminator keeps dash text"
+
+
+def test_reaction_joined_server_side(served):
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    status, _ = _request(
+        port,
+        "POST",
+        "/api/report",
+        {"button": "task-done", "text": "ok", "re": task_id},
+    )
+    assert status == 200
+    _status, body = _request(port, "GET", "/api/agent")
+    entry = json.loads(body)["entries"][0]
+    assert entry["reaction"]["button"] == "task-done"
+    assert entry["reaction"]["text"] == "ok"
+
+
+def test_derived_ids_of_duplicate_lines_stay_distinct(served):
+    root, _server, port = served
+    raw = json.dumps({"type": "task", "text": "same"}) + "\n"
+    (root / ".den" / "board" / "agent.jsonl").write_text(raw + raw, encoding="utf-8")
+    _status, body = _request(port, "GET", "/api/agent")
+    ids = [e["id"] for e in json.loads(body)["entries"]]
+    assert len(ids) == 2 and ids[0] != ids[1]
+
+    _status, body2 = _request(port, "GET", "/api/agent")
+    assert [e["id"] for e in json.loads(body2)["entries"]] == ids, "stable"
+
+
+def test_append_agent_survives_lone_surrogate(tmp_path):
+    entry_id = _board._append_agent(tmp_path, "task", "bad\udcffbyte", None)
+    line = json.loads(
+        (tmp_path / ".den" / "board" / "agent.jsonl").read_text().splitlines()[0]
+    )
+    assert line["id"] == entry_id
+    assert "\udcff" not in line["text"], "surrogate scrubbed, no crash"
+
+
+def test_page_sends_anti_framing_headers(served):
+    _root, _server, port = served
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.getheader("X-Frame-Options") == "DENY"
+        assert "frame-ancestors" in (resp.getheader("Content-Security-Policy") or "")
+    finally:
+        conn.close()
+
+
 def test_main_serve_path_writes_lock_and_reprints(tmp_path, capsys):
     board = tmp_path / ".den" / "board"
     board.mkdir(parents=True)

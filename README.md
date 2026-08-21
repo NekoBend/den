@@ -69,6 +69,9 @@ Python implementation replaces the old bash + PowerShell installers.
   (a button press plus a note) while testing something an agent cannot run
   itself; each report lands as one JSON line in `.den/board/reports.jsonl`,
   which agents read directly (the troubleshoot skill checks for it by name).
+  The channel is two-way: `den board task` / `den board reply` let an agent
+  put tasks on the page and thread answers under reports, with reactions
+  flowing back through `reports.jsonl`.
 
 ## CI
 
