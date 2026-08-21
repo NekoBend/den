@@ -102,7 +102,9 @@ Three tests, all required: the subtasks are independent (no shared
 files, no shared conclusions), the work is bigger than a handful of
 tool calls, and the master would otherwise go dark on the user.
 Fail any one and the right plan is to do the work directly - say so
-in one line and do it.
+in one line and do it. One standing exception passes P1 without the
+size test: rule 2's independent review of a deliverable the master
+authored.
 
 ### Step P2: Cut along independence
 One worker per independent subtask; for review, one worker per lens
@@ -177,14 +179,17 @@ judgment are its whole job. Workers are picked per role:
 | independent review (rule 2), judging    | the master's own tier  |
 
 Two caveats. Small-model workers do not reliably load skills
-(measured), so their briefs must be self-contained - never "use the coding skill".
+(measured: a haiku-class worker fired a skill 0 times in 9 natural
+scenarios where a sonnet-class one fired), so their briefs must be
+self-contained - never "use the coding skill".
 And delegation POSTURE follows the master's model, because the
 vendor's guidance points opposite directions: a Fable-class master
 delegates freely, communicates asynchronously, and uses fresh-context
 verifier workers; an Opus-5-class master delegates sparingly, keeps
-spawn counts low, and keeps ROUTINE double-checking in its own loop
-instead of spawning verifiers for it. Rule 2 is the deliberate
-exception on every tier, posture notwithstanding: a deliverable the
+spawn counts low, and keeps its own verification in its own loop -
+the vendor's words are "do NOT use subagents to verify your own work".
+Rule 2 deliberately overrides that on every tier, posture
+notwithstanding: a deliverable the
 master authored gets independent read-only review before it ships, and
 that review is also the one delegation exempt from the
 handful-of-tool-calls test.
@@ -250,7 +255,8 @@ Drop the lines a single-mode pass did not reach.
 
 ## Self-check (run before sending)
 
-- [ ] Nothing was delegated that fit in a handful of tool calls.
+- [ ] Nothing was delegated that fit in a handful of tool calls
+      (rule 2's independent review is the standing exception).
 - [ ] Each brief was complete the first time; no re-brief round trips.
 - [ ] The user heard what was launched, and the conversation continued
       while backgrounded workers ran - or a foreground or sequential
