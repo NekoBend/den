@@ -3,6 +3,7 @@
   install    deploy skills, the shell environment, hooks, or cheatsheets
   uninstall  remove den-installed files (keeping ones you changed)
   upgrade    upgrade den itself via uv; --refresh redeploys bundled content
+  board      serve the project's report board (user-side debug reports)
 
 Runtime plumbing invoked by installed hooks and skills (not part of the
 everyday surface):
@@ -32,6 +33,8 @@ def _usage() -> None:
         "  remove den-installed files\n"
         "  upgrade   [--refresh]                     "
         " upgrade den via uv (alias: update)\n"
+        "  board     [--port N] [--open] [--dir PATH]"
+        " serve the local report board\n"
         "\n"
         "Run 'den <command> --help' for command-specific options.\n"
         "(den hook / den memory / den verify are runtime plumbing"
@@ -79,6 +82,11 @@ def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-
 
     if cmd in {"upgrade", "update"}:
         from ._upgrade import main as _main
+
+        return _main(rest)
+
+    if cmd == "board":
+        from ._board import main as _main
 
         return _main(rest)
 
