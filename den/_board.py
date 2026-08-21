@@ -13,20 +13,32 @@ second `den board` in the same project finds the live instance and just
 reprints its URL, and the page titles itself after the project so parallel
 tabs stay distinguishable.
 
+The channel is two-way, but each file has exactly one writer. The server
+appends the user's reports; agents append tasks and replies to their own
+file (via `den board task` / `den board reply`, which generate the ids),
+and the page renders both: tasks get Done / Can't buttons whose reaction
+lands in reports.jsonl carrying re=<task id>, and replies thread under
+the report they name. Agents still never talk to the server.
+
 Usage:
   den board [--port N] [--open] [--dir PATH]
+  den board task  [--dir PATH] <text>              agent files a task
+  den board reply [--dir PATH] <report-id> <text>  agent answers a report
 
 Files under <project>/.den/board/:
   board.json     title, preferred port, button set (edit freely)
-  reports.jsonl  one JSON line per report - the agent-facing surface
+  reports.jsonl  server-appended: user reports and task reactions
+  agent.jsonl    agent-appended: tasks and replies (the page displays it)
   server.json    pid + port of the live server (removed on exit)
 """
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -77,6 +89,22 @@ def _lock_path(root: Path) -> Path:
     return _board_dir(root) / "server.json"
 
 
+def _agent_path(root: Path) -> Path:
+    return _board_dir(root) / "agent.jsonl"
+
+
+def _new_id() -> str:
+    return secrets.token_hex(4)
+
+
+def _derived_id(line: str) -> str:
+    """Stable fallback id for an agent line that carries none: the same
+    line always maps to the same id, so reactions stay attributable even
+    when an agent appended raw JSON without an id field."""
+    digest = hashlib.sha1(line.encode("utf-8"), usedforsecurity=False)
+    return digest.hexdigest()[:8]
+
+
 def ensure_scaffold(root: Path) -> dict[str, object]:
     """Create .den/board/board.json with defaults; never clobber edits."""
     cfg_path = _board_dir(root) / "board.json"
@@ -96,6 +124,17 @@ def ensure_scaffold(root: Path) -> dict[str, object]:
     return {**_DEFAULT_CONFIG, **loaded}
 
 
+def _split_jsonl(data: bytes) -> list[str]:
+    """Split on real newlines ONLY. str.splitlines() would also break on
+    U+2028/U+2029/U+0085, which json.dumps(ensure_ascii=False) writes raw
+    inside a line - splitting there shreds a valid entry into fragments
+    that json.loads rejects, making the entry silently invisible."""
+    lines = [ln.rstrip("\r") for ln in data.decode("utf-8", "replace").split("\n")]
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def _tail_lines(path: Path, max_bytes: int) -> list[str]:
     """Last complete lines within the trailing max_bytes of the file, so a
     long-lived board never loads an unbounded file per 5s poll."""
@@ -105,7 +144,7 @@ def _tail_lines(path: Path, max_bytes: int) -> list[str]:
             size = f.tell()
             if size <= max_bytes:
                 f.seek(0)
-                return f.read().decode("utf-8", errors="replace").splitlines()
+                return _split_jsonl(f.read())
             # Read ONE extra byte before the window: splitting on it makes
             # the first split-line the partial (or, when the extra byte is a
             # newline, an empty marker), so dropping lines[0] is exact even
@@ -114,7 +153,17 @@ def _tail_lines(path: Path, max_bytes: int) -> list[str]:
             data = f.read()
     except OSError:
         return []
-    return data.decode("utf-8", errors="replace").splitlines()[1:]
+    return _split_jsonl(data)[1:]
+
+
+def _valid_report(button: object, text: object, re_id: object) -> bool:
+    if not isinstance(button, str) or not button.strip():
+        return False
+    if len(button) > _MAX_BUTTON_LEN:
+        return False
+    if not isinstance(text, str) or len(text) > _MAX_TEXT_LEN:
+        return False
+    return re_id is None or (isinstance(re_id, str) and len(re_id) <= 64)
 
 
 def _title(root: Path, config: dict[str, object]) -> str:
@@ -265,6 +314,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            # A framed board could be clickjacked into fabricated task
+            # reactions that an agent would read as the user's answer.
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -281,6 +334,8 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif url.path == "/api/reports":
             self._send_json(200, self._list_reports(url.query))
+        elif url.path == "/api/agent":
+            self._send_json(200, self._list_agent())
         elif url.path == "/api/ping":
             self._send_json(
                 200,
@@ -305,6 +360,47 @@ class _Handler(BaseHTTPRequestHandler):
             with suppress(json.JSONDecodeError):
                 reports.append(json.loads(line))
         return {"reports": reports, "total": len(lines)}
+
+    def _list_agent(self) -> dict[str, object]:
+        root = self.board.board_root
+        lines = _tail_lines(_agent_path(root), _MAX_LIST_BYTES)
+        # Settlement is joined HERE, over the full reports tail window - the
+        # page's 100-report slice must never decide whether a task is open
+        # (a reaction older than 100 reports would "reopen" it and invite a
+        # second, conflicting reaction).
+        reactions: dict[str, dict[str, object]] = {}
+        for line in _tail_lines(_reports_path(root), _MAX_LIST_BYTES):
+            with suppress(json.JSONDecodeError):
+                rep = json.loads(line)
+                if (
+                    isinstance(rep, dict)
+                    and isinstance(rep.get("re"), str)
+                    and isinstance(rep.get("button"), str)
+                    and rep["button"].startswith("task-")
+                ):
+                    reactions[rep["re"]] = rep
+        entries: list[object] = []
+        seen: dict[str, int] = {}
+        for line in lines:
+            with suppress(json.JSONDecodeError):
+                entry = json.loads(line)
+                if not isinstance(entry, dict):
+                    continue
+                if not isinstance(entry.get("id"), str) or not entry["id"]:
+                    # Occurrence-salted so duplicate id-less lines stay
+                    # distinct; append-only order keeps the salt stable.
+                    n = seen.get(line, 0)
+                    seen[line] = n + 1
+                    entry["id"] = _derived_id(line if n == 0 else f"{line}#{n}")
+                if entry.get("type") == "task" and entry["id"] in reactions:
+                    r = reactions[entry["id"]]
+                    entry["reaction"] = {
+                        "button": r.get("button"),
+                        "ts": r.get("ts"),
+                        "text": r.get("text"),
+                    }
+                entries.append(entry)
+        return {"entries": entries, "total": len(lines)}
 
     def do_POST(self) -> None:
         if not self._host_ok() or not self._origin_ok():
@@ -340,20 +436,20 @@ class _Handler(BaseHTTPRequestHandler):
             return
         button = payload.get("button") if isinstance(payload, dict) else None
         text = payload.get("text", "") if isinstance(payload, dict) else ""
-        if (
-            not isinstance(button, str)
-            or not button.strip()
-            or len(button) > _MAX_BUTTON_LEN
-            or not isinstance(text, str)
-            or len(text) > _MAX_TEXT_LEN
-        ):
-            self._send_json(400, {"error": "expected {button: str, text?: str}"})
+        re_id = payload.get("re") if isinstance(payload, dict) else None
+        if not isinstance(button, str) or not _valid_report(button, text, re_id):
+            self._send_json(
+                400, {"error": "expected {button: str, text?: str, re?: str}"}
+            )
             return
-        entry = {
+        entry: dict[str, object] = {
             "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "id": _new_id(),
             "button": button.strip(),
             "text": text.strip(),
         }
+        if isinstance(re_id, str) and re_id.strip():
+            entry["re"] = re_id.strip()
         line = json.dumps(entry, ensure_ascii=False) + "\n"
         path = _reports_path(self.board.board_root)
         with self.board.append_lock:
@@ -362,12 +458,14 @@ class _Handler(BaseHTTPRequestHandler):
                 f.write(line)
         note = f" {entry['text']}" if entry["text"] else ""
         print(f"[den board] {entry['ts']} [{entry['button']}]{note}", flush=True)
-        self._send_json(200, {"ok": True})
+        self._send_json(200, {"ok": True, "id": entry["id"]})
 
 
 def _usage() -> None:
     print(
         "usage: den board [--port N] [--open] [--dir PATH]\n"
+        "       den board task  [--dir PATH] <text>\n"
+        "       den board reply [--dir PATH] <report-id> <text>\n"
         "\n"
         "Serve the project's report board (http://127.0.0.1:8484 by default;\n"
         "falls back to the next free port). The user files reports from the\n"
@@ -375,10 +473,90 @@ def _usage() -> None:
         "which agents read directly. Edit .den/board/board.json to rename\n"
         "the board or change its buttons.\n"
         "\n"
+        "task / reply are for AGENTS: they append one line to\n"
+        ".den/board/agent.jsonl and print its generated id. The page shows\n"
+        "tasks with Done / Can't buttons; the user's reaction lands in\n"
+        "reports.jsonl with re=<that id>. reply threads a note under the\n"
+        "user's report named by <report-id>.\n"
+        "\n"
         '  --port N    preferred port (default 8484, or "port" in board.json)\n'
         "  --open      also open the URL in the default browser\n"
         "  --dir PATH  project root (default: nearest .den ancestor, else cwd)"
     )
+
+
+def _append_agent(root: Path, entry_type: str, text: str, re_id: str | None) -> str:
+    entry_id = _new_id()
+    # Lone surrogates (surrogateescape-decoded argv bytes) survive
+    # json.dumps but explode at the strict utf-8 file write - scrub first.
+    entry: dict[str, object] = {
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "id": entry_id,
+        "type": entry_type,
+        "text": text.strip().encode("utf-8", "replace").decode("utf-8"),
+    }
+    if re_id is not None:
+        entry["re"] = re_id.encode("utf-8", "replace").decode("utf-8")
+    path = _agent_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    # One O_APPEND write: atomic on POSIX. On Windows the CRT emulates
+    # append with seek+write, so two simultaneous appends can still race;
+    # accepted for a personal tool - the reader drops a torn line rather
+    # than crashing.
+    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY)
+    try:
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return entry_id
+
+
+def _cmd_agent(entry_type: str, args: list[str]) -> int:  # ruff: ignore[too-many-return-statements]  # arg validation
+    """`den board task <text>` / `den board reply <report-id> <text>`."""
+    root: Path | None = None
+    rest: list[str] = []
+    literal = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if not literal and arg in {"-h", "--help", "help"}:
+            _usage()
+            return 0
+        if not literal and arg == "--":
+            literal = True
+        elif not literal and arg == "--dir":
+            if i + 1 >= len(args):
+                _usage()
+                return 2
+            root = Path(args[i + 1]).expanduser()
+            i += 1
+        elif not literal and arg.startswith("-"):
+            # An unrecognized flag must not silently become task text (an
+            # agent probing `task --port 9000 x` would file garbage and
+            # believe it succeeded). Literal dash-leading text goes after
+            # a `--` terminator.
+            _usage()
+            return 2
+        else:
+            rest.append(arg)
+        i += 1
+    re_id: str | None = None
+    if entry_type == "reply":
+        if not rest:
+            _usage()
+            return 2
+        re_id = rest.pop(0)
+        if not re_id.strip() or len(re_id) > 64:
+            _usage()
+            return 2
+    text = " ".join(rest).strip()
+    if not text or len(text) > _MAX_TEXT_LEN:
+        _usage()
+        return 2
+    resolved = (root or _find_den_dir(Path.cwd()).parent).resolve()
+    print(_append_agent(resolved, entry_type, text, re_id))
+    return 0
 
 
 def _parse_args(args: list[str]) -> tuple[int | None, bool, Path | None] | None:
@@ -439,6 +617,8 @@ def _acquire(root: Path, *, open_browser: bool) -> int | None:
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
+    if args and args[0] in {"task", "reply"}:
+        return _cmd_agent(args[0], args[1:])
     if args and args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0

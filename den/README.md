@@ -128,7 +128,20 @@ den board                 # serve http://127.0.0.1:8484 for the nearest .den pro
 den board --open          # ...and open it in the browser
 den board --port 9000     # prefer another port
 den board --dir ~/proj    # serve a specific project root
+
+# the agent-side surface (append to .den/board/agent.jsonl, print the new id):
+den board task "retest the boss fight after this fix"
+den board reply <report-id> "seen - fixed in build 7, please retry"
 ```
+
+The channel is two-way with exactly one writer per file: the server appends
+the user's reports to `reports.jsonl`; agents append tasks and replies to
+`agent.jsonl` (ids are generated - use the commands above rather than
+hand-writing JSON; a hand-appended line without an id still works, the
+server derives a stable one from its content). The page shows open tasks
+with Done / Can't buttons - the user's reaction lands in `reports.jsonl`
+with `re=<task id>` - and threads replies under the report they name.
+Agents still never talk to the server.
 
 Multiple boards coexist: each project has its own server, file, and lock.
 If the preferred port is busy the next free one is used; a second
