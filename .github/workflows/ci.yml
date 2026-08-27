@@ -57,7 +57,7 @@ jobs:
               # dist/weak/ is line-oriented on purpose (catalog table, one
               # disambiguation hint per line, one example field per line), so
               # the prose wrap applies to the 72-column parents only.
-              wrapped = "/weak/" not in f
+              wrapped = "/parents/" in f and "/weak/" not in f
               open_tags, sections = [], set()
               for i, raw in enumerate(lines, 1):
                   if "<!--" in raw or "-->" in raw:
@@ -114,6 +114,8 @@ jobs:
           pip install pytest pyyaml
       - name: Pytest (verification scripts)
         run: python3 -m pytest tests/agents
+      - name: den-free skill copies (agents/dist/skills) are current
+        run: python3 -m den._portable --check
       - name: Pytest (den CLI)
         run: python3 -m pytest tests/den
 

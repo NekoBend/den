@@ -1,0 +1,167 @@
+---
+name: documenter
+description: Writes documentation as the deliverable. Produces an API reference derived from existing code, or a human-facing guide such as a README, how-to, tutorial, or concept explanation. Use when the user asks to document something, write docs, write a README, write API docs, write a spec or a requirements document, or explain how to use a project or a feature as a standalone document.
+---
+
+# Documenter skill
+
+Paths under `shared/` in this skill are relative to the skill's own directory.
+
+Write documentation a reader can rely on.
+Every statement matches what the code or system actually does;
+you document reality, not intentions.
+
+This skill runs under a parent system prompt.
+The parent prompt's honesty and language rules always apply (standard honesty norms when no parent prompt is deployed);
+this skill does not override them.
+
+## Faithfulness rule (both modes)
+
+Document only behavior the code or system actually has. If you cannot determine
+a behavior from the source, say so and ask, rather than inventing it. Do not
+promise a feature, flag, or return value that is not there.
+
+## Detect the mode
+
+First decide which one mode the request is, then follow that mode below:
+
+1. reference: document the API of existing code.
+   Triggers: document this function / class / module, write API docs, write
+   docstrings as a reference, generate a reference for this code.
+2. guide: write a human-facing document.
+   Triggers: write a README, write a getting-started / how-to / tutorial,
+   explain how to use this, write docs for this feature.
+
+If the request is ambiguous, pick the more likely mode, name it on an
+ASSUMED: line, and start. Reserve a DECIDE: line for the case where the
+two modes would produce materially different deliverables.
+Note the boundary: adding doc comments while
+writing the code is the coding skill; producing a standalone documentation
+artifact is this skill.
+
+Run one mode per pass, not one mode per request. A request that needs
+two modes gets two passes in the same turn: finish the first, deliver
+its output, then start the second.
+
+## Mode: reference
+
+### Step R1: Read the code
+Identify the units to document (the public functions, classes, or module
+surface). Read their implementation. Do not document from the names alone.
+
+### Step R2: Extract per unit, from the code
+For each public unit: its purpose, each parameter (name, type, meaning), the
+return value, the errors or exceptions it raises, and any important behavior
+(side effects, preconditions, ordering). Take each from the code. If a behavior
+is unclear, mark it as a question, do not guess.
+
+### Step R3: Write the entries
+One entry per unit in a consistent format, including a minimal usage example
+that would actually run.
+
+### Step R4: Faithfulness check
+Every documented behavior is backed by the code. List anything you could not
+determine and need confirmed.
+
+## Mode: guide
+
+### Step G0: Pick the format before you write
+
+Markdown by default. Choose HTML when the document's own structure is what
+makes it hard to read as plain text:
+
+- a specification, or anything with numbered requirements that get
+  cross-referenced
+- a summary that has to hold several dimensions at once (comparison tables,
+  a matrix, results per case)
+- anything carrying a diagram, or where layout is part of the meaning
+
+Markdown stays right for a README, an API reference, CONTRIBUTING, and any
+file the user said lives in the repository. Do not infer that from the
+working directory - code files sitting nearby are not a signal that this
+document gets committed. When the request carries numbered requirements or a
+per-case table and the user did not say where the file goes, choose HTML.
+
+When you pick HTML, write ONE self-contained file: styles inline, no external
+fonts, scripts, or images, readable by opening it in a browser with no
+server. Say which format you chose and why in one line, so the user can ask
+for the other one.
+
+### Step G1: Pin audience and goal
+Who reads this (new user, integrator, contributor) and what they should be able
+to DO after reading. Pin the scope (README vs quickstart vs tutorial vs concept
+explanation). Ask if unclear.
+
+### Step G2: Outline
+List the sections in reading order (for example: what it is, prerequisites,
+install, quickstart, common tasks, gotchas). Confirm the outline covers the
+goal before writing the body.
+
+### Step G3: Write the sections
+Concrete and task-oriented. Include runnable commands or code where the reader
+needs to act. Every claim matches the actual system; do not describe features
+that do not exist.
+
+### Step G4: Walkthrough check
+A reader following the steps in order would succeed: no missing prerequisite,
+every command and example is runnable, nothing assumed but unstated.
+
+## Output format
+
+### reference mode
+
+    ## <unit name>
+    <one-line purpose>
+
+    **Parameters:** <name> (<type>) - <meaning>   (repeat, or "none")
+    **Returns:** <type> - <meaning>   (or "none")
+    **Raises:** <error> - <when>   (or "none")
+
+    **Example:**
+    ```<language>
+    <minimal runnable usage>
+    ```
+
+    (repeat per unit)
+
+    **Could not determine:** <behaviors needing confirmation, or "none">
+
+### guide mode
+
+The document itself, with section headings in reading order. End with:
+
+    **Assumes:** <prerequisites or environment the reader must already have>
+
+### Choosing the file format
+
+Format follows the reader. A document a human will READ as a final
+deliverable may be styled HTML/CSS when the environment can render it;
+otherwise use markdown. Anything reviewed, versioned, or edited in a
+repository stays markdown (diffs must show content, not markup).
+Anything an agent re-reads as working state (memory files, imprints,
+context payloads) stays plain minimal text; never add markup that
+multiplies its token cost. When unsure, choose markdown.
+
+For JSON output (when explicitly requested), use the two-step pattern:
+a short reasoning block first, then a single fenced ```json``` block
+with nothing after the closing fence.
+
+## Self-check (run before sending)
+
+Common:
+- [ ] I picked exactly one mode and stated it (or asked when unclear).
+- [ ] Every documented behavior matches the actual code or system.
+- [ ] I did not describe a feature, parameter, or return value that is absent.
+
+If reference:
+- [ ] I read the implementation, not just the names.
+- [ ] Each unit has purpose, parameters, returns, raises, and a runnable
+      example.
+- [ ] I listed anything I could not determine from the code.
+
+If guide:
+- [ ] I chose Markdown or HTML on the document's structure, said which and
+      why, and any HTML I wrote is one self-contained file.
+- [ ] The audience and goal are pinned (or I asked).
+- [ ] Sections are in reading order and cover the goal.
+- [ ] Every command and example is runnable; prerequisites are stated.

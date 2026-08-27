@@ -7,7 +7,7 @@ every shared/... reference is rewritten to an ABSOLUTE path under that skill's
 own shared/.
 
   den install skills [--tool TOOL]... [--all-tools] [--target DIR]...
-                     [--with-parent] [--profile weak|frontier]
+                     [--with-parent] [--no-den-cli] [--profile weak|frontier]
                      [--dry-run] [--codex-config]
 
 The parent prompt comes in two profiles: frontier (the default; invariants
@@ -192,21 +192,27 @@ class _Writer:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
 
 
-def _install_skill(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
-    name: str, skills_target: Path, writer: _Stager
-) -> str:
-    """Build the self-contained skill in a temp dir (rewriting shared/ refs to
-    its FINAL location), then stage every file for the writer to commit."""
+def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
+    name: str, work: Path, ref_prefix: str, *, no_den_cli: bool = False
+) -> int:
+    """Copy skill `name` to `work` as a self-contained unit: the shared/
+    resources it references are copied inside it and every shared/ reference
+    is rewritten to `ref_prefix` + kind + '/'. With no_den_cli the substitution
+    table (agents/src/no-den-cli.toml) is applied first, removing every
+    mention of den's own CLI. Returns the number of rewritten .md files."""
     src = skills_dir() / name
-    final = skills_target / name
-    abs_final = final.resolve().as_posix()
     rewritten = 0
+    shutil.copytree(src, work, ignore=_ignore)
+    if no_den_cli:
+        from ._portable import strip_den_cli
 
-    with tempfile.TemporaryDirectory() as td:
-        work = Path(td) / name
-        shutil.copytree(src, work, ignore=_ignore)
+        skill_md = work / "SKILL.md"
+        skill_md.write_text(
+            strip_den_cli(name, skill_md.read_text(encoding="utf-8")),
+            encoding="utf-8",
+        )
 
-        # Scan the copied skill (before shared/ is added) for what it references.
+    if True:  # scan the copied skill (before shared/ is added) for what it references
         blob = ""
         for p in work.rglob("*"):
             if p.is_file():
@@ -230,21 +236,34 @@ def _install_skill(  # ruff: ignore[too-many-branches]  # one branch per shared-
         if need_scripts:
             shutil.copytree(sh / "scripts", work / "shared" / "scripts", ignore=_ignore)
 
-        # Rewrite shared/... refs to an absolute path under the skill's FINAL dir.
+        # Rewrite shared/... refs to their destination under the skill itself.
         for md in work.rglob("*.md"):
             try:
                 orig = md.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue  # not a text .md (binary asset); leave it untouched
-            new = _REWRITE_RE.sub(lambda m: f"{abs_final}/shared/{m.group(1)}/", orig)
+            new = _REWRITE_RE.sub(lambda m: f"{ref_prefix}{m.group(1)}/", orig)
             if new != orig:
                 md.write_text(new, encoding="utf-8")
                 rewritten += 1
+    return rewritten
 
+
+def _install_skill(
+    name: str, skills_target: Path, writer: _Stager, *, no_den_cli: bool = False
+) -> str:
+    """Build the self-contained skill in a temp dir (rewriting shared/ refs to
+    its FINAL absolute location), then stage every file for the writer."""
+    final = skills_target / name
+    abs_final = final.resolve().as_posix()
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / name
+        rewritten = _materialize(
+            name, work, f"{abs_final}/shared/", no_den_cli=no_den_cli
+        )
         for f in sorted(work.rglob("*")):
             if f.is_file():
                 writer.stage(final / f.relative_to(work), f.read_bytes())
-
     return f"  {name} (rewrote {rewritten} md files)"
 
 
@@ -257,6 +276,7 @@ def _deploy(
     with_parent: bool,
     dry_run: bool,
     profile: str = "frontier",
+    no_den_cli: bool = False,
 ) -> None:
     names = _skill_names()
     if dry_run:
@@ -268,7 +288,7 @@ def _deploy(
 
     print(f"installing skills -> {skills_target}")
     for name in names:
-        print(_install_skill(name, skills_target, writer))
+        print(_install_skill(name, skills_target, writer, no_den_cli=no_den_cli))
 
     if with_parent and parent_dir is not None and parent_file is not None:
         src = _parent_source(parent_file, profile)
@@ -287,12 +307,12 @@ def _codex_config(skills_target: Path) -> None:
         print("enabled = true\n")
 
 
-def _parse(
+def _parse(  # ruff: ignore[too-many-branches]  # one branch per flag
     argv: list[str],
-) -> tuple[list[str], list[str], bool, bool, bool, bool, str] | None:
+) -> tuple[list[str], list[str], bool, bool, bool, bool, str, bool] | None:
     tools: list[str] = []
     targets: list[str] = []
-    with_parent = dry_run = codex_config = force = False
+    with_parent = dry_run = codex_config = force = no_den_cli = False
     profile = "frontier"
     i = 0
     while i < len(argv):
@@ -321,6 +341,9 @@ def _parse(
         elif a == "--with-parent":
             with_parent = True
             i += 1
+        elif a == "--no-den-cli":
+            no_den_cli = True
+            i += 1
         elif a == "--dry-run":
             dry_run = True
             i += 1
@@ -333,14 +356,25 @@ def _parse(
         else:
             print(f"den install skills: unexpected arg '{a}'", file=sys.stderr)
             return None
-    return tools, targets, with_parent, dry_run, codex_config, force, profile
+    return (
+        tools,
+        targets,
+        with_parent,
+        dry_run,
+        codex_config,
+        force,
+        profile,
+        no_den_cli,
+    )
 
 
 def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  # per-target staging
     parsed = _parse(argv)
     if parsed is None:
         return 2
-    tools, targets, with_parent, dry_run, codex_config, force, profile = parsed
+    tools, targets, with_parent, dry_run, codex_config, force, profile, no_den_cli = (
+        parsed
+    )
     writer = _Writer(force=force)
 
     processed: list[Path] = []
@@ -354,6 +388,7 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             with_parent=with_parent,
             dry_run=dry_run,
             profile=profile,
+            no_den_cli=no_den_cli,
         )
         processed.append(skt)
 
@@ -367,6 +402,7 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             with_parent=with_parent,
             dry_run=dry_run,
             profile=profile,
+            no_den_cli=no_den_cli,
         )
         if with_parent and not dry_run:
             # custom targets get both AGENTS.md and CLAUDE.md at the root
@@ -385,6 +421,7 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             with_parent=with_parent,
             dry_run=dry_run,
             profile=profile,
+            no_den_cli=no_den_cli,
         )
         agents = Path("~/.agents/skills").expanduser()
         _deploy(
@@ -395,6 +432,7 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             with_parent=with_parent,
             dry_run=dry_run,
             profile=profile,
+            no_den_cli=no_den_cli,
         )
         processed.append(agents)
 
@@ -522,7 +560,7 @@ def _usage() -> None:
         "\n"
         "Targets:\n"
         "  skills [--tool T]... [--all-tools] [--target DIR]...\n"
-        "         [--with-parent] [--profile weak|frontier]\n"
+        "         [--with-parent] [--no-den-cli] [--profile weak|frontier]\n"
         "         [--dry-run] [--codex-config] [--force]\n"
         "  shell  [--dry-run] [--no-extras] [--force]\n"
         "         [--coreutils|--no-coreutils] [--bin|--no-bin] [--zsh-plugins]\n"
