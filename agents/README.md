@@ -24,36 +24,38 @@ Pick the one that matches how your tool loads instructions.
 
 | Shape | File(s) | Use when |
 |-------|---------|----------|
-| Standalone chat prompt | `dist/ASSISTANT.md` | You want a single self-contained system prompt, no skills, one worker. The model answers directly. Single variant, all model tiers. |
-| Frontier coding parent | `dist/AGENTS.md` / `dist/CLAUDE.md` + installed `skills/` | Your tool auto-discovers skills from its skill directories (GitHub Copilot, opencode, Claude Code, OpenAI Codex) and reads `AGENTS.md` (or `CLAUDE.md`) as global instructions. The tool does the routing; these files supply the invariants the skills depend on. |
-| Weak coding parent (router + skills) | `dist/weak/AGENTS.md` + `skills/` | Your model is weak and/or the tool has no native skill loader. Deploy this as that environment's `AGENTS.md`: it routes each request to exactly one skill and the model reads that `skills/<name>/SKILL.md` on demand. |
+| Standalone chat prompt | `dist/parents/ASSISTANT.md` | You want a single self-contained system prompt, no skills, one worker. The model answers directly. Single variant, all model tiers. |
+| Frontier coding parent | `dist/parents/AGENTS.md` / `dist/parents/CLAUDE.md` + installed `src/skills/` | Your tool auto-discovers skills from its skill directories (GitHub Copilot, opencode, Claude Code, OpenAI Codex) and reads `AGENTS.md` (or `CLAUDE.md`) as global instructions. The tool does the routing; these files supply the invariants the skills depend on. |
+| Weak coding parent (router + skills) | `dist/parents/weak/AGENTS.md` + `src/skills/` | Your model is weak and/or the tool has no native skill loader. Deploy this as that environment's `AGENTS.md`: it routes each request to exactly one skill and the model reads that `skills/<name>/SKILL.md` on demand. |
 
 `AGENTS.md` and `CLAUDE.md` have identical content; `AGENTS.md` is the
 cross-tool standard, `CLAUDE.md` is the Claude Code name. The dist root is
-the frontier profile; `dist/weak/` is the weak profile.
+the frontier profile; `dist/parents/weak/` is the weak profile.
 
 ## Layout
 
 ```
 agents/
-  skills/<name>/            # the 9 skills
-    SKILL.md                # name + description frontmatter + body
-    examples/               # worked examples (one shape per file)
-    reference/              # only code-audit (dimension + rubric files)
-  shared/
-    reference/*.md          # per-language + architecture / testing / schema-design
-    scripts/                # verification scripts (used by coding, code-audit)
-      *.py, run-checks.sh
-      tests/                # pytest + bats
-  dist/                     # generated parent prompts (committed; do not hand-edit)
-    ASSISTANT.md  AGENTS.md  CLAUDE.md    # standalone chat + frontier parents
-    weak/AGENTS.md                        # weak parent (the skill router)
+  src/                      # hand-authored: the only place to edit
+    skills/<name>/          # the 9 skills
+      SKILL.md              # name + description frontmatter + body
+      examples/             # worked examples (one shape per file)
+      reference/            # only code-audit (dimension + rubric files)
+    shared/
+      reference/*.md        # per-language + architecture / testing / schema-design
+      scripts/              # verification scripts (used by coding, code-audit)
+        *.py, run-checks.sh
+  dist/                     # generated: never hand-edited, CI checks it
+    parents/
+      ASSISTANT.md  AGENTS.md  CLAUDE.md  # standalone chat + frontier parents
+      weak/AGENTS.md                      # weak parent (the skill router)
   README.md
+tests/agents/               # pytest + bats for src/shared/scripts and the invariants
 ```
 
-The `dist/*.md` parent prompts are generated artifacts; their sources and
+`dist/` holds generated artifacts only. The parent prompts' sources and
 generator are maintained outside this repository, and only the output is
-committed. The rest of `agents/` (skills, shared) is authored in place.
+committed. Everything under `src/` is authored in place.
 
 This content is deployed by the `den` CLI (`den install skills`); `agents/` is
 the content, `den install` is how it gets deployed. The content ships bundled
@@ -89,7 +91,7 @@ no shared dependencies.
 
 ## Generated parent prompts
 
-The `dist/*.md` parent prompts are generated artifacts: do not hand-edit them
+Everything under `dist/` is generated: do not hand-edit it
 (edits would be overwritten by the next build). The generator guarantees, and
 CI asserts, the shipped invariants: no HTML comments, ASCII dashes only, and
 no trailing whitespace.
@@ -143,11 +145,12 @@ source tree.
 
 ## Tests
 
-The verification scripts under `shared/scripts/` have a test suite:
+The verification scripts under `src/shared/scripts/` have a test suite (from the
+repository root):
 
 ```
-python3 -m pytest shared/scripts/tests
-bats shared/scripts/tests/run-checks.bats
+python3 -m pytest tests/agents
+bats tests/agents/run-checks.bats
 ```
 
 (Both suites grow with the scripts; CI runs them, so exact counts live

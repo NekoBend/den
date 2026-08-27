@@ -11,8 +11,7 @@ from pathlib import Path
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 _BUNDLE = {
-    "agents/skills": "den/_data/agents/skills",
-    "agents/shared": "den/_data/agents/shared",
+    "agents/src": "den/_data/agents/src",
     "agents/dist": "den/_data/agents/dist",
     "cheatsheets": "den/_data/cheatsheets",
     "shell": "den/_data/shell",

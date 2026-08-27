@@ -6,7 +6,7 @@
 # which hold regardless of which language toolchains are installed.
 
 setup() {
-  SCRIPT="${BATS_TEST_DIRNAME}/../run-checks.sh"
+  SCRIPT="${BATS_TEST_DIRNAME}/../../agents/src/shared/scripts/run-checks.sh"
   WORK="$(mktemp -d)"
 }
 

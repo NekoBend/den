@@ -22,15 +22,15 @@ def cheatsheets_dir() -> Path:
 
 
 def skills_dir() -> Path:
-    return content_root() / "agents" / "skills"
+    return content_root() / "agents" / "src" / "skills"
 
 
 def shared_dir() -> Path:
-    return content_root() / "agents" / "shared"
+    return content_root() / "agents" / "src" / "shared"
 
 
 def dist_dir() -> Path:
-    return content_root() / "agents" / "dist"
+    return content_root() / "agents" / "dist" / "parents"
 
 
 def shell_dir() -> Path:

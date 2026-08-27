@@ -13,7 +13,11 @@ import pytest
 
 yaml = pytest.importorskip("yaml")
 
-_SKILLS = sorted((Path(__file__).resolve().parents[3] / "skills").glob("*/SKILL.md"))
+_SKILLS = sorted(
+    (Path(__file__).resolve().parents[2] / "agents" / "src" / "skills").glob(
+        "*/SKILL.md"
+    )
+)
 
 
 def _frontmatter(text: str) -> str:

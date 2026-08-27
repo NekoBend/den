@@ -92,7 +92,7 @@ jobs:
           print(f"agents/dist: {len(files)} parent prompt(s) clean")
           PY
       - name: Bats (run-checks)
-        run: bats agents/shared/scripts/tests/run-checks.bats
+        run: bats tests/agents/run-checks.bats
 
   tests:
     name: tests (py ${{ matrix.python-version }})
@@ -113,7 +113,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pyyaml
       - name: Pytest (verification scripts)
-        run: python3 -m pytest agents/shared/scripts/tests
+        run: python3 -m pytest tests/agents
       - name: Pytest (den CLI)
         run: python3 -m pytest tests/den
 
@@ -147,9 +147,9 @@ jobs:
           # else a sdist-built install loses `--with-parent` (unanchored dist/).
           sdist = glob.glob("dist/*.tar.gz")[0]
           members = tarfile.open(sdist).getnames()
-          assert any("/agents/dist/CLAUDE.md" in m for m in members), \
+          assert any("/agents/dist/parents/CLAUDE.md" in m for m in members), \
               "agents/dist missing from sdist"
-          assert any("/agents/dist/weak/AGENTS.md" in m for m in members), \
+          assert any("/agents/dist/parents/weak/AGENTS.md" in m for m in members), \
               "agents/dist/weak (weak-profile parent) missing from sdist"
           print(f"wheel clean ({len(names)} entries), sdist has agents/dist")
           PY
