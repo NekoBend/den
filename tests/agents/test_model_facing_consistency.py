@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-AGENTS = Path(__file__).resolve().parents[3]
+AGENTS = Path(__file__).resolve().parents[2] / "agents"
 
 # Built from codepoints so the banned characters never appear literally in
 # this repo (ruff RUF001 flags them, and the test would otherwise be the one
@@ -31,10 +31,12 @@ BANNED_CHARS = {
 
 
 def test_weak_catalog_rows_match_the_skill_directories() -> None:
-    catalog = (AGENTS / "dist" / "weak" / "AGENTS.md").read_text(encoding="utf-8")
+    catalog = (AGENTS / "dist" / "parents" / "weak" / "AGENTS.md").read_text(
+        encoding="utf-8"
+    )
     rows = set(re.findall(r"^\| ([a-z][a-z-]*) +\|", catalog, re.MULTILINE))
     rows.discard("general")  # the documented direct-answer fallback, no dir
-    dirs = {p.parent.name for p in (AGENTS / "skills").glob("*/SKILL.md")}
+    dirs = {p.parent.name for p in (AGENTS / "src" / "skills").glob("*/SKILL.md")}
     assert rows == dirs, (
         f"catalog-only (router dispatches to nothing): {sorted(rows - dirs)}; "
         f"dir-only (skill unreachable via the weak router): {sorted(dirs - rows)}"

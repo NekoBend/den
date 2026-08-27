@@ -23,7 +23,7 @@ def test_content_root_falls_back_to_repo_root(monkeypatch, tmp_path):
 def test_content_dirs_are_under_the_root(monkeypatch, tmp_path):
     monkeypatch.setattr(_content, "content_root", lambda: tmp_path)
     assert _content.cheatsheets_dir() == tmp_path / "cheatsheets"
-    assert _content.skills_dir() == tmp_path / "agents" / "skills"
-    assert _content.shared_dir() == tmp_path / "agents" / "shared"
-    assert _content.dist_dir() == tmp_path / "agents" / "dist"
+    assert _content.skills_dir() == tmp_path / "agents" / "src" / "skills"
+    assert _content.shared_dir() == tmp_path / "agents" / "src" / "shared"
+    assert _content.dist_dir() == tmp_path / "agents" / "dist" / "parents"
     assert _content.shell_dir() == tmp_path / "shell"

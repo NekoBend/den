@@ -100,7 +100,7 @@ global, so what den's own tree happens to contain proves nothing either
 way. (TypeScript stays, by the owner's explicit call.)
 The `translate` skill and the three language references (plus their coding
 examples) were removed; the translation rules survive as
-`agents/shared/reference/translation.md`, a repo-only note that no skill
+`agents/src/shared/reference/translation.md`, a repo-only note that no skill
 references, so it is never deployed.
 
 Deployed machines keep the old copies:

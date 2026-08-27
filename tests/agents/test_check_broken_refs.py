@@ -12,7 +12,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parent.parent / "check-broken-refs.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[2]
+    / "agents"
+    / "src"
+    / "shared"
+    / "scripts"
+    / "check-broken-refs.py"
+)
 
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:

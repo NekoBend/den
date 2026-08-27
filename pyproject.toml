@@ -70,7 +70,6 @@ ignore = [
 # Tests assert (S101), reach into private helpers on purpose (SLF001), and
 # gain nothing from annotating every fixture-taking function (ANN).
 "tests/**" = ["ANN", "B903", "PT018", "S101", "SLF001"]
-"agents/shared/scripts/tests/**" = ["ANN", "PT018", "S101", "SLF001"]
 # _ui.py IS the optional-dependency fallback layer: questionary and rich are
 # probed and any failure degrades to plain stdin prompts on purpose.
 "den/_ui.py" = ["BLE001", "S110"]
