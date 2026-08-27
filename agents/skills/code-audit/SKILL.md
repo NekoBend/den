@@ -52,7 +52,8 @@ Pin down, in your own words:
   (only the changed lines, or the surrounding code too).
 
 If any of these is unclear, ask the user under
-<work_discipline> Clarification discipline before reviewing.
+the parent's clarification order (investigate, then DECIDE:, then
+ASSUMED:) before reviewing.
 Do not invent intent.
 
 ### Step 2: Choose the dimensions to run
