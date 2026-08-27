@@ -71,7 +71,8 @@ Apply all of them during the work.
 ### Step 1: Pin requirements
 Restate inputs, outputs, and failure modes in your own words.
 If anything is ambiguous (types, error contract, scope, language version),
-ask under <work_discipline> Clarification discipline.
+ask, following the parent's clarification order (investigate, then
+DECIDE:, then ASSUMED:).
 
 ### Step 2: Identify edge cases
 List them BEFORE coding:
@@ -85,7 +86,8 @@ If MODIFYING existing code (rename, change signature, refactor):
       for any symbol whose name or signature you will change;
       list every reference site.
   3b. If the count is 3 or more, or the change crosses packages,
-      surface it under <work_discipline> Clarification discipline first.
+      surface it first, following the parent's clarification order
+      (investigate, then DECIDE:, then ASSUMED:).
   3c. Change the target file AND every reference site. No dangling references.
   3d. Run ../../shared/scripts/check-broken-refs.py;
       fix every broken_ref hit or explain why it is intentional;

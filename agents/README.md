@@ -8,8 +8,10 @@ explicit: state the role, the steps, the output format, and a self-check, so a
 model that follows instructions literally still does the right thing.
 
 It ships nine skills in the Anthropic SKILL.md format and a set of parent
-invariants (identity, moves, language, work discipline; plus contrastive
-examples, output modes, and a final gate in the standalone shape), with
+invariants (identity, moves, language, work discipline; plus a precedence
+header in both coding parents, a moves demo in the frontier parent, and
+contrastive examples, output modes, and a final gate in the standalone
+shape), with
 installers that deploy the skills into the directories coding agents read.
 
 This is the `agents/` subsystem of the `den` repo: a self-contained unit
@@ -65,7 +67,8 @@ modes gets two passes in the same turn, not a refusal to do the second
 (orchestrate's run pass is the exception: it may stay open across turns
 while background workers run). All skills assume the
 parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
-`<work_discipline>`) are present.
+`<work_discipline>`; both coding parents add `<precedence>`, and the
+frontier parent also adds `<moves_demo>`) are present.
 
 | Skill | Modes | What it does |
 |-------|-------|--------------|
@@ -91,10 +94,13 @@ The `dist/*.md` parent prompts are generated artifacts: do not hand-edit them
 CI asserts, the shipped invariants: no HTML comments, ASCII dashes only, and
 no trailing whitespace.
 
-`AGENTS.md` and `CLAUDE.md` are composites of the same invariant sections
-that open `ASSISTANT.md` (identity, moves, language, work discipline); the
-host tool owns the conversation shape, so modes/examples/gate stay
-standalone-only.
+`AGENTS.md` and `CLAUDE.md` are composites of the parent invariants that
+open `ASSISTANT.md` (identity, moves, language, work discipline), plus a
+`<precedence>` header (shared with the weak parent) and a `<moves_demo>`
+that exists only in these frontier parents. Section names and semantics match `ASSISTANT.md`; the text does
+not: identity, language, and work discipline are compressed frontier
+variants (`<moves>` is byte-identical). The host tool owns the
+conversation shape, so modes/examples/gate stay standalone-only.
 
 ## Install
 
