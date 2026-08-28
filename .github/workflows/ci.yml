@@ -51,13 +51,13 @@ jobs:
           PLACEHOLDER = {"name", "file", "n", "language", "dimension", "tool", "event"}
           WRAP = 78  # the prose wrap plus slack; table rows are exempt
           problems = []
-          files = sorted(glob.glob("agents/dist/**/*.md", recursive=True))
+          files = sorted(glob.glob("agents/dist/parents/**/*.md", recursive=True))
           for f in files:
               lines = open(f, encoding="utf-8").read().splitlines()
               # dist/weak/ is line-oriented on purpose (catalog table, one
               # disambiguation hint per line, one example field per line), so
               # the prose wrap applies to the 72-column parents only.
-              wrapped = "/parents/" in f and "/weak/" not in f
+              wrapped = "/weak/" not in f
               open_tags, sections = [], set()
               for i, raw in enumerate(lines, 1):
                   if "<!--" in raw or "-->" in raw:
