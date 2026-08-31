@@ -60,3 +60,20 @@ def test_install_flag_applies_the_table(tmp_path):
     text = (tmp_path / "skills" / "coding" / "SKILL.md").read_text(encoding="utf-8")
     assert DEN_CLI.search(text) is None
     assert f"{tmp_path.resolve().as_posix()}/skills/coding/shared/scripts/" in text
+
+
+def test_check_catches_content_and_mode_drift(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    _portable.build_tree(a)
+    _portable.build_tree(b)
+    assert _portable._differences(a, b) == []
+
+    script = b / "coding" / "shared" / "scripts" / "run-checks.sh"
+    script.chmod(script.stat().st_mode & ~0o111)
+    assert any("executable bit" in d for d in _portable._differences(a, b))
+    script.chmod(script.stat().st_mode | 0o111)
+
+    md = b / "coding" / "SKILL.md"
+    md.write_text(md.read_text(encoding="utf-8") + "x", encoding="utf-8")
+    assert any(str(d).startswith("differs") for d in _portable._differences(a, b))

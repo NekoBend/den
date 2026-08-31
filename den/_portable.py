@@ -16,7 +16,6 @@ shared/ reference becomes a path relative to the skill's own directory.
 
 from __future__ import annotations
 
-import filecmp
 import shutil
 import sys
 import tempfile
@@ -79,12 +78,20 @@ def build_tree(out: Path) -> None:
 
 
 def _differences(a: Path, b: Path) -> list[str]:
-    cmp = filecmp.dircmp(a, b)
-    out = [f"only in built: {x}" for x in cmp.left_only]
-    out += [f"only in committed: {x}" for x in cmp.right_only]
-    out += [f"differs: {x}" for x in cmp.diff_files]
-    for sub in cmp.common_dirs:
-        out += [f"{sub}/{d}" for d in _differences(a / sub, b / sub)]
+    """Exact tree comparison: byte content AND the executable bit. filecmp's
+    shallow stat signatures are avoided on purpose - a committed script that
+    lost +x must fail --check, or every copied skill ships a run-checks.sh
+    that dies with permission denied."""
+    files_a = {p.relative_to(a) for p in a.rglob("*") if p.is_file()}
+    files_b = {p.relative_to(b) for p in b.rglob("*") if p.is_file()}
+    out = [f"only in built: {x}" for x in sorted(map(str, files_a - files_b))]
+    out += [f"only in committed: {x}" for x in sorted(map(str, files_b - files_a))]
+    for rel in sorted(files_a & files_b, key=str):
+        fa, fb = a / rel, b / rel
+        if fa.read_bytes() != fb.read_bytes():
+            out.append(f"differs: {rel}")
+        elif (fa.stat().st_mode & 0o111) != (fb.stat().st_mode & 0o111):
+            out.append(f"executable bit differs: {rel}")
     return out
 
 
