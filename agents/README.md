@@ -46,6 +46,7 @@ agents/
       scripts/              # verification scripts (used by coding, code-audit)
         *.py, run-checks.sh
   dist/                     # generated: never hand-edited, CI checks it
+    skills/<name>/          # den-free copies of the skills (see below)
     parents/
       ASSISTANT.md  AGENTS.md  CLAUDE.md  # standalone chat + frontier parents
       weak/AGENTS.md                      # weak parent (the skill router)
@@ -103,6 +104,19 @@ that exists only in these frontier parents. Section names and semantics match `A
 not: identity, language, and work discipline are compressed frontier
 variants (`<moves>` is byte-identical). The host tool owns the
 conversation shape, so modes/examples/gate stay standalone-only.
+
+## Using the skills without den
+
+`dist/skills/<name>/` is a den-free copy of each skill: copy the directory
+into the place your tool reads skills from (`~/.claude/skills/<name>/`,
+`~/.agents/skills/<name>/`, ...) and it works with no den installed. It is
+generated from `src/` by `python3 -m den._portable` (CI fails if it is
+stale) through the substitution table `src/no-den-cli.toml`: `den verify`
+becomes the bundled `shared/scripts/run-checks.sh`, the den board paragraphs
+are removed, the shared resources each skill references are bundled inside
+it, and `shared/` paths are relative to the skill (the copy says so on its
+first line). den users get the same text with
+`den install skills --no-den-cli`.
 
 ## Install
 

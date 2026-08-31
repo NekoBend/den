@@ -33,4 +33,8 @@ class CustomBuildHook(BuildHookInterface):
                 rel = path.relative_to(base)
                 if any(part in _SKIP_DIRS for part in rel.parts):
                     continue
+                if src == "agents/dist" and rel.parts[:1] == ("skills",):
+                    # den-free copies serve non-den users; den builds them
+                    # from src, so the wheel does not carry them twice.
+                    continue
                 force[str(path)] = f"{dest}/{rel.as_posix()}"

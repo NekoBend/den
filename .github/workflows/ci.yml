@@ -51,7 +51,7 @@ jobs:
           PLACEHOLDER = {"name", "file", "n", "language", "dimension", "tool", "event"}
           WRAP = 78  # the prose wrap plus slack; table rows are exempt
           problems = []
-          files = sorted(glob.glob("agents/dist/**/*.md", recursive=True))
+          files = sorted(glob.glob("agents/dist/parents/**/*.md", recursive=True))
           for f in files:
               lines = open(f, encoding="utf-8").read().splitlines()
               # dist/weak/ is line-oriented on purpose (catalog table, one
@@ -114,6 +114,8 @@ jobs:
           pip install pytest pyyaml
       - name: Pytest (verification scripts)
         run: python3 -m pytest tests/agents
+      - name: den-free skill copies (agents/dist/skills) are current
+        run: python3 -m den._portable --check
       - name: Pytest (den CLI)
         run: python3 -m pytest tests/den
 
