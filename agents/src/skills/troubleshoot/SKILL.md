@@ -134,8 +134,9 @@ you just fixed elsewhere in the codebase and report what you find,
 whether or not you fix it in this pass.
 
 ### Step P4: Verify
-Run the project's checks (`den verify <file>` for Python, otherwise
-../../shared/scripts/run-checks.sh) and the test suite. State what ran.
+Run the project's checks (its own configured commands, or the language's
+standard formatter, linter, and typechecker; `den verify <file>` for
+Python with den installed) and the test suite. State what ran.
 
 ## Output format
 

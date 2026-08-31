@@ -44,11 +44,10 @@ and test adequacy to the tests pass.
 ## How to verify
 
 When the code is on disk and the toolchain exists,
-run these shared scripts (invocation paths are in SKILL.md Step 3):
+run the checks SKILL.md Step 3 names, plus the shared scripts below:
 
-- run-checks.sh
-  typecheck and lint catch a whole class of correctness defects, and the
-  typecheck stage confirms imported APIs actually resolve.
+- the typechecker and linter catch a whole class of correctness
+  defects, and the typecheck confirms imported APIs actually resolve.
 - check-broken-refs.py
   confirms a renamed or removed symbol left no dangling reference.
 
