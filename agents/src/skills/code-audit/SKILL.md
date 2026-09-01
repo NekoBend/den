@@ -80,11 +80,12 @@ When the code is on disk and the language toolchain is available,
 run the shared scripts against the files under review
 and fold the results into the relevant dimension:
 
-- den verify <file>                             Python: format / lint / typecheck (correctness,
-                                                 maintainability). Resolves the project's ruff config
-                                                 and venv from the FILE's path, so a review run from
-                                                 outside the project still typechecks correctly
-- ../../shared/scripts/run-checks.sh <file>      other languages, or when den is not on PATH
+- the language's standard checks on each file under review
+  (Python: ruff format --check, ruff check, ty check; TypeScript:
+  prettier --check, eslint, tsc --noEmit; Rust: cargo fmt --check,
+  cargo clippy; Shell: shellcheck; PowerShell: Invoke-ScriptAnalyzer;
+  with den installed, `den verify <file>` runs the Python three with
+  the project's own config and venv)
 - ../../shared/scripts/find-references.py --uses <symbol>
                                                  blast radius of a changed symbol (correctness)
 

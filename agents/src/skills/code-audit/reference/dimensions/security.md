@@ -57,9 +57,9 @@ Here you assume the input is controlled by an attacker.
 
 ## How to verify
 
-- run-checks.sh: the linter flags some classes
+- the linter flags some classes
   (for example shellcheck catches unsafe shell expansion).
-  See SKILL.md Step 3 for invocation.
+  SKILL.md Step 3 names the checks per language.
 - Trace each trust boundary by hand:
   mark where attacker-controlled input enters,
   then follow it to every place it is used.

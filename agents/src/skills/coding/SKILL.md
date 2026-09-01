@@ -98,19 +98,25 @@ If WRITING NEW code, skip 3a-3d.
   3e. Types first, then logic, then doc comment.
       Validate inputs at module / API boundaries, not between trusted helpers.
 
-### Step 4: Verify with scripts
-Run against the file you produced:
+### Step 4: Verify with the toolchain
+Run against the file you produced. Prefer the project's own configured
+checks (a lint script in its manifest, a Makefile target); otherwise run
+the language's standard tools:
 
-1. Python:  den verify <file>                      # format + lint + typecheck
-                                                   # resolves the project's own ruff config and
-                                                   # venv from the FILE's path, so it is correct
-                                                   # from any working directory
-   other:   ../../shared/scripts/run-checks.sh <file>
-                                                   # also the fallback when den is not on PATH
-2. ../../shared/scripts/check-broken-refs.py       # only when modifying
+  Python      ruff format --check, ruff check, ty check
+              (with den installed, `den verify <file>` runs all three
+              with the project's own config and venv)
+  TypeScript  prettier --check, eslint, tsc --noEmit
+  Rust        cargo fmt --check, cargo clippy
+  Shell       shellcheck, shfmt -d
+  PowerShell  Invoke-ScriptAnalyzer
+
+When you modified existing files, also run
+../../shared/scripts/check-broken-refs.py.
 
 Resolve every finding (fix, or suppress with a written reason).
-If a script cannot run, state which and proceed. Do not pretend a check passed.
+If a tool is not installed, state which and proceed. Do not pretend a
+check passed.
 
 ### Step 5: Compare against examples/<language>.md
 Confirm your code matches the canonical shape (typing, docs, error handling).
@@ -136,7 +142,7 @@ Cover every case from T1, including negative and error-path tests.
 ### Step T4: Run them
 Execute the suite; report the exact command and its result.
 If you cannot run it, say so. Do not report a pass you did not run.
-Also verify the test file (den verify for Python, run-checks.sh otherwise).
+Also run the language's checks (Step 4) on the test file itself.
 
 ### Step T5: Compare against examples/testing.md
 
@@ -160,7 +166,7 @@ State where the schema is validated at the boundary.
 
 ### Step S4: Verify
 For a code schema (types, ORM models):
-run den verify (Python) or ../../shared/scripts/run-checks.sh.
+run the language's checks from Step 4.
 For a non-code schema (SQL DDL, JSON Schema):
 validate with a tool if one exists, otherwise state it was reviewed by reading.
 
@@ -196,7 +202,7 @@ If implement:
 - [ ] I listed edge cases and each is handled or explicitly out of scope.
 - [ ] If I modified existing code, I ran find-references.py before
       and check-broken-refs.py after (zero remaining, or each explained).
-- [ ] I ran den verify (Python) or run-checks.sh (or stated why neither ran).
+- [ ] I ran the language's checks (or stated why they did not run).
 - [ ] Every public API has a doc comment.
 - [ ] No untyped escape hatch (any / Any / object / interface{}) without a
       documented exception, and no catch-all handler outside the entry point.

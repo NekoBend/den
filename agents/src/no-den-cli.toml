@@ -2,42 +2,20 @@
 # agents/dist/skills/ (and `den install skills --no-den-cli`). Each `from` must
 # occur exactly once in the skill's SKILL.md; the build fails otherwise, so a
 # source edit that invalidates an anchor is caught in CI, never shipped stale.
+# The skills name their checks tool-by-tool, so only the den shortcuts and the
+# den board paragraphs need to disappear here.
 
 [[coding]]
-from = """1. Python:  den verify <file>                      # format + lint + typecheck
-                                                   # resolves the project's own ruff config and
-                                                   # venv from the FILE's path, so it is correct
-                                                   # from any working directory
-   other:   ../../shared/scripts/run-checks.sh <file>
-                                                   # also the fallback when den is not on PATH
-2. ../../shared/scripts/check-broken-refs.py       # only when modifying"""
-to = """1. ../../shared/scripts/run-checks.sh <file>       # format + lint + typecheck
-                                                   # (ruff and ty for Python, using the
-                                                   # project config found from the FILE)
-2. ../../shared/scripts/check-broken-refs.py       # only when modifying"""
-
-[[coding]]
-from = "Also verify the test file (den verify for Python, run-checks.sh otherwise)."
-to = "Also verify the test file with ../../shared/scripts/run-checks.sh."
-
-[[coding]]
-from = "run den verify (Python) or ../../shared/scripts/run-checks.sh."
-to = "run ../../shared/scripts/run-checks.sh."
-
-[[coding]]
-from = "- [ ] I ran den verify (Python) or run-checks.sh (or stated why neither ran)."
-to = "- [ ] I ran run-checks.sh (or stated why it did not run)."
+from = """
+              (with den installed, `den verify <file>` runs all three
+              with the project's own config and venv)"""
+to = ""
 
 [[code-audit]]
-from = """- den verify <file>                             Python: format / lint / typecheck (correctness,
-                                                 maintainability). Resolves the project's ruff config
-                                                 and venv from the FILE's path, so a review run from
-                                                 outside the project still typechecks correctly
-- ../../shared/scripts/run-checks.sh <file>      other languages, or when den is not on PATH
-"""
-to = """- ../../shared/scripts/run-checks.sh <file>      format / lint / typecheck for the file's
-                                                 language (correctness, maintainability)
-"""
+from = """;
+  with den installed, `den verify <file>` runs the Python three with
+  the project's own config and venv)"""
+to = ")"
 
 [[troubleshoot]]
 from = """If the workspace has `.den/board/reports.jsonl`, read its newest lines
@@ -60,7 +38,6 @@ line whose `re` field equals that id. Answer a specific report with
 to = ""
 
 [[troubleshoot]]
-from = """Run the project's checks (`den verify <file>` for Python, otherwise
-../../shared/scripts/run-checks.sh) and the test suite. State what ran."""
-to = """Run the project's checks (../../shared/scripts/run-checks.sh <file>) and
-the test suite. State what ran."""
+from = """; `den verify <file>` for
+Python with den installed)"""
+to = ")"

@@ -82,8 +82,10 @@ When the code is on disk and the language toolchain is available,
 run the shared scripts against the files under review
 and fold the results into the relevant dimension:
 
-- shared/scripts/run-checks.sh <file>      format / lint / typecheck for the file's
-                                                 language (correctness, maintainability)
+- the language's standard checks on each file under review
+  (Python: ruff format --check, ruff check, ty check; TypeScript:
+  prettier --check, eslint, tsc --noEmit; Rust: cargo fmt --check,
+  cargo clippy; Shell: shellcheck; PowerShell: Invoke-ScriptAnalyzer)
 - shared/scripts/find-references.py --uses <symbol>
                                                  blast radius of a changed symbol (correctness)
 

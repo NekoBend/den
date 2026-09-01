@@ -111,9 +111,9 @@ conversation shape, so modes/examples/gate stay standalone-only.
 into the place your tool reads skills from (`~/.claude/skills/<name>/`,
 `~/.agents/skills/<name>/`, ...) and it works with no den installed. It is
 generated from `src/` by `python3 -m den._portable` (CI fails if it is
-stale) through the substitution table `src/no-den-cli.toml`: `den verify`
-becomes the bundled `shared/scripts/run-checks.sh`, the den board paragraphs
-are removed, the shared resources each skill references are bundled inside
+stale) through the substitution table `src/no-den-cli.toml`: the `den verify`
+shortcut mentions and the den board paragraphs are removed (the skills name
+their checks tool-by-tool), the shared resources each skill references are bundled inside
 it, and `shared/` paths are relative to the skill (the copy says so on its
 first line). den users get the same text with
 `den install skills --no-den-cli`.
