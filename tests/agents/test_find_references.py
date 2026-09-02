@@ -426,6 +426,21 @@ def test_a_colon_in_a_path_does_not_lose_the_hit(
         assert "a:b.py" in proc.stdout, proc.stdout
 
 
+def test_a_file_named_like_a_skipped_directory_is_not_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A linked git worktree has a regular `.git` FILE holding a gitdir
+    # pointer. rg's `-g !.git` excludes files as well as directories; the
+    # walker pruned directory names only, so it alone searched this one.
+    write(tmp_path, "worktree/.git", "gitdir: /elsewhere/.git/worktrees/x\nwidget()\n")
+    write(tmp_path, "real.py", "widget()\n")
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert ".git" not in proc.stdout, proc.stdout
+        assert "real.py" in proc.stdout, proc.stdout
+
+
 def test_the_git_directory_is_never_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

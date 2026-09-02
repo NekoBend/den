@@ -428,6 +428,28 @@ def test_a_ripgrep_config_cannot_change_what_is_searched(
     assert outputs[0] == outputs[1], outputs
 
 
+def test_a_file_named_like_a_skipped_directory_is_not_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same point as in test_find_references: the `.git` of a linked worktree
+    # is a regular file, and rg excludes it by name while the walker used to
+    # prune directory names only.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    write(tmp_path, "worktree/.git", "gitdir: /elsewhere/.git/worktrees/x\nwidget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert ".git" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+
+
 def test_the_git_directory_is_never_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

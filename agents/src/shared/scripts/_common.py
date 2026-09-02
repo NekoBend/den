@@ -188,8 +188,12 @@ def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:
 
     Mirrors what the ripgrep backend sees:
 
-    - SKIP_DIRS are pruned by directory NAME below `root`, so a checkout that
-      itself lives under `build/`, `dist/`, `target/` ... is still searched.
+    - SKIP_DIRS are pruned by NAME below `root`, so a checkout that itself
+      lives under `build/`, `dist/`, `target/` ... is still searched. A
+      regular FILE carrying one of those names is skipped as well, because
+      rg's `-g !<name>` globs exclude both - a linked git worktree keeps a
+      `.git` file, not a directory, and it must not be searched on one
+      backend only.
     - Symlinks are never followed (ripgrep does not follow them without -L),
       so a link committed in the tree cannot pull a file from outside it into
       the results.
@@ -202,6 +206,8 @@ def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         here = Path(dirpath)
         for name in sorted(filenames):
+            if name in SKIP_DIRS:
+                continue
             path = here / name
             if ext and path.suffix != ext:
                 continue
