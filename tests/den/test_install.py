@@ -400,3 +400,22 @@ def test_leaf_help_prints_usage(capsys):
         for flag in ("--help", "-h", "help"):
             assert install_main([target, flag]) == 0
             assert "usage: den install" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no execute bit")
+def test_install_does_not_chmod_through_a_symlinked_destination(tmp_path, symlink):
+    """chmod follows a symlink, so the mode repair used to hand a symlinked
+    destination's OUTSIDE target 0o755 -- on the byte-identical path, with
+    nothing deployed at all."""
+    install_main(["skills", "--target", str(tmp_path)])
+    scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
+    script = scripts / "find-references.py"
+    outside = tmp_path / "outside.py"
+    outside.write_bytes(script.read_bytes())  # byte-identical, so nothing deploys
+    outside.chmod(0o600)
+    script.unlink()
+    symlink(outside, script)
+
+    assert install_main(["skills", "--target", str(tmp_path)]) == 0
+    assert outside.stat().st_mode & 0o777 == 0o600, "the link's target is untouched"
+    assert script.is_symlink(), "and the link itself is left as the user made it"

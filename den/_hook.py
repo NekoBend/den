@@ -741,6 +741,13 @@ def _clinerules_targets(den_dir: Path, prefix: str = _ERR_HOOK) -> list[Path] | 
         if path.is_symlink():
             print(f"{prefix}: refusing {path}: it is a symlink", file=sys.stderr)
             return None
+        if path.exists() and not path.is_file():
+            # A DIRECTORY at den-memory.md let install write the imprint and then
+            # report success while the mirror refused, and let remove unlink the
+            # imprint and report success while the invalid target stayed. Both
+            # must stop here, before anything is half-done.
+            print(f"{prefix}: refusing {path}: not a regular file", file=sys.stderr)
+            return None
     return targets
 
 

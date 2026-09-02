@@ -208,7 +208,14 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
     would double-deliver. No-op otherwise. Returns True if it wrote/removed the
     mirror."""
     rules = _clinerules_dir(den_dir)
-    if not (rules / _CLINERULES_IMPRINT).is_file():
+    marker = rules / _CLINERULES_IMPRINT
+    # The marker is PROOF that `den install hook --tool cline-cli` ran here, so it
+    # has to be a real file den wrote. is_file() follows a link, so a repo-planted
+    # symlink to ANY outside regular file used to switch the mirror on for a
+    # workspace that never installed cline-cli -- publishing memory.md into a
+    # .clinerules the user never asked den to write to. Silent, like every other
+    # "not installed here" answer: this is a gate, and it runs on every save/add.
+    if _symlink_component(rules, marker) is not None or not marker.is_file():
         return False
     dest = rules / _CLINERULES_MEMORY
     # The mirror is den-managed too, and a repo can ship `.clinerules/` just as

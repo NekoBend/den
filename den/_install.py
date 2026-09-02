@@ -169,7 +169,14 @@ class _Writer:
         (a backup restore, a dotfiles sync, a copy made on Windows, a write by
         a den old enough to predate this rule) is repaired by a re-install
         instead of staying broken forever -- the same repair _shell.py makes
-        for ~/.local/bin."""
+        for ~/.local/bin.
+
+        Never through a symlink: chmod follows one, so a symlinked destination
+        would hand its OUTSIDE target 0o755 -- on the byte-identical path, with
+        nothing deployed at all. The link is the user's own arrangement; den
+        leaves it and its target alone."""
+        if dest.is_symlink():
+            return
         if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
             dest.chmod(0o755)
 

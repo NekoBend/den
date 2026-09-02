@@ -810,3 +810,49 @@ def test_save_still_replaces_non_utf8_memory(tmp_path, monkeypatch):
     _save(tmp_path, monkeypatch, "clean text\n")
     assert _mem(tmp_path).read_text() == "clean text\n"
     assert [p.read_bytes() for p in _history(tmp_path)] == [raw], "old bytes kept"
+
+
+def test_symlinked_cline_marker_does_not_switch_the_mirror_on(
+    tmp_path, monkeypatch, symlink
+):
+    """The den-imprint.md marker is proof that `den install hook --tool cline-cli`
+    ran here. is_file() follows a link, so a repo-planted symlink to any outside
+    regular file used to activate the mirror in a workspace that never installed
+    cline-cli -- publishing memory.md into a .clinerules den was never asked to
+    write to."""
+    outside = tmp_path / "whatever.md"
+    outside.write_text("any old file\n")
+    proj = tmp_path / "repo"
+    (proj / ".clinerules").mkdir(parents=True)
+    symlink(outside, proj / ".clinerules" / "den-imprint.md")
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a private fact"]) == 0, "memory itself still saves"
+    assert _mem(proj).read_text() == "a private fact\n"
+    assert not _clinerules_mem(proj).exists(), "no mirror without a real marker"
+
+
+def test_symlinked_clinerules_dir_does_not_switch_the_mirror_on(
+    tmp_path, monkeypatch, symlink
+):
+    # Same gate one level up: the marker is real but only reachable through a
+    # planted .clinerules link. The write guard already stopped this, so this is
+    # a no-regression guard -- it holds whichever end of the gate does the work.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "den-imprint.md").write_text("someone else's rule\n")
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    symlink(outside, proj / ".clinerules")
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a private fact"]) == 0
+    assert not (outside / "den-memory.md").exists()
+
+
+def test_a_real_marker_still_mirrors(tmp_path, monkeypatch):
+    # The no-regression guard for the gate above.
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a fact"]) == 0
+    assert "a fact" in _clinerules_mem(proj).read_text()

@@ -989,3 +989,34 @@ def test_remove_and_list_cline_cli_refuse_a_file_at_clinerules(
     out = capsys.readouterr()
     assert out.out == "", "nothing reported as den-managed"
     assert (proj / ".clinerules").read_text() == "not a directory\n"
+
+
+def test_install_cline_cli_refuses_a_directory_at_a_rule_file(
+    tmp_path, monkeypatch, capsys
+):
+    """A repo can ship `.clinerules/den-memory.md/` as a DIRECTORY. Install used
+    to write the imprint rule, watch the mirror refuse the directory, and still
+    report success -- leaving cline-cli's memory channel silently broken."""
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    (proj / ".den" / "imprint.md").write_text("my imprint\n")
+    (proj / ".clinerules" / "den-memory.md").mkdir(parents=True)
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 1
+    assert not (proj / ".clinerules" / "den-imprint.md").exists(), "nothing half-done"
+    assert "not a regular file" in capsys.readouterr().err
+
+
+def test_remove_cline_cli_refuses_a_directory_at_a_rule_file(tmp_path, monkeypatch):
+    # remove skipped the directory (is_file() is False), unlinked the imprint and
+    # reported success, leaving the invalid target behind.
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    rules = proj / ".clinerules"
+    rules.mkdir()
+    (rules / "den-imprint.md").write_text("den's rule\n")
+    (rules / "den-memory.md").mkdir()
+    monkeypatch.chdir(proj)
+    assert hook_main(["remove", "--tool", "cline-cli"]) == 1
+    assert (rules / "den-imprint.md").is_file(), "not removed piecemeal"
+    assert (rules / "den-memory.md").is_dir()
