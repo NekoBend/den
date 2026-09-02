@@ -135,7 +135,21 @@ mk_venv "$WORK/venv_tracked" "3.12.0"
 ) >/dev/null 2>&1
 err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_tracked' && va" || true)
 assert_contains "bash/va refuses git-tracked activate" "tracked by git" "$err"
+assert_contains "bash/va names the tracked files" "tracked by git (bin/activate pyvenv.cfg)" "$err"
 assert_contains "bash/va names the escape hatch" "source .venv/bin/activate" "$err"
+
+# pyvenv.cfg alone is enough to refuse, and the message must name THAT file --
+# not the activate script, which is untracked here.
+mk_venv "$WORK/venv_cfg_only" "3.12.0"
+(
+    cd "$WORK/venv_cfg_only" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/pyvenv.cfg
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed pyvenv.cfg"
+) >/dev/null 2>&1
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_cfg_only' && va" || true)
+assert_contains "bash/va reports pyvenv.cfg alone as the tracked file" "tracked by git (pyvenv.cfg)" "$err"
+assert_not_contains "bash/va does not blame the untracked activate script" "bin/activate)" "$err"
 
 echo "[bash] va refuses a world-writable activate script"
 mk_venv "$WORK/venv_ww" "3.12.0"
@@ -267,6 +281,19 @@ mk_venv_ps "$WORK/ps_venv_tracked" "3.12.0"
 ) >/dev/null 2>&1
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked'; va")
 assert_contains "pwsh/va refuses git-tracked activate" "tracked by git" "$err"
+assert_contains "pwsh/va names the tracked files" "pyvenv.cfg" "$err"
+
+mk_venv_ps "$WORK/ps_venv_cfg_only" "3.12.0"
+(
+    cd "$WORK/ps_venv_cfg_only" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/pyvenv.cfg
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed pyvenv.cfg"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_cfg_only'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses on pyvenv.cfg alone" "tracked by git" "$err"
+assert_contains "pwsh/va reports pyvenv.cfg as the tracked file" "pyvenv.cfg" "$err"
+assert_not_contains "pwsh/va does not blame the untracked activate script" "Activate.ps1)" "$err"
 
 echo "[pwsh] va accepts an untracked venv inside a git repo"
 mk_venv_ps "$WORK/ps_venv_untracked" "3.12.0"

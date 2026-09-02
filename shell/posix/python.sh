@@ -99,8 +99,12 @@ va() {
     # COMMITTED to a repo (git tracks .venv happily, even force-added past a
     # .gitignore) is code that arrived with the clone, and `va` in a fresh checkout
     # would run it. Not a git repo, or no git, means nothing to check: pass.
-    if [ -n "$(command git -C "$name" ls-files -- bin/activate pyvenv.cfg 2>/dev/null)" ]; then
-        echo "va: $activate is tracked by git (a venv committed to the repo) — source it yourself if you trust it: source $activate" >&2
+    local tracked
+    # Name what git actually reports: the match may be pyvenv.cfg alone, so a
+    # message about the activate script would be wrong.
+    tracked="$(command git -C "$name" ls-files -- bin/activate pyvenv.cfg 2>/dev/null | tr '\n' ' ')"
+    if [ -n "$tracked" ]; then
+        echo "va: $name: venv content is tracked by git (${tracked% }) — a venv committed to the repo; source it yourself if you trust it: source $activate" >&2
         return 1
     fi
     # Anyone-can-rewrite is the other way this file stops being ours. World-writable

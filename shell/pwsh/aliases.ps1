@@ -134,9 +134,12 @@ function _ShapeCmdArgs([object[]]$Arguments) {
   foreach ($a in $Arguments) {
     $s = [string]$a
     # Two characters cmd re-parsing cannot be protected from, so refuse them: `"`
-    # ends a quoted run, and `%VAR%` is substituted from the environment before the
-    # batch file ever runs -- there is no command-line escape for `%` (`%%` only
-    # works INSIDE a batch file). A Windows filename can contain neither.
+    # ends a quoted run, and `%VAR%` is expanded from the environment -- inside
+    # quotes too -- before the batch file ever runs, with no escape at the command
+    # line (`%%` only works INSIDE a batch file). `%` IS legal in a Windows file
+    # name, so refusing it is a deliberate limit of forwarding through the .cmd
+    # shim rather than a filesystem rule; the caller's message says so and points
+    # at another way to open the file.
     if ($s.Contains('"')) { throw "argument contains a quote: $s" }
     if ($s.Contains('%')) { throw "argument contains a percent sign: $s" }
     # cmd does not split inside quotes, and PowerShell already quotes an argument

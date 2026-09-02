@@ -126,7 +126,10 @@ function va {
   if ($gitExe) {
     $tracked = & $gitExe -C $Name ls-files -- Scripts/Activate.ps1 bin/Activate.ps1 bin/activate pyvenv.cfg 2>$null
     if ($tracked) {
-      Write-Error "va: '$activatePath' is tracked by git (a venv committed to the repo) - dot-source it yourself if you trust it: . $activatePath"
+      # Name what git actually reports: the match may be pyvenv.cfg alone, so a
+      # message about the activate script would be wrong.
+      $trackedList = (@($tracked) -join ', ')
+      Write-Error "va: '$Name': venv content is tracked by git ($trackedList) - a venv committed to the repo; dot-source it yourself if you trust it: . $activatePath"
       return
     }
   }
