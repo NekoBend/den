@@ -717,17 +717,26 @@ def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> b
     # den_dir is pinned by the caller; clinerules delivers via always-on rule
     # files (no `den hook run`), so it only needs the dir, not a baked command.
     rules = _clinerules_dir(den_dir)
+    # This dir is NOT the path _resolve_config checked: clinerules delivers beside
+    # the resolved .den, which may be an ANCESTOR's while cwd is a subdirectory.
+    # So a symlinked .clinerules reaches here past that guard -- and mkdir would
+    # raise FileExistsError on a dangling one.
+    if rules.is_symlink():
+        print(f"{_ERR_INSTALL}: refusing {rules}: it is a symlink", file=sys.stderr)
+        return False
     rules.mkdir(parents=True, exist_ok=True)
     text = _read_guarded_text(den_dir, _imprint_path(den_dir), _ERR_INSTALL)
-    if isinstance(text, str):
+    if isinstance(text, str) and not _write_guarded(
+        rules,
         # The imprint rule is also the cline-cli marker mirror_to_clinerules gates
         # on, so write it BEFORE mirroring the memory.
-        _write_guarded(
-            rules,
-            rules / _CLINERULES_IMPRINT,
-            (_CLINERULES_RULE_HEADER + text).encode("utf-8"),
-            _ERR_INSTALL,
-        )
+        rules / _CLINERULES_IMPRINT,
+        (_CLINERULES_RULE_HEADER + text).encode("utf-8"),
+        _ERR_INSTALL,
+    ):
+        # Without the marker there is no memory mirror either: nothing was
+        # delivered, so this must not be reported as an install.
+        return False
     mirror_to_clinerules(den_dir)
     return True
 

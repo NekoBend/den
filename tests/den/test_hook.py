@@ -782,3 +782,47 @@ def test_install_refuses_a_symlinked_backup_outside_the_workspace(
     assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 1
     assert outside.read_text() == "my notes\n"
     assert cfg.read_text() == "not json {{{"
+
+
+def test_install_cline_cli_refuses_symlinked_ancestor_clinerules(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    """clinerules writes beside the RESOLVED .den, which may be an ancestor's,
+    so a symlinked .clinerules at that level is never seen by _resolve_config
+    (which checked the nested cwd path). It must still refuse, with rc 1."""
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    ws = tmp_path / "workspace"
+    (ws / ".den").mkdir(parents=True)
+    (ws / ".den" / "imprint.md").write_text("ancestor imprint\n")
+    symlink(outside, ws / ".clinerules")
+    nested = ws / "pkg" / "sub"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 1
+    assert list(outside.iterdir()) == [], "nothing written outside the workspace"
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def test_install_cline_cli_refuses_symlinked_imprint_rule(
+    tmp_path, monkeypatch, symlink
+):
+    # The .clinerules dir is real; only the rule file den writes is a symlink.
+    outside = tmp_path / "stolen.md"
+    outside.write_text("someone else's file\n")
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    (proj / ".den" / "imprint.md").write_text("my imprint\n")
+    (proj / ".clinerules").mkdir()
+    symlink(outside, proj / ".clinerules" / "den-imprint.md")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 1
+    assert outside.read_text() == "someone else's file\n"
+
+
+def test_install_cline_cli_still_reports_success_normally(tmp_path, monkeypatch):
+    (tmp_path / ".den").mkdir()
+    (tmp_path / ".den" / "imprint.md").write_text("my imprint\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 0
+    assert (tmp_path / ".clinerules" / "den-imprint.md").is_file()
