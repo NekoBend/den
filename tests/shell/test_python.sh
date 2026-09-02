@@ -280,6 +280,32 @@ mk_venv_ps "$WORK/ps_venv_untracked" "3.12.0"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_untracked'; va *>\$null; \$env:_DEN_VENV_PYTHON" | tr -d '\r')
 assert_eq "pwsh/va accepts a gitignored venv" "3.12.0" "$actual"
 
+echo "[pwsh] va refuses a world-writable activate script"
+# pwsh 7 on Linux/macOS exposes UnixMode, which is what the refusal reads;
+# Windows has no world-writable bit and skips the check.
+mk_venv_ps "$WORK/ps_venv_ww" "3.12.0"
+chmod 666 "$WORK/ps_venv_ww/.venv/bin/Activate.ps1"
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_ww'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses world-writable activate" "world-writable" "$err"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv_ww'
+    \$env:VIRTUAL_ENV = \$null
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va activates nothing when refusing" "VE=[] PY=[]" "$actual"
+
+echo "[pwsh] va accepts a 0644 activate script"
+mk_venv_ps "$WORK/ps_venv_644" "3.12.0"
+chmod 644 "$WORK/ps_venv_644/.venv/bin/Activate.ps1"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv_644'
+    \$env:VIRTUAL_ENV = \$null
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va accepts a 0644 activate script" "VE=[fakevenv] PY=[3.12.0]" "$actual"
+
 # =============================================================================
 # Summary
 # =============================================================================

@@ -123,6 +123,32 @@ function drir {
 
 # ===== Editor =====
 
+# _ShapeCmdArgs <arguments> — shape an argument array for a .cmd/.bat launcher, or
+# throw when an argument cannot be handed to one safely. PowerShell passes the
+# arguments of a .cmd/.bat file as ONE raw command line that cmd.exe re-parses
+# (VS Code ships bin\code.cmd on Windows), so a bare `&` inside a space-free
+# filename would end the command and start a second one. Pure function, no I/O:
+# the branch only fires on Windows, so this is what the Linux test suite exercises.
+function _ShapeCmdArgs([object[]]$Arguments) {
+  $shaped = @()
+  foreach ($a in $Arguments) {
+    $s = [string]$a
+    # Two characters cmd re-parsing cannot be protected from, so refuse them: `"`
+    # ends a quoted run, and `%VAR%` is substituted from the environment before the
+    # batch file ever runs -- there is no command-line escape for `%` (`%%` only
+    # works INSIDE a batch file). A Windows filename can contain neither.
+    if ($s.Contains('"')) { throw "argument contains a quote: $s" }
+    if ($s.Contains('%')) { throw "argument contains a percent sign: $s" }
+    # cmd does not split inside quotes, and PowerShell already quotes an argument
+    # that contains whitespace -- a second pair would split THAT one -- so quote
+    # exactly the arguments it would otherwise pass bare, doubling a trailing
+    # backslash so the closing quote survives the final argv parse.
+    if ($s -match '\s') { $shaped += $s }
+    else { $shaped += '"' + ($s -replace '(\\+)$', '$1$1') + '"' }
+  }
+  return ,$shaped
+}
+
 # code → code-insiders (falls back to code stable)
 # Resolve the real EXECUTABLE (_ResolveCmd <name> App) rather than calling a bare
 # name: this function is itself named `code`, so a bare `code` would recurse, and
@@ -136,27 +162,18 @@ function code {
     Write-Warning "VS Code is not installed."
     return
   }
-  # PowerShell passes arguments to a .cmd/.bat file as ONE raw command line that
-  # cmd.exe re-parses (VS Code ships bin\code.cmd on Windows), so an `&` inside a
-  # space-free filename would end the command and start a second one. cmd does not
-  # split inside quotes, and PowerShell already quotes an argument that contains
-  # whitespace -- a second pair would split THAT one -- so quote exactly the
-  # arguments it would pass bare, doubling a trailing backslash so the closing
-  # quote survives the final argv parse. An argument containing a quote is refused
-  # rather than escaped: a Windows filename cannot hold one, and a wrong escape
-  # here reopens the hole.
+  # Windows resolves `code` to the bin\code.cmd shim, whose arguments cmd.exe
+  # re-parses. Bypassing the shim for the sibling Code.exe is NOT equivalent --
+  # the shim runs it as the Node CLI entry point, which is what makes `--wait`
+  # (git's editor), `--version` and `--list-extensions` behave -- so keep the
+  # shim and shape what is handed to it.
   if ($exe -match '\.(cmd|bat)$') {
-    $quoted = @()
-    foreach ($a in $Args) {
-      $s = [string]$a
-      if ($s.Contains('"')) {
-        Write-Error "code: refusing an argument that contains a quote: $s"
-        return
-      }
-      if ($s -match '\s') { $quoted += $s }
-      else { $quoted += '"' + ($s -replace '(\\+)$', '$1$1') + '"' }
+    try { $shaped = _ShapeCmdArgs $Args }
+    catch {
+      Write-Error "code: $($_.Exception.Message) - cmd.exe would re-parse it. Open the file from inside VS Code, or call the launcher yourself."
+      return
     }
-    & $exe @quoted
+    & $exe @shaped
     return
   }
   & $exe @Args

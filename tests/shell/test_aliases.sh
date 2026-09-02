@@ -100,5 +100,81 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " | tr -d '\r')
 assert_contains "pwsh/code warns when absent" "VS Code is not installed" "$actual"
 
+# =============================================================================
+# _ShapeCmdArgs: what the Windows .cmd shim is handed
+# =============================================================================
+# The `code` branch that uses this only fires on Windows (a resolved .cmd/.bat
+# launcher), and the Windows CI job runs a load smoke test only, so the shaping
+# rules are covered here as a pure function: quote what PowerShell would pass
+# bare (cmd does not split inside quotes), leave what it already quotes, double a
+# trailing backslash, and refuse the two characters cmd re-parsing cannot be
+# protected from (`"` ends a quoted run; `%VAR%` is substituted from the
+# environment with no command-line escape).
+shape_args() {
+    run_pwsh "$HELPERS_PS1" "
+        \$env:_DEN_FORCE_INTERACTIVE = '1'
+        . '$P/aliases.ps1'
+        $1
+    " | tr -d '\r'
+}
+
+echo "[pwsh] _ShapeCmdArgs quoting rules"
+actual=$(shape_args "(_ShapeCmdArgs @('plain.md')) -join '|'")
+assert_eq "pwsh/_ShapeCmdArgs quotes a space-free argument" '"plain.md"' "$actual"
+
+actual=$(shape_args "(_ShapeCmdArgs @('my file.md')) -join '|'")
+assert_eq "pwsh/_ShapeCmdArgs leaves a whitespace argument alone" 'my file.md' "$actual"
+
+actual=$(shape_args "(_ShapeCmdArgs @('C:\src\')) -join '|'")
+assert_eq "pwsh/_ShapeCmdArgs doubles trailing backslashes" '"C:\src\\"' "$actual"
+
+echo "[pwsh] _ShapeCmdArgs keeps an ampersand name in one argument"
+actual=$(shape_args "\$r = _ShapeCmdArgs @('notes&evil&.md'); \"\$(\$r.Count):\$(\$r -join '|')\"")
+assert_eq "pwsh/_ShapeCmdArgs & stays one quoted argument" '1:"notes&evil&.md"' "$actual"
+
+actual=$(shape_args "\$r = _ShapeCmdArgs @('a.md', 'b c.md', 'd&e.md'); \"\$(\$r.Count):\$(\$r -join '|')\"")
+assert_eq "pwsh/_ShapeCmdArgs keeps argument count and order" '3:"a.md"|b c.md|"d&e.md"' "$actual"
+
+echo "[pwsh] _ShapeCmdArgs refuses what cmd re-parsing cannot survive"
+actual=$(shape_args "try { \$null = _ShapeCmdArgs @('say\"hi.md'); 'NOTHROW' } catch { 'THREW: ' + \$_.Exception.Message }")
+assert_contains "pwsh/_ShapeCmdArgs refuses a quote" "THREW: argument contains a quote" "$actual"
+
+actual=$(shape_args "try { \$null = _ShapeCmdArgs @('a%USERPROFILE%b'); 'NOTHROW' } catch { 'THREW: ' + \$_.Exception.Message }")
+assert_contains "pwsh/_ShapeCmdArgs refuses a percent sign" "THREW: argument contains a percent sign" "$actual"
+
+# --- end to end through a stub .cmd launcher ---
+CODE_CMD_BIN="$WORK/code-cmd-bin"
+mkdir -p "$CODE_CMD_BIN"
+cat > "$CODE_CMD_BIN/code.cmd" << 'STUB'
+#!/bin/sh
+printf 'STUB-CMD[%s]\n' "$*"
+STUB
+chmod +x "$CODE_CMD_BIN/code.cmd"
+
+echo "[pwsh] code shapes arguments for a .cmd launcher"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    \$env:PATH = '$CODE_CMD_BIN'
+    . '$P/aliases.ps1'
+    code 'notes&evil&.md'
+" | tr -d '\r')
+assert_contains "pwsh/code hands the shim one quoted argument" 'STUB-CMD["notes&evil&.md"]' "$actual"
+
+echo "[pwsh] code refuses an argument cmd.exe would re-parse"
+err=$(run_pwsh_stderr "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    \$env:PATH = '$CODE_CMD_BIN'
+    . '$P/aliases.ps1'
+    code 'a%USERPROFILE%b'
+")
+assert_contains "pwsh/code refuses a percent argument" "percent sign" "$err"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    \$env:PATH = '$CODE_CMD_BIN'
+    . '$P/aliases.ps1'
+    code 'a%USERPROFILE%b' 2>\$null
+" | tr -d '\r')
+assert_not_contains "pwsh/code does not reach the shim when refusing" "STUB-CMD" "$actual"
+
 print_summary "test_aliases"
 [ "$FAIL" -eq 0 ]
