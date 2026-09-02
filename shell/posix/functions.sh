@@ -102,7 +102,12 @@ extract() {
 }
 
 # archive → create archive (format auto-detected from output filename)
-# NOTE: './' normalisation on $out is required; $@ is pass-through by design.
+# NOTE: './' normalisation on $out is required. Arguments before a literal
+# '--' are passed through to the archiver as options, everything after it is
+# a source; with no '--' every argument is a source. The marker is always
+# re-emitted in front of the sources — without it a file whose name looks
+# like an option (a '--checkpoint-action=exec=...' picked up by a glob, say)
+# is parsed as one and GNU tar runs it. Do not remove it.
 archive() {
     if [ -z "$1" ] || [ -z "$2" ]; then
         echo "usage: archive <output> <source...>" >&2
@@ -111,6 +116,12 @@ archive() {
     local out="$1"; shift
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
+    # Guarantee exactly one end-of-options marker between options and sources.
+    local _ar_arg _ar_n _ar_seen=0 _ar_src=0
+    for _ar_arg in "$@"; do
+        if [ "$_ar_arg" = "--" ]; then _ar_seen=1; break; fi
+    done
+    [ "$_ar_seen" -eq 1 ] || set -- -- "$@"
     case "$out" in
         *.tar.gz|*.tgz)     tar czf "$out" "$@"   ;;
         *.tar.bz2|*.tbz2)   tar cjf "$out" "$@"   ;;
@@ -118,7 +129,23 @@ archive() {
         *.tar.zst)          tar --zstd -cf "$out" "$@" ;;
         *.tar)              tar cf "$out" "$@"    ;;
         *.zip)              zip -r "$out" "$@"    ;;
-        *.7z)               7z a "$out" "$@"      ;;
+        *.7z)
+            # 7z is not in the test image (tests/shell/Dockerfile), so a
+            # '--' marker here cannot be exercised; drop the marker and give
+            # dash-leading sources the './' prefix instead, which neutralises
+            # them without depending on any marker support (as extract() does).
+            _ar_n=$#
+            for _ar_arg in "$@"; do
+                if [ "$_ar_src" -eq 0 ]; then
+                    if [ "$_ar_arg" = "--" ]; then _ar_src=1; continue; fi
+                else
+                    case "$_ar_arg" in -*) _ar_arg="./$_ar_arg" ;; esac
+                fi
+                set -- "$@" "$_ar_arg"
+            done
+            shift "$_ar_n"
+            7z a "$out" "$@"
+            ;;
         *) echo "archive: unsupported format '$out'" >&2; return 1 ;;
     esac
 }

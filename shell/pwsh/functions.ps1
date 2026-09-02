@@ -104,16 +104,30 @@ function archive {
     [Parameter(Mandatory)][string]$Output,
     [Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Sources
   )
+  # '--' stops the archiver's option parsing, so a source whose name looks like
+  # an option (a '--checkpoint-action=exec=...' that pwsh globbed out of the
+  # directory, say) can never be parsed as one and run. PowerShell swallows a
+  # '--' the caller types, so the marker is added here; it reaches a native
+  # command verbatim. Do not remove it.
   switch -Regex ($Output) {
-    '\.tar\.gz$|\.tgz$'    { tar czf $Output @Sources; break }
-    '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output @Sources; break }
-    '\.tar\.xz$|\.txz$'    { tar cJf $Output @Sources; break }
-    '\.tar\.zst$'           { tar --zstd -cf $Output @Sources; break }
-    '\.tar$'                { tar cf $Output @Sources; break }
-    # -Path takes the array itself; splatting after a named parameter binds only
-    # the first element and leaves the rest as unbindable positionals.
-    '\.zip$'                { Compress-Archive -Path $Sources -DestinationPath $Output -Force; break }
-    '\.7z$'                 { & 7z a $Output @Sources; break }
+    '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; break }
+    '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }
+    '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; break }
+    '\.tar\.zst$'           { tar --zstd -cf $Output -- @Sources; break }
+    '\.tar$'                { tar cf $Output -- @Sources; break }
+    # The array goes in as a parameter value: splatting after a named parameter
+    # binds only the first element and leaves the rest as unbindable positionals.
+    # -LiteralPath also stops -Path from reading [ ] * ? in a name as a wildcard
+    # and archiving whichever file that pattern happens to match.
+    '\.zip$'                { Compress-Archive -LiteralPath $Sources -DestinationPath $Output -Force; break }
+    # 7z is not in the test image (tests/shell/Dockerfile), so a '--' marker
+    # here cannot be exercised; './' neutralises a dash-leading source without
+    # depending on any marker support (parity with the POSIX twin).
+    '\.7z$'                 {
+      $safe = @($Sources | ForEach-Object { if ($_.StartsWith('-')) { Join-Path '.' $_ } else { $_ } })
+      & 7z a $Output @safe
+      break
+    }
     default                 { Write-Error "unsupported format '$Output'" }
   }
 }
