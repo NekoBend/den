@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import socket
+import sys
 import threading
 import time
 
@@ -25,6 +26,13 @@ def served(tmp_path):
     server.shutdown()
     server.server_close()
     thread.join(timeout=5)
+
+
+def _umask():
+    """The process umask, read back the only way POSIX offers (set and restore)."""
+    current = os.umask(0o022)
+    os.umask(current)
+    return current
 
 
 def _request(port, method, path, body=None, headers=None):
@@ -650,3 +658,17 @@ def test_lock_round_trip_still_works(tmp_path):
     assert _board._read_lock(tmp_path) == {"pid": os.getpid(), "port": 8484}
     _board._release_lock(tmp_path)
     assert not _board._lock_path(tmp_path).exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX mode bits; the ubuntu jobs cover this"
+)
+def test_board_files_are_not_created_executable(tmp_path):
+    # os.open's default mode is 0o777, so an unspecified mode ships an
+    # executable reports.jsonl / agent.jsonl.
+    _board._append_agent(tmp_path, "task", "do the thing", None)
+    _board._append_line(tmp_path, _board._reports_path(tmp_path), "{}\n")
+    for path in (_board._agent_path(tmp_path), _board._reports_path(tmp_path)):
+        mode = path.stat().st_mode & 0o777
+        assert not mode & 0o111, f"{path.name} is executable ({mode:o})"
+        assert mode == 0o666 & ~_umask(), f"{path.name} is {mode:o}"

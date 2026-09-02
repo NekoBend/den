@@ -161,7 +161,10 @@ def _append_line(root: Path, path: Path, line: str) -> bool:
     if _refuse_symlink(root, path):
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | _NOFOLLOW)
+    # 0o666 (umask applies): os.open's default mode is 0o777, which would make
+    # every new reports.jsonl / agent.jsonl executable. _write_guarded already
+    # passes the same mode.
+    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | _NOFOLLOW, 0o666)
     try:
         os.write(fd, line.encode("utf-8"))
     finally:
