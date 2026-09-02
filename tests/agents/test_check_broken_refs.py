@@ -361,6 +361,7 @@ def test_the_ripgrep_backend_is_really_invoked(
     argv = record.read_text(encoding="utf-8").splitlines()
     assert "--no-config" in argv, argv
     assert "--null" in argv, argv
+    assert "--text" in argv, argv
     assert "--no-ignore" in argv, argv
     assert "--hidden" in argv, argv
     assert "!.git" in argv, argv
@@ -390,12 +391,12 @@ def test_hidden_and_ignored_usages_are_reported_by_both_backends(
         assert "ignored.py" in proc.stdout, proc.stdout
 
 
-def test_binary_files_are_not_searched_by_either_backend(
+def test_binary_files_are_searched_as_text_by_both_backends(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
-    # Same parity point as find-references: a NUL byte makes ripgrep skip the
-    # file, so a "broken reference" must not be reported out of a binary blob
-    # by the walk fallback alone.
+    # Same policy as in find-references: every regular file is searched as
+    # text by both backends, so a dangling reference sitting in a blob is
+    # reported the same way whether or not rg is installed.
     init_repo(tmp_path)
     write(tmp_path, "lib.py", "def widget():\n    return 1\n")
     write(tmp_path, "app.py", "widget()\n")
@@ -406,11 +407,15 @@ def test_binary_files_are_not_searched_by_either_backend(
 
     write(tmp_path, "lib.py", "# gone\n")
 
+    outputs = []
     for env in backends:
         proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
         assert proc.returncode == 0, proc.stderr
-        assert ".bin" not in proc.stdout, proc.stdout
+        assert "early.bin" in proc.stdout, proc.stdout
+        assert "late.bin" in proc.stdout, proc.stdout
         assert "app.py" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.splitlines()))
+    assert outputs[0] == outputs[1], outputs
 
 
 def test_undecodable_bytes_do_not_forge_a_broken_ref(
@@ -440,10 +445,10 @@ def test_a_ripgrep_config_cannot_change_what_is_searched(
     tmp_path_factory: pytest.TempPathFactory,
     backends: list[dict[str, str] | None],
 ) -> None:
-    # A user config carrying --follow/--text would make the rg backend read
-    # the symlinked and binary files the walker skips, so a "broken reference"
-    # would depend on the machine's ripgrep configuration. --no-config keeps
-    # both backends on the same files.
+    # A user config carrying --follow or extra globs would make the rg backend
+    # read files the walker never sees (here: a symlink out of the tree), so a
+    # "broken reference" would depend on the machine's ripgrep configuration.
+    # --no-config keeps both backends on the same files.
     config = tmp_path_factory.mktemp("rg-config") / "rgrc"
     config.write_text("--follow\n--text\n", encoding="utf-8")
     secret = tmp_path_factory.mktemp("outside") / "credentials"
@@ -468,7 +473,6 @@ def test_a_ripgrep_config_cannot_change_what_is_searched(
         proc = run("--base", "HEAD", "--root", str(tmp_path), env=full)
         assert proc.returncode == 0, proc.stderr
         assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
-        assert ".bin" not in proc.stdout, proc.stdout
         assert "app.py" in proc.stdout, proc.stdout
         outputs.append(sorted(proc.stdout.splitlines()))
     assert outputs[0] == outputs[1], outputs

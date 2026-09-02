@@ -144,11 +144,17 @@ SKIP_DIRS: frozenset[str] = frozenset(
 # of its own (`a:b.py`, or a Windows drive letter) and a NUL byte cannot occur
 # in one. The flag and the parser belong together; do not pass one without the
 # other.
+# --text is the other half of the one policy both backends can enforce
+# EXACTLY: every regular file is searched as text. ripgrep's own binary
+# heuristic works per read buffer and can still print matches found before the
+# NUL it stops at, which a whole-file check in the walker cannot reproduce; so
+# rather than approximate it, neither side gives up on a file.
 RG_SEARCH_FLAGS: tuple[str, ...] = (
     "--no-config",
     "--no-ignore",
     "--hidden",
     "--null",
+    "--text",
 )
 
 
@@ -199,8 +205,8 @@ def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:
       the results.
     - `ext`, when given, keeps only files with that suffix.
 
-    Binary files are dropped by read_searchable_text, which is where their
-    content is first available.
+    Every file that survives those rules is searched, binary ones included;
+    read_searchable_text is what decides how their bytes are read.
     """
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
@@ -217,17 +223,15 @@ def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:
 
 
 def read_searchable_text(path: Path) -> str | None:
-    """Return the text of `path`, or None if it must not be searched.
+    """Return the text of `path` to search, or None if it cannot be read.
 
-    None means the file could not be read, or that it is binary: ripgrep stops
-    searching a file the moment it sees a NUL byte and reports nothing for it
-    (verified with rg 15.1.0 on a file whose NUL sits after the match), so the
-    walk fallback must not report matches there either - it would otherwise
-    happily match text inside an object file, a PDF or a .pyc.
-
-    The whole file is read, so the NUL is found wherever it sits; ripgrep
-    applies the same test per read buffer, which differs only for a file that
-    matches before a NUL that appears megabytes later.
+    Every regular file is searched, binary ones included: ripgrep is passed
+    --text, so both backends enforce one policy that is equal by
+    construction. Letting each side detect binaries instead only looked
+    safer - ripgrep decides per read buffer and can report matches from
+    before the NUL byte it stops at, which a whole-file check here cannot
+    reproduce, so the two backends disagreed on exactly the files that are
+    hardest to reason about.
 
     Undecodable bytes become U+FFFD rather than disappearing: ripgrep searches
     raw bytes, so it does not match `widget` inside b"wid\xffget()", while
@@ -236,9 +240,6 @@ def read_searchable_text(path: Path) -> str | None:
     rg's own output is decoded with errors="replace" on this side too.
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    if "\x00" in text:
-        return None
-    return text

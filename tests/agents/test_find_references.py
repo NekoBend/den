@@ -308,6 +308,7 @@ def test_the_ripgrep_backend_is_really_invoked(
     argv = record.read_text(encoding="utf-8").splitlines()
     assert "--no-config" in argv, argv
     assert "--null" in argv, argv
+    assert "--text" in argv, argv
     assert "--no-ignore" in argv, argv
     assert "--hidden" in argv, argv
     assert "!.git" in argv, argv
@@ -345,21 +346,28 @@ def test_hidden_and_ignored_files_are_searched_by_both_backends(
         assert "ci.yml" in proc.stdout, proc.stdout
 
 
-def test_binary_files_are_not_searched_by_either_backend(
+def test_binary_files_are_searched_as_text_by_both_backends(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
-    # ripgrep gives up on a file as soon as it sees a NUL byte and reports
-    # nothing for it, while the walk fallback decoded every file with
-    # errors="ignore" and matched the text inside it: an object file, a .pyc
-    # or a PDF produced hits under one backend only.
+    # One policy on both sides: every regular file is searched as text (rg
+    # gets --text, the walker decodes with errors="replace"). Letting each
+    # backend detect binaries instead could only ever approximate the other -
+    # rg decides per read buffer and can still print matches from before the
+    # NUL it stops at - so the files hardest to reason about were exactly the
+    # ones where the two disagreed. Both blobs below must be reported, with
+    # identical output.
     (tmp_path / "early.bin").write_bytes(b"\x00\x00widget()\n")
     (tmp_path / "late.bin").write_bytes(b"x" * 20000 + b"\nwidget()\n" + b"\x00")
     write(tmp_path, "real.py", "widget()\n")
+    outputs = []
     for env in backends:
         proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
         assert proc.returncode == 0, proc.stderr
-        assert ".bin" not in proc.stdout, proc.stdout
+        assert "early.bin" in proc.stdout, proc.stdout
+        assert "late.bin" in proc.stdout, proc.stdout
         assert "real.py" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.splitlines()))
+    assert outputs[0] == outputs[1], outputs
 
 
 def test_undecodable_bytes_do_not_forge_a_match(
@@ -385,10 +393,10 @@ def test_a_ripgrep_config_cannot_change_what_is_searched(
     backends: list[dict[str, str] | None],
 ) -> None:
     # RIPGREP_CONFIG_PATH would otherwise hand the rg backend --follow and
-    # --text, putting the symlinked and binary files the walker skips back
-    # into the search on that machine alone. --no-config is in the shared flag
-    # list; this pins the whole result against the walker with such a config
-    # in place.
+    # extra globs, putting files the walker never sees (here: a symlink out of
+    # the tree) into the rg results on that machine alone. --no-config is in
+    # the shared flag list; this pins the whole result against the walker with
+    # such a config in place.
     config = tmp_path_factory.mktemp("rg-config") / "rgrc"
     config.write_text("--follow\n--text\n", encoding="utf-8")
     secret = tmp_path_factory.mktemp("outside") / "credentials"
@@ -405,7 +413,6 @@ def test_a_ripgrep_config_cannot_change_what_is_searched(
         proc = run("--uses", "widget", "--root", str(root), env=full)
         assert proc.returncode == 0, proc.stderr
         assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
-        assert ".bin" not in proc.stdout, proc.stdout
         assert "real.py" in proc.stdout, proc.stdout
         outputs.append(sorted(proc.stdout.splitlines()))
     assert outputs[0] == outputs[1], outputs
