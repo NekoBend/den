@@ -32,7 +32,7 @@ den board     [--port N] [--open] [--dir PATH]  serve the project's report board
 # runtime plumbing invoked by installed hooks and skills (not everyday commands):
 den hook   run|list|imprint|memory   the per-turn worker + hook lifecycle
 den hook memory show|add|...          workspace session memory (.den/memory.md)
-den verify <file.py>                  format/lint/typecheck one file, config-faithfully
+den verify <file.py...>               format/lint/typecheck each file, config-faithfully
 ```
 
 `den install` never silently clobbers local edits: files that already exist and

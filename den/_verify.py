@@ -102,37 +102,32 @@ def _stage(label: str, cmd: list[str], counts: dict[str, int]) -> None:
 
 def _usage() -> None:
     print(
-        "usage: den verify <file.py>\n"
+        "usage: den verify <file.py...>\n"
         "\n"
         "Run format (ruff format --check), lint (ruff check), and typecheck\n"
-        "(ty check) on one Python file. Project config always wins: den only\n"
-        "adds its defaults (missing-docstring checks) when no ruff config\n"
-        "exists anywhere above the file. The `config:` lines show exactly\n"
-        "which config file and environment each tool will use."
+        "(ty check) on each Python file given. Project config always wins:\n"
+        "den only adds its defaults (missing-docstring checks) when no ruff\n"
+        "config exists anywhere above a file. The `config:` lines show\n"
+        "exactly which config file and environment each tool will use.\n"
+        "Exit 0 = no failures, 1 = a failure or an unusable file, 2 = usage."
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = argv if argv is not None else sys.argv[1:]
-    if not args or args[0] in {"-h", "--help", "help"}:
-        _usage()
-        return 0
-    if len(args) != 1:
-        print("den verify: expected exactly one file", file=sys.stderr)
-        return 2
-    file = Path(args[0])
+def _reject(file: Path) -> str | None:
+    """Why `file` cannot be verified, or None when it can."""
     if not file.is_file():
-        print(f"den verify: file not found: {file}", file=sys.stderr)
-        return 2
+        return f"file not found: {file}"
     if file.suffix != ".py":
-        print(
-            "den verify: only Python files are supported"
+        return (
+            "only Python files are supported"
             f" (got {file.suffix or 'no extension'});"
-            " for other languages use the coding skill's run-checks.sh",
-            file=sys.stderr,
+            " for other languages run the language's standard tools"
+            " (the coding skill names them per language)"
         )
-        return 2
+    return None
 
+
+def _verify_file(file: Path, counts: dict[str, int]) -> None:
     cfg = _ruff_config(file)
     if cfg:
         path, kind = cfg
@@ -148,13 +143,40 @@ def main(argv: list[str] | None = None) -> int:
     root = _project_root(file)
     print(f"config: ty   <- project root {root} (--project); {_venv_line(root)}")
 
-    counts = {"pass": 0, "fail": 0, "skip": 0}
     _stage("format", ["ruff", "format", "--check", str(file)], counts)
     _stage("lint", lint_cmd, counts)
     _stage("typecheck", ["ty", "check", "--project", str(root), str(file)], counts)
 
+
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
+    if not args or args[0] in {"-h", "--help", "help"}:
+        _usage()
+        return 0
+    files = [Path(a) for a in args]
+    # Every argument is a file to verify. A single unusable argument is a
+    # usage error (exit 2, as before); among several, an unusable one is
+    # reported, counted as a failure, and the rest still run.
+    rejected = {f: _reject(f) for f in files}
+    if all(rejected.values()):
+        for why in rejected.values():
+            print(f"den verify: {why}", file=sys.stderr)
+        return 2
+
+    counts = {"pass": 0, "fail": 0, "skip": 0}
+    for file in files:
+        if len(files) > 1:
+            print(f"== {file}")
+        why = rejected[file]
+        if why:
+            print(f"den verify: {why}", file=sys.stderr)
+            counts["fail"] += 1
+            continue
+        _verify_file(file, counts)
+
+    scope = f" across {len(files)} files" if len(files) > 1 else ""
     print(
         f"summary: {counts['pass']} passed, {counts['fail']} failed, "
-        f"{counts['skip']} skipped"
+        f"{counts['skip']} skipped{scope}"
     )
     return 1 if counts["fail"] else 0
