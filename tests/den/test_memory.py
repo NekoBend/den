@@ -738,3 +738,75 @@ def test_unchanged_content_is_not_a_refusal(tmp_path, monkeypatch):
     assert len(_history(tmp_path)) == 1
     assert memory_main(["add", "v2"]) == 0
     assert _mem(tmp_path).read_text() == "v1\nv2\n"
+
+
+# --------------------------------------------------------------------------- #
+# invalid UTF-8 is an unreadable file, not an exception
+#
+# den's text artifacts are UTF-8, but a repo can put any byte in .den/memory.md
+# or .den/imprint.md, and _compose reads both on every hook invocation.
+# --------------------------------------------------------------------------- #
+
+
+def test_hook_run_survives_non_utf8_memory(tmp_path, monkeypatch, capsys):
+    from den._hook import main as hook_main
+
+    den = tmp_path / ".den"
+    den.mkdir()
+    (den / "imprint.md").write_text("IMP\n")
+    _mem(tmp_path).write_bytes(b"\xff\xfe not utf-8\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "claude"]) == 0
+    out = capsys.readouterr()
+    context = json.loads(out.out)["hookSpecificOutput"]["additionalContext"]
+    assert "IMP" in context, "the readable half still composes"
+    assert "<den:memory>" not in context
+    assert "cannot read" in out.err
+
+
+def test_hook_run_survives_non_utf8_imprint(tmp_path, monkeypatch, capsys):
+    from den._hook import main as hook_main
+
+    den = tmp_path / ".den"
+    den.mkdir()
+    (den / "imprint.md").write_bytes(b"\xff\xfe not utf-8\n")
+    _mem(tmp_path).write_text("MEM\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "claude"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"][
+        "additionalContext"
+    ]
+    assert "MEM" in context and "<den:imprint>" not in context
+
+
+def test_add_refuses_non_utf8_memory(tmp_path, monkeypatch, capsys):
+    raw = b"\xff\xfe not utf-8\n"
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_bytes(raw)
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["add", "a fact"]) == 1
+    assert _mem(tmp_path).read_bytes() == raw, "every byte left as it was"
+    assert _history(tmp_path) == [], "nothing was written, so nothing was snapshotted"
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_show_and_diff_refuse_non_utf8_memory(tmp_path, monkeypatch, capsys):
+    hist = tmp_path / ".den" / "history"
+    hist.mkdir(parents=True)
+    (hist / "memory.20260101T000000000000.md").write_text("older\n")
+    _mem(tmp_path).write_bytes(b"\xff\xfe not utf-8\n")
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["show"]) == 1
+    assert memory_main(["diff", "1"]) == 1
+    assert capsys.readouterr().out == "", "no half-decoded bytes on stdout"
+
+
+def test_save_still_replaces_non_utf8_memory(tmp_path, monkeypatch):
+    # The no-regression guard: save/clear/restore read memory as BYTES for the
+    # checkpoint, so undecodable content is snapshotted and replaced normally.
+    raw = b"\xff\xfe not utf-8\n"
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_bytes(raw)
+    _save(tmp_path, monkeypatch, "clean text\n")
+    assert _mem(tmp_path).read_text() == "clean text\n"
+    assert [p.read_bytes() for p in _history(tmp_path)] == [raw], "old bytes kept"

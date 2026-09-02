@@ -135,8 +135,20 @@ def _read_guarded(
 def _read_guarded_text(
     root: Path, path: Path, prefix: str = _ERR, *, errors: str = "strict"
 ) -> str | _Unreadable | None:
+    """Text of `path`. Bytes that are not UTF-8 are an unreadable file, not an
+    exception: den's text artifacts are UTF-8, a repo can put any byte in one,
+    and _compose reads memory.md and imprint.md on EVERY hook invocation -- so a
+    raised UnicodeDecodeError would crash the per-turn hook. Callers already know
+    what to do with the sentinel. (`errors="replace"` never reaches the except.)
+    """
     data = _read_guarded(root, path, prefix)
-    return data.decode("utf-8", errors) if isinstance(data, bytes) else data
+    if not isinstance(data, bytes):
+        return data
+    try:
+        return data.decode("utf-8", errors)
+    except UnicodeDecodeError as exc:
+        print(f"{prefix}: cannot read {path}: {exc}", file=sys.stderr)
+        return _UNREADABLE
 
 
 def _read_text_or_empty(
