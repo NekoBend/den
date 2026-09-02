@@ -141,6 +141,12 @@ function archive {
   # name looks like an option (a '--checkpoint-action=exec=...' that pwsh
   # globbed out of the directory, say) cannot be parsed as one and run; it
   # reaches a native command verbatim. Do not remove it.
+  #
+  # The output name gets the same treatment once, before dispatching, as the
+  # POSIX twin's './' normalisation and as extract does with $Path: an archiver
+  # would otherwise read a dash-leading relative name as a switch (7z), or
+  # refuse it outright (zstd's -o rejects a value starting with '-').
+  if ($Output.StartsWith('-')) { $Output = Join-Path '.' $Output }
   switch -Regex ($Output) {
     '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; break }
     '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }

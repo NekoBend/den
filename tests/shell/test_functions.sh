@@ -755,6 +755,34 @@ assert_not_exists "pwsh/archive crafted tar.gz ran no command" "$WORK/crafted/pw
 actual=$(tar tzf "$WORK/out.tar.gz" 2>/dev/null)
 assert_contains "pwsh/archive crafted tar.gz stored the file" "$CRAFTED_SRC" "$actual"
 
+# The output name is a path too. The POSIX twin has always normalised a
+# dash-leading $out with './'; pwsh did it only for extract's $Path. Two
+# branches actually broke without that: 7z reads '-x.7z' as its own exclude
+# switch, and zstd's -o refuses a value starting with '-'. tar (where the name
+# is -f's operand) and the redirected forms were already fine, but every shape
+# is checked here so a later branch cannot regress quietly.
+echo "[pwsh] archive neutralizes a dash-leading output name"
+setup_fixtures
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive '-x.tar.gz' 'src'" 2>/dev/null
+assert_success "pwsh/archive dash-leading tar.gz exit code" "$?"
+assert_exists "pwsh/archive dash-leading tar.gz" "$WORK/-x.tar.gz"
+actual=$(tar tzf "$WORK/-x.tar.gz" 2>/dev/null)
+assert_contains "pwsh/archive dash-leading tar.gz stored the source" "src/file1.txt" "$actual"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/src'; archive '-y.zst' 'file1.txt'" 2>/dev/null
+assert_success "pwsh/archive dash-leading single-file .zst exit code" "$?"
+assert_exists "pwsh/archive dash-leading single-file .zst" "$WORK/src/-y.zst"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/src'; archive '-y.gz' 'file1.txt'" 2>/dev/null
+assert_success "pwsh/archive dash-leading single-file .gz exit code" "$?"
+assert_exists "pwsh/archive dash-leading single-file .gz" "$WORK/src/-y.gz"
+# 7z is the branch that misreads the name outright ('-x' is its exclude
+# switch), and it has no '--' to fall back on, so what it was handed is read
+# off the stub's argv rather than off a result.
+setup_archiver_stubs
+: > "$WORK/stubsrc/plain.txt"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; archive '-x.7z' 'plain.txt'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/archive dash-leading 7z output argv" "a ./-x.7z plain.txt " "$actual"
+
 # Compress-Archive -Path reads [ ] * ? as wildcards, so the zip branch has to
 # name the source literally or it archives the file the pattern happens to hit.
 echo "[pwsh] archive zip takes the source name literally"
