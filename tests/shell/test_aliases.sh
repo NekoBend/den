@@ -52,5 +52,53 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " | tr -d '\r')
 assert_eq "pwsh/den commands are functions (not shadowed)" "OK" "$actual"
 
+# =============================================================================
+# code: cross-platform fallback (code-insiders -> code -> code.cmd)
+# =============================================================================
+# `code.cmd` is a Windows-only launcher name, so probing only that name left
+# Linux/macOS pwsh with stable VS Code installed reporting "not installed".
+# Stub executables on a throwaway PATH stand in for the real editors.
+CODE_BIN="$WORK/code-bin"
+CODE_EMPTY="$WORK/code-empty"
+mkdir -p "$CODE_BIN" "$CODE_EMPTY"
+cat > "$CODE_BIN/code" << 'STUB'
+#!/bin/sh
+echo "STUB-CODE $*"
+STUB
+chmod +x "$CODE_BIN/code"
+
+echo "[pwsh] code falls back to stable code (no code-insiders installed)"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    \$env:PATH = '$CODE_BIN'
+    . '$P/aliases.ps1'
+    code --version
+" | tr -d '\r')
+assert_contains "pwsh/code falls back to stable code" "STUB-CODE --version" "$actual"
+
+cat > "$CODE_BIN/code-insiders" << 'STUB'
+#!/bin/sh
+echo "STUB-INSIDERS $*"
+STUB
+chmod +x "$CODE_BIN/code-insiders"
+
+echo "[pwsh] code prefers code-insiders when both exist"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    \$env:PATH = '$CODE_BIN'
+    . '$P/aliases.ps1'
+    code .
+" | tr -d '\r')
+assert_contains "pwsh/code prefers code-insiders" "STUB-INSIDERS ." "$actual"
+
+echo "[pwsh] code warns when no editor is installed"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    \$env:PATH = '$CODE_EMPTY'
+    . '$P/aliases.ps1'
+    code . 3>&1
+" | tr -d '\r')
+assert_contains "pwsh/code warns when absent" "VS Code is not installed" "$actual"
+
 print_summary "test_aliases"
 [ "$FAIL" -eq 0 ]

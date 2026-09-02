@@ -124,16 +124,42 @@ function drir {
 # ===== Editor =====
 
 # code → code-insiders (falls back to code stable)
+# Resolve the real EXECUTABLE (_ResolveCmd <name> App) rather than calling a bare
+# name: this function is itself named `code`, so a bare `code` would recurse, and
+# probing only `code.cmd` -- a Windows-only launcher name -- meant Linux/macOS
+# pwsh with stable VS Code installed reported "not installed" instead of opening it.
 function code {
-  if (Get-Command code-insiders -ErrorAction SilentlyContinue) {
-    code-insiders @Args
-  }
-  elseif (Get-Command code.cmd -ErrorAction SilentlyContinue) {
-    code.cmd @Args
-  }
-  else {
+  $exe = _ResolveCmd 'code-insiders' 'App'
+  if (-not $exe) { $exe = _ResolveCmd 'code' 'App' }
+  if (-not $exe) { $exe = _ResolveCmd 'code.cmd' 'App' }
+  if (-not $exe) {
     Write-Warning "VS Code is not installed."
+    return
   }
+  # PowerShell passes arguments to a .cmd/.bat file as ONE raw command line that
+  # cmd.exe re-parses (VS Code ships bin\code.cmd on Windows), so an `&` inside a
+  # space-free filename would end the command and start a second one. cmd does not
+  # split inside quotes, and PowerShell already quotes an argument that contains
+  # whitespace -- a second pair would split THAT one -- so quote exactly the
+  # arguments it would pass bare, doubling a trailing backslash so the closing
+  # quote survives the final argv parse. An argument containing a quote is refused
+  # rather than escaped: a Windows filename cannot hold one, and a wrong escape
+  # here reopens the hole.
+  if ($exe -match '\.(cmd|bat)$') {
+    $quoted = @()
+    foreach ($a in $Args) {
+      $s = [string]$a
+      if ($s.Contains('"')) {
+        Write-Error "code: refusing an argument that contains a quote: $s"
+        return
+      }
+      if ($s -match '\s') { $quoted += $s }
+      else { $quoted += '"' + ($s -replace '(\\+)$', '$1$1') + '"' }
+    }
+    & $exe @quoted
+    return
+  }
+  & $exe @Args
 }
 
 # gu → gitui (terminal git UI)
