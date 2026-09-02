@@ -61,6 +61,26 @@ setup_wildcard() {
     printf 'decoy' > "$WORK/wild/f1.txt"
 }
 
+# 7z is installed neither here nor in tests/shell/Dockerfile, so the 7z branch
+# is exercised against a stub that records its argv. 7z reads a leading '-' as
+# a switch and a leading '@' as a LISTFILE — it would archive the paths named
+# inside that file instead of the file itself — so archive() must hand it
+# neither form, and has no '--' marker to fall back on.
+SEVENZ_ARGV="$WORK/7z-argv.txt"
+
+setup_sevenz_stub() {
+    rm -rf "$WORK"/*
+    mkdir -p "$WORK/7zbin" "$WORK/sevenz"
+    : > "$WORK/sevenz/-x"
+    : > "$WORK/sevenz/@list"
+    cat > "$WORK/7zbin/7z" <<STUB
+#!/bin/sh
+printf '%s\n' "\$@" > '$SEVENZ_ARGV'
+STUB
+    chmod +x "$WORK/7zbin/7z"
+    rm -f "$SEVENZ_ARGV"
+}
+
 # sha256 of the literal file's content ("real") and of the decoy's ("decoy")
 SHA256_REAL="aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f"
 SHA256_DECOY="bdeb9ba22af8fa73e59fe7c4d3c48ae1165617dd76c720773cdf6cbc33a91dd7"
@@ -165,6 +185,14 @@ assert_not_exists "bash/archive crafted glob zip ran no command" "$WORK/crafted/
 assert_exists "bash/archive crafted glob zip created the archive" "$WORK/out.zip"
 actual=$(unzip -l "$WORK/out.zip" 2>/dev/null)
 assert_contains "bash/archive crafted glob zip stored the file" "$CRAFTED_SRC" "$actual"
+
+echo "[bash] archive 7z gets neither a switch nor a listfile"
+setup_sevenz_stub
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
+assert_exists "bash/archive 7z reached the stub" "$SEVENZ_ARGV"
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "bash/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+assert_not_contains "bash/archive 7z got no -- marker" "--" "$actual"
 
 # --- extract: several archives in one call; one failure does not hide the rest ---
 echo "[bash] extract multiple archives"
@@ -376,6 +404,14 @@ assert_exists "zsh/archive crafted glob zip created the archive" "$WORK/out.zip"
 actual=$(unzip -l "$WORK/out.zip" 2>/dev/null)
 assert_contains "zsh/archive crafted glob zip stored the file" "$CRAFTED_SRC" "$actual"
 
+echo "[zsh] archive 7z gets neither a switch nor a listfile"
+setup_sevenz_stub
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
+assert_exists "zsh/archive 7z reached the stub" "$SEVENZ_ARGV"
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "zsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+assert_not_contains "zsh/archive 7z got no -- marker" "--" "$actual"
+
 echo "[zsh] archive + extract tar.bz2"
 setup_fixtures
 run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.bz2' src" 2>/dev/null
@@ -540,6 +576,14 @@ setup_wildcard
 actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/wild/f[1].txt'" 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/digest literal name" "${SHA256_REAL^^}" "$actual"
 assert_not_contains "pwsh/digest did not hash the decoy" "${SHA256_DECOY^^}" "$actual"
+
+echo "[pwsh] archive 7z gets neither a switch nor a listfile"
+setup_sevenz_stub
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/7zbin:' + \$env:PATH; Set-Location '$WORK/sevenz'; archive '$WORK/out.7z' '-x' '@list'" >/dev/null 2>&1
+assert_exists "pwsh/archive 7z reached the stub" "$SEVENZ_ARGV"
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "pwsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+assert_not_contains "pwsh/archive 7z got no -- marker" "--" "$actual"
 
 echo "[pwsh] digest several files"
 setup_fixtures

@@ -125,12 +125,14 @@ archive() {
         *.zip)              zip -r "$out" -- "$@"    ;;
         *.7z)
             # 7z is not in the test image (tests/shell/Dockerfile), so a '--'
-            # marker here cannot be exercised; give dash-leading sources the
-            # './' prefix instead, which neutralises them without depending on
-            # any marker support (as extract() does).
+            # marker here cannot be exercised; give the two source names 7z
+            # reads as something other than a path the './' prefix instead,
+            # which neutralises them without depending on any marker support.
+            # '-x' is a switch; '@list' is a listfile, i.e. 7z archives the
+            # paths named INSIDE the file rather than the file itself.
             _ar_n=$#
             for _ar_arg in "$@"; do
-                case "$_ar_arg" in -*) _ar_arg="./$_ar_arg" ;; esac
+                case "$_ar_arg" in -*|@*) _ar_arg="./$_ar_arg" ;; esac
                 set -- "$@" "$_ar_arg"
             done
             shift "$_ar_n"

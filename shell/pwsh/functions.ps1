@@ -121,10 +121,14 @@ function archive {
     # and archiving whichever file that pattern happens to match.
     '\.zip$'                { Compress-Archive -LiteralPath $Sources -DestinationPath $Output -Force; break }
     # 7z is not in the test image (tests/shell/Dockerfile), so a '--' marker
-    # here cannot be exercised; './' neutralises a dash-leading source without
-    # depending on any marker support (parity with the POSIX twin).
+    # here cannot be exercised; './' neutralises the two source names 7z reads
+    # as something other than a path, without depending on any marker support
+    # (parity with the POSIX twin). '-x' is a switch; '@list' is a listfile,
+    # i.e. 7z archives the paths named INSIDE the file rather than the file.
     '\.7z$'                 {
-      $safe = @($Sources | ForEach-Object { if ($_.StartsWith('-')) { Join-Path '.' $_ } else { $_ } })
+      $safe = @($Sources | ForEach-Object {
+        if ($_.StartsWith('-') -or $_.StartsWith('@')) { Join-Path '.' $_ } else { $_ }
+      })
       & 7z a $Output @safe
       break
     }
