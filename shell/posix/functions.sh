@@ -62,7 +62,8 @@ mkfile() {
 }
 
 # extract → auto-detect and extract archives
-# NOTE: leading-dash './' prefix is required — do not remove.
+# NOTE: leading-dash './' prefix is required — do not remove. The 7z branch
+# neutralises a leading '@' on top of that; see the comment there.
 extract() {
     if [ $# -eq 0 ]; then
         echo "usage: extract <file...>" >&2
@@ -90,7 +91,17 @@ extract() {
             *.xz)               unxz -- "$_ex_f"      ;;
             *.zst)              unzstd -- "$_ex_f"    ;;
             *.zip)              unzip -- "$_ex_f"     ;;
-            *.7z)               7z x -- "$_ex_f"      ;;
+            *.7z)
+                # 7z reads a leading '-' as a switch (already neutralised
+                # above) and a leading '@' as a listfile — it would extract
+                # the archives named INSIDE that file rather than the file
+                # itself. 7z is in neither this image nor
+                # tests/shell/Dockerfile, so its '--' marker cannot be
+                # exercised; './' neutralises both forms without depending on
+                # marker support, as archive() does.
+                case "$_ex_f" in @*) _ex_f="./$_ex_f" ;; esac
+                7z x "$_ex_f"
+                ;;
             *.rar)              unrar x -- "$_ex_f"   ;;
             *) echo "extract: unsupported format '$_ex_f'" >&2; false ;;
         esac || _ex_fail=1
@@ -102,23 +113,42 @@ extract() {
 }
 
 # archive → create archive (format auto-detected from output filename)
-# NOTE: './' normalisation on $out is required; $@ is pass-through by design.
+# NOTE: './' normalisation on $out is required, and so is the end-of-options
+# marker in front of the sources: every argument after $out is a source, never
+# an option, so a file whose name looks like one (a glob picking up
+# '--checkpoint-action=exec=...', say) cannot be parsed as an option and run
+# by GNU tar. Do not remove either.
 archive() {
     if [ -z "$1" ] || [ -z "$2" ]; then
         echo "usage: archive <output> <source...>" >&2
         return 1
     fi
     local out="$1"; shift
+    local _ar_arg _ar_n
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
     case "$out" in
-        *.tar.gz|*.tgz)     tar czf "$out" "$@"   ;;
-        *.tar.bz2|*.tbz2)   tar cjf "$out" "$@"   ;;
-        *.tar.xz|*.txz)     tar cJf "$out" "$@"   ;;
-        *.tar.zst)          tar --zstd -cf "$out" "$@" ;;
-        *.tar)              tar cf "$out" "$@"    ;;
-        *.zip)              zip -r "$out" "$@"    ;;
-        *.7z)               7z a "$out" "$@"      ;;
+        *.tar.gz|*.tgz)     tar czf "$out" -- "$@"   ;;
+        *.tar.bz2|*.tbz2)   tar cjf "$out" -- "$@"   ;;
+        *.tar.xz|*.txz)     tar cJf "$out" -- "$@"   ;;
+        *.tar.zst)          tar --zstd -cf "$out" -- "$@" ;;
+        *.tar)              tar cf "$out" -- "$@"    ;;
+        *.zip)              zip -r "$out" -- "$@"    ;;
+        *.7z)
+            # 7z is not in the test image (tests/shell/Dockerfile), so a '--'
+            # marker here cannot be exercised; give the two source names 7z
+            # reads as something other than a path the './' prefix instead,
+            # which neutralises them without depending on any marker support.
+            # '-x' is a switch; '@list' is a listfile, i.e. 7z archives the
+            # paths named INSIDE the file rather than the file itself.
+            _ar_n=$#
+            for _ar_arg in "$@"; do
+                case "$_ar_arg" in -*|@*) _ar_arg="./$_ar_arg" ;; esac
+                set -- "$@" "$_ar_arg"
+            done
+            shift "$_ar_n"
+            7z a "$out" "$@"
+            ;;
         *) echo "archive: unsupported format '$out'" >&2; return 1 ;;
     esac
 }

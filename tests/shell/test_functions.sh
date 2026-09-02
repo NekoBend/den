@@ -33,6 +33,74 @@ EXPECTED_MD5="9473fdd0d880a43c21b7778d34872157"
 EXPECTED_SHA256="6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72"
 EXPECTED_SHA512="0cbf4caef38047bba9a24e621a961484e5d2a92176a859e7eb27df343dd34eb98d538a6c5f4da1ce302ec250b821cc001e46cc97a704988297185a4df7e99602"
 
+# A source file whose NAME is a GNU tar option: --checkpoint-action=exec=CMD
+# makes tar run CMD, so while archive() passed sources on without an
+# end-of-options marker, `archive out.tgz *` in a directory holding such a
+# file handed the archiver arbitrary command execution.
+CRAFTED_SRC='--checkpoint-action=exec=touch pwned'
+CRAFTED_TRIGGER='--checkpoint=1'
+
+setup_crafted() {
+    rm -rf "$WORK"/*
+    mkdir -p "$WORK/crafted"
+    # Both names are needed for the exec to fire: --checkpoint=1 turns
+    # checkpointing on, --checkpoint-action says what to run at each one. They
+    # sort before bait.txt, so nothing benign precedes them in the glob and
+    # bait.txt is the operand that makes tar write (and checkpoint) at all.
+    : > "$WORK/crafted/$CRAFTED_TRIGGER"
+    : > "$WORK/crafted/$CRAFTED_SRC"
+    echo bait > "$WORK/crafted/bait.txt"
+}
+
+# A file whose name contains PowerShell wildcard characters, next to the file
+# that name would match if it were read as a wildcard instead of literally.
+setup_wildcard() {
+    rm -rf "$WORK"/*
+    mkdir -p "$WORK/wild"
+    printf 'real'  > "$WORK/wild/f[1].txt"
+    printf 'decoy' > "$WORK/wild/f1.txt"
+}
+
+# What an archiver is actually handed cannot be read off the extracted result,
+# so these cases run against stub archivers on PATH that record their argv.
+# 7z is installed neither here nor in tests/shell/Dockerfile, which is the
+# other reason its branches need a stub at all.
+#
+# The names being defended against: every one of these tools reads a leading
+# '-' as a switch, and 7z additionally reads a leading '@' as a LISTFILE — it
+# would act on the paths named INSIDE that file rather than on the file
+# itself. The 7z branches have no '--' marker to fall back on, so both forms
+# must reach them already neutralised with './'.
+STUB_ARGV="$WORK/stub-argv.txt"
+
+setup_archiver_stubs() {
+    rm -rf "$WORK"/*
+    mkdir -p "$WORK/stubbin" "$WORK/stubsrc"
+    # sources for archive(), and archives for extract(), one per branch shape
+    # a stub can observe (the .zip branch is a cmdlet on pwsh, so it is not
+    # one of them)
+    : > "$WORK/stubsrc/-x"
+    : > "$WORK/stubsrc/@list"
+    : > "$WORK/stubsrc/-x.7z"
+    : > "$WORK/stubsrc/@a.7z"
+    : > "$WORK/stubsrc/-x.tar.gz"
+    : > "$WORK/stubsrc/-x.gz"
+    : > "$WORK/stubsrc/-x.rar"
+    for _stub in 7z tar gzip unrar; do
+        cat > "$WORK/stubbin/$_stub" <<STUB
+#!/bin/sh
+printf '%s\n' "\$@" > '$STUB_ARGV'
+STUB
+        chmod +x "$WORK/stubbin/$_stub"
+    done
+    unset _stub
+    rm -f "$STUB_ARGV"
+}
+
+# sha256 of the literal file's content ("real") and of the decoy's ("decoy")
+SHA256_REAL="aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f"
+SHA256_DECOY="bdeb9ba22af8fa73e59fe7c4d3c48ae1165617dd76c720773cdf6cbc33a91dd7"
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -86,7 +154,7 @@ rm -f "$WORK/-dashfile"
 # --- archive + extract (tar.gz) ---
 echo "[bash] archive + extract tar.gz"
 setup_fixtures
-run_bash "$FUNCTIONS_SH" "archive '$WORK/test.tar.gz' -C '$WORK' src" 2>/dev/null
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.gz' src" 2>/dev/null
 assert_success "bash/archive tar.gz exit code" "$?"
 assert_exists "bash/archive tar.gz" "$WORK/test.tar.gz"
 mkdir -p "$WORK/extracted"
@@ -108,11 +176,57 @@ assert_success "bash/extract zip exit code" "$?"
 assert_exists "bash/extract zip" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.zip" "$WORK/extracted"
 
+# --- archive: a source named like an option must never be parsed as one ---
+echo "[bash] archive neutralizes an option-shaped source name (tar.gz)"
+setup_crafted
+run_bash "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out.tar.gz' *" 2>/dev/null
+assert_success "bash/archive crafted glob tar.gz exit code" "$?"
+assert_not_exists "bash/archive crafted glob tar.gz ran no command" "$WORK/crafted/pwned"
+actual=$(tar tzf "$WORK/out.tar.gz" 2>/dev/null)
+assert_contains "bash/archive crafted glob tar.gz stored the file" "$CRAFTED_SRC" "$actual"
+
+echo "[bash] archive treats every argument after the output as a source"
+setup_crafted
+run_bash "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
+assert_failure "bash/archive does not honour -C as a tar option" "$?"
+actual=$(tar tzf "$WORK/out2.tar.gz" 2>/dev/null)
+assert_contains "bash/archive stored the source that followed it" "bait.txt" "$actual"
+assert_not_contains "bash/archive did not chdir for -C" "crafted" "$actual"
+
+echo "[bash] archive neutralizes an option-shaped source name (zip)"
+setup_crafted
+run_bash "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out.zip' *" >/dev/null 2>&1
+assert_success "bash/archive crafted glob zip exit code" "$?"
+assert_not_exists "bash/archive crafted glob zip ran no command" "$WORK/crafted/pwned"
+assert_exists "bash/archive crafted glob zip created the archive" "$WORK/out.zip"
+actual=$(unzip -l "$WORK/out.zip" 2>/dev/null)
+assert_contains "bash/archive crafted glob zip stored the file" "$CRAFTED_SRC" "$actual"
+
+echo "[bash] archive 7z gets neither a switch nor a listfile"
+setup_archiver_stubs
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
+assert_exists "bash/archive 7z reached the stub" "$STUB_ARGV"
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "bash/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+assert_not_contains "bash/archive 7z got no -- marker" "--" "$actual"
+
+echo "[bash] extract 7z gets neither a switch nor a listfile"
+setup_archiver_stubs
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "bash/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
+assert_not_contains "bash/extract 7z switch-shaped got no -- marker" "--" "$actual"
+rm -f "$STUB_ARGV"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "bash/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
+assert_not_contains "bash/extract 7z listfile-shaped got no -- marker" "--" "$actual"
+
 # --- extract: several archives in one call; one failure does not hide the rest ---
 echo "[bash] extract multiple archives"
 setup_fixtures
 mkdir -p "$WORK/second" && echo second > "$WORK/second/file2.txt"
-run_bash "$FUNCTIONS_SH" "archive '$WORK/one.tar.gz' -C '$WORK' src && archive '$WORK/two.tar.gz' -C '$WORK' second" 2>/dev/null
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/one.tar.gz' src && archive '$WORK/two.tar.gz' second" 2>/dev/null
 mkdir -p "$WORK/multi"
 run_bash "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/two.tar.gz'"
 assert_success "bash/extract multi exit code" "$?"
@@ -137,7 +251,7 @@ rm -rf "$WORK/d1.txt" "$WORK/d2.txt"
 
 echo "[bash] archive + extract tar.bz2"
 setup_fixtures
-run_bash "$FUNCTIONS_SH" "archive '$WORK/test.tar.bz2' -C '$WORK' src" 2>/dev/null
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.bz2' src" 2>/dev/null
 assert_success "bash/archive tar.bz2 exit code" "$?"
 assert_exists "bash/archive tar.bz2" "$WORK/test.tar.bz2"
 mkdir -p "$WORK/extracted"
@@ -149,7 +263,7 @@ rm -rf "$WORK/test.tar.bz2" "$WORK/extracted"
 
 echo "[bash] archive + extract tar.xz"
 setup_fixtures
-run_bash "$FUNCTIONS_SH" "archive '$WORK/test.tar.xz' -C '$WORK' src" 2>/dev/null
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.xz' src" 2>/dev/null
 assert_success "bash/archive tar.xz exit code" "$?"
 assert_exists "bash/archive tar.xz" "$WORK/test.tar.xz"
 mkdir -p "$WORK/extracted"
@@ -244,7 +358,7 @@ rm -f "$WORK/dummy.bin"
 
 echo "[zsh] archive + extract tar.gz"
 setup_fixtures
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/test.tar.gz' -C '$WORK' src" 2>/dev/null
+run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.gz' src" 2>/dev/null
 assert_success "zsh/archive tar.gz exit code" "$?"
 assert_exists "zsh/archive tar.gz" "$WORK/test.tar.gz"
 mkdir -p "$WORK/extracted"
@@ -258,7 +372,7 @@ rm -rf "$WORK/test.tar.gz" "$WORK/extracted"
 echo "[zsh] extract multiple archives"
 setup_fixtures
 mkdir -p "$WORK/second" && echo second > "$WORK/second/file2.txt"
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/one.tar.gz' -C '$WORK' src && archive '$WORK/two.tar.gz' -C '$WORK' second" 2>/dev/null
+run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/one.tar.gz' src && archive '$WORK/two.tar.gz' second" 2>/dev/null
 mkdir -p "$WORK/multi"
 run_zsh "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/two.tar.gz'"
 assert_success "zsh/extract multi exit code" "$?"
@@ -292,9 +406,55 @@ assert_success "zsh/extract zip exit code" "$?"
 assert_exists "zsh/extract zip" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.zip" "$WORK/extracted"
 
+# --- archive: a source named like an option must never be parsed as one ---
+echo "[zsh] archive neutralizes an option-shaped source name (tar.gz)"
+setup_crafted
+run_zsh "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out.tar.gz' *" 2>/dev/null
+assert_success "zsh/archive crafted glob tar.gz exit code" "$?"
+assert_not_exists "zsh/archive crafted glob tar.gz ran no command" "$WORK/crafted/pwned"
+actual=$(tar tzf "$WORK/out.tar.gz" 2>/dev/null)
+assert_contains "zsh/archive crafted glob tar.gz stored the file" "$CRAFTED_SRC" "$actual"
+
+echo "[zsh] archive treats every argument after the output as a source"
+setup_crafted
+run_zsh "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
+assert_failure "zsh/archive does not honour -C as a tar option" "$?"
+actual=$(tar tzf "$WORK/out2.tar.gz" 2>/dev/null)
+assert_contains "zsh/archive stored the source that followed it" "bait.txt" "$actual"
+assert_not_contains "zsh/archive did not chdir for -C" "crafted" "$actual"
+
+echo "[zsh] archive neutralizes an option-shaped source name (zip)"
+setup_crafted
+run_zsh "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out.zip' *" >/dev/null 2>&1
+assert_success "zsh/archive crafted glob zip exit code" "$?"
+assert_not_exists "zsh/archive crafted glob zip ran no command" "$WORK/crafted/pwned"
+assert_exists "zsh/archive crafted glob zip created the archive" "$WORK/out.zip"
+actual=$(unzip -l "$WORK/out.zip" 2>/dev/null)
+assert_contains "zsh/archive crafted glob zip stored the file" "$CRAFTED_SRC" "$actual"
+
+echo "[zsh] archive 7z gets neither a switch nor a listfile"
+setup_archiver_stubs
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
+assert_exists "zsh/archive 7z reached the stub" "$STUB_ARGV"
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "zsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+assert_not_contains "zsh/archive 7z got no -- marker" "--" "$actual"
+
+echo "[zsh] extract 7z gets neither a switch nor a listfile"
+setup_archiver_stubs
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "zsh/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
+assert_not_contains "zsh/extract 7z switch-shaped got no -- marker" "--" "$actual"
+rm -f "$STUB_ARGV"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "zsh/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
+assert_not_contains "zsh/extract 7z listfile-shaped got no -- marker" "--" "$actual"
+
 echo "[zsh] archive + extract tar.bz2"
 setup_fixtures
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/test.tar.bz2' -C '$WORK' src" 2>/dev/null
+run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.bz2' src" 2>/dev/null
 assert_success "zsh/archive tar.bz2 exit code" "$?"
 assert_exists "zsh/archive tar.bz2" "$WORK/test.tar.bz2"
 mkdir -p "$WORK/extracted"
@@ -306,7 +466,7 @@ rm -rf "$WORK/test.tar.bz2" "$WORK/extracted"
 
 echo "[zsh] archive + extract tar.xz"
 setup_fixtures
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/test.tar.xz' -C '$WORK' src" 2>/dev/null
+run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.xz' src" 2>/dev/null
 assert_success "zsh/archive tar.xz exit code" "$?"
 assert_exists "zsh/archive tar.xz" "$WORK/test.tar.xz"
 mkdir -p "$WORK/extracted"
@@ -430,6 +590,69 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/zipped'; extract '$WORK/
 assert_exists "pwsh/archive zip first source" "$WORK/zipped/src/file1.txt"
 assert_exists "pwsh/archive zip second source" "$WORK/zipped/second/file2.txt"
 rm -rf "$WORK/broken.zip" "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+
+# --- archive: a source named like an option must never be parsed as one ---
+echo "[pwsh] archive neutralizes an option-shaped source name (tar.gz)"
+setup_crafted
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/crafted'; archive '$WORK/out.tar.gz' '$CRAFTED_TRIGGER' '$CRAFTED_SRC' bait.txt" >/dev/null 2>&1
+assert_success "pwsh/archive crafted tar.gz exit code" "$?"
+assert_not_exists "pwsh/archive crafted tar.gz ran no command" "$WORK/crafted/pwned"
+actual=$(tar tzf "$WORK/out.tar.gz" 2>/dev/null)
+assert_contains "pwsh/archive crafted tar.gz stored the file" "$CRAFTED_SRC" "$actual"
+
+# Compress-Archive -Path reads [ ] * ? as wildcards, so the zip branch has to
+# name the source literally or it archives the file the pattern happens to hit.
+echo "[pwsh] archive zip takes the source name literally"
+setup_wildcard
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/wild'; archive '$WORK/wild.zip' 'f[1].txt'" >/dev/null 2>&1
+assert_success "pwsh/archive zip literal name exit code" "$?"
+rm -rf "$WORK/wildout" && mkdir -p "$WORK/wildout"
+(cd "$WORK/wildout" && unzip -q "$WORK/wild.zip") >/dev/null 2>&1
+assert_exists "pwsh/archive zip stored the literal file" "$WORK/wildout/f[1].txt"
+assert_not_exists "pwsh/archive zip did not store the decoy" "$WORK/wildout/f1.txt"
+
+echo "[pwsh] digest hashes the literal file, not a wildcard match"
+setup_wildcard
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/wild/f[1].txt'" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/digest literal name" "${SHA256_REAL^^}" "$actual"
+assert_not_contains "pwsh/digest did not hash the decoy" "${SHA256_DECOY^^}" "$actual"
+
+echo "[pwsh] archive 7z gets neither a switch nor a listfile"
+setup_archiver_stubs
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; archive '$WORK/out.7z' '-x' '@list'" >/dev/null 2>&1
+assert_exists "pwsh/archive 7z reached the stub" "$STUB_ARGV"
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+assert_not_contains "pwsh/archive 7z got no -- marker" "--" "$actual"
+
+echo "[pwsh] extract 7z gets neither a switch nor a listfile"
+setup_archiver_stubs
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
+assert_not_contains "pwsh/extract 7z switch-shaped got no -- marker" "--" "$actual"
+rm -f "$STUB_ARGV"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
+assert_not_contains "pwsh/extract 7z listfile-shaped got no -- marker" "--" "$actual"
+
+# The POSIX twin neutralises a leading dash once, before dispatching, so every
+# branch's tool gets a path. pwsh only did it inside the 7z branch, leaving
+# tar/gzip/unrar to read the archive name as a switch.
+echo "[pwsh] extract neutralizes a leading dash for every branch"
+setup_archiver_stubs
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '-x.tar.gz'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract tar branch gets a path" "xzf ./-x.tar.gz " "$actual"
+rm -f "$STUB_ARGV"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '-x.gz'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract gzip branch gets a path" "-d ./-x.gz " "$actual"
+rm -f "$STUB_ARGV"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '-x.rar'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract unrar branch gets a path" "x ./-x.rar " "$actual"
 
 echo "[pwsh] digest several files"
 setup_fixtures

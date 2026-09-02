@@ -70,6 +70,10 @@ function extract {
       $failed++
       continue
     }
+    # Neutralise a leading dash before dispatching, so no branch's tool can
+    # read the archive name as a switch (parity with the POSIX twin). The 7z
+    # branch adds '@' to this; 7z alone reads that as a listfile.
+    if ($Path.StartsWith('-')) { $Path = Join-Path '.' $Path }
     # Each archive's status is taken from ITS OWN command: $LASTEXITCODE is
     # only set by native tools (tar, gzip, 7z, unrar), so it is reset per
     # archive, and the cmdlet path (Expand-Archive) reports through an
@@ -88,7 +92,16 @@ function extract {
         catch { Write-Error "extract: '$Path': $($_.Exception.Message)"; $ok = $false }
         break
       }
-      '\.7z$'                 { & 7z x $Path; break }
+      '\.7z$'                 {
+        # 7z also reads a leading '@' as a listfile — it would extract the
+        # archives named INSIDE that file rather than the file itself. 7z is
+        # in neither this image nor tests/shell/Dockerfile, so its '--' marker
+        # cannot be exercised; './' neutralises the name without depending on
+        # marker support, as archive() does.
+        if ($Path.StartsWith('@')) { $Path = Join-Path '.' $Path }
+        & 7z x $Path
+        break
+      }
       '\.rar$'                { & unrar x $Path; break }
       default                 { Write-Error "extract: unsupported format '$Path'"; $ok = $false }
     }
@@ -104,16 +117,34 @@ function archive {
     [Parameter(Mandatory)][string]$Output,
     [Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Sources
   )
+  # Every argument after $Output is a source, never an option. The '--' in
+  # front of them stops the archiver's own option parsing, so a source whose
+  # name looks like an option (a '--checkpoint-action=exec=...' that pwsh
+  # globbed out of the directory, say) cannot be parsed as one and run; it
+  # reaches a native command verbatim. Do not remove it.
   switch -Regex ($Output) {
-    '\.tar\.gz$|\.tgz$'    { tar czf $Output @Sources; break }
-    '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output @Sources; break }
-    '\.tar\.xz$|\.txz$'    { tar cJf $Output @Sources; break }
-    '\.tar\.zst$'           { tar --zstd -cf $Output @Sources; break }
-    '\.tar$'                { tar cf $Output @Sources; break }
-    # -Path takes the array itself; splatting after a named parameter binds only
-    # the first element and leaves the rest as unbindable positionals.
-    '\.zip$'                { Compress-Archive -Path $Sources -DestinationPath $Output -Force; break }
-    '\.7z$'                 { & 7z a $Output @Sources; break }
+    '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; break }
+    '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }
+    '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; break }
+    '\.tar\.zst$'           { tar --zstd -cf $Output -- @Sources; break }
+    '\.tar$'                { tar cf $Output -- @Sources; break }
+    # The array goes in as a parameter value: splatting after a named parameter
+    # binds only the first element and leaves the rest as unbindable positionals.
+    # -LiteralPath also stops -Path from reading [ ] * ? in a name as a wildcard
+    # and archiving whichever file that pattern happens to match.
+    '\.zip$'                { Compress-Archive -LiteralPath $Sources -DestinationPath $Output -Force; break }
+    # 7z is not in the test image (tests/shell/Dockerfile), so a '--' marker
+    # here cannot be exercised; './' neutralises the two source names 7z reads
+    # as something other than a path, without depending on any marker support
+    # (parity with the POSIX twin). '-x' is a switch; '@list' is a listfile,
+    # i.e. 7z archives the paths named INSIDE the file rather than the file.
+    '\.7z$'                 {
+      $safe = @($Sources | ForEach-Object {
+        if ($_.StartsWith('-') -or $_.StartsWith('@')) { Join-Path '.' $_ } else { $_ }
+      })
+      & 7z a $Output @safe
+      break
+    }
     default                 { Write-Error "unsupported format '$Output'" }
   }
 }
