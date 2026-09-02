@@ -159,7 +159,11 @@ archive() {
                 *.xz)  _ar_tool=xz    ;;
                 *)     _ar_tool=zstd  ;;
             esac
-            if [ $# -ne 1 ] || [ -d "$1" ]; then
+            # Exactly one source, and it must already be a regular file.
+            # '-d' alone was false for a path that does not exist, so a typo'd
+            # source got this far and the redirection below then created or
+            # truncated the output before the compressor failed on it.
+            if [ $# -ne 1 ] || [ ! -f "$1" ]; then
                 echo "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" >&2
                 return 1
             fi

@@ -196,7 +196,11 @@ function archive {
               elseif ($Output -match '\.bz2$') { 'bzip2' }
               elseif ($Output -match '\.xz$')  { 'xz'    }
               else                             { 'zstd'  }
-      if ($Sources.Count -ne 1 -or (Test-Path -LiteralPath $Sources[0] -PathType Container)) {
+      # Exactly one source, and it must already be a regular file. Testing
+      # only for Container was false for a path that does not exist, so a
+      # typo'd source got this far and the output was created or truncated
+      # before the compressor failed on it.
+      if ($Sources.Count -ne 1 -or -not (Test-Path -LiteralPath $Sources[0] -PathType Leaf)) {
         Write-Error "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>"
         break
       }

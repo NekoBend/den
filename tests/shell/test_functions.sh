@@ -368,6 +368,21 @@ for _ext in $SINGLE_FMTS; do
     assert_not_exists "bash/extract missing $DTOOL wrote nothing" "$WORK/noload/payload.bin"
 done
 
+# A source that does not exist used to reach the compressor, which meant the
+# output had already been created or truncated by the time it failed: naming
+# an existing archive as the output destroyed it. Nothing may be written.
+echo "[bash] archive single-file refuses a missing source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'keep.$_ext' missing.bin")
+    assert_contains "bash/archive .$_ext missing source usage" "$SINGLE_USAGE" "$err"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'keep.$_ext' missing.bin" 2>/dev/null
+    assert_eq "bash/archive .$_ext missing source exits 1" "1" "$?"
+    assert_eq "bash/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
+    assert_not_exists "bash/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
+done
+
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
 actual=$(run_bash "$FUNCTIONS_SH" "extract '$WORK/test.foo' 2>&1")
@@ -629,6 +644,21 @@ for _ext in $SINGLE_FMTS; do
     run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'" 2>/dev/null
     assert_eq "zsh/extract missing $DTOOL exits 1" "1" "$?"
     assert_not_exists "zsh/extract missing $DTOOL wrote nothing" "$WORK/noload/payload.bin"
+done
+
+# A source that does not exist used to reach the compressor, which meant the
+# output had already been created or truncated by the time it failed: naming
+# an existing archive as the output destroyed it. Nothing may be written.
+echo "[zsh] archive single-file refuses a missing source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'keep.$_ext' missing.bin")
+    assert_contains "zsh/archive .$_ext missing source usage" "$SINGLE_USAGE" "$err"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'keep.$_ext' missing.bin" 2>/dev/null
+    assert_eq "zsh/archive .$_ext missing source exits 1" "1" "$?"
+    assert_eq "zsh/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
+    assert_not_exists "zsh/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
 done
 
 echo "[zsh] path"
@@ -942,6 +972,19 @@ for _ext in $SINGLE_FMTS; do
     err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'")
     assert_contains "pwsh/extract missing $CTOOL message" "extract: $CTOOL is not installed" "$err"
     assert_not_exists "pwsh/extract missing $CTOOL wrote nothing" "$WORK/noload/payload.bin"
+done
+
+# A source that does not exist used to reach the compressor, which meant the
+# output had already been created or truncated by the time it failed: naming
+# an existing archive as the output destroyed it. Nothing may be written.
+echo "[pwsh] archive single-file refuses a missing source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'keep.$_ext' missing.bin")
+    assert_contains "pwsh/archive .$_ext missing source usage" "$SINGLE_USAGE" "$err"
+    assert_eq "pwsh/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
+    assert_not_exists "pwsh/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
 done
 
 echo "[pwsh] extract unsupported format"
