@@ -8,9 +8,13 @@ asserts directly by pointing at a non-repo directory.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
@@ -22,13 +26,68 @@ SCRIPT = (
 )
 
 
-def run(*args: str) -> subprocess.CompletedProcess[str]:
+def run(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run check-broken-refs.py with `args`; return the completed process."""
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
+    )
+
+
+@pytest.fixture
+def backends(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, str] | None]:
+    """The two environments the check must report the same references in.
+
+    `None` keeps the ambient PATH, which must have ripgrep on it; the second
+    replaces PATH with a directory holding nothing but a link to git (the
+    script needs git, not rg), so rg cannot be found and the walk fallback is
+    the only option. Dropping only the PATH entries that contain rg would take
+    git with it wherever the two live in the same directory, and the test
+    would skip instead of checking anything - all three assertions below pin
+    one half each.
+
+    The directory is a sibling of the test's own tmp_path, never inside it, so
+    it cannot show up in the tree being searched.
+    """
+    assert shutil.which("rg") is not None, (
+        "these parity tests need ripgrep on PATH: without it BOTH legs below "
+        "run the walk fallback and the comparison proves nothing. Install it "
+        "(apt-get install ripgrep / brew install ripgrep); CI installs it in "
+        "the job that runs tests/agents."
+    )
+    bin_dir = tmp_path_factory.mktemp("no-rg-bin")
+    git_exe = shutil.which("git")
+    assert git_exe is not None, "these tests need git on PATH"
+    link = bin_dir / Path(git_exe).name
+    try:
+        link.symlink_to(git_exe)
+    except (OSError, NotImplementedError):  # Windows without privileges
+        shutil.copy2(git_exe, link)
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir)
+    assert shutil.which("rg", path=env["PATH"]) is None
+    assert shutil.which("git", path=env["PATH"]) is not None
+    return [None, env]
+
+
+def run_bytes(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    """Run check-broken-refs.py capturing stdout as raw bytes.
+
+    A POSIX file name is bytes, so a test that checks how a name is PRINTED
+    cannot let subprocess decode the stream for it.
+    """
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        capture_output=True,
+        check=False,
+        env=env,
     )
 
 
@@ -183,3 +242,502 @@ def test_powershell_names_survive_the_hyphen(tmp_path: Path) -> None:
     assert "New-WrapperSuffix" not in [
         ln.split(":")[3] for ln in out.splitlines() if ln.count(":") >= 3
     ]
+
+
+def test_subdirectory_root_does_not_invent_broken_refs(tmp_path: Path) -> None:
+    # `git diff --name-only` prints paths relative to the REPOSITORY top-level,
+    # not to --root. Joining them onto a sub-directory root made every changed
+    # file look deleted, so every symbol it defined was reported as broken -
+    # including at its own surviving definition line.
+    init_repo(tmp_path)
+    write(tmp_path, "pkg/lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "pkg/app.py", "from lib import widget\nwidget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    # Body-only change: the def survives, so nothing is broken.
+    write(tmp_path, "pkg/lib.py", "def widget():\n    return 2\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path / "pkg"))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "", proc.stdout
+
+
+def test_subdirectory_root_still_reports_a_real_removal(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    write(tmp_path, "pkg/lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "pkg/app.py", "from lib import widget\nwidget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "pkg/lib.py", "# widget removed\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path / "pkg"))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:widget" in proc.stdout
+    assert "app.py" in proc.stdout
+    # the defining file is the one the removal is part of: not a broken ref
+    assert "lib.py" not in proc.stdout, proc.stdout
+
+
+def test_non_ascii_paths_are_resolved_not_quoted(tmp_path: Path) -> None:
+    # `git diff --name-only` renders café.py as "caf\303\251.py" - quotes and
+    # octal escapes included - which resolves to no file, so the script called
+    # the file DELETED and reported every symbol it defined at base.
+    init_repo(tmp_path)
+    write(tmp_path, "café.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    # A body-only change removes nothing, so nothing may be reported.
+    write(tmp_path, "café.py", "def widget():\n    return 2\n")
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "", proc.stdout
+
+    # ...and a real removal in the same file is still reported.
+    write(tmp_path, "café.py", "# widget removed\n")
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:widget" in proc.stdout
+    assert "app.py" in proc.stdout
+
+
+def test_a_path_with_leading_whitespace_is_not_lost(tmp_path: Path) -> None:
+    # The line used to be .strip()ed, which turned " lead.py" into "lead.py".
+    # `git show HEAD:lead.py` then failed too, so the script concluded the
+    # file did not exist at base and a real removal inside it was reported as
+    # nothing at all: the silent false negative that mirrors the non-ASCII
+    # false positive above.
+    init_repo(tmp_path)
+    try:
+        write(tmp_path, " lead.py", "def gadget():\n    return 1\n")
+    except OSError as exc:  # a filesystem that forbids the name
+        pytest.skip(f"cannot create a file name starting with a space: {exc}")
+    write(tmp_path, "app.py", "gadget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, " lead.py", "# gadget removed\n")
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:gadget" in proc.stdout, proc.stdout
+    assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_a_repo_root_ending_in_a_space_is_not_trimmed(tmp_path: Path) -> None:
+    # `git rev-parse --show-toplevel` was .strip()ed, so a repository whose
+    # top-level directory ends in a space resolved to a different path and
+    # every changed file failed the "is it under --root" test: the check then
+    # reported nothing at all, whatever had been removed.
+    if sys.platform == "win32":
+        pytest.skip("Windows trims trailing spaces from directory names")
+    repo = tmp_path / "repo "
+    repo.mkdir()
+    init_repo(repo)
+    write(repo, "lib.py", "def widget():\n    return 1\n")
+    write(repo, "app.py", "widget()\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+
+    write(repo, "lib.py", "# widget removed\n")
+
+    proc = run("--base", "HEAD", "--root", str(repo))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:widget" in proc.stdout, proc.stdout
+    assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_a_non_utf8_file_name_is_not_mangled(tmp_path: Path) -> None:
+    # A file name that is not valid UTF-8 is legal on POSIX. Decoding git's
+    # output with errors="replace" turned it into a name with U+FFFD in it, so
+    # `git show BASE:<name>` failed, the file looked as if it had not existed
+    # at base, and a removal inside it was missed entirely.
+    if sys.platform == "win32":
+        pytest.skip("Windows file names are UTF-16, not bytes")
+    name = os.fsdecode(b"bad\xff.py")
+    try:
+        write(tmp_path, name, "def widget():\n    return 1\n")
+    except OSError as exc:  # a filesystem that insists on valid UTF-8
+        pytest.skip(f"cannot create a non-UTF-8 file name: {exc}")
+    init_repo(tmp_path)
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, name, "# widget removed\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:widget" in proc.stdout, proc.stdout
+    assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_the_self_exclusion_holds_for_a_non_utf8_file_name(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A mention left behind in the file the symbol was REMOVED from is not a
+    # dangling reference, and that test compares resolved paths. While rg's
+    # output was decoded as text, the rg backend spelled this file's name with
+    # U+FFFD, the comparison never matched, and the leftover comment was
+    # reported as a broken reference under rg and not under the walker.
+    if sys.platform == "win32":
+        pytest.skip("Windows file names are UTF-16, not bytes")
+    name = os.fsdecode(b"bad\xff.py")
+    try:
+        write(tmp_path, name, "def widget():\n    return 1\n")
+    except OSError as exc:  # a filesystem that insists on valid UTF-8
+        pytest.skip(f"cannot create a non-UTF-8 file name: {exc}")
+    init_repo(tmp_path)
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    # the definition goes; the name stays in a comment in the SAME file
+    write(tmp_path, name, "# widget is gone\n")
+
+    outputs = []
+    for env in backends:
+        proc = run_bytes("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert b"broken_ref:widget" in proc.stdout, proc.stdout
+        assert b"app.py" in proc.stdout, proc.stdout
+        # the leftover mention in the defining file is excluded by BOTH
+        # backends, and no lossy spelling of the name appears either
+        assert b"bad\xff.py" not in proc.stdout, proc.stdout
+        assert b"\xef\xbf\xbd" not in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.split(b"\n")))
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_changed_files_outside_the_root_are_ignored(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    write(tmp_path, "pkg/keep.py", "def kept():\n    return 1\n")
+    write(tmp_path, "other/lib.py", "def outside():\n    return 1\n")
+    write(tmp_path, "pkg/app.py", "outside()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "other/lib.py", "# outside removed\n")
+
+    # The removal happened outside --root, so it is not this run's blast radius.
+    proc = run("--base", "HEAD", "--root", str(tmp_path / "pkg"))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "", proc.stdout
+
+
+def test_the_ripgrep_backend_is_really_invoked(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # As in test_find_references: prove the with-rg leg of the parity tests
+    # actually shells out to rg, and pin this script's own flag list (it was
+    # missing --no-ignore/--hidden, which is what let the two backends
+    # disagree) on the real command line.
+    if sys.platform == "win32":
+        pytest.skip("the stub rg is a /bin/sh script")
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    write(tmp_path, "lib.py", "# gone\n")
+
+    bin_dir = tmp_path_factory.mktemp("stub-rg-bin")
+    record = bin_dir / "argv.txt"
+    stub = bin_dir / "rg"
+    stub.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{record}"\nexit 1\n', encoding="utf-8"
+    )
+    stub.chmod(0o755)
+    git_exe = shutil.which("git")
+    assert git_exe is not None, "these tests need git on PATH"
+    (bin_dir / Path(git_exe).name).symlink_to(git_exe)
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir)
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert record.is_file(), "rg was on PATH but the script never ran it"
+    argv = record.read_text(encoding="utf-8").splitlines()
+    assert "--no-config" in argv, argv
+    assert "--null" in argv, argv
+    assert "--text" in argv, argv
+    assert "--no-ignore" in argv, argv
+    assert "--hidden" in argv, argv
+    assert "!.git" in argv, argv
+
+
+def test_hidden_and_ignored_usages_are_reported_by_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The walk fallback reads dotfiles and git-ignored files, so rg is given
+    # --no-ignore/--hidden to match: a dangling reference in .github/ or in an
+    # untracked file is still a dangling reference, and the report must not
+    # depend on whether rg is installed.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, ".gitignore", "ignored.py\n")
+    write(tmp_path, ".github/workflows/ci.yml", "run: widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+    write(tmp_path, "ignored.py", "widget()\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "ci.yml" in proc.stdout, proc.stdout
+        assert "ignored.py" in proc.stdout, proc.stdout
+
+
+def test_binary_files_are_searched_as_text_by_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same policy as in find-references: every regular file is searched as
+    # text by both backends, so a dangling reference sitting in a blob is
+    # reported the same way whether or not rg is installed.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    (tmp_path / "early.bin").write_bytes(b"\x00\x00widget()\n")
+    (tmp_path / "late.bin").write_bytes(b"x" * 20000 + b"\nwidget()\n" + b"\x00")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    outputs = []
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "early.bin" in proc.stdout, proc.stdout
+        assert "late.bin" in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.splitlines()))
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_a_very_long_line_is_clamped_identically_by_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same clamp, same place: one dangling reference inside a minified bundle
+    # must not print the whole bundle, and both backends must print it alike.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    long_line = "x" * 2000 + " widget() " + "y" * 3000
+    write(tmp_path, "bundle.min.js", long_line + "\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+    expected = long_line[:300] + f" [...+{len(long_line) - 300} chars]"
+
+    outputs = []
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        contexts = {}
+        for ln in proc.stdout.splitlines():
+            file, _lineno, _kind, _symbol, context = ln.split(":", 4)
+            contexts[Path(file).name] = context
+        assert contexts["bundle.min.js"] == expected, contexts["bundle.min.js"][:120]
+        # a short line keeps every character and gains no marker
+        assert contexts["app.py"] == "widget()", contexts["app.py"]
+        outputs.append(sorted(proc.stdout.splitlines()))
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_undecodable_bytes_do_not_forge_a_broken_ref(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same parity point as find-references: rg searches raw bytes and never
+    # matches `widget` in b"wid\xffget()", so the walk fallback must not
+    # decode the 0xff away and call it a dangling reference.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    (tmp_path / "bad.txt").write_bytes(b"wid\xffget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "bad.txt" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_a_ripgrep_config_cannot_change_what_is_searched(
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    backends: list[dict[str, str] | None],
+) -> None:
+    # A user config carrying --follow or extra globs would make the rg backend
+    # read files the walker never sees (here: a symlink out of the tree), so a
+    # "broken reference" would depend on the machine's ripgrep configuration.
+    # --no-config keeps both backends on the same files.
+    config = tmp_path_factory.mktemp("rg-config") / "rgrc"
+    config.write_text("--follow\n--text\n", encoding="utf-8")
+    secret = tmp_path_factory.mktemp("outside") / "credentials"
+    secret.write_text("widget = 'SENTINEL-SECRET'\n", encoding="utf-8")
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x00widget()\n")
+    try:
+        (tmp_path / "creds").symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:  # Windows without privileges
+        pytest.skip(f"symlinks unavailable: {exc}")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    outputs = []
+    for env in backends:
+        full = dict(os.environ if env is None else env)
+        full["RIPGREP_CONFIG_PATH"] = str(config)
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=full)
+        assert proc.returncode == 0, proc.stderr
+        assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.splitlines()))
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_a_file_named_like_a_skipped_directory_is_not_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same point as in test_find_references: the `.git` of a linked worktree
+    # is a regular file, and rg excludes it by name while the walker used to
+    # prune directory names only.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    write(tmp_path, "worktree/.git", "gitdir: /elsewhere/.git/worktrees/x\nwidget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert ".git" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_odd_characters_in_lines_and_file_names_survive_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same record-framing point at this script's own rg call site: a form feed
+    # or U+2028 inside the line, and a newline inside the file name, must not
+    # cut a record in half.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "odd.txt", "head \x0c mid \u2028 widget() tail\n")
+    newline_name = True
+    try:
+        write(tmp_path, "new\nline.txt", "widget()\n")
+    except OSError:  # a filesystem that refuses the name
+        newline_name = False
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    outputs = []
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "odd.txt" in proc.stdout, proc.stdout
+        assert any("\x0c" in ln and "\u2028" in ln for ln in proc.stdout.split("\n")), (
+            proc.stdout
+        )
+        if newline_name:
+            assert "new\nline.txt" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.split("\n")))
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_repeated_uses_on_one_line_are_one_broken_ref_in_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same point at this script's own fallback: a line using the removed
+    # symbol three times is one dangling reference, not three, whether or not
+    # ripgrep is installed.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget(); widget(); widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    outputs = []
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        rows = [ln for ln in proc.stdout.split("\n") if ln]
+        assert len(rows) == 1, rows
+        assert "app.py" in rows[0], rows
+        outputs.append(sorted(rows))
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_the_git_directory_is_never_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # .git carries the whole history (and credentials in .git/config), and
+    # --no-ignore/--hidden must not bring it into the search.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+    (tmp_path / ".git" / "leak.txt").write_text("widget()\n", encoding="utf-8")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert ".git" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_symlinked_files_are_not_followed(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # rg does not follow links without -L; the fallback walk must not either,
+    # or a link committed in the repo turns the usage search into a read of a
+    # file outside the tree, printed verbatim as a "broken reference".
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "credentials"
+    secret.write_text("widget = 'SENTINEL-SECRET'\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    write(repo, "lib.py", "def widget():\n    return 1\n")
+    write(repo, "app.py", "widget()\n")
+    try:
+        (repo / "creds").symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:  # Windows without privileges
+        pytest.skip(f"symlinks unavailable: {exc}")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+
+    write(repo, "lib.py", "# gone\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(repo), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
+        assert "creds" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout

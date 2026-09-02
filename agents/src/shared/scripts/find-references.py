@@ -19,11 +19,27 @@ Backend:
     Uses ripgrep (rg) if available for fast search. Falls back to Python
     standard-library os.walk + re otherwise.
 
+Search scope:
+    Both backends read every file under the root except the skipped
+    directories (.git, node_modules, .venv, build, ...), and neither follows
+    symlinks. Git-ignored and hidden files ARE searched, deliberately, and so
+    are binary ones (ripgrep is passed --text), so the result does not change
+    when ripgrep is installed or removed, nor with the ripgrep configuration
+    on the machine (RIPGREP_CONFIG_PATH is not read). A matching line is
+    printed verbatim, so a tree holding untracked secrets (.env, .npmrc,
+    *.pem) has them searched too, and a hit inside a binary file prints that
+    file's bytes: run this only on a tree whose contents you would read
+    yourself.
+
 Output format:
     <file>:<line>:<kind>:<context>
 
     <kind> is one of: def, use, use:<owner> (the last form is used by
     --in to indicate the symbol whose external use was found).
+
+    <context> is the matching line, clamped to 300 characters with
+    ` [...+N chars]` appended when it was longer, so one hit inside a
+    minified bundle or a binary blob cannot flood the output.
 
 Exit codes:
     0  Search completed (results may be empty).
@@ -46,7 +62,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _common import DEFAULT_CAPTURE, DEFINITION_CAPTURE, DEFINITION_PATTERNS, SKIP_DIRS
+from _common import (
+    DEFAULT_CAPTURE,
+    DEFINITION_CAPTURE,
+    DEFINITION_PATTERNS,
+    RG_SEARCH_FLAGS,
+    allow_undecodable_paths_on_stdout,
+    format_hit,
+    iter_search_files,
+    parse_rg_output,
+    read_searchable_text,
+    rg_skip_globs,
+)
 
 Hit = tuple[str, int, str]
 Result = tuple[str, int, str, str]
@@ -68,76 +95,44 @@ def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]
         # match the Python-walk fallback: search everything except SKIP_DIRS,
         # regardless of .gitignore or hidden-dir status, so results do not
         # depend on whether rg is installed.
-        "--no-ignore",
-        "--hidden",
+        *RG_SEARCH_FLAGS,
         pattern,
         str(root),
     ]
     if ext:
         cmd.extend(["-g", f"*{ext}"])
-    for skip in SKIP_DIRS:
-        cmd.extend(["-g", f"!{skip}"])
+    cmd.extend(rg_skip_globs())
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            encoding="utf-8",
-            errors="replace",
-        )
+        # stdout is read as BYTES: it carries file names, and a name is not
+        # required to be valid UTF-8. parse_rg_output converts each part with
+        # the right codec.
+        proc = subprocess.run(cmd, capture_output=True, check=False)
     except FileNotFoundError:
         return []
-    hits: list[Hit] = []
-    for line in proc.stdout.splitlines():
-        # On Windows, paths may start with `C:\`; split from the LEFT only
-        # twice so the drive letter survives intact.
-        parts = line.split(":", 2)
-        if len(parts) != 3:
-            continue
-        # If parts[0] is a single drive letter, the path includes the next
-        # ':'; re-merge.
-        if len(parts[0]) == 1 and parts[0].isalpha():
-            sub = parts[1].split(":", 1)
-            if len(sub) != 2:
-                continue
-            file = f"{parts[0]}:{sub[0]}"
-            try:
-                lineno = int(sub[1])
-            except ValueError:
-                continue
-            content = parts[2]
-            hits.append((file, lineno, content))
-        else:
-            try:
-                hits.append((parts[0], int(parts[1]), parts[2]))
-            except ValueError:
-                continue
-    return hits
+    return parse_rg_output(proc.stdout)
 
 
 def _search_with_walk(pattern: str, root: Path, ext: str | None) -> list[Hit]:
-    """Search by walking the tree with os.walk + re (fallback path)."""
+    """Search by walking the tree with os.walk + re (fallback path).
+
+    Line by line, the way ripgrep searches: one hit per matching LINE, not one
+    per regex match. re.finditer reported every occurrence, so a line reading
+    `widget(); widget()` produced two identical rows here and one under rg,
+    which is also what rg does with no --only-matching.
+
+    Lines are split on "\n" alone - the record separator rg uses - never with
+    str.splitlines(), which would also break on form feed, NEL or U+2028 and
+    renumber every line after one of those.
+    """
     rx = re.compile(pattern, re.MULTILINE)
     hits: list[Hit] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
+    for path in iter_search_files(root, ext):
+        text = read_searchable_text(path)
+        if text is None:
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        if ext and path.suffix != ext:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        for match in rx.finditer(text):
-            lineno = text.count("\n", 0, match.start()) + 1
-            line_start = text.rfind("\n", 0, match.start()) + 1
-            line_end = text.find("\n", match.end())
-            if line_end == -1:
-                line_end = len(text)
-            hits.append((str(path), lineno, text[line_start:line_end]))
+        for lineno, line in enumerate(text.split("\n"), start=1):
+            if rx.search(line):
+                hits.append((str(path), lineno, line))
     return hits
 
 
@@ -289,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Root directory to search (default: cwd).",
     )
     args = parser.parse_args(argv)
+    allow_undecodable_paths_on_stdout()
 
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -309,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         results = list_in_file(file_path, root)
 
     for file, lineno, kind, content in results:
-        print(f"{file}:{lineno}:{kind}:{content}")
+        print(format_hit(file, lineno, kind, content))
     return 0
 
 

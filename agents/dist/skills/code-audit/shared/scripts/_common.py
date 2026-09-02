@@ -13,9 +13,24 @@ substitutes it before compiling the regex:
                           captures any symbol name.
 
 Patterns are applied with re.MULTILINE.
+
+The search plumbing both scripts share lives here too: the ripgrep flags and
+skip globs, the parser for ripgrep's output stream, the fallback walker, the
+reader it searches files with, and the formatter that prints a result. Keeping
+them in one place is what makes the two backends return the same files, and
+print them the same way.
 """
 
 from __future__ import annotations
+
+import contextlib
+import os
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # Per-extension definition-site patterns. {name} is the symbol placeholder.
 DEFINITION_PATTERNS: dict[str, list[str]] = {
@@ -113,3 +128,194 @@ SKIP_DIRS: frozenset[str] = frozenset(
         ".tox",
     }
 )
+
+
+# Flags added to every ripgrep invocation. The fallback walker knows nothing
+# about .gitignore and does not skip dot-entries, so rg is told to search
+# ignored and hidden files as well: results must not depend on whether rg
+# happens to be installed. SKIP_DIRS (`.git` included) is excluded on both
+# sides instead.
+#
+# --no-config is part of that same guarantee: ripgrep otherwise reads the file
+# named by RIPGREP_CONFIG_PATH and applies whatever is in it, so a user whose
+# config carries --follow or --text (or another glob) would get the rg backend
+# searching symlinked or binary files that the walker skips, on that machine
+# only. The scripts pass the flags they need explicitly.
+#
+# --null terminates the file name with a NUL byte instead of a colon, which is
+# what lets parse_rg_line find where the path ends: a path may contain colons
+# of its own (`a:b.py`, or a Windows drive letter) and a NUL byte cannot occur
+# in one. The flag and the parser belong together; do not pass one without the
+# other.
+# --text is the other half of the one policy both backends can enforce
+# EXACTLY: every regular file is searched as text. ripgrep's own binary
+# heuristic works per read buffer and can still print matches found before the
+# NUL it stops at, which a whole-file check in the walker cannot reproduce; so
+# rather than approximate it, neither side gives up on a file.
+RG_SEARCH_FLAGS: tuple[str, ...] = (
+    "--no-config",
+    "--no-ignore",
+    "--hidden",
+    "--null",
+    "--text",
+)
+
+
+def rg_skip_globs() -> list[str]:
+    """Return `-g !<dir>` arguments excluding every SKIP_DIRS entry."""
+    globs: list[str] = []
+    for skip in sorted(SKIP_DIRS):
+        globs.extend(["-g", f"!{skip}"])
+    return globs
+
+
+def parse_rg_line(record: bytes) -> tuple[str, int, str] | None:
+    """Parse one `<path>NUL<lineno>:<content>` record of ripgrep --null output.
+
+    Returns None when the record carries no usable location.
+
+    Records are BYTES because a POSIX file name is bytes and need not be valid
+    UTF-8. Decoding the stream as text renamed such a file to one with U+FFFD
+    in it, while the walk fallback yields the real name, so the two backends
+    printed different paths for the same file (and check-broken-refs' own
+    "this mention is in the file the symbol was removed from" test stopped
+    matching, turning that mention into a reported broken reference under rg
+    only). The path is converted with os.fsdecode, whose surrogateescape
+    round-trips back to the original bytes; the content is text and is decoded
+    with errors="replace", exactly as read_searchable_text does it.
+
+    The NUL is what makes the split unambiguous: a path may contain colons of
+    its own (`a:b.py`, or a Windows drive letter) and cannot contain a NUL.
+    """
+    path, sep, rest = record.partition(b"\x00")
+    if not sep:
+        return None
+    lineno_text, sep, content = rest.partition(b":")
+    if not sep:
+        return None
+    try:
+        lineno = int(lineno_text)
+    except ValueError:
+        return None
+    return (os.fsdecode(path), lineno, content.decode("utf-8", errors="replace"))
+
+
+def parse_rg_output(stdout: bytes) -> list[tuple[str, int, str]]:
+    """Parse ripgrep's whole --null stdout into hits, record by record.
+
+    A record is `<path>NUL<lineno>:<content>` and only the newline AFTER the
+    NUL ends it, which is why the stream is framed by hand rather than split
+    into "lines": splitlines() also breaks on form feed, vertical tab, NEL,
+    U+2028 and U+2029, so any of those INSIDE a matching line truncated the
+    record, and a newline inside a FILE NAME split one record into two
+    unusable halves. The walk fallback reads both kinds of file without
+    trouble, so each case was a disagreement between the backends.
+
+    Records that do not parse are skipped.
+    """
+    hits: list[tuple[str, int, str]] = []
+    pos = 0
+    while pos < len(stdout):
+        nul = stdout.find(b"\x00", pos)
+        if nul == -1:
+            break
+        end = stdout.find(b"\n", nul)
+        if end == -1:
+            end = len(stdout)
+        hit = parse_rg_line(stdout[pos:end])
+        if hit is not None:
+            hits.append(hit)
+        pos = end + 1
+    return hits
+
+
+def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:
+    """Yield every file under `root` that the fallback walker searches.
+
+    Mirrors what the ripgrep backend sees:
+
+    - SKIP_DIRS are pruned by NAME below `root`, so a checkout that itself
+      lives under `build/`, `dist/`, `target/` ... is still searched. A
+      regular FILE carrying one of those names is skipped as well, because
+      rg's `-g !<name>` globs exclude both - a linked git worktree keeps a
+      `.git` file, not a directory, and it must not be searched on one
+      backend only.
+    - Symlinks are never followed (ripgrep does not follow them without -L),
+      so a link committed in the tree cannot pull a file from outside it into
+      the results.
+    - `ext`, when given, keeps only files with that suffix.
+
+    Every file that survives those rules is searched, binary ones included;
+    read_searchable_text is what decides how their bytes are read.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        here = Path(dirpath)
+        for name in sorted(filenames):
+            if name in SKIP_DIRS:
+                continue
+            path = here / name
+            if ext and path.suffix != ext:
+                continue
+            if path.is_symlink() or not path.is_file():
+                continue
+            yield path
+
+
+def read_searchable_text(path: Path) -> str | None:
+    """Return the text of `path` to search, or None if it cannot be read.
+
+    Every regular file is searched, binary ones included: ripgrep is passed
+    --text, so both backends enforce one policy that is equal by
+    construction. Letting each side detect binaries instead only looked
+    safer - ripgrep decides per read buffer and can report matches from
+    before the NUL byte it stops at, which a whole-file check here cannot
+    reproduce, so the two backends disagreed on exactly the files that are
+    hardest to reason about.
+
+    Undecodable bytes become U+FFFD rather than disappearing: ripgrep searches
+    raw bytes, so it does not match `widget` inside b"wid\xffget()", while
+    errors="ignore" would delete the 0xff and forge exactly that hit here.
+    U+FFFD is not a word character, so the boundary behaves as rg's does, and
+    rg's own output is decoded with errors="replace" on this side too.
+    """
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+# Longest <context> printed on a result line. Every regular file is searched
+# as text, so the matching "line" of a minified bundle, a data blob or an
+# object file can be megabytes long, and both scripts print it verbatim. The
+# clamp sits where the line is FORMATTED - one place for both scripts and both
+# backends - so ripgrep's own output stays untouched and parse_rg_line is
+# unaffected.
+MAX_CONTEXT_CHARS = 300
+
+
+def format_hit(file: str, lineno: int, kind: str, content: str) -> str:
+    """Render one `<file>:<line>:<kind>:<context>` result line.
+
+    The context loses its trailing newline and is clamped to
+    MAX_CONTEXT_CHARS, with ` [...+N chars]` appended when anything was cut,
+    so a single hit inside a long line cannot flood the caller's output.
+    """
+    context = content.rstrip("\r\n")
+    if len(context) > MAX_CONTEXT_CHARS:
+        dropped = len(context) - MAX_CONTEXT_CHARS
+        context = f"{context[:MAX_CONTEXT_CHARS]} [...+{dropped} chars]"
+    return f"{file}:{lineno}:{kind}:{context}"
+
+
+def allow_undecodable_paths_on_stdout() -> None:
+    """Let stdout carry file names that are not valid UTF-8.
+
+    os.fsdecode leaves undecodable bytes as surrogate escapes, and printing one
+    to a strict stdout raises UnicodeEncodeError: on a tree holding such a file
+    the scripts would die instead of reporting it. surrogateescape writes the
+    original bytes back out, which is what every other tool prints.
+    """
+    # not every stdout is a reconfigurable text stream
+    with contextlib.suppress(AttributeError, OSError):
+        sys.stdout.reconfigure(errors="surrogateescape")

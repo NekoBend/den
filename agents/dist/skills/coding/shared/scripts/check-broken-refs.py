@@ -16,8 +16,26 @@ Strategy:
     3. For each removed def, search the working tree for usages.
     4. Each usage of a removed def is reported as a broken reference.
 
+Search scope:
+    Usages are searched with ripgrep when available, otherwise by walking the
+    tree; both backends read every file under the root except the skipped
+    directories (.git, node_modules, .venv, build, ...) and neither follows
+    symlinks. Git-ignored and hidden files ARE searched, deliberately (a
+    dangling reference in .github/, .claude/ or an untracked file is still a
+    dangling reference), and so are binary ones (ripgrep is passed --text), so
+    the result does not change when ripgrep is installed or removed, nor with
+    the ripgrep configuration on the machine (RIPGREP_CONFIG_PATH is not
+    read). Matching lines are printed verbatim, so a tree holding untracked
+    secrets has them searched too, and a hit inside a binary file prints that
+    file's bytes: run this only on a tree whose contents you would read
+    yourself.
+
 Output format:
     <file>:<line>:broken_ref:<symbol>:<context>
+
+    <context> is the matching line, clamped to 300 characters with
+    ` [...+N chars]` appended when it was longer, so one hit inside a
+    minified bundle or a binary blob cannot flood the output.
 
 Exit codes:
     0  Check completed (results may be empty).
@@ -35,35 +53,57 @@ Limitations:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from _common import DEFAULT_CAPTURE, DEFINITION_CAPTURE, DEFINITION_PATTERNS, SKIP_DIRS
+from _common import (
+    DEFAULT_CAPTURE,
+    DEFINITION_CAPTURE,
+    DEFINITION_PATTERNS,
+    RG_SEARCH_FLAGS,
+    allow_undecodable_paths_on_stdout,
+    format_hit,
+    iter_search_files,
+    parse_rg_output,
+    read_searchable_text,
+    rg_skip_globs,
+)
 
 
 class GitError(RuntimeError):
     """Raised when a git operation fails or git is unavailable."""
 
 
-def _run_git(args: list[str], cwd: Path) -> str:
-    """Run a git command and return stdout. Raise GitError on failure."""
+def _run_git_bytes(args: list[str], cwd: Path) -> bytes:
+    """Run a git command and return raw stdout. Raise GitError on failure.
+
+    A path is bytes, not text: POSIX file names may hold sequences that are
+    not valid UTF-8, and decoding one with errors="replace" renames it to a
+    file that exists nowhere. Every command whose output is a PATH reads it
+    from here and converts with os.fsdecode, whose surrogateescape round-trips
+    back to the original bytes when the path is opened or handed to git again.
+    """
     if shutil.which("git") is None:
         raise GitError("git is not installed")
     proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
-        text=True,
         check=False,
-        encoding="utf-8",
-        errors="replace",
     )
     if proc.returncode != 0:
-        raise GitError(proc.stderr.strip() or f"git {' '.join(args)} failed")
+        message = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise GitError(message or f"git {' '.join(args)} failed")
     return proc.stdout
+
+
+def _run_git(args: list[str], cwd: Path) -> str:
+    """Run a git command and return stdout decoded as text (file CONTENT)."""
+    return _run_git_bytes(args, cwd).decode("utf-8", errors="replace")
 
 
 def _is_git_repo(root: Path) -> bool:
@@ -75,15 +115,47 @@ def _is_git_repo(root: Path) -> bool:
         return False
 
 
-def _changed_files(base: str, root: Path, lang_ext: str | None) -> list[Path]:
-    """List files changed in the working tree compared to BASE."""
-    out = _run_git(["diff", "--name-only", base], root)
+def _repo_root(root: Path) -> Path:
+    """Absolute top-level of the git working tree that contains `root`.
+
+    Only the newline git appends is removed. .strip() would also eat a space
+    that is part of the directory name, and the top-level would then resolve
+    somewhere else: every changed file fails the is_relative_to(root) test
+    below and the whole check silently reports nothing.
+    """
+    out = os.fsdecode(_run_git_bytes(["rev-parse", "--show-toplevel"], root))
+    return Path(out.removesuffix("\n")).resolve()
+
+
+def _changed_files(
+    base: str, root: Path, repo_root: Path, lang_ext: str | None
+) -> list[Path]:
+    """List files changed in the working tree compared to BASE.
+
+    `git diff --name-only` prints paths relative to the REPOSITORY top-level
+    whatever the cwd is, so they are joined onto `repo_root` and then narrowed
+    to the ones that live under `root` (which may be any subdirectory).
+
+    `-z` is what makes the paths usable: without it git QUOTES anything
+    non-ASCII (`café.py` arrives as `"caf\303\251.py"`, escapes and quotes
+    included) and the resulting path exists nowhere, while stripping
+    whitespace to clean up the line ending would eat a leading or trailing
+    space that is part of the name. Either way the file looked deleted, and
+    every symbol it defined at BASE was reported as a broken reference.
+
+    The stream is read as BYTES and converted with os.fsdecode for the same
+    reason: a file name that is not valid UTF-8 is legal on POSIX, and
+    decoding it with errors="replace" would point every later step at a file
+    that does not exist.
+    """
+    out = _run_git_bytes(["diff", "--name-only", "-z", base], root)
     files: list[Path] = []
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
+    for raw in out.split(b"\x00"):
+        if not raw:
             continue
-        path = root / line
+        path = repo_root / os.fsdecode(raw)
+        if not path.is_relative_to(root):
+            continue
         if lang_ext and path.suffix != lang_ext:
             continue
         if path.suffix not in DEFINITION_PATTERNS:
@@ -105,11 +177,17 @@ def _extract_defs(text: str, ext: str) -> set[str]:
     return defs
 
 
-def _file_text_at_base(base: str, file: Path, root: Path) -> str | None:
-    """Get the text of `file` at `base` ref. Returns None if file did not exist."""
-    rel = file.relative_to(root).as_posix()
+def _file_text_at_base(base: str, file: Path, repo_root: Path) -> str | None:
+    """Get the text of `file` at `base` ref. Returns None if file did not exist.
+
+    `<rev>:<path>` is resolved from the repository top-level, so `file` is made
+    relative to that and git is run from there. A name that is not valid UTF-8
+    carries surrogate escapes here; subprocess re-encodes them with os.fsencode
+    on POSIX, so git receives the original bytes.
+    """
+    rel = file.relative_to(repo_root).as_posix()
     try:
-        return _run_git(["show", f"{base}:{rel}"], root)
+        return _run_git(["show", f"{base}:{rel}"], repo_root)
     except GitError:
         return None
 
@@ -126,9 +204,7 @@ def _ripgrep_available() -> bool:
     return shutil.which("rg") is not None
 
 
-def _search_for_usages(  # ruff: ignore[too-many-branches]  # one branch per file type scanned
-    symbol: str, root: Path
-) -> list[tuple[str, int, str]]:
+def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
     """Find every occurrence of `symbol` as a whole word under `root`."""
     word_pattern = rf"\b{re.escape(symbol)}\b"
     if _ripgrep_available():
@@ -138,65 +214,36 @@ def _search_for_usages(  # ruff: ignore[too-many-branches]  # one branch per fil
             "--line-number",
             "--with-filename",
             "--no-messages",
+            # same flags as find-references.py: search everything except
+            # SKIP_DIRS, ignored and hidden files included, so a dangling
+            # reference is reported whether or not rg is installed.
+            *RG_SEARCH_FLAGS,
             word_pattern,
             str(root),
         ]
-        for skip in SKIP_DIRS:
-            cmd.extend(["-g", f"!{skip}"])
+        cmd.extend(rg_skip_globs())
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-                encoding="utf-8",
-                errors="replace",
-            )
+            # bytes, not text: the stream carries file names (see
+            # parse_rg_output), and a name need not be valid UTF-8.
+            proc = subprocess.run(cmd, capture_output=True, check=False)
         except FileNotFoundError:
-            proc = None
-        hits: list[tuple[str, int, str]] = []
-        if proc is not None:
-            for line in proc.stdout.splitlines():
-                # Same Windows drive-letter handling as find-references.py.
-                parts = line.split(":", 2)
-                if len(parts) != 3:
-                    continue
-                if len(parts[0]) == 1 and parts[0].isalpha():
-                    sub = parts[1].split(":", 1)
-                    if len(sub) != 2:
-                        continue
-                    file = f"{parts[0]}:{sub[0]}"
-                    try:
-                        lineno = int(sub[1])
-                    except ValueError:
-                        continue
-                    hits.append((file, lineno, parts[2]))
-                else:
-                    try:
-                        hits.append((parts[0], int(parts[1]), parts[2]))
-                    except ValueError:
-                        continue
-        return hits
+            return []
+        return parse_rg_output(proc.stdout)
 
-    # Fallback: walk the tree manually.
+    # Fallback: walk the tree manually, line by line as ripgrep searches. One
+    # hit per matching LINE, not one per regex match: re.finditer reported
+    # every occurrence, so a line using the symbol twice became two identical
+    # broken_ref rows without rg and one with it. Lines are split on "\n"
+    # alone, the separator rg's records use.
     rx = re.compile(word_pattern)
-    hits = []
-    for path in root.rglob("*"):
-        if not path.is_file():
+    hits: list[tuple[str, int, str]] = []
+    for path in iter_search_files(root):
+        text = read_searchable_text(path)
+        if text is None:
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        for match in rx.finditer(text):
-            lineno = text.count("\n", 0, match.start()) + 1
-            line_start = text.rfind("\n", 0, match.start()) + 1
-            line_end = text.find("\n", match.end())
-            if line_end == -1:
-                line_end = len(text)
-            hits.append((str(path), lineno, text[line_start:line_end]))
+        for lineno, line in enumerate(text.split("\n"), start=1):
+            if rx.search(line):
+                hits.append((str(path), lineno, line))
     return hits
 
 
@@ -224,6 +271,7 @@ def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
         "--lang", metavar=".EXT", help="Restrict to one language extension (e.g. .py)."
     )
     args = parser.parse_args(argv)
+    allow_undecodable_paths_on_stdout()
 
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -240,14 +288,15 @@ def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
     ext_filter = _normalize_ext(args.lang)
 
     try:
-        changed = _changed_files(args.base, root, ext_filter)
+        repo_root = _repo_root(root)
+        changed = _changed_files(args.base, root, repo_root, ext_filter)
     except GitError as exc:
         print(f"git error: {exc}", file=sys.stderr)
         return 1
 
     removed_by_file: dict[Path, set[str]] = {}
     for file in changed:
-        base_text = _file_text_at_base(args.base, file, root)
+        base_text = _file_text_at_base(args.base, file, repo_root)
         if base_text is None:
             # File did not exist at base; nothing to remove.
             continue
@@ -285,7 +334,7 @@ def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
             if u_resolved is not None and u_resolved in removed_from.get(symbol, set()):
                 continue
             stripped = u_content.strip()
-            print(f"{u_file}:{u_lineno}:broken_ref:{symbol}:{stripped}")
+            print(format_hit(u_file, u_lineno, f"broken_ref:{symbol}", stripped))
 
     return 0
 
