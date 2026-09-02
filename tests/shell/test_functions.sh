@@ -97,6 +97,33 @@ STUB
     rm -f "$STUB_ARGV"
 }
 
+# A single-file compression fixture: one payload in its own directory, plus an
+# empty dir to use as a PATH with none of the compressors on it. The payload is
+# random BYTES, not text, because the pwsh branch sends the compressor's stdout
+# through a redirection: a text fixture would not catch it if those bytes were
+# ever re-encoded on the way to the file. $PAYLOAD_SHA is recomputed here so a
+# round trip is checked against the exact source that went in.
+PAYLOAD_SHA=""
+setup_single_file() {
+    rm -rf "$WORK"/*
+    mkdir -p "$WORK/one" "$WORK/nobin"
+    head -c 65536 /dev/urandom > "$WORK/one/payload.bin"
+    PAYLOAD_SHA=$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)
+}
+
+# The single-file formats, and the tool each direction shells out to, so the
+# missing-tool cases can assert the binary that branch actually names.
+SINGLE_FMTS="gz bz2 xz zst"
+single_tools() {
+    case "$1" in
+        gz)  CTOOL=gzip;  DTOOL=gunzip  ;;
+        bz2) CTOOL=bzip2; DTOOL=bunzip2 ;;
+        xz)  CTOOL=xz;    DTOOL=unxz    ;;
+        *)   CTOOL=zstd;  DTOOL=unzstd  ;;
+    esac
+}
+SINGLE_USAGE="usage: archive <output.gz|.bz2|.xz|.zst> <one-file>"
+
 # sha256 of the literal file's content ("real") and of the decoy's ("decoy")
 SHA256_REAL="aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f"
 SHA256_DECOY="bdeb9ba22af8fa73e59fe7c4d3c48ae1165617dd76c720773cdf6cbc33a91dd7"
@@ -272,6 +299,74 @@ run_bash "$FUNCTIONS_SH" "cd '$WORK/extracted' && extract 'test.tar.xz'" 2>/dev/
 assert_success "bash/extract tar.xz exit code" "$?"
 assert_exists "bash/extract tar.xz" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.tar.xz" "$WORK/extracted"
+
+# --- .tar.zst and its .tzst alias (the alias is what tgz/tbz2/txz are to
+# --- their long forms: same branch, same tar --zstd call) ---
+echo "[bash] archive + extract tar.zst / tzst"
+for _ext in tar.zst tzst; do
+    setup_fixtures
+    run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.$_ext' src" 2>/dev/null
+    assert_success "bash/archive .$_ext exit code" "$?"
+    assert_exists "bash/archive .$_ext" "$WORK/test.$_ext"
+    mkdir -p "$WORK/extracted"
+    cp "$WORK/test.$_ext" "$WORK/extracted/"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/extracted' && extract 'test.$_ext'" 2>/dev/null
+    assert_success "bash/extract .$_ext exit code" "$?"
+    assert_exists "bash/extract .$_ext" "$WORK/extracted/src/file1.txt"
+done
+
+# --- single-file compression: one source in, the named output out, source kept
+echo "[bash] archive + extract single-file formats"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'payload.bin.$_ext' payload.bin" 2>/dev/null
+    assert_success "bash/archive single-file .$_ext exit code" "$?"
+    assert_exists "bash/archive single-file .$_ext wrote the output" "$WORK/one/payload.bin.$_ext"
+    assert_exists "bash/archive single-file .$_ext kept the source" "$WORK/one/payload.bin"
+    mkdir -p "$WORK/back"
+    cp "$WORK/one/payload.bin.$_ext" "$WORK/back/"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/back' && extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_success "bash/extract single-file .$_ext exit code" "$?"
+    actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
+    assert_eq "bash/extract single-file .$_ext round-trips the bytes" "$PAYLOAD_SHA" "$actual"
+done
+
+# These four tools compress exactly one file: a second source or a directory
+# has to be refused, not quietly turned into a tarball or applied to arg one.
+echo "[bash] archive single-file refuses several sources and directories"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    cp "$WORK/one/payload.bin" "$WORK/one/second.bin"
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'multi.$_ext' payload.bin second.bin")
+    assert_contains "bash/archive .$_ext several sources usage" "$SINGLE_USAGE" "$err"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'multi.$_ext' payload.bin second.bin" 2>/dev/null
+    assert_eq "bash/archive .$_ext several sources exits 1" "1" "$?"
+    assert_not_exists "bash/archive .$_ext several sources wrote nothing" "$WORK/one/multi.$_ext"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/dir.$_ext' one" 2>/dev/null
+    assert_eq "bash/archive .$_ext directory exits 1" "1" "$?"
+    assert_not_exists "bash/archive .$_ext directory wrote nothing" "$WORK/dir.$_ext"
+done
+
+# A compressor missing from PATH is a named per-item failure, not a "command
+# not found" and not a truncated output file: archive's guard runs BEFORE the
+# redirection that would create it.
+echo "[bash] archive and extract report a missing compressor"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    single_tools "$_ext"
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/one' && archive 'gone.$_ext' payload.bin")
+    assert_contains "bash/archive missing $CTOOL message" "archive: $CTOOL is not installed" "$err"
+    run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/one' && archive 'gone.$_ext' payload.bin" 2>/dev/null
+    assert_eq "bash/archive missing $CTOOL exits 1" "1" "$?"
+    assert_not_exists "bash/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
+    mkdir -p "$WORK/noload"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$WORK/noload/payload.bin.$_ext' payload.bin" 2>/dev/null
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'")
+    assert_contains "bash/extract missing $DTOOL message" "extract: $DTOOL is not installed" "$err"
+    run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_eq "bash/extract missing $DTOOL exits 1" "1" "$?"
+    assert_not_exists "bash/extract missing $DTOOL wrote nothing" "$WORK/noload/payload.bin"
+done
 
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
@@ -475,6 +570,66 @@ run_zsh "$FUNCTIONS_SH" "cd '$WORK/extracted' && extract 'test.tar.xz'" 2>/dev/n
 assert_success "zsh/extract tar.xz exit code" "$?"
 assert_exists "zsh/extract tar.xz" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.tar.xz" "$WORK/extracted"
+
+echo "[zsh] archive + extract tar.zst / tzst"
+for _ext in tar.zst tzst; do
+    setup_fixtures
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.$_ext' src" 2>/dev/null
+    assert_success "zsh/archive .$_ext exit code" "$?"
+    assert_exists "zsh/archive .$_ext" "$WORK/test.$_ext"
+    mkdir -p "$WORK/extracted"
+    cp "$WORK/test.$_ext" "$WORK/extracted/"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/extracted' && extract 'test.$_ext'" 2>/dev/null
+    assert_success "zsh/extract .$_ext exit code" "$?"
+    assert_exists "zsh/extract .$_ext" "$WORK/extracted/src/file1.txt"
+done
+
+echo "[zsh] archive + extract single-file formats"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'payload.bin.$_ext' payload.bin" 2>/dev/null
+    assert_success "zsh/archive single-file .$_ext exit code" "$?"
+    assert_exists "zsh/archive single-file .$_ext wrote the output" "$WORK/one/payload.bin.$_ext"
+    assert_exists "zsh/archive single-file .$_ext kept the source" "$WORK/one/payload.bin"
+    mkdir -p "$WORK/back"
+    cp "$WORK/one/payload.bin.$_ext" "$WORK/back/"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/back' && extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_success "zsh/extract single-file .$_ext exit code" "$?"
+    actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
+    assert_eq "zsh/extract single-file .$_ext round-trips the bytes" "$PAYLOAD_SHA" "$actual"
+done
+
+echo "[zsh] archive single-file refuses several sources and directories"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    cp "$WORK/one/payload.bin" "$WORK/one/second.bin"
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'multi.$_ext' payload.bin second.bin")
+    assert_contains "zsh/archive .$_ext several sources usage" "$SINGLE_USAGE" "$err"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'multi.$_ext' payload.bin second.bin" 2>/dev/null
+    assert_eq "zsh/archive .$_ext several sources exits 1" "1" "$?"
+    assert_not_exists "zsh/archive .$_ext several sources wrote nothing" "$WORK/one/multi.$_ext"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/dir.$_ext' one" 2>/dev/null
+    assert_eq "zsh/archive .$_ext directory exits 1" "1" "$?"
+    assert_not_exists "zsh/archive .$_ext directory wrote nothing" "$WORK/dir.$_ext"
+done
+
+echo "[zsh] archive and extract report a missing compressor"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    single_tools "$_ext"
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/one' && archive 'gone.$_ext' payload.bin")
+    assert_contains "zsh/archive missing $CTOOL message" "archive: $CTOOL is not installed" "$err"
+    run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/one' && archive 'gone.$_ext' payload.bin" 2>/dev/null
+    assert_eq "zsh/archive missing $CTOOL exits 1" "1" "$?"
+    assert_not_exists "zsh/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
+    mkdir -p "$WORK/noload"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$WORK/noload/payload.bin.$_ext' payload.bin" 2>/dev/null
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'")
+    assert_contains "zsh/extract missing $DTOOL message" "extract: $DTOOL is not installed" "$err"
+    run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_eq "zsh/extract missing $DTOOL exits 1" "1" "$?"
+    assert_not_exists "zsh/extract missing $DTOOL wrote nothing" "$WORK/noload/payload.bin"
+done
 
 echo "[zsh] path"
 actual=$(run_zsh "$FUNCTIONS_SH" "path")
@@ -700,6 +855,66 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/extracted'; extract 'tes
 assert_success "pwsh/extract tar.xz exit code" "$?"
 assert_exists "pwsh/extract tar.xz" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.tar.xz" "$WORK/extracted"
+
+echo "[pwsh] archive + extract tar.zst / tzst"
+for _ext in tar.zst tzst; do
+    setup_fixtures
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'test.$_ext' 'src'" 2>/dev/null
+    assert_success "pwsh/archive .$_ext exit code" "$?"
+    assert_exists "pwsh/archive .$_ext" "$WORK/test.$_ext"
+    mkdir -p "$WORK/extracted"
+    cp "$WORK/test.$_ext" "$WORK/extracted/"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/extracted'; extract 'test.$_ext'" 2>/dev/null
+    assert_success "pwsh/extract .$_ext exit code" "$?"
+    assert_exists "pwsh/extract .$_ext" "$WORK/extracted/src/file1.txt"
+done
+
+# The gzip/bzip2/xz branches redirect a native command's stdout into the
+# output: the payload is binary, so a round trip that still matches proves
+# PowerShell wrote those bytes through unchanged.
+echo "[pwsh] archive + extract single-file formats"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'payload.bin.$_ext' 'payload.bin'" 2>/dev/null
+    assert_success "pwsh/archive single-file .$_ext exit code" "$?"
+    assert_exists "pwsh/archive single-file .$_ext wrote the output" "$WORK/one/payload.bin.$_ext"
+    assert_exists "pwsh/archive single-file .$_ext kept the source" "$WORK/one/payload.bin"
+    mkdir -p "$WORK/back"
+    cp "$WORK/one/payload.bin.$_ext" "$WORK/back/"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/back'; extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_success "pwsh/extract single-file .$_ext exit code" "$?"
+    actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
+    assert_eq "pwsh/extract single-file .$_ext round-trips the bytes" "$PAYLOAD_SHA" "$actual"
+done
+
+# pwsh reports these through the error stream, as every other failure in
+# archive/extract does: a Write-Error leaves the process exit code at 0, so
+# what is asserted is the message and the absence of an output file.
+echo "[pwsh] archive single-file refuses several sources and directories"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    cp "$WORK/one/payload.bin" "$WORK/one/second.bin"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'multi.$_ext' 'payload.bin' 'second.bin'")
+    assert_contains "pwsh/archive .$_ext several sources usage" "$SINGLE_USAGE" "$err"
+    assert_not_exists "pwsh/archive .$_ext several sources wrote nothing" "$WORK/one/multi.$_ext"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'dir.$_ext' 'one'")
+    assert_contains "pwsh/archive .$_ext directory usage" "$SINGLE_USAGE" "$err"
+    assert_not_exists "pwsh/archive .$_ext directory wrote nothing" "$WORK/dir.$_ext"
+done
+
+echo "[pwsh] archive and extract report a missing compressor"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    single_tools "$_ext"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'")
+    assert_contains "pwsh/archive missing $CTOOL message" "archive: $CTOOL is not installed" "$err"
+    assert_not_exists "pwsh/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
+    mkdir -p "$WORK/noload"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$WORK/noload/payload.bin.$_ext' 'payload.bin'" 2>/dev/null
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'")
+    assert_contains "pwsh/extract missing $CTOOL message" "extract: $CTOOL is not installed" "$err"
+    assert_not_exists "pwsh/extract missing $CTOOL wrote nothing" "$WORK/noload/payload.bin"
+done
 
 echo "[pwsh] extract unsupported format"
 touch "$WORK/test.foo"

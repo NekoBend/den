@@ -61,6 +61,16 @@ mkfile() {
     unset _mf_path
 }
 
+# _ar_have → guard one branch of extract()/archive() on the tool it needs.
+# Usage: _ar_have <caller> <tool>. A missing compressor becomes that caller's
+# own per-item failure instead of a stray "command not found" from the branch,
+# and archive() calls it BEFORE the redirection that would create the output.
+_ar_have() {
+    command -v "$2" >/dev/null 2>&1 && return 0
+    echo "$1: $2 is not installed" >&2
+    return 1
+}
+
 # extract → auto-detect and extract archives
 # NOTE: leading-dash './' prefix is required — do not remove. The 7z branch
 # neutralises a leading '@' on top of that; see the comment there.
@@ -84,12 +94,16 @@ extract() {
             *.tar.gz|*.tgz)     tar xzf "$_ex_f"   ;;
             *.tar.bz2|*.tbz2)   tar xjf "$_ex_f"   ;;
             *.tar.xz|*.txz)     tar xJf "$_ex_f"   ;;
-            *.tar.zst)          tar --zstd -xf "$_ex_f" ;;
+            # tar shells zstd out for these, so the guard is on zstd, not tar.
+            *.tar.zst|*.tzst)   _ar_have extract zstd && tar --zstd -xf "$_ex_f" ;;
             *.tar)              tar xf  "$_ex_f"    ;;
-            *.gz)               gunzip -- "$_ex_f"    ;;
-            *.bz2)              bunzip2 -- "$_ex_f"   ;;
-            *.xz)               unxz -- "$_ex_f"      ;;
-            *.zst)              unzstd -- "$_ex_f"    ;;
+            # Single file: each tool writes the decompressed file next to the
+            # archive. gunzip/bunzip2/unxz consume the archive and unzstd keeps
+            # it — that is each tool's own default, and the pwsh twin matches.
+            *.gz)               _ar_have extract gunzip  && gunzip  -- "$_ex_f" ;;
+            *.bz2)              _ar_have extract bunzip2 && bunzip2 -- "$_ex_f" ;;
+            *.xz)               _ar_have extract unxz    && unxz    -- "$_ex_f" ;;
+            *.zst)              _ar_have extract unzstd  && unzstd  -- "$_ex_f" ;;
             *.zip)              unzip -- "$_ex_f"     ;;
             *.7z)
                 # 7z reads a leading '-' as a switch (already neutralised
@@ -124,15 +138,48 @@ archive() {
         return 1
     fi
     local out="$1"; shift
-    local _ar_arg _ar_n
+    local _ar_arg _ar_n _ar_tool
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
     case "$out" in
         *.tar.gz|*.tgz)     tar czf "$out" -- "$@"   ;;
         *.tar.bz2|*.tbz2)   tar cjf "$out" -- "$@"   ;;
         *.tar.xz|*.txz)     tar cJf "$out" -- "$@"   ;;
-        *.tar.zst)          tar --zstd -cf "$out" -- "$@" ;;
+        # tar shells zstd out for these, so the guard is on zstd, not tar.
+        *.tar.zst|*.tzst)   _ar_have archive zstd && tar --zstd -cf "$out" -- "$@" ;;
         *.tar)              tar cf "$out" -- "$@"    ;;
+        # Single-file compression. Every '.tar.*' form and its 't*' alias is
+        # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and
+        # these four tools compress exactly ONE file: several sources or a
+        # directory is a usage error, not something to silently tar up first.
+        *.gz|*.bz2|*.xz|*.zst)
+            case "$out" in
+                *.gz)  _ar_tool=gzip  ;;
+                *.bz2) _ar_tool=bzip2 ;;
+                *.xz)  _ar_tool=xz    ;;
+                *)     _ar_tool=zstd  ;;
+            esac
+            if [ $# -ne 1 ] || [ -d "$1" ]; then
+                echo "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" >&2
+                return 1
+            fi
+            # The tool check comes before the redirection below, so a missing
+            # compressor leaves no truncated output behind.
+            _ar_have archive "$_ar_tool" || return 1
+            # '--' stops each tool's option parsing (all four support it), so a
+            # source named like a switch reaches it as a path — the same rule
+            # the tar branches above follow.
+            if [ "$_ar_tool" = zstd ]; then
+                # zstd is the only one of the four with -o, and it PROMPTS
+                # before clobbering an existing output; -f keeps the branch
+                # non-interactive and overwriting, as every other branch is.
+                zstd -q -k -f -o "$out" -- "$1"
+            else
+                # The others have no -o: -k -c writes the compressed bytes to
+                # stdout and the shell names the output.
+                "$_ar_tool" -k -c -- "$1" > "$out"
+            fi
+            ;;
         *.zip)              zip -r "$out" -- "$@"    ;;
         *.7z)
             # 7z is not in the test image (tests/shell/Dockerfile), so a '--'

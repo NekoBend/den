@@ -52,6 +52,17 @@ function mkfile {
   Write-Host "Created $Path ($Size → $bytes bytes)"
 }
 
+# _ArHave → guard one branch of extract/archive on the tool it needs. Reports
+# "<caller>: <tool> is not installed" and returns $false when the tool is
+# absent, so a missing compressor becomes that caller's own per-item failure
+# instead of a CommandNotFoundException from the branch, and archive checks it
+# BEFORE the redirection that would create the output.
+function _ArHave([string]$Caller, [string]$Tool) {
+  if (Get-Command $Tool -ErrorAction SilentlyContinue) { return $true }
+  Write-Error "${Caller}: $Tool is not installed"
+  return $false
+}
+
 # extract → auto-detect and extract archives
 function extract {
   # Every argument is an archive; each is extracted in turn and a failure on
@@ -84,9 +95,17 @@ function extract {
       '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
       '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
       '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
-      '\.tar\.zst$'           { tar --zstd -xf $Path; break }
+      # tar shells zstd out for these, so the guard is on zstd, not tar.
+      '\.tar\.zst$|\.tzst$'   { if (_ArHave 'extract' 'zstd') { tar --zstd -xf $Path } else { $ok = $false }; break }
       '\.tar$'                { tar xf $Path; break }
-      '\.gz$'                 { gzip -d $Path; break }
+      # Single file: each tool writes the decompressed file next to the
+      # archive. gzip/bzip2/xz consume the archive and zstd keeps it — that is
+      # each tool's own default, and the POSIX twin behaves the same way. The
+      # name is './'-normalised above, so no branch needs a '--' marker.
+      '\.gz$'                 { if (_ArHave 'extract' 'gzip')  { gzip -d $Path }  else { $ok = $false }; break }
+      '\.bz2$'                { if (_ArHave 'extract' 'bzip2') { bzip2 -d $Path } else { $ok = $false }; break }
+      '\.xz$'                 { if (_ArHave 'extract' 'xz')    { xz -d $Path }    else { $ok = $false }; break }
+      '\.zst$'                { if (_ArHave 'extract' 'zstd')  { zstd -d $Path }  else { $ok = $false }; break }
       '\.zip$'                {
         try { Expand-Archive -LiteralPath $Path -DestinationPath . -Force -ErrorAction Stop }
         catch { Write-Error "extract: '$Path': $($_.Exception.Message)"; $ok = $false }
@@ -126,8 +145,41 @@ function archive {
     '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; break }
     '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }
     '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; break }
-    '\.tar\.zst$'           { tar --zstd -cf $Output -- @Sources; break }
+    # tar shells zstd out for these, so the guard is on zstd, not tar.
+    '\.tar\.zst$|\.tzst$'   { if (_ArHave 'archive' 'zstd') { tar --zstd -cf $Output -- @Sources }; break }
     '\.tar$'                { tar cf $Output -- @Sources; break }
+    # Single-file compression. Every '.tar.*' form and its 't*' alias is
+    # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and these
+    # four tools compress exactly ONE file: several sources or a directory is a
+    # usage error, not something to silently tar up first.
+    '\.gz$|\.bz2$|\.xz$|\.zst$' {
+      $tool = if     ($Output -match '\.gz$')  { 'gzip'  }
+              elseif ($Output -match '\.bz2$') { 'bzip2' }
+              elseif ($Output -match '\.xz$')  { 'xz'    }
+              else                             { 'zstd'  }
+      if ($Sources.Count -ne 1 -or (Test-Path -LiteralPath $Sources[0] -PathType Container)) {
+        Write-Error "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>"
+        break
+      }
+      if (-not (_ArHave 'archive' $tool)) { break }
+      $src = $Sources[0]
+      # '--' stops each tool's option parsing (all four support it), so a
+      # source named like a switch reaches it as a path, as in the tar branches.
+      if ($tool -eq 'zstd') {
+        # zstd is the only one of the four with -o, and it PROMPTS before
+        # clobbering an existing output; -f keeps the branch non-interactive
+        # and overwriting, as every other branch is.
+        & zstd -q -k -f -o $Output -- $src
+      } else {
+        # The others have no -o: -k -c writes the compressed bytes to stdout
+        # and the redirection names the output. PowerShell 7 writes a native
+        # command's redirected stdout as raw bytes, so the archive is not
+        # re-encoded — the round-trip case in tests/shell/test_functions.sh
+        # compresses binary content precisely to keep that honest.
+        & $tool -k -c -- $src > $Output
+      }
+      break
+    }
     # The array goes in as a parameter value: splatting after a named parameter
     # binds only the first element and leaves the rest as unbindable positionals.
     # -LiteralPath also stops -Path from reading [ ] * ? in a name as a wildcard
