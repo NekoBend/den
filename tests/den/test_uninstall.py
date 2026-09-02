@@ -174,6 +174,19 @@ def test_strip_block_keeps_whitespace_only_user_content(tmp_path):
     assert "den" not in rc.read_text()
 
 
+def test_strip_block_preserves_non_utf8_bytes(tmp_path):
+    # A cp1252/latin-1 rc file (old Notepad default): den's block is ASCII, so
+    # it is found and stripped, but a lossy decode would silently drop the
+    # user's 0xe9 byte while rewriting the whole file.
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    mine = "alias caf='cd ~/Caf\xe9'\n".encode("latin-1")
+    rc.write_bytes(mine + f"\n# ===== den =====\n{line}\n".encode())
+    assert _has_block(rc, line)
+    _strip_block(rc, line)
+    assert rc.read_bytes() == mine  # every byte den did not write round-trips
+
+
 def test_strip_block_preserves_crlf(tmp_path):
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
     rc = tmp_path / "profile.ps1"

@@ -20,13 +20,21 @@ from pathlib import Path
 from . import _ui
 
 
+def _decode(raw: bytes) -> str:
+    """Decode an rc file losslessly. `errors="ignore"` would DROP every byte
+    that is not valid UTF-8 (a cp1252/latin-1 rc file loses its accented
+    characters); surrogateescape round-trips them so re-encoding reproduces
+    the original bytes exactly."""
+    return raw.decode("utf-8", errors="surrogateescape")
+
+
 def _has_block(rc: Path, line: str) -> bool:
     from ._shell import _COMMENT
 
     if not rc.is_file():
         return False
     try:
-        text = rc.read_text(encoding="utf-8", errors="ignore")
+        text = _decode(rc.read_bytes())
     except OSError:
         return False
     # den-managed only when the marker line is immediately followed by den's
@@ -42,11 +50,13 @@ def _has_block(rc: Path, line: str) -> bool:
 def _strip_block(rc: Path, line: str) -> None:
     """Remove den's rc block: the `# ===== den =====` marker, the source line
     that follows it, and one preceding blank line (the append form). Preserves
-    the file's CRLF/LF line ending. If the file is EXACTLY what den created
-    (only the block, nothing else), den owns it, so it is removed."""
+    the file's CRLF/LF line ending, and every byte den did not write (the file
+    is decoded and re-encoded with surrogateescape, so bytes that are not valid
+    UTF-8 survive untouched). If the file is EXACTLY what den created (only the
+    block, nothing else), den owns it, so it is removed."""
     from ._shell import _COMMENT
 
-    text = rc.read_bytes().decode("utf-8", errors="ignore")
+    text = _decode(rc.read_bytes())
     crlf = "\r\n" in text
     norm = text.replace("\r\n", "\n")
     if norm == f"{_COMMENT}\n{line}\n":
@@ -69,7 +79,10 @@ def _strip_block(rc: Path, line: str) -> None:
     new = "\n".join(out)
     if crlf:
         new = new.replace("\n", "\r\n")
-    rc.write_text(new, encoding="utf-8", newline="")
+    # write_bytes, not write_text: no newline translation (the CRLF/LF form is
+    # already restored above) and surrogateescape puts the non-UTF-8 bytes back
+    # exactly as they were read.
+    rc.write_bytes(new.encode("utf-8", errors="surrogateescape"))
 
 
 class _Remover:
