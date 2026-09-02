@@ -718,15 +718,22 @@ def _bind_and_record(
         _unlink_lock(root)  # release the claim we hold
         print(f"den board: cannot start: {exc}", file=sys.stderr)
         return None
-    recorded = _write_lock(
-        root,
-        {
-            "pid": os.getpid(),
-            "port": server.server_address[1],
-            "root": str(root),
-            "started": datetime.now(UTC).isoformat(timespec="seconds"),
-        },
-    )
+    try:
+        recorded = _write_lock(
+            root,
+            {
+                "pid": os.getpid(),
+                "port": server.server_address[1],
+                "root": str(root),
+                "started": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+        )
+    except OSError as exc:
+        # Full or read-only filesystem, or O_NOFOLLOW catching a symlink swapped
+        # in after the pre-check. Raising here would skip the cleanup below and
+        # leave the bound socket and our claim behind on the way out.
+        print(f"den board: cannot record the lock: {exc}", file=sys.stderr)
+        recorded = False
     if not recorded:
         server.server_close()  # give the socket back
         _unlink_lock(root)  # release the claim, if it is ours to release

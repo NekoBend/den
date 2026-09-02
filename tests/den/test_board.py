@@ -720,3 +720,24 @@ def test_non_utf8_lock_does_not_block_release(tmp_path):
     lock.write_bytes(b"\xff\xfe not json at all")
     _board._release_lock(tmp_path)  # must not raise
     assert lock.is_file(), "not ours to remove: no readable pid says so"
+
+
+def test_main_does_not_serve_when_the_lock_write_raises(tmp_path, monkeypatch, capsys):
+    """_write_lock reaches os.open, which raises on a full or read-only
+    filesystem (and on O_NOFOLLOW catching a symlink swapped in after the
+    pre-check). That must take the same path as a refusal, not a traceback."""
+    board = tmp_path / ".den" / "board"
+    board.mkdir(parents=True)
+    (board / "board.json").write_text(json.dumps({"port": 0}))
+
+    def _boom(root, info):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(_board, "_write_lock", _boom)
+    # Returns instead of raising, and instead of blocking in serve_forever.
+    assert _board.main(["--dir", str(tmp_path)]) == 1
+    out = capsys.readouterr()
+    assert "serving" not in out.out
+    assert "No space left on device" in out.err
+    assert "not serving" in out.err
+    assert not (board / "server.json").exists(), "the claim is released"
