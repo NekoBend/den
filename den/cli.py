@@ -31,7 +31,7 @@ def _usage() -> None:
         "  deploy (interactive if no target)\n"
         "  uninstall [skills|shell|hook|cheatsheets]"
         "  remove den-installed files\n"
-        "  upgrade   [--refresh]                     "
+        "  upgrade   [--refresh] [--force]           "
         " upgrade den via uv (alias: update)\n"
         "  board     [--port N] [--open] [--dir PATH]"
         " serve the local report board\n"
