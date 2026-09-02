@@ -415,10 +415,16 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             profile=profile,
             no_den_cli=no_den_cli,
         )
-        if with_parent and not dry_run:
-            # custom targets get both AGENTS.md and CLAUDE.md at the root
+        if with_parent:
+            # custom targets get both AGENTS.md and CLAUDE.md at the root, so
+            # the dry-run has to name CLAUDE.md too -- a preview that omits a
+            # destination the real run overwrites is worse than no preview.
             claude = _parent_source("CLAUDE.md", profile)
-            if claude.is_file():
+            if not claude.is_file():
+                print(f"  warning: {claude} not found", file=sys.stderr)
+            elif dry_run:
+                print(f"[dry-run]   parent ({profile}) -> {root}/CLAUDE.md")
+            else:
                 writer.stage(root / "CLAUDE.md", claude.read_bytes())
         processed.append(root / "skills")
 

@@ -106,6 +106,21 @@ def test_install_skills_dry_run_writes_nothing(tmp_path, capsys):
     assert "[dry-run]" in capsys.readouterr().out
 
 
+def test_install_dry_run_names_every_root_file_the_real_run_writes(tmp_path, capsys):
+    # A preview that omits a destination the real run overwrites is worse than
+    # no preview: --target --with-parent also writes CLAUDE.md at the root, and
+    # only AGENTS.md was ever announced.
+    args = ["skills", "--target", str(tmp_path), "--with-parent"]
+    assert install_main([*args, "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert not (tmp_path / "skills").exists()
+    assert install_main(args) == 0
+    written = sorted(p.name for p in tmp_path.iterdir() if p.is_file())
+    assert written == ["AGENTS.md", "CLAUDE.md"]
+    for name in written:
+        assert f"{tmp_path}/{name}" in out
+
+
 def test_install_codex_config_prints_blocks(tmp_path, capsys):
     install_main(["skills", "--target", str(tmp_path), "--codex-config"])
     out = capsys.readouterr().out
