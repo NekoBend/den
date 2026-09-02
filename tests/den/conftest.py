@@ -42,6 +42,31 @@ _WINDOWS_SKIP = {
 }
 
 
+@pytest.fixture
+def symlink(tmp_path):
+    """`link(target, path)`, or skip when this platform/session cannot symlink.
+
+    The symlink-hardening tests need a real symlink; on Windows that takes the
+    create-symbolic-link privilege (or developer mode), which a runner may not
+    have. Probe once and skip rather than fail there. `target_is_directory` is
+    ignored on POSIX and required on Windows for a dir target.
+    """
+
+    def _link(target, path):
+        Path(path).symlink_to(target, target_is_directory=Path(target).is_dir())
+
+    target = tmp_path / "_symlink_probe_target"
+    target.write_text("probe")
+    probe = tmp_path / "_symlink_probe"
+    try:
+        _link(target, probe)
+    except (OSError, NotImplementedError):
+        pytest.skip("creating symlinks is not permitted here")
+    probe.unlink()
+    target.unlink()
+    return _link
+
+
 def pytest_collection_modifyitems(config, items):
     if sys.platform != "win32":
         return

@@ -23,6 +23,7 @@ Subcommands:
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,6 +50,83 @@ def _find_den_dir(start: Path) -> Path:
 
 def _memory_path(den_dir: Path) -> Path:
     return den_dir / _MEMORY_NAME
+
+
+# --------------------------------------------------------------------------- #
+# symlink guard
+#
+# A cloned repository ships the CONTENT and LAYOUT of `.den/`, so a symlink
+# there is an attempt to make den read a file from outside the workspace into
+# the model's context every turn (memory.md is injected by the hook, and copied
+# into .den/history/ by checkpoint) or to overwrite one (save/add/restore/clear
+# write memory.md back). den therefore never follows a symlink at `.den` or
+# below it. A symlinked component ABOVE `.den` -- the workspace dir itself -- is
+# out of scope: the attacker owns repo content, not the local shell. So is the
+# TOCTOU window between the check and the open; O_NOFOLLOW narrows it where the
+# platform has the flag (Windows does not, and CI runs there too).
+# --------------------------------------------------------------------------- #
+
+_ERR = "den hook memory"
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _symlink_component(root: Path, path: Path) -> Path | None:
+    """First symlinked component at `root` or below on the way to `path`, else None."""
+    if root.is_symlink():
+        return root
+    try:
+        rel = path.relative_to(root)
+    except ValueError:  # not under root: nothing this guard owns
+        return None
+    cur = root
+    for part in rel.parts:
+        cur /= part
+        if cur.is_symlink():
+            return cur
+    return None
+
+
+def _refuse_symlink(root: Path, path: Path, action: str, prefix: str = _ERR) -> bool:
+    """True (after one line on stderr) when `path` must not be read/written."""
+    bad = _symlink_component(root, path)
+    if bad is None:
+        return False
+    print(f"{prefix}: refusing to {action} {path}: {bad} is a symlink", file=sys.stderr)
+    return True
+
+
+def _read_guarded(root: Path, path: Path, prefix: str = _ERR) -> bytes | None:
+    """Bytes of `path`, or None when it is absent, unreadable, or symlinked."""
+    if _refuse_symlink(root, path, "read", prefix):
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _read_guarded_text(
+    root: Path, path: Path, prefix: str = _ERR, *, errors: str = "strict"
+) -> str | None:
+    data = _read_guarded(root, path, prefix)
+    return None if data is None else data.decode("utf-8", errors)
+
+
+def _write_guarded(root: Path, path: Path, data: bytes, prefix: str = _ERR) -> bool:
+    """Create/truncate `path` and write `data`; False when a symlink is in the way.
+
+    Bytes, not text: that is what `newline=""` bought the text writes it replaces
+    (LF stays LF on Windows, so snapshots and mirrors are byte-stable).
+    """
+    if _refuse_symlink(root, path, "write", prefix):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW, 0o666)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    return True
 
 
 _CLINERULES_DIRNAME = ".clinerules"
@@ -78,11 +156,13 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
     if not (rules / _CLINERULES_IMPRINT).is_file():
         return False
     dest = rules / _CLINERULES_MEMORY
-    mem = _memory_path(den_dir)
-    text = mem.read_text(encoding="utf-8") if mem.is_file() else ""
+    # The mirror is den-managed too, and a repo can ship `.clinerules/` just as
+    # easily as `.den/`, so guard it against the same symlink trick.
+    if _refuse_symlink(rules, dest, "write"):
+        return False
+    text = _read_guarded_text(den_dir, _memory_path(den_dir)) or ""
     if text.strip():
-        dest.write_text(_CLINERULES_HEADER + text, encoding="utf-8", newline="")
-        return True
+        return _write_guarded(rules, dest, (_CLINERULES_HEADER + text).encode("utf-8"))
     if dest.exists():  # memory emptied/cleared -> drop the stale mirror
         dest.unlink()
         return True
@@ -94,14 +174,23 @@ def _history_dir(den_dir: Path) -> Path:
 
 
 def _snapshots(den_dir: Path) -> list[Path]:
-    """History snapshots, newest first (fixed-width timestamps sort by time)."""
+    """History snapshots, newest first (fixed-width timestamps sort by time).
+
+    A symlink is never a snapshot: reading one would leak an outside file into
+    memory (log/diff/restore all read the list) and restoring it would write
+    memory back through it. Dropped silently rather than reported, because
+    checkpoint walks this list every turn and one line per turn is noise; the
+    reads a planted symlink actually targets do report.
+    """
     hist = _history_dir(den_dir)
-    if not hist.is_dir():
+    if _symlink_component(den_dir, hist) is not None or not hist.is_dir():
         return []
     snaps = [
         p
         for p in hist.iterdir()
-        if p.name.startswith(_SNAP_PREFIX) and p.name.endswith(_SNAP_SUFFIX)
+        if p.name.startswith(_SNAP_PREFIX)
+        and p.name.endswith(_SNAP_SUFFIX)
+        and not p.is_symlink()
     ]
     return sorted(snaps, key=lambda p: p.name, reverse=True)
 
@@ -141,14 +230,15 @@ def _do_checkpoint(den_dir: Path) -> Path | None:
     Returns the new snapshot path, or None when there is nothing to do
     (no memory.md, or it is identical to the most recent snapshot).
     """
-    mem = _memory_path(den_dir)
-    if not mem.is_file():
+    current = _read_guarded(den_dir, _memory_path(den_dir))
+    if current is None:  # absent, unreadable, or symlinked -- nothing to snapshot
         return None
-    current = mem.read_bytes()
+    hist = _history_dir(den_dir)
+    if _refuse_symlink(den_dir, hist, "write"):
+        return None
     snaps = _snapshots(den_dir)
     if snaps and snaps[0].read_bytes() == current:
         return None
-    hist = _history_dir(den_dir)
     hist.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime(_STAMP_FORMAT)
     dest = hist / f"{_SNAP_PREFIX}{stamp}{_SNAP_SUFFIX}"
@@ -156,7 +246,8 @@ def _do_checkpoint(den_dir: Path) -> Path | None:
     while dest.exists():  # never clobber a same-timestamp snapshot
         dest = hist / f"{_SNAP_PREFIX}{stamp}_{n:03d}{_SNAP_SUFFIX}"
         n += 1
-    dest.write_bytes(current)
+    if not _write_guarded(den_dir, dest, current):
+        return None
     _rotate(den_dir)
     return dest
 
@@ -175,9 +266,9 @@ def _parse_index(argv: list[str]) -> int | None:
 
 
 def _cmd_show(den_dir: Path, argv: list[str]) -> int:
-    mem = _memory_path(den_dir)
-    if mem.is_file():
-        sys.stdout.write(mem.read_text(encoding="utf-8"))
+    text = _read_guarded_text(den_dir, _memory_path(den_dir))
+    if text is not None:
+        sys.stdout.write(text)
     return 0
 
 
@@ -202,11 +293,12 @@ def _cmd_save(den_dir: Path, argv: list[str]) -> int:
             return 2
     else:
         content = sys.stdin.read()
-    _do_checkpoint(den_dir)
     mem = _memory_path(den_dir)
-    mem.parent.mkdir(parents=True, exist_ok=True)
-    # newline="" keeps LF on Windows so snapshots/mirrors stay byte-stable.
-    mem.write_text(content, encoding="utf-8", newline="")
+    if _refuse_symlink(den_dir, mem, "write"):
+        return 1
+    _do_checkpoint(den_dir)
+    if not _write_guarded(den_dir, mem, content.encode("utf-8")):
+        return 1
     mirror_to_clinerules(den_dir)
     return 0
 
@@ -222,21 +314,25 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 2
-    _do_checkpoint(den_dir)
     mem = _memory_path(den_dir)
-    mem.parent.mkdir(parents=True, exist_ok=True)
-    existing = mem.read_text(encoding="utf-8") if mem.is_file() else ""
+    if _refuse_symlink(den_dir, mem, "write"):
+        return 1
+    _do_checkpoint(den_dir)
+    existing = _read_guarded_text(den_dir, mem) or ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
     addition = content if content.endswith("\n") else content + "\n"
-    mem.write_text(existing + addition, encoding="utf-8", newline="")
+    if not _write_guarded(den_dir, mem, (existing + addition).encode("utf-8")):
+        return 1
     mirror_to_clinerules(den_dir)
     return 0
 
 
 def _cmd_clear(den_dir: Path, argv: list[str]) -> int:
-    _do_checkpoint(den_dir)
     mem = _memory_path(den_dir)
+    if _refuse_symlink(den_dir, mem, "remove"):
+        return 1
+    _do_checkpoint(den_dir)
     if mem.is_file():
         mem.unlink()
     mirror_to_clinerules(den_dir)
@@ -267,10 +363,12 @@ def _cmd_restore(den_dir: Path, argv: list[str]) -> int:
     target = snaps[n - 1]
     data = target.read_bytes()
     stamp = _snap_stamp(target)
-    _do_checkpoint(den_dir)  # make the restore itself reversible
     mem = _memory_path(den_dir)
-    mem.parent.mkdir(parents=True, exist_ok=True)
-    mem.write_bytes(data)
+    if _refuse_symlink(den_dir, mem, "write"):
+        return 1
+    _do_checkpoint(den_dir)  # make the restore itself reversible
+    if not _write_guarded(den_dir, mem, data):
+        return 1
     mirror_to_clinerules(den_dir)
     print(f"restored #{n} ({_fmt_stamp(stamp)}) -> {mem}", file=sys.stderr)
     return 0
@@ -292,13 +390,9 @@ def _cmd_diff(den_dir: Path, argv: list[str]) -> int:
     import difflib
 
     old = snaps[n - 1]
-    mem = _memory_path(den_dir)
     old_lines = old.read_text(encoding="utf-8").splitlines(keepends=True)
-    new_lines = (
-        mem.read_text(encoding="utf-8").splitlines(keepends=True)
-        if mem.is_file()
-        else []
-    )
+    new = _read_guarded_text(den_dir, _memory_path(den_dir)) or ""
+    new_lines = new.splitlines(keepends=True)
     out = "".join(
         difflib.unified_diff(
             old_lines,

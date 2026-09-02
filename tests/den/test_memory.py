@@ -336,3 +336,131 @@ def test_restore_refreshes_clinerules_mirror(tmp_path, monkeypatch):
     assert "v2" in _clinerules_mem(tmp_path).read_text()
     assert memory_main(["restore", "1"]) == 0  # newest snapshot == v1
     assert "v1" in _clinerules_mem(tmp_path).read_text()
+
+
+# --------------------------------------------------------------------------- #
+# symlink hardening
+#
+# A cloned repository ships the content and layout of .den/, so a symlink there
+# is an attempt to make den read a file from outside the workspace into the
+# model's context (memory.md is injected every turn and copied into history) or
+# to overwrite one. den must follow none of them, in either direction.
+# --------------------------------------------------------------------------- #
+
+_OUTSIDE_TEXT = "PRIVATE KEY MATERIAL\n"
+
+
+def _planted(tmp_path, symlink, name="memory.md"):
+    """A workspace whose .den/<name> is a repo-shipped symlink to a file outside
+    it. Returns (project dir, the outside file)."""
+    secret = tmp_path / "id_ed25519"
+    secret.write_text(_OUTSIDE_TEXT)
+    proj = tmp_path / "repo"
+    link = proj / ".den" / name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    symlink(secret, link)
+    return proj, secret
+
+
+def test_show_refuses_symlinked_memory(tmp_path, monkeypatch, capsys, symlink):
+    proj, _secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    assert memory_main(["show"]) == 0
+    out = capsys.readouterr()
+    assert "PRIVATE KEY" not in out.out, "the target must never be printed"
+    assert "is a symlink" in out.err
+
+
+def test_checkpoint_does_not_snapshot_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, _secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    assert memory_main(["checkpoint"]) == 0
+    assert _history(proj) == [], "the target must not be copied into history"
+
+
+def test_save_refuses_to_write_through_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("overwritten\n"))
+    assert memory_main(["save"]) == 1
+    assert secret.read_text() == _OUTSIDE_TEXT
+    assert _mem(proj).is_symlink(), "den must not replace the link either"
+
+
+def test_add_refuses_to_write_through_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "appended fact"]) == 1
+    assert secret.read_text() == _OUTSIDE_TEXT
+
+
+def test_clear_refuses_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    assert memory_main(["clear"]) == 1
+    assert secret.is_file() and secret.read_text() == _OUTSIDE_TEXT
+
+
+def test_restore_refuses_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, secret = _planted(tmp_path, symlink)
+    hist = proj / ".den" / "history"
+    hist.mkdir()
+    (hist / "memory.20260101T000000000000.md").write_text("snapshot\n")
+    monkeypatch.chdir(proj)
+    assert memory_main(["restore", "1"]) == 1
+    assert secret.read_text() == _OUTSIDE_TEXT
+
+
+def test_symlinked_den_dir_is_refused(tmp_path, monkeypatch, capsys, symlink):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "memory.md").write_text("INJECTED\n")
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    symlink(outside, proj / ".den")
+    monkeypatch.chdir(proj)
+    assert memory_main(["show"]) == 0
+    out = capsys.readouterr()
+    assert "INJECTED" not in out.out
+    assert "is a symlink" in out.err
+
+
+def test_symlinked_history_dir_refuses_checkpoint(tmp_path, monkeypatch, symlink):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    _mem(proj).write_text("real memory\n")
+    symlink(outside, proj / ".den" / "history")
+    monkeypatch.chdir(proj)
+    assert memory_main(["checkpoint"]) == 0
+    assert list(outside.iterdir()) == [], "nothing may land outside the workspace"
+
+
+def test_symlinked_snapshot_is_not_a_snapshot(tmp_path, monkeypatch, capsys, symlink):
+    proj, _secret = _planted(
+        tmp_path, symlink, name="history/memory.20260102T000000000000.md"
+    )
+    real = proj / ".den" / "history" / "memory.20260101T000000000000.md"
+    real.write_text("real snapshot\n")
+    monkeypatch.chdir(proj)
+    assert _memory._snapshots(proj / ".den") == [real]
+    assert memory_main(["log"]) == 0
+    out = capsys.readouterr().out
+    assert "real snapshot" in out
+    assert "PRIVATE KEY" not in out
+
+
+def test_mirror_refuses_symlinked_clinerules_memory(tmp_path, monkeypatch, symlink):
+    secret = tmp_path / "id_ed25519"
+    secret.write_text(_OUTSIDE_TEXT)
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    _cline_cli_here(proj)  # the marker that turns mirroring on
+    symlink(secret, proj / ".clinerules" / "den-memory.md")
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a fact"]) == 0, "memory itself is fine"
+    assert _mem(proj).read_text() == "a fact\n"
+    assert secret.read_text() == _OUTSIDE_TEXT, (
+        "the mirror must not write through the link"
+    )
