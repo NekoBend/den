@@ -1,5 +1,6 @@
 """Tests for den verify (den/_verify.py)."""
 
+import os
 from pathlib import Path
 
 from den import _verify
@@ -21,9 +22,22 @@ class _Proc:
         self.stderr = ""
 
 
+def _tool(name: str) -> str:
+    """Where the fake which() finds a tool: absolute, and outside any cwd.
+
+    Built from the cwd's anchor so it is a real absolute path on POSIX and on
+    Windows alike (a "/usr/bin/x" literal is drive-relative on Windows).
+    """
+    return str(Path(Path.cwd().anchor) / "den-tools" / name)
+
+
+def _fake_which(name, path=None):
+    return _tool(name)
+
+
 def _capture_cmds(monkeypatch, rc: int = 0, out: str = ""):
     cmds: list[list[str]] = []
-    monkeypatch.setattr(_verify.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(_verify.shutil, "which", _fake_which)
     monkeypatch.setattr(
         _verify.subprocess,
         "run",
@@ -84,7 +98,7 @@ def test_den_defaults_only_without_config(tmp_path, monkeypatch, capsys):
     cmds = _capture_cmds(monkeypatch)
     monkeypatch.setattr(_verify, "_ruff_config", lambda _f: None)
     assert verify_main([str(f)]) == 0
-    lint = next(c for c in cmds if c[:2] == ["ruff", "check"])
+    lint = next(c for c in cmds if Path(c[0]).name == "ruff" and c[1] == "check")
     assert "--extend-select" in lint and "D101,D102,D103" in lint
     assert "den defaults" in capsys.readouterr().out
 
@@ -94,7 +108,7 @@ def test_project_config_wins_no_injected_flags(tmp_path, monkeypatch, capsys):
     (tmp_path / "sub" / "ruff.toml").write_text("select=['F']\n")
     cmds = _capture_cmds(monkeypatch)
     assert verify_main([str(f)]) == 0
-    lint = next(c for c in cmds if c[:2] == ["ruff", "check"])
+    lint = next(c for c in cmds if Path(c[0]).name == "ruff" and c[1] == "check")
     assert "--extend-select" not in lint  # project settings never stomped
     assert "ruff.toml" in capsys.readouterr().out  # and the winner is shown
 
@@ -104,7 +118,7 @@ def test_ty_gets_explicit_project_root(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     cmds = _capture_cmds(monkeypatch)
     verify_main([str(f)])
-    ty = next(c for c in cmds if c[0] == "ty")
+    ty = next(c for c in cmds if Path(c[0]).name == "ty")
     assert "--project" in ty
     assert str(tmp_path) == ty[ty.index("--project") + 1]
 
@@ -137,11 +151,51 @@ def test_fail_detail_is_capped(tmp_path, monkeypatch, capsys):
 
 def test_skip_names_next_action(tmp_path, monkeypatch, capsys):
     f = _py(tmp_path)
-    monkeypatch.setattr(_verify.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_verify.shutil, "which", lambda name, path=None: None)
     assert verify_main([str(f)]) == 0  # skips are not failures
     out = capsys.readouterr().out
     assert "SKIP format (ruff not installed: uv tool install ruff)" in out
     assert "SKIP typecheck (ty not installed: uv tool install ty)" in out
+
+
+# ---- tool resolution (never from the workspace, never by bare name) ----
+
+
+def test_tools_run_by_absolute_path(tmp_path, monkeypatch):
+    """cmd[0] is which()'s absolute result: no PATH/cwd search by the OS."""
+    f = _py(tmp_path)
+    cmds = _capture_cmds(monkeypatch)
+    assert verify_main([str(f)]) == 0
+    assert [Path(c[0]).name for c in cmds] == ["ruff", "ruff", "ty"]
+    assert all(Path(c[0]).is_absolute() for c in cmds)
+    assert all(c[0] == _tool(Path(c[0]).name) for c in cmds)
+
+
+def test_search_path_drops_current_directory_entries(tmp_path, monkeypatch):
+    """An empty entry, "." and a relative dir all mean the workspace: dropped."""
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(tmp_path), "", os.curdir, "rel/bin"])
+    )
+    assert _verify._search_path() == str(tmp_path)
+
+
+def test_tool_inside_the_workspace_is_refused(tmp_path, monkeypatch, capsys):
+    """A repo-supplied ruff/ty is refused (SKIP), not executed."""
+    f = _py(tmp_path)
+    monkeypatch.chdir(tmp_path)  # the workspace `den verify` is invoked from
+    cmds = _capture_cmds(monkeypatch)
+    monkeypatch.setattr(
+        _verify.shutil, "which", lambda name, path=None: str(tmp_path / name)
+    )
+    assert verify_main([str(f)]) == 0  # a refusal is a skip, not a failure
+    out = capsys.readouterr().out
+    planted = tmp_path / "ruff"
+    assert f"den verify: refusing ruff resolved inside the workspace ({planted})" in out
+    assert "SKIP format (ruff not run:" in out
+    assert "SKIP lint (ruff not run:" in out
+    assert "SKIP typecheck (ty not run:" in out
+    assert "3 skipped" in out
+    assert cmds == []  # nothing was run
 
 
 def test_usage_and_errors(tmp_path, capsys):
@@ -159,7 +213,9 @@ def test_several_files_each_verified(tmp_path, monkeypatch, capsys):
     b = _py(tmp_path, "b.py")
     cmds = _capture_cmds(monkeypatch)
     assert verify_main([str(a), str(b)]) == 0
-    formats = [c for c in cmds if c[:3] == ["ruff", "format", "--check"]]
+    formats = [
+        c for c in cmds if Path(c[0]).name == "ruff" and c[1:3] == ["format", "--check"]
+    ]
     assert [c[-1] for c in formats] == [str(a), str(b)]
     out = capsys.readouterr().out
     assert f"== {a}" in out and f"== {b}" in out
@@ -170,7 +226,9 @@ def test_several_files_one_unusable_still_runs_the_rest(tmp_path, monkeypatch, c
     a = _py(tmp_path, "a.py")
     cmds = _capture_cmds(monkeypatch)
     assert verify_main([str(a), str(tmp_path / "missing.py")]) == 1
-    assert any(c[:3] == ["ruff", "format", "--check"] for c in cmds), "good file ran"
+    assert any(
+        Path(c[0]).name == "ruff" and c[1:3] == ["format", "--check"] for c in cmds
+    ), "good file ran"
     captured = capsys.readouterr()
     assert "file not found" in captured.err
     assert "1 failed" in captured.out
@@ -183,7 +241,7 @@ def test_all_files_unusable_is_a_usage_error(tmp_path, capsys):
 
 def test_cli_dispatches_verify(tmp_path, monkeypatch, capsys):
     f = _py(tmp_path)
-    monkeypatch.setattr(_verify.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_verify.shutil, "which", lambda name, path=None: None)
     assert cli_main(["verify", str(f)]) == 0
     assert "config: ruff" in capsys.readouterr().out
 
