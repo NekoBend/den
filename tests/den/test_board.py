@@ -697,3 +697,26 @@ def test_main_does_not_serve_when_the_lock_cannot_be_recorded(
     assert "not serving" in out.err
     assert not (board / "server.json").exists(), "the claim is released"
     assert _board._existing_instance(tmp_path) is None
+
+
+def test_non_utf8_lock_reads_as_an_invalid_lock(tmp_path):
+    # A repo can ship .den/board/server.json with any bytes in it. That is an
+    # invalid lock, as it always was -- not a UnicodeDecodeError out of den board.
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b'{"pid": 1, "port": 8484, "root": "\xff\xfe"}\n')
+    assert _board._read_lock(tmp_path) is None
+    assert _board._existing_instance(tmp_path) is None
+    # Left in place, exactly as an unparseable lock always was: _acquire's
+    # takeover path clears it after no live twin answers.
+    assert lock.is_file()
+    _board._unlink_lock(tmp_path)
+    assert _board._claim_lock(tmp_path) is True, "den board can still take over"
+
+
+def test_non_utf8_lock_does_not_block_release(tmp_path):
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"\xff\xfe not json at all")
+    _board._release_lock(tmp_path)  # must not raise
+    assert lock.is_file(), "not ours to remove: no readable pid says so"

@@ -961,3 +961,31 @@ def test_install_cline_cli_refuses_when_the_imprint_is_a_directory(
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "cline-cli"]) == 1
     assert not (proj / ".clinerules" / "den-imprint.md").exists()
+
+
+def test_install_cline_cli_refuses_a_file_at_clinerules(tmp_path, monkeypatch, capsys):
+    """A repo can ship `.clinerules` as a regular FILE. It passes the symlink
+    test, and install's mkdir(parents=True, exist_ok=True) then raises
+    FileExistsError straight out of `den install hook`."""
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    (proj / ".den" / "imprint.md").write_text("my imprint\n")
+    (proj / ".clinerules").write_text("not a directory\n")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 1
+    assert (proj / ".clinerules").read_text() == "not a directory\n", "left alone"
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_remove_and_list_cline_cli_refuse_a_file_at_clinerules(
+    tmp_path, monkeypatch, capsys
+):
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    (proj / ".clinerules").write_text("not a directory\n")
+    monkeypatch.chdir(proj)
+    assert hook_main(["remove", "--tool", "cline-cli"]) == 1
+    assert hook_main(["list", "--tool", "cline-cli"]) == 0
+    out = capsys.readouterr()
+    assert out.out == "", "nothing reported as den-managed"
+    assert (proj / ".clinerules").read_text() == "not a directory\n"

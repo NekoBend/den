@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from ._memory import (
     _find_den_dir,
-    _read_guarded_text,
+    _read_guarded,
     _symlink_component,
     _write_guarded,
 )
@@ -124,11 +124,15 @@ def _read_lock(root: Path) -> dict | None:
     or not a JSON object. The lock is a board file like any other: a repo can
     ship `.den/board/server.json` as a symlink, and following it would let a
     planted file name the port `den board` probes and the pid it trusts."""
-    raw = _read_guarded_text(root / ".den", _lock_path(root), _ERR)
-    if not isinstance(raw, str):
+    data = _read_guarded(root / ".den", _lock_path(root), _ERR)
+    if not isinstance(data, bytes):
         return None
-    with suppress(ValueError):
-        info = json.loads(raw)
+    # Decode INSIDE the suppress. Routing this through the guard moved it out of
+    # the old handler, so a non-UTF-8 server.json -- a byte a repo can plant --
+    # raised UnicodeDecodeError out of `den board` instead of reading, as it
+    # always did, as one more invalid lock.
+    with suppress(ValueError):  # UnicodeDecodeError and JSONDecodeError both
+        info = json.loads(data.decode("utf-8"))
         if isinstance(info, dict):
             return info
     return None

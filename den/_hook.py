@@ -717,8 +717,9 @@ _CLINERULES_RULE_HEADER = (
 
 
 def _clinerules_targets(den_dir: Path, prefix: str = _ERR_HOOK) -> list[Path] | None:
-    """The two rule files this format owns, or None (one line on stderr) when a
-    symlink is in the way -- at the `.clinerules` dir or at either file.
+    """The two rule files this format owns, or None (one line on stderr) when the
+    `.clinerules` dir is not usable as one, or a symlink sits at it or at either
+    file.
 
     The dir is derived HERE, the way the format itself derives it: beside the
     resolved `.den`, which may be an ANCESTOR's while cwd is a subdirectory. That
@@ -729,6 +730,11 @@ def _clinerules_targets(den_dir: Path, prefix: str = _ERR_HOOK) -> list[Path] | 
     rules = _clinerules_dir(den_dir)
     if rules.is_symlink():
         print(f"{prefix}: refusing {rules}: it is a symlink", file=sys.stderr)
+        return None
+    if rules.exists() and not rules.is_dir():
+        # A repo controls this path too, and a regular FILE at it passed the
+        # symlink test and then blew up in install's mkdir(exist_ok=True).
+        print(f"{prefix}: refusing {rules}: it is not a directory", file=sys.stderr)
         return None
     targets = [rules / _CLINERULES_IMPRINT, rules / _CLINERULES_MEMORY]
     for path in targets:
