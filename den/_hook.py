@@ -358,6 +358,26 @@ def _parse_run_args(
 # --------------------------------------------------------------------------- #
 
 
+def _leaves_workspace(path: Path, prefix: str = _ERR_HOOK) -> bool:
+    """True (after one line on stderr) when `path` is under cwd but only reaches
+    it through a symlink -- a dangling one included, since `is_symlink()` does not
+    care whether the target exists.
+
+    A path OUTSIDE cwd passes: that is an explicit --config (and its backup), the
+    user's own choice. What must not happen is a workspace-relative path leaving
+    the workspace, because a cloned repo controls those.
+    """
+    bad = _symlink_component(Path.cwd(), path)
+    if bad is None:
+        return False
+    print(
+        f"{prefix}: refusing {path}: {bad} is a symlink "
+        "(the workspace config must stay in the workspace)",
+        file=sys.stderr,
+    )
+    return True
+
+
 def _resolve_config(spec: dict, override: str | None) -> Path | None:
     """The config file/dir to operate on, or None (after one line on stderr) when
     the workspace-relative default is unusable.
@@ -369,15 +389,8 @@ def _resolve_config(spec: dict, override: str | None) -> Path | None:
     """
     if override:
         return Path(override).expanduser()
-    cwd = Path.cwd()
-    config = cwd / spec["config"]
-    bad = _symlink_component(cwd, config)
-    if bad is not None:
-        print(
-            f"{_ERR_HOOK}: refusing {config}: {bad} is a symlink "
-            "(the workspace config must stay in the workspace)",
-            file=sys.stderr,
-        )
+    config = Path.cwd() / spec["config"]
+    if _leaves_workspace(config):
         return None
     # No symlink component left, so resolve() only normalizes the path.
     return config.resolve()
@@ -418,33 +431,47 @@ def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
     return entries
 
 
-def _backup_if_unmergeable(config: Path) -> None:
+def _backup_if_unmergeable(config: Path) -> bool:
     """Back up config to <config>.den.bak before install overwrites it, UNLESS it
     is already a JSON object den can merge into. _read_json reads anything else as
     {} -- a malformed file, a non-UTF-8 file, OR valid-but-non-object JSON (a
     list/string/number) -- so without this, install would write back only den's
     keys and silently discard the user's file. ValueError covers both
-    JSONDecodeError and UnicodeDecodeError."""
+    JSONDecodeError and UnicodeDecodeError.
+
+    False when the backup could not be made and the caller must not write. The
+    backup path gets the same guard as the config itself: a repo can ship a
+    DANGLING symlink at `settings.json.den.bak`, where `exists()` is False, so the
+    write would have followed it out of the workspace. Refusing the backup means
+    refusing the install -- writing den's hooks over a file we could not preserve
+    is exactly the loss the backup exists to prevent.
+    """
     if not config.is_file():
-        return
+        return True
     try:
         mergeable = isinstance(json.loads(config.read_text(encoding="utf-8")), dict)
     except (OSError, ValueError):
         mergeable = False
     if mergeable:
-        return
+        return True
     bak = config.with_suffix(config.suffix + ".den.bak")
+    if _leaves_workspace(bak, _ERR_INSTALL):
+        return False
     if bak.exists():
-        return
+        return True
     try:
-        bak.write_bytes(config.read_bytes())
-        print(
-            f"den hook install: {config} is not a JSON object den can merge; "
-            f"backed up to {bak} before writing den's hooks",
-            file=sys.stderr,
-        )
-    except OSError:
-        pass
+        written = _write_guarded(bak.parent, bak, config.read_bytes(), _ERR_INSTALL)
+    except OSError as exc:
+        print(f"{_ERR_INSTALL}: cannot back up {config}: {exc}", file=sys.stderr)
+        written = False
+    if not written:
+        return False
+    print(
+        f"{_ERR_INSTALL}: {config} is not a JSON object den can merge; "
+        f"backed up to {bak} before writing den's hooks",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _read_json(config: Path) -> dict:
@@ -478,8 +505,9 @@ def _strip_den_hooks(hooks: dict) -> dict:
     return cleaned
 
 
-def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
-    _backup_if_unmergeable(config)
+def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
+    if not _backup_if_unmergeable(config):
+        return False
     data = _read_json(config)
     hooks = _strip_den_hooks(data.get("hooks", {}))
     for event, groups in _settings_entries(tool, spec, den_dir).items():
@@ -487,6 +515,7 @@ def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -
     data["hooks"] = hooks
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
 
 
 def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
@@ -538,8 +567,9 @@ def _strip_copilot(hooks: dict) -> dict:
     return cleaned
 
 
-def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
-    _backup_if_unmergeable(config)
+def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
+    if not _backup_if_unmergeable(config):
+        return False
     data = _read_json(config)
     data["version"] = data.get("version", 1)
     hooks = _strip_copilot(data.get("hooks", {}))
@@ -549,6 +579,7 @@ def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> None
     data["hooks"] = hooks
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
 
 
 def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
@@ -591,7 +622,7 @@ def _cline_script_name(native: str) -> str:
     return f"{native}.ps1" if _is_windows() else native
 
 
-def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
+def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
     config.mkdir(parents=True, exist_ok=True)
     for generic, native in spec["events"].items():
         script = config / _cline_script_name(native)
@@ -623,6 +654,7 @@ def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
                 encoding="utf-8",
             )
             script.chmod(0o755)
+    return True
 
 
 def _cline_scripts(spec: dict, config: Path) -> Iterator[tuple[str, Path]]:
@@ -665,7 +697,7 @@ _CLINERULES_RULE_HEADER = (
 )
 
 
-def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
+def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
     # den_dir is pinned by the caller; clinerules delivers via always-on rule
     # files (no `den hook run`), so it only needs the dir, not a baked command.
     rules = _clinerules_dir(den_dir)
@@ -681,6 +713,7 @@ def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> N
             _ERR_INSTALL,
         )
     mirror_to_clinerules(den_dir)
+    return True
 
 
 def _list_clinerules(tool: str, spec: dict, config: Path) -> list[str]:
@@ -826,7 +859,9 @@ def _cmd_install(argv: list[str]) -> int:
         if config is None:  # symlinked workspace config: refuse, write nothing
             rc = 1
             continue
-        handlers[0](tool, spec, config, den_dir)
+        if not handlers[0](tool, spec, config, den_dir):
+            rc = 1  # the installer refused and wrote nothing; it said why
+            continue
         print(
             f"installed {tool} hooks -> {_display_config(spec, config)}",
             file=sys.stderr,

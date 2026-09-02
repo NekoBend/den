@@ -660,3 +660,50 @@ def test_install_quiet_when_no_memory(tmp_path, monkeypatch, capsys):
     cfg = tmp_path / "settings.json"
     assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
     assert "existing memory" not in capsys.readouterr().err
+
+
+def test_install_refuses_dangling_backup_symlink(tmp_path, monkeypatch, symlink):
+    """A repo can commit `.claude/settings.json.den.bak` as a DANGLING symlink:
+    exists() is False, so the backup write would have followed it out of the
+    workspace and created the target."""
+    outside = tmp_path / "home" / "stolen.json"
+    outside.parent.mkdir(parents=True)
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('{ "mySetting": 1,  // not valid json\n')  # unmergeable
+    symlink(outside, proj / ".claude" / "settings.json.den.bak")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    assert not outside.exists(), "nothing may be created outside the workspace"
+    assert cfg.read_text() == '{ "mySetting": 1,  // not valid json\n', (
+        "the config we could not back up must not be overwritten"
+    )
+
+
+def test_install_refuses_symlinked_backup_over_existing_file(
+    tmp_path, monkeypatch, symlink
+):
+    outside = tmp_path / "home" / "notes.txt"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("my notes\n")
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("[1, 2, 3]\n")  # valid JSON, not an object -> unmergeable
+    symlink(outside, proj / ".claude" / "settings.json.den.bak")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    assert outside.read_text() == "my notes\n"
+
+
+def test_backup_still_made_for_a_normal_workspace_config(tmp_path, monkeypatch):
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not json {{{")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    bak = cfg.with_suffix(".json.den.bak")
+    assert bak.is_file() and bak.read_text() == "not json {{{"
+    assert "UserPromptSubmit" in json.loads(cfg.read_text())["hooks"]
