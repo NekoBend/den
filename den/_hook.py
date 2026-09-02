@@ -725,17 +725,26 @@ def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> b
         print(f"{_ERR_INSTALL}: refusing {rules}: it is a symlink", file=sys.stderr)
         return False
     rules.mkdir(parents=True, exist_ok=True)
+    # Anything but text -- absent, symlinked, unreadable -- means there is no
+    # imprint to deliver. Skipping the write and falling through to success used
+    # to report an install that put nothing in .clinerules.
     text = _read_guarded_text(den_dir, _imprint_path(den_dir), _ERR_INSTALL)
-    if isinstance(text, str) and not _write_guarded(
+    if not isinstance(text, str):
+        print(
+            f"{_ERR_INSTALL}: no usable imprint at {_imprint_path(den_dir)}; "
+            f"nothing delivered to {rules}",
+            file=sys.stderr,
+        )
+        return False
+    # The imprint rule is also the cline-cli marker mirror_to_clinerules gates on,
+    # so write it BEFORE mirroring the memory. Without the marker there is no
+    # memory mirror either: a refused write delivers nothing at all.
+    if not _write_guarded(
         rules,
-        # The imprint rule is also the cline-cli marker mirror_to_clinerules gates
-        # on, so write it BEFORE mirroring the memory.
         rules / _CLINERULES_IMPRINT,
         (_CLINERULES_RULE_HEADER + text).encode("utf-8"),
         _ERR_INSTALL,
     ):
-        # Without the marker there is no memory mirror either: nothing was
-        # delivered, so this must not be reported as an install.
         return False
     mirror_to_clinerules(den_dir)
     return True

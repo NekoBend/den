@@ -826,3 +826,23 @@ def test_install_cline_cli_still_reports_success_normally(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     assert hook_main(["install", "--tool", "cline-cli"]) == 0
     assert (tmp_path / ".clinerules" / "den-imprint.md").is_file()
+
+
+def test_install_cline_cli_refuses_symlinked_imprint_source(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    """With .den/imprint.md a symlink, the guarded read yields the unreadable
+    sentinel and there is nothing to deliver; cline-cli's whole channel IS that
+    rule file, so reporting success would be a lie."""
+    outside = tmp_path / "id_ed25519"
+    outside.write_text("PRIVATE KEY MATERIAL\n")
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    symlink(outside, proj / ".den" / "imprint.md")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 1
+    rule = proj / ".clinerules" / "den-imprint.md"
+    assert not rule.exists(), "no rule file, so no cline-cli marker"
+    err = capsys.readouterr().err
+    assert "no usable imprint" in err
+    assert "PRIVATE KEY" not in err
