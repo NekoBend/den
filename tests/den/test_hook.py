@@ -1020,3 +1020,46 @@ def test_remove_cline_cli_refuses_a_directory_at_a_rule_file(tmp_path, monkeypat
     assert hook_main(["remove", "--tool", "cline-cli"]) == 1
     assert (rules / "den-imprint.md").is_file(), "not removed piecemeal"
     assert (rules / "den-memory.md").is_dir()
+
+
+def test_explicit_config_under_a_symlinked_dir_is_backed_up(
+    tmp_path, monkeypatch, symlink
+):
+    """Dotfiles managers symlink ~/.claude. An unresolved --config left the
+    backup path with a symlinked PARENT, which the backup guard refused -- so the
+    install worked until the day the JSON was unmergeable, and only then failed."""
+    real = tmp_path / "dotfiles" / "claude"
+    real.mkdir(parents=True)
+    cfg = real / "settings.json"
+    cfg.write_text("not json {{{")  # unmergeable, so a backup is required
+    home = tmp_path / "home"
+    home.mkdir()
+    symlink(real, home / ".claude")
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+
+    linked = home / ".claude" / "settings.json"
+    assert hook_main(["install", "--tool", "claude", "--config", str(linked)]) == 0
+    bak = real / "settings.json.den.bak"
+    assert bak.is_file() and bak.read_text() == "not json {{{"
+    assert "UserPromptSubmit" in json.loads(cfg.read_text())["hooks"]
+
+
+def test_explicit_config_under_a_symlinked_dir_installs_when_mergeable(
+    tmp_path, monkeypatch, symlink
+):
+    # The path that already worked, pinned: no backup needed, so the guard the
+    # resolve() fixes was never reached.
+    real = tmp_path / "dotfiles" / "claude"
+    real.mkdir(parents=True)
+    cfg = real / "settings.json"
+    cfg.write_text('{"theme": "dark"}\n')
+    home = tmp_path / "home"
+    home.mkdir()
+    symlink(real, home / ".claude")
+    monkeypatch.chdir(tmp_path)
+    linked = home / ".claude" / "settings.json"
+    assert hook_main(["install", "--tool", "claude", "--config", str(linked)]) == 0
+    data = json.loads(cfg.read_text())
+    assert data["theme"] == "dark" and "UserPromptSubmit" in data["hooks"]

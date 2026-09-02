@@ -382,13 +382,18 @@ def _resolve_config(spec: dict, override: str | None) -> Path | None:
     """The config file/dir to operate on, or None (after one line on stderr) when
     the workspace-relative default is unusable.
 
-    An explicit --config is the user's own choice and is taken as given. The
-    default is workspace-relative, so it must STAY in the workspace: a cloned repo
-    that ships `.claude` (or `.claude/settings.json`) as a symlink would otherwise
-    make install read-modify-write the user's GLOBAL hook config through it.
+    An explicit --config is the user's own choice and is taken as given -- but
+    RESOLVED, so the paths derived from it are real ones. Dotfiles managers
+    symlink `~/.claude`, and an unresolved override left `<config>.den.bak` with a
+    symlinked parent, which _backup_if_unmergeable's guard then refused: install
+    worked until the day the JSON was unmergeable, and only then failed.
+
+    The default is workspace-relative, so it must STAY in the workspace: a cloned
+    repo that ships `.claude` (or `.claude/settings.json`) as a symlink would
+    otherwise make install read-modify-write the user's GLOBAL hook config.
     """
     if override:
-        return Path(override).expanduser()
+        return Path(override).expanduser().resolve()
     config = Path.cwd() / spec["config"]
     if _leaves_workspace(config):
         return None
