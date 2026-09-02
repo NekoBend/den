@@ -46,6 +46,18 @@ def _capture_cmds(monkeypatch, rc: int = 0, out: str = ""):
     return cmds
 
 
+def _capture_calls(monkeypatch, rc: int = 0, out: str = ""):
+    """Every subprocess.run call as a dict: its kwargs plus "cmd"."""
+    calls: list[dict] = []
+    monkeypatch.setattr(_verify.shutil, "which", _fake_which)
+    monkeypatch.setattr(
+        _verify.subprocess,
+        "run",
+        lambda cmd, **k: calls.append({"cmd": cmd, **k}) or _Proc(rc, out),
+    )
+    return calls
+
+
 # ---- config discovery (real filesystem, mirrors ruff's nearest-wins) ----
 
 
@@ -196,6 +208,18 @@ def test_tool_inside_the_workspace_is_refused(tmp_path, monkeypatch, capsys):
     assert "SKIP typecheck (ty not run:" in out
     assert "3 skipped" in out
     assert cmds == []  # nothing was run
+
+
+def test_tool_output_is_decoded_as_utf8(tmp_path, monkeypatch):
+    """ruff/ty emit UTF-8 snippets; the locale codec raises on cp932/cp1252."""
+    f = _py(tmp_path)
+    calls = _capture_calls(monkeypatch)
+    assert verify_main([str(f)]) == 0
+    assert len(calls) == 3
+    for call in calls:
+        assert call["encoding"] == "utf-8"
+        assert call["errors"] == "replace"
+        assert call["capture_output"] is True
 
 
 def test_usage_and_errors(tmp_path, capsys):

@@ -22,7 +22,9 @@ never override":
 
 Output is line-oriented for model consumption: one `config:` line per tool,
 then PASS / FAIL / SKIP per stage. FAIL detail is capped; SKIP always names
-the next action. Exit 0 = no failures, 1 = failures, 2 = usage.
+the next action. Exit 0 = no failures, 1 = failures, 2 = usage. Tool output
+is decoded as UTF-8 (what ruff and ty emit, source snippets included), never
+the locale codec.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 _MAX_DETAIL_LINES = 30
@@ -135,7 +138,15 @@ def _stage(label: str, cmd: list[str], counts: dict[str, int]) -> None:
         print(f"SKIP {label} ({tool} not installed: uv tool install {tool})")
         counts["skip"] += 1
         return
-    proc = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True)
+    proc = subprocess.run(
+        [exe, *cmd[1:]],
+        capture_output=True,
+        text=True,
+        # ruff and ty emit UTF-8 (source snippets included); the locale codec
+        # would raise or mangle on a Windows console page (cp932/cp1252).
+        encoding="utf-8",
+        errors="replace",
+    )
     if proc.returncode == 0:
         print(f"PASS {label}")
         counts["pass"] += 1
@@ -198,6 +209,13 @@ def _verify_file(file: Path, counts: dict[str, int]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FAIL detail quotes the tool's own output, so any character can reach
+    # stdout; a Windows console or pipe on a narrow code page must degrade
+    # rather than raise UnicodeEncodeError over a diagnostic.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        with suppress(OSError, ValueError):
+            reconfigure(errors="replace")
     args = argv if argv is not None else sys.argv[1:]
     if not args or args[0] in {"-h", "--help", "help"}:
         _usage()
