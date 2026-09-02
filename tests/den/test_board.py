@@ -679,3 +679,21 @@ def test_board_files_are_not_created_executable(tmp_path):
         mode = path.stat().st_mode & 0o777
         assert not mode & 0o111, f"{path.name} is executable ({mode:o})"
         assert mode == 0o666 & ~_umask(), f"{path.name} is {mode:o}"
+
+
+def test_main_does_not_serve_when_the_lock_cannot_be_recorded(
+    tmp_path, monkeypatch, capsys
+):
+    """An unrecorded server is invisible to _existing_instance, so a second
+    `den board` would start a twin on another port and split the reports."""
+    board = tmp_path / ".den" / "board"
+    board.mkdir(parents=True)
+    (board / "board.json").write_text(json.dumps({"port": 0}))
+    monkeypatch.setattr(_board, "_write_lock", lambda root, info: False)
+    # Returns instead of blocking in serve_forever: a hang here IS the failure.
+    assert _board.main(["--dir", str(tmp_path)]) == 1
+    out = capsys.readouterr()
+    assert "serving" not in out.out
+    assert "not serving" in out.err
+    assert not (board / "server.json").exists(), "the claim is released"
+    assert _board._existing_instance(tmp_path) is None

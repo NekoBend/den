@@ -700,6 +700,37 @@ def _acquire(root: Path, *, open_browser: bool) -> int | None:
     return None
 
 
+def _bind_and_record(
+    root: Path, config: dict[str, object], preferred: int
+) -> _BoardServer | None:
+    """Bind the port AND record the lock, or None (message printed) if either
+    fails. The two belong together: a server that is bound but not recorded is
+    invisible to _existing_instance, so the next `den board` here would start a
+    SECOND one on another port and the two would split the user's reports between
+    them. Serving anyway is worse than not serving."""
+    try:
+        server = make_server(root, config, preferred)
+    except OSError as exc:
+        _unlink_lock(root)  # release the claim we hold
+        print(f"den board: cannot start: {exc}", file=sys.stderr)
+        return None
+    recorded = _write_lock(
+        root,
+        {
+            "pid": os.getpid(),
+            "port": server.server_address[1],
+            "root": str(root),
+            "started": datetime.now(UTC).isoformat(timespec="seconds"),
+        },
+    )
+    if not recorded:
+        server.server_close()  # give the socket back
+        _unlink_lock(root)  # release the claim, if it is ours to release
+        print("den board: could not record the lock; not serving", file=sys.stderr)
+        return None
+    return server
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     if args and args[0] in {"task", "reply"}:
@@ -736,24 +767,12 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(cfg_port, int) and 0 <= cfg_port <= _MAX_PORT
         else _PREFERRED_PORT
     )
-    try:
-        server = make_server(root, config, preferred)
-    except OSError as exc:
-        _unlink_lock(root)  # release the claim we hold
-        print(f"den board: cannot start: {exc}", file=sys.stderr)
+    server = _bind_and_record(root, config, preferred)
+    if server is None:
         return 1
 
     port = server.server_address[1]
     url = f"http://127.0.0.1:{port}/"
-    _write_lock(
-        root,
-        {
-            "pid": os.getpid(),
-            "port": port,
-            "root": str(root),
-            "started": datetime.now(UTC).isoformat(timespec="seconds"),
-        },
-    )
     print(
         f"den board: serving {_title(root, config)}\n"
         f"  url      {url}\n"
