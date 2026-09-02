@@ -95,23 +95,57 @@ def _refuse_symlink(root: Path, path: Path, action: str, prefix: str = _ERR) -> 
     return True
 
 
-def _read_guarded(root: Path, path: Path, prefix: str = _ERR) -> bytes | None:
-    """Bytes of `path`, or None when it is absent, unreadable, or symlinked."""
+class _Unreadable:
+    """Sentinel type: the file is THERE but den could not read it (a symlink it
+    refuses to follow, a permission error, a directory in its place).
+
+    Kept distinct from None ("no memory yet"): a caller that reads the old
+    content before rewriting it would otherwise take a failed read for an empty
+    file and truncate content it never saw.
+    """
+
+    __slots__ = ()
+
+
+_UNREADABLE = _Unreadable()
+
+
+def _read_guarded(
+    root: Path, path: Path, prefix: str = _ERR
+) -> bytes | _Unreadable | None:
+    """Bytes of `path`; None when it is ABSENT; `_UNREADABLE` (one line on
+    stderr) when it exists but cannot be read."""
     if _refuse_symlink(root, path, "read", prefix):
-        return None
+        return _UNREADABLE
     try:
         fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        print(f"{prefix}: cannot read {path}: {exc}", file=sys.stderr)
+        return _UNREADABLE
+    try:
         with os.fdopen(fd, "rb") as fh:
             return fh.read()
-    except OSError:
-        return None
+    except OSError as exc:
+        print(f"{prefix}: cannot read {path}: {exc}", file=sys.stderr)
+        return _UNREADABLE
 
 
 def _read_guarded_text(
     root: Path, path: Path, prefix: str = _ERR, *, errors: str = "strict"
-) -> str | None:
+) -> str | _Unreadable | None:
     data = _read_guarded(root, path, prefix)
-    return None if data is None else data.decode("utf-8", errors)
+    return data.decode("utf-8", errors) if isinstance(data, bytes) else data
+
+
+def _read_text_or_empty(
+    root: Path, path: Path, prefix: str = _ERR, *, errors: str = "strict"
+) -> str:
+    """Text of `path`, or "" when it is absent or unreadable (already reported).
+    For the callers that must not fail: composition and the install notices."""
+    text = _read_guarded_text(root, path, prefix, errors=errors)
+    return text if isinstance(text, str) else ""
 
 
 def _write_guarded(root: Path, path: Path, data: bytes, prefix: str = _ERR) -> bool:
@@ -160,7 +194,10 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
     # easily as `.den/`, so guard it against the same symlink trick.
     if _refuse_symlink(rules, dest, "write"):
         return False
-    text = _read_guarded_text(den_dir, _memory_path(den_dir)) or ""
+    text = _read_guarded_text(den_dir, _memory_path(den_dir))
+    if isinstance(text, _Unreadable):
+        return False  # do not mirror, and do not drop the mirror we cannot verify
+    text = text or ""
     if text.strip():
         return _write_guarded(rules, dest, (_CLINERULES_HEADER + text).encode("utf-8"))
     if dest.exists():  # memory emptied/cleared -> drop the stale mirror
@@ -231,7 +268,7 @@ def _do_checkpoint(den_dir: Path) -> Path | None:
     (no memory.md, or it is identical to the most recent snapshot).
     """
     current = _read_guarded(den_dir, _memory_path(den_dir))
-    if current is None:  # absent, unreadable, or symlinked -- nothing to snapshot
+    if not isinstance(current, bytes):  # absent or unreadable -- cannot snapshot
         return None
     hist = _history_dir(den_dir)
     if _refuse_symlink(den_dir, hist, "write"):
@@ -267,6 +304,8 @@ def _parse_index(argv: list[str]) -> int | None:
 
 def _cmd_show(den_dir: Path, argv: list[str]) -> int:
     text = _read_guarded_text(den_dir, _memory_path(den_dir))
+    if isinstance(text, _Unreadable):
+        return 1
     if text is not None:
         sys.stdout.write(text)
     return 0
@@ -296,6 +335,10 @@ def _cmd_save(den_dir: Path, argv: list[str]) -> int:
     mem = _memory_path(den_dir)
     if _refuse_symlink(den_dir, mem, "write"):
         return 1
+    # What cannot be read cannot be checkpointed, and overwriting it would
+    # destroy content den never saw. Refuse instead of silently replacing it.
+    if isinstance(_read_guarded(den_dir, mem), _Unreadable):
+        return 1
     _do_checkpoint(den_dir)
     if not _write_guarded(den_dir, mem, content.encode("utf-8")):
         return 1
@@ -317,8 +360,11 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
     mem = _memory_path(den_dir)
     if _refuse_symlink(den_dir, mem, "write"):
         return 1
+    existing = _read_guarded_text(den_dir, mem)
+    if isinstance(existing, _Unreadable):
+        return 1  # appending to what we could not read would truncate it
     _do_checkpoint(den_dir)
-    existing = _read_guarded_text(den_dir, mem) or ""
+    existing = existing or ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
     addition = content if content.endswith("\n") else content + "\n"
@@ -332,6 +378,8 @@ def _cmd_clear(den_dir: Path, argv: list[str]) -> int:
     mem = _memory_path(den_dir)
     if _refuse_symlink(den_dir, mem, "remove"):
         return 1
+    if isinstance(_read_guarded(den_dir, mem), _Unreadable):
+        return 1  # deleting what cannot be snapshotted is not reversible
     _do_checkpoint(den_dir)
     if mem.is_file():
         mem.unlink()
@@ -391,8 +439,10 @@ def _cmd_diff(den_dir: Path, argv: list[str]) -> int:
 
     old = snaps[n - 1]
     old_lines = old.read_text(encoding="utf-8").splitlines(keepends=True)
-    new = _read_guarded_text(den_dir, _memory_path(den_dir)) or ""
-    new_lines = new.splitlines(keepends=True)
+    new = _read_guarded_text(den_dir, _memory_path(den_dir))
+    if isinstance(new, _Unreadable):
+        return 1  # a diff against "" would read as a wholesale deletion
+    new_lines = (new or "").splitlines(keepends=True)
     out = "".join(
         difflib.unified_diff(
             old_lines,

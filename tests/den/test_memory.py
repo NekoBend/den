@@ -1,6 +1,10 @@
 """Tests for den memory (den/_memory.py)."""
 
 import io
+import os
+import sys
+
+import pytest
 
 from den import _memory
 from den._memory import main as memory_main
@@ -365,7 +369,7 @@ def _planted(tmp_path, symlink, name="memory.md"):
 def test_show_refuses_symlinked_memory(tmp_path, monkeypatch, capsys, symlink):
     proj, _secret = _planted(tmp_path, symlink)
     monkeypatch.chdir(proj)
-    assert memory_main(["show"]) == 0
+    assert memory_main(["show"]) == 1, "a refused read is an error, not an empty file"
     out = capsys.readouterr()
     assert "PRIVATE KEY" not in out.out, "the target must never be printed"
     assert "is a symlink" in out.err
@@ -419,7 +423,7 @@ def test_symlinked_den_dir_is_refused(tmp_path, monkeypatch, capsys, symlink):
     proj.mkdir()
     symlink(outside, proj / ".den")
     monkeypatch.chdir(proj)
-    assert memory_main(["show"]) == 0
+    assert memory_main(["show"]) == 1
     out = capsys.readouterr()
     assert "INJECTED" not in out.out
     assert "is a symlink" in out.err
@@ -464,3 +468,92 @@ def test_mirror_refuses_symlinked_clinerules_memory(tmp_path, monkeypatch, symli
     assert secret.read_text() == _OUTSIDE_TEXT, (
         "the mirror must not write through the link"
     )
+
+
+# --------------------------------------------------------------------------- #
+# unreadable != absent
+#
+# Collapsing the two would make a write command take a memory.md it failed to
+# read for an empty one and truncate content it never saw.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def unreadable():
+    """`make(path, text)` -> a file that exists but den cannot read back.
+
+    Skipped where POSIX mode bits do not bite: Windows ignores them, and root
+    reads straight through 0o200. The directory-in-place test below covers the
+    same `_UNREADABLE` path on every platform.
+    """
+    if sys.platform == "win32":
+        pytest.skip("POSIX mode bits do not make a file unreadable on Windows")
+    if getattr(os, "geteuid", lambda: 1)() == 0:
+        pytest.skip("root reads through mode 0o200")
+
+    def _make(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        path.chmod(0o200)
+        return path
+
+    return _make
+
+
+def test_add_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
+    proj = tmp_path / "repo"
+    mem = unreadable(_mem(proj), "important prior content\n")
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a new fact"]) == 1
+    mem.chmod(0o600)
+    assert mem.read_text() == "important prior content\n", "not truncated"
+    assert _history(proj) == []
+
+
+def test_save_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
+    proj = tmp_path / "repo"
+    mem = unreadable(_mem(proj), "important prior content\n")
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
+    assert memory_main(["save"]) == 1
+    mem.chmod(0o600)
+    assert mem.read_text() == "important prior content\n"
+    assert _history(proj) == [], "no checkpoint was possible, so no write happened"
+
+
+def test_clear_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
+    proj = tmp_path / "repo"
+    mem = unreadable(_mem(proj), "important prior content\n")
+    monkeypatch.chdir(proj)
+    assert memory_main(["clear"]) == 1
+    assert mem.exists(), "deleting what cannot be snapshotted is not reversible"
+
+
+def test_write_commands_refuse_a_directory_in_place_of_memory(
+    tmp_path, monkeypatch, capsys
+):
+    # Same _UNREADABLE path as the 0o200 tests, but it bites as root and on
+    # Windows too, so this one always runs.
+    proj = tmp_path / "repo"
+    _mem(proj).mkdir(parents=True)
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
+    for argv in (["show"], ["add", "x"], ["save"], ["clear"], ["diff"]):
+        assert memory_main(argv) == 1, argv
+    assert _mem(proj).is_dir()
+    assert _history(proj) == []
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_unreadable_memory_does_not_drop_the_clinerules_mirror(
+    tmp_path, monkeypatch, unreadable
+):
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    mirror = _clinerules_mem(proj)
+    mirror.write_text("<!-- den-managed -->\n\nprior mirror\n")
+    unreadable(_mem(proj), "prior memory\n")
+    monkeypatch.chdir(proj)
+    assert _memory.mirror_to_clinerules(proj / ".den") is False
+    assert mirror.read_text().endswith("prior mirror\n"), "mirror left alone"

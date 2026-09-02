@@ -52,6 +52,7 @@ from ._memory import (
     _history_dir,
     _memory_path,
     _read_guarded_text,
+    _read_text_or_empty,
     _snapshots,
     _symlink_component,
     _write_guarded,
@@ -206,8 +207,7 @@ def _compose(den_dir: Path) -> str:
         ("imprint", _imprint_path(den_dir)),
         ("memory", _memory_path(den_dir)),
     ):
-        raw = _read_guarded_text(den_dir, path, _ERR_HOOK)
-        text = (raw or "").strip()
+        text = _read_text_or_empty(den_dir, path, _ERR_HOOK).strip()
         if text:
             blocks.append(f"<den:{tag}>\n{text}\n</den:{tag}>")
 
@@ -671,7 +671,7 @@ def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> N
     rules = _clinerules_dir(den_dir)
     rules.mkdir(parents=True, exist_ok=True)
     text = _read_guarded_text(den_dir, _imprint_path(den_dir), _ERR_INSTALL)
-    if text is not None:
+    if isinstance(text, str):
         # The imprint rule is also the cline-cli marker mirror_to_clinerules gates
         # on, so write it BEFORE mirroring the memory.
         _write_guarded(
@@ -731,9 +731,7 @@ def _surface_existing_imprint(den_dir: Path) -> None:
     NESTED/ancestor .den, but the install dir's own imprint is still trusted, so
     surface it here and let the user see what they are about to make authoritative."""
     path = _imprint_path(den_dir)
-    text = (
-        _read_guarded_text(den_dir, path, _ERR_INSTALL, errors="replace") or ""
-    ).strip()
+    text = _read_text_or_empty(den_dir, path, _ERR_INSTALL, errors="replace").strip()
     if not text:
         return
     print(
@@ -755,7 +753,7 @@ def _surface_existing_memory(den_dir: Path) -> None:
     seen. First line, size and snapshot count is enough to make them look.
     """
     mem = _memory_path(den_dir)
-    text = _read_guarded_text(den_dir, mem, _ERR_INSTALL, errors="replace") or ""
+    text = _read_text_or_empty(den_dir, mem, _ERR_INSTALL, errors="replace")
     snaps = len(_snapshots(den_dir))
     if not text.strip() and not snaps:
         return
