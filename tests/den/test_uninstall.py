@@ -22,6 +22,26 @@ def test_uninstall_removes_unmodified_keeps_modified(tmp_path, monkeypatch):
     assert not review.is_file()  # den's, removed
 
 
+def test_uninstall_removes_a_no_den_cli_install(tmp_path, monkeypatch):
+    # `den install skills --no-den-cli` rewrites three SKILL.md files, and
+    # nothing on disk records which flavor was installed. Re-deriving only the
+    # den-aware bytes made uninstall report den's OWN output as "files you
+    # changed": the three SKILL.md files survived while every sibling
+    # (examples/, shared/reference/, shared/scripts/) was deleted, leaving a
+    # gutted skill whose absolute shared/ paths point at nothing.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    plain = tmp_path / "plain"
+    denfree = tmp_path / "denfree"
+    _install(plain)
+    _install(denfree, "--no-den-cli")
+    coding = denfree / "skills" / "coding" / "SKILL.md"
+    plain_coding = plain / "skills" / "coding" / "SKILL.md"
+    # the flavors really do differ, else this test would prove nothing
+    assert coding.read_bytes() != plain_coding.read_bytes()
+    assert uninstall_main(["skills", "--target", str(denfree), "--yes"]) == 0
+    assert not (denfree / "skills").exists()
+
+
 def test_uninstall_prunes_emptied_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path)

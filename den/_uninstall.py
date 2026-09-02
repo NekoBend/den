@@ -97,17 +97,26 @@ class _Remover:
     def _plan(self) -> tuple[list[Path], list[Path], list[tuple[Path, str]]]:
         delete: list[Path] = []
         keep: list[Path] = []
-        seen: set[Path] = set()
+        # A dest can be staged more than once, because `den install` can write
+        # more than one content there (the --no-den-cli SKILL.md variants, the
+        # frontier/weak parents). Collect every candidate and delete when the
+        # bytes on disk match ANY of them -- first-wins would report den's own
+        # output as a file the user changed.
+        candidates: dict[Path, list[bytes]] = {}
+        order: list[Path] = []
         for dest, content in self._files:
-            if dest in seen:
-                continue
-            seen.add(dest)
+            if dest not in candidates:
+                candidates[dest] = []
+                order.append(dest)
+            candidates[dest].append(content)
+        for dest in order:
             if not dest.is_file():
                 continue
             try:
-                same = dest.read_bytes() == content
+                on_disk = dest.read_bytes()
             except OSError:
                 continue
+            same = any(on_disk == c for c in candidates[dest])
             (delete if same else keep).append(dest)
         unwire = [(rc, line) for rc, line in self._unwire if _has_block(rc, line)]
         return delete, keep, unwire
@@ -171,6 +180,20 @@ class _Remover:
                 cur = parent
 
 
+def _den_free_skills() -> set[str]:
+    """Skills whose `--no-den-cli` copy differs from the den-aware one: exactly
+    the keys of the substitution table (a skill with no entry is copied
+    unchanged). Uninstall stages the second variant only for these, so it
+    recognizes either flavor without materializing every skill twice. A missing
+    or broken table costs the extra candidate, never the uninstall itself."""
+    try:
+        from ._portable import table
+
+        return set(table())
+    except (OSError, ValueError):
+        return set()
+
+
 def _stage_skills(
     remover: _Remover,
     tools: list[str],
@@ -187,6 +210,7 @@ def _stage_skills(
     )
 
     names = _skill_names()
+    den_free = _den_free_skills()
 
     def parent_bytes(dest: Path, parent_file: str) -> bytes | None:
         """The parent content to treat as den-identical at dest. den install
@@ -205,7 +229,13 @@ def _stage_skills(
 
     def do(skills_target: Path, parent_dir: Path, parent_file: str | None) -> None:
         for name in names:
+            # `den install skills` writes either the den-aware skill or the
+            # --no-den-cli one, and nothing on disk records which. Stage both
+            # so either is recognized as den's own output; _plan accepts a dest
+            # whose bytes match any staged candidate.
             _install_skill(name, skills_target, remover)
+            if name in den_free:
+                _install_skill(name, skills_target, remover, no_den_cli=True)
         remover.boundary(parent_dir)
         if with_parent and parent_file:
             content = parent_bytes(parent_dir / parent_file, parent_file)
@@ -228,6 +258,8 @@ def _stage_skills(
         if legacy.is_dir():
             for name in names:
                 _install_skill(name, legacy, remover)
+                if name in den_free:
+                    _install_skill(name, legacy, remover, no_den_cli=True)
             remover.boundary(legacy.parent)
         return
     for tool in tools:
