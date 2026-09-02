@@ -70,6 +70,42 @@ echo "[bash] python redirect message"
 err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV _DEN_VENV_PYTHON; python -c pass")
 assert_contains "bash/python redirect" "→ uv run" "$err"
 
+echo "[bash] uv run keeps the user's own uv options"
+# `--` ends uv's option parsing, so it must NOT precede an option: pre-fix this
+# became `uv run --python X -- --with rich script.py`, i.e. "spawn --with".
+actual=$(run_bash "$PYTHON_SH_TEST" "export VIRTUAL_ENV='$WORK/fakevenv' _DEN_VENV_PYTHON=3.12; uv run --with rich script.py")
+assert_eq "bash/uv run keeps --with as an option" "mock-uv run --python 3.12 --with rich script.py" "$actual"
+
+actual=$(run_bash "$PYTHON_SH_TEST" "export VIRTUAL_ENV='$WORK/fakevenv' _DEN_VENV_PYTHON=3.12; uv run -m pytest")
+assert_eq "bash/uv run keeps -m as an option" "mock-uv run --python 3.12 -m pytest" "$actual"
+
+echo "[bash] uv run still separates a non-option command"
+actual=$(run_bash "$PYTHON_SH_TEST" "export VIRTUAL_ENV='$WORK/fakevenv' _DEN_VENV_PYTHON=3.12; uv run script.py")
+assert_eq "bash/uv run separates script.py" "mock-uv run --python 3.12 -- script.py" "$actual"
+
+echo "[bash] va normalizes pyvenv.cfg version_info"
+# virtualenv (tox/nox/virtualenv CLI) writes all five fields; uv rejects that form.
+mk_venv() {
+    rm -rf "$1"
+    mkdir -p "$1/.venv/bin"
+    : > "$1/.venv/bin/activate"
+    printf 'version_info = %s\n' "$2" > "$1/.venv/pyvenv.cfg"
+}
+mk_venv "$WORK/venv_virtualenv" "3.12.3.final.0"
+actual=$(run_bash "$PYTHON_SH_TEST" "cd '$WORK/venv_virtualenv' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
+assert_eq "bash/va trims virtualenv 5-field version_info" "PY=3.12.3" "$actual"
+
+mk_venv "$WORK/venv_uv" "3.13.13"
+actual=$(run_bash "$PYTHON_SH_TEST" "cd '$WORK/venv_uv' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
+assert_eq "bash/va keeps uv 3-field version_info" "PY=3.13.13" "$actual"
+
+echo "[bash] va rejects a non-numeric version_info"
+mk_venv "$WORK/venv_evil" "3.12; touch $WORK/pwned"
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_evil' && va; echo \"PY=[\$_DEN_VENV_PYTHON]\" >&2")
+assert_contains "bash/va rejects suspicious version_info" "rejecting suspicious version_info" "$err"
+assert_contains "bash/va unsets _DEN_VENV_PYTHON on reject" "PY=[]" "$err"
+assert_not_exists "bash/va does not execute version_info" "$WORK/pwned"
+
 echo "[bash] vd no active venv"
 err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV; vd" || true)
 assert_contains "bash/vd no venv" "No active venv" "$err"
@@ -93,6 +129,15 @@ assert_eq "zsh/_show_uv_only_message" "pip → uv pip" "$actual"
 echo "[zsh] pip redirect message"
 err=$(run_zsh_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV; pip install foo")
 assert_contains "zsh/pip redirect" "→ uv pip" "$err"
+
+echo "[zsh] uv run keeps the user's own uv options"
+actual=$(run_zsh "$PYTHON_SH_TEST" "export VIRTUAL_ENV='$WORK/fakevenv' _DEN_VENV_PYTHON=3.12; uv run --with rich script.py")
+assert_eq "zsh/uv run keeps --with as an option" "mock-uv run --python 3.12 --with rich script.py" "$actual"
+
+echo "[zsh] va normalizes pyvenv.cfg version_info"
+mk_venv "$WORK/venv_zsh" "3.11.4.final.0"
+actual=$(run_zsh "$PYTHON_SH_TEST" "cd '$WORK/venv_zsh' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
+assert_eq "zsh/va trims virtualenv 5-field version_info" "PY=3.11.4" "$actual"
 
 echo "[zsh] vd no active venv"
 err=$(run_zsh_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV; vd" || true)

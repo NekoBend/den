@@ -14,7 +14,14 @@ if command -v uv >/dev/null 2>&1; then
 uv() {
     if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ] && [ "$1" = "run" ]; then
         shift
-        command uv run --python "$_DEN_VENV_PYTHON" -- "$@"
+        # `--` ends uv's OWN option parsing, so injecting it unconditionally turned
+        # every `uv run` option into the command to spawn (`uv run --with rich app.py`
+        # -> "Failed to spawn: --with"). Only separate when the first user argument
+        # cannot be mistaken for a uv option.
+        case "${1-}" in
+            -*) command uv run --python "$_DEN_VENV_PYTHON" "$@" ;;
+            *)  command uv run --python "$_DEN_VENV_PYTHON" -- "$@" ;;
+        esac
     else
         command uv "$@"
     fi
@@ -87,14 +94,20 @@ va() {
         return 1
     fi
     source "$name/bin/activate"
-    local pyver
-    pyver="$(sed -n 's/^version_info[[:space:]]*=[[:space:]]*//p' "$name/pyvenv.cfg" 2>/dev/null)"
+    local pyver pyver_raw
+    pyver_raw="$(sed -n 's/^version_info[[:space:]]*=[[:space:]]*//p' "$name/pyvenv.cfg" 2>/dev/null)"
     # Strip trailing CR for Windows-CRLF pyvenv.cfg.
-    pyver="${pyver%"$(printf '\r')"}"
+    pyver_raw="${pyver_raw%"$(printf '\r')"}"
+    # virtualenv (tox, nox, the virtualenv CLI) writes all five version_info fields,
+    # e.g. "3.12.3.final.0", which uv reads as an executable NAME and rejects; keep
+    # the MAJOR.MINOR.PATCH prefix uv understands.
+    pyver="$(printf '%s' "$pyver_raw" | cut -d. -f1-3)"
     # NOTE: allowlist validation is required — do not remove (pyvenv.cfg is untrusted).
+    # Digits and dots only, leading digit required: a version request is all this
+    # value is ever used for.
     case "$pyver" in
-        ''|*[!0-9A-Za-z.+-]*)
-            [ -n "$pyver" ] && echo "va: rejecting suspicious version_info='$pyver' from pyvenv.cfg" >&2
+        ''|[!0-9]*|*[!0-9.]*)
+            [ -n "$pyver_raw" ] && echo "va: rejecting suspicious version_info='$pyver_raw' from pyvenv.cfg" >&2
             unset _DEN_VENV_PYTHON
             ;;
         *)
