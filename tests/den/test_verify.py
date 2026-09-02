@@ -151,7 +151,34 @@ def test_usage_and_errors(tmp_path, capsys):
     notpy = tmp_path / "x.sh"
     notpy.write_text("echo hi\n")
     assert verify_main([str(notpy)]) == 2
-    assert "run-checks.sh" in capsys.readouterr().err  # points at the alternative
+    assert "standard tools" in capsys.readouterr().err  # points at the alternative
+
+
+def test_several_files_each_verified(tmp_path, monkeypatch, capsys):
+    a = _py(tmp_path, "a.py")
+    b = _py(tmp_path, "b.py")
+    cmds = _capture_cmds(monkeypatch)
+    assert verify_main([str(a), str(b)]) == 0
+    formats = [c for c in cmds if c[:3] == ["ruff", "format", "--check"]]
+    assert [c[-1] for c in formats] == [str(a), str(b)]
+    out = capsys.readouterr().out
+    assert f"== {a}" in out and f"== {b}" in out
+    assert "across 2 files" in out
+
+
+def test_several_files_one_unusable_still_runs_the_rest(tmp_path, monkeypatch, capsys):
+    a = _py(tmp_path, "a.py")
+    cmds = _capture_cmds(monkeypatch)
+    assert verify_main([str(a), str(tmp_path / "missing.py")]) == 1
+    assert any(c[:3] == ["ruff", "format", "--check"] for c in cmds), "good file ran"
+    captured = capsys.readouterr()
+    assert "file not found" in captured.err
+    assert "1 failed" in captured.out
+
+
+def test_all_files_unusable_is_a_usage_error(tmp_path, capsys):
+    assert verify_main([str(tmp_path / "x.py"), str(tmp_path / "y.py")]) == 2
+    assert capsys.readouterr().err.count("file not found") == 2
 
 
 def test_cli_dispatches_verify(tmp_path, monkeypatch, capsys):

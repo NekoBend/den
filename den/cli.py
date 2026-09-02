@@ -9,7 +9,7 @@ Runtime plumbing invoked by installed hooks and skills (not part of the
 everyday surface):
   hook    the per-turn worker + hook lifecycle (den hook run/list/imprint/memory)
   memory  workspace session memory (also reachable as den hook memory)
-  verify  format/lint/typecheck one Python file, config-faithfully (skills
+  verify  format/lint/typecheck Python files, config-faithfully (skills
           call this after writing code; see den/_verify.py)
 """
 
