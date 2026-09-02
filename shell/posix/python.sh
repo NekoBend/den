@@ -89,11 +89,30 @@ fi
 # va → activate Python venv (default: .venv)
 va() {
     local name="${1:-.venv}"
-    if [ ! -f "$name/bin/activate" ]; then
-        echo "activate script not found: $name/bin/activate" >&2
+    local activate="$name/bin/activate"
+    if [ ! -f "$activate" ]; then
+        echo "activate script not found: $activate" >&2
         return 1
     fi
-    source "$name/bin/activate"
+    # The activate script runs in THIS shell, so it gets the same trust check as
+    # any other sourced file (pyvenv.cfg below is already treated as untrusted): a
+    # cloned repo can ship a committed .venv/bin/activate, and a shared or synced
+    # checkout can hand one over from another user. Refuse a symlinked venv dir or
+    # script, one we do not own, and one anybody can rewrite. A venv you created
+    # yourself passes all three.
+    if [ -L "$name" ] || [ -L "$activate" ] || [ ! -O "$activate" ]; then
+        echo "va: refusing to source $activate (symlink, or not owned by you)" >&2
+        return 1
+    fi
+    # World-writable check without stat(1), whose output differs across platforms:
+    # position 9 of the `ls -l` mode string is the other-write bit.
+    case "$(command ls -ld -- "$activate" 2>/dev/null)" in
+        ????????w*)
+            echo "va: refusing to source $activate (world-writable)" >&2
+            return 1
+            ;;
+    esac
+    source "$activate"
     local pyver pyver_raw
     pyver_raw="$(sed -n 's/^version_info[[:space:]]*=[[:space:]]*//p' "$name/pyvenv.cfg" 2>/dev/null)"
     # Strip trailing CR for Windows-CRLF pyvenv.cfg.

@@ -134,9 +134,20 @@ if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
         unset _hwinfo_gpu_short
     fi
 
-    # --- Write the cache (machine-local, mode 600 via umask) ---
-    _hwc_tmp="$_hwc_f.tmp.$$"
-    if (umask 077 && : > "$_hwc_tmp") 2>/dev/null; then
+    # --- Write the cache (machine-local, mode 600) ---
+    # Create the temp file with mktemp (O_EXCL + 0600 + random suffix) rather than
+    # the predictable "$_hwc_f.tmp.$$": with XDG_RUNTIME_DIR unset the cache lives
+    # in a shared /tmp, where another user can pre-plant that exact name as a
+    # symlink and have the truncating `>` below rewrite whatever it points at.
+    # Without mktemp, fall back to a noclobber (set -C) redirect, which also fails
+    # closed on an existing path or symlink. Same fail-closed intent as the read
+    # side above and _init_cache in _helpers.sh.
+    _hwc_tmp=$(command mktemp "$_hwc_f.tmp.XXXXXX" 2>/dev/null)
+    if [ -z "$_hwc_tmp" ]; then
+        _hwc_tmp="$_hwc_f.tmp.$$"
+        (umask 077 && set -C && : > "$_hwc_tmp") 2>/dev/null || _hwc_tmp=""
+    fi
+    if [ -n "$_hwc_tmp" ]; then
         for _hwc_v in STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL; do
             eval "_hwc_val=\$$_hwc_v"
             if [ -n "$_hwc_val" ]; then

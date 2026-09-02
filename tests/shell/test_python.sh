@@ -106,6 +106,28 @@ assert_contains "bash/va rejects suspicious version_info" "rejecting suspicious 
 assert_contains "bash/va unsets _DEN_VENV_PYTHON on reject" "PY=[]" "$err"
 assert_not_exists "bash/va does not execute version_info" "$WORK/pwned"
 
+echo "[bash] va refuses an untrusted activate script"
+# va sources the script into the live shell, so a cloned repo that commits
+# .venv/bin/activate (or a shared checkout) must not get a free `source`.
+mk_venv "$WORK/venv_ww" "3.12.0"
+chmod 777 "$WORK/venv_ww/.venv/bin/activate"
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_ww' && va" || true)
+assert_contains "bash/va refuses world-writable activate" "world-writable" "$err"
+
+mk_venv "$WORK/venv_symlink_target" "3.12.0"
+mkdir -p "$WORK/venv_symlink"
+ln -sfn "$WORK/venv_symlink_target/.venv" "$WORK/venv_symlink/.venv"
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_symlink' && va" || true)
+assert_contains "bash/va refuses symlinked venv dir" "symlink" "$err"
+
+mk_venv "$WORK/venv_owner" "3.12.0"
+if chown 65534 "$WORK/venv_owner/.venv/bin/activate" 2>/dev/null; then
+    err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_owner' && va" || true)
+    assert_contains "bash/va refuses foreign-owned activate" "not owned by you" "$err"
+else
+    echo "  SKIP: bash/va refuses foreign-owned activate (chown needs root)"
+fi
+
 echo "[bash] vd no active venv"
 err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV; vd" || true)
 assert_contains "bash/vd no venv" "No active venv" "$err"

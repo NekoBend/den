@@ -117,6 +117,24 @@ actual=$(bash -c "
 " | tr -d '\r')
 assert_contains "bash/Intel GPU via lspci" "GPU_INTEL=UHD Graphics 620" "$actual"
 
+echo "[bash] cache write ignores a planted temp symlink"
+# The old write path opened the predictable "$cache.tmp.$$" with a truncating
+# redirect, so another user sharing /tmp (XDG_RUNTIME_DIR unset) could pre-plant
+# that name as a symlink and have the shell rewrite the file it points at.
+mkdir -p "$WORK/hwinfo-symcache"
+echo "VICTIM" > "$WORK/hwinfo-victim.txt"
+actual=$(bash -c "
+    export XDG_RUNTIME_DIR='$WORK/hwinfo-symcache'
+    unset STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL
+    mid=\$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
+    ln -sf '$WORK/hwinfo-victim.txt' \"\$XDG_RUNTIME_DIR/den-hwinfo.\${mid}.sh.tmp.\$\$\"
+    source '$HWINFO_SH'
+    command cat '$WORK/hwinfo-victim.txt'
+" | tr -d '\r')
+assert_eq "bash/hwinfo does not write through planted symlink" "VICTIM" "$actual"
+hwc_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
+assert_exists "bash/hwinfo cache still written" "$WORK/hwinfo-symcache/den-hwinfo.${hwc_mid}.sh"
+
 # =============================================================================
 # Zsh tests
 # =============================================================================
