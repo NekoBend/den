@@ -626,17 +626,24 @@ def test_existing_instance_ignores_symlinked_lock(tmp_path, capsys, symlink):
 
 
 def test_release_lock_refuses_symlinked_lock(tmp_path, symlink):
+    # The planted file names our own pid, which is what used to buy the unlink.
     proj, outside = _plant_lock_symlink(
         tmp_path, symlink, json.dumps({"pid": os.getpid(), "port": 1}) + "\n"
     )
     _board._release_lock(proj)
-    assert outside.is_file(), "our own pid in a planted lock still buys no unlink"
+    assert outside.is_file()
+    assert _board._lock_path(proj).is_symlink(), (
+        "a lock den refuses to read is not one it may clear"
+    )
 
 
-def test_claim_lock_refuses_symlinked_lock(tmp_path, symlink):
+def test_claim_lock_refuses_symlinked_lock(tmp_path, capsys, symlink):
     proj, outside = _plant_lock_symlink(tmp_path, symlink)
     assert _board._claim_lock(proj) is False
     assert outside.read_text() == "outside file\n"
+    # O_EXCL alone also returns False here, but silently, leaving the caller to
+    # "take over" a lock it cannot see was planted. The refusal must be spoken.
+    assert "is a symlink" in capsys.readouterr().err
 
 
 def test_write_lock_refuses_symlinked_lock(tmp_path, symlink):
