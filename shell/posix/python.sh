@@ -94,21 +94,21 @@ va() {
         echo "activate script not found: $activate" >&2
         return 1
     fi
-    # The activate script runs in THIS shell, so it gets the same trust check as
-    # any other sourced file (pyvenv.cfg below is already treated as untrusted): a
-    # cloned repo can ship a committed .venv/bin/activate, and a shared or synced
-    # checkout can hand one over from another user. Refuse a symlinked venv dir or
-    # script, one we do not own, and one anybody can rewrite. A venv you created
-    # yourself passes all three.
-    if [ -L "$name" ] || [ -L "$activate" ] || [ ! -O "$activate" ]; then
-        echo "va: refusing to source $activate (symlink, or not owned by you)" >&2
+    # The activate script runs in THIS shell, so the venv's own content is checked
+    # the way pyvenv.cfg below already is. A venv you create is untracked; a venv
+    # COMMITTED to a repo (git tracks .venv happily, even force-added past a
+    # .gitignore) is code that arrived with the clone, and `va` in a fresh checkout
+    # would run it. Not a git repo, or no git, means nothing to check: pass.
+    if [ -n "$(command git -C "$name" ls-files -- bin/activate pyvenv.cfg 2>/dev/null)" ]; then
+        echo "va: $activate is tracked by git (a venv committed to the repo) — source it yourself if you trust it: source $activate" >&2
         return 1
     fi
-    # World-writable check without stat(1), whose output differs across platforms:
-    # position 9 of the `ls -l` mode string is the other-write bit.
+    # Anyone-can-rewrite is the other way this file stops being ours. World-writable
+    # check without stat(1), whose output differs across platforms: position 9 of
+    # the `ls -l` mode string is the other-write bit.
     case "$(command ls -ld -- "$activate" 2>/dev/null)" in
         ????????w*)
-            echo "va: refusing to source $activate (world-writable)" >&2
+            echo "va: $activate is world-writable — source it yourself if you trust it: source $activate" >&2
             return 1
             ;;
     esac

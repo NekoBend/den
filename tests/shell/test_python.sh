@@ -106,27 +106,45 @@ assert_contains "bash/va rejects suspicious version_info" "rejecting suspicious 
 assert_contains "bash/va unsets _DEN_VENV_PYTHON on reject" "PY=[]" "$err"
 assert_not_exists "bash/va does not execute version_info" "$WORK/pwned"
 
-echo "[bash] va refuses an untrusted activate script"
-# va sources the script into the live shell, so a cloned repo that commits
-# .venv/bin/activate (or a shared checkout) must not get a free `source`.
+echo "[bash] va refuses a venv whose activate script is committed"
+# The threat is a venv that arrives WITH a clone: after `git clone` the file is
+# owned by the user and mode 644, so only its tracked-ness marks it as foreign.
+mk_venv "$WORK/venv_tracked" "3.12.0"
+(
+    cd "$WORK/venv_tracked" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/activate .venv/pyvenv.cfg
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+) >/dev/null 2>&1
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_tracked' && va" || true)
+assert_contains "bash/va refuses git-tracked activate" "tracked by git" "$err"
+assert_contains "bash/va names the escape hatch" "source .venv/bin/activate" "$err"
+
+echo "[bash] va refuses a world-writable activate script"
 mk_venv "$WORK/venv_ww" "3.12.0"
 chmod 777 "$WORK/venv_ww/.venv/bin/activate"
 err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_ww' && va" || true)
 assert_contains "bash/va refuses world-writable activate" "world-writable" "$err"
 
+echo "[bash] va accepts an untracked venv inside a git repo"
+mk_venv "$WORK/venv_untracked" "3.12.0"
+(
+    cd "$WORK/venv_untracked" || exit 1
+    git init -q .
+    printf '.venv/\n' > .gitignore
+    git -c user.email=t@example.com -c user.name=t add .gitignore
+    git -c user.email=t@example.com -c user.name=t commit -q -m "ignore venv"
+) >/dev/null 2>&1
+actual=$(run_bash "$PYTHON_SH_TEST" "cd '$WORK/venv_untracked' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
+assert_eq "bash/va accepts a gitignored venv" "PY=3.12.0" "$actual"
+
+echo "[bash] va accepts a symlinked venv"
+# `ln -s ~/venvs/proj .venv` is a legitimate layout, not an attack.
 mk_venv "$WORK/venv_symlink_target" "3.12.0"
 mkdir -p "$WORK/venv_symlink"
 ln -sfn "$WORK/venv_symlink_target/.venv" "$WORK/venv_symlink/.venv"
-err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_symlink' && va" || true)
-assert_contains "bash/va refuses symlinked venv dir" "symlink" "$err"
-
-mk_venv "$WORK/venv_owner" "3.12.0"
-if chown 65534 "$WORK/venv_owner/.venv/bin/activate" 2>/dev/null; then
-    err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_owner' && va" || true)
-    assert_contains "bash/va refuses foreign-owned activate" "not owned by you" "$err"
-else
-    echo "  SKIP: bash/va refuses foreign-owned activate (chown needs root)"
-fi
+actual=$(run_bash "$PYTHON_SH_TEST" "cd '$WORK/venv_symlink' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
+assert_eq "bash/va accepts a symlinked venv" "PY=3.12.0" "$actual"
 
 echo "[bash] vd no active venv"
 err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV; vd" || true)
