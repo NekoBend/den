@@ -53,6 +53,7 @@ Limitations:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -76,22 +77,32 @@ class GitError(RuntimeError):
     """Raised when a git operation fails or git is unavailable."""
 
 
-def _run_git(args: list[str], cwd: Path) -> str:
-    """Run a git command and return stdout. Raise GitError on failure."""
+def _run_git_bytes(args: list[str], cwd: Path) -> bytes:
+    """Run a git command and return raw stdout. Raise GitError on failure.
+
+    A path is bytes, not text: POSIX file names may hold sequences that are
+    not valid UTF-8, and decoding one with errors="replace" renames it to a
+    file that exists nowhere. Every command whose output is a PATH reads it
+    from here and converts with os.fsdecode, whose surrogateescape round-trips
+    back to the original bytes when the path is opened or handed to git again.
+    """
     if shutil.which("git") is None:
         raise GitError("git is not installed")
     proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
-        text=True,
         check=False,
-        encoding="utf-8",
-        errors="replace",
     )
     if proc.returncode != 0:
-        raise GitError(proc.stderr.strip() or f"git {' '.join(args)} failed")
+        message = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise GitError(message or f"git {' '.join(args)} failed")
     return proc.stdout
+
+
+def _run_git(args: list[str], cwd: Path) -> str:
+    """Run a git command and return stdout decoded as text (file CONTENT)."""
+    return _run_git_bytes(args, cwd).decode("utf-8", errors="replace")
 
 
 def _is_git_repo(root: Path) -> bool:
@@ -104,8 +115,15 @@ def _is_git_repo(root: Path) -> bool:
 
 
 def _repo_root(root: Path) -> Path:
-    """Absolute top-level of the git working tree that contains `root`."""
-    return Path(_run_git(["rev-parse", "--show-toplevel"], root).strip()).resolve()
+    """Absolute top-level of the git working tree that contains `root`.
+
+    Only the newline git appends is removed. .strip() would also eat a space
+    that is part of the directory name, and the top-level would then resolve
+    somewhere else: every changed file fails the is_relative_to(root) test
+    below and the whole check silently reports nothing.
+    """
+    out = os.fsdecode(_run_git_bytes(["rev-parse", "--show-toplevel"], root))
+    return Path(out.removesuffix("\n")).resolve()
 
 
 def _changed_files(
@@ -123,13 +141,18 @@ def _changed_files(
     whitespace to clean up the line ending would eat a leading or trailing
     space that is part of the name. Either way the file looked deleted, and
     every symbol it defined at BASE was reported as a broken reference.
+
+    The stream is read as BYTES and converted with os.fsdecode for the same
+    reason: a file name that is not valid UTF-8 is legal on POSIX, and
+    decoding it with errors="replace" would point every later step at a file
+    that does not exist.
     """
-    out = _run_git(["diff", "--name-only", "-z", base], root)
+    out = _run_git_bytes(["diff", "--name-only", "-z", base], root)
     files: list[Path] = []
-    for name in out.split("\x00"):
-        if not name:
+    for raw in out.split(b"\x00"):
+        if not raw:
             continue
-        path = repo_root / name
+        path = repo_root / os.fsdecode(raw)
         if not path.is_relative_to(root):
             continue
         if lang_ext and path.suffix != lang_ext:
@@ -157,7 +180,9 @@ def _file_text_at_base(base: str, file: Path, repo_root: Path) -> str | None:
     """Get the text of `file` at `base` ref. Returns None if file did not exist.
 
     `<rev>:<path>` is resolved from the repository top-level, so `file` is made
-    relative to that and git is run from there.
+    relative to that and git is run from there. A name that is not valid UTF-8
+    carries surrogate escapes here; subprocess re-encodes them with os.fsencode
+    on POSIX, so git receives the original bytes.
     """
     rel = file.relative_to(repo_root).as_posix()
     try:

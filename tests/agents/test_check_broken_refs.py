@@ -310,6 +310,54 @@ def test_a_path_with_leading_whitespace_is_not_lost(tmp_path: Path) -> None:
     assert "app.py" in proc.stdout, proc.stdout
 
 
+def test_a_repo_root_ending_in_a_space_is_not_trimmed(tmp_path: Path) -> None:
+    # `git rev-parse --show-toplevel` was .strip()ed, so a repository whose
+    # top-level directory ends in a space resolved to a different path and
+    # every changed file failed the "is it under --root" test: the check then
+    # reported nothing at all, whatever had been removed.
+    if sys.platform == "win32":
+        pytest.skip("Windows trims trailing spaces from directory names")
+    repo = tmp_path / "repo "
+    repo.mkdir()
+    init_repo(repo)
+    write(repo, "lib.py", "def widget():\n    return 1\n")
+    write(repo, "app.py", "widget()\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+
+    write(repo, "lib.py", "# widget removed\n")
+
+    proc = run("--base", "HEAD", "--root", str(repo))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:widget" in proc.stdout, proc.stdout
+    assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_a_non_utf8_file_name_is_not_mangled(tmp_path: Path) -> None:
+    # A file name that is not valid UTF-8 is legal on POSIX. Decoding git's
+    # output with errors="replace" turned it into a name with U+FFFD in it, so
+    # `git show BASE:<name>` failed, the file looked as if it had not existed
+    # at base, and a removal inside it was missed entirely.
+    if sys.platform == "win32":
+        pytest.skip("Windows file names are UTF-16, not bytes")
+    name = os.fsdecode(b"bad\xff.py")
+    try:
+        write(tmp_path, name, "def widget():\n    return 1\n")
+    except OSError as exc:  # a filesystem that insists on valid UTF-8
+        pytest.skip(f"cannot create a non-UTF-8 file name: {exc}")
+    init_repo(tmp_path)
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, name, "# widget removed\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:widget" in proc.stdout, proc.stdout
+    assert "app.py" in proc.stdout, proc.stdout
+
+
 def test_changed_files_outside_the_root_are_ignored(tmp_path: Path) -> None:
     init_repo(tmp_path)
     write(tmp_path, "pkg/keep.py", "def kept():\n    return 1\n")
