@@ -191,12 +191,13 @@ def test_search_path_drops_current_directory_entries(tmp_path, monkeypatch):
     assert _verify._search_path() == str(tmp_path)
 
 
-def test_tool_inside_the_workspace_is_refused(tmp_path, monkeypatch, capsys):
-    """A repo-supplied ruff/ty is refused (SKIP), not executed."""
+def test_tool_in_the_working_directory_is_refused(tmp_path, monkeypatch, capsys):
+    """A ruff/ty sitting in the cwd - all the curdir search can reach - is
+    refused (SKIP), not executed."""
     f = _py(tmp_path)
     monkeypatch.chdir(tmp_path)  # the workspace `den verify` is invoked from
     cmds = _capture_cmds(monkeypatch)
-    monkeypatch.setattr(
+    monkeypatch.setattr(  # a repo shipping ./ruff, next to the checked file
         _verify.shutil, "which", lambda name, path=None: str(tmp_path / name)
     )
     assert verify_main([str(f)]) == 0  # a refusal is a skip, not a failure
@@ -208,6 +209,27 @@ def test_tool_inside_the_workspace_is_refused(tmp_path, monkeypatch, capsys):
     assert "SKIP typecheck (ty not run:" in out
     assert "3 skipped" in out
     assert cmds == []  # nothing was run
+
+
+def test_tool_in_a_project_venv_is_allowed(tmp_path, monkeypatch, capsys):
+    """The project's own .venv/bin/ruff is under the cwd but not in it: the
+    curdir search cannot reach a subdirectory, and it is the wanted tool."""
+    f = _py(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    venv_bin = tmp_path / ".venv" / "bin"
+    cmds = _capture_cmds(monkeypatch)
+    monkeypatch.setattr(
+        _verify.shutil, "which", lambda name, path=None: str(venv_bin / name)
+    )
+    assert verify_main([str(f)]) == 0
+    assert [c[0] for c in cmds] == [
+        str(venv_bin / "ruff"),
+        str(venv_bin / "ruff"),
+        str(venv_bin / "ty"),
+    ]
+    out = capsys.readouterr().out
+    assert "refusing" not in out
+    assert "PASS format" in out
 
 
 def test_tool_output_is_decoded_as_utf8(tmp_path, monkeypatch):

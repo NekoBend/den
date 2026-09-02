@@ -298,9 +298,10 @@ is "discover like the tools do, make the discovery visible, never override":
 Exit codes: 0 = no failures (skips allowed), 1 = a stage failed, 2 = usage.
 Missing tools are `SKIP` lines naming the install command, never failures.
 Both tools are resolved through `PATH` alone and run by absolute path, so one
-that resolves inside the workspace - a cloned repo shipping its own `ruff.exe`,
-which Windows would otherwise prefer over the installed one - is refused and
-counted as a `SKIP`, never executed.
+that resolves to the working directory itself - a cloned repo shipping its own
+`ruff.exe`, which Windows would otherwise prefer over the installed one - is
+refused and counted as a `SKIP`, never executed; a tool from the project's own
+`.venv` is unaffected.
 Python only; other languages go through the coding skill's `run-checks.sh`.
 
 ## Architecture

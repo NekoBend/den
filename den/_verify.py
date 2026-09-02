@@ -14,8 +14,8 @@ never override":
   passed explicitly (--project <root>, root = nearest pyproject.toml/ty.toml
   ancestor) and the venv line reports what ty will see.
 - the tools themselves are resolved through PATH only and run by absolute
-  path; one that resolves inside the workspace is refused, never executed.
-  On Windows shutil.which prepends the current directory (unless
+  path; one that resolves to the working directory itself is refused, never
+  executed. On Windows shutil.which prepends the current directory (unless
   NoDefaultCurrentDirectoryInExePath is set) and CreateProcess searches it
   too for a path-less name, so a cloned repo shipping `ruff.exe` at its root
   would otherwise run when `den verify` is invoked there.
@@ -104,13 +104,17 @@ def _search_path() -> str:
 def _resolve_tool(name: str) -> tuple[str | None, str | None]:
     """(absolute path to run, refusal reason) for the tool `name`.
 
-    Both None means "not installed". A hit inside the cwd is refused rather
-    than run: shutil.which re-inserts the current directory ahead of PATH on
-    Windows (unless NoDefaultCurrentDirectoryInExePath is set) and
-    CreateProcess searches it too for a path-less name, so a cloned repo that
-    ships `ruff.exe` at its root would otherwise be executed by a `den verify`
-    run there. Handing subprocess an absolute path also stops CreateProcess
-    from searching at all.
+    Both None means "not installed". A hit in the working directory itself is
+    refused rather than run: shutil.which re-inserts the current directory
+    ahead of PATH on Windows (unless NoDefaultCurrentDirectoryInExePath is
+    set) and CreateProcess searches it too for a path-less name, so a cloned
+    repo that ships `ruff.exe` at its root would otherwise be executed by a
+    `den verify` run there. Handing subprocess an absolute path also stops
+    CreateProcess from searching at all.
+
+    Only the directory itself is refused, because that is all those two
+    searches can reach; a tool under it - a project's own .venv/bin/ruff,
+    the normal case - is the one the project wants and still runs.
     """
     hit = shutil.which(name, path=_search_path())
     if hit is None:
@@ -118,7 +122,7 @@ def _resolve_tool(name: str) -> tuple[str | None, str | None]:
     exe = Path(hit)
     if not exe.is_absolute():  # only reachable via the Windows curdir entry
         exe = Path.cwd() / exe
-    if exe.resolve().is_relative_to(Path.cwd().resolve()):
+    if exe.resolve().parent == Path.cwd().resolve():
         return None, f"refusing {name} resolved inside the workspace ({exe})"
     return str(exe), None
 
