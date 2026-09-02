@@ -299,6 +299,23 @@ def test_hidden_and_ignored_files_are_searched_by_both_backends(
         assert "ci.yml" in proc.stdout, proc.stdout
 
 
+def test_binary_files_are_not_searched_by_either_backend(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # ripgrep gives up on a file as soon as it sees a NUL byte and reports
+    # nothing for it, while the walk fallback decoded every file with
+    # errors="ignore" and matched the text inside it: an object file, a .pyc
+    # or a PDF produced hits under one backend only.
+    (tmp_path / "early.bin").write_bytes(b"\x00\x00widget()\n")
+    (tmp_path / "late.bin").write_bytes(b"x" * 20000 + b"\nwidget()\n" + b"\x00")
+    write(tmp_path, "real.py", "widget()\n")
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert ".bin" not in proc.stdout, proc.stdout
+        assert "real.py" in proc.stdout, proc.stdout
+
+
 def test_the_git_directory_is_never_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

@@ -59,6 +59,7 @@ from _common import (
     RG_SEARCH_FLAGS,
     iter_search_files,
     parse_rg_line,
+    read_searchable_text,
     rg_skip_globs,
 )
 
@@ -204,9 +205,8 @@ def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
     rx = re.compile(word_pattern)
     hits = []
     for path in iter_search_files(root):
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+        text = read_searchable_text(path)
+        if text is None:
             continue
         for match in rx.finditer(text):
             lineno = text.count("\n", 0, match.start()) + 1

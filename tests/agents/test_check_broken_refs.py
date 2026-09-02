@@ -298,6 +298,29 @@ def test_hidden_and_ignored_usages_are_reported_by_both_backends(
         assert "ignored.py" in proc.stdout, proc.stdout
 
 
+def test_binary_files_are_not_searched_by_either_backend(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same parity point as find-references: a NUL byte makes ripgrep skip the
+    # file, so a "broken reference" must not be reported out of a binary blob
+    # by the walk fallback alone.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    (tmp_path / "early.bin").write_bytes(b"\x00\x00widget()\n")
+    (tmp_path / "late.bin").write_bytes(b"x" * 20000 + b"\nwidget()\n" + b"\x00")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert ".bin" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+
+
 def test_the_git_directory_is_never_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

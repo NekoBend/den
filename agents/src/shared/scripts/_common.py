@@ -15,8 +15,9 @@ substitutes it before compiling the regex:
 Patterns are applied with re.MULTILINE.
 
 The search plumbing both scripts share lives here too: the ripgrep flags and
-skip globs, the parser for ripgrep's output lines, and the fallback walker.
-Keeping them in one place is what makes the two backends return the same files.
+skip globs, the parser for ripgrep's output lines, the fallback walker, and
+the reader it searches files with. Keeping them in one place is what makes the
+two backends return the same files.
 """
 
 from __future__ import annotations
@@ -179,6 +180,9 @@ def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:
       so a link committed in the tree cannot pull a file from outside it into
       the results.
     - `ext`, when given, keeps only files with that suffix.
+
+    Binary files are dropped by read_searchable_text, which is where their
+    content is first available.
     """
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
@@ -190,3 +194,26 @@ def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:
             if path.is_symlink() or not path.is_file():
                 continue
             yield path
+
+
+def read_searchable_text(path: Path) -> str | None:
+    """Return the text of `path`, or None if it must not be searched.
+
+    None means the file could not be read, or that it is binary: ripgrep stops
+    searching a file the moment it sees a NUL byte and reports nothing for it
+    (verified with rg 15.1.0 on a file whose NUL sits after the match), so the
+    walk fallback must not report matches there either - a decode with
+    errors="ignore" would otherwise happily match text inside an object file,
+    a PDF or a .pyc.
+
+    The whole file is read, so the NUL is found wherever it sits; ripgrep
+    applies the same test per read buffer, which differs only for a file that
+    matches before a NUL that appears megabytes later.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    if "\x00" in text:
+        return None
+    return text
