@@ -264,6 +264,52 @@ def test_subdirectory_root_still_reports_a_real_removal(tmp_path: Path) -> None:
     assert "lib.py" not in proc.stdout, proc.stdout
 
 
+def test_non_ascii_paths_are_resolved_not_quoted(tmp_path: Path) -> None:
+    # `git diff --name-only` renders café.py as "caf\303\251.py" - quotes and
+    # octal escapes included - which resolves to no file, so the script called
+    # the file DELETED and reported every symbol it defined at base.
+    init_repo(tmp_path)
+    write(tmp_path, "café.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    # A body-only change removes nothing, so nothing may be reported.
+    write(tmp_path, "café.py", "def widget():\n    return 2\n")
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "", proc.stdout
+
+    # ...and a real removal in the same file is still reported.
+    write(tmp_path, "café.py", "# widget removed\n")
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:widget" in proc.stdout
+    assert "app.py" in proc.stdout
+
+
+def test_a_path_with_leading_whitespace_is_not_lost(tmp_path: Path) -> None:
+    # The line used to be .strip()ed, which turned " lead.py" into "lead.py".
+    # `git show HEAD:lead.py` then failed too, so the script concluded the
+    # file did not exist at base and a real removal inside it was reported as
+    # nothing at all: the silent false negative that mirrors the non-ASCII
+    # false positive above.
+    init_repo(tmp_path)
+    try:
+        write(tmp_path, " lead.py", "def gadget():\n    return 1\n")
+    except OSError as exc:  # a filesystem that forbids the name
+        pytest.skip(f"cannot create a file name starting with a space: {exc}")
+    write(tmp_path, "app.py", "gadget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, " lead.py", "# gadget removed\n")
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:gadget" in proc.stdout, proc.stdout
+    assert "app.py" in proc.stdout, proc.stdout
+
+
 def test_changed_files_outside_the_root_are_ignored(tmp_path: Path) -> None:
     init_repo(tmp_path)
     write(tmp_path, "pkg/keep.py", "def kept():\n    return 1\n")

@@ -109,14 +109,20 @@ def _changed_files(
     `git diff --name-only` prints paths relative to the REPOSITORY top-level
     whatever the cwd is, so they are joined onto `repo_root` and then narrowed
     to the ones that live under `root` (which may be any subdirectory).
+
+    `-z` is what makes the paths usable: without it git QUOTES anything
+    non-ASCII (`café.py` arrives as `"caf\303\251.py"`, escapes and quotes
+    included) and the resulting path exists nowhere, while stripping
+    whitespace to clean up the line ending would eat a leading or trailing
+    space that is part of the name. Either way the file looked deleted, and
+    every symbol it defined at BASE was reported as a broken reference.
     """
-    out = _run_git(["diff", "--name-only", base], root)
+    out = _run_git(["diff", "--name-only", "-z", base], root)
     files: list[Path] = []
-    for raw in out.splitlines():
-        line = raw.strip()
-        if not line:
+    for name in out.split("\x00"):
+        if not name:
             continue
-        path = repo_root / line
+        path = repo_root / name
         if not path.is_relative_to(root):
             continue
         if lang_ext and path.suffix != lang_ext:
