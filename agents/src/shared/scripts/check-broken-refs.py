@@ -65,6 +65,7 @@ from _common import (
     DEFINITION_CAPTURE,
     DEFINITION_PATTERNS,
     RG_SEARCH_FLAGS,
+    allow_undecodable_paths_on_stdout,
     format_hit,
     iter_search_files,
     parse_rg_output,
@@ -222,14 +223,9 @@ def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
         ]
         cmd.extend(rg_skip_globs())
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-                encoding="utf-8",
-                errors="replace",
-            )
+            # bytes, not text: the stream carries file names (see
+            # parse_rg_output), and a name need not be valid UTF-8.
+            proc = subprocess.run(cmd, capture_output=True, check=False)
         except FileNotFoundError:
             return []
         return parse_rg_output(proc.stdout)
@@ -275,6 +271,7 @@ def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
         "--lang", metavar=".EXT", help="Restrict to one language extension (e.g. .py)."
     )
     args = parser.parse_args(argv)
+    allow_undecodable_paths_on_stdout()
 
     root = Path(args.root).resolve()
     if not root.is_dir():

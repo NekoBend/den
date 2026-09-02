@@ -75,6 +75,22 @@ def backends(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, str] | 
     return [None, env]
 
 
+def run_bytes(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    """Run check-broken-refs.py capturing stdout as raw bytes.
+
+    A POSIX file name is bytes, so a test that checks how a name is PRINTED
+    cannot let subprocess decode the stream for it.
+    """
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+
 def git(repo: Path, *args: str) -> None:
     """Run a git command inside `repo`, raising on failure."""
     subprocess.run(
@@ -356,6 +372,43 @@ def test_a_non_utf8_file_name_is_not_mangled(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert "broken_ref:widget" in proc.stdout, proc.stdout
     assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_the_self_exclusion_holds_for_a_non_utf8_file_name(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A mention left behind in the file the symbol was REMOVED from is not a
+    # dangling reference, and that test compares resolved paths. While rg's
+    # output was decoded as text, the rg backend spelled this file's name with
+    # U+FFFD, the comparison never matched, and the leftover comment was
+    # reported as a broken reference under rg and not under the walker.
+    if sys.platform == "win32":
+        pytest.skip("Windows file names are UTF-16, not bytes")
+    name = os.fsdecode(b"bad\xff.py")
+    try:
+        write(tmp_path, name, "def widget():\n    return 1\n")
+    except OSError as exc:  # a filesystem that insists on valid UTF-8
+        pytest.skip(f"cannot create a non-UTF-8 file name: {exc}")
+    init_repo(tmp_path)
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    # the definition goes; the name stays in a comment in the SAME file
+    write(tmp_path, name, "# widget is gone\n")
+
+    outputs = []
+    for env in backends:
+        proc = run_bytes("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert b"broken_ref:widget" in proc.stdout, proc.stdout
+        assert b"app.py" in proc.stdout, proc.stdout
+        # the leftover mention in the defining file is excluded by BOTH
+        # backends, and no lossy spelling of the name appears either
+        assert b"bad\xff.py" not in proc.stdout, proc.stdout
+        assert b"\xef\xbf\xbd" not in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.split(b"\n")))
+    assert outputs[0] == outputs[1], outputs
 
 
 def test_changed_files_outside_the_root_are_ignored(tmp_path: Path) -> None:

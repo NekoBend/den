@@ -67,6 +67,7 @@ from _common import (
     DEFINITION_CAPTURE,
     DEFINITION_PATTERNS,
     RG_SEARCH_FLAGS,
+    allow_undecodable_paths_on_stdout,
     format_hit,
     iter_search_files,
     parse_rg_output,
@@ -102,14 +103,10 @@ def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]
         cmd.extend(["-g", f"*{ext}"])
     cmd.extend(rg_skip_globs())
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            encoding="utf-8",
-            errors="replace",
-        )
+        # stdout is read as BYTES: it carries file names, and a name is not
+        # required to be valid UTF-8. parse_rg_output converts each part with
+        # the right codec.
+        proc = subprocess.run(cmd, capture_output=True, check=False)
     except FileNotFoundError:
         return []
     return parse_rg_output(proc.stdout)
@@ -281,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Root directory to search (default: cwd).",
     )
     args = parser.parse_args(argv)
+    allow_undecodable_paths_on_stdout()
 
     root = Path(args.root).resolve()
     if not root.is_dir():

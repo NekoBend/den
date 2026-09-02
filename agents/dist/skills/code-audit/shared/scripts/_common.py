@@ -23,7 +23,9 @@ print them the same way.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -167,37 +169,45 @@ def rg_skip_globs() -> list[str]:
     return globs
 
 
-def parse_rg_line(line: str) -> tuple[str, int, str] | None:
-    """Parse one `<path>NUL<lineno>:<content>` line of ripgrep --null output.
+def parse_rg_line(record: bytes) -> tuple[str, int, str] | None:
+    """Parse one `<path>NUL<lineno>:<content>` record of ripgrep --null output.
 
-    Returns None when the line carries no usable location.
+    Returns None when the record carries no usable location.
 
-    The NUL byte is what makes this unambiguous. Splitting on colons instead
-    dropped every hit whose path contained one - a POSIX file named `a:b.py`,
-    and on Windows every hit at all, since each path starts with `C:` - while
-    the walk fallback reported them, so the two backends disagreed.
+    Records are BYTES because a POSIX file name is bytes and need not be valid
+    UTF-8. Decoding the stream as text renamed such a file to one with U+FFFD
+    in it, while the walk fallback yields the real name, so the two backends
+    printed different paths for the same file (and check-broken-refs' own
+    "this mention is in the file the symbol was removed from" test stopped
+    matching, turning that mention into a reported broken reference under rg
+    only). The path is converted with os.fsdecode, whose surrogateescape
+    round-trips back to the original bytes; the content is text and is decoded
+    with errors="replace", exactly as read_searchable_text does it.
+
+    The NUL is what makes the split unambiguous: a path may contain colons of
+    its own (`a:b.py`, or a Windows drive letter) and cannot contain a NUL.
     """
-    file, sep, rest = line.partition("\x00")
+    path, sep, rest = record.partition(b"\x00")
     if not sep:
         return None
-    lineno_text, sep, content = rest.partition(":")
+    lineno_text, sep, content = rest.partition(b":")
     if not sep:
         return None
     try:
         lineno = int(lineno_text)
     except ValueError:
         return None
-    return (file, lineno, content)
+    return (os.fsdecode(path), lineno, content.decode("utf-8", errors="replace"))
 
 
-def parse_rg_output(stdout: str) -> list[tuple[str, int, str]]:
+def parse_rg_output(stdout: bytes) -> list[tuple[str, int, str]]:
     """Parse ripgrep's whole --null stdout into hits, record by record.
 
     A record is `<path>NUL<lineno>:<content>` and only the newline AFTER the
-    NUL ends it, which is why the stream is scanned rather than handed to
-    str.splitlines(): splitlines() also breaks on form feed, vertical tab,
-    NEL, U+2028 and U+2029, so any of those INSIDE a matching line truncated
-    the record, and a newline inside a FILE NAME split one record into two
+    NUL ends it, which is why the stream is framed by hand rather than split
+    into "lines": splitlines() also breaks on form feed, vertical tab, NEL,
+    U+2028 and U+2029, so any of those INSIDE a matching line truncated the
+    record, and a newline inside a FILE NAME split one record into two
     unusable halves. The walk fallback reads both kinds of file without
     trouble, so each case was a disagreement between the backends.
 
@@ -206,10 +216,10 @@ def parse_rg_output(stdout: str) -> list[tuple[str, int, str]]:
     hits: list[tuple[str, int, str]] = []
     pos = 0
     while pos < len(stdout):
-        nul = stdout.find("\x00", pos)
+        nul = stdout.find(b"\x00", pos)
         if nul == -1:
             break
-        end = stdout.find("\n", nul)
+        end = stdout.find(b"\n", nul)
         if end == -1:
             end = len(stdout)
         hit = parse_rg_line(stdout[pos:end])
@@ -296,3 +306,16 @@ def format_hit(file: str, lineno: int, kind: str, content: str) -> str:
         dropped = len(context) - MAX_CONTEXT_CHARS
         context = f"{context[:MAX_CONTEXT_CHARS]} [...+{dropped} chars]"
     return f"{file}:{lineno}:{kind}:{context}"
+
+
+def allow_undecodable_paths_on_stdout() -> None:
+    """Let stdout carry file names that are not valid UTF-8.
+
+    os.fsdecode leaves undecodable bytes as surrogate escapes, and printing one
+    to a strict stdout raises UnicodeEncodeError: on a tree holding such a file
+    the scripts would die instead of reporting it. surrogateescape writes the
+    original bytes back out, which is what every other tool prints.
+    """
+    # not every stdout is a reconfigurable text stream
+    with contextlib.suppress(AttributeError, OSError):
+        sys.stdout.reconfigure(errors="surrogateescape")

@@ -82,6 +82,22 @@ def symlink_or_skip(link: Path, target: Path) -> None:
         pytest.skip(f"symlinks unavailable: {exc}")
 
 
+def run_bytes(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    """Run find-references.py capturing stdout as raw bytes.
+
+    A POSIX file name is bytes, so a test that checks how a name is PRINTED
+    cannot let subprocess decode the stream for it.
+    """
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+
 def write(root: Path, rel: str, body: str) -> Path:
     """Create `root/rel` (with parents) containing `body`. Return the path."""
     path = root / rel
@@ -246,39 +262,53 @@ def test_in_reports_full_powershell_names(tmp_path: Path) -> None:
 
 
 def test_rg_line_parser_reads_the_null_separated_format() -> None:
-    # rg is run with --null, so the path ends at the NUL byte and the only
-    # colon that matters is the one after the line number. Parsed directly:
-    # the Windows case cannot be produced on the ubuntu CI runners.
-    assert parse_rg_line("/repo/mod.py\x0012:def widget():") == (
+    # rg is run with --null and its stdout is read as bytes, so a record is
+    # bytes: the path ends at the NUL and the only colon that matters is the
+    # one after the line number. Parsed directly, since the ubuntu CI runners
+    # cannot produce the Windows case.
+    assert parse_rg_line(b"/repo/mod.py\x0012:def widget():") == (
         "/repo/mod.py",
         12,
         "def widget():",
     )
     # a colon inside the path is no longer ambiguous...
-    assert parse_rg_line("/repo/a:b.py\x0012:widget()") == (
+    assert parse_rg_line(b"/repo/a:b.py\x0012:widget()") == (
         "/repo/a:b.py",
         12,
         "widget()",
     )
     # ...neither is a Windows drive letter, which needs no special case now
-    assert parse_rg_line("C:\\repo\\mod.py\x0012:def widget():") == (
+    assert parse_rg_line(b"C:\\repo\\mod.py\x0012:def widget():") == (
         "C:\\repo\\mod.py",
         12,
         "def widget():",
     )
-    # and the content keeps every colon it had
-    assert parse_rg_line("/repo/mod.py\x007:d = {'a': 1, 'b': 2}") == (
+    # the content keeps every colon it had
+    assert parse_rg_line(b"/repo/mod.py\x007:d = {'a': 1, 'b': 2}") == (
         "/repo/mod.py",
         7,
         "d = {'a': 1, 'b': 2}",
     )
+    # a name that is not valid UTF-8 keeps its bytes (os.fsdecode round-trips)
+    assert parse_rg_line(b"/repo/bad\xff.py\x001:widget()") == (
+        os.fsdecode(b"/repo/bad\xff.py"),
+        1,
+        "widget()",
+    )
+    # ...while undecodable bytes in the CONTENT are replaced, as the walker's
+    # reader does it
+    assert parse_rg_line(b"/repo/mod.py\x001:wid\xffget()") == (
+        "/repo/mod.py",
+        1,
+        "wid\ufffdget()",
+    )
 
 
 def test_rg_line_parser_rejects_junk() -> None:
-    assert parse_rg_line("no separators here") is None
-    assert parse_rg_line("/repo/mod.py:12:no null byte") is None
-    assert parse_rg_line("/repo/mod.py\x00twelve:x") is None
-    assert parse_rg_line("/repo/mod.py\x0012 no colon") is None
+    assert parse_rg_line(b"no separators here") is None
+    assert parse_rg_line(b"/repo/mod.py:12:no null byte") is None
+    assert parse_rg_line(b"/repo/mod.py\x00twelve:x") is None
+    assert parse_rg_line(b"/repo/mod.py\x0012 no colon") is None
 
 
 def test_rg_stream_parser_splits_records_on_the_record_newline_only() -> None:
@@ -286,20 +316,22 @@ def test_rg_stream_parser_splits_records_on_the_record_newline_only() -> None:
     # which this replaced, also breaks on form feed, vertical tab, NEL, U+2028
     # and U+2029, and it split a path containing a newline in half.
     stream = (
-        "/repo/a.txt\x001:head \x0c tail\n"
-        "/repo/b\nc.txt\x002:x\n"
-        "/repo/d.txt\x003:sep \u2028 here\n"
-        "/repo/e.txt\x004:vertical \x0b tab\n"
+        b"/repo/a.txt\x001:head \x0c tail\n"
+        b"/repo/b\nc.txt\x002:x\n"
+        b"/repo/d.txt\x003:sep \xe2\x80\xa8 here\n"
+        b"/repo/e.txt\x004:vertical \x0b tab\n"
+        b"/repo/bad\xff.py\x005:widget()\n"
     )
     assert parse_rg_output(stream) == [
         ("/repo/a.txt", 1, "head \x0c tail"),
         ("/repo/b\nc.txt", 2, "x"),
         ("/repo/d.txt", 3, "sep \u2028 here"),
         ("/repo/e.txt", 4, "vertical \x0b tab"),
+        (os.fsdecode(b"/repo/bad\xff.py"), 5, "widget()"),
     ]
     # a stream with no trailing newline still yields its last record
-    assert parse_rg_output("/repo/f.txt\x005:last") == [("/repo/f.txt", 5, "last")]
-    assert parse_rg_output("") == []
+    assert parse_rg_output(b"/repo/f.txt\x005:last") == [("/repo/f.txt", 5, "last")]
+    assert parse_rg_output(b"") == []
 
 
 # ---------- the two backends must see the same tree ----------
@@ -539,6 +571,40 @@ def test_a_newline_in_a_file_name_does_not_lose_the_hit(
         assert "new\nline.txt" in proc.stdout, proc.stdout
         outputs.append(sorted(proc.stdout.split("\n")))
     assert outputs[0] == outputs[1], outputs
+
+
+def test_a_non_utf8_file_name_is_printed_identically_by_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A POSIX name need not be valid UTF-8. rg's stream used to be decoded as
+    # text, so the rg backend printed the name with U+FFFD in it while the
+    # walker printed the real bytes: one file, two spellings, and neither
+    # usable to open it.
+    if sys.platform == "win32":
+        pytest.skip("Windows file names are UTF-16, not bytes")
+    try:
+        write(tmp_path, os.fsdecode(b"bad\xff.py"), "widget()\n")
+    except OSError as exc:  # a filesystem that insists on valid UTF-8
+        pytest.skip(f"cannot create a non-UTF-8 file name: {exc}")
+    write(tmp_path, "real.py", "widget()\n")
+
+    outputs = []
+    for env in backends:
+        proc = run_bytes("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert b"bad\xff.py" in proc.stdout, proc.stdout
+        # U+FFFD would mean the name was decoded and re-encoded lossily
+        assert b"\xef\xbf\xbd" not in proc.stdout, proc.stdout
+        assert b"real.py" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.split(b"\n")))
+    assert outputs[0] == outputs[1], outputs
+
+    # A strict stdout must not kill the script either: the surrogate escapes
+    # os.fsdecode produced are written back out as the original bytes.
+    strict = dict(os.environ, PYTHONIOENCODING="utf-8:strict")
+    proc = run_bytes("--uses", "widget", "--root", str(tmp_path), env=strict)
+    assert proc.returncode == 0, proc.stderr
+    assert b"bad\xff.py" in proc.stdout, proc.stdout
 
 
 def test_the_git_directory_is_never_searched(
