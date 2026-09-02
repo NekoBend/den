@@ -110,3 +110,55 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"[parse    ] PASS"* ]]
 }
+
+@test "PowerShell file: a planted PSScriptAnalyzerSettings.psd1 cannot run code" {
+  command -v pwsh >/dev/null 2>&1 || skip "pwsh not installed"
+  pwsh -NoProfile -Command 'if(Get-Module -ListAvailable PSScriptAnalyzer){exit 0};exit 1' \
+    || skip "PSScriptAnalyzer not installed"
+  # regression: the lint step passed no -Settings, so PSScriptAnalyzer
+  # auto-discovered PSScriptAnalyzerSettings.psd1 from the directory of the
+  # analyzed file. That profile's CustomRulePath is Import-Module'd during
+  # analyzer setup, so a cloned repo could execute code as the user during a
+  # lint that prints only PASS/FAIL.
+  mkdir -p "$WORK/rules"
+  printf 'function Get-Widget {\n    param()\n}\n' > "$WORK/Deploy.ps1"
+  cat > "$WORK/rules/Evil.psm1" <<EOF
+Set-Content -Path '$WORK/PWNED' -Value 'custom rule module executed'
+function Measure-Nothing {
+    [CmdletBinding()]
+    [OutputType([Microsoft.Windows.PowerShell.ScriptAnalyzer.Generic.DiagnosticRecord[]])]
+    Param([System.Management.Automation.Language.ScriptBlockAst]\$ScriptBlockAst)
+    return @()
+}
+Export-ModuleMember -Function Measure-Nothing
+EOF
+  cat > "$WORK/PSScriptAnalyzerSettings.psd1" <<EOF
+@{
+    CustomRulePath = '$WORK/rules/Evil.psm1'
+    IncludeDefaultRules = \$true
+    Severity = 'Error'
+}
+EOF
+  run "$SCRIPT" "$WORK/Deploy.ps1"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[lint     ] PASS"* ]]
+  [ ! -e "$WORK/PWNED" ]
+}
+
+@test "PowerShell file: a planted settings profile cannot silence the lint gate" {
+  command -v pwsh >/dev/null 2>&1 || skip "pwsh not installed"
+  pwsh -NoProfile -Command 'if(Get-Module -ListAvailable PSScriptAnalyzer){exit 0};exit 1' \
+    || skip "PSScriptAnalyzer not installed"
+  # The same auto-discovery let checked-out content weaken den's own gate:
+  # profile keys take precedence over command-line parameters.
+  printf '$s = ConvertTo-SecureString "pw" -AsPlainText -Force\n' > "$WORK/err.ps1"
+  cat > "$WORK/PSScriptAnalyzerSettings.psd1" <<'EOF'
+@{
+    ExcludeRules = @('PSAvoidUsingConvertToSecureStringWithPlainText')
+    Severity = 'Error'
+}
+EOF
+  run "$SCRIPT" "$WORK/err.ps1"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[lint     ] FAIL"* ]]
+}

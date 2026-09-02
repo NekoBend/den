@@ -129,6 +129,15 @@ case "$ext" in
     # reads as one line, not a wall of analyzer output. The file path travels
     # in an env var, never interpolated into the pwsh command string, so a
     # hostile filename cannot become pwsh code.
+    #
+    # -Settings is passed as a hashtable, and it is not optional. With no
+    # -Settings, PSScriptAnalyzer auto-discovers a PSScriptAnalyzerSettings.psd1
+    # in the analyzed file's own directory, and such a profile may set
+    # CustomRulePath, which the analyzer Import-Modules before it reports a
+    # single finding -- arbitrary code execution from checked-out content, in a
+    # step whose visible output is only PASS/FAIL. Any non-null -Settings
+    # disables that lookup, so the settings are this script's, not the
+    # checked-out repository's.
     export RC_FILE="$file"
     # shellcheck disable=SC2016  # the $-expressions are pwsh code, expanded by pwsh, not bash
     run_tool "parse" pwsh -NoProfile -Command '$t=$null;$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $env:RC_FILE).Path,[ref]$t,[ref]$e);if($e.Count){$e|ForEach-Object{"line $($_.Extent.StartLineNumber): $($_.Message)"};exit 1}'
@@ -137,7 +146,7 @@ case "$ext" in
       skipped=$((skipped + 1))
     else
       # shellcheck disable=SC2016  # same: pwsh expands, bash must not
-      run_tool "lint" pwsh -NoProfile -Command '$p=[System.Management.Automation.WildcardPattern]::Escape((Resolve-Path -LiteralPath $env:RC_FILE).Path);$r=Invoke-ScriptAnalyzer -Path $p -Severity Error;if($r){$r|ForEach-Object{"$($_.Line): $($_.RuleName): $($_.Message)"};exit 1}'
+      run_tool "lint" pwsh -NoProfile -Command '$p=[System.Management.Automation.WildcardPattern]::Escape((Resolve-Path -LiteralPath $env:RC_FILE).Path);$r=Invoke-ScriptAnalyzer -Path $p -Settings @{Severity=@("Error");IncludeDefaultRules=$true};if($r){$r|ForEach-Object{"$($_.Line): $($_.RuleName): $($_.Message)"};exit 1}'
     fi
     project_only "typecheck" "PowerShell has no static typecheck; parse + PSScriptAnalyzer are the gate"
     ;;
