@@ -49,7 +49,12 @@ from ._memory import (
     _clinerules_dir,
     _do_checkpoint,
     _find_den_dir,
+    _history_dir,
     _memory_path,
+    _read_guarded_text,
+    _snapshots,
+    _symlink_component,
+    _write_guarded,
     mirror_to_clinerules,
 )
 from ._memory import (
@@ -57,6 +62,10 @@ from ._memory import (
 )
 
 _IMPRINT_NAME = "imprint.md"
+
+# stderr prefixes, matching the subcommand the message comes from.
+_ERR_HOOK = "den hook"
+_ERR_INSTALL = "den hook install"
 
 # Marker embedded in every den-managed hook command so install/list/remove can
 # find and replace exactly the entries den owns, leaving foreign hooks alone.
@@ -190,17 +199,17 @@ def _compose(den_dir: Path) -> str:
     """
     blocks: list[str] = []
 
-    imprint = _imprint_path(den_dir)
-    if imprint.is_file():
-        text = imprint.read_text(encoding="utf-8").strip()
+    # Guarded reads: a repo-shipped symlink at .den/imprint.md or .den/memory.md
+    # would otherwise inject an arbitrary file (an ssh key, an auth.json) into the
+    # model's context every turn. A refused read yields nothing and says so once.
+    for tag, path in (
+        ("imprint", _imprint_path(den_dir)),
+        ("memory", _memory_path(den_dir)),
+    ):
+        raw = _read_guarded_text(den_dir, path, _ERR_HOOK)
+        text = (raw or "").strip()
         if text:
-            blocks.append(f"<den:imprint>\n{text}\n</den:imprint>")
-
-    mem = _memory_path(den_dir)
-    if mem.is_file():
-        text = mem.read_text(encoding="utf-8").strip()
-        if text:
-            blocks.append(f"<den:memory>\n{text}\n</den:memory>")
+            blocks.append(f"<den:{tag}>\n{text}\n</den:{tag}>")
 
     return "\n\n".join(blocks)
 
@@ -349,12 +358,29 @@ def _parse_run_args(
 # --------------------------------------------------------------------------- #
 
 
-def _resolve_config(spec: dict, override: str | None) -> Path:
+def _resolve_config(spec: dict, override: str | None) -> Path | None:
+    """The config file/dir to operate on, or None (after one line on stderr) when
+    the workspace-relative default is unusable.
+
+    An explicit --config is the user's own choice and is taken as given. The
+    default is workspace-relative, so it must STAY in the workspace: a cloned repo
+    that ships `.claude` (or `.claude/settings.json`) as a symlink would otherwise
+    make install read-modify-write the user's GLOBAL hook config through it.
+    """
     if override:
         return Path(override).expanduser()
-    # config is a workspace-relative path; resolve against the current dir so
-    # hooks land in the project being set up (alongside its .den/).
-    return (Path.cwd() / spec["config"]).resolve()
+    cwd = Path.cwd()
+    config = cwd / spec["config"]
+    bad = _symlink_component(cwd, config)
+    if bad is not None:
+        print(
+            f"{_ERR_HOOK}: refusing {config}: {bad} is a symlink "
+            "(the workspace config must stay in the workspace)",
+            file=sys.stderr,
+        )
+        return None
+    # No symlink component left, so resolve() only normalizes the path.
+    return config.resolve()
 
 
 def _display_config(spec: dict, config: Path) -> Path:
@@ -569,6 +595,12 @@ def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> None:
     config.mkdir(parents=True, exist_ok=True)
     for generic, native in spec["events"].items():
         script = config / _cline_script_name(native)
+        if script.is_symlink():
+            # Writing through it would land outside the hooks dir; a repo can ship
+            # this file, so never follow it (a symlinked target that happens to
+            # carry the marker would otherwise pass the den-managed check below).
+            print(f"{_ERR_INSTALL}: {script} is a symlink; skipping", file=sys.stderr)
+            continue
         if script.exists() and _MARKER not in script.read_text(
             encoding="utf-8", errors="ignore"
         ):
@@ -638,13 +670,15 @@ def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> N
     # files (no `den hook run`), so it only needs the dir, not a baked command.
     rules = _clinerules_dir(den_dir)
     rules.mkdir(parents=True, exist_ok=True)
-    imprint = _imprint_path(den_dir)
-    if imprint.is_file():
+    text = _read_guarded_text(den_dir, _imprint_path(den_dir), _ERR_INSTALL)
+    if text is not None:
         # The imprint rule is also the cline-cli marker mirror_to_clinerules gates
         # on, so write it BEFORE mirroring the memory.
-        (rules / _CLINERULES_IMPRINT).write_text(
-            _CLINERULES_RULE_HEADER + imprint.read_text(encoding="utf-8"),
-            encoding="utf-8",
+        _write_guarded(
+            rules,
+            rules / _CLINERULES_IMPRINT,
+            (_CLINERULES_RULE_HEADER + text).encode("utf-8"),
+            _ERR_INSTALL,
         )
     mirror_to_clinerules(den_dir)
 
@@ -685,11 +719,9 @@ def _seed_imprint(den_dir: Path) -> bool:
     path = _imprint_path(den_dir)
     if path.is_file():
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # newline="" keeps LF on Windows too, so the seeded file matches the bundled
+    # Bytes, so the seeded file keeps LF on Windows too and matches the bundled
     # LF content byte-for-byte (den's text artifacts are LF on every platform).
-    path.write_text(_DEFAULT_IMPRINT, encoding="utf-8", newline="")
-    return True
+    return _write_guarded(den_dir, path, _DEFAULT_IMPRINT.encode("utf-8"), _ERR_INSTALL)
 
 
 def _surface_existing_imprint(den_dir: Path) -> None:
@@ -699,19 +731,43 @@ def _surface_existing_imprint(den_dir: Path) -> None:
     NESTED/ancestor .den, but the install dir's own imprint is still trusted, so
     surface it here and let the user see what they are about to make authoritative."""
     path = _imprint_path(den_dir)
-    if not path.is_file():
-        return
-    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    text = (
+        _read_guarded_text(den_dir, path, _ERR_INSTALL, errors="replace") or ""
+    ).strip()
     if not text:
         return
     print(
-        f"den hook install: using the existing imprint at {path}.\n"
+        f"{_ERR_INSTALL}: using the existing imprint at {path}.\n"
         "  It is injected every turn as standing directives -- verify you trust "
         "it (e.g. if it came from a checked-out repo, not you):",
         file=sys.stderr,
     )
     for line in text.splitlines():
         print(f"  | {line}", file=sys.stderr)
+
+
+def _surface_existing_memory(den_dir: Path) -> None:
+    """Show a pre-existing memory file and its history at install time.
+
+    `_compose` injects .den/memory.md every turn exactly like the imprint, and
+    install pins whatever .den/ is already here -- so a memory.md (and history)
+    that came with a checked-out repo is instruction injection the user has never
+    seen. First line, size and snapshot count is enough to make them look.
+    """
+    mem = _memory_path(den_dir)
+    text = _read_guarded_text(den_dir, mem, _ERR_INSTALL, errors="replace") or ""
+    snaps = len(_snapshots(den_dir))
+    if not text.strip() and not snaps:
+        return
+    print(
+        f"{_ERR_INSTALL}: using the existing memory at {mem} "
+        f"({len(text.encode('utf-8'))} bytes, {snaps} snapshot(s) in "
+        f"{_history_dir(den_dir)}) -- it is injected every turn:",
+        file=sys.stderr,
+    )
+    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if first:
+        print(f"  | {first[:80]}", file=sys.stderr)
 
 
 def _pick_tools_interactive() -> list[str] | None:
@@ -752,6 +808,9 @@ def _cmd_install(argv: list[str]) -> int:
         print(f"seeded {_imprint_path(den_dir)}", file=sys.stderr)
     else:
         _surface_existing_imprint(den_dir)
+    # Unconditional: a repo can ship memory.md without an imprint.md, and then the
+    # seeded-imprint branch above would say nothing about it.
+    _surface_existing_memory(den_dir)
 
     rc = 0
     for tool in tools:
@@ -766,6 +825,9 @@ def _cmd_install(argv: list[str]) -> int:
             rc = 1
             continue
         config = _resolve_config(spec, override)
+        if config is None:  # symlinked workspace config: refuse, write nothing
+            rc = 1
+            continue
         handlers[0](tool, spec, config, den_dir)
         print(
             f"installed {tool} hooks -> {_display_config(spec, config)}",
@@ -783,7 +845,10 @@ def _cmd_list(argv: list[str]) -> int:
         handlers = _FORMATS.get(spec.get("format", ""))
         if handlers is None:
             continue
-        for line in handlers[1](tool, spec, _resolve_config(spec, override)):
+        config = _resolve_config(spec, override)
+        if config is None:
+            continue
+        for line in handlers[1](tool, spec, config):
             print(line)
     return 0
 
@@ -792,18 +857,22 @@ def _cmd_remove(argv: list[str]) -> int:
     tools, override = _parse_tool_args(argv, default_all=True)
     if tools is None:
         return 2
+    rc = 0
     for tool in tools:
         spec = _TOOLS[tool]
         handlers = _FORMATS.get(spec.get("format", ""))
         if handlers is None:
             continue
         config = _resolve_config(spec, override)
+        if config is None:  # symlinked workspace config: refuse, touch nothing
+            rc = 1
+            continue
         handlers[2](tool, spec, config)
         print(
             f"removed den hooks from {tool} -> {_display_config(spec, config)}",
             file=sys.stderr,
         )
-    return 0
+    return rc
 
 
 def _cmd_imprint(argv: list[str]) -> int:
