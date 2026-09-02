@@ -42,6 +42,34 @@ def test_uninstall_removes_a_no_den_cli_install(tmp_path, monkeypatch):
     assert not (denfree / "skills").exists()
 
 
+def test_uninstall_prunes_pycache_left_by_running_the_scripts(tmp_path, monkeypatch):
+    # The skills tell the model to run den's deployed shared/scripts/*.py by
+    # absolute path; they import _common, so CPython writes a __pycache__ next
+    # to them. It is den's own residue, but it is not staged, so it used to
+    # block the prune and strand the whole skill directory.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    _install(tmp_path)
+    scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
+    assert (scripts / "_common.py").is_file()  # the import that makes the cache
+    cache = scripts / "__pycache__"
+    cache.mkdir()
+    (cache / "_common.cpython-312.pyc").write_bytes(b"\x00fake bytecode")
+    assert uninstall_main(["skills", "--target", str(tmp_path), "--yes"]) == 0
+    assert not (tmp_path / "skills").exists()
+
+
+def test_uninstall_keeps_pycache_holding_foreign_files(tmp_path, monkeypatch):
+    # only compiled bytecode is treated as den's residue
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    _install(tmp_path)
+    cache = tmp_path / "skills" / "coding" / "shared" / "scripts" / "__pycache__"
+    cache.mkdir()
+    mine = cache / "notes.txt"
+    mine.write_text("mine\n")
+    assert uninstall_main(["skills", "--target", str(tmp_path), "--yes"]) == 0
+    assert mine.is_file()
+
+
 def test_uninstall_prunes_emptied_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path)

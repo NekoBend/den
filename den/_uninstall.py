@@ -14,6 +14,7 @@ mirroring `den install`.
 from __future__ import annotations
 
 import contextlib
+import shutil
 import sys
 from pathlib import Path
 
@@ -172,12 +173,32 @@ class _Remover:
         _ui.say(f"removed {len(delete)} file(s); unwired {len(unwire)} rc file(s).")
         return 0
 
+    @staticmethod
+    def _drop_pycache(cur: Path) -> None:
+        """Remove `cur/__pycache__` when it is all that is left of `cur`.
+
+        The skills tell the model to run den's deployed shared/scripts/*.py by
+        absolute path, and those import `_common`, so CPython writes a
+        `__pycache__/` next to them. It is residue of den's own files, never
+        staged and never the user's, but it would block the prune and leave a
+        gutted skill directory behind. Only compiled bytecode is dropped."""
+        try:
+            rest = list(cur.iterdir())
+            if len(rest) != 1 or rest[0].name != "__pycache__" or not rest[0].is_dir():
+                return
+            if any(p.suffix != ".pyc" or not p.is_file() for p in rest[0].iterdir()):
+                return  # something other than bytecode lives there; leave it
+        except OSError:
+            return
+        shutil.rmtree(rest[0], ignore_errors=True)
+
     def _prune(self, deleted: list[Path]) -> None:
         home = Path.home()
         # deepest first, so a dir is only checked after its children were emptied
         for f in sorted(deleted, key=lambda p: len(p.parts), reverse=True):
             cur = f.parent
             while cur not in self._boundaries and cur not in {home, cur.parent}:
+                self._drop_pycache(cur)
                 try:
                     next(cur.iterdir())
                     break  # not empty
