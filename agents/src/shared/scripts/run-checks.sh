@@ -63,7 +63,7 @@ project_only() {
 # Walk up from the file the way ruff itself discovers config (nearest
 # .ruff.toml / ruff.toml / pyproject.toml with [tool.ruff] wins). When a
 # project config exists we pass NO extra flags, so the project's own settings
-# are never overridden; only a config-less file gets den's defaults below.
+# are never overridden; only a config-less file gets the defaults below.
 _py_has_ruff_config() {
   d=$(cd "$(dirname "$1")" && pwd)
   while :; do
@@ -124,8 +124,8 @@ case "$ext" in
     project_only "typecheck" "javac requires classpath context; run a build (gradle/maven) in project root"
     ;;
   ps1|psm1)
-    # PSScriptAnalyzer at Error severity is the same bar den's own CI applies
-    # to shell/pwsh. Parse errors surface as their own check so a syntax break
+    # PSScriptAnalyzer at Error severity is the bar the originating repository's
+    # CI applies to its PowerShell. Parse errors surface as their own check so a syntax break
     # reads as one line, not a wall of analyzer output. The file path travels
     # in an env var, never interpolated into the pwsh command string, so a
     # hostile filename cannot become pwsh code.

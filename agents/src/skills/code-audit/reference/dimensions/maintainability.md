@@ -40,8 +40,8 @@ here the code is assumed to work, and the question is how well it reads.
 
 - the formatter and linter catch style drift
   and some complexity signals (SKILL.md Step 3 names them per language).
-  Bare `ruff check` never reports a missing docstring: when the file has
-  no ruff config of its own, run
+  ruff's default rule set leaves the docstring rules off: unless a
+  discovered ruff configuration already selects D101-D103, run
   `ruff check --extend-select D101,D102,D103 <file>` to flag public
   symbols without one.
 - Read for intent: would a new contributor understand this

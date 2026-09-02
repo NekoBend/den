@@ -85,3 +85,16 @@ def test_preamble_only_where_shared_ships(tmp_path):
     for skill in (p for p in tmp_path.iterdir() if p.is_dir()):
         text = (skill / "SKILL.md").read_text(encoding="utf-8")
         assert (note in text) == (skill / "shared").is_dir(), skill.name
+
+
+DEN_WORD = re.compile(r"\bden('s)?\b")
+
+
+def test_copies_never_mention_den_in_any_file(tmp_path):
+    _portable.build_tree(tmp_path)
+    for path in tmp_path.rglob("*"):
+        if not path.is_file() or path.parent == tmp_path:
+            continue  # the top-level README explains the substitutions by name
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        hit = DEN_WORD.search(text)
+        assert hit is None, f"{path.relative_to(tmp_path)}: {hit.group(0)!r}"

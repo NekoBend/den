@@ -113,8 +113,9 @@ not appear in new code - it is PowerShell's `shell=True`.
 ## 8. When the toolchain runs this file
 
 The checks for `.ps1` / `.psm1` are a syntax parse
-(`[System.Management.Automation.Language.Parser]::ParseFile`) followed by
-`Invoke-ScriptAnalyzer -Severity Error`; both degrade to SKIPPED when pwsh
-or PSScriptAnalyzer is absent - say so rather than claiming a check that
-did not run. `find-references.py` resolves `function` / `filter` /
+(`[System.Management.Automation.Language.Parser]::ParseFile`), which needs
+only pwsh, followed by `Invoke-ScriptAnalyzer -Severity Error`, which needs
+pwsh plus the PSScriptAnalyzer module; each degrades to SKIPPED when its
+own prerequisite is absent - say so rather than claiming a check that did
+not run. `find-references.py` resolves `function` / `filter` /
 `class` / `enum` definitions with no pwsh dependency.
