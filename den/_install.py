@@ -145,6 +145,23 @@ class _Stager(Protocol):
     def stage(self, dest: Path, content: bytes) -> None: ...
 
 
+def _chmod_no_follow(path: Path, mode: int) -> None:
+    """chmod, but never through a symlink.
+
+    chmod FOLLOWS a link, so a symlinked destination would hand its outside
+    target the mode -- and every caller reaches here on the byte-identical
+    repair path, where den deployed nothing at all. A 0o600 file elsewhere must
+    not become world-executable because den decided nothing needed doing. The
+    link is the user's own arrangement; den leaves it and its target alone.
+
+    One helper, shared by the staged writes and _shell.py's ~/.local/bin repair,
+    so the rule cannot drift between the two.
+    """
+    if path.is_symlink():
+        return
+    path.chmod(mode)
+
+
 class _Writer:
     """Collect (dest, content) writes, then commit them. New and byte-identical
     files are written silently; files that already exist and DIFFER are listed
@@ -171,14 +188,9 @@ class _Writer:
         instead of staying broken forever -- the same repair _shell.py makes
         for ~/.local/bin.
 
-        Never through a symlink: chmod follows one, so a symlinked destination
-        would hand its OUTSIDE target 0o755 -- on the byte-identical path, with
-        nothing deployed at all. The link is the user's own arrangement; den
-        leaves it and its target alone."""
-        if dest.is_symlink():
-            return
+        Never through a symlink -- see _chmod_no_follow."""
         if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
-            dest.chmod(0o755)
+            _chmod_no_follow(dest, 0o755)
 
     def commit(self) -> int:
         """Write the staged files. Returns the number of differing files that

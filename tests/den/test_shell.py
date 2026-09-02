@@ -672,3 +672,26 @@ def test_clone_zsh_plugins_skips_existing(tmp_path, monkeypatch):
     clones = [c[-1] for c in calls if c[:2] == ["git", "clone"]]
     assert not any("zsh-autosuggestions" in t for t in clones)  # already present
     assert any("zsh-syntax-highlighting" in t for t in clones)  # still cloned
+
+
+def test_install_shell_bin_does_not_chmod_through_a_symlink(
+    tmp_path, monkeypatch, symlink
+):
+    """The ~/.local/bin repair reaches chmod on the byte-identical path, where
+    nothing is deployed. chmod follows a link, so a symlinked entry there used to
+    hand its OUTSIDE target 0o755."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell", "--bin"]) == 0
+    local_bin = tmp_path / ".local" / "bin"
+    name, content = next(iter(_bundled_posix_bin().items()))
+
+    outside = tmp_path / "outside-tool"
+    outside.write_bytes(content)  # byte-identical, so the repair path is taken
+    outside.chmod(0o600)
+    (local_bin / name).unlink()
+    symlink(outside, local_bin / name)
+
+    assert install_main(["shell", "--bin"]) == 0
+    assert outside.stat().st_mode & 0o777 == 0o600, "the link's target is untouched"
+    assert (local_bin / name).is_symlink(), "and the link itself is left alone"

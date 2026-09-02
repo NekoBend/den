@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 from ._content import shell_dir
-from ._install import _Stager, _Writer
+from ._install import _chmod_no_follow, _Stager, _Writer
 
 _COMMENT = "# ===== den ====="
 _PWSH_PROFILE = "Microsoft.PowerShell_profile.ps1"
@@ -349,7 +349,10 @@ def install_shell(  # ruff: ignore[too-many-locals]  # one local per flag
             for f in src_bin.iterdir():
                 dst = local_bin / f.name
                 if f.is_file() and dst.is_file() and dst.read_bytes() == f.read_bytes():
-                    dst.chmod(0o755)
+                    # _chmod_no_follow, not dst.chmod: a symlinked entry here
+                    # would otherwise get its outside target chmod'd 0o755 on
+                    # this very path, where nothing was deployed.
+                    _chmod_no_follow(dst, 0o755)
 
     print("wiring shell rc files")
     if shutil.which("bash") or (home / ".bashrc").is_file():

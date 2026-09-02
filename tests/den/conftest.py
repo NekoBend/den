@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 # on Windows too.
 _WINDOWS_SKIP = {
     # shell: POSIX config/bin deployment (mock _windows=False) + PosixPath
+    "test_install_shell_bin_does_not_chmod_through_a_symlink",
     "test_install_shell_bin_flag_installs_executables",
     "test_install_shell_bin_prompt_yes_installs",
     "test_install_shell_deploys_both_families",
