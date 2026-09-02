@@ -194,6 +194,7 @@ function strip-audio {
         $dir  = [IO.Path]::GetDirectoryName($In)
         $Out  = [IO.Path]::Combine($dir, "${base}_nosound${ext}")
     }
+    if (-not (_AssertNoExtraPos 'strip-audio' $pos 2)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In -an @extra $Out
     } else {
@@ -211,6 +212,7 @@ function thumbnail {
     $In   = $pos[0]
     $Time = if ($pos.Count -gt 1) { $pos[1] } else { '00:00:01' }
     $Out  = if ($pos.Count -gt 2) { $pos[2] } else { [IO.Path]::ChangeExtension($In, '.jpg') }
+    if (-not (_AssertNoExtraPos 'thumbnail' $pos 3)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In -ss $Time @extra $Out
     } else {

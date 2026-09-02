@@ -219,6 +219,7 @@ strip-audio() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}_nosound.${_in##*.}"
+  _ff_no_extra strip-audio "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" -an "$@" "$_out"
   else
@@ -239,6 +240,7 @@ thumbnail() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.jpg"
+  _ff_no_extra thumbnail "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" -ss "$_t" "$@" "$_out"
   else

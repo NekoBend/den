@@ -43,6 +43,9 @@ function mkfile {
   } else {
     [int64]$Size
   }
+  # .NET resolves relative paths against the process directory, which
+  # Set-Location never updates; resolve against the PowerShell location first.
+  $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
   $fs = [System.IO.File]::Create($Path)
   $fs.SetLength($bytes)
   $fs.Close()
@@ -107,7 +110,9 @@ function archive {
     '\.tar\.xz$|\.txz$'    { tar cJf $Output @Sources; break }
     '\.tar\.zst$'           { tar --zstd -cf $Output @Sources; break }
     '\.tar$'                { tar cf $Output @Sources; break }
-    '\.zip$'                { Compress-Archive -Path @Sources -DestinationPath $Output -Force; break }
+    # -Path takes the array itself; splatting after a named parameter binds only
+    # the first element and leaves the rest as unbindable positionals.
+    '\.zip$'                { Compress-Archive -Path $Sources -DestinationPath $Output -Force; break }
     '\.7z$'                 { & 7z a $Output @Sources; break }
     default                 { Write-Error "unsupported format '$Output'" }
   }

@@ -416,6 +416,19 @@ printf 'not a zip' > "$WORK/broken.zip"
 err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/broken.zip' '$WORK/two.tar.gz'" 2>&1 >/dev/null)
 assert_contains "pwsh/extract counts a corrupt zip as failed" "1 of 2 archives failed" "$err"
 assert_exists "pwsh/extract corrupt zip does not stop the next archive" "$WORK/multi/second/file2.txt"
+
+echo "[pwsh] mkfile resolves a relative path against the PowerShell location"
+# [IO.File]::Create resolves against the process directory (where pwsh was
+# launched), which Set-Location never updates: the file must land in $WORK/multi.
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; mkfile 512 rel.bin" >/dev/null
+assert_exists "pwsh/mkfile relative path follows Set-Location" "$WORK/multi/rel.bin"
+
+echo "[pwsh] archive zip takes several sources"
+rm -rf "$WORK/zipped" && mkdir -p "$WORK/zipped"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'both.zip' src second" 2>/dev/null
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/zipped'; extract '$WORK/both.zip'" >/dev/null 2>&1
+assert_exists "pwsh/archive zip first source" "$WORK/zipped/src/file1.txt"
+assert_exists "pwsh/archive zip second source" "$WORK/zipped/second/file2.txt"
 rm -rf "$WORK/broken.zip" "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
 echo "[pwsh] digest several files"
