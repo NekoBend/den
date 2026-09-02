@@ -167,6 +167,17 @@ archive() {
                 echo "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" >&2
                 return 1
             fi
+            # The compressor's output is opened before it reads the source,
+            # so an output that IS the source leaves a compressed empty stream
+            # where the file this branch promised to keep used to be, and it
+            # exited 0 while doing it. '-ef' compares device and inode, so a
+            # './' spelling or a symlink aliasing the source is caught too.
+            # zstd refuses this itself; gzip/bzip2/xz do not.
+            # shellcheck disable=SC3013  # -ef: not in POSIX, but in dash/bash/zsh
+            if [ "$out" -ef "$1" ]; then
+                echo "archive: output '$out' is the source file" >&2
+                return 1
+            fi
             # The tool check comes before the redirection below, so a missing
             # compressor leaves no truncated output behind.
             _ar_have archive "$_ar_tool" || return 1

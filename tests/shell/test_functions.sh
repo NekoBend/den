@@ -383,6 +383,24 @@ for _ext in $SINGLE_FMTS; do
     assert_not_exists "bash/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
 done
 
+# `archive f.gz f.gz` opened f.gz for the compressor's output before reading
+# it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
+# exited 0 doing it. Every spelling of the same file has to be refused, the
+# symlink alias included, and the file left exactly as it was.
+echo "[bash] archive single-file refuses an output that is the source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'ORIGINAL' > "$WORK/one/self.$_ext"
+    ln -sf "self.$_ext" "$WORK/one/alias.$_ext"
+    for _spell in "self.$_ext" "./self.$_ext" "alias.$_ext"; do
+        err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_spell' 'self.$_ext'")
+        assert_contains "bash/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
+        assert_eq "bash/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
+    done
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'self.$_ext' 'self.$_ext'" 2>/dev/null
+    assert_eq "bash/archive .$_ext output is the source exits 1" "1" "$?"
+done
+
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
 actual=$(run_bash "$FUNCTIONS_SH" "extract '$WORK/test.foo' 2>&1")
@@ -659,6 +677,24 @@ for _ext in $SINGLE_FMTS; do
     assert_eq "zsh/archive .$_ext missing source exits 1" "1" "$?"
     assert_eq "zsh/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
     assert_not_exists "zsh/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
+done
+
+# `archive f.gz f.gz` opened f.gz for the compressor's output before reading
+# it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
+# exited 0 doing it. Every spelling of the same file has to be refused, the
+# symlink alias included, and the file left exactly as it was.
+echo "[zsh] archive single-file refuses an output that is the source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'ORIGINAL' > "$WORK/one/self.$_ext"
+    ln -sf "self.$_ext" "$WORK/one/alias.$_ext"
+    for _spell in "self.$_ext" "./self.$_ext" "alias.$_ext"; do
+        err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_spell' 'self.$_ext'")
+        assert_contains "zsh/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
+        assert_eq "zsh/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
+    done
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'self.$_ext' 'self.$_ext'" 2>/dev/null
+    assert_eq "zsh/archive .$_ext output is the source exits 1" "1" "$?"
 done
 
 echo "[zsh] path"
@@ -985,6 +1021,22 @@ for _ext in $SINGLE_FMTS; do
     assert_contains "pwsh/archive .$_ext missing source usage" "$SINGLE_USAGE" "$err"
     assert_eq "pwsh/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
     assert_not_exists "pwsh/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
+done
+
+# `archive f.gz f.gz` opened f.gz for the compressor's output before reading
+# it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
+# exited 0 doing it. Every spelling of the same file has to be refused, the
+# symlink alias included, and the file left exactly as it was.
+echo "[pwsh] archive single-file refuses an output that is the source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'ORIGINAL' > "$WORK/one/self.$_ext"
+    ln -sf "self.$_ext" "$WORK/one/alias.$_ext"
+    for _spell in "self.$_ext" "./self.$_ext" "alias.$_ext"; do
+        err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_spell' 'self.$_ext'")
+        assert_contains "pwsh/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
+        assert_eq "pwsh/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
+    done
 done
 
 echo "[pwsh] extract unsupported format"

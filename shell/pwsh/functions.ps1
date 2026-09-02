@@ -63,6 +63,23 @@ function _ArHave([string]$Caller, [string]$Tool) {
   return $false
 }
 
+# _ArRealPath → the filesystem path $Path names, with one symlink hop followed.
+# Used to tell whether archive's output and its source are the same file.
+# ResolveLinkTarget is 7.2+, so the link is read off .Target, which every pwsh
+# 7 has (7.0 types it string[], later ones string; @()[0] takes either). A
+# missing file or a broken link just yields the normalised path.
+function _ArRealPath([string]$Path) {
+  $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+  $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+  if ($item -and $item.Target) {
+    $target = @($item.Target)[0]
+    if ($target) {
+      $full = [System.IO.Path]::GetFullPath($target, [System.IO.Path]::GetDirectoryName($full))
+    }
+  }
+  return $full
+}
+
 # _ArCompressTo → run a stdout compressor and put its raw bytes in $Dest.
 # gzip/bzip2/xz have no -o, and PowerShell only redirects a native command's
 # stdout byte-for-byte from 7.4 on: before that the text pipeline re-encodes
@@ -204,8 +221,23 @@ function archive {
         Write-Error "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>"
         break
       }
-      if (-not (_ArHave 'archive' $tool)) { break }
       $src = $Sources[0]
+      # The compressor's output is opened before it reads the source, so an
+      # output that IS the source leaves a compressed empty stream where the
+      # file this branch promised to keep used to be, and it reported success
+      # while doing it. Paths are compared as the provider resolves them, one
+      # symlink hop followed, so './out.gz' and a link aliasing the source are
+      # caught too. Only Windows compares case-insensitively.
+      $sameFile = if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+        (_ArRealPath $Output) -eq  (_ArRealPath $src)
+      } else {
+        (_ArRealPath $Output) -ceq (_ArRealPath $src)
+      }
+      if ($sameFile) {
+        Write-Error "archive: output '$Output' is the source file"
+        break
+      }
+      if (-not (_ArHave 'archive' $tool)) { break }
       # '--' stops each tool's option parsing (all four support it), so a
       # source named like a switch reaches it as a path, as in the tar branches.
       if ($tool -eq 'zstd') {
