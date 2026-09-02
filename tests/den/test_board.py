@@ -231,9 +231,13 @@ def test_tail_lines_boundaries(tmp_path):
     full = [e.rstrip("\n") for e in entries]
     line = len(entries[0])
 
-    assert _board._tail_lines(path, 10_000) == full
-    assert _board._tail_lines(path, line * 2 + 10) == full[3:], "partial dropped"
-    assert _board._tail_lines(path, line * 2) == full[3:], "exact boundary kept"
+    assert _board._tail_lines(tmp_path, path, 10_000) == full
+    assert _board._tail_lines(tmp_path, path, line * 2 + 10) == full[3:], (
+        "partial dropped"
+    )
+    assert _board._tail_lines(tmp_path, path, line * 2) == full[3:], (
+        "exact boundary kept"
+    )
 
 
 def test_claim_lock_is_exclusive(tmp_path):
@@ -523,3 +527,69 @@ def test_main_serve_path_writes_lock_and_reprints(tmp_path, capsys):
 
     assert _board.main(["--dir", str(tmp_path)]) == 0
     assert "already running" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# symlink hardening: a cloned repo ships .den/board/, so a symlink there would
+# turn every board write into an append to a file outside the workspace.
+# --------------------------------------------------------------------------- #
+
+_OUTSIDE_TEXT = "ORIGINAL\n"
+
+
+def _outside(tmp_path):
+    path = tmp_path / "outside.log"
+    path.write_text(_OUTSIDE_TEXT)
+    return path
+
+
+def test_agent_append_refuses_symlinked_file(tmp_path, capsys, symlink):
+    outside = _outside(tmp_path)
+    proj = tmp_path / "repo"
+    (proj / ".den" / "board").mkdir(parents=True)
+    symlink(outside, _board._agent_path(proj))
+    assert _board.main(["task", "--dir", str(proj), "do the thing"]) == 1
+    assert outside.read_text() == _OUTSIDE_TEXT
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def test_agent_append_refuses_symlinked_board_dir(tmp_path, symlink):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    symlink(elsewhere, proj / ".den" / "board")
+    assert _board.main(["task", "--dir", str(proj), "do the thing"]) == 1
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_report_post_refuses_symlinked_reports_file(served, tmp_path, symlink):
+    _root, _server, port = served
+    outside = _outside(tmp_path)
+    reports = _board._reports_path(tmp_path)
+    reports.unlink(missing_ok=True)
+    symlink(outside, reports)
+    status, _body = _request(port, "POST", "/api/report", {"button": "bug"})
+    assert status == 500
+    assert outside.read_text() == _OUTSIDE_TEXT
+
+
+def test_tail_lines_ignores_symlinked_file(tmp_path, symlink):
+    outside = tmp_path / "secrets.txt"
+    outside.write_text('{"leaked": true}\n')
+    proj = tmp_path / "repo"
+    (proj / ".den" / "board").mkdir(parents=True)
+    reports = _board._reports_path(proj)
+    symlink(outside, reports)
+    assert _board._tail_lines(proj, reports, 10_000) == []
+
+
+def test_scaffold_refuses_symlinked_config(tmp_path, capsys, symlink):
+    outside = tmp_path / "elsewhere.json"
+    outside.write_text('{"title": "planted"}\n')
+    proj = tmp_path / "repo"
+    (proj / ".den" / "board").mkdir(parents=True)
+    symlink(outside, proj / ".den" / "board" / "board.json")
+    config = _board.ensure_scaffold(proj)
+    assert config["title"] is None, "the planted config is not used"
+    assert "is a symlink" in capsys.readouterr().err

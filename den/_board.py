@@ -51,7 +51,7 @@ from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
-from ._memory import _find_den_dir
+from ._memory import _find_den_dir, _symlink_component
 
 _PREFERRED_PORT = 8484
 _PORT_TRIES = 20
@@ -93,6 +93,44 @@ def _agent_path(root: Path) -> Path:
     return _board_dir(root) / "agent.jsonl"
 
 
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _refuse_symlink(root: Path, path: Path) -> bool:
+    """True (after one line on stderr) when a symlink at `.den`, `.den/board` or
+    the board file itself makes `path` unusable.
+
+    A cloned repo ships `.den/board/`, so a symlink planted there would turn every
+    board append into an append to a file outside the workspace (and every read
+    into serving one over localhost). den never follows one.
+    """
+    bad = _symlink_component(root / ".den", path)
+    if bad is None:
+        return False
+    print(f"den board: refusing {path}: {bad} is a symlink", file=sys.stderr)
+    return True
+
+
+def _append_line(root: Path, path: Path, line: str) -> bool:
+    """Append one line to a board file, refusing symlinks. False when refused.
+
+    One O_APPEND write: atomic on POSIX. On Windows the CRT emulates append
+    with seek+write, so two simultaneous appends can still race; accepted for
+    a personal tool - the reader drops a torn line rather than crashing.
+    O_NOFOLLOW narrows the check-to-open window where the platform has it
+    (Windows does not; there the is_symlink check above is the whole guard).
+    """
+    if _refuse_symlink(root, path):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | _NOFOLLOW)
+    try:
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True
+
+
 def _new_id() -> str:
     return secrets.token_hex(4)
 
@@ -108,6 +146,8 @@ def _derived_id(line: str) -> str:
 def ensure_scaffold(root: Path) -> dict[str, object]:
     """Create .den/board/board.json with defaults; never clobber edits."""
     cfg_path = _board_dir(root) / "board.json"
+    if _refuse_symlink(root, cfg_path):
+        return dict(_DEFAULT_CONFIG)
     if not cfg_path.is_file():
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
         cfg_path.write_text(
@@ -135,9 +175,13 @@ def _split_jsonl(data: bytes) -> list[str]:
     return lines
 
 
-def _tail_lines(path: Path, max_bytes: int) -> list[str]:
+def _tail_lines(root: Path, path: Path, max_bytes: int) -> list[str]:
     """Last complete lines within the trailing max_bytes of the file, so a
-    long-lived board never loads an unbounded file per 5s poll."""
+    long-lived board never loads an unbounded file per 5s poll. A symlinked
+    board file reads as empty: the page must not serve an outside file. Silent,
+    because the page polls this every 5s; the appends report instead."""
+    if _symlink_component(root / ".den", path) is not None:
+        return []
     try:
         with path.open("rb") as f:
             f.seek(0, 2)
@@ -354,7 +398,8 @@ class _Handler(BaseHTTPRequestHandler):
             limit = max(1, min(int(raw_limit), _MAX_LIST_LIMIT))
         except ValueError:
             limit = 100
-        lines = _tail_lines(_reports_path(self.board.board_root), _MAX_LIST_BYTES)
+        root = self.board.board_root
+        lines = _tail_lines(root, _reports_path(root), _MAX_LIST_BYTES)
         reports: list[object] = []
         for line in lines[-limit:]:
             with suppress(json.JSONDecodeError):
@@ -363,13 +408,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _list_agent(self) -> dict[str, object]:
         root = self.board.board_root
-        lines = _tail_lines(_agent_path(root), _MAX_LIST_BYTES)
+        lines = _tail_lines(root, _agent_path(root), _MAX_LIST_BYTES)
         # Settlement is joined HERE, over the full reports tail window - the
         # page's 100-report slice must never decide whether a task is open
         # (a reaction older than 100 reports would "reopen" it and invite a
         # second, conflicting reaction).
         reactions: dict[str, dict[str, object]] = {}
-        for line in _tail_lines(_reports_path(root), _MAX_LIST_BYTES):
+        for line in _tail_lines(root, _reports_path(root), _MAX_LIST_BYTES):
             with suppress(json.JSONDecodeError):
                 rep = json.loads(line)
                 if (
@@ -451,11 +496,12 @@ class _Handler(BaseHTTPRequestHandler):
         if isinstance(re_id, str) and re_id.strip():
             entry["re"] = re_id.strip()
         line = json.dumps(entry, ensure_ascii=False) + "\n"
-        path = _reports_path(self.board.board_root)
+        root = self.board.board_root
         with self.board.append_lock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line)
+            stored = _append_line(root, _reports_path(root), line)
+        if not stored:
+            self._send_json(500, {"error": "report file refused"})
+            return
         note = f" {entry['text']}" if entry["text"] else ""
         print(f"[den board] {entry['ts']} [{entry['button']}]{note}", flush=True)
         self._send_json(200, {"ok": True, "id": entry["id"]})
@@ -485,7 +531,9 @@ def _usage() -> None:
     )
 
 
-def _append_agent(root: Path, entry_type: str, text: str, re_id: str | None) -> str:
+def _append_agent(
+    root: Path, entry_type: str, text: str, re_id: str | None
+) -> str | None:
     entry_id = _new_id()
     # Lone surrogates (surrogateescape-decoded argv bytes) survive
     # json.dumps but explode at the strict utf-8 file write - scrub first.
@@ -497,18 +545,9 @@ def _append_agent(root: Path, entry_type: str, text: str, re_id: str | None) -> 
     }
     if re_id is not None:
         entry["re"] = re_id.encode("utf-8", "replace").decode("utf-8")
-    path = _agent_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, ensure_ascii=False) + "\n"
-    # One O_APPEND write: atomic on POSIX. On Windows the CRT emulates
-    # append with seek+write, so two simultaneous appends can still race;
-    # accepted for a personal tool - the reader drops a torn line rather
-    # than crashing.
-    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY)
-    try:
-        os.write(fd, line.encode("utf-8"))
-    finally:
-        os.close(fd)
+    if not _append_line(root, _agent_path(root), line):
+        return None
     return entry_id
 
 
@@ -555,7 +594,10 @@ def _cmd_agent(entry_type: str, args: list[str]) -> int:  # ruff: ignore[too-man
         _usage()
         return 2
     resolved = (root or _find_den_dir(Path.cwd()).parent).resolve()
-    print(_append_agent(resolved, entry_type, text, re_id))
+    entry_id = _append_agent(resolved, entry_type, text, re_id)
+    if entry_id is None:  # symlinked board file: nothing was appended
+        return 1
+    print(entry_id)
     return 0
 
 
