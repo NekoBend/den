@@ -303,8 +303,14 @@ def test_install_keeps_modified_file_non_tty(tmp_path, monkeypatch):
     install_main(["skills", "--target", str(tmp_path)])
     skill = tmp_path / "skills" / "coding" / "SKILL.md"
     skill.write_text(skill.read_text() + "\nLOCAL EDIT\n")
-    install_main(["skills", "--target", str(tmp_path)])  # non-TTY -> skip changed
+    # non-TTY -> the changed file is skipped, and the run says so with its exit
+    # code: `den upgrade --refresh` reads it, and a refresh that deployed none
+    # of the new version's files must not report success.
+    assert install_main(["skills", "--target", str(tmp_path)]) == 1
     assert "LOCAL EDIT" in skill.read_text()
+    # --force is the way through, and it succeeds
+    assert install_main(["skills", "--target", str(tmp_path), "--force"]) == 0
+    assert "LOCAL EDIT" not in skill.read_text()
 
 
 def test_install_force_overwrites_modified(tmp_path, monkeypatch):
@@ -324,6 +330,18 @@ def test_install_interactive_overwrite_on_yes(tmp_path, monkeypatch):
     monkeypatch.setattr("den._ui.confirm", lambda *a, **k: True)
     install_main(["skills", "--target", str(tmp_path)])
     assert "CLOBBERED" not in skill.read_text()
+
+
+def test_install_interactive_decline_is_not_a_failure(tmp_path, monkeypatch):
+    # keeping a file because the user said "no" is their choice, not a failed
+    # deploy; only the unattended skip is reported as one
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    install_main(["skills", "--target", str(tmp_path)])
+    skill = tmp_path / "skills" / "coding" / "SKILL.md"
+    skill.write_text("MINE")
+    monkeypatch.setattr("den._ui.confirm", lambda *a, **k: False)
+    assert install_main(["skills", "--target", str(tmp_path)]) == 0
+    assert skill.read_text() == "MINE"
 
 
 def test_install_cline_parent_goes_to_cline_rules_dir(tmp_path, monkeypatch):

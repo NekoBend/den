@@ -558,8 +558,10 @@ def test_install_shell_bin_keeps_modified_file_content_and_mode(tmp_path, monkey
     mine = local_bin / "fixids"
     mine.write_text("#!/bin/sh\n# my own fixids\n")
     mine.chmod(0o600)
-    assert install_main(["shell", "--bin"]) == 0
-    # non-tty + differing file -> kept as-is: content AND mode untouched
+    # non-tty + differing file -> nothing deployed for it, so rc is non-zero
+    # (a scripted `den upgrade --refresh` must not read this as success)
+    assert install_main(["shell", "--bin"]) == 1
+    # the kept file is untouched: content AND mode
     assert mine.read_text() == "#!/bin/sh\n# my own fixids\n"
     if sys.platform != "win32":
         assert mine.stat().st_mode & 0o777 == 0o600

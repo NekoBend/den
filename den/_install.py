@@ -173,9 +173,14 @@ class _Writer:
         if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
             dest.chmod(0o755)
 
-    def commit(self) -> None:
+    def commit(self) -> int:
+        """Write the staged files. Returns the number of differing files that
+        were kept WITHOUT asking (the non-interactive skip), so a scripted
+        caller can exit non-zero instead of reporting a deploy that never
+        happened; an interactive "no" is the user's own choice and returns 0."""
         changed = [d for d, c in self._items if d.is_file() and d.read_bytes() != c]
         overwrite = True
+        silently_skipped = False
         if changed and not self.force:
             _ui.say(
                 "These files exist and differ from the bundled version:", style="yellow"
@@ -187,6 +192,7 @@ class _Writer:
             else:
                 print("  skipped (re-run with --force to overwrite)", file=sys.stderr)
                 overwrite = False
+                silently_skipped = True
         kept = 0
         for dest, content in self._items:
             if dest.is_file():
@@ -201,6 +207,7 @@ class _Writer:
             self._ensure_mode(dest)
         if kept:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
+        return kept if silently_skipped else 0
 
 
 def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
@@ -453,8 +460,7 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
         )
         processed.append(agents)
 
-    if not dry_run:
-        writer.commit()
+    skipped = writer.commit() if not dry_run else 0
 
     if codex_config:
         target = processed[0] if processed else Path("~/.agents/skills").expanduser()
@@ -468,7 +474,10 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             "<language_policy>, <work_discipline>). Re-run with --with-parent "
             "to install it into each tool's location."
         )
-    return 0
+    # A non-interactive run that kept differing files deployed nothing for them.
+    # Say so with the exit code: `den upgrade --refresh` (and any script) would
+    # otherwise read "success" from a run that left the old version in place.
+    return 1 if skipped else 0
 
 
 def _interactive() -> int:
@@ -565,8 +574,7 @@ def _install_cheatsheets(argv: list[str]) -> int:
     for f in files:
         writer.stage(dest_root / f.relative_to(src), f.read_bytes())
     print(f"installing cheatsheets -> {dest_root}")
-    writer.commit()
-    return 0
+    return 1 if writer.commit() else 0
 
 
 def _usage() -> None:
