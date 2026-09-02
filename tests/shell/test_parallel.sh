@@ -380,6 +380,22 @@ for sh in bash zsh; do
     assert_not_exists "$sh/prm -- -f removed the file" "$WORK/src/-f"
     assert_exists "$sh/prm -- -f left others" "$WORK/src/file1.txt"
 
+    echo "[$sh] prm: a DANGLING symlink named -f is refused too (-e follows links)"
+    setup_fixtures
+    ln -s "$WORK/does-not-exist" "$WORK/src/-f"
+    printf 'y\n' | $runner "$PARALLEL_SH" "cd '$WORK/src' && prm *" >/dev/null 2>&1
+    assert_failure "$sh/prm glob with dangling -f symlink refuses" "$?"
+    assert_exists "$sh/prm dangling -f: file1 kept" "$WORK/src/file1.txt"
+    err=$($runner_err "$PARALLEL_SH" "cd '$WORK/src' && prm *" </dev/null)
+    assert_contains "$sh/prm dangling -f names the ambiguity" "both a flag and an existing file" "$err"
+    printf 'y\n' | $runner "$PARALLEL_SH" "cd '$WORK/src' && prm -- -f" >/dev/null 2>&1
+    assert_success "$sh/prm -- removes the dangling -f symlink" "$?"
+    if [ -L "$WORK/src/-f" ]; then
+        echo "  FAIL: $sh/prm -- dangling -f symlink removed"; ERRORS+=("$sh/prm -- dangling -f symlink removed"); ((FAIL++)) || true
+    else
+        echo "  PASS: $sh/prm -- dangling -f symlink removed"; ((PASS++)) || true
+    fi
+
     echo "[$sh] prm: flags after the first path are paths; unknown option rejected"
     setup_fixtures
     : > "$WORK/src/-f"

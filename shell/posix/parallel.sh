@@ -25,9 +25,12 @@ _nproc() {
 #
 # GNU parallel joins the template words with spaces and hands the string to a
 # shell, so without -q a destination like "My Documents" became TWO cp
-# operands and "x;rm -rf y" executed the rm. -q quotes the template, which
-# makes this branch behave exactly like the xargs one (argv preserved, no
-# shell). Only GNU parallel is used: moreutils' `parallel` has different flags.
+# operands and "x;rm -rf y" executed the rm. -q shell-quotes every template
+# word before that join, so each word reaches the command as one argument and
+# metacharacters stay literal. The job still runs through a shell (xargs, by
+# contrast, exec()s the command directly); -q makes the template safe, it does
+# not remove the shell. Only GNU parallel is used: moreutils' `parallel` has
+# different flags.
 _parallel_exec() {
     local jobs="$1"
     shift
@@ -157,8 +160,9 @@ prm() {
                 # A file literally named -f (a mistyped `tar -f` leaves one)
                 # in an unprotected glob would arrive here first and silently
                 # skip the confirmation; refuse the ambiguity instead of
-                # guessing.
-                if [ -e "$1" ]; then
+                # guessing. -L as well as -e: -e follows symlinks, so a
+                # DANGLING symlink named -f would otherwise pass as absent.
+                if [ -e "$1" ] || [ -L "$1" ]; then
                     echo "prm: '$1' is both a flag and an existing file; use \`prm -- ...\` or \`./$1\`" >&2
                     return 1
                 fi
