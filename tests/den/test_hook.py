@@ -731,3 +731,54 @@ def test_compose_keeps_the_model_copy_byte_exact(tmp_path):
     # Only the terminal preview is filtered; what reaches the model is the file.
     _seed(tmp_path, memory="\x1b[2Jkeep me raw\n")
     assert "\x1b[2Jkeep me raw" in _hook._compose(_den(tmp_path))
+
+
+def test_install_refuses_a_directory_at_the_backup_path(tmp_path, monkeypatch, capsys):
+    """A repo can ship `.claude/settings.json.den.bak/` as a directory. It
+    preserves nothing, so it must not count as "already backed up" and let the
+    unmergeable config be overwritten."""
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not json {{{")
+    (proj / ".claude" / "settings.json.den.bak").mkdir()
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    assert cfg.read_text() == "not json {{{", "the config was not overwritten"
+    assert "not a regular file" in capsys.readouterr().err
+
+
+def test_install_accepts_an_existing_file_backup(tmp_path, monkeypatch):
+    # A real backup from an earlier run is still respected: install proceeds and
+    # does not clobber it with the (already overwritten) config.
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not json {{{")
+    bak = proj / ".claude" / "settings.json.den.bak"
+    bak.write_text("the original, from an earlier install\n")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert bak.read_text() == "the original, from an earlier install\n"
+    assert "UserPromptSubmit" in json.loads(cfg.read_text())["hooks"]
+
+
+def test_install_refuses_a_symlinked_backup_outside_the_workspace(
+    tmp_path, monkeypatch, symlink
+):
+    # cwd is the workspace; --config points OUTSIDE it, so _leaves_workspace does
+    # not apply to the backup path and only the regular-file check stands between
+    # den and someone else's file.
+    home = tmp_path / "home"
+    home.mkdir()
+    outside = home / "notes.txt"
+    outside.write_text("my notes\n")
+    cfg = home / "settings.json"
+    cfg.write_text("not json {{{")
+    symlink(outside, home / "settings.json.den.bak")
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 1
+    assert outside.read_text() == "my notes\n"
+    assert cfg.read_text() == "not json {{{"

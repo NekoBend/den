@@ -431,6 +431,16 @@ def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
     return entries
 
 
+def _mergeable(config: Path) -> bool:
+    """True when config is already a JSON object den can merge its keys into, so
+    nothing of the user's is lost by writing it back. ValueError covers both
+    JSONDecodeError and UnicodeDecodeError."""
+    try:
+        return isinstance(json.loads(config.read_text(encoding="utf-8")), dict)
+    except (OSError, ValueError):
+        return False
+
+
 def _backup_if_unmergeable(config: Path) -> bool:
     """Back up config to <config>.den.bak before install overwrites it, UNLESS it
     is already a JSON object den can merge into. _read_json reads anything else as
@@ -445,19 +455,25 @@ def _backup_if_unmergeable(config: Path) -> bool:
     write would have followed it out of the workspace. Refusing the backup means
     refusing the install -- writing den's hooks over a file we could not preserve
     is exactly the loss the backup exists to prevent.
+
+    An existing backup path is accepted as "already preserved" only when it is a
+    regular file. A repo can ship `settings.json.den.bak/` as a DIRECTORY (or as
+    a symlink to one), which preserves nothing; taking it for a backup would hand
+    install a green light to overwrite the config it was meant to save.
     """
-    if not config.is_file():
-        return True
-    try:
-        mergeable = isinstance(json.loads(config.read_text(encoding="utf-8")), dict)
-    except (OSError, ValueError):
-        mergeable = False
-    if mergeable:
+    if not config.is_file() or _mergeable(config):
         return True
     bak = config.with_suffix(config.suffix + ".den.bak")
     if _leaves_workspace(bak, _ERR_INSTALL):
         return False
-    if bak.exists():
+    if bak.is_symlink() or (bak.exists() and not bak.is_file()):
+        print(
+            f"{_ERR_INSTALL}: refusing to treat {bak} as a backup of {config}: "
+            "it is not a regular file",
+            file=sys.stderr,
+        )
+        return False
+    if bak.is_file():
         return True
     try:
         written = _write_guarded(bak.parent, bak, config.read_bytes(), _ERR_INSTALL)
