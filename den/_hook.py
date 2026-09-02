@@ -757,6 +757,20 @@ def _seed_imprint(den_dir: Path) -> bool:
     return _write_guarded(den_dir, path, _DEFAULT_IMPRINT.encode("utf-8"), _ERR_INSTALL)
 
 
+def _safe_for_terminal(text: str) -> str:
+    """Repo-controlled text on its way to the user's TERMINAL, defanged.
+
+    The imprint and memory previews echo a file a cloned repo may have written,
+    and a raw ESC in it drives the terminal: an ANSI sequence can repaint the
+    screen (hiding the very lines the preview exists to show) and an OSC one can
+    set the window title or, on some terminals, stage a paste. Every
+    non-printable character becomes a hex escape, so the preview stays
+    readable and inert. Only the terminal copy is filtered: what `_compose`
+    sends to the MODEL is left byte-exact.
+    """
+    return "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in text)
+
+
 def _surface_existing_imprint(den_dir: Path) -> None:
     """Show a pre-existing imprint at install time. The imprint is injected every
     turn as standing directives; if it came from a checked-out repo rather than
@@ -774,7 +788,7 @@ def _surface_existing_imprint(den_dir: Path) -> None:
         file=sys.stderr,
     )
     for line in text.splitlines():
-        print(f"  | {line}", file=sys.stderr)
+        print(f"  | {_safe_for_terminal(line)}", file=sys.stderr)
 
 
 def _surface_existing_memory(den_dir: Path) -> None:
@@ -798,7 +812,7 @@ def _surface_existing_memory(den_dir: Path) -> None:
     )
     first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     if first:
-        print(f"  | {first[:80]}", file=sys.stderr)
+        print(f"  | {_safe_for_terminal(first)[:80]}", file=sys.stderr)
 
 
 def _pick_tools_interactive() -> list[str] | None:

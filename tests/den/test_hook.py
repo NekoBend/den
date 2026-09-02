@@ -707,3 +707,27 @@ def test_backup_still_made_for_a_normal_workspace_config(tmp_path, monkeypatch):
     bak = cfg.with_suffix(".json.den.bak")
     assert bak.is_file() and bak.read_text() == "not json {{{"
     assert "UserPromptSubmit" in json.loads(cfg.read_text())["hooks"]
+
+
+def test_install_previews_defang_terminal_escapes(tmp_path, monkeypatch, capsys):
+    """The previews echo repo-controlled text, so a raw ESC in it must not reach
+    the terminal: an ANSI sequence can repaint away the very lines the preview
+    exists to show."""
+    _seed(
+        tmp_path,
+        imprint="\x1b[2Jcleared your screen\n",
+        memory="\x1b]0;pwned\x07- looks harmless\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    err = capsys.readouterr().err
+    assert "\x1b" not in err, "no raw ESC on the terminal"
+    assert "\\x1b" in err, "escaped instead of dropped, so the user sees it is there"
+    assert "cleared your screen" in err and "looks harmless" in err
+
+
+def test_compose_keeps_the_model_copy_byte_exact(tmp_path):
+    # Only the terminal preview is filtered; what reaches the model is the file.
+    _seed(tmp_path, memory="\x1b[2Jkeep me raw\n")
+    assert "\x1b[2Jkeep me raw" in _hook._compose(_den(tmp_path))
