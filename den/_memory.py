@@ -284,15 +284,29 @@ def _fmt_stamp(stamp: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+_NOT_TEXT = "(not UTF-8 text)"
+
+
 def _first_line(path: Path) -> str:
+    """First non-blank line of a snapshot, truncated, for the `log` listing.
+
+    A snapshot can hold bytes that are not UTF-8: save/clear/restore checkpoint
+    memory.md as BYTES on purpose, so undecodable content is preserved intact.
+    `log` has to list such a snapshot -- with a placeholder, since there is no
+    line to show -- rather than raise on the way past it.
+    """
     try:
-        with path.open(encoding="utf-8") as fh:
-            for line in fh:
-                stripped = line.strip()
-                if stripped:
-                    return stripped[:60]
+        data = path.read_bytes()
     except OSError:
-        pass
+        return ""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return _NOT_TEXT
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:60]
     return ""
 
 
@@ -536,7 +550,12 @@ def _cmd_diff(den_dir: Path, argv: list[str]) -> int:
     import difflib
 
     old = snaps[n - 1]
-    old_lines = old.read_text(encoding="utf-8").splitlines(keepends=True)
+    # Guarded, like every other read: a snapshot may hold non-UTF-8 bytes (see
+    # _first_line), and a strict decode raised straight out of `diff`.
+    old_text = _read_guarded_text(den_dir, old)
+    if not isinstance(old_text, str):
+        return 1  # unreadable or undecodable snapshot; the read said why
+    old_lines = old_text.splitlines(keepends=True)
     new = _read_guarded_text(den_dir, _memory_path(den_dir))
     if isinstance(new, _Unreadable):
         return 1  # a diff against "" would read as a wholesale deletion

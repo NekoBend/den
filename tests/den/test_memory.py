@@ -856,3 +856,33 @@ def test_a_real_marker_still_mirrors(tmp_path, monkeypatch):
     monkeypatch.chdir(proj)
     assert memory_main(["add", "a fact"]) == 0
     assert "a fact" in _clinerules_mem(proj).read_text()
+
+
+def test_log_and_diff_survive_a_non_utf8_snapshot(tmp_path, monkeypatch, capsys):
+    """save/clear/restore checkpoint memory.md as BYTES, so a snapshot can hold
+    content that is not UTF-8. `log` walks every snapshot's first line and `diff`
+    decodes a whole one, and both used to raise on the way past it."""
+    raw = b"\xff\xfe not utf-8\n"
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_bytes(raw)
+    _save(tmp_path, monkeypatch, "clean text\n")  # snapshots the raw bytes
+    assert [p.read_bytes() for p in _history(tmp_path)] == [raw]
+    capsys.readouterr()
+
+    assert memory_main(["log"]) == 0
+    assert "(not UTF-8 text)" in capsys.readouterr().out, "listed, with a placeholder"
+
+    assert memory_main(["diff", "1"]) == 1, "a diff of undecodable bytes is refused"
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_log_and_diff_still_work_on_normal_snapshots(tmp_path, monkeypatch, capsys):
+    # The no-regression guard for the two reads above.
+    _save(tmp_path, monkeypatch, "# Memory\n\n- v1 fact\n")
+    _save(tmp_path, monkeypatch, "# Memory\n\n- v2 fact\n")  # snapshots v1
+    capsys.readouterr()
+    assert memory_main(["log"]) == 0
+    assert "# Memory" in capsys.readouterr().out
+    assert memory_main(["diff", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "-- v1 fact" in out and "+- v2 fact" in out
