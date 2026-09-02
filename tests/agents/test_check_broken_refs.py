@@ -418,6 +418,37 @@ def test_binary_files_are_searched_as_text_by_both_backends(
     assert outputs[0] == outputs[1], outputs
 
 
+def test_a_very_long_line_is_clamped_identically_by_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same clamp, same place: one dangling reference inside a minified bundle
+    # must not print the whole bundle, and both backends must print it alike.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    long_line = "x" * 2000 + " widget() " + "y" * 3000
+    write(tmp_path, "bundle.min.js", long_line + "\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+    expected = long_line[:300] + f" [...+{len(long_line) - 300} chars]"
+
+    outputs = []
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        contexts = {}
+        for ln in proc.stdout.splitlines():
+            file, _lineno, _kind, _symbol, context = ln.split(":", 4)
+            contexts[Path(file).name] = context
+        assert contexts["bundle.min.js"] == expected, contexts["bundle.min.js"][:120]
+        # a short line keeps every character and gains no marker
+        assert contexts["app.py"] == "widget()", contexts["app.py"]
+        outputs.append(sorted(proc.stdout.splitlines()))
+    assert outputs[0] == outputs[1], outputs
+
+
 def test_undecodable_bytes_do_not_forge_a_broken_ref(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

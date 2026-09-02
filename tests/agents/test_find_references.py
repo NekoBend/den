@@ -370,6 +370,33 @@ def test_binary_files_are_searched_as_text_by_both_backends(
     assert outputs[0] == outputs[1], outputs
 
 
+def test_a_very_long_line_is_clamped_identically_by_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Every regular file is searched as text, so a hit inside a minified
+    # bundle or a blob would otherwise print a "line" megabytes long into the
+    # caller's output. The clamp sits where the result line is formatted, so
+    # both backends produce exactly the same clamped row.
+    long_line = "x" * 2000 + " widget() " + "y" * 3000
+    write(tmp_path, "bundle.min.js", long_line + "\n")
+    write(tmp_path, "short.py", "widget()\n")
+    expected = long_line[:300] + f" [...+{len(long_line) - 300} chars]"
+
+    outputs = []
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        contexts = {}
+        for ln in proc.stdout.splitlines():
+            file, _lineno, _kind, context = ln.split(":", 3)
+            contexts[Path(file).name] = context
+        assert contexts["bundle.min.js"] == expected, contexts["bundle.min.js"][:120]
+        # a short line keeps every character and gains no marker
+        assert contexts["short.py"] == "widget()", contexts["short.py"]
+        outputs.append(sorted(proc.stdout.splitlines()))
+    assert outputs[0] == outputs[1], outputs
+
+
 def test_undecodable_bytes_do_not_forge_a_match(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

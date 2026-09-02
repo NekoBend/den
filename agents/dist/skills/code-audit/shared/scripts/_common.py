@@ -15,9 +15,10 @@ substitutes it before compiling the regex:
 Patterns are applied with re.MULTILINE.
 
 The search plumbing both scripts share lives here too: the ripgrep flags and
-skip globs, the parser for ripgrep's output lines, the fallback walker, and
-the reader it searches files with. Keeping them in one place is what makes the
-two backends return the same files.
+skip globs, the parser for ripgrep's output lines, the fallback walker, the
+reader it searches files with, and the formatter that prints a result. Keeping
+them in one place is what makes the two backends return the same files, and
+print them the same way.
 """
 
 from __future__ import annotations
@@ -243,3 +244,26 @@ def read_searchable_text(path: Path) -> str | None:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+
+
+# Longest <context> printed on a result line. Every regular file is searched
+# as text, so the matching "line" of a minified bundle, a data blob or an
+# object file can be megabytes long, and both scripts print it verbatim. The
+# clamp sits where the line is FORMATTED - one place for both scripts and both
+# backends - so ripgrep's own output stays untouched and parse_rg_line is
+# unaffected.
+MAX_CONTEXT_CHARS = 300
+
+
+def format_hit(file: str, lineno: int, kind: str, content: str) -> str:
+    """Render one `<file>:<line>:<kind>:<context>` result line.
+
+    The context loses its trailing newline and is clamped to
+    MAX_CONTEXT_CHARS, with ` [...+N chars]` appended when anything was cut,
+    so a single hit inside a long line cannot flood the caller's output.
+    """
+    context = content.rstrip("\r\n")
+    if len(context) > MAX_CONTEXT_CHARS:
+        dropped = len(context) - MAX_CONTEXT_CHARS
+        context = f"{context[:MAX_CONTEXT_CHARS]} [...+{dropped} chars]"
+    return f"{file}:{lineno}:{kind}:{context}"

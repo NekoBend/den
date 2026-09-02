@@ -37,6 +37,10 @@ Output format:
     <kind> is one of: def, use, use:<owner> (the last form is used by
     --in to indicate the symbol whose external use was found).
 
+    <context> is the matching line, clamped to 300 characters with
+    ` [...+N chars]` appended when it was longer, so one hit inside a
+    minified bundle or a binary blob cannot flood the output.
+
 Exit codes:
     0  Search completed (results may be empty).
     1  Invalid usage or root not found.
@@ -63,6 +67,7 @@ from _common import (
     DEFINITION_CAPTURE,
     DEFINITION_PATTERNS,
     RG_SEARCH_FLAGS,
+    format_hit,
     iter_search_files,
     parse_rg_line,
     read_searchable_text,
@@ -301,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         results = list_in_file(file_path, root)
 
     for file, lineno, kind, content in results:
-        print(f"{file}:{lineno}:{kind}:{content}")
+        print(format_hit(file, lineno, kind, content))
     return 0
 
 

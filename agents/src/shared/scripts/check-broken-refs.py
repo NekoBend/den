@@ -33,6 +33,10 @@ Search scope:
 Output format:
     <file>:<line>:broken_ref:<symbol>:<context>
 
+    <context> is the matching line, clamped to 300 characters with
+    ` [...+N chars]` appended when it was longer, so one hit inside a
+    minified bundle or a binary blob cannot flood the output.
+
 Exit codes:
     0  Check completed (results may be empty).
     1  Not a git repository / git unavailable / invalid usage.
@@ -60,6 +64,7 @@ from _common import (
     DEFINITION_CAPTURE,
     DEFINITION_PATTERNS,
     RG_SEARCH_FLAGS,
+    format_hit,
     iter_search_files,
     parse_rg_line,
     read_searchable_text,
@@ -313,7 +318,7 @@ def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
             if u_resolved is not None and u_resolved in removed_from.get(symbol, set()):
                 continue
             stripped = u_content.strip()
-            print(f"{u_file}:{u_lineno}:broken_ref:{symbol}:{stripped}")
+            print(format_hit(u_file, u_lineno, f"broken_ref:{symbol}", stripped))
 
     return 0
 
