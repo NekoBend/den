@@ -6,10 +6,10 @@
 # den board paragraphs need to disappear here.
 
 [[coding]]
-from = """
+from = """ruff check, ty check
               (with den installed, `den verify <file>` runs all three
               with the project's own config and venv)"""
-to = ""
+to = "ruff check, ty check"
 
 [[code-audit]]
 from = """;

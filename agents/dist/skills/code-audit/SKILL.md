@@ -79,7 +79,7 @@ State which dimensions you are running before you start.
 ### Step 3: Ground the review in tool output (when a toolchain exists)
 
 When the code is on disk and the language toolchain is available,
-run the shared scripts against the files under review
+run the checks and scripts below against the files under review
 and fold the results into the relevant dimension:
 
 - the language's standard checks on each file under review
@@ -87,9 +87,12 @@ and fold the results into the relevant dimension:
   prettier --check, eslint, tsc --noEmit; Rust: cargo fmt --check,
   cargo clippy; Shell: shellcheck; PowerShell: Invoke-ScriptAnalyzer)
 - shared/scripts/find-references.py --uses <symbol>
-                                                 blast radius of a changed symbol (correctness)
+  (blast radius of a changed symbol: correctness)
+- shared/scripts/check-broken-refs.py
+  (after a rename or removal, confirms no dangling reference remains:
+  correctness)
 
-If a script cannot run (no toolchain, code only pasted in chat),
+If a check or script cannot run (no toolchain, code only pasted in chat),
 say so and review by reading.
 Do not claim a check passed when it did not run.
 
@@ -151,7 +154,7 @@ Lead with the verdict and a one-line summary, then the findings:
 
     (repeat per finding, ordered by severity: blockers first)
 
-    **Ran:** <which dimensions, and which scripts actually executed>
+    **Ran:** <which dimensions, and which checks and scripts actually executed>
 
 If the user requested JSON output,
 use the two-step pattern:
@@ -165,7 +168,7 @@ with nothing after the closing fence.
 - [ ] I stated which dimensions I ran.
 - [ ] I ran each dimension as its own focused pass,
       reading that dimension's reference file.
-- [ ] I ran the shared scripts where the toolchain allowed,
+- [ ] I ran the Step 3 checks and scripts where the toolchain allowed,
       or stated which could not run and why.
 - [ ] Every finding has location, problem, impact, and a concrete fix.
 - [ ] Every finding has a severity from the rubric.

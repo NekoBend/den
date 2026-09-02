@@ -5,8 +5,6 @@ description: Checks claims against sources, or answers strictly from supplied do
 
 # Grounding skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
-
 Tie every statement to a source.
 This skill produces claims a reader can check,
 not assertions they must take on trust.

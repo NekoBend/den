@@ -86,8 +86,7 @@ frontier parent also adds `<moves_demo>`) are present.
 | git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. |
 
 `coding` and `code-audit` are the heavy skills (they use `shared/reference/`
-and `shared/scripts/`), and `troubleshoot`'s repair mode pulls in the shared
-verification scripts. The other six are light: `SKILL.md` plus two examples,
+and `shared/scripts/`). The other seven are light: `SKILL.md` plus examples,
 no shared dependencies.
 
 ## Generated parent prompts

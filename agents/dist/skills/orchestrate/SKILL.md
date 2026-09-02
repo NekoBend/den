@@ -5,8 +5,6 @@ description: Runs one piece of work as a team of agents while the master session
 
 # Orchestrate skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
-
 Divide the work; do not divide the conversation.
 
 This skill runs under a parent system prompt.

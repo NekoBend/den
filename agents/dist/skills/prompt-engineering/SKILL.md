@@ -5,8 +5,6 @@ description: Writes a new prompt from a goal, or diagnoses and rewrites a prompt
 
 # Prompt-engineering skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
-
 Produce prompts that a model follows correctly on the first try.
 A strong prompt is explicit, single-purpose, and self-checkable;
 it does not rely on the model to guess intent.

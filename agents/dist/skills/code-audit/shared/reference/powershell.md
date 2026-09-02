@@ -25,7 +25,7 @@ costs the features that make cross-platform scripts tractable.
 ## 2. Tooling: PSScriptAnalyzer + Pester
 
 **Rule:** Lint gate is `Invoke-ScriptAnalyzer` clean at `-Severity Error` -
-the same bar den's CI applies. (Eight rules nominally; for a non-DSC
+the same bar the originating repository's CI applies. (Eight rules nominally; for a non-DSC
 script the live set is four, none of which cover the conventions
 below.) The conventions in sections
 3, 5, 6, and 7 report at Warning severity: review enforces them, the
@@ -112,8 +112,9 @@ not appear in new code - it is PowerShell's `shell=True`.
 
 ## 8. When the toolchain runs this file
 
-`run-checks.sh` dispatches `.ps1` / `.psm1` to a syntax parse plus
-`Invoke-ScriptAnalyzer -Severity Error`; those checks degrade to SKIPPED
-when pwsh or PSScriptAnalyzer is absent - say so rather than claiming a
-check that did not run. `find-references.py` resolves `function` /
-`filter` / `class` / `enum` definitions with no pwsh dependency.
+The checks for `.ps1` / `.psm1` are a syntax parse
+(`[System.Management.Automation.Language.Parser]::ParseFile`) followed by
+`Invoke-ScriptAnalyzer -Severity Error`; both degrade to SKIPPED when pwsh
+or PSScriptAnalyzer is absent - say so rather than claiming a check that
+did not run. `find-references.py` resolves `function` / `filter` /
+`class` / `enum` definitions with no pwsh dependency.

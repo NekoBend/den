@@ -11,7 +11,7 @@ copy the wording.
 
 ## Worked output
 
-**Reproduced:** `ruff check den tests` locally reports the same 19 errors.
+**Reproduced:** `ruff check src tests` locally reports the same 19 errors.
 So this is not a CI-only artifact and not a flake.
 
 **What changed** (asked before opening the code):
@@ -33,7 +33,7 @@ third named the suspect.
    the same rule now reports more.
 
 **The observation that separates them:** pin the old version and re-run.
-`pip install ruff==0.15.4 && ruff check den tests` reports 0 errors, and the
+`pip install ruff==0.15.4 && ruff check src tests` reports 0 errors, and the
 19 findings under 0.16.0 all carry rule codes that do not appear anywhere in
 the 0.15.4 output. That is hypothesis 1 - new rules, not changed ones.
 Hypothesis 2 would have shown the same rule codes with more hits.

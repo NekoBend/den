@@ -77,3 +77,11 @@ def test_check_catches_content_and_mode_drift(tmp_path):
     md = b / "coding" / "SKILL.md"
     md.write_text(md.read_text(encoding="utf-8") + "x", encoding="utf-8")
     assert any(str(d).startswith("differs") for d in _portable._differences(a, b))
+
+
+def test_preamble_only_where_shared_ships(tmp_path):
+    _portable.build_tree(tmp_path)
+    note = "relative to the skill's own directory"
+    for skill in (p for p in tmp_path.iterdir() if p.is_dir()):
+        text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        assert (note in text) == (skill / "shared").is_dir(), skill.name

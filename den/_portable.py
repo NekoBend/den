@@ -74,7 +74,8 @@ def build_tree(out: Path) -> None:
     for name in _skill_names():
         work = out / name
         _materialize(name, work, "shared/", no_den_cli=True)
-        _add_preamble(work / "SKILL.md")
+        if (work / "shared").is_dir():  # the note is only true when shared/ ships
+            _add_preamble(work / "SKILL.md")
     (out / "README.md").write_text(_DIST_README, encoding="utf-8")
 
 

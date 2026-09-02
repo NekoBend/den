@@ -25,7 +25,8 @@ When you cannot get one, say so and report what you ruled out.
 ## What this skill is for
 
 Something behaves in a way nobody intended and the reason is not yet known.
-Writing code that does not exist yet is `coding`.
+Writing new code, or changing code whose defect is already understood,
+is `coding`; a failure whose cause is not yet known is this skill.
 Judging code that already works is `code-audit`.
 The moment the cause IS known and the fix is mechanical,
 the rest is ordinary work - do it, and say what the cause was.
