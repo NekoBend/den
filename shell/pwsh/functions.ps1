@@ -104,11 +104,11 @@ function archive {
     [Parameter(Mandatory)][string]$Output,
     [Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Sources
   )
-  # '--' stops the archiver's option parsing, so a source whose name looks like
-  # an option (a '--checkpoint-action=exec=...' that pwsh globbed out of the
-  # directory, say) can never be parsed as one and run. PowerShell swallows a
-  # '--' the caller types, so the marker is added here; it reaches a native
-  # command verbatim. Do not remove it.
+  # Every argument after $Output is a source, never an option. The '--' in
+  # front of them stops the archiver's own option parsing, so a source whose
+  # name looks like an option (a '--checkpoint-action=exec=...' that pwsh
+  # globbed out of the directory, say) cannot be parsed as one and run; it
+  # reaches a native command verbatim. Do not remove it.
   switch -Regex ($Output) {
     '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; break }
     '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }

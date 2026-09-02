@@ -118,7 +118,7 @@ rm -f "$WORK/-dashfile"
 # --- archive + extract (tar.gz) ---
 echo "[bash] archive + extract tar.gz"
 setup_fixtures
-run_bash "$FUNCTIONS_SH" "archive '$WORK/test.tar.gz' -C '$WORK' -- src" 2>/dev/null
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.gz' src" 2>/dev/null
 assert_success "bash/archive tar.gz exit code" "$?"
 assert_exists "bash/archive tar.gz" "$WORK/test.tar.gz"
 mkdir -p "$WORK/extracted"
@@ -149,13 +149,13 @@ assert_not_exists "bash/archive crafted glob tar.gz ran no command" "$WORK/craft
 actual=$(tar tzf "$WORK/out.tar.gz" 2>/dev/null)
 assert_contains "bash/archive crafted glob tar.gz stored the file" "$CRAFTED_SRC" "$actual"
 
-echo "[bash] archive keeps options usable before an explicit -- (tar.gz)"
+echo "[bash] archive treats every argument after the output as a source"
 setup_crafted
-run_bash "$FUNCTIONS_SH" "archive '$WORK/out2.tar.gz' -C '$WORK/crafted' -- '$CRAFTED_TRIGGER' '$CRAFTED_SRC' bait.txt" 2>/dev/null
-assert_success "bash/archive crafted explicit -- exit code" "$?"
-assert_not_exists "bash/archive crafted explicit -- ran no command" "$WORK/crafted/pwned"
+run_bash "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
+assert_failure "bash/archive does not honour -C as a tar option" "$?"
 actual=$(tar tzf "$WORK/out2.tar.gz" 2>/dev/null)
-assert_contains "bash/archive crafted explicit -- stored the file" "$CRAFTED_SRC" "$actual"
+assert_contains "bash/archive stored the source that followed it" "bait.txt" "$actual"
+assert_not_contains "bash/archive did not chdir for -C" "crafted" "$actual"
 
 echo "[bash] archive neutralizes an option-shaped source name (zip)"
 setup_crafted
@@ -170,7 +170,7 @@ assert_contains "bash/archive crafted glob zip stored the file" "$CRAFTED_SRC" "
 echo "[bash] extract multiple archives"
 setup_fixtures
 mkdir -p "$WORK/second" && echo second > "$WORK/second/file2.txt"
-run_bash "$FUNCTIONS_SH" "archive '$WORK/one.tar.gz' -C '$WORK' -- src && archive '$WORK/two.tar.gz' -C '$WORK' -- second" 2>/dev/null
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/one.tar.gz' src && archive '$WORK/two.tar.gz' second" 2>/dev/null
 mkdir -p "$WORK/multi"
 run_bash "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/two.tar.gz'"
 assert_success "bash/extract multi exit code" "$?"
@@ -195,7 +195,7 @@ rm -rf "$WORK/d1.txt" "$WORK/d2.txt"
 
 echo "[bash] archive + extract tar.bz2"
 setup_fixtures
-run_bash "$FUNCTIONS_SH" "archive '$WORK/test.tar.bz2' -C '$WORK' -- src" 2>/dev/null
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.bz2' src" 2>/dev/null
 assert_success "bash/archive tar.bz2 exit code" "$?"
 assert_exists "bash/archive tar.bz2" "$WORK/test.tar.bz2"
 mkdir -p "$WORK/extracted"
@@ -207,7 +207,7 @@ rm -rf "$WORK/test.tar.bz2" "$WORK/extracted"
 
 echo "[bash] archive + extract tar.xz"
 setup_fixtures
-run_bash "$FUNCTIONS_SH" "archive '$WORK/test.tar.xz' -C '$WORK' -- src" 2>/dev/null
+run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.xz' src" 2>/dev/null
 assert_success "bash/archive tar.xz exit code" "$?"
 assert_exists "bash/archive tar.xz" "$WORK/test.tar.xz"
 mkdir -p "$WORK/extracted"
@@ -302,7 +302,7 @@ rm -f "$WORK/dummy.bin"
 
 echo "[zsh] archive + extract tar.gz"
 setup_fixtures
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/test.tar.gz' -C '$WORK' -- src" 2>/dev/null
+run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.gz' src" 2>/dev/null
 assert_success "zsh/archive tar.gz exit code" "$?"
 assert_exists "zsh/archive tar.gz" "$WORK/test.tar.gz"
 mkdir -p "$WORK/extracted"
@@ -316,7 +316,7 @@ rm -rf "$WORK/test.tar.gz" "$WORK/extracted"
 echo "[zsh] extract multiple archives"
 setup_fixtures
 mkdir -p "$WORK/second" && echo second > "$WORK/second/file2.txt"
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/one.tar.gz' -C '$WORK' -- src && archive '$WORK/two.tar.gz' -C '$WORK' -- second" 2>/dev/null
+run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/one.tar.gz' src && archive '$WORK/two.tar.gz' second" 2>/dev/null
 mkdir -p "$WORK/multi"
 run_zsh "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/two.tar.gz'"
 assert_success "zsh/extract multi exit code" "$?"
@@ -359,13 +359,13 @@ assert_not_exists "zsh/archive crafted glob tar.gz ran no command" "$WORK/crafte
 actual=$(tar tzf "$WORK/out.tar.gz" 2>/dev/null)
 assert_contains "zsh/archive crafted glob tar.gz stored the file" "$CRAFTED_SRC" "$actual"
 
-echo "[zsh] archive keeps options usable before an explicit -- (tar.gz)"
+echo "[zsh] archive treats every argument after the output as a source"
 setup_crafted
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/out2.tar.gz' -C '$WORK/crafted' -- '$CRAFTED_TRIGGER' '$CRAFTED_SRC' bait.txt" 2>/dev/null
-assert_success "zsh/archive crafted explicit -- exit code" "$?"
-assert_not_exists "zsh/archive crafted explicit -- ran no command" "$WORK/crafted/pwned"
+run_zsh "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
+assert_failure "zsh/archive does not honour -C as a tar option" "$?"
 actual=$(tar tzf "$WORK/out2.tar.gz" 2>/dev/null)
-assert_contains "zsh/archive crafted explicit -- stored the file" "$CRAFTED_SRC" "$actual"
+assert_contains "zsh/archive stored the source that followed it" "bait.txt" "$actual"
+assert_not_contains "zsh/archive did not chdir for -C" "crafted" "$actual"
 
 echo "[zsh] archive neutralizes an option-shaped source name (zip)"
 setup_crafted
@@ -378,7 +378,7 @@ assert_contains "zsh/archive crafted glob zip stored the file" "$CRAFTED_SRC" "$
 
 echo "[zsh] archive + extract tar.bz2"
 setup_fixtures
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/test.tar.bz2' -C '$WORK' -- src" 2>/dev/null
+run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.bz2' src" 2>/dev/null
 assert_success "zsh/archive tar.bz2 exit code" "$?"
 assert_exists "zsh/archive tar.bz2" "$WORK/test.tar.bz2"
 mkdir -p "$WORK/extracted"
@@ -390,7 +390,7 @@ rm -rf "$WORK/test.tar.bz2" "$WORK/extracted"
 
 echo "[zsh] archive + extract tar.xz"
 setup_fixtures
-run_zsh "$FUNCTIONS_SH" "archive '$WORK/test.tar.xz' -C '$WORK' -- src" 2>/dev/null
+run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.xz' src" 2>/dev/null
 assert_success "zsh/archive tar.xz exit code" "$?"
 assert_exists "zsh/archive tar.xz" "$WORK/test.tar.xz"
 mkdir -p "$WORK/extracted"
@@ -518,7 +518,7 @@ rm -rf "$WORK/broken.zip" "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "
 # --- archive: a source named like an option must never be parsed as one ---
 echo "[pwsh] archive neutralizes an option-shaped source name (tar.gz)"
 setup_crafted
-run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/crafted'; archive '$WORK/out.tar.gz' -- '$CRAFTED_TRIGGER' '$CRAFTED_SRC' bait.txt" >/dev/null 2>&1
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/crafted'; archive '$WORK/out.tar.gz' '$CRAFTED_TRIGGER' '$CRAFTED_SRC' bait.txt" >/dev/null 2>&1
 assert_success "pwsh/archive crafted tar.gz exit code" "$?"
 assert_not_exists "pwsh/archive crafted tar.gz ran no command" "$WORK/crafted/pwned"
 actual=$(tar tzf "$WORK/out.tar.gz" 2>/dev/null)
