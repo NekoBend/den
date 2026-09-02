@@ -22,6 +22,13 @@ SCRIPT = (
 )
 
 
+# The scripts share their search plumbing through _common.py, which is importable
+# (find-references.py itself is not: its filename has a hyphen).
+sys.path.insert(0, str(SCRIPT.parent))
+
+from _common import parse_rg_line  # ruff: ignore[module-import-not-at-top-of-file]
+
+
 def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run find-references.py with `args`; return the completed process."""
     return subprocess.run(
@@ -190,3 +197,34 @@ def test_in_reports_full_powershell_names(tmp_path: Path) -> None:
     # to the verb alone: `use:New` is the regression this test exists for.
     owners = [kc.split(":", 2)[1] for _n, kc in rows if kc.startswith("use:")]
     assert owners == ["New-Wrapper"], proc.stdout
+
+
+# ---------- rg output parsing ----------
+
+
+def test_rg_line_parser_keeps_the_windows_drive_letter() -> None:
+    # On Windows every rg hit starts with `C:\`, so the FIRST colon belongs to
+    # the drive and the line number is in the last field. Parsed directly
+    # because tests/agents runs on ubuntu only, where no rg output looks
+    # like this.
+    assert parse_rg_line(r"C:\repo\mod.py:12:def widget():") == (
+        r"C:\repo\mod.py",
+        12,
+        "def widget():",
+    )
+    assert parse_rg_line("C:/repo/mod.py:12:def widget():") == (
+        "C:/repo/mod.py",
+        12,
+        "def widget():",
+    )
+
+
+def test_rg_line_parser_reads_posix_paths_and_rejects_junk() -> None:
+    assert parse_rg_line("/repo/mod.py:12:def widget():") == (
+        "/repo/mod.py",
+        12,
+        "def widget():",
+    )
+    assert parse_rg_line("no separators here") is None
+    assert parse_rg_line("/repo/mod.py:twelve:x") is None
+    assert parse_rg_line(r"C:\repo\mod.py:no-line-number") is None

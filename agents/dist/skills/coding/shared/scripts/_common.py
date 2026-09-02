@@ -113,3 +113,29 @@ SKIP_DIRS: frozenset[str] = frozenset(
         ".tox",
     }
 )
+
+
+def parse_rg_line(line: str) -> tuple[str, int, str] | None:
+    """Parse one `<file>:<lineno>:<content>` line of ripgrep output.
+
+    Returns None when the line carries no usable location.
+
+    On Windows the path starts with a drive letter, so the first colon of
+    `C:\\repo\\mod.py:12:content` belongs to the path and the line number
+    lands in the LAST field of the three-way split.
+    """
+    parts = line.split(":", 2)
+    if len(parts) != 3:
+        return None
+    file, lineno_text, content = parts
+    if len(file) == 1 and file.isalpha() and lineno_text[:1] in {"\\", "/"}:
+        sub = content.split(":", 1)
+        if len(sub) != 2:
+            return None
+        file = f"{file}:{lineno_text}"
+        lineno_text, content = sub
+    try:
+        lineno = int(lineno_text)
+    except ValueError:
+        return None
+    return (file, lineno, content)

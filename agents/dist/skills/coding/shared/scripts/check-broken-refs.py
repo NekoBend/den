@@ -41,7 +41,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _common import DEFAULT_CAPTURE, DEFINITION_CAPTURE, DEFINITION_PATTERNS, SKIP_DIRS
+from _common import (
+    DEFAULT_CAPTURE,
+    DEFINITION_CAPTURE,
+    DEFINITION_PATTERNS,
+    SKIP_DIRS,
+    parse_rg_line,
+)
 
 
 class GitError(RuntimeError):
@@ -126,9 +132,7 @@ def _ripgrep_available() -> bool:
     return shutil.which("rg") is not None
 
 
-def _search_for_usages(  # ruff: ignore[too-many-branches]  # one branch per file type scanned
-    symbol: str, root: Path
-) -> list[tuple[str, int, str]]:
+def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
     """Find every occurrence of `symbol` as a whole word under `root`."""
     word_pattern = rf"\b{re.escape(symbol)}\b"
     if _ripgrep_available():
@@ -157,25 +161,9 @@ def _search_for_usages(  # ruff: ignore[too-many-branches]  # one branch per fil
         hits: list[tuple[str, int, str]] = []
         if proc is not None:
             for line in proc.stdout.splitlines():
-                # Same Windows drive-letter handling as find-references.py.
-                parts = line.split(":", 2)
-                if len(parts) != 3:
-                    continue
-                if len(parts[0]) == 1 and parts[0].isalpha():
-                    sub = parts[1].split(":", 1)
-                    if len(sub) != 2:
-                        continue
-                    file = f"{parts[0]}:{sub[0]}"
-                    try:
-                        lineno = int(sub[1])
-                    except ValueError:
-                        continue
-                    hits.append((file, lineno, parts[2]))
-                else:
-                    try:
-                        hits.append((parts[0], int(parts[1]), parts[2]))
-                    except ValueError:
-                        continue
+                hit = parse_rg_line(line)
+                if hit is not None:
+                    hits.append(hit)
         return hits
 
     # Fallback: walk the tree manually.

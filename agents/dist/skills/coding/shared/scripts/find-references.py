@@ -46,7 +46,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _common import DEFAULT_CAPTURE, DEFINITION_CAPTURE, DEFINITION_PATTERNS, SKIP_DIRS
+from _common import (
+    DEFAULT_CAPTURE,
+    DEFINITION_CAPTURE,
+    DEFINITION_PATTERNS,
+    SKIP_DIRS,
+    parse_rg_line,
+)
 
 Hit = tuple[str, int, str]
 Result = tuple[str, int, str, str]
@@ -90,29 +96,9 @@ def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]
         return []
     hits: list[Hit] = []
     for line in proc.stdout.splitlines():
-        # On Windows, paths may start with `C:\`; split from the LEFT only
-        # twice so the drive letter survives intact.
-        parts = line.split(":", 2)
-        if len(parts) != 3:
-            continue
-        # If parts[0] is a single drive letter, the path includes the next
-        # ':'; re-merge.
-        if len(parts[0]) == 1 and parts[0].isalpha():
-            sub = parts[1].split(":", 1)
-            if len(sub) != 2:
-                continue
-            file = f"{parts[0]}:{sub[0]}"
-            try:
-                lineno = int(sub[1])
-            except ValueError:
-                continue
-            content = parts[2]
-            hits.append((file, lineno, content))
-        else:
-            try:
-                hits.append((parts[0], int(parts[1]), parts[2]))
-            except ValueError:
-                continue
+        hit = parse_rg_line(line)
+        if hit is not None:
+            hits.append(hit)
     return hits
 
 
