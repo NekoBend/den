@@ -162,15 +162,19 @@ Loads only when ffmpeg is installed. pwsh has the same set; cmd has none.
 
 ## Parallel operations
 
-pwsh runs `pcp`/`pmv`/`prm` via PowerShell 7's `-Parallel`; bash/zsh use background
-jobs / xargs. `ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a
-plain `tar` wrapper on pwsh.
+pwsh runs `pcp`/`pmv`/`prm` via PowerShell 7's `-Parallel`; bash/zsh use GNU
+parallel when it is installed, else `xargs -P` (both paths pass every argument
+through as one argv element, so a destination with spaces is safe). `pcp` and
+`pmv` overwrite an existing destination file on both shells, read-only or not.
+`ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a plain `tar`
+wrapper on pwsh; both accept `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
+`.tar.xz`/`.txz`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `pcp` / `pmv` | parallel copy / move (last arg = destination) | ✓ | ✓ | — |
-| `prm` | parallel remove (y/N confirm; `-f`/`-Force` to skip) | ✓ | ✓ | — |
-| `ptar` | compress an archive; threaded (pigz/pbzip2/pxz) on bash/zsh, plain `tar` on pwsh | ✓ | ✓ | — |
+| `prm` | parallel remove (y/N confirm; `-f`/`--force`/`-Force` to skip; flags only before the paths, `--` ends them) | ✓ | ✓ | — |
+| `ptar` | compress an archive (`.tar` `.tar.gz` `.tgz` `.tar.bz2` `.tbz2` `.tar.xz` `.txz`); threaded (pigz/pbzip2/pxz) on bash/zsh, plain `tar` on pwsh | ✓ | ✓ | — |
 | `pxargs` | `xargs -P nproc` | ✓ | — | — |
 
 ## Snippets, cheatsheets, proxy

@@ -31,8 +31,15 @@ RUN apt-get update && \
         unzip \
         bzip2 \
         xz-utils \
+        parallel \
+        pigz \
+        pbzip2 \
         software-properties-common \
     && rm -rf /var/lib/apt/lists/*
+
+# GNU parallel prints a citation notice on first use; the marker file is what
+# `parallel --citation` writes, and it keeps test stderr clean.
+RUN mkdir -p /root/.parallel && touch /root/.parallel/will-cite
 
 # =============================================================================
 # PowerShell 7 from Microsoft repository

@@ -29,13 +29,31 @@ function _CountEntries {
     return $total
 }
 
+# _ResolvePaths → expand wildcard arguments. Functions do not glob-expand
+# their arguments and every downstream call uses -LiteralPath, so `pcp *.md d`
+# would look for a file literally named '*.md'. An existing literal path is
+# kept as is; a pattern with no match passes through so the downstream error
+# names it.
+function _ResolvePaths {
+    param([string[]]$Patterns)
+    $out = @()
+    foreach ($p in $Patterns) {
+        if (Test-Path -LiteralPath $p) { $out += $p; continue }
+        $hits = @(Convert-Path -Path $p -ErrorAction SilentlyContinue)
+        if ($hits.Count -eq 0) { $out += $p } else { $out += $hits }
+    }
+    return ,$out
+}
+
 # ===== Parallel File Operations =====
 
 # pcp → parallel copy (like cp, last arg is destination)
 function pcp {
+    # Not Mandatory: a bare `pcp` must print the usage line, not open an
+    # interactive "Paths[0]:" prompt (posix parity).
     param(
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]]$Paths
+        [Parameter(ValueFromRemainingArguments)]
+        [string[]]$Paths = @()
     )
 
     if ($Paths.Count -lt 2) {
@@ -44,7 +62,7 @@ function pcp {
     }
 
     $dest = $Paths[-1]
-    $sources = $Paths[0..($Paths.Count - 2)]
+    $sources = _ResolvePaths $Paths[0..($Paths.Count - 2)]
 
     if ($sources.Count -gt 1 -and -not (Test-Path -LiteralPath $dest -PathType Container)) {
         Write-Error "'$dest' is not a directory"
@@ -63,8 +81,8 @@ function pcp {
 # pmv → parallel move (like mv, last arg is destination)
 function pmv {
     param(
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]]$Paths
+        [Parameter(ValueFromRemainingArguments)]
+        [string[]]$Paths = @()
     )
 
     if ($Paths.Count -lt 2) {
@@ -73,7 +91,7 @@ function pmv {
     }
 
     $dest = $Paths[-1]
-    $sources = $Paths[0..($Paths.Count - 2)]
+    $sources = _ResolvePaths $Paths[0..($Paths.Count - 2)]
 
     if ($sources.Count -gt 1 -and -not (Test-Path -LiteralPath $dest -PathType Container)) {
         Write-Error "'$dest' is not a directory"
@@ -93,14 +111,21 @@ function pmv {
 function prm {
     param(
         [switch]$Force,
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]]$Paths
+        [Parameter(ValueFromRemainingArguments)]
+        [string[]]$Paths = @()
     )
 
+    # posix parity: `--force` (the long form its usage advertises) is accepted
+    # only as the leading word, like the posix parser.
+    if ($Paths.Count -gt 0 -and $Paths[0] -eq '--force') {
+        $Force = $true
+        $Paths = @($Paths | Select-Object -Skip 1)
+    }
     if ($Paths.Count -eq 0) {
-        Write-Error "usage: [-Force] <path...>"
+        Write-Error "usage: [-Force|--force] <path...>"
         return
     }
+    $Paths = _ResolvePaths $Paths
 
     $jobs = [Environment]::ProcessorCount
     $entries = _CountEntries $Paths
@@ -130,12 +155,16 @@ function prm {
 # ptar → compress using tar (available on Windows 10+)
 function ptar {
     param(
-        [Parameter(Mandatory, Position = 0)]
+        [Parameter(Position = 0)]
         [string]$Output,
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]]$Sources
+        [Parameter(ValueFromRemainingArguments)]
+        [string[]]$Sources = @()
     )
 
+    if (-not $Output -or $Sources.Count -eq 0) {
+        Write-Error "usage: <output.tar|.tar.gz|.tgz|.tar.bz2|.tbz2|.tar.xz|.txz> <src...>"
+        return
+    }
     if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
         Write-Error "'tar' command not found"
         return
@@ -143,11 +172,13 @@ function ptar {
 
     Write-Host "+ ptar: compressing → $Output"
 
+    # `--` before the sources, as the posix twin does: a source that starts
+    # with '-' is a file, never a tar option.
     switch -Regex ($Output) {
-        '\.tar\.gz$|\.tgz$'   { tar czf $Output @Sources; break }
-        '\.tar\.bz2$|\.tbz2$' { tar cjf $Output @Sources; break }
-        '\.tar\.xz$|\.txz$'   { tar cJf $Output @Sources; break }
-        '\.tar$'               { tar cf  $Output @Sources; break }
+        '\.tar\.gz$|\.tgz$'   { tar czf $Output -- @Sources; break }
+        '\.tar\.bz2$|\.tbz2$' { tar cjf $Output -- @Sources; break }
+        '\.tar\.xz$|\.txz$'   { tar cJf $Output -- @Sources; break }
+        '\.tar$'               { tar cf  $Output -- @Sources; break }
         default                { Write-Error "unsupported format '$Output'" }
     }
 }
