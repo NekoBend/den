@@ -607,6 +607,25 @@ def test_a_non_utf8_file_name_is_printed_identically_by_both_backends(
     assert b"bad\xff.py" in proc.stdout, proc.stdout
 
 
+def test_repeated_matches_on_one_line_are_one_row_in_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # ripgrep reports a matching LINE once; the walk fallback reported every
+    # regex MATCH, so a line calling the symbol three times printed three
+    # identical use rows without rg and one with it.
+    write(tmp_path, "caller.py", "widget(); widget(); widget()\n")
+    write(tmp_path, "other.py", "widget()\n")
+    outputs = []
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        rows = [ln for ln in proc.stdout.split("\n") if ln]
+        assert len(rows) == 2, rows
+        assert sum("caller.py" in ln for ln in rows) == 1, rows
+        outputs.append(sorted(rows))
+    assert outputs[0] == outputs[1], outputs
+
+
 def test_the_git_directory_is_never_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

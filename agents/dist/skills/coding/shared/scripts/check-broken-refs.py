@@ -230,20 +230,20 @@ def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
             return []
         return parse_rg_output(proc.stdout)
 
-    # Fallback: walk the tree manually.
+    # Fallback: walk the tree manually, line by line as ripgrep searches. One
+    # hit per matching LINE, not one per regex match: re.finditer reported
+    # every occurrence, so a line using the symbol twice became two identical
+    # broken_ref rows without rg and one with it. Lines are split on "\n"
+    # alone, the separator rg's records use.
     rx = re.compile(word_pattern)
     hits: list[tuple[str, int, str]] = []
     for path in iter_search_files(root):
         text = read_searchable_text(path)
         if text is None:
             continue
-        for match in rx.finditer(text):
-            lineno = text.count("\n", 0, match.start()) + 1
-            line_start = text.rfind("\n", 0, match.start()) + 1
-            line_end = text.find("\n", match.end())
-            if line_end == -1:
-                line_end = len(text)
-            hits.append((str(path), lineno, text[line_start:line_end]))
+        for lineno, line in enumerate(text.split("\n"), start=1):
+            if rx.search(line):
+                hits.append((str(path), lineno, line))
     return hits
 
 

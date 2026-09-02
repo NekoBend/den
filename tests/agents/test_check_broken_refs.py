@@ -665,6 +665,31 @@ def test_odd_characters_in_lines_and_file_names_survive_both_backends(
     assert outputs[0] == outputs[1], outputs
 
 
+def test_repeated_uses_on_one_line_are_one_broken_ref_in_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same point at this script's own fallback: a line using the removed
+    # symbol three times is one dangling reference, not three, whether or not
+    # ripgrep is installed.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget(); widget(); widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    outputs = []
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        rows = [ln for ln in proc.stdout.split("\n") if ln]
+        assert len(rows) == 1, rows
+        assert "app.py" in rows[0], rows
+        outputs.append(sorted(rows))
+    assert outputs[0] == outputs[1], outputs
+
+
 def test_the_git_directory_is_never_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

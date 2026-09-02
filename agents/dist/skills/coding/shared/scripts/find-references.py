@@ -113,20 +113,26 @@ def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]
 
 
 def _search_with_walk(pattern: str, root: Path, ext: str | None) -> list[Hit]:
-    """Search by walking the tree with os.walk + re (fallback path)."""
+    """Search by walking the tree with os.walk + re (fallback path).
+
+    Line by line, the way ripgrep searches: one hit per matching LINE, not one
+    per regex match. re.finditer reported every occurrence, so a line reading
+    `widget(); widget()` produced two identical rows here and one under rg,
+    which is also what rg does with no --only-matching.
+
+    Lines are split on "\n" alone - the record separator rg uses - never with
+    str.splitlines(), which would also break on form feed, NEL or U+2028 and
+    renumber every line after one of those.
+    """
     rx = re.compile(pattern, re.MULTILINE)
     hits: list[Hit] = []
     for path in iter_search_files(root, ext):
         text = read_searchable_text(path)
         if text is None:
             continue
-        for match in rx.finditer(text):
-            lineno = text.count("\n", 0, match.start()) + 1
-            line_start = text.rfind("\n", 0, match.start()) + 1
-            line_end = text.find("\n", match.end())
-            if line_end == -1:
-                line_end = len(text)
-            hits.append((str(path), lineno, text[line_start:line_end]))
+        for lineno, line in enumerate(text.split("\n"), start=1):
+            if rx.search(line):
+                hits.append((str(path), lineno, line))
     return hits
 
 
