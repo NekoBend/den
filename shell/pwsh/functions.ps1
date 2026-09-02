@@ -63,6 +63,39 @@ function _ArHave([string]$Caller, [string]$Tool) {
   return $false
 }
 
+# _ArCompressTo → run a stdout compressor and put its raw bytes in $Dest.
+# gzip/bzip2/xz have no -o, and PowerShell only redirects a native command's
+# stdout byte-for-byte from 7.4 on: before that the text pipeline re-encodes
+# it, and every archive a '> $Dest' produced would be corrupt. den supports
+# pwsh 7.0+ (shell/pwsh/parallel.ps1 gates on Major -lt 7), so the bytes are
+# copied off the process's own stdout stream, which has no encoding step on
+# any version. Letting the tool write its own '<source>.<ext>' next to the
+# source and moving that onto $Dest would also avoid the redirect, but it
+# destroys a pre-existing file of that name. Returns the tool's exit code.
+function _ArCompressTo([string]$Tool, [string]$Source, [string]$Dest) {
+  # .NET resolves relative paths against the process directory, which
+  # Set-Location never updates; resolve against the PowerShell location first
+  # (the same rule mkfile follows).
+  $srcFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Source)
+  $dstFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dest)
+  $psi = [System.Diagnostics.ProcessStartInfo]::new()
+  $psi.FileName = $Tool
+  # ArgumentList passes each argument verbatim, no quoting round-trip. '--'
+  # keeps a source named like a switch a path, as the tar branches do.
+  foreach ($a in @('-k', '-c', '--', $srcFull)) { $psi.ArgumentList.Add($a) }
+  $psi.RedirectStandardOutput = $true
+  $psi.UseShellExecute = $false
+  # stderr is deliberately NOT redirected: the tool's diagnostics reach the
+  # console, and there is no second pipe to deadlock on while stdout drains.
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $fs = [System.IO.File]::Create($dstFull)
+  try { $proc.StandardOutput.BaseStream.CopyTo($fs) } finally { $fs.Dispose() }
+  $proc.WaitForExit()
+  $code = $proc.ExitCode
+  $proc.Dispose()
+  return $code
+}
+
 # extract → auto-detect and extract archives
 function extract {
   # Every argument is an archive; each is extracted in turn and a failure on
@@ -177,12 +210,11 @@ function archive {
         # and overwriting, as every other branch is.
         & zstd -q -k -f -o $Output -- $src
       } else {
-        # The others have no -o: -k -c writes the compressed bytes to stdout
-        # and the redirection names the output. PowerShell 7 writes a native
-        # command's redirected stdout as raw bytes, so the archive is not
-        # re-encoded — the round-trip case in tests/shell/test_functions.sh
-        # compresses binary content precisely to keep that honest.
-        & $tool -k -c -- $src > $Output
+        # The others have no -o, so their stdout is captured as raw bytes and
+        # written to $Output; see _ArCompressTo for why not '> $Output'. The
+        # exit code goes where a native command would have left it, so the
+        # branch reports failure like every other one.
+        $global:LASTEXITCODE = _ArCompressTo $tool $src $Output
       }
       break
     }
