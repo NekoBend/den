@@ -551,6 +551,10 @@ def test_install_shell_bin_dry_run_writes_nothing(tmp_path, monkeypatch):
 
 def test_install_shell_bin_keeps_modified_file_content_and_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Path.home() reads USERPROFILE on Windows, not HOME; without this the
+    # install lands in the runner's real profile and the planted file is never
+    # seen, which made this test pass vacuously there.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setattr("den._shell._windows", lambda: False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     local_bin = tmp_path / ".local" / "bin"
