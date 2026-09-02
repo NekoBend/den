@@ -223,6 +223,38 @@ def test_strip_block_preserves_crlf(tmp_path):
     assert rc.read_bytes() == b"Set-Foo 1\r\n"  # CRLF kept, not flipped to LF
 
 
+def test_strip_block_keeps_mixed_line_endings(tmp_path):
+    # A file mixing LF and CRLF (a Windows editor touching a POSIX rc file, a
+    # merge): den removes its own block and leaves every other line's ending
+    # exactly as it found it. The old flag-and-normalize pass rewrote them all.
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    mine = b"export A=1\nexport B=2\r\nexport C=3\n"
+    rc.write_bytes(mine + f"\n# ===== den =====\n{line}\n".encode())
+    assert _has_block(rc, line)
+    _strip_block(rc, line)
+    assert rc.read_bytes() == mine, "every byte outside den's block is untouched"
+
+
+def test_strip_block_keeps_crlf_block_in_an_lf_file(tmp_path):
+    # The block itself carries CRLF while the user's lines are LF; removing it
+    # must not drag the user's lines to CRLF.
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    mine = b"export A=1\nexport B=2\n"
+    rc.write_bytes(mine + f"\r\n# ===== den =====\r\n{line}\r\n".encode())
+    _strip_block(rc, line)
+    assert rc.read_bytes() == mine
+
+
+def test_strip_block_keeps_a_missing_final_newline(tmp_path):
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    rc.write_bytes(f"# ===== den =====\n{line}\nalias x=y".encode())
+    _strip_block(rc, line)
+    assert rc.read_bytes() == b"alias x=y", "no newline invented at EOF"
+
+
 def test_strip_block_removes_den_created_empty_file(tmp_path):
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
     rc = tmp_path / "profile.ps1"  # created form: only den's block

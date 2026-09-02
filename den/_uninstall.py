@@ -50,40 +50,50 @@ def _has_block(rc: Path, line: str) -> bool:
 
 def _strip_block(rc: Path, line: str) -> None:
     """Remove den's rc block: the `# ===== den =====` marker, the source line
-    that follows it, and one preceding blank line (the append form). Preserves
-    the file's CRLF/LF line ending, and every byte den did not write (the file
-    is decoded and re-encoded with surrogateescape, so bytes that are not valid
-    UTF-8 survive untouched). If the file is EXACTLY what den created (only the
-    block, nothing else), den owns it, so it is removed."""
+    that follows it, and one preceding blank line (the append form). If nothing
+    but den's block was in the file, den created it, so the file goes too.
+
+    Works on BYTES, keeping each surviving line with its own terminator. The
+    previous version set one `crlf` flag if the file contained a single CRLF
+    anywhere and then rewrote every ending to match, so a file mixing LF and
+    CRLF (a Windows editor touching a POSIX rc file, a merge) came back with
+    every LF line converted -- the opposite of the byte-exact promise. Lines den
+    did not write are now copied through verbatim, endings and non-UTF-8 bytes
+    alike, and no decode happens at all.
+    """
     from ._shell import _COMMENT
 
-    text = _decode(rc.read_bytes())
-    crlf = "\r\n" in text
-    norm = text.replace("\r\n", "\n")
-    if norm == f"{_COMMENT}\n{line}\n":
-        with contextlib.suppress(OSError):
-            rc.unlink()
-        return
-    lines = norm.split("\n")
-    out: list[str] = []
+    marker = _COMMENT.encode("utf-8")
+    wire = line.encode("utf-8")
+    lines = rc.read_bytes().splitlines(keepends=True)
+
+    def content(raw: bytes) -> bytes:
+        """The line without its terminator (\n, \r\n or a bare \r)."""
+        return raw.rstrip(b"\r\n")
+
+    kept: list[bytes] = []
+    stripped = False
     i = 0
     while i < len(lines):
         # Only den's block: marker immediately followed by den's wire line.
         # A stray marker (or a user-edited wire line) is left untouched.
-        if lines[i].strip() == _COMMENT and i + 1 < len(lines) and lines[i + 1] == line:
-            if out and out[-1] == "":
-                out.pop()
+        if (
+            content(lines[i]).strip() == marker
+            and i + 1 < len(lines)
+            and content(lines[i + 1]) == wire
+        ):
+            if kept and content(kept[-1]) == b"":
+                kept.pop()  # the blank line the append form inserted
+            stripped = True
             i += 2
             continue
-        out.append(lines[i])
+        kept.append(lines[i])
         i += 1
-    new = "\n".join(out)
-    if crlf:
-        new = new.replace("\n", "\r\n")
-    # write_bytes, not write_text: no newline translation (the CRLF/LF form is
-    # already restored above) and surrogateescape puts the non-UTF-8 bytes back
-    # exactly as they were read.
-    rc.write_bytes(new.encode("utf-8", errors="surrogateescape"))
+    if stripped and not kept:  # the file was den's block and nothing else
+        with contextlib.suppress(OSError):
+            rc.unlink()
+        return
+    rc.write_bytes(b"".join(kept))
 
 
 class _Remover:
