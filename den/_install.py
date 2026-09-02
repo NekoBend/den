@@ -158,6 +158,21 @@ class _Writer:
     def stage(self, dest: Path, content: bytes) -> None:
         self._items.append((dest, content))
 
+    @staticmethod
+    def _ensure_mode(dest: Path) -> None:
+        """The skills tell the model to run these by absolute path, so the
+        deployed copy has to keep the source's executable bit; a plain
+        write_bytes lands 0644 and every invocation dies on permission denied.
+        Only scripts are marked; content files stay 0644.
+
+        Applied to byte-identical files too, so a deployed script that lost +x
+        (a backup restore, a dotfiles sync, a copy made on Windows, a write by
+        a den old enough to predate this rule) is repaired by a re-install
+        instead of staying broken forever -- the same repair _shell.py makes
+        for ~/.local/bin."""
+        if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
+            dest.chmod(0o755)
+
     def commit(self) -> None:
         changed = [d for d, c in self._items if d.is_file() and d.read_bytes() != c]
         overwrite = True
@@ -176,18 +191,14 @@ class _Writer:
         for dest, content in self._items:
             if dest.is_file():
                 if dest.read_bytes() == content:
+                    self._ensure_mode(dest)
                     continue
                 if not overwrite:
                     kept += 1
                     continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(content)
-            # The skills tell the model to run these by absolute path, so the
-            # deployed copy has to keep the source's executable bit; a plain
-            # write_bytes lands 0644 and every invocation dies on permission
-            # denied. Only scripts are marked; content files stay 0644.
-            if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
-                dest.chmod(0o755)
+            self._ensure_mode(dest)
         if kept:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
 

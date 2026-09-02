@@ -78,6 +78,20 @@ def test_install_skills_keeps_scripts_executable(tmp_path):
     assert not skill.stat().st_mode & 0o111
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no execute bit")
+def test_install_repairs_a_lost_executable_bit(tmp_path):
+    # A deployed script can lose +x without its bytes changing (backup restore,
+    # dotfiles sync, a copy made on Windows). The byte-identical fast path used
+    # to `continue` before the chmod, so the re-install reported success and
+    # left every call site dying on permission denied.
+    install_main(["skills", "--target", str(tmp_path)])
+    scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
+    script = scripts / "find-references.py"
+    script.chmod(0o644)
+    assert install_main(["skills", "--target", str(tmp_path)]) == 0
+    assert script.stat().st_mode & 0o111
+
+
 def test_install_skills_excludes_tests_and_pyc(tmp_path):
     install_main(["skills", "--target", str(tmp_path)])
     scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
