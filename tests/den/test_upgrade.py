@@ -69,17 +69,28 @@ def test_dry_run_shows_the_forced_steps(monkeypatch, capsys):
     assert "den install shell --force" in out
 
 
-def test_refresh_step_that_deployed_nothing_reports_it_with_a_force_hint(
-    monkeypatch, capsys
-):
+def test_refresh_step_that_kept_files_reports_it_with_a_force_hint(monkeypatch, capsys):
     # `den install skills` exits non-zero when a non-interactive run kept the
     # files it meant to deploy; the refresh must surface that, not exit 0.
     calls = _wire(monkeypatch, rcs={1: 1})
     assert upgrade_main(["--refresh"]) == 1
     assert len(calls) == 2
     err = capsys.readouterr().err
-    assert "NOT deployed" in err
+    # The step deployed everything it was allowed to and kept the rest, and any
+    # earlier step fully succeeded, so "nothing was deployed" would be false.
+    assert "did not complete" in err
+    assert "may already be deployed" in err
+    assert "NOT deployed" not in err
     assert "den upgrade --refresh --force" in err
+
+
+def test_refresh_failure_under_force_omits_the_force_hint(monkeypatch, capsys):
+    calls = _wire(monkeypatch, rcs={1: 1})
+    assert upgrade_main(["--refresh", "--force"]) == 1
+    assert len(calls) == 2
+    err = capsys.readouterr().err
+    assert "did not complete" in err
+    assert "--refresh --force" not in err, "already forced; the hint would be noise"
 
 
 def test_failed_upgrade_skips_refresh_and_propagates(monkeypatch):

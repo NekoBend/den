@@ -128,14 +128,17 @@ def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag
     for step in steps:
         proc = subprocess.run([den, *step])
         if proc.returncode != 0:
+            # Not "nothing was deployed": an install step exits non-zero when it
+            # KEPT even one modified file, having deployed the rest, and a later
+            # step fails only after every earlier one already succeeded.
             print(
                 f"den upgrade: `den {' '.join(step)}` exited"
-                f" {proc.returncode}; the new version's files are NOT deployed."
+                f" {proc.returncode}; the refresh did not complete. Some files"
+                " may already be deployed."
                 + (
                     ""
                     if force
-                    else " If it kept files that differ, re-run"
-                    " `den upgrade --refresh --force`."
+                    else " Re-run `den upgrade --refresh --force` to deploy the rest."
                 ),
                 file=sys.stderr,
             )
