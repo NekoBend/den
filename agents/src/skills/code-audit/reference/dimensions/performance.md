@@ -42,7 +42,7 @@ and leave correctness, safety, and style to their own passes.
 - Estimate the cost at the expected input size from the Step 1 intent.
   Separate "matters at the expected scale" from "theoretical only":
   the first is a real finding, the second is at most a nit.
-- When a performance finding is load-bearing,
+- When a performance finding is one the user will act on,
   recommend the user profile or benchmark to confirm,
   and say the review estimated rather than measured.
 

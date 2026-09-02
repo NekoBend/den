@@ -19,6 +19,8 @@ First decide which mode the request starts in, then follow that mode below:
 
 1. implement: write new feature code, or modify existing code.
    Triggers: implement, write, build, add, fix, refactor a function/class/module.
+   A failure whose cause is not yet known is `troubleshoot`, not this
+   mode; come here once the cause is established.
 2. test: write tests for code (existing or just produced).
    Triggers: write tests, add tests, cover this with tests, test this.
 3. schema: design a data or API schema.

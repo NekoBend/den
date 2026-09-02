@@ -44,11 +44,11 @@ and test adequacy to the tests pass.
 ## How to verify
 
 When the code is on disk and the toolchain exists,
-run the checks SKILL.md Step 3 names, plus the shared scripts below:
+run the checks and scripts SKILL.md Step 3 names:
 
 - the typechecker and linter catch a whole class of correctness
   defects, and the typecheck confirms imported APIs actually resolve.
-- check-broken-refs.py
+- check-broken-refs.py (path in SKILL.md Step 3)
   confirms a renamed or removed symbol left no dangling reference.
 
 Then reason by hand: list the inputs the code claims to handle

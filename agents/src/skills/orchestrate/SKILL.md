@@ -52,7 +52,7 @@ the master's own turn; the briefs become pass instructions.
    output goes to workers who did not write it, briefed read-only, and
    the workspace is re-checked (git status) after they return.
 3. A worker's report is material, not truth.
-   Before a load-bearing claim from a report is adopted, acted on, or
+   Before a report's claim that anything rests on is adopted, acted on, or
    repeated to the user, check it against the artifact it names - the
    file, the command output, the transcript. Numbers are the most
    dangerous kind: a counted result inherits every defect of the
@@ -150,8 +150,8 @@ worker telemetry.
 ## Mode: integrate
 
 ### Step I1: Verify before adopting
-For each returned report, check every load-bearing claim against the
-artifact it names (rule 3). What cannot be checked is carried as the
+For each returned report, check every claim the result rests on against
+the artifact it names (rule 3). What cannot be checked is carried as the
 worker's claim, labeled, never as fact.
 
 ### Step I2: Reconcile conflicts
@@ -261,8 +261,8 @@ Drop the lines a single-mode pass did not reach.
 - [ ] The user heard what was launched, and the conversation continued
       while backgrounded workers ran - or a foreground or sequential
       run was the deliberate, stated choice.
-- [ ] Every load-bearing claim from a report was verified against the
-      artifact it names, or is explicitly carried as unverified.
+- [ ] Every claim from a report that the result rests on was verified
+      against the artifact it names, or is explicitly carried as unverified.
 - [ ] Contradictions were debated and judged, not averaged.
 - [ ] Reviewers of the master's own work were read-only, and the
       workspace was re-checked after they returned.

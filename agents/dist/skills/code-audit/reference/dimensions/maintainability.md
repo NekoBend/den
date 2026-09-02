@@ -39,10 +39,11 @@ here the code is assumed to work, and the question is how well it reads.
 ## How to verify
 
 - the formatter and linter catch style drift
-  and some complexity signals (SKILL.md Step 3 names them per language);
-  ruff without a project config also flags public symbols
-  with no docstring.
-  See SKILL.md Step 3 for invocation.
+  and some complexity signals (SKILL.md Step 3 names them per language).
+  ruff's default rule set leaves the docstring rules off: unless a
+  discovered ruff configuration already selects D101-D103, run
+  `ruff check --extend-select D101,D102,D103 <file>` to flag public
+  symbols without one.
 - Read for intent: would a new contributor understand this
   in a single pass, without having to run it in their head?
 

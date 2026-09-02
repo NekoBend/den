@@ -5,8 +5,6 @@ description: Writes a new prompt from a goal, or diagnoses and rewrites a prompt
 
 # Prompt-engineering skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
-
 Produce prompts that a model follows correctly on the first try.
 A strong prompt is explicit, single-purpose, and self-checkable;
 it does not rely on the model to guess intent.
@@ -73,7 +71,7 @@ List two or three ways the prompt could be misread or could fail, then tighten
 the wording to close each one.
 
 ### Step A4: Deliver
-Output the prompt, then a short note on the load-bearing design choices.
+Output the prompt, then a short note on the design choices that carry it.
 
 ## Mode: improve
 
@@ -104,7 +102,7 @@ mapped to the principles.
     <the prompt>
     ```
 
-    **Design notes:** <the load-bearing choices: why this role, this format,
+    **Design notes:** <the choices that carry it: why this role, this format,
     these constraints>
 
 ### improve mode

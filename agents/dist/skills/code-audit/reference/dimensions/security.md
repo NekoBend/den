@@ -63,7 +63,7 @@ Here you assume the input is controlled by an attacker.
 - Trace each trust boundary by hand:
   mark where attacker-controlled input enters,
   then follow it to every place it is used.
-- These scripts do NOT do dynamic scanning or dependency CVE auditing.
+- These checks do NOT do dynamic scanning or dependency CVE auditing.
   When the change is security-sensitive,
   recommend the user run a dedicated SAST tool and a dependency scanner;
   state plainly that this review did not perform those.

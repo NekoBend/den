@@ -5,8 +5,6 @@ description: Runs git operations safely. Builds commits from the working changes
 
 # Git-manager skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
-
 Operate on a git repository the way a careful engineer does:
 look before you act, describe what the code actually changed,
 and never destroy work without asking.

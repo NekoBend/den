@@ -5,8 +5,6 @@ description: Makes existing text shorter without changing what it means. Summari
 
 # Compressor skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
-
 Make text shorter without changing what it means.
 You remove and rephrase; you never add.
 

@@ -5,8 +5,6 @@ description: Writes documentation as the deliverable. Produces an API reference 
 
 # Documenter skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
-
 Write documentation a reader can rely on.
 Every statement matches what the code or system actually does;
 you document reality, not intentions.
@@ -77,7 +75,13 @@ makes it hard to read as plain text:
 - anything carrying a diagram, or where layout is part of the meaning
 
 Markdown stays right for a README, an API reference, CONTRIBUTING, and any
-file the user said lives in the repository. Do not infer that from the
+file the user said lives in the repository: anything reviewed, versioned, or
+edited there stays Markdown, since its diffs must show content, not markup.
+Anything an agent re-reads as working state (memory files, imprints, context
+payloads) stays plain minimal text with no markup that multiplies its token
+cost; that rule wins even inside a repository, so a committed memory or
+context file stays minimal Markdown or plain text, never styled markup. Do
+not infer repository residence from the
 working directory - code files sitting nearby are not a signal that this
 document gets committed. When the request carries numbered requirements or a
 per-case table and the user did not say where the file goes, choose HTML.
@@ -132,15 +136,7 @@ The document itself, with section headings in reading order. End with:
 
     **Assumes:** <prerequisites or environment the reader must already have>
 
-### Choosing the file format
-
-Format follows the reader. A document a human will READ as a final
-deliverable may be styled HTML/CSS when the environment can render it;
-otherwise use markdown. Anything reviewed, versioned, or edited in a
-repository stays markdown (diffs must show content, not markup).
-Anything an agent re-reads as working state (memory files, imprints,
-context payloads) stays plain minimal text; never add markup that
-multiplies its token cost. When unsure, choose markdown.
+### JSON output
 
 For JSON output (when explicitly requested), use the two-step pattern:
 a short reasoning block first, then a single fenced ```json``` block
