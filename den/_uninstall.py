@@ -14,10 +14,19 @@ mirroring `den install`.
 from __future__ import annotations
 
 import contextlib
+import shutil
 import sys
 from pathlib import Path
 
 from . import _ui
+
+
+def _decode(raw: bytes) -> str:
+    """Decode an rc file losslessly. `errors="ignore"` would DROP every byte
+    that is not valid UTF-8 (a cp1252/latin-1 rc file loses its accented
+    characters); surrogateescape round-trips them so re-encoding reproduces
+    the original bytes exactly."""
+    return raw.decode("utf-8", errors="surrogateescape")
 
 
 def _has_block(rc: Path, line: str) -> bool:
@@ -26,7 +35,7 @@ def _has_block(rc: Path, line: str) -> bool:
     if not rc.is_file():
         return False
     try:
-        text = rc.read_text(encoding="utf-8", errors="ignore")
+        text = _decode(rc.read_bytes())
     except OSError:
         return False
     # den-managed only when the marker line is immediately followed by den's
@@ -41,35 +50,50 @@ def _has_block(rc: Path, line: str) -> bool:
 
 def _strip_block(rc: Path, line: str) -> None:
     """Remove den's rc block: the `# ===== den =====` marker, the source line
-    that follows it, and one preceding blank line (the append form). Preserves
-    the file's CRLF/LF line ending. If the file is EXACTLY what den created
-    (only the block, nothing else), den owns it, so it is removed."""
+    that follows it, and one preceding blank line (the append form). If nothing
+    but den's block was in the file, den created it, so the file goes too.
+
+    Works on BYTES, keeping each surviving line with its own terminator. The
+    previous version set one `crlf` flag if the file contained a single CRLF
+    anywhere and then rewrote every ending to match, so a file mixing LF and
+    CRLF (a Windows editor touching a POSIX rc file, a merge) came back with
+    every LF line converted -- the opposite of the byte-exact promise. Lines den
+    did not write are now copied through verbatim, endings and non-UTF-8 bytes
+    alike, and no decode happens at all.
+    """
     from ._shell import _COMMENT
 
-    text = rc.read_bytes().decode("utf-8", errors="ignore")
-    crlf = "\r\n" in text
-    norm = text.replace("\r\n", "\n")
-    if norm == f"{_COMMENT}\n{line}\n":
-        with contextlib.suppress(OSError):
-            rc.unlink()
-        return
-    lines = norm.split("\n")
-    out: list[str] = []
+    marker = _COMMENT.encode("utf-8")
+    wire = line.encode("utf-8")
+    lines = rc.read_bytes().splitlines(keepends=True)
+
+    def content(raw: bytes) -> bytes:
+        """The line without its terminator (\n, \r\n or a bare \r)."""
+        return raw.rstrip(b"\r\n")
+
+    kept: list[bytes] = []
+    stripped = False
     i = 0
     while i < len(lines):
         # Only den's block: marker immediately followed by den's wire line.
         # A stray marker (or a user-edited wire line) is left untouched.
-        if lines[i].strip() == _COMMENT and i + 1 < len(lines) and lines[i + 1] == line:
-            if out and out[-1] == "":
-                out.pop()
+        if (
+            content(lines[i]).strip() == marker
+            and i + 1 < len(lines)
+            and content(lines[i + 1]) == wire
+        ):
+            if kept and content(kept[-1]) == b"":
+                kept.pop()  # the blank line the append form inserted
+            stripped = True
             i += 2
             continue
-        out.append(lines[i])
+        kept.append(lines[i])
         i += 1
-    new = "\n".join(out)
-    if crlf:
-        new = new.replace("\n", "\r\n")
-    rc.write_text(new, encoding="utf-8", newline="")
+    if stripped and not kept:  # the file was den's block and nothing else
+        with contextlib.suppress(OSError):
+            rc.unlink()
+        return
+    rc.write_bytes(b"".join(kept))
 
 
 class _Remover:
@@ -97,17 +121,26 @@ class _Remover:
     def _plan(self) -> tuple[list[Path], list[Path], list[tuple[Path, str]]]:
         delete: list[Path] = []
         keep: list[Path] = []
-        seen: set[Path] = set()
+        # A dest can be staged more than once, because `den install` can write
+        # more than one content there (the --no-den-cli SKILL.md variants, the
+        # frontier/weak parents). Collect every candidate and delete when the
+        # bytes on disk match ANY of them -- first-wins would report den's own
+        # output as a file the user changed.
+        candidates: dict[Path, list[bytes]] = {}
+        order: list[Path] = []
         for dest, content in self._files:
-            if dest in seen:
-                continue
-            seen.add(dest)
+            if dest not in candidates:
+                candidates[dest] = []
+                order.append(dest)
+            candidates[dest].append(content)
+        for dest in order:
             if not dest.is_file():
                 continue
             try:
-                same = dest.read_bytes() == content
+                on_disk = dest.read_bytes()
             except OSError:
                 continue
+            same = any(on_disk == c for c in candidates[dest])
             (delete if same else keep).append(dest)
         unwire = [(rc, line) for rc, line in self._unwire if _has_block(rc, line)]
         return delete, keep, unwire
@@ -150,12 +183,32 @@ class _Remover:
         _ui.say(f"removed {len(delete)} file(s); unwired {len(unwire)} rc file(s).")
         return 0
 
+    @staticmethod
+    def _drop_pycache(cur: Path) -> None:
+        """Remove `cur/__pycache__` when it is all that is left of `cur`.
+
+        The skills tell the model to run den's deployed shared/scripts/*.py by
+        absolute path, and those import `_common`, so CPython writes a
+        `__pycache__/` next to them. It is residue of den's own files, never
+        staged and never the user's, but it would block the prune and leave a
+        gutted skill directory behind. Only compiled bytecode is dropped."""
+        try:
+            rest = list(cur.iterdir())
+            if len(rest) != 1 or rest[0].name != "__pycache__" or not rest[0].is_dir():
+                return
+            if any(p.suffix != ".pyc" or not p.is_file() for p in rest[0].iterdir()):
+                return  # something other than bytecode lives there; leave it
+        except OSError:
+            return
+        shutil.rmtree(rest[0], ignore_errors=True)
+
     def _prune(self, deleted: list[Path]) -> None:
         home = Path.home()
         # deepest first, so a dir is only checked after its children were emptied
         for f in sorted(deleted, key=lambda p: len(p.parts), reverse=True):
             cur = f.parent
             while cur not in self._boundaries and cur not in {home, cur.parent}:
+                self._drop_pycache(cur)
                 try:
                     next(cur.iterdir())
                     break  # not empty
@@ -169,6 +222,20 @@ class _Remover:
                 except OSError:
                     break
                 cur = parent
+
+
+def _den_free_skills() -> set[str]:
+    """Skills whose `--no-den-cli` copy differs from the den-aware one: exactly
+    the keys of the substitution table (a skill with no entry is copied
+    unchanged). Uninstall stages the second variant only for these, so it
+    recognizes either flavor without materializing every skill twice. A missing
+    or broken table costs the extra candidate, never the uninstall itself."""
+    try:
+        from ._portable import table
+
+        return set(table())
+    except (OSError, ValueError):
+        return set()
 
 
 def _stage_skills(
@@ -187,6 +254,7 @@ def _stage_skills(
     )
 
     names = _skill_names()
+    den_free = _den_free_skills()
 
     def parent_bytes(dest: Path, parent_file: str) -> bytes | None:
         """The parent content to treat as den-identical at dest. den install
@@ -205,7 +273,13 @@ def _stage_skills(
 
     def do(skills_target: Path, parent_dir: Path, parent_file: str | None) -> None:
         for name in names:
+            # `den install skills` writes either the den-aware skill or the
+            # --no-den-cli one, and nothing on disk records which. Stage both
+            # so either is recognized as den's own output; _plan accepts a dest
+            # whose bytes match any staged candidate.
             _install_skill(name, skills_target, remover)
+            if name in den_free:
+                _install_skill(name, skills_target, remover, no_den_cli=True)
         remover.boundary(parent_dir)
         if with_parent and parent_file:
             content = parent_bytes(parent_dir / parent_file, parent_file)
@@ -228,6 +302,8 @@ def _stage_skills(
         if legacy.is_dir():
             for name in names:
                 _install_skill(name, legacy, remover)
+                if name in den_free:
+                    _install_skill(name, legacy, remover, no_den_cli=True)
             remover.boundary(legacy.parent)
         return
     for tool in tools:

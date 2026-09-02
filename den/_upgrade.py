@@ -22,15 +22,30 @@ _REFRESH_STEPS = (
 )
 
 
+def _refresh_steps(*, force: bool) -> tuple[tuple[str, ...], ...]:
+    """The redeploy commands. `den install` decides "this file is den's" by
+    comparing bytes, and after an upgrade EVERY file the new version changed
+    differs -- indistinguishable from a local edit. So a plain --refresh keeps
+    them all (silently, when stdin is not a tty) and deploys nothing. --force
+    is how a scripted refresh says "the deployed copy is den's, replace it"."""
+    return tuple((*step, "--force") if force else step for step in _REFRESH_STEPS)
+
+
 def _usage() -> None:
     print(
-        "usage: den upgrade [--refresh] [--dry-run]   (alias: den update)\n"
+        "usage: den upgrade [--refresh] [--force] [--dry-run]"
+        "   (alias: den update)\n"
         "\n"
         "Upgrade den itself (runs `uv tool upgrade den`).\n"
         "\n"
         "  --refresh  after upgrading, redeploy the bundled content by running\n"
         "             `den install skills --with-parent` and `den install shell`\n"
         "             with the new binary\n"
+        "  --force    pass --force to those redeploy steps, overwriting deployed\n"
+        "             files that differ. After an upgrade every file the new\n"
+        "             version changed differs, so a non-interactive --refresh\n"
+        "             without it keeps them all and deploys nothing (it then\n"
+        "             exits non-zero rather than reporting success).\n"
         "  --dry-run  print the commands without running anything"
     )
 
@@ -42,15 +57,24 @@ def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag
     if args and args[0] in {"-h", "--help", "help"}:
         _usage()
         return 0
-    refresh = dry_run = False
+    refresh = dry_run = force = False
     for a in args:
         if a == "--refresh":
             refresh = True
+        elif a == "--force":
+            force = True
         elif a == "--dry-run":
             dry_run = True
         else:
             print(f"den upgrade: unknown argument '{a}'", file=sys.stderr)
             return 2
+    if force and not refresh:
+        print(
+            "den upgrade: --force only applies to --refresh; nothing is"
+            " redeployed without it.",
+            file=sys.stderr,
+        )
+    steps = _refresh_steps(force=force)
 
     if not shutil.which("uv"):
         print(
@@ -64,7 +88,7 @@ def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag
     if dry_run:
         print(f"[dry-run] would run: {' '.join(upgrade_cmd)}")
         if refresh:
-            for step in _REFRESH_STEPS:
+            for step in steps:
                 print(f"[dry-run] would run: den {' '.join(step)}")
         return 0
 
@@ -101,8 +125,22 @@ def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag
             file=sys.stderr,
         )
         return 1
-    for step in _REFRESH_STEPS:
+    for step in steps:
         proc = subprocess.run([den, *step])
         if proc.returncode != 0:
+            # Not "nothing was deployed": an install step exits non-zero when it
+            # KEPT even one modified file, having deployed the rest, and a later
+            # step fails only after every earlier one already succeeded.
+            print(
+                f"den upgrade: `den {' '.join(step)}` exited"
+                f" {proc.returncode}; the refresh did not complete. Some files"
+                " may already be deployed."
+                + (
+                    ""
+                    if force
+                    else " Re-run `den upgrade --refresh --force` to deploy the rest."
+                ),
+                file=sys.stderr,
+            )
             return proc.returncode
     return 0

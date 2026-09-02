@@ -145,6 +145,23 @@ class _Stager(Protocol):
     def stage(self, dest: Path, content: bytes) -> None: ...
 
 
+def _chmod_no_follow(path: Path, mode: int) -> None:
+    """chmod, but never through a symlink.
+
+    chmod FOLLOWS a link, so a symlinked destination would hand its outside
+    target the mode -- and every caller reaches here on the byte-identical
+    repair path, where den deployed nothing at all. A 0o600 file elsewhere must
+    not become world-executable because den decided nothing needed doing. The
+    link is the user's own arrangement; den leaves it and its target alone.
+
+    One helper, shared by the staged writes and _shell.py's ~/.local/bin repair,
+    so the rule cannot drift between the two.
+    """
+    if path.is_symlink():
+        return
+    path.chmod(mode)
+
+
 class _Writer:
     """Collect (dest, content) writes, then commit them. New and byte-identical
     files are written silently; files that already exist and DIFFER are listed
@@ -158,9 +175,31 @@ class _Writer:
     def stage(self, dest: Path, content: bytes) -> None:
         self._items.append((dest, content))
 
-    def commit(self) -> None:
+    @staticmethod
+    def _ensure_mode(dest: Path) -> None:
+        """The skills tell the model to run these by absolute path, so the
+        deployed copy has to keep the source's executable bit; a plain
+        write_bytes lands 0644 and every invocation dies on permission denied.
+        Only scripts are marked; content files stay 0644.
+
+        Applied to byte-identical files too, so a deployed script that lost +x
+        (a backup restore, a dotfiles sync, a copy made on Windows, a write by
+        a den old enough to predate this rule) is repaired by a re-install
+        instead of staying broken forever -- the same repair _shell.py makes
+        for ~/.local/bin.
+
+        Never through a symlink -- see _chmod_no_follow."""
+        if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
+            _chmod_no_follow(dest, 0o755)
+
+    def commit(self) -> int:
+        """Write the staged files. Returns the number of differing files that
+        were kept WITHOUT asking (the non-interactive skip), so a scripted
+        caller can exit non-zero instead of reporting a deploy that never
+        happened; an interactive "no" is the user's own choice and returns 0."""
         changed = [d for d, c in self._items if d.is_file() and d.read_bytes() != c]
         overwrite = True
+        silently_skipped = False
         if changed and not self.force:
             _ui.say(
                 "These files exist and differ from the bundled version:", style="yellow"
@@ -172,24 +211,22 @@ class _Writer:
             else:
                 print("  skipped (re-run with --force to overwrite)", file=sys.stderr)
                 overwrite = False
+                silently_skipped = True
         kept = 0
         for dest, content in self._items:
             if dest.is_file():
                 if dest.read_bytes() == content:
+                    self._ensure_mode(dest)
                     continue
                 if not overwrite:
                     kept += 1
                     continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(content)
-            # The skills tell the model to run these by absolute path, so the
-            # deployed copy has to keep the source's executable bit; a plain
-            # write_bytes lands 0644 and every invocation dies on permission
-            # denied. Only scripts are marked; content files stay 0644.
-            if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
-                dest.chmod(0o755)
+            self._ensure_mode(dest)
         if kept:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
+        return kept if silently_skipped else 0
 
 
 def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
@@ -404,10 +441,16 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             profile=profile,
             no_den_cli=no_den_cli,
         )
-        if with_parent and not dry_run:
-            # custom targets get both AGENTS.md and CLAUDE.md at the root
+        if with_parent:
+            # custom targets get both AGENTS.md and CLAUDE.md at the root, so
+            # the dry-run has to name CLAUDE.md too -- a preview that omits a
+            # destination the real run overwrites is worse than no preview.
             claude = _parent_source("CLAUDE.md", profile)
-            if claude.is_file():
+            if not claude.is_file():
+                print(f"  warning: {claude} not found", file=sys.stderr)
+            elif dry_run:
+                print(f"[dry-run]   parent ({profile}) -> {root}/CLAUDE.md")
+            else:
                 writer.stage(root / "CLAUDE.md", claude.read_bytes())
         processed.append(root / "skills")
 
@@ -436,8 +479,7 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
         )
         processed.append(agents)
 
-    if not dry_run:
-        writer.commit()
+    skipped = writer.commit() if not dry_run else 0
 
     if codex_config:
         target = processed[0] if processed else Path("~/.agents/skills").expanduser()
@@ -451,7 +493,10 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             "<language_policy>, <work_discipline>). Re-run with --with-parent "
             "to install it into each tool's location."
         )
-    return 0
+    # A non-interactive run that kept differing files deployed nothing for them.
+    # Say so with the exit code: `den upgrade --refresh` (and any script) would
+    # otherwise read "success" from a run that left the old version in place.
+    return 1 if skipped else 0
 
 
 def _interactive() -> int:
@@ -548,8 +593,7 @@ def _install_cheatsheets(argv: list[str]) -> int:
     for f in files:
         writer.stage(dest_root / f.relative_to(src), f.read_bytes())
     print(f"installing cheatsheets -> {dest_root}")
-    writer.commit()
-    return 0
+    return 1 if writer.commit() else 0
 
 
 def _usage() -> None:

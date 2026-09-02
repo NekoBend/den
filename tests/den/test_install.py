@@ -78,6 +78,20 @@ def test_install_skills_keeps_scripts_executable(tmp_path):
     assert not skill.stat().st_mode & 0o111
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no execute bit")
+def test_install_repairs_a_lost_executable_bit(tmp_path):
+    # A deployed script can lose +x without its bytes changing (backup restore,
+    # dotfiles sync, a copy made on Windows). The byte-identical fast path used
+    # to `continue` before the chmod, so the re-install reported success and
+    # left every call site dying on permission denied.
+    install_main(["skills", "--target", str(tmp_path)])
+    scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
+    script = scripts / "find-references.py"
+    script.chmod(0o644)
+    assert install_main(["skills", "--target", str(tmp_path)]) == 0
+    assert script.stat().st_mode & 0o111
+
+
 def test_install_skills_excludes_tests_and_pyc(tmp_path):
     install_main(["skills", "--target", str(tmp_path)])
     scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
@@ -90,6 +104,21 @@ def test_install_skills_dry_run_writes_nothing(tmp_path, capsys):
     assert rc == 0
     assert not (tmp_path / "skills").exists()
     assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_install_dry_run_names_every_root_file_the_real_run_writes(tmp_path, capsys):
+    # A preview that omits a destination the real run overwrites is worse than
+    # no preview: --target --with-parent also writes CLAUDE.md at the root, and
+    # only AGENTS.md was ever announced.
+    args = ["skills", "--target", str(tmp_path), "--with-parent"]
+    assert install_main([*args, "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert not (tmp_path / "skills").exists()
+    assert install_main(args) == 0
+    written = sorted(p.name for p in tmp_path.iterdir() if p.is_file())
+    assert written == ["AGENTS.md", "CLAUDE.md"]
+    for name in written:
+        assert f"{tmp_path}/{name}" in out
 
 
 def test_install_codex_config_prints_blocks(tmp_path, capsys):
@@ -274,8 +303,14 @@ def test_install_keeps_modified_file_non_tty(tmp_path, monkeypatch):
     install_main(["skills", "--target", str(tmp_path)])
     skill = tmp_path / "skills" / "coding" / "SKILL.md"
     skill.write_text(skill.read_text() + "\nLOCAL EDIT\n")
-    install_main(["skills", "--target", str(tmp_path)])  # non-TTY -> skip changed
+    # non-TTY -> the changed file is skipped, and the run says so with its exit
+    # code: `den upgrade --refresh` reads it, and a refresh that deployed none
+    # of the new version's files must not report success.
+    assert install_main(["skills", "--target", str(tmp_path)]) == 1
     assert "LOCAL EDIT" in skill.read_text()
+    # --force is the way through, and it succeeds
+    assert install_main(["skills", "--target", str(tmp_path), "--force"]) == 0
+    assert "LOCAL EDIT" not in skill.read_text()
 
 
 def test_install_force_overwrites_modified(tmp_path, monkeypatch):
@@ -295,6 +330,18 @@ def test_install_interactive_overwrite_on_yes(tmp_path, monkeypatch):
     monkeypatch.setattr("den._ui.confirm", lambda *a, **k: True)
     install_main(["skills", "--target", str(tmp_path)])
     assert "CLOBBERED" not in skill.read_text()
+
+
+def test_install_interactive_decline_is_not_a_failure(tmp_path, monkeypatch):
+    # keeping a file because the user said "no" is their choice, not a failed
+    # deploy; only the unattended skip is reported as one
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    install_main(["skills", "--target", str(tmp_path)])
+    skill = tmp_path / "skills" / "coding" / "SKILL.md"
+    skill.write_text("MINE")
+    monkeypatch.setattr("den._ui.confirm", lambda *a, **k: False)
+    assert install_main(["skills", "--target", str(tmp_path)]) == 0
+    assert skill.read_text() == "MINE"
 
 
 def test_install_cline_parent_goes_to_cline_rules_dir(tmp_path, monkeypatch):
@@ -353,3 +400,22 @@ def test_leaf_help_prints_usage(capsys):
         for flag in ("--help", "-h", "help"):
             assert install_main([target, flag]) == 0
             assert "usage: den install" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no execute bit")
+def test_install_does_not_chmod_through_a_symlinked_destination(tmp_path, symlink):
+    """chmod follows a symlink, so the mode repair used to hand a symlinked
+    destination's OUTSIDE target 0o755 -- on the byte-identical path, with
+    nothing deployed at all."""
+    install_main(["skills", "--target", str(tmp_path)])
+    scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
+    script = scripts / "find-references.py"
+    outside = tmp_path / "outside.py"
+    outside.write_bytes(script.read_bytes())  # byte-identical, so nothing deploys
+    outside.chmod(0o600)
+    script.unlink()
+    symlink(outside, script)
+
+    assert install_main(["skills", "--target", str(tmp_path)]) == 0
+    assert outside.stat().st_mode & 0o777 == 0o600, "the link's target is untouched"
+    assert script.is_symlink(), "and the link itself is left as the user made it"

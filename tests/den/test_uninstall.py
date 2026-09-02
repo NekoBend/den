@@ -22,6 +22,54 @@ def test_uninstall_removes_unmodified_keeps_modified(tmp_path, monkeypatch):
     assert not review.is_file()  # den's, removed
 
 
+def test_uninstall_removes_a_no_den_cli_install(tmp_path, monkeypatch):
+    # `den install skills --no-den-cli` rewrites three SKILL.md files, and
+    # nothing on disk records which flavor was installed. Re-deriving only the
+    # den-aware bytes made uninstall report den's OWN output as "files you
+    # changed": the three SKILL.md files survived while every sibling
+    # (examples/, shared/reference/, shared/scripts/) was deleted, leaving a
+    # gutted skill whose absolute shared/ paths point at nothing.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    plain = tmp_path / "plain"
+    denfree = tmp_path / "denfree"
+    _install(plain)
+    _install(denfree, "--no-den-cli")
+    coding = denfree / "skills" / "coding" / "SKILL.md"
+    plain_coding = plain / "skills" / "coding" / "SKILL.md"
+    # the flavors really do differ, else this test would prove nothing
+    assert coding.read_bytes() != plain_coding.read_bytes()
+    assert uninstall_main(["skills", "--target", str(denfree), "--yes"]) == 0
+    assert not (denfree / "skills").exists()
+
+
+def test_uninstall_prunes_pycache_left_by_running_the_scripts(tmp_path, monkeypatch):
+    # The skills tell the model to run den's deployed shared/scripts/*.py by
+    # absolute path; they import _common, so CPython writes a __pycache__ next
+    # to them. It is den's own residue, but it is not staged, so it used to
+    # block the prune and strand the whole skill directory.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    _install(tmp_path)
+    scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
+    assert (scripts / "_common.py").is_file()  # the import that makes the cache
+    cache = scripts / "__pycache__"
+    cache.mkdir()
+    (cache / "_common.cpython-312.pyc").write_bytes(b"\x00fake bytecode")
+    assert uninstall_main(["skills", "--target", str(tmp_path), "--yes"]) == 0
+    assert not (tmp_path / "skills").exists()
+
+
+def test_uninstall_keeps_pycache_holding_foreign_files(tmp_path, monkeypatch):
+    # only compiled bytecode is treated as den's residue
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    _install(tmp_path)
+    cache = tmp_path / "skills" / "coding" / "shared" / "scripts" / "__pycache__"
+    cache.mkdir()
+    mine = cache / "notes.txt"
+    mine.write_text("mine\n")
+    assert uninstall_main(["skills", "--target", str(tmp_path), "--yes"]) == 0
+    assert mine.is_file()
+
+
 def test_uninstall_prunes_emptied_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path)
@@ -154,12 +202,57 @@ def test_strip_block_keeps_whitespace_only_user_content(tmp_path):
     assert "den" not in rc.read_text()
 
 
+def test_strip_block_preserves_non_utf8_bytes(tmp_path):
+    # A cp1252/latin-1 rc file (old Notepad default): den's block is ASCII, so
+    # it is found and stripped, but a lossy decode would silently drop the
+    # user's 0xe9 byte while rewriting the whole file.
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    mine = "alias caf='cd ~/Caf\xe9'\n".encode("latin-1")
+    rc.write_bytes(mine + f"\n# ===== den =====\n{line}\n".encode())
+    assert _has_block(rc, line)
+    _strip_block(rc, line)
+    assert rc.read_bytes() == mine  # every byte den did not write round-trips
+
+
 def test_strip_block_preserves_crlf(tmp_path):
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
     rc = tmp_path / "profile.ps1"
     rc.write_bytes(f"Set-Foo 1\r\n\r\n# ===== den =====\r\n{line}\r\n".encode())
     _strip_block(rc, line)
     assert rc.read_bytes() == b"Set-Foo 1\r\n"  # CRLF kept, not flipped to LF
+
+
+def test_strip_block_keeps_mixed_line_endings(tmp_path):
+    # A file mixing LF and CRLF (a Windows editor touching a POSIX rc file, a
+    # merge): den removes its own block and leaves every other line's ending
+    # exactly as it found it. The old flag-and-normalize pass rewrote them all.
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    mine = b"export A=1\nexport B=2\r\nexport C=3\n"
+    rc.write_bytes(mine + f"\n# ===== den =====\n{line}\n".encode())
+    assert _has_block(rc, line)
+    _strip_block(rc, line)
+    assert rc.read_bytes() == mine, "every byte outside den's block is untouched"
+
+
+def test_strip_block_keeps_crlf_block_in_an_lf_file(tmp_path):
+    # The block itself carries CRLF while the user's lines are LF; removing it
+    # must not drag the user's lines to CRLF.
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    mine = b"export A=1\nexport B=2\n"
+    rc.write_bytes(mine + f"\r\n# ===== den =====\r\n{line}\r\n".encode())
+    _strip_block(rc, line)
+    assert rc.read_bytes() == mine
+
+
+def test_strip_block_keeps_a_missing_final_newline(tmp_path):
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    rc.write_bytes(f"# ===== den =====\n{line}\nalias x=y".encode())
+    _strip_block(rc, line)
+    assert rc.read_bytes() == b"alias x=y", "no newline invented at EOF"
 
 
 def test_strip_block_removes_den_created_empty_file(tmp_path):

@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import socket
+import sys
 import threading
 import time
 
@@ -25,6 +26,13 @@ def served(tmp_path):
     server.shutdown()
     server.server_close()
     thread.join(timeout=5)
+
+
+def _umask():
+    """The process umask, read back the only way POSIX offers (set and restore)."""
+    current = os.umask(0o022)
+    os.umask(current)
+    return current
 
 
 def _request(port, method, path, body=None, headers=None):
@@ -231,9 +239,13 @@ def test_tail_lines_boundaries(tmp_path):
     full = [e.rstrip("\n") for e in entries]
     line = len(entries[0])
 
-    assert _board._tail_lines(path, 10_000) == full
-    assert _board._tail_lines(path, line * 2 + 10) == full[3:], "partial dropped"
-    assert _board._tail_lines(path, line * 2) == full[3:], "exact boundary kept"
+    assert _board._tail_lines(tmp_path, path, 10_000) == full
+    assert _board._tail_lines(tmp_path, path, line * 2 + 10) == full[3:], (
+        "partial dropped"
+    )
+    assert _board._tail_lines(tmp_path, path, line * 2) == full[3:], (
+        "exact boundary kept"
+    )
 
 
 def test_claim_lock_is_exclusive(tmp_path):
@@ -523,3 +535,209 @@ def test_main_serve_path_writes_lock_and_reprints(tmp_path, capsys):
 
     assert _board.main(["--dir", str(tmp_path)]) == 0
     assert "already running" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# symlink hardening: a cloned repo ships .den/board/, so a symlink there would
+# turn every board write into an append to a file outside the workspace.
+# --------------------------------------------------------------------------- #
+
+_OUTSIDE_TEXT = "ORIGINAL\n"
+
+
+def _outside(tmp_path):
+    path = tmp_path / "outside.log"
+    path.write_text(_OUTSIDE_TEXT)
+    return path
+
+
+def test_agent_append_refuses_symlinked_file(tmp_path, capsys, symlink):
+    outside = _outside(tmp_path)
+    proj = tmp_path / "repo"
+    (proj / ".den" / "board").mkdir(parents=True)
+    symlink(outside, _board._agent_path(proj))
+    assert _board.main(["task", "--dir", str(proj), "do the thing"]) == 1
+    assert outside.read_text() == _OUTSIDE_TEXT
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def test_agent_append_refuses_symlinked_board_dir(tmp_path, symlink):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    symlink(elsewhere, proj / ".den" / "board")
+    assert _board.main(["task", "--dir", str(proj), "do the thing"]) == 1
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_report_post_refuses_symlinked_reports_file(served, tmp_path, symlink):
+    _root, _server, port = served
+    outside = _outside(tmp_path)
+    reports = _board._reports_path(tmp_path)
+    reports.unlink(missing_ok=True)
+    symlink(outside, reports)
+    status, _body = _request(port, "POST", "/api/report", {"button": "bug"})
+    assert status == 500
+    assert outside.read_text() == _OUTSIDE_TEXT
+
+
+def test_tail_lines_ignores_symlinked_file(tmp_path, symlink):
+    outside = tmp_path / "secrets.txt"
+    outside.write_text('{"leaked": true}\n')
+    proj = tmp_path / "repo"
+    (proj / ".den" / "board").mkdir(parents=True)
+    reports = _board._reports_path(proj)
+    symlink(outside, reports)
+    assert _board._tail_lines(proj, reports, 10_000) == []
+
+
+def test_scaffold_refuses_symlinked_config(tmp_path, capsys, symlink):
+    outside = tmp_path / "elsewhere.json"
+    outside.write_text('{"title": "planted"}\n')
+    proj = tmp_path / "repo"
+    (proj / ".den" / "board").mkdir(parents=True)
+    symlink(outside, proj / ".den" / "board" / "board.json")
+    config = _board.ensure_scaffold(proj)
+    assert config["title"] is None, "the planted config is not used"
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def _plant_lock_symlink(tmp_path, symlink, payload="outside file\n"):
+    """A workspace whose .den/board/server.json is a symlink to a file the board
+    has no business reading, writing, or deleting."""
+    outside = tmp_path / "outside.json"
+    outside.write_text(payload)
+    proj = tmp_path / "repo"
+    (proj / ".den" / "board").mkdir(parents=True)
+    symlink(outside, _board._lock_path(proj))
+    return proj, outside
+
+
+def test_existing_instance_ignores_symlinked_lock(tmp_path, capsys, symlink):
+    # A planted lock could otherwise name any port for `den board` to probe and
+    # any pid for it to trust.
+    proj, outside = _plant_lock_symlink(
+        tmp_path, symlink, json.dumps({"pid": 1, "port": 8484}) + "\n"
+    )
+    assert _board._existing_instance(proj) is None
+    assert outside.is_file(), "the stale-lock cleanup must not reach the target"
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def test_release_lock_refuses_symlinked_lock(tmp_path, symlink):
+    # The planted file names our own pid, which is what used to buy the unlink.
+    proj, outside = _plant_lock_symlink(
+        tmp_path, symlink, json.dumps({"pid": os.getpid(), "port": 1}) + "\n"
+    )
+    _board._release_lock(proj)
+    assert outside.is_file()
+    assert _board._lock_path(proj).is_symlink(), (
+        "a lock den refuses to read is not one it may clear"
+    )
+
+
+def test_claim_lock_refuses_symlinked_lock(tmp_path, capsys, symlink):
+    proj, outside = _plant_lock_symlink(tmp_path, symlink)
+    assert _board._claim_lock(proj) is False
+    assert outside.read_text() == "outside file\n"
+    # O_EXCL alone also returns False here, but silently, leaving the caller to
+    # "take over" a lock it cannot see was planted. The refusal must be spoken.
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def test_write_lock_refuses_symlinked_lock(tmp_path, symlink):
+    proj, outside = _plant_lock_symlink(tmp_path, symlink)
+    assert _board._write_lock(proj, {"pid": 1, "port": 8484}) is False
+    assert outside.read_text() == "outside file\n"
+
+
+def test_unlink_lock_refuses_symlinked_lock(tmp_path, symlink):
+    proj, outside = _plant_lock_symlink(tmp_path, symlink)
+    _board._unlink_lock(proj)
+    assert outside.is_file()
+    assert _board._lock_path(proj).is_symlink(), "the link is left as evidence"
+
+
+def test_lock_round_trip_still_works(tmp_path):
+    assert _board._claim_lock(tmp_path) is True
+    assert _board._write_lock(tmp_path, {"pid": os.getpid(), "port": 8484}) is True
+    assert _board._read_lock(tmp_path) == {"pid": os.getpid(), "port": 8484}
+    _board._release_lock(tmp_path)
+    assert not _board._lock_path(tmp_path).exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX mode bits; the ubuntu jobs cover this"
+)
+def test_board_files_are_not_created_executable(tmp_path):
+    # os.open's default mode is 0o777, so an unspecified mode ships an
+    # executable reports.jsonl / agent.jsonl.
+    _board._append_agent(tmp_path, "task", "do the thing", None)
+    _board._append_line(tmp_path, _board._reports_path(tmp_path), "{}\n")
+    for path in (_board._agent_path(tmp_path), _board._reports_path(tmp_path)):
+        mode = path.stat().st_mode & 0o777
+        assert not mode & 0o111, f"{path.name} is executable ({mode:o})"
+        assert mode == 0o666 & ~_umask(), f"{path.name} is {mode:o}"
+
+
+def test_main_does_not_serve_when_the_lock_cannot_be_recorded(
+    tmp_path, monkeypatch, capsys
+):
+    """An unrecorded server is invisible to _existing_instance, so a second
+    `den board` would start a twin on another port and split the reports."""
+    board = tmp_path / ".den" / "board"
+    board.mkdir(parents=True)
+    (board / "board.json").write_text(json.dumps({"port": 0}))
+    monkeypatch.setattr(_board, "_write_lock", lambda root, info: False)
+    # Returns instead of blocking in serve_forever: a hang here IS the failure.
+    assert _board.main(["--dir", str(tmp_path)]) == 1
+    out = capsys.readouterr()
+    assert "serving" not in out.out
+    assert "not serving" in out.err
+    assert not (board / "server.json").exists(), "the claim is released"
+    assert _board._existing_instance(tmp_path) is None
+
+
+def test_non_utf8_lock_reads_as_an_invalid_lock(tmp_path):
+    # A repo can ship .den/board/server.json with any bytes in it. That is an
+    # invalid lock, as it always was -- not a UnicodeDecodeError out of den board.
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b'{"pid": 1, "port": 8484, "root": "\xff\xfe"}\n')
+    assert _board._read_lock(tmp_path) is None
+    assert _board._existing_instance(tmp_path) is None
+    # Left in place, exactly as an unparseable lock always was: _acquire's
+    # takeover path clears it after no live twin answers.
+    assert lock.is_file()
+    _board._unlink_lock(tmp_path)
+    assert _board._claim_lock(tmp_path) is True, "den board can still take over"
+
+
+def test_non_utf8_lock_does_not_block_release(tmp_path):
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"\xff\xfe not json at all")
+    _board._release_lock(tmp_path)  # must not raise
+    assert lock.is_file(), "not ours to remove: no readable pid says so"
+
+
+def test_main_does_not_serve_when_the_lock_write_raises(tmp_path, monkeypatch, capsys):
+    """_write_lock reaches os.open, which raises on a full or read-only
+    filesystem (and on O_NOFOLLOW catching a symlink swapped in after the
+    pre-check). That must take the same path as a refusal, not a traceback."""
+    board = tmp_path / ".den" / "board"
+    board.mkdir(parents=True)
+    (board / "board.json").write_text(json.dumps({"port": 0}))
+
+    def _boom(root, info):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(_board, "_write_lock", _boom)
+    # Returns instead of raising, and instead of blocking in serve_forever.
+    assert _board.main(["--dir", str(tmp_path)]) == 1
+    out = capsys.readouterr()
+    assert "serving" not in out.out
+    assert "No space left on device" in out.err
+    assert "not serving" in out.err
+    assert not (board / "server.json").exists(), "the claim is released"

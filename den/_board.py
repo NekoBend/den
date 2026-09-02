@@ -51,7 +51,12 @@ from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
-from ._memory import _find_den_dir
+from ._memory import (
+    _find_den_dir,
+    _read_guarded,
+    _symlink_component,
+    _write_guarded,
+)
 
 _PREFERRED_PORT = 8484
 _PORT_TRIES = 20
@@ -93,6 +98,84 @@ def _agent_path(root: Path) -> Path:
     return _board_dir(root) / "agent.jsonl"
 
 
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _refuse_symlink(root: Path, path: Path) -> bool:
+    """True (after one line on stderr) when a symlink at `.den`, `.den/board` or
+    the board file itself makes `path` unusable.
+
+    A cloned repo ships `.den/board/`, so a symlink planted there would turn every
+    board append into an append to a file outside the workspace (and every read
+    into serving one over localhost). den never follows one.
+    """
+    bad = _symlink_component(root / ".den", path)
+    if bad is None:
+        return False
+    print(f"den board: refusing {path}: {bad} is a symlink", file=sys.stderr)
+    return True
+
+
+_ERR = "den board"
+
+
+def _read_lock(root: Path) -> dict | None:
+    """The parsed server.json, or None when it is absent, unreadable, symlinked,
+    or not a JSON object. The lock is a board file like any other: a repo can
+    ship `.den/board/server.json` as a symlink, and following it would let a
+    planted file name the port `den board` probes and the pid it trusts."""
+    data = _read_guarded(root / ".den", _lock_path(root), _ERR)
+    if not isinstance(data, bytes):
+        return None
+    # Decode INSIDE the suppress. Routing this through the guard moved it out of
+    # the old handler, so a non-UTF-8 server.json -- a byte a repo can plant --
+    # raised UnicodeDecodeError out of `den board` instead of reading, as it
+    # always did, as one more invalid lock.
+    with suppress(ValueError):  # UnicodeDecodeError and JSONDecodeError both
+        info = json.loads(data.decode("utf-8"))
+        if isinstance(info, dict):
+            return info
+    return None
+
+
+def _write_lock(root: Path, info: dict) -> bool:
+    """Write server.json through the guard. False when refused (it said why)."""
+    data = (json.dumps(info) + "\n").encode("utf-8")
+    return _write_guarded(root / ".den", _lock_path(root), data, _ERR)
+
+
+def _unlink_lock(root: Path) -> None:
+    """Drop server.json, never through a symlink. Unlink would only remove the
+    link itself, but a lock den refuses to read is not one it may clear either."""
+    if _refuse_symlink(root, _lock_path(root)):
+        return
+    with suppress(OSError):
+        _lock_path(root).unlink()
+
+
+def _append_line(root: Path, path: Path, line: str) -> bool:
+    """Append one line to a board file, refusing symlinks. False when refused.
+
+    One O_APPEND write: atomic on POSIX. On Windows the CRT emulates append
+    with seek+write, so two simultaneous appends can still race; accepted for
+    a personal tool - the reader drops a torn line rather than crashing.
+    O_NOFOLLOW narrows the check-to-open window where the platform has it
+    (Windows does not; there the is_symlink check above is the whole guard).
+    """
+    if _refuse_symlink(root, path):
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 0o666 (umask applies): os.open's default mode is 0o777, which would make
+    # every new reports.jsonl / agent.jsonl executable. _write_guarded already
+    # passes the same mode.
+    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | _NOFOLLOW, 0o666)
+    try:
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True
+
+
 def _new_id() -> str:
     return secrets.token_hex(4)
 
@@ -108,6 +191,8 @@ def _derived_id(line: str) -> str:
 def ensure_scaffold(root: Path) -> dict[str, object]:
     """Create .den/board/board.json with defaults; never clobber edits."""
     cfg_path = _board_dir(root) / "board.json"
+    if _refuse_symlink(root, cfg_path):
+        return dict(_DEFAULT_CONFIG)
     if not cfg_path.is_file():
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
         cfg_path.write_text(
@@ -135,9 +220,13 @@ def _split_jsonl(data: bytes) -> list[str]:
     return lines
 
 
-def _tail_lines(path: Path, max_bytes: int) -> list[str]:
+def _tail_lines(root: Path, path: Path, max_bytes: int) -> list[str]:
     """Last complete lines within the trailing max_bytes of the file, so a
-    long-lived board never loads an unbounded file per 5s poll."""
+    long-lived board never loads an unbounded file per 5s poll. A symlinked
+    board file reads as empty: the page must not serve an outside file. Silent,
+    because the page polls this every 5s; the appends report instead."""
+    if _symlink_component(root / ".den", path) is not None:
+        return []
     try:
         with path.open("rb") as f:
             f.seek(0, 2)
@@ -173,11 +262,12 @@ def _title(root: Path, config: dict[str, object]) -> str:
 
 def _existing_instance(root: Path) -> str | None:
     """URL of a live server for this root, else None (clearing stale locks)."""
-    lock = _lock_path(root)
+    info = _read_lock(root)
+    if info is None:
+        return None
     try:
-        info = json.loads(lock.read_text(encoding="utf-8"))
         port = int(info["port"])
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+    except (ValueError, KeyError, TypeError):
         return None
     with suppress(OSError, ValueError, json.JSONDecodeError):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_PING_TIMEOUT_S)
@@ -193,19 +283,19 @@ def _existing_instance(root: Path) -> str | None:
             and data.get("root") == str(root)
         ):
             return f"http://127.0.0.1:{port}/"
-    with suppress(OSError):
-        lock.unlink()
+    _unlink_lock(root)
     return None
 
 
 def _release_lock(root: Path) -> None:
     """Remove the lock only if this process owns it (a concurrent start may
     have overwritten it; deleting a twin's lock would orphan that server)."""
-    lock = _lock_path(root)
-    with suppress(OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-        info = json.loads(lock.read_text(encoding="utf-8"))
+    info = _read_lock(root)
+    if info is None:
+        return
+    with suppress(ValueError, TypeError):
         if int(info.get("pid", -1)) == os.getpid():
-            lock.unlink()
+            _unlink_lock(root)
 
 
 def _claim_lock(root: Path) -> bool:
@@ -216,9 +306,11 @@ def _claim_lock(root: Path) -> bool:
     (or a stale claim) and never starts a shadow server.
     """
     lock = _lock_path(root)
+    if _refuse_symlink(root, lock):
+        return False
     lock.parent.mkdir(parents=True, exist_ok=True)
     try:
-        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY | _NOFOLLOW, 0o666))
     except FileExistsError:
         return False
     return True
@@ -354,7 +446,8 @@ class _Handler(BaseHTTPRequestHandler):
             limit = max(1, min(int(raw_limit), _MAX_LIST_LIMIT))
         except ValueError:
             limit = 100
-        lines = _tail_lines(_reports_path(self.board.board_root), _MAX_LIST_BYTES)
+        root = self.board.board_root
+        lines = _tail_lines(root, _reports_path(root), _MAX_LIST_BYTES)
         reports: list[object] = []
         for line in lines[-limit:]:
             with suppress(json.JSONDecodeError):
@@ -363,13 +456,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _list_agent(self) -> dict[str, object]:
         root = self.board.board_root
-        lines = _tail_lines(_agent_path(root), _MAX_LIST_BYTES)
+        lines = _tail_lines(root, _agent_path(root), _MAX_LIST_BYTES)
         # Settlement is joined HERE, over the full reports tail window - the
         # page's 100-report slice must never decide whether a task is open
         # (a reaction older than 100 reports would "reopen" it and invite a
         # second, conflicting reaction).
         reactions: dict[str, dict[str, object]] = {}
-        for line in _tail_lines(_reports_path(root), _MAX_LIST_BYTES):
+        for line in _tail_lines(root, _reports_path(root), _MAX_LIST_BYTES):
             with suppress(json.JSONDecodeError):
                 rep = json.loads(line)
                 if (
@@ -451,11 +544,12 @@ class _Handler(BaseHTTPRequestHandler):
         if isinstance(re_id, str) and re_id.strip():
             entry["re"] = re_id.strip()
         line = json.dumps(entry, ensure_ascii=False) + "\n"
-        path = _reports_path(self.board.board_root)
+        root = self.board.board_root
         with self.board.append_lock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line)
+            stored = _append_line(root, _reports_path(root), line)
+        if not stored:
+            self._send_json(500, {"error": "report file refused"})
+            return
         note = f" {entry['text']}" if entry["text"] else ""
         print(f"[den board] {entry['ts']} [{entry['button']}]{note}", flush=True)
         self._send_json(200, {"ok": True, "id": entry["id"]})
@@ -485,7 +579,9 @@ def _usage() -> None:
     )
 
 
-def _append_agent(root: Path, entry_type: str, text: str, re_id: str | None) -> str:
+def _append_agent(
+    root: Path, entry_type: str, text: str, re_id: str | None
+) -> str | None:
     entry_id = _new_id()
     # Lone surrogates (surrogateescape-decoded argv bytes) survive
     # json.dumps but explode at the strict utf-8 file write - scrub first.
@@ -497,18 +593,9 @@ def _append_agent(root: Path, entry_type: str, text: str, re_id: str | None) -> 
     }
     if re_id is not None:
         entry["re"] = re_id.encode("utf-8", "replace").decode("utf-8")
-    path = _agent_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, ensure_ascii=False) + "\n"
-    # One O_APPEND write: atomic on POSIX. On Windows the CRT emulates
-    # append with seek+write, so two simultaneous appends can still race;
-    # accepted for a personal tool - the reader drops a torn line rather
-    # than crashing.
-    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY)
-    try:
-        os.write(fd, line.encode("utf-8"))
-    finally:
-        os.close(fd)
+    if not _append_line(root, _agent_path(root), line):
+        return None
     return entry_id
 
 
@@ -555,7 +642,10 @@ def _cmd_agent(entry_type: str, args: list[str]) -> int:  # ruff: ignore[too-man
         _usage()
         return 2
     resolved = (root or _find_den_dir(Path.cwd()).parent).resolve()
-    print(_append_agent(resolved, entry_type, text, re_id))
+    entry_id = _append_agent(resolved, entry_type, text, re_id)
+    if entry_id is None:  # symlinked board file: nothing was appended
+        return 1
+    print(entry_id)
     return 0
 
 
@@ -607,12 +697,49 @@ def _acquire(root: Path, *, open_browser: bool) -> int | None:
             return 0
     # No live twin materialized: the claim is a corpse (a crash between
     # claim and lock write). Take it over.
-    with suppress(OSError):
-        _lock_path(root).unlink()
+    _unlink_lock(root)
     if not _claim_lock(root):
         print("den board: another instance is starting; try again", file=sys.stderr)
         return 1
     return None
+
+
+def _bind_and_record(
+    root: Path, config: dict[str, object], preferred: int
+) -> _BoardServer | None:
+    """Bind the port AND record the lock, or None (message printed) if either
+    fails. The two belong together: a server that is bound but not recorded is
+    invisible to _existing_instance, so the next `den board` here would start a
+    SECOND one on another port and the two would split the user's reports between
+    them. Serving anyway is worse than not serving."""
+    try:
+        server = make_server(root, config, preferred)
+    except OSError as exc:
+        _unlink_lock(root)  # release the claim we hold
+        print(f"den board: cannot start: {exc}", file=sys.stderr)
+        return None
+    try:
+        recorded = _write_lock(
+            root,
+            {
+                "pid": os.getpid(),
+                "port": server.server_address[1],
+                "root": str(root),
+                "started": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+        )
+    except OSError as exc:
+        # Full or read-only filesystem, or O_NOFOLLOW catching a symlink swapped
+        # in after the pre-check. Raising here would skip the cleanup below and
+        # leave the bound socket and our claim behind on the way out.
+        print(f"den board: cannot record the lock: {exc}", file=sys.stderr)
+        recorded = False
+    if not recorded:
+        server.server_close()  # give the socket back
+        _unlink_lock(root)  # release the claim, if it is ours to release
+        print("den board: could not record the lock; not serving", file=sys.stderr)
+        return None
+    return server
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -651,29 +778,12 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(cfg_port, int) and 0 <= cfg_port <= _MAX_PORT
         else _PREFERRED_PORT
     )
-    try:
-        server = make_server(root, config, preferred)
-    except OSError as exc:
-        with suppress(OSError):
-            _lock_path(root).unlink()  # release the claim we hold
-        print(f"den board: cannot start: {exc}", file=sys.stderr)
+    server = _bind_and_record(root, config, preferred)
+    if server is None:
         return 1
 
     port = server.server_address[1]
     url = f"http://127.0.0.1:{port}/"
-    lock = _lock_path(root)
-    lock.write_text(
-        json.dumps(
-            {
-                "pid": os.getpid(),
-                "port": port,
-                "root": str(root),
-                "started": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     print(
         f"den board: serving {_title(root, config)}\n"
         f"  url      {url}\n"

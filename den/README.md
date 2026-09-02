@@ -26,7 +26,7 @@ source on disk; from a checkout it falls back to the repo root (`_content.py`).
 ```
 den install   [skills|shell|hook|cheatsheets]   interactive setup, or one target
 den uninstall [skills|shell|hook|cheatsheets]   remove den files, keeping your edits
-den upgrade   [--refresh]                       upgrade den via uv (alias: update)
+den upgrade   [--refresh] [--force]             upgrade den via uv (alias: update)
 den board     [--port N] [--open] [--dir PATH]  serve the project's report board
 
 # runtime plumbing invoked by installed hooks and skills (not everyday commands):
@@ -38,7 +38,8 @@ den verify <file.py...>               format/lint/typecheck each file, config-fa
 `den install` never silently clobbers local edits: files that already exist and
 differ from the bundled version are listed and you are asked once before
 overwriting (default no, so your changes are kept). Pass `--force` to overwrite
-without asking; non-interactive runs skip the changed files. `den install hook`
+without asking; non-interactive runs skip the changed files and exit non-zero,
+so a scripted install cannot mistake a full skip for success. `den install hook`
 into a tool's settings.json merges (it preserves foreign hooks and other keys).
 
 ### Parent profiles (frontier / weak)
@@ -104,9 +105,13 @@ den upgrade              # upgrade only; prints a reminder to redeploy
 
 `--refresh` runs `den install skills --with-parent` and `den install shell` as
 subprocesses of the *new* binary (the running process still has the old package
-imported, so an in-process redeploy would ship stale content). The usual
-install semantics apply: files you edited are never silently overwritten.
-`--dry-run` prints the commands without running anything.
+imported, so an in-process redeploy would ship stale content). den keeps no
+record of what it deployed last time, so a file the new version changed is
+indistinguishable from one you edited: without `--force` an interactive run
+asks once, and a non-interactive one keeps every such file and exits non-zero
+rather than reporting a refresh that deployed nothing. Use
+`den upgrade --refresh --force` from a script or cron. `--dry-run` prints the
+commands without running anything.
 
 Windows caveat: `den upgrade` runs from the very tool venv uv replaces, and
 Windows locks running executables. If uv reports a file-in-use error there,
@@ -179,6 +184,13 @@ The `.den/` directory is resolved by walking up from the current directory to th
 nearest existing `.den/`, falling back to `<cwd>/.den`. History keeps the last 20
 snapshots.
 
+den never follows a symlink at or under `.den/` (memory, imprint, history,
+the board files, and the `.clinerules` mirror): a cloned repository ships the
+layout of `.den/`, and a symlink there would pull an outside file into the
+model's context every turn or make `save`/`add`/`restore` write through it.
+A refused read yields nothing and says so once on stderr; a refused write
+fails.
+
 ## `den hook`
 
 Installs per-tool hooks that imprint context every turn. Soft enforcement only:
@@ -210,6 +222,13 @@ seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope
 `install` writes only the hooks den manages (marked by a sentinel) and leaves
 foreign hooks untouched. Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
+
+The workspace-relative config (`.claude/settings.json` and the other per-tool
+paths below) must stay in the workspace: `den install hook` refuses it when any
+path component is a symlink, so a checked-out repo cannot redirect the install
+into your global settings. An explicit `--config PATH` is taken as given.
+The install also reports a pre-existing `.den/memory.md` (size, first line,
+snapshot count) next to the imprint, because both are injected every turn.
 
 ### Per-tool support
 

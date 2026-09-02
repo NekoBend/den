@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 from ._content import shell_dir
-from ._install import _Stager, _Writer
+from ._install import _chmod_no_follow, _Stager, _Writer
 
 _COMMENT = "# ===== den ====="
 _PWSH_PROFILE = "Microsoft.PowerShell_profile.ps1"
@@ -300,7 +300,7 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     return True
 
 
-def install_shell(  # ruff: ignore[too-many-branches, too-many-locals]  # one branch per flag
+def install_shell(  # ruff: ignore[too-many-locals]  # one local per flag
     argv: list[str],
 ) -> int:
     dry_run = "--dry-run" in argv
@@ -337,8 +337,7 @@ def install_shell(  # ruff: ignore[too-many-branches, too-many-locals]  # one br
         posix_bin=install_bin,
     )
 
-    if not dry_run:
-        writer.commit()
+    skipped = writer.commit() if not dry_run else 0
 
     # _copy/_Writer write bytes only; deployed executables need their +x bit.
     # Only chmod files whose on-disk content is den's: a file the user modified
@@ -350,7 +349,10 @@ def install_shell(  # ruff: ignore[too-many-branches, too-many-locals]  # one br
             for f in src_bin.iterdir():
                 dst = local_bin / f.name
                 if f.is_file() and dst.is_file() and dst.read_bytes() == f.read_bytes():
-                    dst.chmod(0o755)
+                    # _chmod_no_follow, not dst.chmod: a symlinked entry here
+                    # would otherwise get its outside target chmod'd 0o755 on
+                    # this very path, where nothing was deployed.
+                    _chmod_no_follow(dst, 0o755)
 
     print("wiring shell rc files")
     if shutil.which("bash") or (home / ".bashrc").is_file():
@@ -365,6 +367,10 @@ def install_shell(  # ruff: ignore[too-many-branches, too-many-locals]  # one br
     rc = _maybe_install_coreutils(
         want=want_coreutils, skip=skip_coreutils, dry_run=dry_run
     )
+    # A non-interactive run that kept differing files deployed nothing for them;
+    # report that with the exit code so `den upgrade --refresh` cannot call a
+    # refresh that landed none of the new version's files a success.
+    rc = rc or (1 if skipped else 0)
 
     # coreutils installs a PSConsoleHostReadLine rewriter into the profile that
     # retargets typed `ls`/`cat`/... to coreutils BEFORE den's wrappers run,

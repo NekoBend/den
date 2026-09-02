@@ -1,6 +1,11 @@
 """Tests for den memory (den/_memory.py)."""
 
 import io
+import json
+import os
+import sys
+
+import pytest
 
 from den import _memory
 from den._memory import main as memory_main
@@ -336,3 +341,548 @@ def test_restore_refreshes_clinerules_mirror(tmp_path, monkeypatch):
     assert "v2" in _clinerules_mem(tmp_path).read_text()
     assert memory_main(["restore", "1"]) == 0  # newest snapshot == v1
     assert "v1" in _clinerules_mem(tmp_path).read_text()
+
+
+# --------------------------------------------------------------------------- #
+# symlink hardening
+#
+# A cloned repository ships the content and layout of .den/, so a symlink there
+# is an attempt to make den read a file from outside the workspace into the
+# model's context (memory.md is injected every turn and copied into history) or
+# to overwrite one. den must follow none of them, in either direction.
+# --------------------------------------------------------------------------- #
+
+_OUTSIDE_TEXT = "PRIVATE KEY MATERIAL\n"
+
+
+def _planted(tmp_path, symlink, name="memory.md"):
+    """A workspace whose .den/<name> is a repo-shipped symlink to a file outside
+    it. Returns (project dir, the outside file)."""
+    secret = tmp_path / "id_ed25519"
+    secret.write_text(_OUTSIDE_TEXT)
+    proj = tmp_path / "repo"
+    link = proj / ".den" / name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    symlink(secret, link)
+    return proj, secret
+
+
+def test_show_refuses_symlinked_memory(tmp_path, monkeypatch, capsys, symlink):
+    proj, _secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    assert memory_main(["show"]) == 1, "a refused read is an error, not an empty file"
+    out = capsys.readouterr()
+    assert "PRIVATE KEY" not in out.out, "the target must never be printed"
+    assert "is a symlink" in out.err
+
+
+def test_checkpoint_does_not_snapshot_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, _secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    assert memory_main(["checkpoint"]) == 0
+    assert _history(proj) == [], "the target must not be copied into history"
+
+
+def test_save_refuses_to_write_through_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("overwritten\n"))
+    assert memory_main(["save"]) == 1
+    assert secret.read_text() == _OUTSIDE_TEXT
+    assert _mem(proj).is_symlink(), "den must not replace the link either"
+
+
+def test_add_refuses_to_write_through_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "appended fact"]) == 1
+    assert secret.read_text() == _OUTSIDE_TEXT
+
+
+def test_clear_refuses_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, secret = _planted(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    assert memory_main(["clear"]) == 1
+    assert secret.is_file() and secret.read_text() == _OUTSIDE_TEXT
+
+
+def test_restore_refuses_symlinked_memory(tmp_path, monkeypatch, symlink):
+    proj, secret = _planted(tmp_path, symlink)
+    hist = proj / ".den" / "history"
+    hist.mkdir()
+    (hist / "memory.20260101T000000000000.md").write_text("snapshot\n")
+    monkeypatch.chdir(proj)
+    assert memory_main(["restore", "1"]) == 1
+    assert secret.read_text() == _OUTSIDE_TEXT
+
+
+def test_symlinked_den_dir_is_refused(tmp_path, monkeypatch, capsys, symlink):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "memory.md").write_text("INJECTED\n")
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    symlink(outside, proj / ".den")
+    monkeypatch.chdir(proj)
+    assert memory_main(["show"]) == 1
+    out = capsys.readouterr()
+    assert "INJECTED" not in out.out
+    assert "is a symlink" in out.err
+
+
+def test_symlinked_history_dir_refuses_checkpoint(tmp_path, monkeypatch, symlink):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    _mem(proj).write_text("real memory\n")
+    symlink(outside, proj / ".den" / "history")
+    monkeypatch.chdir(proj)
+    assert memory_main(["checkpoint"]) == 1, (
+        "asked for a checkpoint, could not make one"
+    )
+    assert list(outside.iterdir()) == [], "nothing may land outside the workspace"
+
+
+def test_symlinked_snapshot_is_not_a_snapshot(tmp_path, monkeypatch, capsys, symlink):
+    proj, _secret = _planted(
+        tmp_path, symlink, name="history/memory.20260102T000000000000.md"
+    )
+    real = proj / ".den" / "history" / "memory.20260101T000000000000.md"
+    real.write_text("real snapshot\n")
+    monkeypatch.chdir(proj)
+    assert _memory._snapshots(proj / ".den") == [real]
+    assert memory_main(["log"]) == 0
+    out = capsys.readouterr().out
+    assert "real snapshot" in out
+    assert "PRIVATE KEY" not in out
+
+
+def test_mirror_refuses_symlinked_clinerules_memory(tmp_path, monkeypatch, symlink):
+    secret = tmp_path / "id_ed25519"
+    secret.write_text(_OUTSIDE_TEXT)
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    _cline_cli_here(proj)  # the marker that turns mirroring on
+    symlink(secret, proj / ".clinerules" / "den-memory.md")
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a fact"]) == 0, "memory itself is fine"
+    assert _mem(proj).read_text() == "a fact\n"
+    assert secret.read_text() == _OUTSIDE_TEXT, (
+        "the mirror must not write through the link"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# unreadable != absent
+#
+# Collapsing the two would make a write command take a memory.md it failed to
+# read for an empty one and truncate content it never saw.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def unreadable():
+    """`make(path, text)` -> a file that exists but den cannot read back.
+
+    Skipped where POSIX mode bits do not bite: Windows ignores them, and root
+    reads straight through 0o200. The directory-in-place test below covers the
+    same `_UNREADABLE` path on every platform.
+    """
+    if sys.platform == "win32":
+        pytest.skip("POSIX mode bits do not make a file unreadable on Windows")
+    if getattr(os, "geteuid", lambda: 1)() == 0:
+        pytest.skip("root reads through mode 0o200")
+
+    def _make(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        path.chmod(0o200)
+        return path
+
+    return _make
+
+
+def test_add_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
+    proj = tmp_path / "repo"
+    mem = unreadable(_mem(proj), "important prior content\n")
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a new fact"]) == 1
+    mem.chmod(0o600)
+    assert mem.read_text() == "important prior content\n", "not truncated"
+    assert _history(proj) == []
+
+
+def test_save_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
+    proj = tmp_path / "repo"
+    mem = unreadable(_mem(proj), "important prior content\n")
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
+    assert memory_main(["save"]) == 1
+    mem.chmod(0o600)
+    assert mem.read_text() == "important prior content\n"
+    assert _history(proj) == [], "no checkpoint was possible, so no write happened"
+
+
+def test_clear_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
+    proj = tmp_path / "repo"
+    mem = unreadable(_mem(proj), "important prior content\n")
+    monkeypatch.chdir(proj)
+    assert memory_main(["clear"]) == 1
+    assert mem.exists(), "deleting what cannot be snapshotted is not reversible"
+
+
+def test_write_commands_refuse_a_directory_in_place_of_memory(
+    tmp_path, monkeypatch, capsys
+):
+    # Same _UNREADABLE path as the 0o200 tests, but it bites as root and on
+    # Windows too, so this one always runs.
+    proj = tmp_path / "repo"
+    _mem(proj).mkdir(parents=True)
+    # a snapshot, so restore reaches the unreadable check instead of stopping at
+    # "no snapshot #1"
+    hist = proj / ".den" / "history"
+    hist.mkdir()
+    (hist / "memory.20260101T000000000000.md").write_text("older snapshot\n")
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
+    for argv in (["show"], ["add", "x"], ["save"], ["clear"], ["diff"], ["restore"]):
+        assert memory_main(argv) == 1, argv
+    assert _mem(proj).is_dir()
+    assert len(_history(proj)) == 1, "nothing was checkpointed"
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_unreadable_memory_does_not_drop_the_clinerules_mirror(
+    tmp_path, monkeypatch, unreadable
+):
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    mirror = _clinerules_mem(proj)
+    mirror.write_text("<!-- den-managed -->\n\nprior mirror\n")
+    unreadable(_mem(proj), "prior memory\n")
+    monkeypatch.chdir(proj)
+    assert _memory.mirror_to_clinerules(proj / ".den") is False
+    assert mirror.read_text().endswith("prior mirror\n"), "mirror left alone"
+
+
+def test_restore_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
+    # restore's promise is that what it replaces stays recoverable; with no
+    # snapshot of the current content possible, it must not write.
+    proj = tmp_path / "repo"
+    hist = proj / ".den" / "history"
+    hist.mkdir(parents=True)
+    (hist / "memory.20260101T000000000000.md").write_text("older snapshot\n")
+    mem = unreadable(_mem(proj), "important prior content\n")
+    monkeypatch.chdir(proj)
+    assert memory_main(["restore", "1"]) == 1
+    mem.chmod(0o600)
+    assert mem.read_text() == "important prior content\n", "not truncated"
+    assert len(_history(proj)) == 1, "no checkpoint was possible"
+
+
+def test_mirror_survives_a_directory_at_the_mirror_path(tmp_path, monkeypatch, capsys):
+    # `.clinerules/den-memory.md` as a DIRECTORY: the mirror write must refuse,
+    # not raise IsADirectoryError out of `den hook memory add`.
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    _clinerules_mem(proj).mkdir()
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a fact"]) == 0, "memory itself still saves"
+    assert _mem(proj).read_text() == "a fact\n"
+    assert _clinerules_mem(proj).is_dir()
+    assert "not a regular file" in capsys.readouterr().err
+
+
+def test_clear_survives_a_directory_at_the_mirror_path(tmp_path, monkeypatch, capsys):
+    # `.clinerules/den-memory.md` as a DIRECTORY hits the mirror's EMPTY branch,
+    # which unlinks -- after clear has already deleted memory.md, so den used to
+    # die half-done with IsADirectoryError.
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    _mem(proj).parent.mkdir(parents=True, exist_ok=True)
+    _mem(proj).write_text("a fact\n")
+    _clinerules_mem(proj).mkdir()
+    monkeypatch.chdir(proj)
+    assert memory_main(["clear"]) == 0
+    assert not _mem(proj).exists(), "memory really was cleared"
+    assert _clinerules_mem(proj).is_dir(), "the planted dir is left alone"
+    assert "not a regular file" in capsys.readouterr().err
+
+
+def test_save_of_whitespace_survives_a_directory_at_the_mirror_path(
+    tmp_path, monkeypatch
+):
+    # Same branch, reached the other way: a whitespace-only save empties memory.
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    _clinerules_mem(proj).mkdir()
+    _save(proj, monkeypatch, "   \n")
+    assert _mem(proj).read_text() == "   \n"
+    assert _clinerules_mem(proj).is_dir()
+
+
+def test_a_directory_named_like_a_snapshot_is_not_one(tmp_path, monkeypatch, capsys):
+    # `.den/history/memory.<stamp>.md/` passes the name test; every consumer of
+    # the list then called read_bytes() on it.
+    proj = tmp_path / "repo"
+    hist = proj / ".den" / "history"
+    hist.mkdir(parents=True)
+    (hist / "memory.20260102T000000000000.md").mkdir()
+    real = hist / "memory.20260101T000000000000.md"
+    real.write_text("real snapshot\n")
+    _mem(proj).write_text("current\n")
+    monkeypatch.chdir(proj)
+    assert _memory._snapshots(proj / ".den") == [real]
+    assert memory_main(["log"]) == 0
+    assert memory_main(["diff", "1"]) == 0
+    assert memory_main(["restore", "1"]) == 0
+    assert _mem(proj).read_text() == "real snapshot\n"
+    assert memory_main(["checkpoint"]) == 0
+    assert "real snapshot" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# a refused checkpoint is not "nothing to snapshot"
+#
+# The pre-write checkpoint IS the undo for save/add/clear/restore. When it is
+# refused the safety net is gone, so the write must not happen either -- and a
+# refusal must not read as the ordinary "content unchanged, nothing to do".
+# --------------------------------------------------------------------------- #
+
+
+def _no_history_workspace(tmp_path, symlink, kind="symlink"):
+    """A workspace whose .den/history cannot hold a snapshot, with memory.md
+    holding content that would need one."""
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    _mem(proj).write_text("the only copy\n")
+    if kind == "symlink":
+        symlink(outside, proj / ".den" / "history")
+    else:
+        (proj / ".den" / "history").write_text("not a directory\n")
+    return proj, outside
+
+
+def test_write_commands_abort_when_the_checkpoint_is_refused(
+    tmp_path, monkeypatch, symlink
+):
+    proj, outside = _no_history_workspace(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
+    # restore stops earlier here (a symlinked history lists no snapshots), but it
+    # must be just as harmless; the branch itself is pinned by the next test.
+    for argv in (["save"], ["add", "a fact"], ["clear"], ["restore", "1"]):
+        assert memory_main(argv) == 1, argv
+        assert _mem(proj).read_text() == "the only copy\n", argv
+    assert list(outside.iterdir()) == [], "nothing landed outside the workspace"
+
+
+def test_restore_aborts_when_the_checkpoint_is_refused(tmp_path, monkeypatch):
+    """restore is the one command that needs a USABLE history to read its source
+    from, so it cannot reach the refusal through a symlinked history dir. Stub
+    the checkpoint result to pin the branch itself: a restore that could not be
+    made reversible must not run."""
+    proj = tmp_path / "repo"
+    hist = proj / ".den" / "history"
+    hist.mkdir(parents=True)
+    (hist / "memory.20260101T000000000000.md").write_text("older\n")
+    _mem(proj).write_text("the only copy\n")
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(_memory, "_do_checkpoint", lambda den_dir: _memory._REFUSED)
+    assert memory_main(["restore", "1"]) == 1
+    assert _mem(proj).read_text() == "the only copy\n", "not replaced without an undo"
+
+
+def test_write_commands_abort_when_history_is_a_file(tmp_path, monkeypatch):
+    # A regular file at .den/history used to raise FileExistsError out of the
+    # mkdir; it is a refusal like any other now.
+    proj, _outside = _no_history_workspace(tmp_path, None, kind="file")
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
+    for argv in (["checkpoint"], ["save"], ["add", "a fact"], ["clear"]):
+        assert memory_main(argv) == 1, argv
+    assert _mem(proj).read_text() == "the only copy\n"
+    assert (proj / ".den" / "history").read_text() == "not a directory\n"
+
+
+def test_hook_run_stays_tolerant_of_a_refused_checkpoint(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    # The per-turn hook must never fail on this: it still exits 0 and composes.
+    from den._hook import main as hook_main
+
+    proj, _outside = _no_history_workspace(tmp_path, symlink)
+    (proj / ".den" / "imprint.md").write_text("IMP\n")
+    monkeypatch.chdir(proj)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "claude"]) == 0
+    out = capsys.readouterr()
+    context = json.loads(out.out)["hookSpecificOutput"]["additionalContext"]
+    assert "IMP" in context and "the only copy" in context
+    assert "is a symlink" in out.err, "the refusal is still spoken"
+
+
+def test_unchanged_content_is_not_a_refusal(tmp_path, monkeypatch):
+    # The no-regression guard: "nothing to snapshot" must keep exiting 0 and let
+    # the write through, which is the common path on every turn.
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["add", "v1"]) == 0
+    assert memory_main(["checkpoint"]) == 0  # first snapshot
+    assert memory_main(["checkpoint"]) == 0  # unchanged: no new snapshot, still 0
+    assert len(_history(tmp_path)) == 1
+    assert memory_main(["add", "v2"]) == 0
+    assert _mem(tmp_path).read_text() == "v1\nv2\n"
+
+
+# --------------------------------------------------------------------------- #
+# invalid UTF-8 is an unreadable file, not an exception
+#
+# den's text artifacts are UTF-8, but a repo can put any byte in .den/memory.md
+# or .den/imprint.md, and _compose reads both on every hook invocation.
+# --------------------------------------------------------------------------- #
+
+
+def test_hook_run_survives_non_utf8_memory(tmp_path, monkeypatch, capsys):
+    from den._hook import main as hook_main
+
+    den = tmp_path / ".den"
+    den.mkdir()
+    (den / "imprint.md").write_text("IMP\n")
+    _mem(tmp_path).write_bytes(b"\xff\xfe not utf-8\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "claude"]) == 0
+    out = capsys.readouterr()
+    context = json.loads(out.out)["hookSpecificOutput"]["additionalContext"]
+    assert "IMP" in context, "the readable half still composes"
+    assert "<den:memory>" not in context
+    assert "cannot read" in out.err
+
+
+def test_hook_run_survives_non_utf8_imprint(tmp_path, monkeypatch, capsys):
+    from den._hook import main as hook_main
+
+    den = tmp_path / ".den"
+    den.mkdir()
+    (den / "imprint.md").write_bytes(b"\xff\xfe not utf-8\n")
+    _mem(tmp_path).write_text("MEM\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "claude"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"][
+        "additionalContext"
+    ]
+    assert "MEM" in context and "<den:imprint>" not in context
+
+
+def test_add_refuses_non_utf8_memory(tmp_path, monkeypatch, capsys):
+    raw = b"\xff\xfe not utf-8\n"
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_bytes(raw)
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["add", "a fact"]) == 1
+    assert _mem(tmp_path).read_bytes() == raw, "every byte left as it was"
+    assert _history(tmp_path) == [], "nothing was written, so nothing was snapshotted"
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_show_and_diff_refuse_non_utf8_memory(tmp_path, monkeypatch, capsys):
+    hist = tmp_path / ".den" / "history"
+    hist.mkdir(parents=True)
+    (hist / "memory.20260101T000000000000.md").write_text("older\n")
+    _mem(tmp_path).write_bytes(b"\xff\xfe not utf-8\n")
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["show"]) == 1
+    assert memory_main(["diff", "1"]) == 1
+    assert capsys.readouterr().out == "", "no half-decoded bytes on stdout"
+
+
+def test_save_still_replaces_non_utf8_memory(tmp_path, monkeypatch):
+    # The no-regression guard: save/clear/restore read memory as BYTES for the
+    # checkpoint, so undecodable content is snapshotted and replaced normally.
+    raw = b"\xff\xfe not utf-8\n"
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_bytes(raw)
+    _save(tmp_path, monkeypatch, "clean text\n")
+    assert _mem(tmp_path).read_text() == "clean text\n"
+    assert [p.read_bytes() for p in _history(tmp_path)] == [raw], "old bytes kept"
+
+
+def test_symlinked_cline_marker_does_not_switch_the_mirror_on(
+    tmp_path, monkeypatch, symlink
+):
+    """The den-imprint.md marker is proof that `den install hook --tool cline-cli`
+    ran here. is_file() follows a link, so a repo-planted symlink to any outside
+    regular file used to activate the mirror in a workspace that never installed
+    cline-cli -- publishing memory.md into a .clinerules den was never asked to
+    write to."""
+    outside = tmp_path / "whatever.md"
+    outside.write_text("any old file\n")
+    proj = tmp_path / "repo"
+    (proj / ".clinerules").mkdir(parents=True)
+    symlink(outside, proj / ".clinerules" / "den-imprint.md")
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a private fact"]) == 0, "memory itself still saves"
+    assert _mem(proj).read_text() == "a private fact\n"
+    assert not _clinerules_mem(proj).exists(), "no mirror without a real marker"
+
+
+def test_symlinked_clinerules_dir_does_not_switch_the_mirror_on(
+    tmp_path, monkeypatch, symlink
+):
+    # Same gate one level up: the marker is real but only reachable through a
+    # planted .clinerules link. The write guard already stopped this, so this is
+    # a no-regression guard -- it holds whichever end of the gate does the work.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "den-imprint.md").write_text("someone else's rule\n")
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    symlink(outside, proj / ".clinerules")
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a private fact"]) == 0
+    assert not (outside / "den-memory.md").exists()
+
+
+def test_a_real_marker_still_mirrors(tmp_path, monkeypatch):
+    # The no-regression guard for the gate above.
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a fact"]) == 0
+    assert "a fact" in _clinerules_mem(proj).read_text()
+
+
+def test_log_and_diff_survive_a_non_utf8_snapshot(tmp_path, monkeypatch, capsys):
+    """save/clear/restore checkpoint memory.md as BYTES, so a snapshot can hold
+    content that is not UTF-8. `log` walks every snapshot's first line and `diff`
+    decodes a whole one, and both used to raise on the way past it."""
+    raw = b"\xff\xfe not utf-8\n"
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_bytes(raw)
+    _save(tmp_path, monkeypatch, "clean text\n")  # snapshots the raw bytes
+    assert [p.read_bytes() for p in _history(tmp_path)] == [raw]
+    capsys.readouterr()
+
+    assert memory_main(["log"]) == 0
+    assert "(not UTF-8 text)" in capsys.readouterr().out, "listed, with a placeholder"
+
+    assert memory_main(["diff", "1"]) == 1, "a diff of undecodable bytes is refused"
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_log_and_diff_still_work_on_normal_snapshots(tmp_path, monkeypatch, capsys):
+    # The no-regression guard for the two reads above.
+    _save(tmp_path, monkeypatch, "# Memory\n\n- v1 fact\n")
+    _save(tmp_path, monkeypatch, "# Memory\n\n- v2 fact\n")  # snapshots v1
+    capsys.readouterr()
+    assert memory_main(["log"]) == 0
+    assert "# Memory" in capsys.readouterr().out
+    assert memory_main(["diff", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "-- v1 fact" in out and "+- v2 fact" in out

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 # on Windows too.
 _WINDOWS_SKIP = {
     # shell: POSIX config/bin deployment (mock _windows=False) + PosixPath
+    "test_install_shell_bin_does_not_chmod_through_a_symlink",
     "test_install_shell_bin_flag_installs_executables",
     "test_install_shell_bin_prompt_yes_installs",
     "test_install_shell_deploys_both_families",
@@ -40,6 +41,31 @@ _WINDOWS_SKIP = {
     "test_install_cline_cli_parent_stays_in_agents",
     "test_uninstall_cline_removes_rules_parent",
 }
+
+
+@pytest.fixture
+def symlink(tmp_path):
+    """`link(target, path)`, or skip when this platform/session cannot symlink.
+
+    The symlink-hardening tests need a real symlink; on Windows that takes the
+    create-symbolic-link privilege (or developer mode), which a runner may not
+    have. Probe once and skip rather than fail there. `target_is_directory` is
+    ignored on POSIX and required on Windows for a dir target.
+    """
+
+    def _link(target, path):
+        Path(path).symlink_to(target, target_is_directory=Path(target).is_dir())
+
+    target = tmp_path / "_symlink_probe_target"
+    target.write_text("probe")
+    probe = tmp_path / "_symlink_probe"
+    try:
+        _link(target, probe)
+    except (OSError, NotImplementedError):
+        pytest.skip("creating symlinks is not permitted here")
+    probe.unlink()
+    target.unlink()
+    return _link
 
 
 def pytest_collection_modifyitems(config, items):

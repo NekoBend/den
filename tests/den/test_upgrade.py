@@ -43,6 +43,56 @@ def test_refresh_redeploys_via_new_binary(monkeypatch):
     assert calls[2] == ["/usr/bin/den", "install", "shell"]
 
 
+def test_refresh_force_is_forwarded_to_both_steps(monkeypatch):
+    # After an upgrade every file the new version changed differs from the
+    # deployed copy, which `den install` cannot tell from a local edit; without
+    # --force a non-interactive refresh keeps them all and deploys nothing.
+    calls = _wire(monkeypatch)
+    assert upgrade_main(["--refresh", "--force"]) == 0
+    assert calls[1] == ["/usr/bin/den", "install", "skills", "--with-parent", "--force"]
+    assert calls[2] == ["/usr/bin/den", "install", "shell", "--force"]
+
+
+def test_force_without_refresh_says_it_does_nothing(monkeypatch, capsys):
+    calls = _wire(monkeypatch)
+    assert upgrade_main(["--force"]) == 0
+    assert calls == [["uv", "tool", "upgrade", "den"]]  # nothing redeployed
+    assert "--force only applies to --refresh" in capsys.readouterr().err
+
+
+def test_dry_run_shows_the_forced_steps(monkeypatch, capsys):
+    calls = _wire(monkeypatch)
+    assert upgrade_main(["--dry-run", "--refresh", "--force"]) == 0
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "den install skills --with-parent --force" in out
+    assert "den install shell --force" in out
+
+
+def test_refresh_step_that_kept_files_reports_it_with_a_force_hint(monkeypatch, capsys):
+    # `den install skills` exits non-zero when a non-interactive run kept the
+    # files it meant to deploy; the refresh must surface that, not exit 0.
+    calls = _wire(monkeypatch, rcs={1: 1})
+    assert upgrade_main(["--refresh"]) == 1
+    assert len(calls) == 2
+    err = capsys.readouterr().err
+    # The step deployed everything it was allowed to and kept the rest, and any
+    # earlier step fully succeeded, so "nothing was deployed" would be false.
+    assert "did not complete" in err
+    assert "may already be deployed" in err
+    assert "NOT deployed" not in err
+    assert "den upgrade --refresh --force" in err
+
+
+def test_refresh_failure_under_force_omits_the_force_hint(monkeypatch, capsys):
+    calls = _wire(monkeypatch, rcs={1: 1})
+    assert upgrade_main(["--refresh", "--force"]) == 1
+    assert len(calls) == 2
+    err = capsys.readouterr().err
+    assert "did not complete" in err
+    assert "--refresh --force" not in err, "already forced; the hint would be noise"
+
+
 def test_failed_upgrade_skips_refresh_and_propagates(monkeypatch):
     calls = _wire(monkeypatch, rcs={0: 3})
     assert upgrade_main(["--refresh"]) == 3
