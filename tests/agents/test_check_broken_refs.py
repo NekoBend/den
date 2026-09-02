@@ -43,17 +43,23 @@ def run(
 def backends(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, str] | None]:
     """The two environments the check must report the same references in.
 
-    `None` keeps the ambient PATH, where the CI runners have ripgrep. The
-    second replaces PATH with a directory holding nothing but a link to git
-    (the script needs git, not rg), so rg cannot be found and the walk
-    fallback is the only option. Dropping only the PATH entries that contain
-    rg would take git with it wherever the two live in the same directory,
-    and the test would skip instead of checking anything - the assertions
-    below pin both halves.
+    `None` keeps the ambient PATH, which must have ripgrep on it; the second
+    replaces PATH with a directory holding nothing but a link to git (the
+    script needs git, not rg), so rg cannot be found and the walk fallback is
+    the only option. Dropping only the PATH entries that contain rg would take
+    git with it wherever the two live in the same directory, and the test
+    would skip instead of checking anything - all three assertions below pin
+    one half each.
 
     The directory is a sibling of the test's own tmp_path, never inside it, so
     it cannot show up in the tree being searched.
     """
+    assert shutil.which("rg") is not None, (
+        "these parity tests need ripgrep on PATH: without it BOTH legs below "
+        "run the walk fallback and the comparison proves nothing. Install it "
+        "(apt-get install ripgrep / brew install ripgrep); CI installs it in "
+        "the job that runs tests/agents."
+    )
     bin_dir = tmp_path_factory.mktemp("no-rg-bin")
     git_exe = shutil.which("git")
     assert git_exe is not None, "these tests need git on PATH"
@@ -272,6 +278,44 @@ def test_changed_files_outside_the_root_are_ignored(tmp_path: Path) -> None:
     proc = run("--base", "HEAD", "--root", str(tmp_path / "pkg"))
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "", proc.stdout
+
+
+def test_the_ripgrep_backend_is_really_invoked(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # As in test_find_references: prove the with-rg leg of the parity tests
+    # actually shells out to rg, and pin this script's own flag list (it was
+    # missing --no-ignore/--hidden, which is what let the two backends
+    # disagree) on the real command line.
+    if sys.platform == "win32":
+        pytest.skip("the stub rg is a /bin/sh script")
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    write(tmp_path, "lib.py", "# gone\n")
+
+    bin_dir = tmp_path_factory.mktemp("stub-rg-bin")
+    record = bin_dir / "argv.txt"
+    stub = bin_dir / "rg"
+    stub.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{record}"\nexit 1\n', encoding="utf-8"
+    )
+    stub.chmod(0o755)
+    git_exe = shutil.which("git")
+    assert git_exe is not None, "these tests need git on PATH"
+    (bin_dir / Path(git_exe).name).symlink_to(git_exe)
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir)
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert record.is_file(), "rg was on PATH but the script never ran it"
+    argv = record.read_text(encoding="utf-8").splitlines()
+    assert "--no-ignore" in argv, argv
+    assert "--hidden" in argv, argv
+    assert "!.git" in argv, argv
 
 
 def test_hidden_and_ignored_usages_are_reported_by_both_backends(

@@ -48,16 +48,22 @@ def run(
 def backends(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, str] | None]:
     """The two environments a search must return the same files in.
 
-    `None` keeps the ambient PATH, where the CI runners have ripgrep. The
-    second replaces PATH with one empty directory, so the script cannot find
-    rg and has to walk the tree itself; the assertion below is what keeps the
-    parity tests from quietly running the same backend twice. Dropping only
-    the PATH entries that contain rg is not enough: where rg sits in /usr/bin
-    that removes every other tool with it.
+    `None` keeps the ambient PATH, which must have ripgrep on it; the second
+    replaces PATH with one empty directory, so the script cannot find rg and
+    has to walk the tree itself. BOTH halves are asserted, because either one
+    failing quietly turns every parity test into the same backend run twice.
+    Dropping only the PATH entries that contain rg is not enough: where rg
+    sits in /usr/bin that removes every other tool with it.
 
     The directory is a sibling of the test's own tmp_path, never inside it, so
     it cannot show up in the tree being searched.
     """
+    assert shutil.which("rg") is not None, (
+        "these parity tests need ripgrep on PATH: without it BOTH legs below "
+        "run the walk fallback and the comparison proves nothing. Install it "
+        "(apt-get install ripgrep / brew install ripgrep); CI installs it in "
+        "the job that runs tests/agents."
+    )
     bin_dir = tmp_path_factory.mktemp("no-rg-bin")
     env = dict(os.environ)
     env["PATH"] = str(bin_dir)
@@ -265,6 +271,36 @@ def test_rg_line_parser_reads_posix_paths_and_rejects_junk() -> None:
 
 
 # ---------- the two backends must see the same tree ----------
+
+
+def test_the_ripgrep_backend_is_really_invoked(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # The `backends` fixture asserts rg is reachable on the ambient PATH; this
+    # observes the call itself, which is the only direct evidence that the
+    # first leg of every parity test runs ripgrep and not the fallback. A stub
+    # `rg` records its argv, so the flags that keep the two backends in
+    # agreement are pinned on the real command line too.
+    if sys.platform == "win32":
+        pytest.skip("the stub rg is a /bin/sh script")
+    bin_dir = tmp_path_factory.mktemp("stub-rg-bin")
+    record = bin_dir / "argv.txt"
+    stub = bin_dir / "rg"
+    stub.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{record}"\nexit 1\n', encoding="utf-8"
+    )
+    stub.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir)
+    write(tmp_path, "mod.py", "def widget():\n    return 1\n")
+
+    proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert record.is_file(), "rg was on PATH but the script never ran it"
+    argv = record.read_text(encoding="utf-8").splitlines()
+    assert "--no-ignore" in argv, argv
+    assert "--hidden" in argv, argv
+    assert "!.git" in argv, argv
 
 
 def test_root_under_a_skipped_directory_is_still_searched(

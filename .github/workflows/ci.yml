@@ -112,6 +112,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pyyaml
+          # ripgrep is the fast backend of find-references.py and
+          # check-broken-refs.py, and tests/agents compares it against the
+          # Python-walk fallback file by file. The runner image does not ship
+          # it, and without it BOTH legs of every parity test would run the
+          # fallback and pass without comparing anything, so the tests fail
+          # loudly rather than skip: install it here.
+          sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Pytest (verification scripts)
         run: python3 -m pytest tests/agents
       - name: den-free skill copies (agents/dist/skills) are current
