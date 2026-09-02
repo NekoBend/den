@@ -24,10 +24,32 @@ function _SplitPosExtra {
 #   tomp4 input.avi out.mp4                → custom output
 #   tomp4 input.avi -c:v libx265 -crf 18  → override (auto output)
 #   tomp4 input.avi out.mp4 -c:v libx265  → override + custom output
+# An explicit output without the target extension is almost always a second
+# INPUT mistaken for an output (`tomp4 a.avi b.avi` would overwrite b.avi,
+# since ffmpeg runs with -y). The converters take one input per call.
+function _AssertOutExt([string]$Fn, [string]$Out, [string]$Ext) {
+    if (-not $Out.ToLower().EndsWith(".$Ext")) {
+        Write-Error "${Fn}: output '$Out' does not end in .$Ext; one input per call (for several files: Get-ChildItem *.ext | ForEach-Object { $Fn `$_.FullName })"
+        return $false
+    }
+    return $true
+}
+# After <in> [out], a further positional is a stray argument (a third file, a
+# typo); refuse rather than hand it to ffmpeg.
+function _AssertNoExtraPos([string]$Fn, $Pos, [int]$Max) {
+    if ($Pos.Count -gt $Max) {
+        Write-Error "${Fn}: unexpected argument '$($Pos[$Max])' (usage: $Fn <in> [out] [ffmpeg args])"
+        return $false
+    }
+    return $true
+}
+
 function tomp4 {
     $pos, $extra = _SplitPosExtra @args
     $In  = $pos[0]
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.mp4') }
+    if (-not (_AssertOutExt 'tomp4' $Out 'mp4')) { return }
+    if (-not (_AssertNoExtraPos 'tomp4' $pos 2)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
@@ -41,6 +63,8 @@ function towebm {
     $pos, $extra = _SplitPosExtra @args
     $In  = $pos[0]
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.webm') }
+    if (-not (_AssertOutExt 'towebm' $Out 'webm')) { return }
+    if (-not (_AssertNoExtraPos 'towebm' $pos 2)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
@@ -54,6 +78,8 @@ function tomp3 {
     $pos, $extra = _SplitPosExtra @args
     $In  = $pos[0]
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.mp3') }
+    if (-not (_AssertOutExt 'tomp3' $Out 'mp3')) { return }
+    if (-not (_AssertNoExtraPos 'tomp3' $pos 2)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
@@ -67,6 +93,8 @@ function towav {
     $pos, $extra = _SplitPosExtra @args
     $In  = $pos[0]
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.wav') }
+    if (-not (_AssertOutExt 'towav' $Out 'wav')) { return }
+    if (-not (_AssertNoExtraPos 'towav' $pos 2)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
@@ -80,6 +108,8 @@ function toflac {
     $pos, $extra = _SplitPosExtra @args
     $In  = $pos[0]
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.flac') }
+    if (-not (_AssertOutExt 'toflac' $Out 'flac')) { return }
+    if (-not (_AssertNoExtraPos 'toflac' $pos 2)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
@@ -95,6 +125,7 @@ function togif {
     $pos, $extra = _SplitPosExtra @args
     $In  = $pos[0]
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.gif') }
+    if (-not (_AssertOutExt 'togif' $Out 'gif')) { return }
     $Fps   = if ($pos.Count -gt 2) { $pos[2] } else { '10' }
     $Width = if ($pos.Count -gt 3) { $pos[3] } else { '480' }
     if ($extra.Count -gt 0) {
@@ -116,9 +147,13 @@ function togif {
 # minfo <input> [extra ffprobe args] — Show media info (ffprobe compact format).
 #   minfo input.mp4 -show_streams -of json  → extra ffprobe args
 function minfo {
-    $In = $args[0]
-    $extra = @($args | Select-Object -Skip 1)
-    ffprobe -hide_banner @extra -i $In
+    # Several inputs are fine: each is probed in turn with the same options.
+    $pos, $extra = _SplitPosExtra @args
+    if ($pos.Count -eq 0) {
+        Write-Error "usage: minfo <file...> [ffprobe args]"
+        return
+    }
+    foreach ($In in $pos) { ffprobe -hide_banner @extra -i $In }
 }
 
 # clip <input> <start> <end> [output] [-ffmpeg overrides] — Cut video segment.
@@ -159,6 +194,7 @@ function strip-audio {
         $dir  = [IO.Path]::GetDirectoryName($In)
         $Out  = [IO.Path]::Combine($dir, "${base}_nosound${ext}")
     }
+    if (-not (_AssertNoExtraPos 'strip-audio' $pos 2)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In -an @extra $Out
     } else {
@@ -176,6 +212,7 @@ function thumbnail {
     $In   = $pos[0]
     $Time = if ($pos.Count -gt 1) { $pos[1] } else { '00:00:01' }
     $Out  = if ($pos.Count -gt 2) { $pos[2] } else { [IO.Path]::ChangeExtension($In, '.jpg') }
+    if (-not (_AssertNoExtraPos 'thumbnail' $pos 3)) { return }
     if ($extra.Count -gt 0) {
         ffmpeg -hide_banner -loglevel error -y -i $In -ss $Time @extra $Out
     } else {

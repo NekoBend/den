@@ -128,6 +128,31 @@ assert_contains "zsh/clip output" "input_clip.mp4" "$actual"
 # PowerShell tests
 # =============================================================================
 
+
+echo "[bash] tomp4 refuses an output that is really a second input"
+err=$(run_bash "$FFMPEG_SH_TEST" 'tomp4 a.avi b.avi' 2>&1 >/dev/null || true)
+assert_contains "bash/tomp4 second-input guard message" "does not end in .mp4" "$err"
+actual=$(run_bash "$FFMPEG_SH_TEST" 'tomp4 a.avi b.avi' 2>/dev/null || true)
+assert_eq "bash/tomp4 second-input guard runs no ffmpeg" "" "$actual"
+err=$(run_bash "$FFMPEG_SH_TEST" 'tomp4 a.avi out.mp4 c.avi' 2>&1 >/dev/null || true)
+assert_contains "bash/tomp4 stray positional refused" "unexpected argument 'c.avi'" "$err"
+err=$(run_bash "$FFMPEG_SH_TEST" 'strip-audio a.mp4 out.mp4 c.mp4' 2>&1 >/dev/null || true)
+assert_contains "bash/strip-audio stray positional refused" "unexpected argument 'c.mp4'" "$err"
+err=$(run_bash "$FFMPEG_SH_TEST" 'thumbnail a.mp4 00:00:05 out.png c.mp4' 2>&1 >/dev/null || true)
+assert_contains "bash/thumbnail stray positional refused" "unexpected argument 'c.mp4'" "$err"
+actual=$(run_bash "$FFMPEG_SH_TEST" 'thumbnail a.mp4 00:00:05 out.png -q:v 2')
+assert_contains "bash/thumbnail time+out+override still accepted" "out.png" "$actual"
+actual=$(run_bash "$FFMPEG_SH_TEST" 'tomp4 a.avi out.mp4 -crf 18')
+assert_contains "bash/tomp4 explicit out still accepted" "out.mp4" "$actual"
+
+echo "[bash] minfo several inputs"
+actual=$(run_bash "$FFMPEG_SH_TEST" 'minfo a.mp4 b.mp4 -show_streams')
+assert_contains "bash/minfo first input" "-i a.mp4" "$actual"
+assert_contains "bash/minfo second input" "-i b.mp4" "$actual"
+assert_eq "bash/minfo options applied to each call" "2" "$(printf '%s\n' "$actual" | grep -c -- '-show_streams')"
+err=$(run_bash "$FFMPEG_SH_TEST" 'minfo -show_streams' 2>&1 >/dev/null || true)
+assert_contains "bash/minfo no input is a usage error" "usage: minfo" "$err"
+
 echo "[pwsh] tomp4 auto output"
 actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 input.avi' | tr -d '\r')
 assert_contains "pwsh/tomp4 auto ext" "input.mp4" "$actual"
@@ -153,6 +178,24 @@ assert_contains "pwsh/togif width" "scale=640" "$actual"
 echo "[pwsh] strip-audio auto output"
 actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'strip-audio input.mp4' | tr -d '\r')
 assert_contains "pwsh/strip-audio output" "input_nosound.mp4" "$actual"
+
+echo "[pwsh] tomp4 refuses an output that is really a second input"
+err=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 a.avi b.avi' 2>&1 >/dev/null || true)
+assert_contains "pwsh/tomp4 second-input guard message" "does not end in .mp4" "$err"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 a.avi b.avi' 2>/dev/null || true)
+assert_eq "pwsh/tomp4 second-input guard runs no ffmpeg" "" "$actual"
+err=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 a.avi out.mp4 c.avi' 2>&1 >/dev/null || true)
+assert_contains "pwsh/tomp4 stray positional refused" "unexpected argument 'c.avi'" "$err"
+err=$(run_pwsh "$FFMPEG_PS1_TEST" 'strip-audio a.mp4 out.mp4 c.mp4' 2>&1 >/dev/null || true)
+assert_contains "pwsh/strip-audio stray positional refused" "unexpected argument 'c.mp4'" "$err"
+err=$(run_pwsh "$FFMPEG_PS1_TEST" 'thumbnail a.mp4 00:00:05 out.png c.mp4' 2>&1 >/dev/null || true)
+assert_contains "pwsh/thumbnail stray positional refused" "unexpected argument 'c.mp4'" "$err"
+
+echo "[pwsh] minfo several inputs"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'minfo a.mp4 b.mp4 -show_streams')
+assert_contains "pwsh/minfo first input" "-i a.mp4" "$actual"
+assert_contains "pwsh/minfo second input" "-i b.mp4" "$actual"
+
 
 # =============================================================================
 # Summary

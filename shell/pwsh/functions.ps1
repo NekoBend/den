@@ -9,10 +9,26 @@ function digest {
     [Parameter(Mandatory, Position = 0)]
     [ValidateSet('md5', 'sha256', 'sha512')]
     [string]$Algorithm,
-    [Parameter(Mandatory, Position = 1)]
-    [string]$Path
+    [Parameter(Position = 1, ValueFromRemainingArguments)]
+    [string[]]$Path
   )
-  (Get-FileHash $Path -Algorithm $Algorithm.ToUpper()).Hash
+  if (-not $Path -or $Path.Count -eq 0) {
+    Write-Error "usage: digest {md5|sha256|sha512} <file...>"
+    return
+  }
+  # One file prints the bare hash (scriptable); several print hash and name
+  # per line so the lines stay attributable.
+  $failed = 0
+  foreach ($p in $Path) {
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+      Write-Error "digest: '$p' is not a file"
+      $failed++
+      continue
+    }
+    $h = (Get-FileHash -LiteralPath $p -Algorithm $Algorithm.ToUpper()).Hash
+    if ($Path.Count -gt 1) { "$h  $p" } else { $h }
+  }
+  if ($failed) { Write-Error "digest: $failed of $($Path.Count) files failed" }
 }
 
 # mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)
@@ -27,6 +43,9 @@ function mkfile {
   } else {
     [int64]$Size
   }
+  # .NET resolves relative paths against the process directory, which
+  # Set-Location never updates; resolve against the PowerShell location first.
+  $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
   $fs = [System.IO.File]::Create($Path)
   $fs.SetLength($bytes)
   $fs.Close()
@@ -35,23 +54,48 @@ function mkfile {
 
 # extract → auto-detect and extract archives
 function extract {
-  param([Parameter(Mandatory)][string]$Path)
-  if (-not (Test-Path $Path)) {
-    Write-Error "'$Path' not found"
+  # Every argument is an archive; each is extracted in turn and a failure on
+  # one does not hide the others. Failures are reported per archive and
+  # summarized at the end with a (non-terminating) error; the function does
+  # not throw.
+  param([Parameter(ValueFromRemainingArguments)][string[]]$Paths)
+  if (-not $Paths -or $Paths.Count -eq 0) {
+    Write-Error "usage: extract <file...>"
     return
   }
-  switch -Regex ($Path) {
-    '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
-    '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
-    '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
-    '\.tar\.zst$'           { tar --zstd -xf $Path; break }
-    '\.tar$'                { tar xf $Path; break }
-    '\.gz$'                 { gzip -d $Path; break }
-    '\.zip$'                { Expand-Archive -Path $Path -DestinationPath . -Force; break }
-    '\.7z$'                 { & 7z x $Path; break }
-    '\.rar$'                { & unrar x $Path; break }
-    default                 { Write-Error "unsupported format '$Path'" }
+  $failed = 0
+  foreach ($Path in $Paths) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+      Write-Error "extract: '$Path' is not a file"
+      $failed++
+      continue
+    }
+    # Each archive's status is taken from ITS OWN command: $LASTEXITCODE is
+    # only set by native tools (tar, gzip, 7z, unrar), so it is reset per
+    # archive, and the cmdlet path (Expand-Archive) reports through an
+    # exception instead.
+    $global:LASTEXITCODE = 0
+    $ok = $true
+    switch -Regex ($Path) {
+      '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
+      '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
+      '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
+      '\.tar\.zst$'           { tar --zstd -xf $Path; break }
+      '\.tar$'                { tar xf $Path; break }
+      '\.gz$'                 { gzip -d $Path; break }
+      '\.zip$'                {
+        try { Expand-Archive -LiteralPath $Path -DestinationPath . -Force -ErrorAction Stop }
+        catch { Write-Error "extract: '$Path': $($_.Exception.Message)"; $ok = $false }
+        break
+      }
+      '\.7z$'                 { & 7z x $Path; break }
+      '\.rar$'                { & unrar x $Path; break }
+      default                 { Write-Error "extract: unsupported format '$Path'"; $ok = $false }
+    }
+    if ($LASTEXITCODE -ne 0) { $ok = $false }
+    if (-not $ok) { $failed++ }
   }
+  if ($failed) { Write-Error "extract: $failed of $($Paths.Count) archives failed" }
 }
 
 # archive → create archive (format auto-detected from output filename)
@@ -66,7 +110,9 @@ function archive {
     '\.tar\.xz$|\.txz$'    { tar cJf $Output @Sources; break }
     '\.tar\.zst$'           { tar --zstd -cf $Output @Sources; break }
     '\.tar$'                { tar cf $Output @Sources; break }
-    '\.zip$'                { Compress-Archive -Path @Sources -DestinationPath $Output -Force; break }
+    # -Path takes the array itself; splatting after a named parameter binds only
+    # the first element and leaves the rest as unbindable positionals.
+    '\.zip$'                { Compress-Archive -Path $Sources -DestinationPath $Output -Force; break }
     '\.7z$'                 { & 7z a $Output @Sources; break }
     default                 { Write-Error "unsupported format '$Output'" }
   }

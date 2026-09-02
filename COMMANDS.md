@@ -119,9 +119,9 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `digest {md5\|sha256\|sha512} <file>` | file hash | ✓ | ✓ | ✓ |
+| `digest {md5\|sha256\|sha512} <file...>` | file hash; with several files, hash and name per line | ✓ | ✓ | ✓ |
 | `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
-| `extract <archive>` | auto-detect archive type and extract | ✓ | ✓ | — |
+| `extract <archive...>` | auto-detect each archive's type and extract it; exit 1 if any failed | ✓ | ✓ | — |
 | `archive <out> <in>...` | create an archive (format from the output name) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
@@ -152,10 +152,10 @@ Loads only when ffmpeg is installed. pwsh has the same set; cmd has none.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `tomp4` / `towebm` | convert to H.264/AAC mp4 / VP9/Opus webm | ✓ | ✓ | — |
-| `tomp3` / `towav` / `toflac` | convert audio to mp3 / wav / flac | ✓ | ✓ | — |
+| `tomp4` / `towebm` | convert to H.264/AAC mp4 / VP9/Opus webm; `<in> [out] [ffmpeg args]`, one input per call (an `out` without the target extension is refused) | ✓ | ✓ | — |
+| `tomp3` / `towav` / `toflac` | convert audio to mp3 / wav / flac; same argument shape and one-input rule as `tomp4` | ✓ | ✓ | — |
 | `togif` | convert to GIF (2-pass palette) | ✓ | ✓ | — |
-| `minfo` | media info via ffprobe | ✓ | ✓ | — |
+| `minfo <file...>` | media info via ffprobe, one report per file | ✓ | ✓ | — |
 | `clip` | cut a video segment (stream copy by default) | ✓ | ✓ | — |
 | `strip-audio` | remove the audio track | ✓ | ✓ | — |
 | `thumbnail` | extract a single frame as an image | ✓ | ✓ | — |

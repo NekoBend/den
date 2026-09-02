@@ -17,11 +17,38 @@ command -v ffmpeg >/dev/null 2>&1 || return 0
 #   tomp4 input.avi out.mp4                → custom output
 #   tomp4 input.avi -c:v libx265 -crf 18  → override (auto output)
 #   tomp4 input.avi out.mp4 -c:v libx265  → override + custom output
+# _ff_check_out <fn> <out> <ext>: an explicit output that does not carry the
+# target extension is almost always a second INPUT mistaken for an output
+# (`tomp4 a.avi b.avi` would overwrite b.avi, since ffmpeg runs with -y).
+# The converters take one input per call; refuse instead of destroying it.
+_ff_check_out() {
+  case "$2" in
+    *."$3") return 0 ;;
+  esac
+  echo "$1: output '$2' does not end in .$3; one input per call (for several files: for f in *.ext; do $1 \"\$f\"; done)" >&2
+  return 1
+}
+
+# _ff_no_extra <fn> "$@": after <in> [out], a further non-option argument is a
+# stray positional (a third file, a typo); refuse rather than hand it to ffmpeg.
+_ff_no_extra() {
+  _fn="$1"; shift
+  if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
+    echo "$_fn: unexpected argument '$1' (usage: $_fn <in> [out] [ffmpeg args])" >&2
+    unset _fn
+    return 1
+  fi
+  unset _fn
+  return 0
+}
+
 tomp4() {
   _in="$1"; shift
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.mp4"
+  _ff_check_out tomp4 "$_out" mp4 || return 1
+  _ff_no_extra tomp4 "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" "$@" "$_out"
   else
@@ -36,6 +63,8 @@ towebm() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.webm"
+  _ff_check_out towebm "$_out" webm || return 1
+  _ff_no_extra towebm "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" "$@" "$_out"
   else
@@ -50,6 +79,8 @@ tomp3() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.mp3"
+  _ff_check_out tomp3 "$_out" mp3 || return 1
+  _ff_no_extra tomp3 "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" "$@" "$_out"
   else
@@ -64,6 +95,8 @@ towav() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.wav"
+  _ff_check_out towav "$_out" wav || return 1
+  _ff_no_extra towav "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" "$@" "$_out"
   else
@@ -78,6 +111,8 @@ toflac() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.flac"
+  _ff_check_out toflac "$_out" flac || return 1
+  _ff_no_extra toflac "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" "$@" "$_out"
   else
@@ -94,6 +129,7 @@ togif() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.gif"
+  _ff_check_out togif "$_out" gif || return 1
   _fps=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _fps="$1"; shift; }
   [ -z "$_fps" ] && _fps="10"
@@ -122,8 +158,39 @@ togif() {
 # minfo <input> [extra ffprobe args] — Show media info (ffprobe compact format).
 #   minfo input.mp4 -show_streams -of json  → extra ffprobe args
 minfo() {
-  _in="$1"; shift
-  ffprobe -hide_banner "$@" -i "$_in"
+  # Several inputs are fine: each is probed in turn with the same options
+  # (dash-prefixed arguments) applied to every ffprobe call.
+  _n=0
+  for _a in "$@"; do case "$_a" in -*) ;; *) _n=$((_n + 1)) ;; esac; done
+  if [ "$_n" -eq 0 ]; then
+    echo "usage: minfo <file...> [ffprobe args]" >&2
+    unset _n _a
+    return 1
+  fi
+  _rc=0
+  for _a in "$@"; do
+    case "$_a" in -*) continue ;; esac
+    _minfo_one "$_a" "$@" || _rc=1
+  done
+  unset _n _a
+  return "$_rc"
+}
+
+# _minfo_one <input> "$@": ffprobe <input> with only the dash-prefixed
+# arguments of "$@" (POSIX sh has no arrays; the option list is rebuilt).
+_minfo_one() {
+  _target="$1"; shift
+  _got=0
+  for _o in "$@"; do
+    case "$_o" in
+      -*) if [ "$_got" -eq 0 ]; then set -- "$_o"; _got=1; else set -- "$@" "$_o"; fi ;;
+    esac
+  done
+  [ "$_got" -eq 0 ] && set --
+  ffprobe -hide_banner "$@" -i "$_target"
+  _mrc=$?
+  unset _target _got _o
+  return "$_mrc"
 }
 
 # clip <input> <start> <end> [output] [-ffmpeg overrides] — Cut video segment.
@@ -152,6 +219,7 @@ strip-audio() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}_nosound.${_in##*.}"
+  _ff_no_extra strip-audio "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" -an "$@" "$_out"
   else
@@ -172,6 +240,7 @@ thumbnail() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.jpg"
+  _ff_no_extra thumbnail "$@" || return 1
   if [ $# -gt 0 ]; then
     ffmpeg -hide_banner -loglevel error -y -i "$_in" -ss "$_t" "$@" "$_out"
   else
