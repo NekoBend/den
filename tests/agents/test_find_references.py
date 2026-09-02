@@ -8,9 +8,12 @@ public contract under test is its CLI: argv in, stdout + exit code out.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
@@ -29,14 +32,47 @@ sys.path.insert(0, str(SCRIPT.parent))
 from _common import parse_rg_line  # ruff: ignore[module-import-not-at-top-of-file]
 
 
-def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run(
+    *args: str, cwd: Path | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run find-references.py with `args`; return the completed process."""
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
+
+
+def without_rg() -> dict[str, str]:
+    """A copy of os.environ whose PATH holds no `rg`, forcing the walk fallback.
+
+    Both backends must return the same files, and the CI runners have ripgrep
+    installed, so every parity test runs the script twice: once as-is and once
+    with this environment.
+    """
+    env = dict(os.environ)
+    kept = [
+        entry
+        for entry in env.get("PATH", "").split(os.pathsep)
+        if entry and shutil.which("rg", path=entry) is None
+    ]
+    env["PATH"] = os.pathsep.join(kept)
+    return env
+
+
+def both_backends() -> list[dict[str, str] | None]:
+    """The two environments a search must behave identically in."""
+    return [None, without_rg()]
+
+
+def symlink_or_skip(link: Path, target: Path) -> None:
+    """Create `link` -> `target`, skipping the test where that is not allowed."""
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:  # Windows without privileges
+        pytest.skip(f"symlinks unavailable: {exc}")
 
 
 def write(root: Path, rel: str, body: str) -> Path:
@@ -228,3 +264,55 @@ def test_rg_line_parser_reads_posix_paths_and_rejects_junk() -> None:
     assert parse_rg_line("no separators here") is None
     assert parse_rg_line("/repo/mod.py:twelve:x") is None
     assert parse_rg_line(r"C:\repo\mod.py:no-line-number") is None
+
+
+# ---------- the two backends must see the same tree ----------
+
+
+def test_root_under_a_skipped_directory_is_still_searched(tmp_path: Path) -> None:
+    # SKIP_DIRS applies BELOW the root; a checkout that happens to live under a
+    # directory called build/ (or dist/, target/, out/) is not itself skipped.
+    root = tmp_path / "build" / "proj"
+    write(root, "mod.py", "def widget():\n    return 1\n")
+    for env in both_backends():
+        proc = run("--def", "widget", "--root", str(root), env=env)
+        assert proc.returncode == 0, proc.stderr
+        lines = [ln for ln in proc.stdout.splitlines() if ln]
+        assert len(lines) == 1, proc.stdout
+        assert lines[0].endswith("mod.py:1:def:def widget():"), proc.stdout
+
+
+def test_hidden_and_ignored_files_are_searched_by_both_backends(
+    tmp_path: Path,
+) -> None:
+    # The walk fallback knows nothing about .gitignore or dotfiles, so rg is
+    # given --no-ignore/--hidden to match it. Pinned because dropping either
+    # flag makes the output depend on whether rg is installed.
+    (tmp_path / ".git").mkdir()  # makes rg honour .gitignore at all
+    write(tmp_path, ".gitignore", "ignored.py\n")
+    write(tmp_path, "ignored.py", "widget()\n")
+    write(tmp_path, ".github/workflows/ci.yml", "run: widget()\n")
+    for env in both_backends():
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "ignored.py" in proc.stdout, proc.stdout
+        assert "ci.yml" in proc.stdout, proc.stdout
+
+
+def test_symlinked_files_are_not_followed(tmp_path: Path) -> None:
+    # rg does not follow links without -L; the fallback walk must not either,
+    # or a link committed in a repo turns a search into a read of a file
+    # outside it, printed verbatim.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "credentials"
+    secret.write_text("widget = 'SENTINEL-SECRET'\n", encoding="utf-8")
+    root = tmp_path / "repo"
+    write(root, "real.py", "widget()\n")
+    symlink_or_skip(root / "creds", secret)
+    for env in both_backends():
+        proc = run("--uses", "widget", "--root", str(root), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
+        assert "creds" not in proc.stdout, proc.stdout
+        assert "real.py" in proc.stdout, proc.stdout

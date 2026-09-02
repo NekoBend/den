@@ -8,9 +8,13 @@ asserts directly by pointing at a non-repo directory.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
@@ -22,14 +26,40 @@ SCRIPT = (
 )
 
 
-def run(*args: str) -> subprocess.CompletedProcess[str]:
+def run(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run check-broken-refs.py with `args`; return the completed process."""
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
+
+
+def without_rg() -> dict[str, str]:
+    """A copy of os.environ whose PATH holds no `rg`, forcing the walk fallback.
+
+    The script must report the same broken references either way, and the CI
+    runners have ripgrep installed, so parity tests run it in both.
+    """
+    env = dict(os.environ)
+    kept = [
+        entry
+        for entry in env.get("PATH", "").split(os.pathsep)
+        if entry and shutil.which("rg", path=entry) is None
+    ]
+    env["PATH"] = os.pathsep.join(kept)
+    if shutil.which("git", path=env["PATH"]) is None:
+        pytest.skip("git and rg share a PATH entry; cannot force the fallback")
+    return env
+
+
+def both_backends() -> list[dict[str, str] | None]:
+    """The two environments the check must behave identically in."""
+    return [None, without_rg()]
 
 
 def git(repo: Path, *args: str) -> None:
@@ -235,3 +265,57 @@ def test_changed_files_outside_the_root_are_ignored(tmp_path: Path) -> None:
     proc = run("--base", "HEAD", "--root", str(tmp_path / "pkg"))
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "", proc.stdout
+
+
+def test_hidden_and_ignored_usages_are_reported_by_both_backends(
+    tmp_path: Path,
+) -> None:
+    # The walk fallback reads dotfiles and git-ignored files, so rg is given
+    # --no-ignore/--hidden to match: a dangling reference in .github/ or in an
+    # untracked file is still a dangling reference, and the report must not
+    # depend on whether rg is installed.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, ".gitignore", "ignored.py\n")
+    write(tmp_path, ".github/workflows/ci.yml", "run: widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+    write(tmp_path, "ignored.py", "widget()\n")
+
+    for env in both_backends():
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "ci.yml" in proc.stdout, proc.stdout
+        assert "ignored.py" in proc.stdout, proc.stdout
+
+
+def test_symlinked_files_are_not_followed(tmp_path: Path) -> None:
+    # rg does not follow links without -L; the fallback walk must not either,
+    # or a link committed in the repo turns the usage search into a read of a
+    # file outside the tree, printed verbatim as a "broken reference".
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "credentials"
+    secret.write_text("widget = 'SENTINEL-SECRET'\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    write(repo, "lib.py", "def widget():\n    return 1\n")
+    write(repo, "app.py", "widget()\n")
+    try:
+        (repo / "creds").symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:  # Windows without privileges
+        pytest.skip(f"symlinks unavailable: {exc}")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+
+    write(repo, "lib.py", "# gone\n")
+
+    for env in both_backends():
+        proc = run("--base", "HEAD", "--root", str(repo), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
+        assert "creds" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout

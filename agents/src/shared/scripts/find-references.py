@@ -50,8 +50,10 @@ from _common import (
     DEFAULT_CAPTURE,
     DEFINITION_CAPTURE,
     DEFINITION_PATTERNS,
-    SKIP_DIRS,
+    RG_SEARCH_FLAGS,
+    iter_search_files,
     parse_rg_line,
+    rg_skip_globs,
 )
 
 Hit = tuple[str, int, str]
@@ -74,15 +76,13 @@ def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]
         # match the Python-walk fallback: search everything except SKIP_DIRS,
         # regardless of .gitignore or hidden-dir status, so results do not
         # depend on whether rg is installed.
-        "--no-ignore",
-        "--hidden",
+        *RG_SEARCH_FLAGS,
         pattern,
         str(root),
     ]
     if ext:
         cmd.extend(["-g", f"*{ext}"])
-    for skip in SKIP_DIRS:
-        cmd.extend(["-g", f"!{skip}"])
+    cmd.extend(rg_skip_globs())
     try:
         proc = subprocess.run(
             cmd,
@@ -106,13 +106,7 @@ def _search_with_walk(pattern: str, root: Path, ext: str | None) -> list[Hit]:
     """Search by walking the tree with os.walk + re (fallback path)."""
     rx = re.compile(pattern, re.MULTILINE)
     hits: list[Hit] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        if ext and path.suffix != ext:
-            continue
+    for path in iter_search_files(root, ext):
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:

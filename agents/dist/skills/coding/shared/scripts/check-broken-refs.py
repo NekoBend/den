@@ -45,8 +45,10 @@ from _common import (
     DEFAULT_CAPTURE,
     DEFINITION_CAPTURE,
     DEFINITION_PATTERNS,
-    SKIP_DIRS,
+    RG_SEARCH_FLAGS,
+    iter_search_files,
     parse_rg_line,
+    rg_skip_globs,
 )
 
 
@@ -160,11 +162,14 @@ def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
             "--line-number",
             "--with-filename",
             "--no-messages",
+            # same flags as find-references.py: search everything except
+            # SKIP_DIRS, ignored and hidden files included, so a dangling
+            # reference is reported whether or not rg is installed.
+            *RG_SEARCH_FLAGS,
             word_pattern,
             str(root),
         ]
-        for skip in SKIP_DIRS:
-            cmd.extend(["-g", f"!{skip}"])
+        cmd.extend(rg_skip_globs())
         try:
             proc = subprocess.run(
                 cmd,
@@ -187,11 +192,7 @@ def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
     # Fallback: walk the tree manually.
     rx = re.compile(word_pattern)
     hits = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
+    for path in iter_search_files(root):
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:

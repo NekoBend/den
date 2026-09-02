@@ -13,9 +13,20 @@ substitutes it before compiling the regex:
                           captures any symbol name.
 
 Patterns are applied with re.MULTILINE.
+
+The search plumbing both scripts share lives here too: the ripgrep flags and
+skip globs, the parser for ripgrep's output lines, and the fallback walker.
+Keeping them in one place is what makes the two backends return the same files.
 """
 
 from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # Per-extension definition-site patterns. {name} is the symbol placeholder.
 DEFINITION_PATTERNS: dict[str, list[str]] = {
@@ -115,6 +126,22 @@ SKIP_DIRS: frozenset[str] = frozenset(
 )
 
 
+# Flags added to every ripgrep invocation. The fallback walker knows nothing
+# about .gitignore and does not skip dot-entries, so rg is told to search
+# ignored and hidden files as well: results must not depend on whether rg
+# happens to be installed. SKIP_DIRS (`.git` included) is excluded on both
+# sides instead.
+RG_SEARCH_FLAGS: tuple[str, ...] = ("--no-ignore", "--hidden")
+
+
+def rg_skip_globs() -> list[str]:
+    """Return `-g !<dir>` arguments excluding every SKIP_DIRS entry."""
+    globs: list[str] = []
+    for skip in sorted(SKIP_DIRS):
+        globs.extend(["-g", f"!{skip}"])
+    return globs
+
+
 def parse_rg_line(line: str) -> tuple[str, int, str] | None:
     """Parse one `<file>:<lineno>:<content>` line of ripgrep output.
 
@@ -139,3 +166,27 @@ def parse_rg_line(line: str) -> tuple[str, int, str] | None:
     except ValueError:
         return None
     return (file, lineno, content)
+
+
+def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:
+    """Yield every file under `root` that the fallback walker searches.
+
+    Mirrors what the ripgrep backend sees:
+
+    - SKIP_DIRS are pruned by directory NAME below `root`, so a checkout that
+      itself lives under `build/`, `dist/`, `target/` ... is still searched.
+    - Symlinks are never followed (ripgrep does not follow them without -L),
+      so a link committed in the tree cannot pull a file from outside it into
+      the results.
+    - `ext`, when given, keeps only files with that suffix.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        here = Path(dirpath)
+        for name in sorted(filenames):
+            path = here / name
+            if ext and path.suffix != ext:
+                continue
+            if path.is_symlink() or not path.is_file():
+                continue
+            yield path
