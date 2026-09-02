@@ -61,26 +61,40 @@ setup_wildcard() {
     printf 'decoy' > "$WORK/wild/f1.txt"
 }
 
-# 7z is installed neither here nor in tests/shell/Dockerfile, so the 7z branch
-# is exercised against a stub that records its argv. 7z reads a leading '-' as
-# a switch and a leading '@' as a LISTFILE — it would archive the paths named
-# inside that file instead of the file itself — so archive() must hand it
-# neither form, and has no '--' marker to fall back on.
-SEVENZ_ARGV="$WORK/7z-argv.txt"
+# What an archiver is actually handed cannot be read off the extracted result,
+# so these cases run against stub archivers on PATH that record their argv.
+# 7z is installed neither here nor in tests/shell/Dockerfile, which is the
+# other reason its branches need a stub at all.
+#
+# The names being defended against: every one of these tools reads a leading
+# '-' as a switch, and 7z additionally reads a leading '@' as a LISTFILE — it
+# would act on the paths named INSIDE that file rather than on the file
+# itself. The 7z branches have no '--' marker to fall back on, so both forms
+# must reach them already neutralised with './'.
+STUB_ARGV="$WORK/stub-argv.txt"
 
-setup_sevenz_stub() {
+setup_archiver_stubs() {
     rm -rf "$WORK"/*
-    mkdir -p "$WORK/7zbin" "$WORK/sevenz"
-    : > "$WORK/sevenz/-x"
-    : > "$WORK/sevenz/@list"
-    : > "$WORK/sevenz/-x.7z"
-    : > "$WORK/sevenz/@a.7z"
-    cat > "$WORK/7zbin/7z" <<STUB
+    mkdir -p "$WORK/stubbin" "$WORK/stubsrc"
+    # sources for archive(), and archives for extract(), one per branch shape
+    # a stub can observe (the .zip branch is a cmdlet on pwsh, so it is not
+    # one of them)
+    : > "$WORK/stubsrc/-x"
+    : > "$WORK/stubsrc/@list"
+    : > "$WORK/stubsrc/-x.7z"
+    : > "$WORK/stubsrc/@a.7z"
+    : > "$WORK/stubsrc/-x.tar.gz"
+    : > "$WORK/stubsrc/-x.gz"
+    : > "$WORK/stubsrc/-x.rar"
+    for _stub in 7z tar gzip unrar; do
+        cat > "$WORK/stubbin/$_stub" <<STUB
 #!/bin/sh
-printf '%s\n' "\$@" > '$SEVENZ_ARGV'
+printf '%s\n' "\$@" > '$STUB_ARGV'
 STUB
-    chmod +x "$WORK/7zbin/7z"
-    rm -f "$SEVENZ_ARGV"
+        chmod +x "$WORK/stubbin/$_stub"
+    done
+    unset _stub
+    rm -f "$STUB_ARGV"
 }
 
 # sha256 of the literal file's content ("real") and of the decoy's ("decoy")
@@ -189,22 +203,22 @@ actual=$(unzip -l "$WORK/out.zip" 2>/dev/null)
 assert_contains "bash/archive crafted glob zip stored the file" "$CRAFTED_SRC" "$actual"
 
 echo "[bash] archive 7z gets neither a switch nor a listfile"
-setup_sevenz_stub
-run_bash "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
-assert_exists "bash/archive 7z reached the stub" "$SEVENZ_ARGV"
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+setup_archiver_stubs
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
+assert_exists "bash/archive 7z reached the stub" "$STUB_ARGV"
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "bash/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
 assert_not_contains "bash/archive 7z got no -- marker" "--" "$actual"
 
 echo "[bash] extract 7z gets neither a switch nor a listfile"
-setup_sevenz_stub
-run_bash "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && extract '-x.7z'" >/dev/null 2>&1
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+setup_archiver_stubs
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "bash/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
 assert_not_contains "bash/extract 7z switch-shaped got no -- marker" "--" "$actual"
-rm -f "$SEVENZ_ARGV"
-run_bash "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && extract '@a.7z'" >/dev/null 2>&1
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+rm -f "$STUB_ARGV"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "bash/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
 assert_not_contains "bash/extract 7z listfile-shaped got no -- marker" "--" "$actual"
 
@@ -419,22 +433,22 @@ actual=$(unzip -l "$WORK/out.zip" 2>/dev/null)
 assert_contains "zsh/archive crafted glob zip stored the file" "$CRAFTED_SRC" "$actual"
 
 echo "[zsh] archive 7z gets neither a switch nor a listfile"
-setup_sevenz_stub
-run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
-assert_exists "zsh/archive 7z reached the stub" "$SEVENZ_ARGV"
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+setup_archiver_stubs
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
+assert_exists "zsh/archive 7z reached the stub" "$STUB_ARGV"
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "zsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
 assert_not_contains "zsh/archive 7z got no -- marker" "--" "$actual"
 
 echo "[zsh] extract 7z gets neither a switch nor a listfile"
-setup_sevenz_stub
-run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && extract '-x.7z'" >/dev/null 2>&1
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+setup_archiver_stubs
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "zsh/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
 assert_not_contains "zsh/extract 7z switch-shaped got no -- marker" "--" "$actual"
-rm -f "$SEVENZ_ARGV"
-run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && extract '@a.7z'" >/dev/null 2>&1
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+rm -f "$STUB_ARGV"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "zsh/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
 assert_not_contains "zsh/extract 7z listfile-shaped got no -- marker" "--" "$actual"
 
@@ -604,24 +618,41 @@ assert_eq "pwsh/digest literal name" "${SHA256_REAL^^}" "$actual"
 assert_not_contains "pwsh/digest did not hash the decoy" "${SHA256_DECOY^^}" "$actual"
 
 echo "[pwsh] archive 7z gets neither a switch nor a listfile"
-setup_sevenz_stub
-run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/7zbin:' + \$env:PATH; Set-Location '$WORK/sevenz'; archive '$WORK/out.7z' '-x' '@list'" >/dev/null 2>&1
-assert_exists "pwsh/archive 7z reached the stub" "$SEVENZ_ARGV"
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+setup_archiver_stubs
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; archive '$WORK/out.7z' '-x' '@list'" >/dev/null 2>&1
+assert_exists "pwsh/archive 7z reached the stub" "$STUB_ARGV"
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "pwsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
 assert_not_contains "pwsh/archive 7z got no -- marker" "--" "$actual"
 
 echo "[pwsh] extract 7z gets neither a switch nor a listfile"
-setup_sevenz_stub
-run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/7zbin:' + \$env:PATH; Set-Location '$WORK/sevenz'; extract '-x.7z'" >/dev/null 2>&1
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+setup_archiver_stubs
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "pwsh/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
 assert_not_contains "pwsh/extract 7z switch-shaped got no -- marker" "--" "$actual"
-rm -f "$SEVENZ_ARGV"
-run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/7zbin:' + \$env:PATH; Set-Location '$WORK/sevenz'; extract '@a.7z'" >/dev/null 2>&1
-actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+rm -f "$STUB_ARGV"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
 assert_eq "pwsh/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
 assert_not_contains "pwsh/extract 7z listfile-shaped got no -- marker" "--" "$actual"
+
+# The POSIX twin neutralises a leading dash once, before dispatching, so every
+# branch's tool gets a path. pwsh only did it inside the 7z branch, leaving
+# tar/gzip/unrar to read the archive name as a switch.
+echo "[pwsh] extract neutralizes a leading dash for every branch"
+setup_archiver_stubs
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '-x.tar.gz'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract tar branch gets a path" "xzf ./-x.tar.gz " "$actual"
+rm -f "$STUB_ARGV"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '-x.gz'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract gzip branch gets a path" "-d ./-x.gz " "$actual"
+rm -f "$STUB_ARGV"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; extract '-x.rar'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract unrar branch gets a path" "x ./-x.rar " "$actual"
 
 echo "[pwsh] digest several files"
 setup_fixtures

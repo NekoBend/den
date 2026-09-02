@@ -70,6 +70,10 @@ function extract {
       $failed++
       continue
     }
+    # Neutralise a leading dash before dispatching, so no branch's tool can
+    # read the archive name as a switch (parity with the POSIX twin). The 7z
+    # branch adds '@' to this; 7z alone reads that as a listfile.
+    if ($Path.StartsWith('-')) { $Path = Join-Path '.' $Path }
     # Each archive's status is taken from ITS OWN command: $LASTEXITCODE is
     # only set by native tools (tar, gzip, 7z, unrar), so it is reset per
     # archive, and the cmdlet path (Expand-Archive) reports through an
@@ -89,13 +93,13 @@ function extract {
         break
       }
       '\.7z$'                 {
-        # 7z reads a leading '-' as a switch and a leading '@' as a listfile —
-        # it would extract the archives named INSIDE that file rather than the
-        # file itself. 7z is in neither this image nor tests/shell/Dockerfile,
-        # so its '--' marker cannot be exercised; './' neutralises both forms
-        # without depending on marker support, as archive() does.
-        $p7 = if ($Path.StartsWith('-') -or $Path.StartsWith('@')) { Join-Path '.' $Path } else { $Path }
-        & 7z x $p7
+        # 7z also reads a leading '@' as a listfile — it would extract the
+        # archives named INSIDE that file rather than the file itself. 7z is
+        # in neither this image nor tests/shell/Dockerfile, so its '--' marker
+        # cannot be exercised; './' neutralises the name without depending on
+        # marker support, as archive() does.
+        if ($Path.StartsWith('@')) { $Path = Join-Path '.' $Path }
+        & 7z x $Path
         break
       }
       '\.rar$'                { & unrar x $Path; break }
