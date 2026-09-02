@@ -577,3 +577,17 @@ def test_restore_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
     mem.chmod(0o600)
     assert mem.read_text() == "important prior content\n", "not truncated"
     assert len(_history(proj)) == 1, "no checkpoint was possible"
+
+
+def test_mirror_survives_a_directory_at_the_mirror_path(tmp_path, monkeypatch, capsys):
+    # `.clinerules/den-memory.md` as a DIRECTORY: the mirror write must refuse,
+    # not raise IsADirectoryError out of `den hook memory add`.
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    _clinerules_mem(proj).mkdir()
+    monkeypatch.chdir(proj)
+    assert memory_main(["add", "a fact"]) == 0, "memory itself still saves"
+    assert _mem(proj).read_text() == "a fact\n"
+    assert _clinerules_mem(proj).is_dir()
+    assert "not a regular file" in capsys.readouterr().err

@@ -156,6 +156,15 @@ def _write_guarded(root: Path, path: Path, data: bytes, prefix: str = _ERR) -> b
     """
     if _refuse_symlink(root, path, "write", prefix):
         return False
+    if path.exists() and not path.is_file():
+        # A repo can ship `.den/imprint.md/` (or any other target) as a DIRECTORY.
+        # os.open would raise IsADirectoryError straight out of den install; and
+        # the callers that check `is_file()` first read that as "absent" and write.
+        # (A symlink cannot reach here: _refuse_symlink covers the final component.)
+        print(
+            f"{prefix}: refusing to write {path}: not a regular file", file=sys.stderr
+        )
+        return False
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW, 0o666)
     with os.fdopen(fd, "wb") as fh:

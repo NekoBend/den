@@ -934,3 +934,30 @@ def test_list_cline_cli_reports_real_rules(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(proj)
     assert hook_main(["list", "--tool", "cline-cli"]) == 0
     assert "den-imprint.md" in capsys.readouterr().out
+
+
+def test_install_survives_a_directory_at_the_imprint_path(
+    tmp_path, monkeypatch, capsys
+):
+    """A repo can ship `.den/imprint.md/` as a DIRECTORY. _seed_imprint's is_file()
+    check reads that as "absent" and used to write, so os.open raised
+    IsADirectoryError straight out of `den install hook`."""
+    proj = tmp_path / "repo"
+    (proj / ".den" / "imprint.md").mkdir(parents=True)
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 0, "hooks still install"
+    assert (proj / ".claude" / "settings.json").is_file()
+    assert (proj / ".den" / "imprint.md").is_dir(), "left as we found it"
+    assert "not a regular file" in capsys.readouterr().err
+
+
+def test_install_cline_cli_refuses_when_the_imprint_is_a_directory(
+    tmp_path, monkeypatch
+):
+    # Unreadable rather than symlinked: same non-str read, same refusal, and the
+    # seeding write that precedes it must not crash either.
+    proj = tmp_path / "repo"
+    (proj / ".den" / "imprint.md").mkdir(parents=True)
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 1
+    assert not (proj / ".clinerules" / "den-imprint.md").exists()
