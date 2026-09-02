@@ -183,3 +183,55 @@ def test_powershell_names_survive_the_hyphen(tmp_path: Path) -> None:
     assert "New-WrapperSuffix" not in [
         ln.split(":")[3] for ln in out.splitlines() if ln.count(":") >= 3
     ]
+
+
+def test_subdirectory_root_does_not_invent_broken_refs(tmp_path: Path) -> None:
+    # `git diff --name-only` prints paths relative to the REPOSITORY top-level,
+    # not to --root. Joining them onto a sub-directory root made every changed
+    # file look deleted, so every symbol it defined was reported as broken -
+    # including at its own surviving definition line.
+    init_repo(tmp_path)
+    write(tmp_path, "pkg/lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "pkg/app.py", "from lib import widget\nwidget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    # Body-only change: the def survives, so nothing is broken.
+    write(tmp_path, "pkg/lib.py", "def widget():\n    return 2\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path / "pkg"))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "", proc.stdout
+
+
+def test_subdirectory_root_still_reports_a_real_removal(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    write(tmp_path, "pkg/lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "pkg/app.py", "from lib import widget\nwidget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "pkg/lib.py", "# widget removed\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path / "pkg"))
+    assert proc.returncode == 0, proc.stderr
+    assert "broken_ref:widget" in proc.stdout
+    assert "app.py" in proc.stdout
+    # the defining file is the one the removal is part of: not a broken ref
+    assert "lib.py" not in proc.stdout, proc.stdout
+
+
+def test_changed_files_outside_the_root_are_ignored(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    write(tmp_path, "pkg/keep.py", "def kept():\n    return 1\n")
+    write(tmp_path, "other/lib.py", "def outside():\n    return 1\n")
+    write(tmp_path, "pkg/app.py", "outside()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "other/lib.py", "# outside removed\n")
+
+    # The removal happened outside --root, so it is not this run's blast radius.
+    proc = run("--base", "HEAD", "--root", str(tmp_path / "pkg"))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "", proc.stdout

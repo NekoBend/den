@@ -81,15 +81,29 @@ def _is_git_repo(root: Path) -> bool:
         return False
 
 
-def _changed_files(base: str, root: Path, lang_ext: str | None) -> list[Path]:
-    """List files changed in the working tree compared to BASE."""
+def _repo_root(root: Path) -> Path:
+    """Absolute top-level of the git working tree that contains `root`."""
+    return Path(_run_git(["rev-parse", "--show-toplevel"], root).strip()).resolve()
+
+
+def _changed_files(
+    base: str, root: Path, repo_root: Path, lang_ext: str | None
+) -> list[Path]:
+    """List files changed in the working tree compared to BASE.
+
+    `git diff --name-only` prints paths relative to the REPOSITORY top-level
+    whatever the cwd is, so they are joined onto `repo_root` and then narrowed
+    to the ones that live under `root` (which may be any subdirectory).
+    """
     out = _run_git(["diff", "--name-only", base], root)
     files: list[Path] = []
-    for line in out.splitlines():
-        line = line.strip()
+    for raw in out.splitlines():
+        line = raw.strip()
         if not line:
             continue
-        path = root / line
+        path = repo_root / line
+        if not path.is_relative_to(root):
+            continue
         if lang_ext and path.suffix != lang_ext:
             continue
         if path.suffix not in DEFINITION_PATTERNS:
@@ -111,11 +125,15 @@ def _extract_defs(text: str, ext: str) -> set[str]:
     return defs
 
 
-def _file_text_at_base(base: str, file: Path, root: Path) -> str | None:
-    """Get the text of `file` at `base` ref. Returns None if file did not exist."""
-    rel = file.relative_to(root).as_posix()
+def _file_text_at_base(base: str, file: Path, repo_root: Path) -> str | None:
+    """Get the text of `file` at `base` ref. Returns None if file did not exist.
+
+    `<rev>:<path>` is resolved from the repository top-level, so `file` is made
+    relative to that and git is run from there.
+    """
+    rel = file.relative_to(repo_root).as_posix()
     try:
-        return _run_git(["show", f"{base}:{rel}"], root)
+        return _run_git(["show", f"{base}:{rel}"], repo_root)
     except GitError:
         return None
 
@@ -228,14 +246,15 @@ def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
     ext_filter = _normalize_ext(args.lang)
 
     try:
-        changed = _changed_files(args.base, root, ext_filter)
+        repo_root = _repo_root(root)
+        changed = _changed_files(args.base, root, repo_root, ext_filter)
     except GitError as exc:
         print(f"git error: {exc}", file=sys.stderr)
         return 1
 
     removed_by_file: dict[Path, set[str]] = {}
     for file in changed:
-        base_text = _file_text_at_base(args.base, file, root)
+        base_text = _file_text_at_base(args.base, file, repo_root)
         if base_text is None:
             # File did not exist at base; nothing to remove.
             continue
