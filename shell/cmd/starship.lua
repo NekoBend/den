@@ -9,6 +9,54 @@ if not current_path:find(bin_dir, 1, true) then
     os.setenv("PATH", bin_dir .. ";" .. current_path)
 end
 
+-- ===== Spawn helpers (never resolve a command from the current directory) =====
+-- io.popen/os.execute run their string through `cmd.exe /c`, and cmd resolves a
+-- bare command name from the CURRENT DIRECTORY before %PATH%. Clink loads this
+-- script into every new cmd session, so a `zoxide.cmd`/`starship.bat`/`doskey.bat`
+-- sitting in a cloned repo would run at startup -- and the zoxide/starship output
+-- is handed to load(), i.e. arbitrary code execution with nothing typed. Every
+-- command below is therefore spawned by absolute path: tools from %PATH% only
+-- (relative and empty PATH entries, which mean "current directory", are skipped),
+-- system tools from %SystemRoot%\System32.
+
+-- Resolve <name> to an absolute path using %PATH%, or nil when not found.
+local function find_on_path(name)
+    for dir in (os.getenv("PATH") or ""):gmatch("[^;]+") do
+        dir = dir:gsub('"', ""):gsub("[\\/]+$", "")
+        -- Absolute (drive-letter or UNC) entries only: "", ".", "..\bin" and any
+        -- other relative entry resolves against the current directory.
+        if dir:match("^%a:[\\/]") or dir:match("^\\\\") then
+            for _, ext in ipairs({ ".exe", ".cmd", ".bat" }) do
+                local candidate = dir .. "\\" .. name .. ext
+                local f = io.open(candidate, "r")
+                if f then
+                    f:close()
+                    return candidate
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Build a `cmd /c` line for an absolute exe plus arguments. The extra outer quote
+-- pair is required: cmd strips the first and last quote of the line whenever it
+-- holds more than two quotes (redirections, a quoted -Command argument), which
+-- would otherwise unquote a path containing spaces such as
+-- C:\Program Files\starship\bin\starship.exe.
+local function cmd_line(exe, args)
+    return '""' .. exe .. '" ' .. args .. '"'
+end
+
+local system_root = os.getenv("SystemRoot") or os.getenv("windir") or "C:\\Windows"
+local doskey_exe = system_root .. "\\System32\\doskey.exe"
+local powershell_exe = system_root .. "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+
+-- doskey <macro> — define one doskey macro through the System32 binary.
+local function doskey(macro)
+    os.execute(cmd_line(doskey_exe, macro))
+end
+
 -- ===== Hardware info (for starship) =====
 -- Uses env var caching — skips detection if STARSHIP_* vars are already set
 -- (e.g. inherited from parent process or previous clink session).
@@ -17,14 +65,14 @@ local has_hw_cache = (os.getenv("STARSHIP_CPU_INTEL") or os.getenv("STARSHIP_CPU
 
 if not has_hw_cache then
     -- Uses PowerShell for CIM queries (WMIC deprecated on Win11)
-    local h = io.popen('powershell.exe -NoProfile -NoLogo -Command "'
+    local h = io.popen(cmd_line(powershell_exe, '-NoProfile -NoLogo -Command "'
         .. '$cpu=(Get-CimInstance Win32_Processor).Name.Trim();'
         .. "$gpu='';"
         .. 'if(Get-Command nvidia-smi -EA 0){'
         .. '$gpu=(nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null|Select -First 1).Trim()};'
         .. 'if(-not $gpu){'
         .. '$gpu=(Get-CimInstance Win32_VideoController|Select -First 1).Name.Trim()};'
-        .. 'Write-Host $cpu;Write-Host $gpu"')
+        .. 'Write-Host $cpu;Write-Host $gpu"'))
     if h then
         local cpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
         local gpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
@@ -62,51 +110,51 @@ if not has_hw_cache then
 end
 
 -- ===== Navigation (doskey - simple aliases) =====
-os.execute('doskey ..=cd ..')
-os.execute('doskey .1=up 1')
-os.execute('doskey .2=up 2')
-os.execute('doskey .3=up 3')
-os.execute('doskey .4=up 4')
-os.execute('doskey .5=up 5')
-os.execute('doskey .6=up 6')
-os.execute('doskey .7=up 7')
-os.execute('doskey .8=up 8')
-os.execute('doskey .9=up 9')
-os.execute('doskey c=cls')
+doskey('..=cd ..')
+doskey('.1=up 1')
+doskey('.2=up 2')
+doskey('.3=up 3')
+doskey('.4=up 4')
+doskey('.5=up 5')
+doskey('.6=up 6')
+doskey('.7=up 7')
+doskey('.8=up 8')
+doskey('.9=up 9')
+doskey('c=cls')
 
 -- ===== Git =====
-os.execute('doskey g=git $*')
-os.execute('doskey ga=git add $*')
-os.execute('doskey gaa=git add --all')
-os.execute('doskey gb=git branch $*')
-os.execute('doskey gc=git commit $*')
-os.execute('doskey gcm=git commit -m $*')
-os.execute('doskey gco=git checkout $*')
-os.execute('doskey gd=git diff $*')
-os.execute('doskey gds=git diff --staged $*')
-os.execute('doskey gf=git fetch --all --prune')
-os.execute('doskey gl=git log --oneline --graph $*')
-os.execute('doskey gpl=git pull $*')
-os.execute('doskey gps=git push $*')
-os.execute('doskey gst=git status -sb')
-os.execute('doskey gsw=git switch $*')
+doskey('g=git $*')
+doskey('ga=git add $*')
+doskey('gaa=git add --all')
+doskey('gb=git branch $*')
+doskey('gc=git commit $*')
+doskey('gcm=git commit -m $*')
+doskey('gco=git checkout $*')
+doskey('gd=git diff $*')
+doskey('gds=git diff --staged $*')
+doskey('gf=git fetch --all --prune')
+doskey('gl=git log --oneline --graph $*')
+doskey('gpl=git pull $*')
+doskey('gps=git push $*')
+doskey('gst=git status -sb')
+doskey('gsw=git switch $*')
 
 -- ===== Docker =====
-os.execute('doskey d=docker $*')
-os.execute('doskey dc=docker compose $*')
-os.execute('doskey dcb=docker compose build $*')
-os.execute('doskey dcd=docker compose down $*')
-os.execute('doskey dce=docker compose exec $*')
-os.execute('doskey dcl=docker compose logs $*')
-os.execute('doskey dcu=docker compose up $*')
-os.execute('doskey di=docker images $*')
-os.execute('doskey dps=docker ps $*')
-os.execute('doskey dri=docker run -it $*')
-os.execute('doskey drir=docker run -it --rm $*')
+doskey('d=docker $*')
+doskey('dc=docker compose $*')
+doskey('dcb=docker compose build $*')
+doskey('dcd=docker compose down $*')
+doskey('dce=docker compose exec $*')
+doskey('dcl=docker compose logs $*')
+doskey('dcu=docker compose up $*')
+doskey('di=docker images $*')
+doskey('dps=docker ps $*')
+doskey('dri=docker run -it $*')
+doskey('drir=docker run -it --rm $*')
 
 -- ===== Editor =====
-os.execute('doskey code=code-insiders $*')
-os.execute('doskey gu=gitui $*')
+doskey('code=code-insiders $*')
+doskey('gu=gitui $*')
 
 -- ===== Track _OLDPWD for back command =====
 local _prev_dir = os.getcwd()
@@ -121,23 +169,29 @@ function oldpwd_filter:filter(prompt)
 end
 
 -- ===== Zoxide (smart cd) =====
-local zh = io.popen('zoxide init cmd 2>nul')
-if zh then
-    local zoxide_init = zh:read("*a")
-    zh:close()
-    if zoxide_init and zoxide_init ~= "" then
-        load(zoxide_init)()
-        os.execute('doskey zd=z $*')
-        os.execute('doskey zdi=zi $*')
+local zoxide_exe = find_on_path("zoxide")
+if zoxide_exe then
+    local zh = io.popen(cmd_line(zoxide_exe, "init cmd 2>nul"))
+    if zh then
+        local zoxide_init = zh:read("*a")
+        zh:close()
+        if zoxide_init and zoxide_init ~= "" then
+            load(zoxide_init)()
+            doskey('zd=z $*')
+            doskey('zdi=zi $*')
+        end
     end
 end
 
 -- ===== Starship =====
-local sh = io.popen('starship init cmd 2>nul')
-if sh then
-    local starship_init = sh:read("*a")
-    sh:close()
-    if starship_init and starship_init ~= "" then
-        load(starship_init)()
+local starship_exe = find_on_path("starship")
+if starship_exe then
+    local sh = io.popen(cmd_line(starship_exe, "init cmd 2>nul"))
+    if sh then
+        local starship_init = sh:read("*a")
+        sh:close()
+        if starship_init and starship_init ~= "" then
+            load(starship_init)()
+        end
     end
 end

@@ -203,6 +203,26 @@ actual=$(wc -c < "$WORK/xad" | tr -d ' ')
 assert_eq "split -b last chunk size" "10" "$actual"
 rm -f "$WORK"/xa? "$WORK/bytefile.bin"
 
+echo "[pwsh] split reads and writes literal names (no wildcard glob)"
+# Resolve-Path/Set-Content treat [] as a wildcard, so a bracketed file name read
+# a same-shaped decoy instead, and a bracketed prefix overwrote one.
+rm -f "$WORK"/x?? "$WORK/dump[1].bin" "$WORK/dump1.bin"
+head -c 40 /dev/zero > "$WORK/dump[1].bin"
+head -c 10 /dev/zero > "$WORK/dump1.bin"
+run_pwsh "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK'; split -b 20 'dump[1].bin'" >/dev/null
+assert_exists "split literal name xaa" "$WORK/xaa"
+assert_exists "split literal name xab" "$WORK/xab"
+actual=$(wc -c < "$WORK/xaa" | tr -d ' ')
+assert_eq "split -b reads the bracketed file, not the decoy" "20" "$actual"
+rm -f "$WORK"/x?? "$WORK/dump[1].bin" "$WORK/dump1.bin"
+
+seq 1 5 > "$WORK/split_literal.txt"
+echo "DECOY" > "$WORK/out1aa"
+run_pwsh "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK'; split -l 10 '$WORK/split_literal.txt' 'out[1]'" >/dev/null
+assert_exists "split writes the literal out[1]aa" "$WORK/out[1]aa"
+assert_eq "split -l leaves the decoy untouched" "DECOY" "$(cat "$WORK/out1aa")"
+rm -f "$WORK/out1aa" "$WORK/out[1]aa" "$WORK/split_literal.txt"
+
 # =============================================================================
 # touch
 # =============================================================================

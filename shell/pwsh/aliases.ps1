@@ -123,17 +123,63 @@ function drir {
 
 # ===== Editor =====
 
+# _ShapeCmdArgs <arguments> — shape an argument array for a .cmd/.bat launcher, or
+# throw when an argument cannot be handed to one safely. PowerShell passes the
+# arguments of a .cmd/.bat file as ONE raw command line that cmd.exe re-parses
+# (VS Code ships bin\code.cmd on Windows), so a bare `&` inside a space-free
+# filename would end the command and start a second one. Pure function, no I/O:
+# the branch only fires on Windows, so this is what the Linux test suite exercises.
+function _ShapeCmdArgs([object[]]$Arguments) {
+  $shaped = @()
+  foreach ($a in $Arguments) {
+    $s = [string]$a
+    # Two characters cmd re-parsing cannot be protected from, so refuse them: `"`
+    # ends a quoted run, and `%VAR%` is expanded from the environment -- inside
+    # quotes too -- before the batch file ever runs, with no escape at the command
+    # line (`%%` only works INSIDE a batch file). `%` IS legal in a Windows file
+    # name, so refusing it is a deliberate limit of forwarding through the .cmd
+    # shim rather than a filesystem rule; the caller's message says so and points
+    # at another way to open the file.
+    if ($s.Contains('"')) { throw "argument contains a quote: $s" }
+    if ($s.Contains('%')) { throw "argument contains a percent sign: $s" }
+    # cmd does not split inside quotes, and PowerShell already quotes an argument
+    # that contains whitespace -- a second pair would split THAT one -- so quote
+    # exactly the arguments it would otherwise pass bare, doubling a trailing
+    # backslash so the closing quote survives the final argv parse.
+    if ($s -match '\s') { $shaped += $s }
+    else { $shaped += '"' + ($s -replace '(\\+)$', '$1$1') + '"' }
+  }
+  return ,$shaped
+}
+
 # code → code-insiders (falls back to code stable)
+# Resolve the real EXECUTABLE (_ResolveCmd <name> App) rather than calling a bare
+# name: this function is itself named `code`, so a bare `code` would recurse, and
+# probing only `code.cmd` -- a Windows-only launcher name -- meant Linux/macOS
+# pwsh with stable VS Code installed reported "not installed" instead of opening it.
 function code {
-  if (Get-Command code-insiders -ErrorAction SilentlyContinue) {
-    code-insiders @Args
-  }
-  elseif (Get-Command code.cmd -ErrorAction SilentlyContinue) {
-    code.cmd @Args
-  }
-  else {
+  $exe = _ResolveCmd 'code-insiders' 'App'
+  if (-not $exe) { $exe = _ResolveCmd 'code' 'App' }
+  if (-not $exe) { $exe = _ResolveCmd 'code.cmd' 'App' }
+  if (-not $exe) {
     Write-Warning "VS Code is not installed."
+    return
   }
+  # Windows resolves `code` to the bin\code.cmd shim, whose arguments cmd.exe
+  # re-parses. Bypassing the shim for the sibling Code.exe is NOT equivalent --
+  # the shim runs it as the Node CLI entry point, which is what makes `--wait`
+  # (git's editor), `--version` and `--list-extensions` behave -- so keep the
+  # shim and shape what is handed to it.
+  if ($exe -match '\.(cmd|bat)$') {
+    try { $shaped = _ShapeCmdArgs $Args }
+    catch {
+      Write-Error "code: $($_.Exception.Message) - cmd.exe would re-parse it. Open the file from inside VS Code, or call the launcher yourself."
+      return
+    }
+    & $exe @shaped
+    return
+  }
+  & $exe @Args
 }
 
 # gu → gitui (terminal git UI)

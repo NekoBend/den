@@ -136,7 +136,7 @@ function split {
     if ($path -eq '') {
       $data = [System.Text.Encoding]::UTF8.GetBytes(($content -join "`n") + "`n")
     } else {
-      $data = [System.IO.File]::ReadAllBytes((Resolve-Path $path))
+      $data = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path))
     }
     $idx = 0; $off = 0
     while ($off -lt $data.Length) {
@@ -160,7 +160,7 @@ function split {
   for ($idx = 0; $idx -lt $total; $idx++) {
     $start = $idx * $lines
     $outFile = "${prefix}$(_suffix $idx $suffixLen)"
-    $content[$start..($start + $lines - 1)] | Set-Content $outFile
+    $content[$start..($start + $lines - 1)] | Set-Content -LiteralPath $outFile
   }
   Write-Host "Split into $total files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($total-1) $suffixLen))"
 }

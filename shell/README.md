@@ -88,6 +88,14 @@ wrapper substitutes the modern one. To make that visible, a dim notice prints on
 [den] ls -> lsd  | native one-off: command ls ...  | disable: run toggle-wrapper, or export _DEN_WRAPPERS=0
 ```
 
+One difference is easy to miss when you are vetting code you did not write: `rg`
+and `fd` honor a repository's own `.gitignore`, `.ignore`, `.rgignore` and
+`.fdignore` files and skip hidden paths, so anything an untrusted checkout lists
+there is silently absent from your `grep` and `find` results. Reach for
+`command grep` / `command find` (or `export _DEN_WRAPPERS=0`) when auditing such
+a tree, or pass the tools' own overrides, `rg --no-ignore --hidden` and
+`fd --no-ignore --hidden`.
+
 Ways to get the native command:
 
 - **One-off (POSIX):** prefix `command`, e.g. `command ls -la --color=never`.
