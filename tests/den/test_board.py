@@ -593,3 +593,60 @@ def test_scaffold_refuses_symlinked_config(tmp_path, capsys, symlink):
     config = _board.ensure_scaffold(proj)
     assert config["title"] is None, "the planted config is not used"
     assert "is a symlink" in capsys.readouterr().err
+
+
+def _plant_lock_symlink(tmp_path, symlink, payload="outside file\n"):
+    """A workspace whose .den/board/server.json is a symlink to a file the board
+    has no business reading, writing, or deleting."""
+    outside = tmp_path / "outside.json"
+    outside.write_text(payload)
+    proj = tmp_path / "repo"
+    (proj / ".den" / "board").mkdir(parents=True)
+    symlink(outside, _board._lock_path(proj))
+    return proj, outside
+
+
+def test_existing_instance_ignores_symlinked_lock(tmp_path, capsys, symlink):
+    # A planted lock could otherwise name any port for `den board` to probe and
+    # any pid for it to trust.
+    proj, outside = _plant_lock_symlink(
+        tmp_path, symlink, json.dumps({"pid": 1, "port": 8484}) + "\n"
+    )
+    assert _board._existing_instance(proj) is None
+    assert outside.is_file(), "the stale-lock cleanup must not reach the target"
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def test_release_lock_refuses_symlinked_lock(tmp_path, symlink):
+    proj, outside = _plant_lock_symlink(
+        tmp_path, symlink, json.dumps({"pid": os.getpid(), "port": 1}) + "\n"
+    )
+    _board._release_lock(proj)
+    assert outside.is_file(), "our own pid in a planted lock still buys no unlink"
+
+
+def test_claim_lock_refuses_symlinked_lock(tmp_path, symlink):
+    proj, outside = _plant_lock_symlink(tmp_path, symlink)
+    assert _board._claim_lock(proj) is False
+    assert outside.read_text() == "outside file\n"
+
+
+def test_write_lock_refuses_symlinked_lock(tmp_path, symlink):
+    proj, outside = _plant_lock_symlink(tmp_path, symlink)
+    assert _board._write_lock(proj, {"pid": 1, "port": 8484}) is False
+    assert outside.read_text() == "outside file\n"
+
+
+def test_unlink_lock_refuses_symlinked_lock(tmp_path, symlink):
+    proj, outside = _plant_lock_symlink(tmp_path, symlink)
+    _board._unlink_lock(proj)
+    assert outside.is_file()
+    assert _board._lock_path(proj).is_symlink(), "the link is left as evidence"
+
+
+def test_lock_round_trip_still_works(tmp_path):
+    assert _board._claim_lock(tmp_path) is True
+    assert _board._write_lock(tmp_path, {"pid": os.getpid(), "port": 8484}) is True
+    assert _board._read_lock(tmp_path) == {"pid": os.getpid(), "port": 8484}
+    _board._release_lock(tmp_path)
+    assert not _board._lock_path(tmp_path).exists()

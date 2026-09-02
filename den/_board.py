@@ -51,7 +51,12 @@ from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
-from ._memory import _find_den_dir, _symlink_component
+from ._memory import (
+    _find_den_dir,
+    _read_guarded_text,
+    _symlink_component,
+    _write_guarded,
+)
 
 _PREFERRED_PORT = 8484
 _PORT_TRIES = 20
@@ -109,6 +114,39 @@ def _refuse_symlink(root: Path, path: Path) -> bool:
         return False
     print(f"den board: refusing {path}: {bad} is a symlink", file=sys.stderr)
     return True
+
+
+_ERR = "den board"
+
+
+def _read_lock(root: Path) -> dict | None:
+    """The parsed server.json, or None when it is absent, unreadable, symlinked,
+    or not a JSON object. The lock is a board file like any other: a repo can
+    ship `.den/board/server.json` as a symlink, and following it would let a
+    planted file name the port `den board` probes and the pid it trusts."""
+    raw = _read_guarded_text(root / ".den", _lock_path(root), _ERR)
+    if not isinstance(raw, str):
+        return None
+    with suppress(ValueError):
+        info = json.loads(raw)
+        if isinstance(info, dict):
+            return info
+    return None
+
+
+def _write_lock(root: Path, info: dict) -> bool:
+    """Write server.json through the guard. False when refused (it said why)."""
+    data = (json.dumps(info) + "\n").encode("utf-8")
+    return _write_guarded(root / ".den", _lock_path(root), data, _ERR)
+
+
+def _unlink_lock(root: Path) -> None:
+    """Drop server.json, never through a symlink. Unlink would only remove the
+    link itself, but a lock den refuses to read is not one it may clear either."""
+    if _refuse_symlink(root, _lock_path(root)):
+        return
+    with suppress(OSError):
+        _lock_path(root).unlink()
 
 
 def _append_line(root: Path, path: Path, line: str) -> bool:
@@ -217,11 +255,12 @@ def _title(root: Path, config: dict[str, object]) -> str:
 
 def _existing_instance(root: Path) -> str | None:
     """URL of a live server for this root, else None (clearing stale locks)."""
-    lock = _lock_path(root)
+    info = _read_lock(root)
+    if info is None:
+        return None
     try:
-        info = json.loads(lock.read_text(encoding="utf-8"))
         port = int(info["port"])
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+    except (ValueError, KeyError, TypeError):
         return None
     with suppress(OSError, ValueError, json.JSONDecodeError):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_PING_TIMEOUT_S)
@@ -237,19 +276,19 @@ def _existing_instance(root: Path) -> str | None:
             and data.get("root") == str(root)
         ):
             return f"http://127.0.0.1:{port}/"
-    with suppress(OSError):
-        lock.unlink()
+    _unlink_lock(root)
     return None
 
 
 def _release_lock(root: Path) -> None:
     """Remove the lock only if this process owns it (a concurrent start may
     have overwritten it; deleting a twin's lock would orphan that server)."""
-    lock = _lock_path(root)
-    with suppress(OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-        info = json.loads(lock.read_text(encoding="utf-8"))
+    info = _read_lock(root)
+    if info is None:
+        return
+    with suppress(ValueError, TypeError):
         if int(info.get("pid", -1)) == os.getpid():
-            lock.unlink()
+            _unlink_lock(root)
 
 
 def _claim_lock(root: Path) -> bool:
@@ -260,9 +299,11 @@ def _claim_lock(root: Path) -> bool:
     (or a stale claim) and never starts a shadow server.
     """
     lock = _lock_path(root)
+    if _refuse_symlink(root, lock):
+        return False
     lock.parent.mkdir(parents=True, exist_ok=True)
     try:
-        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY | _NOFOLLOW, 0o666))
     except FileExistsError:
         return False
     return True
@@ -649,8 +690,7 @@ def _acquire(root: Path, *, open_browser: bool) -> int | None:
             return 0
     # No live twin materialized: the claim is a corpse (a crash between
     # claim and lock write). Take it over.
-    with suppress(OSError):
-        _lock_path(root).unlink()
+    _unlink_lock(root)
     if not _claim_lock(root):
         print("den board: another instance is starting; try again", file=sys.stderr)
         return 1
@@ -696,25 +736,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         server = make_server(root, config, preferred)
     except OSError as exc:
-        with suppress(OSError):
-            _lock_path(root).unlink()  # release the claim we hold
+        _unlink_lock(root)  # release the claim we hold
         print(f"den board: cannot start: {exc}", file=sys.stderr)
         return 1
 
     port = server.server_address[1]
     url = f"http://127.0.0.1:{port}/"
-    lock = _lock_path(root)
-    lock.write_text(
-        json.dumps(
-            {
-                "pid": os.getpid(),
-                "port": port,
-                "root": str(root),
-                "started": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_lock(
+        root,
+        {
+            "pid": os.getpid(),
+            "port": port,
+            "root": str(root),
+            "started": datetime.now(UTC).isoformat(timespec="seconds"),
+        },
     )
     print(
         f"den board: serving {_title(root, config)}\n"
