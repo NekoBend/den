@@ -19,6 +19,15 @@ Backend:
     Uses ripgrep (rg) if available for fast search. Falls back to Python
     standard-library os.walk + re otherwise.
 
+Search scope:
+    Both backends read every file under the root except the skipped
+    directories (.git, node_modules, .venv, build, ...), and neither follows
+    symlinks. Git-ignored and hidden files ARE searched, deliberately, so the
+    result does not change when ripgrep is installed or removed. A matching
+    line is printed verbatim, so a tree holding untracked secrets (.env,
+    .npmrc, *.pem) has them searched too: run this only on a tree whose
+    contents you would read yourself.
+
 Output format:
     <file>:<line>:<kind>:<context>
 

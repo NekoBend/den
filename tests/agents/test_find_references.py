@@ -24,7 +24,6 @@ SCRIPT = (
     / "find-references.py"
 )
 
-
 # The scripts share their search plumbing through _common.py, which is importable
 # (find-references.py itself is not: its filename has a hyphen).
 sys.path.insert(0, str(SCRIPT.parent))
@@ -297,6 +296,18 @@ def test_hidden_and_ignored_files_are_searched_by_both_backends(
         assert proc.returncode == 0, proc.stderr
         assert "ignored.py" in proc.stdout, proc.stdout
         assert "ci.yml" in proc.stdout, proc.stdout
+
+
+def test_the_git_directory_is_never_searched(tmp_path: Path) -> None:
+    # .git holds the whole history (and credentials in .git/config); it is in
+    # SKIP_DIRS, and --no-ignore/--hidden must not bring it back.
+    write(tmp_path, ".git/config", "widget()\n")
+    write(tmp_path, "real.py", "widget()\n")
+    for env in both_backends():
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert ".git" not in proc.stdout, proc.stdout
+        assert "real.py" in proc.stdout, proc.stdout
 
 
 def test_symlinked_files_are_not_followed(tmp_path: Path) -> None:

@@ -291,6 +291,25 @@ def test_hidden_and_ignored_usages_are_reported_by_both_backends(
         assert "ignored.py" in proc.stdout, proc.stdout
 
 
+def test_the_git_directory_is_never_searched(tmp_path: Path) -> None:
+    # .git carries the whole history (and credentials in .git/config), and
+    # --no-ignore/--hidden must not bring it into the search.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+    (tmp_path / ".git" / "leak.txt").write_text("widget()\n", encoding="utf-8")
+
+    for env in both_backends():
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert ".git" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+
+
 def test_symlinked_files_are_not_followed(tmp_path: Path) -> None:
     # rg does not follow links without -L; the fallback walk must not either,
     # or a link committed in the repo turns the usage search into a read of a

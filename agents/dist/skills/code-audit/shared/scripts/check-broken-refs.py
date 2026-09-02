@@ -16,6 +16,17 @@ Strategy:
     3. For each removed def, search the working tree for usages.
     4. Each usage of a removed def is reported as a broken reference.
 
+Search scope:
+    Usages are searched with ripgrep when available, otherwise by walking the
+    tree; both backends read every file under the root except the skipped
+    directories (.git, node_modules, .venv, build, ...) and neither follows
+    symlinks. Git-ignored and hidden files ARE searched, deliberately (a
+    dangling reference in .github/, .claude/ or an untracked file is still a
+    dangling reference), so the result does not change when ripgrep is
+    installed or removed. Matching lines are printed verbatim, so a tree
+    holding untracked secrets has them searched too: run this only on a tree
+    whose contents you would read yourself.
+
 Output format:
     <file>:<line>:broken_ref:<symbol>:<context>
 
