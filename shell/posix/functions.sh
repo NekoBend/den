@@ -11,26 +11,40 @@ case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 # digest → unified hash function (md5, sha256, sha512)
 digest() {
     case "$1" in
-        md5|sha256|sha512)
-            if [ -z "$2" ]; then
-                echo "usage: digest $1 <file>" >&2
-                return 1
-            fi
-            if [ ! -f "$2" ]; then
-                echo "digest: '$2' is not a file" >&2
-                return 1
-            fi
-            _h_algo="$1"; shift
-            # Neutralize a leading-dash filename so it is not parsed as an option.
-            case "$1" in -*) set -- "./$1" ;; esac
-            "${_h_algo}sum" "$1" | awk '{ print $1 }'
-            unset _h_algo
-            ;;
+        md5|sha256|sha512) ;;
         *)
-            echo "usage: digest {md5|sha256|sha512} <file>" >&2
+            echo "usage: digest {md5|sha256|sha512} <file...>" >&2
             return 1
             ;;
     esac
+    _h_algo="$1"; shift
+    if [ $# -eq 0 ]; then
+        echo "usage: digest $_h_algo <file...>" >&2
+        unset _h_algo
+        return 1
+    fi
+    # One file prints the bare hash (scriptable); several print hash and
+    # name per line, like the *sum tools, so the lines stay attributable.
+    _h_many=$#
+    _h_fail=0
+    for _h_f in "$@"; do
+        if [ ! -f "$_h_f" ]; then
+            echo "digest: '$_h_f' is not a file" >&2
+            _h_fail=1
+            continue
+        fi
+        # Neutralize a leading-dash filename so it is not parsed as an option.
+        case "$_h_f" in -*) _h_f="./$_h_f" ;; esac
+        if [ "$_h_many" -gt 1 ]; then
+            "${_h_algo}sum" "$_h_f" | awk -v f="$_h_f" '{ print $1 "  " f }'
+        else
+            "${_h_algo}sum" "$_h_f" | awk '{ print $1 }'
+        fi
+    done
+    unset _h_algo _h_f _h_many
+    if [ "$_h_fail" -ne 0 ]; then unset _h_fail; return 1; fi
+    unset _h_fail
+    return 0
 }
 
 # mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)

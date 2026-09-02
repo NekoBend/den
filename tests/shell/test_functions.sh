@@ -124,6 +124,17 @@ assert_eq "bash/extract multi with a missing archive exits 1" "1" "$?"
 assert_exists "bash/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
+echo "[bash] digest several files"
+setup_fixtures
+printf 'one' > "$WORK/d1.txt"; printf 'two' > "$WORK/d2.txt"
+actual=$(run_bash "$FUNCTIONS_SH" "digest sha256 '$WORK/d1.txt' '$WORK/d2.txt'")
+assert_success "bash/digest multi exit code" "$?"
+assert_eq "bash/digest multi prints one line per file" "2" "$(printf '%s\n' "$actual" | wc -l | tr -d ' ')"
+assert_contains "bash/digest multi names the file" "$WORK/d2.txt" "$actual"
+run_bash "$FUNCTIONS_SH" "digest sha256 '$WORK/d1.txt' '$WORK/missing.txt'" 2>/dev/null
+assert_eq "bash/digest multi with a missing file exits 1" "1" "$?"
+rm -rf "$WORK/d1.txt" "$WORK/d2.txt"
+
 echo "[bash] archive + extract tar.bz2"
 setup_fixtures
 run_bash "$FUNCTIONS_SH" "archive '$WORK/test.tar.bz2' -C '$WORK' src" 2>/dev/null
@@ -259,6 +270,17 @@ assert_eq "zsh/extract multi with a missing archive exits 1" "1" "$?"
 assert_exists "zsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
+echo "[zsh] digest several files"
+setup_fixtures
+printf 'one' > "$WORK/d1.txt"; printf 'two' > "$WORK/d2.txt"
+actual=$(run_zsh "$FUNCTIONS_SH" "digest sha256 '$WORK/d1.txt' '$WORK/d2.txt'")
+assert_success "zsh/digest multi exit code" "$?"
+assert_eq "zsh/digest multi prints one line per file" "2" "$(printf '%s\n' "$actual" | wc -l | tr -d ' ')"
+assert_contains "zsh/digest multi names the file" "$WORK/d2.txt" "$actual"
+run_zsh "$FUNCTIONS_SH" "digest sha256 '$WORK/d1.txt' '$WORK/missing.txt'" 2>/dev/null
+assert_eq "zsh/digest multi with a missing file exits 1" "1" "$?"
+rm -rf "$WORK/d1.txt" "$WORK/d2.txt"
+
 echo "[zsh] archive + extract zip"
 setup_fixtures
 run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.zip' src" 2>/dev/null
@@ -388,6 +410,17 @@ err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$
 assert_contains "pwsh/extract multi reports the failed archive" "1 of 2 archives failed" "$err"
 assert_exists "pwsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+
+echo "[pwsh] digest several files"
+setup_fixtures
+printf 'one' > "$WORK/d1.txt"; printf 'two' > "$WORK/d2.txt"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/d1.txt' '$WORK/d2.txt'")
+assert_success "pwsh/digest multi exit code" "$?"
+assert_eq "pwsh/digest multi prints one line per file" "2" "$(printf '%s\n' "$actual" | wc -l | tr -d ' ')"
+assert_contains "pwsh/digest multi names the file" "d2.txt" "$actual"
+err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/d1.txt' '$WORK/missing.txt'" 2>&1 >/dev/null)
+assert_contains "pwsh/digest multi reports the missing file" "1 of 2 files failed" "$err"
+rm -rf "$WORK/d1.txt" "$WORK/d2.txt"
 
 echo "[pwsh] archive + extract zip"
 setup_fixtures

@@ -9,10 +9,26 @@ function digest {
     [Parameter(Mandatory, Position = 0)]
     [ValidateSet('md5', 'sha256', 'sha512')]
     [string]$Algorithm,
-    [Parameter(Mandatory, Position = 1)]
-    [string]$Path
+    [Parameter(Position = 1, ValueFromRemainingArguments)]
+    [string[]]$Path
   )
-  (Get-FileHash $Path -Algorithm $Algorithm.ToUpper()).Hash
+  if (-not $Path -or $Path.Count -eq 0) {
+    Write-Error "usage: digest {md5|sha256|sha512} <file...>"
+    return
+  }
+  # One file prints the bare hash (scriptable); several print hash and name
+  # per line so the lines stay attributable.
+  $failed = 0
+  foreach ($p in $Path) {
+    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+      Write-Error "digest: '$p' is not a file"
+      $failed++
+      continue
+    }
+    $h = (Get-FileHash -LiteralPath $p -Algorithm $Algorithm.ToUpper()).Hash
+    if ($Path.Count -gt 1) { "$h  $p" } else { $h }
+  }
+  if ($failed) { Write-Error "digest: $failed of $($Path.Count) files failed" }
 }
 
 # mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)
