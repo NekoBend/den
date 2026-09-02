@@ -414,6 +414,12 @@ def _cmd_restore(den_dir: Path, argv: list[str]) -> int:
     mem = _memory_path(den_dir)
     if _refuse_symlink(den_dir, mem, "write"):
         return 1
+    # Same reason as save/add/clear: _write_guarded opens write-only and
+    # truncates, so a memory.md _do_checkpoint could not read would be gone with
+    # no snapshot behind it -- and restore is the command whose whole promise is
+    # that the state it replaces stays recoverable.
+    if isinstance(_read_guarded(den_dir, mem), _Unreadable):
+        return 1
     _do_checkpoint(den_dir)  # make the restore itself reversible
     if not _write_guarded(den_dir, mem, data):
         return 1

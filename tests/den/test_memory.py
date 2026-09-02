@@ -536,12 +536,17 @@ def test_write_commands_refuse_a_directory_in_place_of_memory(
     # Windows too, so this one always runs.
     proj = tmp_path / "repo"
     _mem(proj).mkdir(parents=True)
+    # a snapshot, so restore reaches the unreadable check instead of stopping at
+    # "no snapshot #1"
+    hist = proj / ".den" / "history"
+    hist.mkdir()
+    (hist / "memory.20260101T000000000000.md").write_text("older snapshot\n")
     monkeypatch.chdir(proj)
     monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
-    for argv in (["show"], ["add", "x"], ["save"], ["clear"], ["diff"]):
+    for argv in (["show"], ["add", "x"], ["save"], ["clear"], ["diff"], ["restore"]):
         assert memory_main(argv) == 1, argv
     assert _mem(proj).is_dir()
-    assert _history(proj) == []
+    assert len(_history(proj)) == 1, "nothing was checkpointed"
     assert "cannot read" in capsys.readouterr().err
 
 
@@ -557,3 +562,18 @@ def test_unreadable_memory_does_not_drop_the_clinerules_mirror(
     monkeypatch.chdir(proj)
     assert _memory.mirror_to_clinerules(proj / ".den") is False
     assert mirror.read_text().endswith("prior mirror\n"), "mirror left alone"
+
+
+def test_restore_refuses_unreadable_memory(tmp_path, monkeypatch, unreadable):
+    # restore's promise is that what it replaces stays recoverable; with no
+    # snapshot of the current content possible, it must not write.
+    proj = tmp_path / "repo"
+    hist = proj / ".den" / "history"
+    hist.mkdir(parents=True)
+    (hist / "memory.20260101T000000000000.md").write_text("older snapshot\n")
+    mem = unreadable(_mem(proj), "important prior content\n")
+    monkeypatch.chdir(proj)
+    assert memory_main(["restore", "1"]) == 1
+    mem.chmod(0o600)
+    assert mem.read_text() == "important prior content\n", "not truncated"
+    assert len(_history(proj)) == 1, "no checkpoint was possible"
