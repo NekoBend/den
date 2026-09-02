@@ -203,8 +203,13 @@ jobs:
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
           $files = Get-ChildItem shell/pwsh/*.ps1 -File
+          # -Settings is a hashtable on purpose: with no -Settings the analyzer
+          # auto-discovers a PSScriptAnalyzerSettings.psd1 from the checkout,
+          # and such a profile can set CustomRulePath, which is Import-Module'd
+          # (code execution on the runner from whatever this job checked out).
+          $settings = @{ Severity = @('Error'); IncludeDefaultRules = $true }
           $errs = $files | ForEach-Object {
-            Invoke-ScriptAnalyzer -Path $_.FullName -Severity Error
+            Invoke-ScriptAnalyzer -Path $_.FullName -Settings $settings
           }
           if ($errs) {
             $errs | Format-Table -AutoSize

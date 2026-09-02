@@ -114,8 +114,13 @@ not appear in new code - it is PowerShell's `shell=True`.
 
 The checks for `.ps1` / `.psm1` are a syntax parse
 (`[System.Management.Automation.Language.Parser]::ParseFile`), which needs
-only pwsh, followed by `Invoke-ScriptAnalyzer -Severity Error`, which needs
+only pwsh, followed by `Invoke-ScriptAnalyzer` at Error severity, which needs
 pwsh plus the PSScriptAnalyzer module; each degrades to SKIPPED when its
 own prerequisite is absent - say so rather than claiming a check that did
-not run. `find-references.py` resolves `function` / `filter` /
+not run. Run the analyzer with an explicit settings hashtable
+(`-Settings @{ Severity = @('Error'); IncludeDefaultRules = $true }`), never
+with a bare `-Severity Error`: with no `-Settings` the analyzer picks up a
+`PSScriptAnalyzerSettings.psd1` sitting next to the file it is checking, and
+that file's `CustomRulePath` is `Import-Module`d - checked-out content
+running as you. `find-references.py` resolves `function` / `filter` /
 `class` / `enum` definitions with no pwsh dependency.
