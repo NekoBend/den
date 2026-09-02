@@ -7,6 +7,7 @@ public contract under test is its CLI: argv in, stdout + exit code out.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -173,9 +174,19 @@ def test_in_reports_full_powershell_names(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert "New-Wrapper" in proc.stdout
     assert "WidgetKind" in proc.stdout
-    owners = [
-        ln.split(":", 2)[1]
-        for ln in proc.stdout.splitlines()
-        if ln.startswith(("def:", "use:"))
-    ]
-    assert "New" not in owners, proc.stdout
+    # Every line is `<file>:<line>:<kind>:<context>` and <file> is the absolute
+    # path, so strip that prefix first instead of splitting the line blindly:
+    # both the kind (`use:<owner>`) and the context can contain colons.
+    prefix = f"{tmp_path}{os.sep}"
+    rows: list[tuple[str, str]] = []
+    for ln in proc.stdout.splitlines():
+        if not ln:
+            continue
+        assert ln.startswith(prefix), ln
+        name, _lineno, kind_and_context = ln[len(prefix) :].split(":", 2)
+        rows.append((name, kind_and_context))
+    assert [n for n, kc in rows if kc.startswith("def:")] == ["mod.ps1", "mod.ps1"]
+    # The external call site is attributed to the whole Verb-Noun name, never
+    # to the verb alone: `use:New` is the regression this test exists for.
+    owners = [kc.split(":", 2)[1] for _n, kc in rows if kc.startswith("use:")]
+    assert owners == ["New-Wrapper"], proc.stdout

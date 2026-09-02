@@ -45,8 +45,16 @@ def test_weak_catalog_rows_match_the_skill_directories() -> None:
 
 def test_no_banned_dashes_in_any_model_facing_markdown() -> None:
     offenders: list[str] = []
-    for base in ("skills", "shared", "dist"):
-        for f in sorted((AGENTS / base).rglob("*.md")):
+    # Every directory is asserted to hold markdown: rglob on a directory that
+    # does not exist yields nothing WITHOUT raising, so a move like #74
+    # (skills/ and shared/ -> src/) once emptied this scan in silence and left
+    # only dist/ checked.
+    for base in ("src/skills", "src/shared", "dist"):
+        directory = AGENTS / base
+        assert directory.is_dir(), f"no such directory: {directory}"
+        files = sorted(directory.rglob("*.md"))
+        assert files, f"no markdown found under {directory}"
+        for f in files:
             text = f.read_text(encoding="utf-8")
             for ch, name in BANNED_CHARS.items():
                 if ch in text:
