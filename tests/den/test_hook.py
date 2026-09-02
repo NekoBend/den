@@ -846,3 +846,91 @@ def test_install_cline_cli_refuses_symlinked_imprint_source(
     err = capsys.readouterr().err
     assert "no usable imprint" in err
     assert "PRIVATE KEY" not in err
+
+
+def test_remove_cline_cli_refuses_symlinked_ancestor_clinerules(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    """_remove_clinerules ignores `config` and works beside the nearest ancestor
+    .den, so the path _resolve_config vetted (cwd/.clinerules) is not the one it
+    unlinks from. An ancestor .clinerules symlink must not become a licence to
+    delete real files outside the workspace."""
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "den-imprint.md").write_text("someone else's rule\n")
+    (outside / "den-memory.md").write_text("someone else's memory\n")
+    ws = tmp_path / "workspace"
+    (ws / ".den").mkdir(parents=True)
+    symlink(outside, ws / ".clinerules")
+    nested = ws / "pkg" / "sub"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    rc = hook_main(["remove", "--tool", "cline-cli"])
+    # the destruction first: it is the finding, and rc only reports it
+    assert (outside / "den-imprint.md").read_text() == "someone else's rule\n"
+    assert (outside / "den-memory.md").read_text() == "someone else's memory\n"
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "is a symlink" in err
+    assert "removed den hooks" not in err
+
+
+def test_remove_cline_cli_refuses_symlinked_rule_file(tmp_path, monkeypatch, symlink):
+    # The .clinerules dir is real; only one rule file is a symlink. unlink would
+    # drop just the link, but a file den refuses to read is not one it may clear.
+    outside = tmp_path / "notes.md"
+    outside.write_text("my notes\n")
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    (proj / ".clinerules").mkdir()
+    (proj / ".clinerules" / "den-memory.md").write_text("real mirror\n")
+    symlink(outside, proj / ".clinerules" / "den-imprint.md")
+    monkeypatch.chdir(proj)
+    assert hook_main(["remove", "--tool", "cline-cli"]) == 1
+    assert outside.is_file() and outside.read_text() == "my notes\n"
+    assert (proj / ".clinerules" / "den-imprint.md").is_symlink()
+    assert (proj / ".clinerules" / "den-memory.md").is_file(), "nothing was touched"
+
+
+def test_remove_cline_cli_still_removes_real_rules(tmp_path, monkeypatch, capsys):
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    rules = proj / ".clinerules"
+    rules.mkdir()
+    (rules / "den-imprint.md").write_text("den's rule\n")
+    (rules / "den-memory.md").write_text("den's mirror\n")
+    monkeypatch.chdir(proj)
+    assert hook_main(["remove", "--tool", "cline-cli"]) == 0
+    assert not (rules / "den-imprint.md").exists()
+    assert not (rules / "den-memory.md").exists()
+    assert "removed den hooks" in capsys.readouterr().err
+
+
+def test_list_cline_cli_ignores_symlinked_clinerules(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    # Someone else's files behind a planted link must not be reported as den's,
+    # which would tell the user cline-cli is installed here when it is not.
+    # Ancestor layout, like the remove test: cwd/.clinerules does not exist, so
+    # _resolve_config passes and only _list_clinerules' own guard stands.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "den-imprint.md").write_text("someone else's rule\n")
+    ws = tmp_path / "workspace"
+    (ws / ".den").mkdir(parents=True)
+    symlink(outside, ws / ".clinerules")
+    nested = ws / "pkg" / "sub"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    assert hook_main(["list", "--tool", "cline-cli"]) == 0
+    assert "den-imprint.md" not in capsys.readouterr().out
+
+
+def test_list_cline_cli_reports_real_rules(tmp_path, monkeypatch, capsys):
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    (proj / ".clinerules").mkdir()
+    (proj / ".clinerules" / "den-imprint.md").write_text("den's rule\n")
+    monkeypatch.chdir(proj)
+    assert hook_main(["list", "--tool", "cline-cli"]) == 0
+    assert "den-imprint.md" in capsys.readouterr().out

@@ -553,16 +553,17 @@ def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
     return lines
 
 
-def _remove_settings_json(tool: str, spec: dict, config: Path) -> None:
+def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
     if not config.is_file():
-        return
+        return True
     data = _read_json(config)
     if "hooks" not in data:
-        return
+        return True
     data["hooks"] = _strip_den_hooks(data["hooks"])
     if not data["hooks"]:
         del data["hooks"]
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
 
 
 # --- copilot: flat {version, hooks:{event:[{type,bash}]}}, marker in "bash" --- #
@@ -611,16 +612,17 @@ def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
     ]
 
 
-def _remove_copilot(tool: str, spec: dict, config: Path) -> None:
+def _remove_copilot(tool: str, spec: dict, config: Path) -> bool:
     if not config.is_file():
-        return
+        return True
     data = _read_json(config)
     if "hooks" not in data:
-        return
+        return True
     data["hooks"] = _strip_copilot(data["hooks"])
     if not data["hooks"]:
         del data["hooks"]
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return True
 
 
 # --- cline: one executable script per event, named exactly the event name --- #
@@ -693,11 +695,12 @@ def _list_cline(tool: str, spec: dict, config: Path) -> list[str]:
     ]
 
 
-def _remove_cline(tool: str, spec: dict, config: Path) -> None:
+def _remove_cline(tool: str, spec: dict, config: Path) -> bool:
     if not config.is_dir():
-        return
+        return True
     for _native, script in _cline_scripts(spec, config):
         script.unlink()
+    return True
 
 
 # --- cline-cli: deliver imprint + memory as .clinerules rule files (no hook) --- #
@@ -713,16 +716,35 @@ _CLINERULES_RULE_HEADER = (
 )
 
 
+def _clinerules_targets(den_dir: Path, prefix: str = _ERR_HOOK) -> list[Path] | None:
+    """The two rule files this format owns, or None (one line on stderr) when a
+    symlink is in the way -- at the `.clinerules` dir or at either file.
+
+    The dir is derived HERE, the way the format itself derives it: beside the
+    resolved `.den`, which may be an ANCESTOR's while cwd is a subdirectory. That
+    is not the path `_resolve_config` vetted, so an ancestor `.clinerules` symlink
+    sails past that guard; remove would then unlink real den-imprint.md /
+    den-memory.md files outside the workspace through it.
+    """
+    rules = _clinerules_dir(den_dir)
+    if rules.is_symlink():
+        print(f"{prefix}: refusing {rules}: it is a symlink", file=sys.stderr)
+        return None
+    targets = [rules / _CLINERULES_IMPRINT, rules / _CLINERULES_MEMORY]
+    for path in targets:
+        if path.is_symlink():
+            print(f"{prefix}: refusing {path}: it is a symlink", file=sys.stderr)
+            return None
+    return targets
+
+
 def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
     # den_dir is pinned by the caller; clinerules delivers via always-on rule
     # files (no `den hook run`), so it only needs the dir, not a baked command.
     rules = _clinerules_dir(den_dir)
-    # This dir is NOT the path _resolve_config checked: clinerules delivers beside
-    # the resolved .den, which may be an ANCESTOR's while cwd is a subdirectory.
-    # So a symlinked .clinerules reaches here past that guard -- and mkdir would
-    # raise FileExistsError on a dangling one.
-    if rules.is_symlink():
-        print(f"{_ERR_INSTALL}: refusing {rules}: it is a symlink", file=sys.stderr)
+    # Guard before the mkdir: on a DANGLING .clinerules symlink mkdir(exist_ok=True)
+    # re-raises FileExistsError, because is_dir() is False for a broken link.
+    if _clinerules_targets(den_dir, _ERR_INSTALL) is None:
         return False
     rules.mkdir(parents=True, exist_ok=True)
     # Anything but text -- absent, symlinked, unreadable -- means there is no
@@ -751,21 +773,24 @@ def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> b
 
 
 def _list_clinerules(tool: str, spec: dict, config: Path) -> list[str]:
-    rules = _clinerules_dir(_find_den_dir(Path.cwd()))
-    out = []
-    for name in (_CLINERULES_IMPRINT, _CLINERULES_MEMORY):
-        p = rules / name
-        if p.is_file():
-            out.append(f"{tool}  {name}  {p}")
-    return out
+    targets = _clinerules_targets(_find_den_dir(Path.cwd()))
+    if targets is None:
+        return []
+    return [f"{tool}  {p.name}  {p}" for p in targets if p.is_file()]
 
 
-def _remove_clinerules(tool: str, spec: dict, config: Path) -> None:
-    rules = _clinerules_dir(_find_den_dir(Path.cwd()))
-    for name in (_CLINERULES_IMPRINT, _CLINERULES_MEMORY):
-        p = rules / name
-        if p.is_file():
-            p.unlink()
+def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
+    # `config` is ignored by this format (see the section comment above), so the
+    # path _resolve_config vetted is not the one being unlinked here. Derive and
+    # guard the real one, or the unlinks follow a planted link out of the
+    # workspace and destroy someone else's files.
+    targets = _clinerules_targets(_find_den_dir(Path.cwd()))
+    if targets is None:
+        return False
+    for path in targets:
+        if path.is_file():
+            path.unlink()
+    return True
 
 
 # format -> (install, list, remove)
@@ -948,7 +973,9 @@ def _cmd_remove(argv: list[str]) -> int:
         if config is None:  # symlinked workspace config: refuse, touch nothing
             rc = 1
             continue
-        handlers[2](tool, spec, config)
+        if not handlers[2](tool, spec, config):
+            rc = 1  # the remover refused and touched nothing; it said why
+            continue
         print(
             f"removed den hooks from {tool} -> {_display_config(spec, config)}",
             file=sys.stderr,
