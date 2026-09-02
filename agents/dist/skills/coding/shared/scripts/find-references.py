@@ -23,9 +23,10 @@ Search scope:
     Both backends read every file under the root except the skipped
     directories (.git, node_modules, .venv, build, ...), and neither follows
     symlinks. Git-ignored and hidden files ARE searched, deliberately, so the
-    result does not change when ripgrep is installed or removed. A matching
-    line is printed verbatim, so a tree holding untracked secrets (.env,
-    .npmrc, *.pem) has them searched too: run this only on a tree whose
+    result does not change when ripgrep is installed or removed, nor with the
+    ripgrep configuration on the machine (RIPGREP_CONFIG_PATH is not read).
+    A matching line is printed verbatim, so a tree holding untracked secrets
+    (.env, .npmrc, *.pem) has them searched too: run this only on a tree whose
     contents you would read yourself.
 
 Output format:

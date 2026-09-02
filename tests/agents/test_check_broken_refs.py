@@ -313,6 +313,7 @@ def test_the_ripgrep_backend_is_really_invoked(
     assert proc.returncode == 0, proc.stderr
     assert record.is_file(), "rg was on PATH but the script never ran it"
     argv = record.read_text(encoding="utf-8").splitlines()
+    assert "--no-config" in argv, argv
     assert "--no-ignore" in argv, argv
     assert "--hidden" in argv, argv
     assert "!.git" in argv, argv
@@ -363,6 +364,45 @@ def test_binary_files_are_not_searched_by_either_backend(
         assert proc.returncode == 0, proc.stderr
         assert ".bin" not in proc.stdout, proc.stdout
         assert "app.py" in proc.stdout, proc.stdout
+
+
+def test_a_ripgrep_config_cannot_change_what_is_searched(
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    backends: list[dict[str, str] | None],
+) -> None:
+    # A user config carrying --follow/--text would make the rg backend read
+    # the symlinked and binary files the walker skips, so a "broken reference"
+    # would depend on the machine's ripgrep configuration. --no-config keeps
+    # both backends on the same files.
+    config = tmp_path_factory.mktemp("rg-config") / "rgrc"
+    config.write_text("--follow\n--text\n", encoding="utf-8")
+    secret = tmp_path_factory.mktemp("outside") / "credentials"
+    secret.write_text("widget = 'SENTINEL-SECRET'\n", encoding="utf-8")
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x00widget()\n")
+    try:
+        (tmp_path / "creds").symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:  # Windows without privileges
+        pytest.skip(f"symlinks unavailable: {exc}")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    outputs = []
+    for env in backends:
+        full = dict(os.environ if env is None else env)
+        full["RIPGREP_CONFIG_PATH"] = str(config)
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=full)
+        assert proc.returncode == 0, proc.stderr
+        assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
+        assert ".bin" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.splitlines()))
+    assert outputs[0] == outputs[1], outputs
 
 
 def test_the_git_directory_is_never_searched(

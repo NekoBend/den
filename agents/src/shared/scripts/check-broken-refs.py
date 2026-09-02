@@ -23,9 +23,10 @@ Search scope:
     symlinks. Git-ignored and hidden files ARE searched, deliberately (a
     dangling reference in .github/, .claude/ or an untracked file is still a
     dangling reference), so the result does not change when ripgrep is
-    installed or removed. Matching lines are printed verbatim, so a tree
-    holding untracked secrets has them searched too: run this only on a tree
-    whose contents you would read yourself.
+    installed or removed, nor with the ripgrep configuration on the machine
+    (RIPGREP_CONFIG_PATH is not read). Matching lines are printed verbatim, so
+    a tree holding untracked secrets has them searched too: run this only on a
+    tree whose contents you would read yourself.
 
 Output format:
     <file>:<line>:broken_ref:<symbol>:<context>

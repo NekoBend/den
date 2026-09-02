@@ -132,7 +132,13 @@ SKIP_DIRS: frozenset[str] = frozenset(
 # ignored and hidden files as well: results must not depend on whether rg
 # happens to be installed. SKIP_DIRS (`.git` included) is excluded on both
 # sides instead.
-RG_SEARCH_FLAGS: tuple[str, ...] = ("--no-ignore", "--hidden")
+#
+# --no-config is part of that same guarantee: ripgrep otherwise reads the file
+# named by RIPGREP_CONFIG_PATH and applies whatever is in it, so a user whose
+# config carries --follow or --text (or another glob) would get the rg backend
+# searching symlinked or binary files that the walker skips, on that machine
+# only. The scripts pass the flags they need explicitly.
+RG_SEARCH_FLAGS: tuple[str, ...] = ("--no-config", "--no-ignore", "--hidden")
 
 
 def rg_skip_globs() -> list[str]:
