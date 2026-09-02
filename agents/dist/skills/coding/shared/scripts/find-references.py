@@ -69,7 +69,7 @@ from _common import (
     RG_SEARCH_FLAGS,
     format_hit,
     iter_search_files,
-    parse_rg_line,
+    parse_rg_output,
     read_searchable_text,
     rg_skip_globs,
 )
@@ -112,12 +112,7 @@ def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]
         )
     except FileNotFoundError:
         return []
-    hits: list[Hit] = []
-    for line in proc.stdout.splitlines():
-        hit = parse_rg_line(line)
-        if hit is not None:
-            hits.append(hit)
-    return hits
+    return parse_rg_output(proc.stdout)
 
 
 def _search_with_walk(pattern: str, root: Path, ext: str | None) -> list[Hit]:

@@ -15,7 +15,7 @@ substitutes it before compiling the regex:
 Patterns are applied with re.MULTILINE.
 
 The search plumbing both scripts share lives here too: the ripgrep flags and
-skip globs, the parser for ripgrep's output lines, the fallback walker, the
+skip globs, the parser for ripgrep's output stream, the fallback walker, the
 reader it searches files with, and the formatter that prints a result. Keeping
 them in one place is what makes the two backends return the same files, and
 print them the same way.
@@ -188,6 +188,35 @@ def parse_rg_line(line: str) -> tuple[str, int, str] | None:
     except ValueError:
         return None
     return (file, lineno, content)
+
+
+def parse_rg_output(stdout: str) -> list[tuple[str, int, str]]:
+    """Parse ripgrep's whole --null stdout into hits, record by record.
+
+    A record is `<path>NUL<lineno>:<content>` and only the newline AFTER the
+    NUL ends it, which is why the stream is scanned rather than handed to
+    str.splitlines(): splitlines() also breaks on form feed, vertical tab,
+    NEL, U+2028 and U+2029, so any of those INSIDE a matching line truncated
+    the record, and a newline inside a FILE NAME split one record into two
+    unusable halves. The walk fallback reads both kinds of file without
+    trouble, so each case was a disagreement between the backends.
+
+    Records that do not parse are skipped.
+    """
+    hits: list[tuple[str, int, str]] = []
+    pos = 0
+    while pos < len(stdout):
+        nul = stdout.find("\x00", pos)
+        if nul == -1:
+            break
+        end = stdout.find("\n", nul)
+        if end == -1:
+            end = len(stdout)
+        hit = parse_rg_line(stdout[pos:end])
+        if hit is not None:
+            hits.append(hit)
+        pos = end + 1
+    return hits
 
 
 def iter_search_files(root: Path, ext: str | None = None) -> Iterator[Path]:

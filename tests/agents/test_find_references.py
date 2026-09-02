@@ -28,7 +28,10 @@ SCRIPT = (
 # (find-references.py itself is not: its filename has a hyphen).
 sys.path.insert(0, str(SCRIPT.parent))
 
-from _common import parse_rg_line  # ruff: ignore[module-import-not-at-top-of-file]
+from _common import (  # ruff: ignore[module-import-not-at-top-of-file]
+    parse_rg_line,
+    parse_rg_output,
+)
 
 
 def run(
@@ -278,6 +281,27 @@ def test_rg_line_parser_rejects_junk() -> None:
     assert parse_rg_line("/repo/mod.py\x0012 no colon") is None
 
 
+def test_rg_stream_parser_splits_records_on_the_record_newline_only() -> None:
+    # Only the newline that ends a record ends a record. str.splitlines(),
+    # which this replaced, also breaks on form feed, vertical tab, NEL, U+2028
+    # and U+2029, and it split a path containing a newline in half.
+    stream = (
+        "/repo/a.txt\x001:head \x0c tail\n"
+        "/repo/b\nc.txt\x002:x\n"
+        "/repo/d.txt\x003:sep \u2028 here\n"
+        "/repo/e.txt\x004:vertical \x0b tab\n"
+    )
+    assert parse_rg_output(stream) == [
+        ("/repo/a.txt", 1, "head \x0c tail"),
+        ("/repo/b\nc.txt", 2, "x"),
+        ("/repo/d.txt", 3, "sep \u2028 here"),
+        ("/repo/e.txt", 4, "vertical \x0b tab"),
+    ]
+    # a stream with no trailing newline still yields its last record
+    assert parse_rg_output("/repo/f.txt\x005:last") == [("/repo/f.txt", 5, "last")]
+    assert parse_rg_output("") == []
+
+
 # ---------- the two backends must see the same tree ----------
 
 
@@ -473,6 +497,48 @@ def test_a_file_named_like_a_skipped_directory_is_not_searched(
         assert proc.returncode == 0, proc.stderr
         assert ".git" not in proc.stdout, proc.stdout
         assert "real.py" in proc.stdout, proc.stdout
+
+
+def test_control_characters_in_a_line_do_not_truncate_the_record(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A form feed, a vertical tab or U+2028 inside a matching line used to cut
+    # rg's record short (the walker never split on them), so the two backends
+    # printed different context for the same hit.
+    write(tmp_path, "odd.txt", "head \x0c mid \u2028 widget() \x0b tail\n")
+    write(tmp_path, "real.py", "widget()\n")
+    outputs = []
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        # split on the record separator only: the content holds characters
+        # that str.splitlines() would break on here too.
+        rows = [ln for ln in proc.stdout.split("\n") if ln]
+        assert len(rows) == 2, rows
+        assert any("\x0c" in ln and "\u2028" in ln and "\x0b" in ln for ln in rows), (
+            rows
+        )
+        outputs.append(sorted(rows))
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_a_newline_in_a_file_name_does_not_lose_the_hit(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # rg terminates the path with NUL, so a newline inside the NAME is data,
+    # not a record boundary - but only if the stream is parsed as records.
+    try:
+        write(tmp_path, "new\nline.txt", "widget()\n")
+    except OSError as exc:  # a filesystem that refuses the name
+        pytest.skip(f"cannot create a file name containing a newline: {exc}")
+    write(tmp_path, "real.py", "widget()\n")
+    outputs = []
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "new\nline.txt" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.split("\n")))
+    assert outputs[0] == outputs[1], outputs
 
 
 def test_the_git_directory_is_never_searched(

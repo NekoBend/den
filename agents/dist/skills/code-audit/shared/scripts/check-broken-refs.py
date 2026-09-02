@@ -66,7 +66,7 @@ from _common import (
     RG_SEARCH_FLAGS,
     format_hit,
     iter_search_files,
-    parse_rg_line,
+    parse_rg_output,
     read_searchable_text,
     rg_skip_globs,
 )
@@ -206,18 +206,12 @@ def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
                 errors="replace",
             )
         except FileNotFoundError:
-            proc = None
-        hits: list[tuple[str, int, str]] = []
-        if proc is not None:
-            for line in proc.stdout.splitlines():
-                hit = parse_rg_line(line)
-                if hit is not None:
-                    hits.append(hit)
-        return hits
+            return []
+        return parse_rg_output(proc.stdout)
 
     # Fallback: walk the tree manually.
     rx = re.compile(word_pattern)
-    hits = []
+    hits: list[tuple[str, int, str]] = []
     for path in iter_search_files(root):
         text = read_searchable_text(path)
         if text is None:

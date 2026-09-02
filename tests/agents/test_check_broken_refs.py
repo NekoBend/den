@@ -531,6 +531,39 @@ def test_a_file_named_like_a_skipped_directory_is_not_searched(
         assert "app.py" in proc.stdout, proc.stdout
 
 
+def test_odd_characters_in_lines_and_file_names_survive_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same record-framing point at this script's own rg call site: a form feed
+    # or U+2028 inside the line, and a newline inside the file name, must not
+    # cut a record in half.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "odd.txt", "head \x0c mid \u2028 widget() tail\n")
+    newline_name = True
+    try:
+        write(tmp_path, "new\nline.txt", "widget()\n")
+    except OSError:  # a filesystem that refuses the name
+        newline_name = False
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    outputs = []
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "odd.txt" in proc.stdout, proc.stdout
+        assert any("\x0c" in ln and "\u2028" in ln for ln in proc.stdout.split("\n")), (
+            proc.stdout
+        )
+        if newline_name:
+            assert "new\nline.txt" in proc.stdout, proc.stdout
+        outputs.append(sorted(proc.stdout.split("\n")))
+    assert outputs[0] == outputs[1], outputs
+
+
 def test_the_git_directory_is_never_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
