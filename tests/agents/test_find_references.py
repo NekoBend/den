@@ -242,32 +242,40 @@ def test_in_reports_full_powershell_names(tmp_path: Path) -> None:
 # ---------- rg output parsing ----------
 
 
-def test_rg_line_parser_keeps_the_windows_drive_letter() -> None:
-    # On Windows every rg hit starts with `C:\`, so the FIRST colon belongs to
-    # the drive and the line number is in the last field. Parsed directly
-    # because tests/agents runs on ubuntu only, where no rg output looks
-    # like this.
-    assert parse_rg_line(r"C:\repo\mod.py:12:def widget():") == (
-        r"C:\repo\mod.py",
-        12,
-        "def widget():",
-    )
-    assert parse_rg_line("C:/repo/mod.py:12:def widget():") == (
-        "C:/repo/mod.py",
-        12,
-        "def widget():",
-    )
-
-
-def test_rg_line_parser_reads_posix_paths_and_rejects_junk() -> None:
-    assert parse_rg_line("/repo/mod.py:12:def widget():") == (
+def test_rg_line_parser_reads_the_null_separated_format() -> None:
+    # rg is run with --null, so the path ends at the NUL byte and the only
+    # colon that matters is the one after the line number. Parsed directly:
+    # the Windows case cannot be produced on the ubuntu CI runners.
+    assert parse_rg_line("/repo/mod.py\x0012:def widget():") == (
         "/repo/mod.py",
         12,
         "def widget():",
     )
+    # a colon inside the path is no longer ambiguous...
+    assert parse_rg_line("/repo/a:b.py\x0012:widget()") == (
+        "/repo/a:b.py",
+        12,
+        "widget()",
+    )
+    # ...neither is a Windows drive letter, which needs no special case now
+    assert parse_rg_line("C:\\repo\\mod.py\x0012:def widget():") == (
+        "C:\\repo\\mod.py",
+        12,
+        "def widget():",
+    )
+    # and the content keeps every colon it had
+    assert parse_rg_line("/repo/mod.py\x007:d = {'a': 1, 'b': 2}") == (
+        "/repo/mod.py",
+        7,
+        "d = {'a': 1, 'b': 2}",
+    )
+
+
+def test_rg_line_parser_rejects_junk() -> None:
     assert parse_rg_line("no separators here") is None
-    assert parse_rg_line("/repo/mod.py:twelve:x") is None
-    assert parse_rg_line(r"C:\repo\mod.py:no-line-number") is None
+    assert parse_rg_line("/repo/mod.py:12:no null byte") is None
+    assert parse_rg_line("/repo/mod.py\x00twelve:x") is None
+    assert parse_rg_line("/repo/mod.py\x0012 no colon") is None
 
 
 # ---------- the two backends must see the same tree ----------
@@ -299,6 +307,7 @@ def test_the_ripgrep_backend_is_really_invoked(
     assert record.is_file(), "rg was on PATH but the script never ran it"
     argv = record.read_text(encoding="utf-8").splitlines()
     assert "--no-config" in argv, argv
+    assert "--null" in argv, argv
     assert "--no-ignore" in argv, argv
     assert "--hidden" in argv, argv
     assert "!.git" in argv, argv
@@ -400,6 +409,21 @@ def test_a_ripgrep_config_cannot_change_what_is_searched(
         assert "real.py" in proc.stdout, proc.stdout
         outputs.append(sorted(proc.stdout.splitlines()))
     assert outputs[0] == outputs[1], outputs
+
+
+def test_a_colon_in_a_path_does_not_lose_the_hit(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The rg backend used to split its output on colons, so a hit in `a:b.py`
+    # was dropped there and reported by the walk fallback.
+    try:
+        write(tmp_path, "a:b.py", "widget()\n")
+    except OSError as exc:  # Windows forbids ':' in a file name
+        pytest.skip(f"cannot create a path containing a colon: {exc}")
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "a:b.py" in proc.stdout, proc.stdout
 
 
 def test_the_git_directory_is_never_searched(

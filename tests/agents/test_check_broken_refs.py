@@ -314,6 +314,7 @@ def test_the_ripgrep_backend_is_really_invoked(
     assert record.is_file(), "rg was on PATH but the script never ran it"
     argv = record.read_text(encoding="utf-8").splitlines()
     assert "--no-config" in argv, argv
+    assert "--null" in argv, argv
     assert "--no-ignore" in argv, argv
     assert "--hidden" in argv, argv
     assert "!.git" in argv, argv

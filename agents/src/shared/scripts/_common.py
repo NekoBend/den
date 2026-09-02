@@ -138,7 +138,18 @@ SKIP_DIRS: frozenset[str] = frozenset(
 # config carries --follow or --text (or another glob) would get the rg backend
 # searching symlinked or binary files that the walker skips, on that machine
 # only. The scripts pass the flags they need explicitly.
-RG_SEARCH_FLAGS: tuple[str, ...] = ("--no-config", "--no-ignore", "--hidden")
+#
+# --null terminates the file name with a NUL byte instead of a colon, which is
+# what lets parse_rg_line find where the path ends: a path may contain colons
+# of its own (`a:b.py`, or a Windows drive letter) and a NUL byte cannot occur
+# in one. The flag and the parser belong together; do not pass one without the
+# other.
+RG_SEARCH_FLAGS: tuple[str, ...] = (
+    "--no-config",
+    "--no-ignore",
+    "--hidden",
+    "--null",
+)
 
 
 def rg_skip_globs() -> list[str]:
@@ -150,24 +161,21 @@ def rg_skip_globs() -> list[str]:
 
 
 def parse_rg_line(line: str) -> tuple[str, int, str] | None:
-    """Parse one `<file>:<lineno>:<content>` line of ripgrep output.
+    """Parse one `<path>NUL<lineno>:<content>` line of ripgrep --null output.
 
     Returns None when the line carries no usable location.
 
-    On Windows the path starts with a drive letter, so the first colon of
-    `C:\\repo\\mod.py:12:content` belongs to the path and the line number
-    lands in the LAST field of the three-way split.
+    The NUL byte is what makes this unambiguous. Splitting on colons instead
+    dropped every hit whose path contained one - a POSIX file named `a:b.py`,
+    and on Windows every hit at all, since each path starts with `C:` - while
+    the walk fallback reported them, so the two backends disagreed.
     """
-    parts = line.split(":", 2)
-    if len(parts) != 3:
+    file, sep, rest = line.partition("\x00")
+    if not sep:
         return None
-    file, lineno_text, content = parts
-    if len(file) == 1 and file.isalpha() and lineno_text[:1] in {"\\", "/"}:
-        sub = content.split(":", 1)
-        if len(sub) != 2:
-            return None
-        file = f"{file}:{lineno_text}"
-        lineno_text, content = sub
+    lineno_text, sep, content = rest.partition(":")
+    if not sep:
+        return None
     try:
         lineno = int(lineno_text)
     except ValueError:
