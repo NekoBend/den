@@ -50,35 +50,41 @@ mkfile() {
 # extract → auto-detect and extract archives
 # NOTE: leading-dash './' prefix is required — do not remove.
 extract() {
-    if [ -z "$1" ]; then
-        echo "usage: extract <file>" >&2
+    if [ $# -eq 0 ]; then
+        echo "usage: extract <file...>" >&2
         return 1
     fi
-    if [ ! -f "$1" ]; then
-        echo "extract: '$1' is not a file" >&2
-        return 1
-    fi
-    # Neutralise leading dash so downstream tools cannot parse filename as option
-    _ex_f="$1"
-    case "$_ex_f" in -*) _ex_f="./$_ex_f" ;; esac
-    case "$_ex_f" in
-        *.tar.gz|*.tgz)     tar xzf "$_ex_f"   ;;
-        *.tar.bz2|*.tbz2)   tar xjf "$_ex_f"   ;;
-        *.tar.xz|*.txz)     tar xJf "$_ex_f"   ;;
-        *.tar.zst)          tar --zstd -xf "$_ex_f" ;;
-        *.tar)              tar xf  "$_ex_f"    ;;
-        *.gz)               gunzip -- "$_ex_f"    ;;
-        *.bz2)              bunzip2 -- "$_ex_f"   ;;
-        *.xz)               unxz -- "$_ex_f"      ;;
-        *.zst)              unzstd -- "$_ex_f"    ;;
-        *.zip)              unzip -- "$_ex_f"     ;;
-        *.7z)               7z x -- "$_ex_f"      ;;
-        *.rar)              unrar x -- "$_ex_f"   ;;
-        *) echo "extract: unsupported format '$_ex_f'" >&2; unset _ex_f; return 1 ;;
-    esac
-    _ex_rc=$?
+    # Every argument is an archive; each is extracted in turn and a failure
+    # on one does not hide the others (the exit code is 1 if any failed).
+    _ex_fail=0
+    for _ex_f in "$@"; do
+        if [ ! -f "$_ex_f" ]; then
+            echo "extract: '$_ex_f' is not a file" >&2
+            _ex_fail=1
+            continue
+        fi
+        # Neutralise leading dash so downstream tools cannot parse filename as option
+        case "$_ex_f" in -*) _ex_f="./$_ex_f" ;; esac
+        case "$_ex_f" in
+            *.tar.gz|*.tgz)     tar xzf "$_ex_f"   ;;
+            *.tar.bz2|*.tbz2)   tar xjf "$_ex_f"   ;;
+            *.tar.xz|*.txz)     tar xJf "$_ex_f"   ;;
+            *.tar.zst)          tar --zstd -xf "$_ex_f" ;;
+            *.tar)              tar xf  "$_ex_f"    ;;
+            *.gz)               gunzip -- "$_ex_f"    ;;
+            *.bz2)              bunzip2 -- "$_ex_f"   ;;
+            *.xz)               unxz -- "$_ex_f"      ;;
+            *.zst)              unzstd -- "$_ex_f"    ;;
+            *.zip)              unzip -- "$_ex_f"     ;;
+            *.7z)               7z x -- "$_ex_f"      ;;
+            *.rar)              unrar x -- "$_ex_f"   ;;
+            *) echo "extract: unsupported format '$_ex_f'" >&2; false ;;
+        esac || _ex_fail=1
+    done
     unset _ex_f
-    return "$_ex_rc"
+    if [ "$_ex_fail" -ne 0 ]; then unset _ex_fail; return 1; fi
+    unset _ex_fail
+    return 0
 }
 
 # archive → create archive (format auto-detected from output filename)

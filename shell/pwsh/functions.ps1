@@ -35,23 +35,35 @@ function mkfile {
 
 # extract → auto-detect and extract archives
 function extract {
-  param([Parameter(Mandatory)][string]$Path)
-  if (-not (Test-Path $Path)) {
-    Write-Error "'$Path' not found"
+  # Every argument is an archive; each is extracted in turn and a failure on
+  # one does not hide the others (the function throws at the end if any failed).
+  param([Parameter(ValueFromRemainingArguments)][string[]]$Paths)
+  if (-not $Paths -or $Paths.Count -eq 0) {
+    Write-Error "usage: extract <file...>"
     return
   }
-  switch -Regex ($Path) {
-    '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
-    '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
-    '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
-    '\.tar\.zst$'           { tar --zstd -xf $Path; break }
-    '\.tar$'                { tar xf $Path; break }
-    '\.gz$'                 { gzip -d $Path; break }
-    '\.zip$'                { Expand-Archive -Path $Path -DestinationPath . -Force; break }
-    '\.7z$'                 { & 7z x $Path; break }
-    '\.rar$'                { & unrar x $Path; break }
-    default                 { Write-Error "unsupported format '$Path'" }
+  $failed = 0
+  foreach ($Path in $Paths) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+      Write-Error "extract: '$Path' is not a file"
+      $failed++
+      continue
+    }
+    switch -Regex ($Path) {
+      '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
+      '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
+      '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
+      '\.tar\.zst$'           { tar --zstd -xf $Path; break }
+      '\.tar$'                { tar xf $Path; break }
+      '\.gz$'                 { gzip -d $Path; break }
+      '\.zip$'                { Expand-Archive -LiteralPath $Path -DestinationPath . -Force; break }
+      '\.7z$'                 { & 7z x $Path; break }
+      '\.rar$'                { & unrar x $Path; break }
+      default                 { Write-Error "extract: unsupported format '$Path'"; $global:LASTEXITCODE = 1 }
+    }
+    if ($LASTEXITCODE) { $failed++ }
   }
+  if ($failed) { Write-Error "extract: $failed of $($Paths.Count) archives failed" }
 }
 
 # archive → create archive (format auto-detected from output filename)

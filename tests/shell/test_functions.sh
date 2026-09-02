@@ -108,6 +108,22 @@ assert_success "bash/extract zip exit code" "$?"
 assert_exists "bash/extract zip" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.zip" "$WORK/extracted"
 
+# --- extract: several archives in one call; one failure does not hide the rest ---
+echo "[bash] extract multiple archives"
+setup_fixtures
+mkdir -p "$WORK/second" && echo second > "$WORK/second/file2.txt"
+run_bash "$FUNCTIONS_SH" "archive '$WORK/one.tar.gz' -C '$WORK' src && archive '$WORK/two.tar.gz' -C '$WORK' second" 2>/dev/null
+mkdir -p "$WORK/multi"
+run_bash "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/two.tar.gz'"
+assert_success "bash/extract multi exit code" "$?"
+assert_exists "bash/extract multi first archive" "$WORK/multi/src/file1.txt"
+assert_exists "bash/extract multi second archive" "$WORK/multi/second/file2.txt"
+rm -rf "$WORK/multi" && mkdir -p "$WORK/multi"
+run_bash "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/missing.tar.gz'" 2>/dev/null
+assert_eq "bash/extract multi with a missing archive exits 1" "1" "$?"
+assert_exists "bash/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
+rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+
 echo "[bash] archive + extract tar.bz2"
 setup_fixtures
 run_bash "$FUNCTIONS_SH" "archive '$WORK/test.tar.bz2' -C '$WORK' src" 2>/dev/null
@@ -227,6 +243,22 @@ assert_success "zsh/extract tar.gz exit code" "$?"
 assert_exists "zsh/extract tar.gz" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.tar.gz" "$WORK/extracted"
 
+# --- extract: several archives in one call; one failure does not hide the rest ---
+echo "[zsh] extract multiple archives"
+setup_fixtures
+mkdir -p "$WORK/second" && echo second > "$WORK/second/file2.txt"
+run_zsh "$FUNCTIONS_SH" "archive '$WORK/one.tar.gz' -C '$WORK' src && archive '$WORK/two.tar.gz' -C '$WORK' second" 2>/dev/null
+mkdir -p "$WORK/multi"
+run_zsh "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/two.tar.gz'"
+assert_success "zsh/extract multi exit code" "$?"
+assert_exists "zsh/extract multi first archive" "$WORK/multi/src/file1.txt"
+assert_exists "zsh/extract multi second archive" "$WORK/multi/second/file2.txt"
+rm -rf "$WORK/multi" && mkdir -p "$WORK/multi"
+run_zsh "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/missing.tar.gz'" 2>/dev/null
+assert_eq "zsh/extract multi with a missing archive exits 1" "1" "$?"
+assert_exists "zsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
+rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+
 echo "[zsh] archive + extract zip"
 setup_fixtures
 run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.zip' src" 2>/dev/null
@@ -340,6 +372,22 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/extracted'; extract 'tes
 assert_success "pwsh/extract tar.gz exit code" "$?"
 assert_exists "pwsh/extract tar.gz" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.tar.gz" "$WORK/extracted"
+
+# --- extract: several archives in one call; one failure does not hide the rest ---
+echo "[pwsh] extract multiple archives"
+setup_fixtures
+mkdir -p "$WORK/second" && echo second > "$WORK/second/file2.txt"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'one.tar.gz' src; archive 'two.tar.gz' second" 2>/dev/null
+mkdir -p "$WORK/multi"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/one.tar.gz' '$WORK/two.tar.gz'"
+assert_success "pwsh/extract multi exit code" "$?"
+assert_exists "pwsh/extract multi first archive" "$WORK/multi/src/file1.txt"
+assert_exists "pwsh/extract multi second archive" "$WORK/multi/second/file2.txt"
+rm -rf "$WORK/multi" && mkdir -p "$WORK/multi"
+err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/one.tar.gz' '$WORK/missing.tar.gz'" 2>&1 >/dev/null)
+assert_contains "pwsh/extract multi reports the failed archive" "1 of 2 archives failed" "$err"
+assert_exists "pwsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
+rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
 echo "[pwsh] archive + extract zip"
 setup_fixtures

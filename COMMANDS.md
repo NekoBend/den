@@ -121,7 +121,7 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 |---|---|:---:|:---:|:---:|
 | `digest {md5\|sha256\|sha512} <file>` | file hash | ✓ | ✓ | ✓ |
 | `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
-| `extract <archive>` | auto-detect archive type and extract | ✓ | ✓ | — |
+| `extract <archive...>` | auto-detect each archive's type and extract it; exit 1 if any failed | ✓ | ✓ | — |
 | `archive <out> <in>...` | create an archive (format from the output name) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
