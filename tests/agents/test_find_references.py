@@ -353,6 +353,23 @@ def test_binary_files_are_not_searched_by_either_backend(
         assert "real.py" in proc.stdout, proc.stdout
 
 
+def test_undecodable_bytes_do_not_forge_a_match(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # ripgrep searches raw bytes, so `widget` does not occur in
+    # b"wid\xffget()". Decoding with errors="ignore" deleted the 0xff and
+    # made the fallback report a hit rg never sees; errors="replace" leaves a
+    # U+FFFD in the way, which is not a word character, so the boundary
+    # behaves the way rg's does.
+    (tmp_path / "bad.txt").write_bytes(b"wid\xffget()\n")
+    write(tmp_path, "real.py", "widget()\n")
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "bad.txt" not in proc.stdout, proc.stdout
+        assert "real.py" in proc.stdout, proc.stdout
+
+
 def test_a_ripgrep_config_cannot_change_what_is_searched(
     tmp_path: Path,
     tmp_path_factory: pytest.TempPathFactory,

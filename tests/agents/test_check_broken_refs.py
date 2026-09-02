@@ -366,6 +366,28 @@ def test_binary_files_are_not_searched_by_either_backend(
         assert "app.py" in proc.stdout, proc.stdout
 
 
+def test_undecodable_bytes_do_not_forge_a_broken_ref(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Same parity point as find-references: rg searches raw bytes and never
+    # matches `widget` in b"wid\xffget()", so the walk fallback must not
+    # decode the 0xff away and call it a dangling reference.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    (tmp_path / "bad.txt").write_bytes(b"wid\xffget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# gone\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert "bad.txt" not in proc.stdout, proc.stdout
+        assert "app.py" in proc.stdout, proc.stdout
+
+
 def test_a_ripgrep_config_cannot_change_what_is_searched(
     tmp_path: Path,
     tmp_path_factory: pytest.TempPathFactory,

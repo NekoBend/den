@@ -208,16 +208,21 @@ def read_searchable_text(path: Path) -> str | None:
     None means the file could not be read, or that it is binary: ripgrep stops
     searching a file the moment it sees a NUL byte and reports nothing for it
     (verified with rg 15.1.0 on a file whose NUL sits after the match), so the
-    walk fallback must not report matches there either - a decode with
-    errors="ignore" would otherwise happily match text inside an object file,
-    a PDF or a .pyc.
+    walk fallback must not report matches there either - it would otherwise
+    happily match text inside an object file, a PDF or a .pyc.
 
     The whole file is read, so the NUL is found wherever it sits; ripgrep
     applies the same test per read buffer, which differs only for a file that
     matches before a NUL that appears megabytes later.
+
+    Undecodable bytes become U+FFFD rather than disappearing: ripgrep searches
+    raw bytes, so it does not match `widget` inside b"wid\xffget()", while
+    errors="ignore" would delete the 0xff and forge exactly that hit here.
+    U+FFFD is not a word character, so the boundary behaves as rg's does, and
+    rg's own output is decoded with errors="replace" on this side too.
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     if "\x00" in text:
