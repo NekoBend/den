@@ -282,32 +282,88 @@ def _rotate(den_dir: Path) -> None:
         old.unlink(missing_ok=True)
 
 
-def _do_checkpoint(den_dir: Path) -> Path | None:
+class _Refused:
+    """Sentinel type: a checkpoint den declined or failed to make, when there WAS
+    content to snapshot -- a symlinked or non-directory `history/`, a refused
+    snapshot write, an OSError on the way.
+
+    Kept distinct from None, which means there was simply nothing to do (memory.md
+    absent, or already identical to the newest snapshot). Folding the two together
+    is what let save/add/clear/restore carry on after the safety net was refused
+    and leave an overwrite -- or, for clear, a deletion -- with no snapshot behind
+    it.
+    """
+
+    __slots__ = ()
+
+
+_REFUSED = _Refused()
+
+
+def _unusable_history(den_dir: Path, hist: Path) -> bool:
+    """True (one line on stderr) when `.den/history` cannot hold a snapshot: a
+    symlink den will not follow, or a non-directory a repo planted there -- which
+    would otherwise make `mkdir(exist_ok=True)` raise FileExistsError."""
+    if _refuse_symlink(den_dir, hist, "write"):
+        return True
+    if hist.exists() and not hist.is_dir():
+        print(
+            f"{_ERR}: refusing to snapshot into {hist}: not a directory",
+            file=sys.stderr,
+        )
+        return True
+    return False
+
+
+def _do_checkpoint(den_dir: Path) -> Path | _Refused | None:
     """Snapshot memory.md into history if it changed since the newest snapshot.
 
-    Returns the new snapshot path, or None when there is nothing to do
-    (no memory.md, or it is identical to the most recent snapshot).
+    Returns the new snapshot path; None when there is nothing to do (no memory.md,
+    or it already matches the newest snapshot); `_REFUSED` when there was content
+    to snapshot and den could not store it. Callers that are about to overwrite or
+    delete memory.md must treat `_REFUSED` as a stop -- see _checkpointed.
     """
     current = _read_guarded(den_dir, _memory_path(den_dir))
-    if not isinstance(current, bytes):  # absent or unreadable -- cannot snapshot
+    if not isinstance(current, bytes):  # absent or unreadable -- nothing to store
         return None
     hist = _history_dir(den_dir)
-    if _refuse_symlink(den_dir, hist, "write"):
-        return None
-    snaps = _snapshots(den_dir)
-    if snaps and snaps[0].read_bytes() == current:
-        return None
-    hist.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime(_STAMP_FORMAT)
-    dest = hist / f"{_SNAP_PREFIX}{stamp}{_SNAP_SUFFIX}"
-    n = 1
-    while dest.exists():  # never clobber a same-timestamp snapshot
-        dest = hist / f"{_SNAP_PREFIX}{stamp}_{n:03d}{_SNAP_SUFFIX}"
-        n += 1
-    if not _write_guarded(den_dir, dest, current):
-        return None
-    _rotate(den_dir)
-    return dest
+    if _unusable_history(den_dir, hist):
+        return _REFUSED
+    try:
+        snaps = _snapshots(den_dir)
+        if snaps and snaps[0].read_bytes() == current:
+            return None  # unchanged: nothing to do, and that is not a refusal
+        hist.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime(_STAMP_FORMAT)
+        dest = hist / f"{_SNAP_PREFIX}{stamp}{_SNAP_SUFFIX}"
+        n = 1
+        while dest.exists():  # never clobber a same-timestamp snapshot
+            dest = hist / f"{_SNAP_PREFIX}{stamp}_{n:03d}{_SNAP_SUFFIX}"
+            n += 1
+        if not _write_guarded(den_dir, dest, current):
+            return _REFUSED
+        _rotate(den_dir)
+        return dest
+    except OSError as exc:  # read-only workspace, full disk, vanished dir
+        print(f"{_ERR}: cannot snapshot into {hist}: {exc}", file=sys.stderr)
+        return _REFUSED
+
+
+def _writable_memory(den_dir: Path, mem: Path, action: str = "write") -> bool:
+    """False (already reported) when memory.md must not be written or removed: a
+    symlink den will not follow, or a file it exists but could not read --
+    replacing content den never saw would destroy it, and it cannot be
+    snapshotted either. One place, so no command can check only half of it."""
+    if _refuse_symlink(den_dir, mem, action):
+        return False
+    return not isinstance(_read_guarded(den_dir, mem), _Unreadable)
+
+
+def _checkpointed(den_dir: Path) -> bool:
+    """Run the pre-write checkpoint. False (already reported) when it was refused,
+    and the caller must then write nothing: without a snapshot behind it the
+    overwrite -- or the delete -- cannot be undone."""
+    return not isinstance(_do_checkpoint(den_dir), _Refused)
 
 
 def _parse_index(argv: list[str]) -> int | None:
@@ -334,33 +390,35 @@ def _cmd_show(den_dir: Path, argv: list[str]) -> int:
 
 def _cmd_checkpoint(den_dir: Path, argv: list[str]) -> int:
     snap = _do_checkpoint(den_dir)
+    if isinstance(snap, _Refused):
+        return 1  # asked for a checkpoint, could not make one
     if snap is not None:
         print(f"checkpointed: {snap}", file=sys.stderr)
     return 0
 
 
+def _save_content(argv: list[str]) -> str | int:
+    """The text `save` will write: stdin, or the file named by --file. An int is
+    the exit code to return instead (the message is already out)."""
+    if not (argv and argv[0] in {"--file", "-f"}):
+        return sys.stdin.read()
+    if len(argv) < 2:
+        print("den hook memory save: --file needs a path", file=sys.stderr)
+        return 2
+    try:
+        return Path(argv[1]).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"den hook memory save: cannot read {argv[1]}: {exc}", file=sys.stderr)
+        return 2
+
+
 def _cmd_save(den_dir: Path, argv: list[str]) -> int:
-    if argv and argv[0] in {"--file", "-f"}:
-        if len(argv) < 2:
-            print("den hook memory save: --file needs a path", file=sys.stderr)
-            return 2
-        try:
-            content = Path(argv[1]).read_text(encoding="utf-8")
-        except OSError as exc:
-            print(
-                f"den hook memory save: cannot read {argv[1]}: {exc}", file=sys.stderr
-            )
-            return 2
-    else:
-        content = sys.stdin.read()
+    content = _save_content(argv)
+    if isinstance(content, int):
+        return content
     mem = _memory_path(den_dir)
-    if _refuse_symlink(den_dir, mem, "write"):
+    if not _writable_memory(den_dir, mem) or not _checkpointed(den_dir):
         return 1
-    # What cannot be read cannot be checkpointed, and overwriting it would
-    # destroy content den never saw. Refuse instead of silently replacing it.
-    if isinstance(_read_guarded(den_dir, mem), _Unreadable):
-        return 1
-    _do_checkpoint(den_dir)
     if not _write_guarded(den_dir, mem, content.encode("utf-8")):
         return 1
     mirror_to_clinerules(den_dir)
@@ -384,7 +442,8 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
     existing = _read_guarded_text(den_dir, mem)
     if isinstance(existing, _Unreadable):
         return 1  # appending to what we could not read would truncate it
-    _do_checkpoint(den_dir)
+    if not _checkpointed(den_dir):
+        return 1
     existing = existing or ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
@@ -397,11 +456,9 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
 
 def _cmd_clear(den_dir: Path, argv: list[str]) -> int:
     mem = _memory_path(den_dir)
-    if _refuse_symlink(den_dir, mem, "remove"):
+    # Deleting what cannot be snapshotted is not reversible.
+    if not _writable_memory(den_dir, mem, "remove") or not _checkpointed(den_dir):
         return 1
-    if isinstance(_read_guarded(den_dir, mem), _Unreadable):
-        return 1  # deleting what cannot be snapshotted is not reversible
-    _do_checkpoint(den_dir)
     if mem.is_file():
         mem.unlink()
     mirror_to_clinerules(den_dir)
@@ -433,15 +490,10 @@ def _cmd_restore(den_dir: Path, argv: list[str]) -> int:
     data = target.read_bytes()
     stamp = _snap_stamp(target)
     mem = _memory_path(den_dir)
-    if _refuse_symlink(den_dir, mem, "write"):
+    # restore is the command whose whole promise is that the state it replaces
+    # stays recoverable, so both preconditions and the checkpoint must hold.
+    if not _writable_memory(den_dir, mem) or not _checkpointed(den_dir):
         return 1
-    # Same reason as save/add/clear: _write_guarded opens write-only and
-    # truncates, so a memory.md _do_checkpoint could not read would be gone with
-    # no snapshot behind it -- and restore is the command whose whole promise is
-    # that the state it replaces stays recoverable.
-    if isinstance(_read_guarded(den_dir, mem), _Unreadable):
-        return 1
-    _do_checkpoint(den_dir)  # make the restore itself reversible
     if not _write_guarded(den_dir, mem, data):
         return 1
     mirror_to_clinerules(den_dir)

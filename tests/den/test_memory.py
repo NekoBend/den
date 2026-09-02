@@ -1,6 +1,7 @@
 """Tests for den memory (den/_memory.py)."""
 
 import io
+import json
 import os
 import sys
 
@@ -437,7 +438,9 @@ def test_symlinked_history_dir_refuses_checkpoint(tmp_path, monkeypatch, symlink
     _mem(proj).write_text("real memory\n")
     symlink(outside, proj / ".den" / "history")
     monkeypatch.chdir(proj)
-    assert memory_main(["checkpoint"]) == 0
+    assert memory_main(["checkpoint"]) == 1, (
+        "asked for a checkpoint, could not make one"
+    )
     assert list(outside.iterdir()) == [], "nothing may land outside the workspace"
 
 
@@ -641,3 +644,97 @@ def test_a_directory_named_like_a_snapshot_is_not_one(tmp_path, monkeypatch, cap
     assert _mem(proj).read_text() == "real snapshot\n"
     assert memory_main(["checkpoint"]) == 0
     assert "real snapshot" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# a refused checkpoint is not "nothing to snapshot"
+#
+# The pre-write checkpoint IS the undo for save/add/clear/restore. When it is
+# refused the safety net is gone, so the write must not happen either -- and a
+# refusal must not read as the ordinary "content unchanged, nothing to do".
+# --------------------------------------------------------------------------- #
+
+
+def _no_history_workspace(tmp_path, symlink, kind="symlink"):
+    """A workspace whose .den/history cannot hold a snapshot, with memory.md
+    holding content that would need one."""
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    proj = tmp_path / "repo"
+    (proj / ".den").mkdir(parents=True)
+    _mem(proj).write_text("the only copy\n")
+    if kind == "symlink":
+        symlink(outside, proj / ".den" / "history")
+    else:
+        (proj / ".den" / "history").write_text("not a directory\n")
+    return proj, outside
+
+
+def test_write_commands_abort_when_the_checkpoint_is_refused(
+    tmp_path, monkeypatch, symlink
+):
+    proj, outside = _no_history_workspace(tmp_path, symlink)
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
+    # restore stops earlier here (a symlinked history lists no snapshots), but it
+    # must be just as harmless; the branch itself is pinned by the next test.
+    for argv in (["save"], ["add", "a fact"], ["clear"], ["restore", "1"]):
+        assert memory_main(argv) == 1, argv
+        assert _mem(proj).read_text() == "the only copy\n", argv
+    assert list(outside.iterdir()) == [], "nothing landed outside the workspace"
+
+
+def test_restore_aborts_when_the_checkpoint_is_refused(tmp_path, monkeypatch):
+    """restore is the one command that needs a USABLE history to read its source
+    from, so it cannot reach the refusal through a symlinked history dir. Stub
+    the checkpoint result to pin the branch itself: a restore that could not be
+    made reversible must not run."""
+    proj = tmp_path / "repo"
+    hist = proj / ".den" / "history"
+    hist.mkdir(parents=True)
+    (hist / "memory.20260101T000000000000.md").write_text("older\n")
+    _mem(proj).write_text("the only copy\n")
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(_memory, "_do_checkpoint", lambda den_dir: _memory._REFUSED)
+    assert memory_main(["restore", "1"]) == 1
+    assert _mem(proj).read_text() == "the only copy\n", "not replaced without an undo"
+
+
+def test_write_commands_abort_when_history_is_a_file(tmp_path, monkeypatch):
+    # A regular file at .den/history used to raise FileExistsError out of the
+    # mkdir; it is a refusal like any other now.
+    proj, _outside = _no_history_workspace(tmp_path, None, kind="file")
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("sys.stdin", io.StringIO("replacement\n"))
+    for argv in (["checkpoint"], ["save"], ["add", "a fact"], ["clear"]):
+        assert memory_main(argv) == 1, argv
+    assert _mem(proj).read_text() == "the only copy\n"
+    assert (proj / ".den" / "history").read_text() == "not a directory\n"
+
+
+def test_hook_run_stays_tolerant_of_a_refused_checkpoint(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    # The per-turn hook must never fail on this: it still exits 0 and composes.
+    from den._hook import main as hook_main
+
+    proj, _outside = _no_history_workspace(tmp_path, symlink)
+    (proj / ".den" / "imprint.md").write_text("IMP\n")
+    monkeypatch.chdir(proj)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "claude"]) == 0
+    out = capsys.readouterr()
+    context = json.loads(out.out)["hookSpecificOutput"]["additionalContext"]
+    assert "IMP" in context and "the only copy" in context
+    assert "is a symlink" in out.err, "the refusal is still spoken"
+
+
+def test_unchanged_content_is_not_a_refusal(tmp_path, monkeypatch):
+    # The no-regression guard: "nothing to snapshot" must keep exiting 0 and let
+    # the write through, which is the common path on every turn.
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["add", "v1"]) == 0
+    assert memory_main(["checkpoint"]) == 0  # first snapshot
+    assert memory_main(["checkpoint"]) == 0  # unchanged: no new snapshot, still 0
+    assert len(_history(tmp_path)) == 1
+    assert memory_main(["add", "v2"]) == 0
+    assert _mem(tmp_path).read_text() == "v1\nv2\n"
