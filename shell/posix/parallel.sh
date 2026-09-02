@@ -22,11 +22,18 @@ _nproc() {
 # _parallel_exec → run command in parallel via GNU parallel or xargs
 #   $1 = job count, remaining args = command template
 #   stdin = NUL-separated arguments
+#
+# GNU parallel joins the template words with spaces and hands the string to a
+# shell, so without -q a destination like "My Documents" became TWO cp
+# operands and "x;rm -rf y" executed the rm. -q quotes the template, which
+# makes this branch behave exactly like the xargs one (argv preserved, no
+# shell). Only GNU parallel is used: moreutils' `parallel` has different flags.
 _parallel_exec() {
     local jobs="$1"
     shift
-    if command -v parallel >/dev/null 2>&1; then
-        command parallel -0 -j"$jobs" "$@"
+    if command -v parallel >/dev/null 2>&1 \
+        && command parallel --version 2>/dev/null | grep -q 'GNU parallel'; then
+        command parallel -0 -q -j"$jobs" "$@"
     else
         command xargs -0 -P"$jobs" -I{} "$@"
     fi
@@ -100,7 +107,9 @@ pcp() {
     local entries
     entries="$(_count_entries "${srcs[@]}")"
     echo "+ pcp: ${#srcs[@]} paths ($entries entries) → $dest ($jobs jobs)"
-    printf '%s\0' "${srcs[@]}" | _parallel_exec "$jobs" cp -a -- {} "$dest"
+    # -f: overwrite an existing destination file even when it is read-only,
+    # the same semantics as pwsh's Copy-Item -Force (and as mv below).
+    printf '%s\0' "${srcs[@]}" | _parallel_exec "$jobs" cp -af -- {} "$dest"
 }
 
 # pmv → parallel move (like mv, last arg is destination)
@@ -138,17 +147,35 @@ pmv() {
 # prm → parallel remove with interactive confirmation by default
 prm() {
     local force=0
-    local -a items=()
-    local arg
-    for arg in "$@"; do
-        case "$arg" in
-            --force|-f) force=1 ;;
-            *) items+=("$arg") ;;
+    # Flags count only BEFORE the first operand, and `--` ends them: a
+    # glob-expanded file literally named -f must never flip force mode (it
+    # would silently skip the [y/N] confirmation). Remove such a file with
+    # `prm -- -f`. An unknown dash-word is an error, not a path.
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --force|-f)
+                # A file literally named -f (a mistyped `tar -f` leaves one)
+                # in an unprotected glob would arrive here first and silently
+                # skip the confirmation; refuse the ambiguity instead of
+                # guessing.
+                if [ -e "$1" ]; then
+                    echo "prm: '$1' is both a flag and an existing file; use \`prm -- ...\` or \`./$1\`" >&2
+                    return 1
+                fi
+                force=1; shift ;;
+            --) shift; break ;;
+            -*)
+                echo "prm: unknown option '$1' (use -- before paths that start with -)" >&2
+                echo "usage: prm [--force|-f] [--] <path...>" >&2
+                return 1
+                ;;
+            *) break ;;
         esac
     done
+    local -a items=("$@")
 
     if [ ${#items[@]} -eq 0 ]; then
-        echo "usage: prm [--force|-f] <path...>" >&2
+        echo "usage: prm [--force|-f] [--] <path...>" >&2
         return 1
     fi
 
@@ -179,7 +206,7 @@ prm() {
 # ptar → parallel compress using pigz/pbzip2/pxz when available
 ptar() {
     if [ $# -lt 2 ]; then
-        echo "usage: ptar <output.tar.gz|.tar.bz2|.tar.xz> <src...>" >&2
+        echo "usage: ptar <output.tar|.tar.gz|.tgz|.tar.bz2|.tbz2|.tar.xz|.txz> <src...>" >&2
         return 1
     fi
 
@@ -199,7 +226,7 @@ ptar() {
                 tar czf "$out" -- "$@"
             fi
             ;;
-        *.tar.bz2)
+        *.tar.bz2|*.tbz2)
             if command -v pbzip2 >/dev/null 2>&1; then
                 echo "+ ptar: compressing → $out (using pbzip2)"
                 tar -cf - -- "$@" | pbzip2 -p"$jobs" > "$out"
@@ -208,7 +235,7 @@ ptar() {
                 tar cjf "$out" -- "$@"
             fi
             ;;
-        *.tar.xz)
+        *.tar.xz|*.txz)
             if command -v pxz >/dev/null 2>&1; then
                 echo "+ ptar: compressing → $out (using pxz)"
                 tar -cf - -- "$@" | pxz -T"$jobs" > "$out"
@@ -220,9 +247,13 @@ ptar() {
                 tar cJf "$out" -- "$@"
             fi
             ;;
+        *.tar)
+            echo "+ ptar: archiving → $out (no compression)"
+            tar -cf "$out" -- "$@"
+            ;;
         *)
             echo "ptar: unsupported format '$out'" >&2
-            echo "  supported: .tar.gz .tgz .tar.bz2 .tar.xz" >&2
+            echo "  supported: .tar .tar.gz .tgz .tar.bz2 .tbz2 .tar.xz .txz" >&2
             return 1
             ;;
     esac

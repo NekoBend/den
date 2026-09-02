@@ -3,7 +3,8 @@
 # Sourced by each test_*.sh file.
 set -uo pipefail
 
-DOTFILES="/root/.dotfiles"
+# Override to run the suite against a checkout: DOTFILES=/path/to/repo bash test_x.sh
+DOTFILES="${DOTFILES:-/root/.dotfiles}"
 PASS=0
 FAIL=0
 ERRORS=()
@@ -77,6 +78,18 @@ assert_success() {
         ((PASS++)) || true
     else
         echo "  FAIL: $label (exit_code=$exit_code)"
+        ERRORS+=("$label")
+        ((FAIL++)) || true
+    fi
+}
+
+assert_failure() {
+    local label="$1" exit_code="$2"
+    if [ "$exit_code" -ne 0 ]; then
+        echo "  PASS: $label"
+        ((PASS++)) || true
+    else
+        echo "  FAIL: $label (expected a nonzero exit code, got 0)"
         ERRORS+=("$label")
         ((FAIL++)) || true
     fi
