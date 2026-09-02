@@ -409,7 +409,14 @@ rm -rf "$WORK/multi" && mkdir -p "$WORK/multi"
 err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/one.tar.gz' '$WORK/missing.tar.gz'" 2>&1 >/dev/null)
 assert_contains "pwsh/extract multi reports the failed archive" "1 of 2 archives failed" "$err"
 assert_exists "pwsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
-rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+# A corrupt zip goes through the cmdlet path (Expand-Archive), which never sets
+# $LASTEXITCODE; its failure must still be counted, and a healthy archive after
+# a failed native command must not inherit that command's exit code.
+printf 'not a zip' > "$WORK/broken.zip"
+err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/broken.zip' '$WORK/two.tar.gz'" 2>&1 >/dev/null)
+assert_contains "pwsh/extract counts a corrupt zip as failed" "1 of 2 archives failed" "$err"
+assert_exists "pwsh/extract corrupt zip does not stop the next archive" "$WORK/multi/second/file2.txt"
+rm -rf "$WORK/broken.zip" "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
 echo "[pwsh] digest several files"
 setup_fixtures

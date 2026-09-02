@@ -52,7 +52,9 @@ function mkfile {
 # extract → auto-detect and extract archives
 function extract {
   # Every argument is an archive; each is extracted in turn and a failure on
-  # one does not hide the others (the function throws at the end if any failed).
+  # one does not hide the others. Failures are reported per archive and
+  # summarized at the end with a (non-terminating) error; the function does
+  # not throw.
   param([Parameter(ValueFromRemainingArguments)][string[]]$Paths)
   if (-not $Paths -or $Paths.Count -eq 0) {
     Write-Error "usage: extract <file...>"
@@ -65,6 +67,12 @@ function extract {
       $failed++
       continue
     }
+    # Each archive's status is taken from ITS OWN command: $LASTEXITCODE is
+    # only set by native tools (tar, gzip, 7z, unrar), so it is reset per
+    # archive, and the cmdlet path (Expand-Archive) reports through an
+    # exception instead.
+    $global:LASTEXITCODE = 0
+    $ok = $true
     switch -Regex ($Path) {
       '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
       '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
@@ -72,12 +80,17 @@ function extract {
       '\.tar\.zst$'           { tar --zstd -xf $Path; break }
       '\.tar$'                { tar xf $Path; break }
       '\.gz$'                 { gzip -d $Path; break }
-      '\.zip$'                { Expand-Archive -LiteralPath $Path -DestinationPath . -Force; break }
+      '\.zip$'                {
+        try { Expand-Archive -LiteralPath $Path -DestinationPath . -Force -ErrorAction Stop }
+        catch { Write-Error "extract: '$Path': $($_.Exception.Message)"; $ok = $false }
+        break
+      }
       '\.7z$'                 { & 7z x $Path; break }
       '\.rar$'                { & unrar x $Path; break }
-      default                 { Write-Error "extract: unsupported format '$Path'"; $global:LASTEXITCODE = 1 }
+      default                 { Write-Error "extract: unsupported format '$Path'"; $ok = $false }
     }
-    if ($LASTEXITCODE) { $failed++ }
+    if ($LASTEXITCODE -ne 0) { $ok = $false }
+    if (-not $ok) { $failed++ }
   }
   if ($failed) { Write-Error "extract: $failed of $($Paths.Count) archives failed" }
 }

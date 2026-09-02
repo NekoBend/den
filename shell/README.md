@@ -122,9 +122,9 @@ native PowerShell cmdlets, when you need object-accurate results.
 ### Files
 | Command | What it does |
 |---------|--------------|
-| `digest {md5\|sha256\|sha512} FILE` | hash a file |
+| `digest {md5\|sha256\|sha512} FILE...` | hash files (several: hash and name per line) |
 | `mkfile SIZE PATH` | create a dummy file (e.g. `mkfile 10M test.bin`) |
-| `extract ARCHIVE` | auto-detect and extract |
+| `extract ARCHIVE...` | auto-detect and extract each archive; a failure is reported and the rest still run (exit 1 if any failed) |
 | `archive OUT FILES...` | create an archive (format from `OUT` extension) |
 | `y` | yazi file manager (returns you to the dir you exit in) |
 | `again [N]` / `sagain` | re-run the Nth previous command (`sagain` = with sudo) |
