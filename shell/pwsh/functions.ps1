@@ -88,7 +88,16 @@ function extract {
         catch { Write-Error "extract: '$Path': $($_.Exception.Message)"; $ok = $false }
         break
       }
-      '\.7z$'                 { & 7z x $Path; break }
+      '\.7z$'                 {
+        # 7z reads a leading '-' as a switch and a leading '@' as a listfile —
+        # it would extract the archives named INSIDE that file rather than the
+        # file itself. 7z is in neither this image nor tests/shell/Dockerfile,
+        # so its '--' marker cannot be exercised; './' neutralises both forms
+        # without depending on marker support, as archive() does.
+        $p7 = if ($Path.StartsWith('-') -or $Path.StartsWith('@')) { Join-Path '.' $Path } else { $Path }
+        & 7z x $p7
+        break
+      }
       '\.rar$'                { & unrar x $Path; break }
       default                 { Write-Error "extract: unsupported format '$Path'"; $ok = $false }
     }

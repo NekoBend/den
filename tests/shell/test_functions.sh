@@ -73,6 +73,8 @@ setup_sevenz_stub() {
     mkdir -p "$WORK/7zbin" "$WORK/sevenz"
     : > "$WORK/sevenz/-x"
     : > "$WORK/sevenz/@list"
+    : > "$WORK/sevenz/-x.7z"
+    : > "$WORK/sevenz/@a.7z"
     cat > "$WORK/7zbin/7z" <<STUB
 #!/bin/sh
 printf '%s\n' "\$@" > '$SEVENZ_ARGV'
@@ -193,6 +195,18 @@ assert_exists "bash/archive 7z reached the stub" "$SEVENZ_ARGV"
 actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
 assert_eq "bash/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
 assert_not_contains "bash/archive 7z got no -- marker" "--" "$actual"
+
+echo "[bash] extract 7z gets neither a switch nor a listfile"
+setup_sevenz_stub
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "bash/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
+assert_not_contains "bash/extract 7z switch-shaped got no -- marker" "--" "$actual"
+rm -f "$SEVENZ_ARGV"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "bash/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
+assert_not_contains "bash/extract 7z listfile-shaped got no -- marker" "--" "$actual"
 
 # --- extract: several archives in one call; one failure does not hide the rest ---
 echo "[bash] extract multiple archives"
@@ -412,6 +426,18 @@ actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
 assert_eq "zsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
 assert_not_contains "zsh/archive 7z got no -- marker" "--" "$actual"
 
+echo "[zsh] extract 7z gets neither a switch nor a listfile"
+setup_sevenz_stub
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "zsh/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
+assert_not_contains "zsh/extract 7z switch-shaped got no -- marker" "--" "$actual"
+rm -f "$SEVENZ_ARGV"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/7zbin:$PATH'; cd '$WORK/sevenz' && extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "zsh/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
+assert_not_contains "zsh/extract 7z listfile-shaped got no -- marker" "--" "$actual"
+
 echo "[zsh] archive + extract tar.bz2"
 setup_fixtures
 run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.tar.bz2' src" 2>/dev/null
@@ -584,6 +610,18 @@ assert_exists "pwsh/archive 7z reached the stub" "$SEVENZ_ARGV"
 actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
 assert_eq "pwsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
 assert_not_contains "pwsh/archive 7z got no -- marker" "--" "$actual"
+
+echo "[pwsh] extract 7z gets neither a switch nor a listfile"
+setup_sevenz_stub
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/7zbin:' + \$env:PATH; Set-Location '$WORK/sevenz'; extract '-x.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract 7z switch-shaped name" "x ./-x.7z " "$actual"
+assert_not_contains "pwsh/extract 7z switch-shaped got no -- marker" "--" "$actual"
+rm -f "$SEVENZ_ARGV"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/7zbin:' + \$env:PATH; Set-Location '$WORK/sevenz'; extract '@a.7z'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$SEVENZ_ARGV" 2>/dev/null)
+assert_eq "pwsh/extract 7z listfile-shaped name" "x ./@a.7z " "$actual"
+assert_not_contains "pwsh/extract 7z listfile-shaped got no -- marker" "--" "$actual"
 
 echo "[pwsh] digest several files"
 setup_fixtures

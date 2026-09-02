@@ -62,7 +62,8 @@ mkfile() {
 }
 
 # extract → auto-detect and extract archives
-# NOTE: leading-dash './' prefix is required — do not remove.
+# NOTE: leading-dash './' prefix is required — do not remove. The 7z branch
+# neutralises a leading '@' on top of that; see the comment there.
 extract() {
     if [ $# -eq 0 ]; then
         echo "usage: extract <file...>" >&2
@@ -90,7 +91,17 @@ extract() {
             *.xz)               unxz -- "$_ex_f"      ;;
             *.zst)              unzstd -- "$_ex_f"    ;;
             *.zip)              unzip -- "$_ex_f"     ;;
-            *.7z)               7z x -- "$_ex_f"      ;;
+            *.7z)
+                # 7z reads a leading '-' as a switch (already neutralised
+                # above) and a leading '@' as a listfile — it would extract
+                # the archives named INSIDE that file rather than the file
+                # itself. 7z is in neither this image nor
+                # tests/shell/Dockerfile, so its '--' marker cannot be
+                # exercised; './' neutralises both forms without depending on
+                # marker support, as archive() does.
+                case "$_ex_f" in @*) _ex_f="./$_ex_f" ;; esac
+                7z x "$_ex_f"
+                ;;
             *.rar)              unrar x -- "$_ex_f"   ;;
             *) echo "extract: unsupported format '$_ex_f'" >&2; false ;;
         esac || _ex_fail=1
