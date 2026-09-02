@@ -209,9 +209,18 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
     text = text or ""
     if text.strip():
         return _write_guarded(rules, dest, (_CLINERULES_HEADER + text).encode("utf-8"))
-    if dest.exists():  # memory emptied/cleared -> drop the stale mirror
+    if dest.is_file():  # memory emptied/cleared -> drop the stale mirror
         dest.unlink()
         return True
+    if dest.exists():
+        # Symmetric with the write branch above: a repo can ship
+        # `.clinerules/den-memory.md/` as a DIRECTORY, and unlink() on it raises
+        # -- after `clear` has already deleted memory.md, so den would die
+        # half-done. (A symlink cannot reach here; _refuse_symlink ran first.)
+        print(
+            f"{_ERR}: refusing to remove {dest}: not a regular file",
+            file=sys.stderr,
+        )
     return False
 
 
@@ -222,11 +231,13 @@ def _history_dir(den_dir: Path) -> Path:
 def _snapshots(den_dir: Path) -> list[Path]:
     """History snapshots, newest first (fixed-width timestamps sort by time).
 
-    A symlink is never a snapshot: reading one would leak an outside file into
-    memory (log/diff/restore all read the list) and restoring it would write
-    memory back through it. Dropped silently rather than reported, because
-    checkpoint walks this list every turn and one line per turn is noise; the
-    reads a planted symlink actually targets do report.
+    Only regular files count. A symlink would leak an outside file into memory
+    (log/diff/restore all read the list) and restoring it would write memory back
+    through it; a DIRECTORY named `memory.*.md` -- equally shippable in a repo --
+    passed the name test and then crashed checkpoint/restore/diff on read_bytes().
+    Dropped silently rather than reported, because checkpoint walks this list
+    every turn and one line per turn is noise; the reads a planted entry actually
+    targets do report.
     """
     hist = _history_dir(den_dir)
     if _symlink_component(den_dir, hist) is not None or not hist.is_dir():
@@ -237,6 +248,7 @@ def _snapshots(den_dir: Path) -> list[Path]:
         if p.name.startswith(_SNAP_PREFIX)
         and p.name.endswith(_SNAP_SUFFIX)
         and not p.is_symlink()
+        and p.is_file()
     ]
     return sorted(snaps, key=lambda p: p.name, reverse=True)
 

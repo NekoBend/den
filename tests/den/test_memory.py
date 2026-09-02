@@ -591,3 +591,53 @@ def test_mirror_survives_a_directory_at_the_mirror_path(tmp_path, monkeypatch, c
     assert _mem(proj).read_text() == "a fact\n"
     assert _clinerules_mem(proj).is_dir()
     assert "not a regular file" in capsys.readouterr().err
+
+
+def test_clear_survives_a_directory_at_the_mirror_path(tmp_path, monkeypatch, capsys):
+    # `.clinerules/den-memory.md` as a DIRECTORY hits the mirror's EMPTY branch,
+    # which unlinks -- after clear has already deleted memory.md, so den used to
+    # die half-done with IsADirectoryError.
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    _mem(proj).parent.mkdir(parents=True, exist_ok=True)
+    _mem(proj).write_text("a fact\n")
+    _clinerules_mem(proj).mkdir()
+    monkeypatch.chdir(proj)
+    assert memory_main(["clear"]) == 0
+    assert not _mem(proj).exists(), "memory really was cleared"
+    assert _clinerules_mem(proj).is_dir(), "the planted dir is left alone"
+    assert "not a regular file" in capsys.readouterr().err
+
+
+def test_save_of_whitespace_survives_a_directory_at_the_mirror_path(
+    tmp_path, monkeypatch
+):
+    # Same branch, reached the other way: a whitespace-only save empties memory.
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _cline_cli_here(proj)
+    _clinerules_mem(proj).mkdir()
+    _save(proj, monkeypatch, "   \n")
+    assert _mem(proj).read_text() == "   \n"
+    assert _clinerules_mem(proj).is_dir()
+
+
+def test_a_directory_named_like_a_snapshot_is_not_one(tmp_path, monkeypatch, capsys):
+    # `.den/history/memory.<stamp>.md/` passes the name test; every consumer of
+    # the list then called read_bytes() on it.
+    proj = tmp_path / "repo"
+    hist = proj / ".den" / "history"
+    hist.mkdir(parents=True)
+    (hist / "memory.20260102T000000000000.md").mkdir()
+    real = hist / "memory.20260101T000000000000.md"
+    real.write_text("real snapshot\n")
+    _mem(proj).write_text("current\n")
+    monkeypatch.chdir(proj)
+    assert _memory._snapshots(proj / ".den") == [real]
+    assert memory_main(["log"]) == 0
+    assert memory_main(["diff", "1"]) == 0
+    assert memory_main(["restore", "1"]) == 0
+    assert _mem(proj).read_text() == "real snapshot\n"
+    assert memory_main(["checkpoint"]) == 0
+    assert "real snapshot" in capsys.readouterr().out
