@@ -34,6 +34,23 @@ PYTHON_SH_TEST="$WORK/python_test.sh"
 PYTHON_PS1_TEST="$WORK/python_test.ps1"
 grep -v 'Get-Command uv.*SilentlyContinue.*return' "$PYTHON_PS1" > "$PYTHON_PS1_TEST"
 
+# pwsh with the mock uv resolvable: _helpers.ps1 (provides _ResolveCmd) + the mock
+# PATH prepended, so `uv`/`va` exercise the real code path against the mock binary.
+PYTHON_PS1_COMBINED="$WORK/python_combined.ps1"
+{
+    echo "\$env:PATH = '$WORK' + [IO.Path]::PathSeparator + \$env:PATH"
+    echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
+    cat "$PYTHON_PS1_TEST"
+} > "$PYTHON_PS1_COMBINED"
+
+# mk_venv_ps <project dir> <version_info> — venv fixture for the pwsh va tests
+mk_venv_ps() {
+    rm -rf "$1"
+    mkdir -p "$1/.venv/bin"
+    printf '%s\n' '$env:VIRTUAL_ENV = "fakevenv"' > "$1/.venv/bin/Activate.ps1"
+    printf 'version_info = %s\n' "$2" > "$1/.venv/pyvenv.cfg"
+}
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -220,6 +237,48 @@ mkdir -p "$WORK/wildtest/foobar/bin"
 printf '%s\n' '$env:VIRTUAL_ENV = "leaked"' > "$WORK/wildtest/foobar/bin/Activate.ps1"
 err=$(run_pwsh_stderr "$PYTHON_PS1_TEST" "Set-Location '$WORK/wildtest'; \$env:VIRTUAL_ENV = \$null; va 'foo*'")
 assert_contains "pwsh/va rejects wildcard name" "activate script not found" "$err"
+
+echo "[pwsh] uv run keeps the user's own uv options"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:VIRTUAL_ENV = '$WORK/fakevenv'; \$env:_DEN_VENV_PYTHON = '3.12'
+    uv run --with rich script.py
+" | tr -d '\r')
+assert_eq "pwsh/uv run keeps --with as an option" "mock-uv run --python 3.12 --with rich script.py" "$actual"
+
+echo "[pwsh] uv run still separates a non-option command"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:VIRTUAL_ENV = '$WORK/fakevenv'; \$env:_DEN_VENV_PYTHON = '3.12'
+    uv run script.py
+" | tr -d '\r')
+assert_eq "pwsh/uv run separates script.py" "mock-uv run --python 3.12 -- script.py" "$actual"
+
+echo "[pwsh] va normalizes pyvenv.cfg version_info"
+mk_venv_ps "$WORK/ps_venv5" "3.11.4.final.0"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv5'; va *>\$null; \$env:_DEN_VENV_PYTHON" | tr -d '\r')
+assert_eq "pwsh/va trims virtualenv 5-field version_info" "3.11.4" "$actual"
+
+echo "[pwsh] va refuses a venv whose activate script is committed"
+mk_venv_ps "$WORK/ps_venv_tracked" "3.12.0"
+(
+    cd "$WORK/ps_venv_tracked" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/Activate.ps1 .venv/pyvenv.cfg
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked'; va")
+assert_contains "pwsh/va refuses git-tracked activate" "tracked by git" "$err"
+
+echo "[pwsh] va accepts an untracked venv inside a git repo"
+mk_venv_ps "$WORK/ps_venv_untracked" "3.12.0"
+(
+    cd "$WORK/ps_venv_untracked" || exit 1
+    git init -q .
+    printf '.venv/\n' > .gitignore
+    git -c user.email=t@example.com -c user.name=t add .gitignore
+    git -c user.email=t@example.com -c user.name=t commit -q -m "ignore venv"
+) >/dev/null 2>&1
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_untracked'; va *>\$null; \$env:_DEN_VENV_PYTHON" | tr -d '\r')
+assert_eq "pwsh/va accepts a gitignored venv" "3.12.0" "$actual"
 
 # =============================================================================
 # Summary
