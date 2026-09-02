@@ -44,26 +44,25 @@ def run(
     )
 
 
-def without_rg() -> dict[str, str]:
-    """A copy of os.environ whose PATH holds no `rg`, forcing the walk fallback.
+@pytest.fixture
+def backends(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, str] | None]:
+    """The two environments a search must return the same files in.
 
-    Both backends must return the same files, and the CI runners have ripgrep
-    installed, so every parity test runs the script twice: once as-is and once
-    with this environment.
+    `None` keeps the ambient PATH, where the CI runners have ripgrep. The
+    second replaces PATH with one empty directory, so the script cannot find
+    rg and has to walk the tree itself; the assertion below is what keeps the
+    parity tests from quietly running the same backend twice. Dropping only
+    the PATH entries that contain rg is not enough: where rg sits in /usr/bin
+    that removes every other tool with it.
+
+    The directory is a sibling of the test's own tmp_path, never inside it, so
+    it cannot show up in the tree being searched.
     """
+    bin_dir = tmp_path_factory.mktemp("no-rg-bin")
     env = dict(os.environ)
-    kept = [
-        entry
-        for entry in env.get("PATH", "").split(os.pathsep)
-        if entry and shutil.which("rg", path=entry) is None
-    ]
-    env["PATH"] = os.pathsep.join(kept)
-    return env
-
-
-def both_backends() -> list[dict[str, str] | None]:
-    """The two environments a search must behave identically in."""
-    return [None, without_rg()]
+    env["PATH"] = str(bin_dir)
+    assert shutil.which("rg", path=env["PATH"]) is None
+    return [None, env]
 
 
 def symlink_or_skip(link: Path, target: Path) -> None:
@@ -268,12 +267,14 @@ def test_rg_line_parser_reads_posix_paths_and_rejects_junk() -> None:
 # ---------- the two backends must see the same tree ----------
 
 
-def test_root_under_a_skipped_directory_is_still_searched(tmp_path: Path) -> None:
+def test_root_under_a_skipped_directory_is_still_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
     # SKIP_DIRS applies BELOW the root; a checkout that happens to live under a
     # directory called build/ (or dist/, target/, out/) is not itself skipped.
     root = tmp_path / "build" / "proj"
     write(root, "mod.py", "def widget():\n    return 1\n")
-    for env in both_backends():
+    for env in backends:
         proc = run("--def", "widget", "--root", str(root), env=env)
         assert proc.returncode == 0, proc.stderr
         lines = [ln for ln in proc.stdout.splitlines() if ln]
@@ -282,7 +283,7 @@ def test_root_under_a_skipped_directory_is_still_searched(tmp_path: Path) -> Non
 
 
 def test_hidden_and_ignored_files_are_searched_by_both_backends(
-    tmp_path: Path,
+    tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
     # The walk fallback knows nothing about .gitignore or dotfiles, so rg is
     # given --no-ignore/--hidden to match it. Pinned because dropping either
@@ -291,26 +292,30 @@ def test_hidden_and_ignored_files_are_searched_by_both_backends(
     write(tmp_path, ".gitignore", "ignored.py\n")
     write(tmp_path, "ignored.py", "widget()\n")
     write(tmp_path, ".github/workflows/ci.yml", "run: widget()\n")
-    for env in both_backends():
+    for env in backends:
         proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
         assert proc.returncode == 0, proc.stderr
         assert "ignored.py" in proc.stdout, proc.stdout
         assert "ci.yml" in proc.stdout, proc.stdout
 
 
-def test_the_git_directory_is_never_searched(tmp_path: Path) -> None:
+def test_the_git_directory_is_never_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
     # .git holds the whole history (and credentials in .git/config); it is in
     # SKIP_DIRS, and --no-ignore/--hidden must not bring it back.
     write(tmp_path, ".git/config", "widget()\n")
     write(tmp_path, "real.py", "widget()\n")
-    for env in both_backends():
+    for env in backends:
         proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
         assert proc.returncode == 0, proc.stderr
         assert ".git" not in proc.stdout, proc.stdout
         assert "real.py" in proc.stdout, proc.stdout
 
 
-def test_symlinked_files_are_not_followed(tmp_path: Path) -> None:
+def test_symlinked_files_are_not_followed(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
     # rg does not follow links without -L; the fallback walk must not either,
     # or a link committed in a repo turns a search into a read of a file
     # outside it, printed verbatim.
@@ -321,7 +326,7 @@ def test_symlinked_files_are_not_followed(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     write(root, "real.py", "widget()\n")
     symlink_or_skip(root / "creds", secret)
-    for env in both_backends():
+    for env in backends:
         proc = run("--uses", "widget", "--root", str(root), env=env)
         assert proc.returncode == 0, proc.stderr
         assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout

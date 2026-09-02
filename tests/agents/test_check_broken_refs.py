@@ -39,27 +39,34 @@ def run(
     )
 
 
-def without_rg() -> dict[str, str]:
-    """A copy of os.environ whose PATH holds no `rg`, forcing the walk fallback.
+@pytest.fixture
+def backends(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, str] | None]:
+    """The two environments the check must report the same references in.
 
-    The script must report the same broken references either way, and the CI
-    runners have ripgrep installed, so parity tests run it in both.
+    `None` keeps the ambient PATH, where the CI runners have ripgrep. The
+    second replaces PATH with a directory holding nothing but a link to git
+    (the script needs git, not rg), so rg cannot be found and the walk
+    fallback is the only option. Dropping only the PATH entries that contain
+    rg would take git with it wherever the two live in the same directory,
+    and the test would skip instead of checking anything - the assertions
+    below pin both halves.
+
+    The directory is a sibling of the test's own tmp_path, never inside it, so
+    it cannot show up in the tree being searched.
     """
+    bin_dir = tmp_path_factory.mktemp("no-rg-bin")
+    git_exe = shutil.which("git")
+    assert git_exe is not None, "these tests need git on PATH"
+    link = bin_dir / Path(git_exe).name
+    try:
+        link.symlink_to(git_exe)
+    except (OSError, NotImplementedError):  # Windows without privileges
+        shutil.copy2(git_exe, link)
     env = dict(os.environ)
-    kept = [
-        entry
-        for entry in env.get("PATH", "").split(os.pathsep)
-        if entry and shutil.which("rg", path=entry) is None
-    ]
-    env["PATH"] = os.pathsep.join(kept)
-    if shutil.which("git", path=env["PATH"]) is None:
-        pytest.skip("git and rg share a PATH entry; cannot force the fallback")
-    return env
-
-
-def both_backends() -> list[dict[str, str] | None]:
-    """The two environments the check must behave identically in."""
-    return [None, without_rg()]
+    env["PATH"] = str(bin_dir)
+    assert shutil.which("rg", path=env["PATH"]) is None
+    assert shutil.which("git", path=env["PATH"]) is not None
+    return [None, env]
 
 
 def git(repo: Path, *args: str) -> None:
@@ -268,7 +275,7 @@ def test_changed_files_outside_the_root_are_ignored(tmp_path: Path) -> None:
 
 
 def test_hidden_and_ignored_usages_are_reported_by_both_backends(
-    tmp_path: Path,
+    tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
     # The walk fallback reads dotfiles and git-ignored files, so rg is given
     # --no-ignore/--hidden to match: a dangling reference in .github/ or in an
@@ -284,14 +291,16 @@ def test_hidden_and_ignored_usages_are_reported_by_both_backends(
     write(tmp_path, "lib.py", "# gone\n")
     write(tmp_path, "ignored.py", "widget()\n")
 
-    for env in both_backends():
+    for env in backends:
         proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
         assert proc.returncode == 0, proc.stderr
         assert "ci.yml" in proc.stdout, proc.stdout
         assert "ignored.py" in proc.stdout, proc.stdout
 
 
-def test_the_git_directory_is_never_searched(tmp_path: Path) -> None:
+def test_the_git_directory_is_never_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
     # .git carries the whole history (and credentials in .git/config), and
     # --no-ignore/--hidden must not bring it into the search.
     init_repo(tmp_path)
@@ -303,14 +312,16 @@ def test_the_git_directory_is_never_searched(tmp_path: Path) -> None:
     write(tmp_path, "lib.py", "# gone\n")
     (tmp_path / ".git" / "leak.txt").write_text("widget()\n", encoding="utf-8")
 
-    for env in both_backends():
+    for env in backends:
         proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
         assert proc.returncode == 0, proc.stderr
         assert ".git" not in proc.stdout, proc.stdout
         assert "app.py" in proc.stdout, proc.stdout
 
 
-def test_symlinked_files_are_not_followed(tmp_path: Path) -> None:
+def test_symlinked_files_are_not_followed(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
     # rg does not follow links without -L; the fallback walk must not either,
     # or a link committed in the repo turns the usage search into a read of a
     # file outside the tree, printed verbatim as a "broken reference".
@@ -332,7 +343,7 @@ def test_symlinked_files_are_not_followed(tmp_path: Path) -> None:
 
     write(repo, "lib.py", "# gone\n")
 
-    for env in both_backends():
+    for env in backends:
         proc = run("--base", "HEAD", "--root", str(repo), env=env)
         assert proc.returncode == 0, proc.stderr
         assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
