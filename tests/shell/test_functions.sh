@@ -535,6 +535,38 @@ assert_contains "bash/archive staging directory is private" "drwx------" "$(cat 
 assert_exists "bash/archive published the staged file" "$WORK/one/out.zst"
 assert_eq "bash/archive removed the staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
 
+# 'command -v' answers with the bare name for a shell function, so a local
+# `gzip` passed the availability check and then took the call itself. Two
+# halves: with the real gzip on PATH the function must never run and the round
+# trip must still work; with only the function and no binary the branch must
+# say the tool is missing rather than run it.
+echo "[bash] archive and extract run the program, not a shell function"
+setup_single_file
+SHADOW="gzip() { echo ran > '$WORK/one/shadow-marker'; }; zstd() { echo ran > '$WORK/one/shadow-marker'; }"
+run_bash "$FUNCTIONS_SH" "true; $SHADOW; cd '$WORK/one' && archive 'payload.bin.gz' payload.bin && archive 'payload.bin.zst' payload.bin" >/dev/null 2>&1
+assert_success "bash/archive shadowed run exit code" "$?"
+assert_not_exists "bash/archive ran no shadowing function" "$WORK/one/shadow-marker"
+assert_exists "bash/archive still wrote the real .gz" "$WORK/one/payload.bin.gz"
+assert_exists "bash/archive still wrote the real .zst" "$WORK/one/payload.bin.zst"
+mkdir -p "$WORK/back"
+cp "$WORK/one/payload.bin.gz" "$WORK/back/"
+run_bash "$FUNCTIONS_SH" "true; gunzip() { echo ran > '$WORK/back/shadow-marker'; }; cd '$WORK/back' && extract 'payload.bin.gz'" >/dev/null 2>&1
+assert_not_exists "bash/extract ran no shadowing function" "$WORK/back/shadow-marker"
+assert_eq "bash/extract round-trips past the shadowing function" "$PAYLOAD_SHA" "$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)"
+
+# A function is not an installed program: with no gzip binary reachable, the
+# branch must report it missing instead of calling the function.
+echo "[bash] archive does not accept a shell function as the compressor"
+setup_single_file
+mkdir -p "$WORK/nogzip"
+for _t in mktemp mv rm chmod ls; do
+    _p=$(command -v "$_t") && ln -sf "$_p" "$WORK/nogzip/$_t"
+done
+err=$(run_bash_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nogzip'; gzip() { echo ran > '$WORK/one/shadow-marker'; }; cd '$WORK/one' && archive 'out.gz' payload.bin")
+assert_contains "bash/archive function-only gzip reported missing" "archive: gzip is not installed" "$err"
+assert_not_exists "bash/archive function-only gzip never ran" "$WORK/one/shadow-marker"
+assert_not_exists "bash/archive function-only gzip wrote nothing" "$WORK/one/out.gz"
+
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
 actual=$(run_bash "$FUNCTIONS_SH" "extract '$WORK/test.foo' 2>&1")
@@ -964,6 +996,38 @@ assert_contains "zsh/archive staged in a .archive directory" "/.archive." "$(cat
 assert_contains "zsh/archive staging directory is private" "drwx------" "$(cat "$WORK/stage.log" 2>/dev/null)"
 assert_exists "zsh/archive published the staged file" "$WORK/one/out.zst"
 assert_eq "zsh/archive removed the staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
+
+# 'command -v' answers with the bare name for a shell function, so a local
+# `gzip` passed the availability check and then took the call itself. Two
+# halves: with the real gzip on PATH the function must never run and the round
+# trip must still work; with only the function and no binary the branch must
+# say the tool is missing rather than run it.
+echo "[zsh] archive and extract run the program, not a shell function"
+setup_single_file
+SHADOW="gzip() { echo ran > '$WORK/one/shadow-marker'; }; zstd() { echo ran > '$WORK/one/shadow-marker'; }"
+run_zsh "$FUNCTIONS_SH" "true; $SHADOW; cd '$WORK/one' && archive 'payload.bin.gz' payload.bin && archive 'payload.bin.zst' payload.bin" >/dev/null 2>&1
+assert_success "zsh/archive shadowed run exit code" "$?"
+assert_not_exists "zsh/archive ran no shadowing function" "$WORK/one/shadow-marker"
+assert_exists "zsh/archive still wrote the real .gz" "$WORK/one/payload.bin.gz"
+assert_exists "zsh/archive still wrote the real .zst" "$WORK/one/payload.bin.zst"
+mkdir -p "$WORK/back"
+cp "$WORK/one/payload.bin.gz" "$WORK/back/"
+run_zsh "$FUNCTIONS_SH" "true; gunzip() { echo ran > '$WORK/back/shadow-marker'; }; cd '$WORK/back' && extract 'payload.bin.gz'" >/dev/null 2>&1
+assert_not_exists "zsh/extract ran no shadowing function" "$WORK/back/shadow-marker"
+assert_eq "zsh/extract round-trips past the shadowing function" "$PAYLOAD_SHA" "$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)"
+
+# A function is not an installed program: with no gzip binary reachable, the
+# branch must report it missing instead of calling the function.
+echo "[zsh] archive does not accept a shell function as the compressor"
+setup_single_file
+mkdir -p "$WORK/nogzip"
+for _t in mktemp mv rm chmod ls; do
+    _p=$(command -v "$_t") && ln -sf "$_p" "$WORK/nogzip/$_t"
+done
+err=$(run_zsh_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nogzip'; gzip() { echo ran > '$WORK/one/shadow-marker'; }; cd '$WORK/one' && archive 'out.gz' payload.bin")
+assert_contains "zsh/archive function-only gzip reported missing" "archive: gzip is not installed" "$err"
+assert_not_exists "zsh/archive function-only gzip never ran" "$WORK/one/shadow-marker"
+assert_not_exists "zsh/archive function-only gzip wrote nothing" "$WORK/one/out.gz"
 
 echo "[zsh] path"
 actual=$(run_zsh "$FUNCTIONS_SH" "path")

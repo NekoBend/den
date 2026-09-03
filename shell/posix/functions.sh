@@ -66,7 +66,19 @@ mkfile() {
 # own per-item failure instead of a stray "command not found" from the branch,
 # and archive() calls it BEFORE the redirection that would create the output.
 _ar_have() {
-    command -v "$2" >/dev/null 2>&1 && return 0
+    # 'command -v' answers with the bare NAME for a shell function or an alias
+    # and with a path for a program, so a plain success test accepted a local
+    # `zstd` function as the zstd that tar is about to spawn -- which tar
+    # cannot see, let alone call. Only an absolute path is a program.
+    #
+    # A function also HIDES the program from 'command -v', so asking inside a
+    # subshell that has dropped the function is what finds the real one; the
+    # answer is then a path exactly when a program exists, shadowed or not.
+    # The callers invoke it with `command`, which likewise runs the program
+    # rather than a function of that name.
+    case $(unset -f "$2" 2>/dev/null; command -v "$2" 2>/dev/null) in
+        /*) return 0 ;;
+    esac
     echo "$1: $2 is not installed" >&2
     return 1
 }
@@ -100,10 +112,12 @@ extract() {
             # Single file: each tool writes the decompressed file next to the
             # archive. gunzip/bunzip2/unxz consume the archive and unzstd keeps
             # it — that is each tool's own default, and the pwsh twin matches.
-            *.gz)               _ar_have extract gunzip  && gunzip  -- "$_ex_f" ;;
-            *.bz2)              _ar_have extract bunzip2 && bunzip2 -- "$_ex_f" ;;
-            *.xz)               _ar_have extract unxz    && unxz    -- "$_ex_f" ;;
-            *.zst)              _ar_have extract unzstd  && unzstd  -- "$_ex_f" ;;
+            # 'command' runs the program, never a shell function of that name
+            # (parity with the pwsh twin, which invokes the resolved path).
+            *.gz)               _ar_have extract gunzip  && command gunzip  -- "$_ex_f" ;;
+            *.bz2)              _ar_have extract bunzip2 && command bunzip2 -- "$_ex_f" ;;
+            *.xz)               _ar_have extract unxz    && command unxz    -- "$_ex_f" ;;
+            *.zst)              _ar_have extract unzstd  && command unzstd  -- "$_ex_f" ;;
             *.zip)              unzip -- "$_ex_f"     ;;
             *.7z)
                 # 7z reads a leading '-' as a switch (already neutralised
@@ -224,9 +238,9 @@ archive() {
             if [ "$_ar_tool" = zstd ]; then
                 # zstd is the only one of the four with -o; the others have
                 # none, so -k -c writes the bytes and the shell names the file.
-                zstd -q -k -f -o "$_ar_tmp" -- "$1"
+                command zstd -q -k -f -o "$_ar_tmp" -- "$1"
             else
-                "$_ar_tool" -k -c -- "$1" > "$_ar_tmp"
+                command "$_ar_tool" -k -c -- "$1" > "$_ar_tmp"
             fi
             _ar_rc=$?
             if [ "$_ar_rc" -ne 0 ]; then
