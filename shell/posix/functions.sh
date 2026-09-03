@@ -202,14 +202,16 @@ archive() {
             # predictable "$out.tmp.$$" with a truncating redirect: in a shared
             # directory another user can pre-plant that exact name as a symlink
             # and have the redirect rewrite whatever it points at. mktemp is
-            # O_EXCL + 0600 + a random suffix; without it, a noclobber (set -C)
-            # redirect also fails closed on an existing path or symlink. Same
-            # pattern, and the same reason, as the cache write in hwinfo.sh.
+            # O_EXCL + 0600 + a random suffix.
+            #
+            # There is deliberately NO noclobber fallback. 'set -C' would only
+            # guard the one redirect that creates the file; the compressor
+            # below reopens that same predictable path without it, so the
+            # symlink can simply be planted in between. An unguessable name is
+            # the only thing that closes the race, so a missing mktemp is a
+            # missing tool like any other.
+            _ar_have archive mktemp || return 1
             _ar_tmp=$(command mktemp "$out.tmp.XXXXXX" 2>/dev/null)
-            if [ -z "$_ar_tmp" ]; then
-                _ar_tmp="$out.tmp.$$"
-                (umask 077 && set -C && : > "$_ar_tmp") 2>/dev/null || _ar_tmp=""
-            fi
             if [ -z "$_ar_tmp" ]; then
                 echo "archive: cannot create a temporary file next to '$out'" >&2
                 return 1
@@ -230,12 +232,20 @@ archive() {
                 rm -f -- "$_ar_tmp"
                 return "$_ar_rc"
             fi
-            # Both ways of creating the temporary above make it 0600. The
-            # archive itself should land with the user's umask, as the tar and
-            # zip branches' outputs do -- 'umask -S' gives the directory form,
-            # so strip the execute bits it carries.
+            # mktemp makes the temporary 0600. The archive itself should land
+            # with the user's umask, as the tar and zip branches' outputs do --
+            # 'umask -S' gives the directory form, so strip the execute bits it
+            # carries.
             chmod "$(umask -S)" "$_ar_tmp" 2>/dev/null && chmod a-x "$_ar_tmp" 2>/dev/null
+            # Publishing can fail too (a read-only directory, a full disk).
+            # Report the failure and take the staged archive with it, rather
+            # than leaving a stray .tmp behind for the caller to find.
             mv -f -- "$_ar_tmp" "$out"
+            _ar_rc=$?
+            if [ "$_ar_rc" -ne 0 ]; then
+                rm -f -- "$_ar_tmp"
+            fi
+            return "$_ar_rc"
             ;;
         *.zip)              zip -r "$out" -- "$@"    ;;
         *.7z)

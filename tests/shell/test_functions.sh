@@ -463,16 +463,47 @@ echo "[bash] archive reports a compressor that fails"
 # rewrote whatever it pointed at. mktemp is forced to fail here so the noclobber
 # fallback is the thing under test, and the link is planted from inside the very
 # shell whose $$ the fallback uses.
+# An unguessable temporary name is the ONLY thing that closes the symlink race,
+# so mktemp is required rather than fallen back on. A noclobber 'set -C'
+# redirect would guard only the creation; the compressor reopens that same
+# predictable path straight afterwards, leaving the window wide open.
+echo "[bash] archive requires mktemp for the staging temporary"
+setup_single_file
+# a PATH carrying the real compressor but no mktemp, so the branch gets past
+# its own tool check and fails on this one
+mkdir -p "$WORK/nomk"
+ln -s "$(command -v gzip)" "$WORK/nomk/gzip"
+err=$(run_bash_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'out.gz' payload.bin")
+assert_contains "bash/archive missing mktemp message" "archive: mktemp is not installed" "$err"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "bash/archive missing mktemp exits 1" "1" "$?"
+assert_not_exists "bash/archive missing mktemp wrote nothing" "$WORK/one/out.gz"
+
+# mktemp present but unable to produce a name: still refuse, and still never
+# touch the predictable name a symlink would have been planted at.
 echo "[bash] archive's temporary does not follow a planted symlink"
 setup_single_file
-mkdir -p "$WORK/nomk"
-printf '#!/bin/sh\nexit 1\n' > "$WORK/nomk/mktemp"
-chmod +x "$WORK/nomk/mktemp"
+mkdir -p "$WORK/failmk"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/failmk/mktemp"
+chmod +x "$WORK/failmk/mktemp"
 printf 'VICTIM' > "$WORK/one/victim"
-run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nomk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/failmk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
 assert_eq "bash/archive planted temp symlink exits nonzero" "1" "$?"
 assert_eq "bash/archive did not write through the planted symlink" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
 assert_not_exists "bash/archive planted symlink produced no output" "$WORK/one/out.gz"
+
+# Publishing the staged archive can fail on its own (a read-only directory, a
+# full disk). The staged file must not be left lying around as a stray .tmp,
+# and the failure must be reported. A stub mv makes it fail as any user.
+echo "[bash] archive cleans up when the publish fails"
+setup_single_file
+mkdir -p "$WORK/stubmv"
+printf '#!/bin/sh\nexit 7\n' > "$WORK/stubmv/mv"
+chmod +x "$WORK/stubmv/mv"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubmv:$PATH'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "bash/archive publish failure exits with mv's code" "7" "$?"
+assert_not_exists "bash/archive publish failure wrote no output" "$WORK/one/out.gz"
+assert_eq "bash/archive publish failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^out\.gz\.tmp' | tr -d '\n')"
 
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
@@ -832,16 +863,47 @@ echo "[zsh] archive reports a compressor that fails"
 # rewrote whatever it pointed at. mktemp is forced to fail here so the noclobber
 # fallback is the thing under test, and the link is planted from inside the very
 # shell whose $$ the fallback uses.
+# An unguessable temporary name is the ONLY thing that closes the symlink race,
+# so mktemp is required rather than fallen back on. A noclobber 'set -C'
+# redirect would guard only the creation; the compressor reopens that same
+# predictable path straight afterwards, leaving the window wide open.
+echo "[zsh] archive requires mktemp for the staging temporary"
+setup_single_file
+# a PATH carrying the real compressor but no mktemp, so the branch gets past
+# its own tool check and fails on this one
+mkdir -p "$WORK/nomk"
+ln -s "$(command -v gzip)" "$WORK/nomk/gzip"
+err=$(run_zsh_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'out.gz' payload.bin")
+assert_contains "zsh/archive missing mktemp message" "archive: mktemp is not installed" "$err"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "zsh/archive missing mktemp exits 1" "1" "$?"
+assert_not_exists "zsh/archive missing mktemp wrote nothing" "$WORK/one/out.gz"
+
+# mktemp present but unable to produce a name: still refuse, and still never
+# touch the predictable name a symlink would have been planted at.
 echo "[zsh] archive's temporary does not follow a planted symlink"
 setup_single_file
-mkdir -p "$WORK/nomk"
-printf '#!/bin/sh\nexit 1\n' > "$WORK/nomk/mktemp"
-chmod +x "$WORK/nomk/mktemp"
+mkdir -p "$WORK/failmk"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/failmk/mktemp"
+chmod +x "$WORK/failmk/mktemp"
 printf 'VICTIM' > "$WORK/one/victim"
-run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nomk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/failmk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
 assert_eq "zsh/archive planted temp symlink exits nonzero" "1" "$?"
 assert_eq "zsh/archive did not write through the planted symlink" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
 assert_not_exists "zsh/archive planted symlink produced no output" "$WORK/one/out.gz"
+
+# Publishing the staged archive can fail on its own (a read-only directory, a
+# full disk). The staged file must not be left lying around as a stray .tmp,
+# and the failure must be reported. A stub mv makes it fail as any user.
+echo "[zsh] archive cleans up when the publish fails"
+setup_single_file
+mkdir -p "$WORK/stubmv"
+printf '#!/bin/sh\nexit 7\n' > "$WORK/stubmv/mv"
+chmod +x "$WORK/stubmv/mv"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubmv:$PATH'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "zsh/archive publish failure exits with mv's code" "7" "$?"
+assert_not_exists "zsh/archive publish failure wrote no output" "$WORK/one/out.gz"
+assert_eq "zsh/archive publish failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^out\.gz\.tmp' | tr -d '\n')"
 
 echo "[zsh] path"
 actual=$(run_zsh "$FUNCTIONS_SH" "path")
@@ -1309,6 +1371,31 @@ if [ "$(id -u)" -ne 0 ] && chmod 500 "$WORK/ro" 2>/dev/null; then
     chmod 700 "$WORK/ro"
 else
     echo "  SKIP: pwsh/archive unwritable destination (running as root)"
+fi
+
+# _ArCompressTo used to start the compressor and only then open the
+# destination, with just the file stream in a finally: when File.Create threw
+# -- an unwritable directory, a path that does not exist -- a started child was
+# left with nobody draining its pipe and was never waited on. The destination
+# is opened first now, so a destination that cannot be opened means the
+# compressor is never started at all. The stub records that it ran; the marker
+# must not appear.
+echo "[pwsh] archive opens the destination before starting the compressor"
+setup_single_file
+mkdir -p "$WORK/markbin"
+printf '#!/bin/sh\ntouch "%s/one/compressor-ran"\ncat\n' "$WORK" > "$WORK/markbin/gzip"
+chmod +x "$WORK/markbin/gzip"
+err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/markbin:' + \$env:PATH; Set-Location '$WORK/one'; archive '$WORK/no-such-dir/out.gz' 'payload.bin'")
+assert_not_exists "pwsh/archive unopenable destination started no compressor" "$WORK/one/compressor-ran"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/markbin:' + \$env:PATH; Set-Location '$WORK/one'; archive '$WORK/no-such-dir/out.gz' 'payload.bin'" >/dev/null 2>&1
+assert_eq "pwsh/archive unopenable destination exits 1" "1" "$?"
+assert_not_exists "pwsh/archive unopenable destination wrote nothing" "$WORK/no-such-dir/out.gz"
+# procps is not in tests/shell/Dockerfile, so the process sweep only runs where
+# pgrep happens to exist; the marker above is the check that always runs.
+if command -v pgrep >/dev/null 2>&1; then
+    assert_eq "pwsh/archive left no compressor process behind" "" "$(pgrep -x gzip | tr -d '\n')"
+else
+    echo "  SKIP: pwsh/archive process sweep (pgrep not installed)"
 fi
 
 echo "[pwsh] extract unsupported format"
