@@ -107,9 +107,11 @@ function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
 # extract → auto-detect and extract archives
 function extract {
   # Every argument is an archive; each is extracted in turn and a failure on
-  # one does not hide the others. Failures are reported per archive and
-  # summarized at the end with a (non-terminating) error; the function does
-  # not throw.
+  # one does not hide the others: the per-archive errors are non-terminating,
+  # so the loop runs to the end. The final summary IS terminating, which is
+  # what carries the failure into the process status -- a plain Write-Error
+  # inside a function leaves `pwsh -Command` exiting 0. Callers that want to
+  # survive it can catch, as they would any terminating error.
   param([Parameter(ValueFromRemainingArguments)][string[]]$Paths)
   if (-not $Paths -or $Paths.Count -eq 0) {
     Write-Error "usage: extract <file...>" -ErrorAction Stop

@@ -1130,8 +1130,9 @@ for _ext in $SINGLE_FMTS; do
 done
 
 # pwsh reports these through the error stream, as every other failure in
-# archive/extract does: a Write-Error leaves the process exit code at 0, so
-# what is asserted is the message and the absence of an output file.
+# archive/extract does, and terminates so the refusal reaches the process
+# status: the message, exit 1 and the absence of an output are all asserted,
+# the same three things the bash and zsh cases check.
 echo "[pwsh] archive single-file refuses several sources and directories"
 for _ext in $SINGLE_FMTS; do
     setup_single_file
