@@ -841,6 +841,8 @@ assert_exists "pwsh/extract multi second archive" "$WORK/multi/second/file2.txt"
 rm -rf "$WORK/multi" && mkdir -p "$WORK/multi"
 err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/one.tar.gz' '$WORK/missing.tar.gz'" 2>&1 >/dev/null)
 assert_contains "pwsh/extract multi reports the failed archive" "1 of 2 archives failed" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/one.tar.gz' '$WORK/missing.tar.gz'" >/dev/null 2>&1
+assert_eq "pwsh/extract multi with a missing archive exits 1" "1" "$?"
 assert_exists "pwsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 # A corrupt zip goes through the cmdlet path (Expand-Archive), which never sets
 # $LASTEXITCODE; its failure must still be counted, and a healthy archive after
@@ -1042,9 +1044,13 @@ for _ext in $SINGLE_FMTS; do
     cp "$WORK/one/payload.bin" "$WORK/one/second.bin"
     err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'multi.$_ext' 'payload.bin' 'second.bin'")
     assert_contains "pwsh/archive .$_ext several sources usage" "$SINGLE_USAGE" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'multi.$_ext' 'payload.bin' 'second.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext several sources exits 1" "1" "$?"
     assert_not_exists "pwsh/archive .$_ext several sources wrote nothing" "$WORK/one/multi.$_ext"
     err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'dir.$_ext' 'one'")
     assert_contains "pwsh/archive .$_ext directory usage" "$SINGLE_USAGE" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'dir.$_ext' 'one'" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext directory exits 1" "1" "$?"
     assert_not_exists "pwsh/archive .$_ext directory wrote nothing" "$WORK/dir.$_ext"
 done
 
@@ -1052,13 +1058,23 @@ echo "[pwsh] archive and extract report a missing compressor"
 for _ext in $SINGLE_FMTS; do
     setup_single_file
     single_tools "$_ext"
+    # A terminating error renders as PowerShell's error block: the activity
+    # ("archive:") and the message land on separate lines, so the message is
+    # what is matched. The "archive: archive:" shape the stderr-format section
+    # forbids cannot occur — the prefix comes from the activity, not the text.
     err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'")
-    assert_contains "pwsh/archive missing $CTOOL message" "archive: $CTOOL is not installed" "$err"
+    assert_contains "pwsh/archive missing $CTOOL message" "$CTOOL is not installed" "$err"
+    assert_not_contains "pwsh/archive missing $CTOOL no double prefix" "archive: archive:" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive missing $CTOOL exits 1" "1" "$?"
     assert_not_exists "pwsh/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
     mkdir -p "$WORK/noload"
     run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$WORK/noload/payload.bin.$_ext' 'payload.bin'" 2>/dev/null
     err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'")
-    assert_contains "pwsh/extract missing $CTOOL message" "extract: $CTOOL is not installed" "$err"
+    assert_contains "pwsh/extract missing $CTOOL message" "$CTOOL is not installed" "$err"
+    assert_not_contains "pwsh/extract missing $CTOOL no double prefix" "extract: extract:" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'" >/dev/null 2>&1
+    assert_eq "pwsh/extract missing $CTOOL exits 1" "1" "$?"
     assert_not_exists "pwsh/extract missing $CTOOL wrote nothing" "$WORK/noload/payload.bin"
 done
 
@@ -1071,6 +1087,8 @@ for _ext in $SINGLE_FMTS; do
     printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
     err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'keep.$_ext' missing.bin")
     assert_contains "pwsh/archive .$_ext missing source usage" "$SINGLE_USAGE" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'keep.$_ext' missing.bin" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext missing source exits 1" "1" "$?"
     assert_eq "pwsh/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
     assert_not_exists "pwsh/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
 done
@@ -1087,6 +1105,8 @@ for _ext in $SINGLE_FMTS; do
     for _spell in "self.$_ext" "./self.$_ext"; do
         err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_spell' 'self.$_ext'")
         assert_contains "pwsh/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
+        run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_spell' 'self.$_ext'" >/dev/null 2>&1
+        assert_eq "pwsh/archive .$_ext output '$_spell' exits 1" "1" "$?"
         assert_eq "pwsh/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
     done
 done
@@ -1125,6 +1145,8 @@ echo "[pwsh] archive does not mistake a function for the compressor"
 setup_single_file
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; function gzip { 'not the real gzip' }; Set-Location '$WORK/one'; archive 'shadow.gz' 'payload.bin'")
 assert_contains "pwsh/archive function-shadowed gzip reports it missing" "gzip is not installed" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; function gzip { 'x' }; Set-Location '$WORK/one'; archive 'shadow.gz' 'payload.bin'" >/dev/null 2>&1
+assert_eq "pwsh/archive function-shadowed gzip exits 1" "1" "$?"
 assert_not_contains "pwsh/archive function-shadowed gzip did not start a process" "ProcessStartInfo" "$err"
 assert_not_contains "pwsh/archive function-shadowed gzip threw no win32 error" "No such file or directory" "$err"
 assert_not_exists "pwsh/archive function-shadowed gzip wrote nothing" "$WORK/one/shadow.gz"

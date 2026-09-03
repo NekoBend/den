@@ -52,12 +52,12 @@ function mkfile {
   Write-Host "Created $Path ($Size → $bytes bytes)"
 }
 
-# _ArHave → guard one branch of extract/archive on the tool it needs. Reports
-# "<caller>: <tool> is not installed" and returns $false when the tool is
-# absent, so a missing compressor becomes that caller's own per-item failure
-# instead of a CommandNotFoundException from the branch, and archive checks it
-# BEFORE the redirection that would create the output.
-function _ArHave([string]$Caller, [string]$Tool) {
+# _ArHave → is $Tool available to a branch of extract/archive? A predicate
+# only: PowerShell prefixes an error with the name of the function that RAISED
+# it, so a message written here would reach stderr as "_ArHave: ..." instead of
+# "archive: ..." — each caller reports its own, which also lets archive make it
+# terminating while extract keeps going through the rest of its archives.
+function _ArHave([string]$Tool) {
   # -CommandType Application because these branches start a PROGRAM:
   # _ArCompressTo goes through ProcessStartInfo, which can only launch an
   # executable, so a PowerShell function or alias of the same name is not the
@@ -67,7 +67,6 @@ function _ArHave([string]$Caller, [string]$Tool) {
   # because its cache is keyed for wrapper resolution and would go on saying
   # "not installed" after a compressor was installed later in the session.
   if (Get-Command $Tool -CommandType Application -ErrorAction SilentlyContinue) { return $true }
-  Write-Error "${Caller}: $Tool is not installed"
   return $false
 }
 
@@ -112,13 +111,12 @@ function extract {
   # not throw.
   param([Parameter(ValueFromRemainingArguments)][string[]]$Paths)
   if (-not $Paths -or $Paths.Count -eq 0) {
-    Write-Error "usage: extract <file...>"
-    return
+    Write-Error "usage: extract <file...>" -ErrorAction Stop
   }
   $failed = 0
   foreach ($Path in $Paths) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-      Write-Error "extract: '$Path' is not a file"
+      Write-Error "'$Path' is not a file"
       $failed++
       continue
     }
@@ -137,19 +135,19 @@ function extract {
       '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
       '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
       # tar shells zstd out for these, so the guard is on zstd, not tar.
-      '\.tar\.zst$|\.tzst$'   { if (_ArHave 'extract' 'zstd') { tar --zstd -xf $Path } else { $ok = $false }; break }
+      '\.tar\.zst$|\.tzst$'   { if (_ArHave 'zstd') { tar --zstd -xf $Path } else { Write-Error 'zstd is not installed'; $ok = $false }; break }
       '\.tar$'                { tar xf $Path; break }
       # Single file: each tool writes the decompressed file next to the
       # archive. gzip/bzip2/xz consume the archive and zstd keeps it — that is
       # each tool's own default, and the POSIX twin behaves the same way. The
       # name is './'-normalised above, so no branch needs a '--' marker.
-      '\.gz$'                 { if (_ArHave 'extract' 'gzip')  { gzip -d $Path }  else { $ok = $false }; break }
-      '\.bz2$'                { if (_ArHave 'extract' 'bzip2') { bzip2 -d $Path } else { $ok = $false }; break }
-      '\.xz$'                 { if (_ArHave 'extract' 'xz')    { xz -d $Path }    else { $ok = $false }; break }
-      '\.zst$'                { if (_ArHave 'extract' 'zstd')  { zstd -d $Path }  else { $ok = $false }; break }
+      '\.gz$'                 { if (_ArHave 'gzip')  { gzip -d $Path }  else { Write-Error 'gzip is not installed';  $ok = $false }; break }
+      '\.bz2$'                { if (_ArHave 'bzip2') { bzip2 -d $Path } else { Write-Error 'bzip2 is not installed'; $ok = $false }; break }
+      '\.xz$'                 { if (_ArHave 'xz')    { xz -d $Path }    else { Write-Error 'xz is not installed';    $ok = $false }; break }
+      '\.zst$'                { if (_ArHave 'zstd')  { zstd -d $Path }  else { Write-Error 'zstd is not installed';  $ok = $false }; break }
       '\.zip$'                {
         try { Expand-Archive -LiteralPath $Path -DestinationPath . -Force -ErrorAction Stop }
-        catch { Write-Error "extract: '$Path': $($_.Exception.Message)"; $ok = $false }
+        catch { Write-Error "'$Path': $($_.Exception.Message)"; $ok = $false }
         break
       }
       '\.7z$'                 {
@@ -163,12 +161,18 @@ function extract {
         break
       }
       '\.rar$'                { & unrar x $Path; break }
-      default                 { Write-Error "extract: unsupported format '$Path'"; $ok = $false }
+      default                 { Write-Error "unsupported format '$Path'"; $ok = $false }
     }
     if ($LASTEXITCODE -ne 0) { $ok = $false }
     if (-not $ok) { $failed++ }
   }
-  if ($failed) { Write-Error "extract: $failed of $($Paths.Count) archives failed" }
+  # Terminating, so the process status is nonzero: a plain Write-Error inside
+  # a function leaves `pwsh -Command '... extract bad.zip'` exiting 0, and
+  # automation reads that as success. It fires after the loop, so a failure on
+  # one archive still does not stop the rest. $LASTEXITCODE cannot carry this —
+  # PowerShell does not use it for the process status unless the last command
+  # was a native one — and `exit` would end an interactive session.
+  if ($failed) { Write-Error "$failed of $($Paths.Count) archives failed" -ErrorAction Stop }
 }
 
 # archive → create archive (format auto-detected from output filename)
@@ -193,7 +197,7 @@ function archive {
     '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }
     '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; break }
     # tar shells zstd out for these, so the guard is on zstd, not tar.
-    '\.tar\.zst$|\.tzst$'   { if (_ArHave 'archive' 'zstd') { tar --zstd -cf $Output -- @Sources }; break }
+    '\.tar\.zst$|\.tzst$'   { if (_ArHave 'zstd') { tar --zstd -cf $Output -- @Sources } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
     '\.tar$'                { tar cf $Output -- @Sources; break }
     # Single-file compression. Every '.tar.*' form and its 't*' alias is
     # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and these
@@ -209,8 +213,7 @@ function archive {
       # typo'd source got this far and the output was created or truncated
       # before the compressor failed on it.
       if ($Sources.Count -ne 1 -or -not (Test-Path -LiteralPath $Sources[0] -PathType Leaf)) {
-        Write-Error "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>"
-        break
+        Write-Error "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" -ErrorAction Stop
       }
       $src = $Sources[0]
       # Naming the source as the output is refused outright, for the clear
@@ -227,10 +230,9 @@ function archive {
         $outResolved -ceq $srcResolved
       }
       if ($sameFile) {
-        Write-Error "output '$Output' is the source file"
-        break
+        Write-Error "output '$Output' is the source file" -ErrorAction Stop
       }
-      if (-not (_ArHave 'archive' $tool)) { break }
+      if (-not (_ArHave $tool)) { Write-Error "$tool is not installed" -ErrorAction Stop }
       # Compress into a temporary sibling of the output and rename that into
       # place only once the compressor has succeeded. The file being written is
       # never the source under any name, so nothing can truncate the source
@@ -276,7 +278,7 @@ function archive {
       & 7z a $Output @safe
       break
     }
-    default                 { Write-Error "unsupported format '$Output'" }
+    default                 { Write-Error "unsupported format '$Output'" -ErrorAction Stop }
   }
 }
 
