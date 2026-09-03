@@ -52,21 +52,194 @@ function mkfile {
   Write-Host "Created $Path ($Size → $bytes bytes)"
 }
 
+# _ArTool → the PROGRAM $Tool resolves to on PATH, or $null. The path, not a
+# yes/no, because a branch that then invokes the bare name with & would run a
+# same-named PowerShell function or alias instead of the program that was
+# checked for; callers run what this returns. -CommandType Application is what
+# makes it a program: _ArCompressTo starts it through ProcessStartInfo, which
+# cannot launch a function anyway. No message is written here — PowerShell
+# attributes an error to the function that RAISED it, so it would reach stderr
+# as "_ArTool: ..." instead of "archive: ...". Each caller reports its own,
+# which is also what lets archive make it terminating while extract keeps going
+# through the rest of its archives. _ResolveCmd in _helpers.ps1 draws the same
+# Application line for the wrappers; it is not reused because its cache is
+# keyed for wrapper resolution and would go on reporting a compressor missing
+# after it was installed later in the session.
+function _ArTool([string]$Tool) {
+  $cmd = Get-Command $Tool -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cmd) { return $cmd.Source }
+  return $null
+}
+
+# _ArRegularFile → is $Path an existing REGULAR file? Test-Path -PathType Leaf
+# only means "not a container", so a FIFO, a character device or a socket all
+# pass it, and `archive out.zst /dev/zero` then runs until the disk is full.
+# The POSIX twin gets this right for free with [ -f ], so on Unix this asks the
+# same question the same way: 'test -f' follows a symlink to its target and is
+# true only for a regular file. PowerShell's own UnixMode cannot stand in for
+# it -- measured on 7.6.3, a FIFO reports "-rw-r--r--", the same leading '-' as
+# a regular file -- so it is only the fallback for a system with no /bin/sh,
+# where it at least rules out devices, sockets and directories.
+function _ArRegularFile([string]$Path) {
+  $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+  # Rules out a directory and a path that is not there at all, on every OS.
+  if (-not [System.IO.File]::Exists($full)) { return $false }
+  if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+    $attrs = [System.IO.File]::GetAttributes($full)
+    return -not ($attrs.HasFlag([System.IO.FileAttributes]::Device) -or
+                 $attrs.HasFlag([System.IO.FileAttributes]::Directory))
+  }
+  if (Test-Path -LiteralPath '/bin/sh' -PathType Leaf) {
+    & /bin/sh -c 'test -f "$1"' _ $full
+    return ($LASTEXITCODE -eq 0)
+  }
+  $mode = (Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue).UnixMode
+  if ($mode) { return $mode.StartsWith('-') }
+  return $true
+}
+
+# _ArSameFile → do $A and $B name the same file? Comparing resolved path
+# strings is not enough, and here that matters: on a case-insensitive volume
+# (macOS by default) 'self.gz' and 'SELF.GZ' are ONE directory entry, so a
+# case-sensitive compare says they differ and the staged output is renamed over
+# the source, which was supposed to be kept. Hard links and symlink chains fold
+# the same way. Ask the filesystem instead -- 'test -ef' compares device and
+# inode, exactly what the POSIX twin uses -- and keep the string compare only
+# as a fast path that answers the common case without a fork. Windows has no
+# such test; NTFS is case-insensitive, so comparing full paths that way is the
+# right question there.
+# _ArVolumeRelative → a Windows path with its volume root dropped, so a full
+# path can be compared with the volume-relative names a hard link reports.
+function _ArVolumeRelative([string]$Path) {
+  $root = try { [System.IO.Path]::GetPathRoot($Path) } catch { '' }
+  if ($root -and $Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return '\' + $Path.Substring($root.Length).TrimStart('\', '/')
+  }
+  return '\' + $Path.TrimStart('\', '/')
+}
+
+# _ArLinkTarget → what a symlink points at, else the item's own path.
+# ResolveLinkTarget is 7.2+; .Target is the one-hop stand-in on 7.0/7.1.
+function _ArLinkTarget($Item) {
+  try {
+    if ($Item.LinkType -eq 'SymbolicLink') {
+      if ($Item | Get-Member -Name ResolveLinkTarget) {
+        $t = $Item.ResolveLinkTarget($true)
+        if ($t) { return $t.FullName }
+      }
+      $t = @($Item.Target)[0]
+      if ($t) {
+        return [System.IO.Path]::GetFullPath($t, [System.IO.Path]::GetDirectoryName($Item.FullName))
+      }
+    }
+  } catch { }
+  return $Item.FullName
+}
+
+function _ArSameFile([string]$A, [string]$B) {
+  $fa = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($A)
+  $fb = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($B)
+  if (-not ($IsWindows -or $env:OS -eq 'Windows_NT')) {
+    if ($fa -ceq $fb) { return $true }
+    # -ef needs both to exist; an output that is not there yet collides with
+    # nothing, and skipping the fork is the common case.
+    if (-not (Test-Path -LiteralPath $fb)) { return $false }
+    if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { return $false }
+    & /bin/sh -c 'test "$1" -ef "$2"' _ $fa $fb
+    return ($LASTEXITCODE -eq 0)
+  }
+  # Windows. The case-insensitive compare settles the spellings people type,
+  # NTFS being case-insensitive, and is only the fast path: Windows has hard
+  # links and symlinks too, and no -ef to ask about them.
+  if ($fa -eq $fb) { return $true }
+  if (-not (Test-Path -LiteralPath $fb)) { return $false }
+  $ia = Get-Item -LiteralPath $fa -Force -ErrorAction SilentlyContinue
+  $ib = Get-Item -LiteralPath $fb -Force -ErrorAction SilentlyContinue
+  if (-not $ia -or -not $ib) { return $false }
+  # A symlink names another path: compare what each one actually points at.
+  $ra = _ArLinkTarget $ia
+  $rb = _ArLinkTarget $ib
+  if ($ra -eq $rb) { return $true }
+  # A hard link is one file under several names, and on Windows .Target
+  # enumerates the OTHER names for LinkType 'HardLink'. They come back
+  # volume-relative, so both sides are compared with the root dropped;
+  # -contains is case-insensitive, which is what NTFS wants.
+  foreach ($side in @(@($ia, $rb), @($ib, $ra))) {
+    $item = $side[0]
+    $other = _ArVolumeRelative $side[1]
+    if ($item.LinkType -eq 'HardLink' -and $item.Target) {
+      $names = @($item.Target | ForEach-Object { _ArVolumeRelative $_ })
+      if ($names -contains $other) { return $true }
+    }
+  }
+  return $false
+}
+
+# _ArCompressTo → run a stdout compressor and put its raw bytes in $Dest.
+# gzip/bzip2/xz have no -o, and PowerShell only redirects a native command's
+# stdout byte-for-byte from 7.4 on: before that the text pipeline re-encodes
+# it, and every archive a '> $Dest' produced would be corrupt. den supports
+# pwsh 7.0+ (shell/pwsh/parallel.ps1 gates on Major -lt 7), so the bytes are
+# copied off the process's own stdout stream, which has no encoding step on
+# any version. Letting the tool write its own '<source>.<ext>' next to the
+# source and moving that onto $Dest would also avoid the redirect, but it
+# destroys a pre-existing file of that name. Returns the tool's exit code.
+function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
+  # .NET resolves relative paths against the process directory, which
+  # Set-Location never updates; resolve against the PowerShell location first
+  # (the same rule mkfile follows).
+  $srcFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Source)
+  $dstFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dest)
+  $psi = [System.Diagnostics.ProcessStartInfo]::new()
+  $psi.FileName = $ToolPath
+  # ArgumentList passes each argument verbatim, no quoting round-trip. '--'
+  # keeps a source named like a switch a path, as the tar branches do.
+  foreach ($a in @('-k', '-c', '--', $srcFull)) { $psi.ArgumentList.Add($a) }
+  $psi.RedirectStandardOutput = $true
+  $psi.UseShellExecute = $false
+  # stderr is deliberately NOT redirected: the tool's diagnostics reach the
+  # console, and there is no second pipe to deadlock on while stdout drains.
+  # Open the destination BEFORE starting the compressor. The other order left
+  # a started child with nobody draining its pipe whenever File.Create threw --
+  # an unwritable directory, a path that does not exist -- and only the file
+  # stream was in a finally, so the process was never waited on or disposed.
+  $fs = [System.IO.File]::Create($dstFull)
+  try {
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    try {
+      $proc.StandardOutput.BaseStream.CopyTo($fs)
+      $proc.WaitForExit()
+      $code = $proc.ExitCode
+    } finally {
+      # Reached on every path out, CopyTo throwing included: a child still
+      # running at this point is one nothing will ever read from again.
+      # HasExited can go true between the test and the call, and that race is
+      # exactly the outcome wanted, so the kill is allowed to fail.
+      try { if (-not $proc.HasExited) { $proc.Kill(); $proc.WaitForExit() } } catch { }
+      $proc.Dispose()
+    }
+  } finally {
+    $fs.Dispose()
+  }
+  return $code
+}
+
 # extract → auto-detect and extract archives
 function extract {
   # Every argument is an archive; each is extracted in turn and a failure on
-  # one does not hide the others. Failures are reported per archive and
-  # summarized at the end with a (non-terminating) error; the function does
-  # not throw.
+  # one does not hide the others: the per-archive errors are non-terminating,
+  # so the loop runs to the end. The final summary IS terminating, which is
+  # what carries the failure into the process status -- a plain Write-Error
+  # inside a function leaves `pwsh -Command` exiting 0. Callers that want to
+  # survive it can catch, as they would any terminating error.
   param([Parameter(ValueFromRemainingArguments)][string[]]$Paths)
   if (-not $Paths -or $Paths.Count -eq 0) {
-    Write-Error "usage: extract <file...>"
-    return
+    Write-Error "usage: extract <file...>" -ErrorAction Stop
   }
   $failed = 0
   foreach ($Path in $Paths) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-      Write-Error "extract: '$Path' is not a file"
+      Write-Error "'$Path' is not a file"
       $failed++
       continue
     }
@@ -84,12 +257,23 @@ function extract {
       '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
       '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
       '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
-      '\.tar\.zst$'           { tar --zstd -xf $Path; break }
+      # tar shells zstd out for these, so the guard is on zstd, not tar.
+      # tar spawns zstd itself, in its own process, so a PowerShell function
+      # cannot shadow that one and there is no path to hand tar; the resolved
+      # path is only used where THIS shell does the invoking.
+      '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -xf $Path } else { Write-Error 'zstd is not installed'; $ok = $false }; break }
       '\.tar$'                { tar xf $Path; break }
-      '\.gz$'                 { gzip -d $Path; break }
+      # Single file: each tool writes the decompressed file next to the
+      # archive. gzip/bzip2/xz consume the archive and zstd keeps it — that is
+      # each tool's own default, and the POSIX twin behaves the same way. The
+      # name is './'-normalised above, so no branch needs a '--' marker.
+      '\.gz$'   { $t = _ArTool 'gzip';  if ($t) { & $t -d $Path } else { Write-Error 'gzip is not installed';  $ok = $false }; break }
+      '\.bz2$'  { $t = _ArTool 'bzip2'; if ($t) { & $t -d $Path } else { Write-Error 'bzip2 is not installed'; $ok = $false }; break }
+      '\.xz$'   { $t = _ArTool 'xz';    if ($t) { & $t -d $Path } else { Write-Error 'xz is not installed';    $ok = $false }; break }
+      '\.zst$'  { $t = _ArTool 'zstd';  if ($t) { & $t -d $Path } else { Write-Error 'zstd is not installed';  $ok = $false }; break }
       '\.zip$'                {
         try { Expand-Archive -LiteralPath $Path -DestinationPath . -Force -ErrorAction Stop }
-        catch { Write-Error "extract: '$Path': $($_.Exception.Message)"; $ok = $false }
+        catch { Write-Error "'$Path': $($_.Exception.Message)"; $ok = $false }
         break
       }
       '\.7z$'                 {
@@ -103,12 +287,18 @@ function extract {
         break
       }
       '\.rar$'                { & unrar x $Path; break }
-      default                 { Write-Error "extract: unsupported format '$Path'"; $ok = $false }
+      default                 { Write-Error "unsupported format '$Path'"; $ok = $false }
     }
     if ($LASTEXITCODE -ne 0) { $ok = $false }
     if (-not $ok) { $failed++ }
   }
-  if ($failed) { Write-Error "extract: $failed of $($Paths.Count) archives failed" }
+  # Terminating, so the process status is nonzero: a plain Write-Error inside
+  # a function leaves `pwsh -Command '... extract bad.zip'` exiting 0, and
+  # automation reads that as success. It fires after the loop, so a failure on
+  # one archive still does not stop the rest. $LASTEXITCODE cannot carry this —
+  # PowerShell does not use it for the process status unless the last command
+  # was a native one — and `exit` would end an interactive session.
+  if ($failed) { Write-Error "$failed of $($Paths.Count) archives failed" -ErrorAction Stop }
 }
 
 # archive → create archive (format auto-detected from output filename)
@@ -122,12 +312,92 @@ function archive {
   # name looks like an option (a '--checkpoint-action=exec=...' that pwsh
   # globbed out of the directory, say) cannot be parsed as one and run; it
   # reaches a native command verbatim. Do not remove it.
+  #
+  # The output name gets the same treatment once, before dispatching, as the
+  # POSIX twin's './' normalisation and as extract does with $Path: an archiver
+  # would otherwise read a dash-leading relative name as a switch (7z), or
+  # refuse it outright (zstd's -o rejects a value starting with '-').
+  if ($Output.StartsWith('-')) { $Output = Join-Path '.' $Output }
+  # A directory already sitting at the output path is not an output. Checked
+  # for every format, before any of them starts: the single-file branch's
+  # Move-Item would otherwise put the temporary INSIDE that directory and
+  # report success with no archive written at all, and Compress-Archive -Force
+  # deletes the directory before failing on it.
+  if (Test-Path -LiteralPath $Output -PathType Container) {
+    Write-Error "output '$Output' is a directory" -ErrorAction Stop
+  }
   switch -Regex ($Output) {
     '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; break }
     '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }
     '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; break }
-    '\.tar\.zst$'           { tar --zstd -cf $Output -- @Sources; break }
+    # tar shells zstd out for these, so the guard is on zstd, not tar.
+    '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -cf $Output -- @Sources } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
     '\.tar$'                { tar cf $Output -- @Sources; break }
+    # Single-file compression. Every '.tar.*' form and its 't*' alias is
+    # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and these
+    # four tools compress exactly ONE file: several sources or a directory is a
+    # usage error, not something to silently tar up first.
+    '\.gz$|\.bz2$|\.xz$|\.zst$' {
+      $tool = if     ($Output -match '\.gz$')  { 'gzip'  }
+              elseif ($Output -match '\.bz2$') { 'bzip2' }
+              elseif ($Output -match '\.xz$')  { 'xz'    }
+              else                             { 'zstd'  }
+      # Exactly one source, and it must already be a REGULAR file -- see
+      # _ArRegularFile for why "not a container" was not enough.
+      if ($Sources.Count -ne 1 -or -not (_ArRegularFile $Sources[0])) {
+        Write-Error "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" -ErrorAction Stop
+      }
+      $src = $Sources[0]
+      # Naming the source as the output is refused. Staging keeps the source
+      # readable while the archive is built, but the final rename still lands
+      # ON the output, so where the output and the source are one directory
+      # entry -- a case-insensitive volume, most obviously -- the source would
+      # be replaced by its own compressed form despite the promise to keep it.
+      # _ArSameFile settles that by device and inode, not by path text.
+      if (_ArSameFile $src $Output) {
+        Write-Error "output '$Output' is the source file" -ErrorAction Stop
+      }
+      $toolPath = _ArTool $tool
+      if (-not $toolPath) { Write-Error "$tool is not installed" -ErrorAction Stop }
+      # Compress into a temporary sibling of the output and rename that into
+      # place only once the compressor has succeeded. The file being written is
+      # never the source under any name, so nothing can truncate the source
+      # before it is read; a failed run leaves an existing output exactly as it
+      # was; and the rename is atomic because the temporary is in the output's
+      # own directory. Move-Item reads -Destination literally, so a name
+      # holding [ ] * ? still lands where it says.
+      # '--' stops each tool's option parsing (all four support it), so a
+      # source named like a switch reaches it as a path, as in the tar branches.
+      $tmp = "$Output.tmp." + [System.IO.Path]::GetRandomFileName()
+      $moved = $false
+      try {
+        if ($tool -eq 'zstd') {
+          # zstd is the only one of the four with -o; the others have none, so
+          # _ArCompressTo captures their stdout as raw bytes instead. Both run
+          # the resolved program path, never the bare name.
+          & $toolPath -q -k -f -o $tmp -- $src
+        } else {
+          # A .NET exception out of _ArCompressTo (destination unopenable, say)
+          # is only STATEMENT-terminating, so on its own it would leave
+          # `pwsh -Command` exiting 0 -- the same hole the refusals had.
+          # Re-raise it as this function's own terminating error.
+          try { $global:LASTEXITCODE = _ArCompressTo $toolPath $src $tmp }
+          catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+        }
+        # A compressor that started and then failed used to leave archive
+        # reporting success: the move was skipped, finally deleted the
+        # temporary, and nothing was raised. Move-Item was non-terminating
+        # too, so a failed publish still set $moved and left no trace. Both
+        # terminate now, or the caller is told an archive exists that does not.
+        $code = $LASTEXITCODE
+        if ($code -ne 0) { Write-Error "$tool exited $code" -ErrorAction Stop }
+        Move-Item -LiteralPath $tmp -Destination $Output -Force -ErrorAction Stop
+        $moved = $true
+      } finally {
+        if (-not $moved) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+      }
+      break
+    }
     # The array goes in as a parameter value: splatting after a named parameter
     # binds only the first element and leaves the rest as unbindable positionals.
     # -LiteralPath also stops -Path from reading [ ] * ? in a name as a wildcard
@@ -145,7 +415,7 @@ function archive {
       & 7z a $Output @safe
       break
     }
-    default                 { Write-Error "unsupported format '$Output'" }
+    default                 { Write-Error "unsupported format '$Output'" -ErrorAction Stop }
   }
 }
 

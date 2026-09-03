@@ -61,6 +61,28 @@ mkfile() {
     unset _mf_path
 }
 
+# _ar_have → guard one branch of extract()/archive() on the tool it needs.
+# Usage: _ar_have <caller> <tool>. A missing compressor becomes that caller's
+# own per-item failure instead of a stray "command not found" from the branch,
+# and archive() calls it BEFORE the redirection that would create the output.
+_ar_have() {
+    # 'command -v' answers with the bare NAME for a shell function or an alias
+    # and with a path for a program, so a plain success test accepted a local
+    # `zstd` function as the zstd that tar is about to spawn -- which tar
+    # cannot see, let alone call. Only an absolute path is a program.
+    #
+    # A function also HIDES the program from 'command -v', so asking inside a
+    # subshell that has dropped the function is what finds the real one; the
+    # answer is then a path exactly when a program exists, shadowed or not.
+    # The callers invoke it with `command`, which likewise runs the program
+    # rather than a function of that name.
+    case $(unset -f "$2" 2>/dev/null; command -v "$2" 2>/dev/null) in
+        /*) return 0 ;;
+    esac
+    echo "$1: $2 is not installed" >&2
+    return 1
+}
+
 # extract → auto-detect and extract archives
 # NOTE: leading-dash './' prefix is required — do not remove. The 7z branch
 # neutralises a leading '@' on top of that; see the comment there.
@@ -84,12 +106,18 @@ extract() {
             *.tar.gz|*.tgz)     tar xzf "$_ex_f"   ;;
             *.tar.bz2|*.tbz2)   tar xjf "$_ex_f"   ;;
             *.tar.xz|*.txz)     tar xJf "$_ex_f"   ;;
-            *.tar.zst)          tar --zstd -xf "$_ex_f" ;;
+            # tar shells zstd out for these, so the guard is on zstd, not tar.
+            *.tar.zst|*.tzst)   _ar_have extract zstd && tar --zstd -xf "$_ex_f" ;;
             *.tar)              tar xf  "$_ex_f"    ;;
-            *.gz)               gunzip -- "$_ex_f"    ;;
-            *.bz2)              bunzip2 -- "$_ex_f"   ;;
-            *.xz)               unxz -- "$_ex_f"      ;;
-            *.zst)              unzstd -- "$_ex_f"    ;;
+            # Single file: each tool writes the decompressed file next to the
+            # archive. gunzip/bunzip2/unxz consume the archive and unzstd keeps
+            # it — that is each tool's own default, and the pwsh twin matches.
+            # 'command' runs the program, never a shell function of that name
+            # (parity with the pwsh twin, which invokes the resolved path).
+            *.gz)               _ar_have extract gunzip  && command gunzip  -- "$_ex_f" ;;
+            *.bz2)              _ar_have extract bunzip2 && command bunzip2 -- "$_ex_f" ;;
+            *.xz)               _ar_have extract unxz    && command unxz    -- "$_ex_f" ;;
+            *.zst)              _ar_have extract unzstd  && command unzstd  -- "$_ex_f" ;;
             *.zip)              unzip -- "$_ex_f"     ;;
             *.7z)
                 # 7z reads a leading '-' as a switch (already neutralised
@@ -124,15 +152,118 @@ archive() {
         return 1
     fi
     local out="$1"; shift
-    local _ar_arg _ar_n
+    local _ar_arg _ar_n _ar_tool _ar_tmp _ar_rc _ar_tmpd _ar_outdir
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
+    # A directory already sitting at the output path is not an output. Checked
+    # for every format, before any of them starts: the single-file branch's
+    # rename would otherwise put the temporary INSIDE that directory and report
+    # success with no archive written at all, and the tar/zip branches only
+    # fail late, with the archiver's own message.
+    if [ -d "$out" ]; then
+        echo "archive: output '$out' is a directory" >&2
+        return 1
+    fi
     case "$out" in
         *.tar.gz|*.tgz)     tar czf "$out" -- "$@"   ;;
         *.tar.bz2|*.tbz2)   tar cjf "$out" -- "$@"   ;;
         *.tar.xz|*.txz)     tar cJf "$out" -- "$@"   ;;
-        *.tar.zst)          tar --zstd -cf "$out" -- "$@" ;;
+        # tar shells zstd out for these, so the guard is on zstd, not tar.
+        *.tar.zst|*.tzst)   _ar_have archive zstd && tar --zstd -cf "$out" -- "$@" ;;
         *.tar)              tar cf "$out" -- "$@"    ;;
+        # Single-file compression. Every '.tar.*' form and its 't*' alias is
+        # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and
+        # these four tools compress exactly ONE file: several sources or a
+        # directory is a usage error, not something to silently tar up first.
+        *.gz|*.bz2|*.xz|*.zst)
+            case "$out" in
+                *.gz)  _ar_tool=gzip  ;;
+                *.bz2) _ar_tool=bzip2 ;;
+                *.xz)  _ar_tool=xz    ;;
+                *)     _ar_tool=zstd  ;;
+            esac
+            # Exactly one source, and it must already be a regular file.
+            # '-d' alone was false for a path that does not exist, so a typo'd
+            # source got this far and the redirection below then created or
+            # truncated the output before the compressor failed on it.
+            if [ $# -ne 1 ] || [ ! -f "$1" ]; then
+                echo "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" >&2
+                return 1
+            fi
+            # Naming the source as the output is refused outright, for the
+            # clear message: '-ef' compares device and inode, so a './'
+            # spelling, a hard link and a chain of symlinks all resolve to the
+            # same file and are caught. It is not what makes this SAFE, though
+            # — the staging below is — so it can stay this cheap.
+            # shellcheck disable=SC3013  # -ef: not in POSIX, but in dash/bash/zsh
+            if [ "$out" -ef "$1" ]; then
+                echo "archive: output '$out' is the source file" >&2
+                return 1
+            fi
+            # The tool check comes before anything is written, so a missing
+            # compressor leaves nothing behind at all.
+            _ar_have archive "$_ar_tool" || return 1
+            # Compress into a temporary sibling of the output and rename that
+            # into place only once the compressor has succeeded. The file being
+            # written is never the source under any name, so nothing can
+            # truncate the source before it is read; a failed run leaves an
+            # existing output exactly as it was; and the rename is atomic
+            # because the temporary is in the output's own directory.
+            # '--' stops each tool's option parsing (all four support it), so a
+            # source named like a switch reaches it as a path — the same rule
+            # the tar branches above follow.
+            # Stage inside a private DIRECTORY, not a temporary file. mktemp
+            # creates a file exclusively, but the compressor then reopens it by
+            # pathname, and in a directory anyone else can write to that file
+            # can be unlinked and replaced with a symlink in between -- the
+            # exclusive creation does not survive being reopened. A 0700
+            # directory (mktemp -d's default) nobody else can traverse means
+            # the name inside it cannot be swapped at all, so there is no
+            # window to race. A predictable-name fallback would give the window
+            # straight back, so a missing mktemp is a missing tool like any
+            # other, and the branch fails closed.
+            case "$out" in
+                */*) _ar_outdir="${out%/*}" ;;
+                *)   _ar_outdir="." ;;
+            esac
+            _ar_have archive mktemp || return 1
+            _ar_tmpd=$(command mktemp -d "$_ar_outdir/.archive.XXXXXX" 2>/dev/null)
+            if [ -z "$_ar_tmpd" ]; then
+                echo "archive: cannot create a temporary directory in '$_ar_outdir'" >&2
+                return 1
+            fi
+            # The name inside is fixed: the directory is what makes it private,
+            # and staging beside the output keeps the publish below a rename.
+            _ar_tmp="$_ar_tmpd/archive"
+            if [ "$_ar_tool" = zstd ]; then
+                # zstd is the only one of the four with -o; the others have
+                # none, so -k -c writes the bytes and the shell names the file.
+                command zstd -q -k -f -o "$_ar_tmp" -- "$1"
+            else
+                command "$_ar_tool" -k -c -- "$1" > "$_ar_tmp"
+            fi
+            _ar_rc=$?
+            if [ "$_ar_rc" -ne 0 ]; then
+                # The compressor started and failed. Take the staging directory
+                # with it and report ITS code, the way the tar and zip branches
+                # report the archiver's; an existing output at $out was never
+                # opened, so it is still whatever it was.
+                rm -rf -- "$_ar_tmpd"
+                return "$_ar_rc"
+            fi
+            # Inside a 0700 directory the file is 0600. The archive itself
+            # should land with the user's umask, as the tar and zip branches'
+            # outputs do -- 'umask -S' gives the directory form, so strip the
+            # execute bits it carries.
+            chmod "$(umask -S)" "$_ar_tmp" 2>/dev/null && chmod a-x "$_ar_tmp" 2>/dev/null
+            # Publishing can fail too (a read-only directory, a full disk).
+            # Report that, and take the staging directory with it on every exit
+            # path rather than leaving one behind for the caller to find.
+            mv -f -- "$_ar_tmp" "$out"
+            _ar_rc=$?
+            rm -rf -- "$_ar_tmpd"
+            return "$_ar_rc"
+            ;;
         *.zip)              zip -r "$out" -- "$@"    ;;
         *.7z)
             # 7z is not in the test image (tests/shell/Dockerfile), so a '--'

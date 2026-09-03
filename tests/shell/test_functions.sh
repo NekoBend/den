@@ -97,6 +97,33 @@ STUB
     rm -f "$STUB_ARGV"
 }
 
+# A single-file compression fixture: one payload in its own directory, plus an
+# empty dir to use as a PATH with none of the compressors on it. The payload is
+# random BYTES, not text, because the pwsh branch sends the compressor's stdout
+# through a redirection: a text fixture would not catch it if those bytes were
+# ever re-encoded on the way to the file. $PAYLOAD_SHA is recomputed here so a
+# round trip is checked against the exact source that went in.
+PAYLOAD_SHA=""
+setup_single_file() {
+    rm -rf "$WORK"/*
+    mkdir -p "$WORK/one" "$WORK/nobin"
+    head -c 65536 /dev/urandom > "$WORK/one/payload.bin"
+    PAYLOAD_SHA=$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)
+}
+
+# The single-file formats, and the tool each direction shells out to, so the
+# missing-tool cases can assert the binary that branch actually names.
+SINGLE_FMTS="gz bz2 xz zst"
+single_tools() {
+    case "$1" in
+        gz)  CTOOL=gzip;  DTOOL=gunzip  ;;
+        bz2) CTOOL=bzip2; DTOOL=bunzip2 ;;
+        xz)  CTOOL=xz;    DTOOL=unxz    ;;
+        *)   CTOOL=zstd;  DTOOL=unzstd  ;;
+    esac
+}
+SINGLE_USAGE="usage: archive <output.gz|.bz2|.xz|.zst> <one-file>"
+
 # sha256 of the literal file's content ("real") and of the decoy's ("decoy")
 SHA256_REAL="aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f"
 SHA256_DECOY="bdeb9ba22af8fa73e59fe7c4d3c48ae1165617dd76c720773cdf6cbc33a91dd7"
@@ -272,6 +299,273 @@ run_bash "$FUNCTIONS_SH" "cd '$WORK/extracted' && extract 'test.tar.xz'" 2>/dev/
 assert_success "bash/extract tar.xz exit code" "$?"
 assert_exists "bash/extract tar.xz" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.tar.xz" "$WORK/extracted"
+
+# --- .tar.zst and its .tzst alias (the alias is what tgz/tbz2/txz are to
+# --- their long forms: same branch, same tar --zstd call) ---
+echo "[bash] archive + extract tar.zst / tzst"
+for _ext in tar.zst tzst; do
+    setup_fixtures
+    run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.$_ext' src" 2>/dev/null
+    assert_success "bash/archive .$_ext exit code" "$?"
+    assert_exists "bash/archive .$_ext" "$WORK/test.$_ext"
+    mkdir -p "$WORK/extracted"
+    cp "$WORK/test.$_ext" "$WORK/extracted/"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/extracted' && extract 'test.$_ext'" 2>/dev/null
+    assert_success "bash/extract .$_ext exit code" "$?"
+    assert_exists "bash/extract .$_ext" "$WORK/extracted/src/file1.txt"
+done
+
+# --- single-file compression: one source in, the named output out, source kept
+echo "[bash] archive + extract single-file formats"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'payload.bin.$_ext' payload.bin" 2>/dev/null
+    assert_success "bash/archive single-file .$_ext exit code" "$?"
+    assert_exists "bash/archive single-file .$_ext wrote the output" "$WORK/one/payload.bin.$_ext"
+    assert_exists "bash/archive single-file .$_ext kept the source" "$WORK/one/payload.bin"
+    mkdir -p "$WORK/back"
+    cp "$WORK/one/payload.bin.$_ext" "$WORK/back/"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/back' && extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_success "bash/extract single-file .$_ext exit code" "$?"
+    actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
+    assert_eq "bash/extract single-file .$_ext round-trips the bytes" "$PAYLOAD_SHA" "$actual"
+done
+
+# These four tools compress exactly one file: a second source or a directory
+# has to be refused, not quietly turned into a tarball or applied to arg one.
+echo "[bash] archive single-file refuses several sources and directories"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    cp "$WORK/one/payload.bin" "$WORK/one/second.bin"
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'multi.$_ext' payload.bin second.bin")
+    assert_contains "bash/archive .$_ext several sources usage" "$SINGLE_USAGE" "$err"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'multi.$_ext' payload.bin second.bin" 2>/dev/null
+    assert_eq "bash/archive .$_ext several sources exits 1" "1" "$?"
+    assert_not_exists "bash/archive .$_ext several sources wrote nothing" "$WORK/one/multi.$_ext"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/dir.$_ext' one" 2>/dev/null
+    assert_eq "bash/archive .$_ext directory exits 1" "1" "$?"
+    assert_not_exists "bash/archive .$_ext directory wrote nothing" "$WORK/dir.$_ext"
+done
+
+# A compressor missing from PATH is a named per-item failure, not a "command
+# not found" and not a truncated output file: archive's guard runs BEFORE the
+# redirection that would create it.
+echo "[bash] archive and extract report a missing compressor"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    single_tools "$_ext"
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/one' && archive 'gone.$_ext' payload.bin")
+    assert_contains "bash/archive missing $CTOOL message" "archive: $CTOOL is not installed" "$err"
+    run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/one' && archive 'gone.$_ext' payload.bin" 2>/dev/null
+    assert_eq "bash/archive missing $CTOOL exits 1" "1" "$?"
+    assert_not_exists "bash/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
+    mkdir -p "$WORK/noload"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$WORK/noload/payload.bin.$_ext' payload.bin" 2>/dev/null
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'")
+    assert_contains "bash/extract missing $DTOOL message" "extract: $DTOOL is not installed" "$err"
+    run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_eq "bash/extract missing $DTOOL exits 1" "1" "$?"
+    assert_not_exists "bash/extract missing $DTOOL wrote nothing" "$WORK/noload/payload.bin"
+done
+
+# A source that does not exist used to reach the compressor, which meant the
+# output had already been created or truncated by the time it failed: naming
+# an existing archive as the output destroyed it. Nothing may be written.
+echo "[bash] archive single-file refuses a missing source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'keep.$_ext' missing.bin")
+    assert_contains "bash/archive .$_ext missing source usage" "$SINGLE_USAGE" "$err"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'keep.$_ext' missing.bin" 2>/dev/null
+    assert_eq "bash/archive .$_ext missing source exits 1" "1" "$?"
+    assert_eq "bash/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
+    assert_not_exists "bash/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
+done
+
+# `archive f.gz f.gz` opened f.gz for the compressor's output before reading
+# it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
+# exited 0 doing it. Spellings that resolve to the same path are refused
+# outright, with the file left exactly as it was; names that reach the source
+# through a link are the next block's business.
+echo "[bash] archive single-file refuses an output that is the source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'ORIGINAL' > "$WORK/one/self.$_ext"
+    for _spell in "self.$_ext" "./self.$_ext"; do
+        err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_spell' 'self.$_ext'")
+        assert_contains "bash/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
+        assert_eq "bash/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
+    done
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'self.$_ext' 'self.$_ext'" 2>/dev/null
+    assert_eq "bash/archive .$_ext output is the source exits 1" "1" "$?"
+done
+
+# Comparing resolved paths does not establish identity: a hard link and a chain
+# of symlinks name the same file by a different path, and a check that only
+# compares strings lets them through. What actually keeps the source safe is
+# that the compressor writes a temporary sibling of the output which is renamed
+# into place afterwards — the source is never the file being written, whatever
+# it is called — so what is asserted here is the source surviving, in the lane
+# that refuses these and in the lane that goes ahead and compresses them.
+echo "[bash] archive single-file cannot truncate the source through another name"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    ln -s payload.bin "$WORK/one/hop1.$_ext"
+    ln -s "hop1.$_ext" "$WORK/one/hop2.$_ext"
+    for _hop in "hop1.$_ext" "hop2.$_ext"; do
+        run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_hop' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "bash/archive .$_ext symlink '$_hop' left the source intact" "$PAYLOAD_SHA" "$actual"
+    done
+    if ln "$WORK/one/payload.bin" "$WORK/one/hard.$_ext" 2>/dev/null; then
+        run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'hard.$_ext' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "bash/archive .$_ext hard link left the source intact" "$PAYLOAD_SHA" "$actual"
+    else
+        echo "  SKIP: bash/archive .$_ext hard link (filesystem refused)"
+    fi
+done
+
+# A directory sitting where the output should go is not an output. The
+# single-file branch renamed its temporary INTO that directory and reported
+# success with no archive written; the tar and zip branches only failed late,
+# and pwsh's Compress-Archive -Force deleted the directory on the way.
+echo "[bash] archive refuses a directory at the output path"
+for _fmt in gz tar.gz zip; do
+    setup_single_file
+    mkdir -p "$WORK/one/out.$_fmt"
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'out.$_fmt' payload.bin")
+    assert_contains "bash/archive .$_fmt directory output message" "is a directory" "$err"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'out.$_fmt' payload.bin" >/dev/null 2>&1
+    assert_eq "bash/archive .$_fmt directory output exits 1" "1" "$?"
+    assert_exists "bash/archive .$_fmt directory output still there" "$WORK/one/out.$_fmt"
+    assert_eq "bash/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
+done
+
+# A compressor that starts and then fails must not look like success: the
+# partial temporary goes, an existing output keeps its contents, and the
+# failure is reported. The stub exits 3 after writing to stdout, so there IS a
+# partial temporary to clean up.
+echo "[bash] archive reports a compressor that fails"
+    setup_single_file
+    mkdir -p "$WORK/stub3"
+    printf '#!/bin/sh\nprintf PARTIAL\nexit 3\n' > "$WORK/stub3/gzip"
+    chmod +x "$WORK/stub3/gzip"
+    printf 'PRECIOUS' > "$WORK/one/keep.gz"
+    run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stub3:$PATH'; cd '$WORK/one' && archive 'keep.gz' payload.bin" >/dev/null 2>&1
+    assert_eq "bash/archive compressor failure exits with the tool's code" "3" "$?"
+    assert_eq "bash/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
+    assert_eq "bash/archive compressor failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
+
+# Staging happens inside a private 0700 directory nobody else can traverse,
+# which is what keeps the name the compressor reopens from being swapped for a
+# symlink. There is no fallback for a missing mktemp, deliberately: any
+# predictable name would hand that window straight back. These two cases check
+# the branch fails CLOSED instead -- with mktemp gone entirely, and with mktemp
+# present but unable to produce a directory -- writing nothing either way.
+echo "[bash] archive requires mktemp for the staging directory"
+setup_single_file
+# a PATH carrying the real compressor but no mktemp, so the branch gets past
+# its own tool check and fails on this one
+mkdir -p "$WORK/nomk"
+ln -s "$(command -v gzip)" "$WORK/nomk/gzip"
+err=$(run_bash_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'out.gz' payload.bin")
+assert_contains "bash/archive missing mktemp message" "archive: mktemp is not installed" "$err"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "bash/archive missing mktemp exits 1" "1" "$?"
+assert_not_exists "bash/archive missing mktemp wrote nothing" "$WORK/one/out.gz"
+
+# mktemp present but unable to produce a directory: refuse, rather than fall
+# back to any name an attacker could have guessed. The old predictable name is
+# planted as a symlink to prove nothing reaches for it any more.
+echo "[bash] archive falls back to no predictable name when mktemp fails"
+setup_single_file
+mkdir -p "$WORK/failmk"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/failmk/mktemp"
+chmod +x "$WORK/failmk/mktemp"
+printf 'VICTIM' > "$WORK/one/victim"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/failmk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "bash/archive unusable mktemp exits nonzero" "1" "$?"
+assert_eq "bash/archive unusable mktemp touched no predictable name" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
+assert_not_exists "bash/archive unusable mktemp produced no output" "$WORK/one/out.gz"
+# '.archive.' only here: the fixture deliberately plants a file whose own name
+# ends in .tmp.<pid>, and that plant is the point of the case, not a leftover.
+assert_eq "bash/archive unusable mktemp left no staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
+
+# Publishing the staged archive can fail on its own (a read-only directory, a
+# full disk). The staged file must not be left lying around as a stray .tmp,
+# and the failure must be reported. A stub mv makes it fail as any user.
+echo "[bash] archive cleans up when the publish fails"
+setup_single_file
+mkdir -p "$WORK/stubmv"
+printf '#!/bin/sh\nexit 7\n' > "$WORK/stubmv/mv"
+chmod +x "$WORK/stubmv/mv"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubmv:$PATH'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "bash/archive publish failure exits with mv's code" "7" "$?"
+assert_not_exists "bash/archive publish failure wrote no output" "$WORK/one/out.gz"
+assert_eq "bash/archive publish failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
+
+# What actually closes the symlink race is WHERE the archive is staged: mktemp
+# creates a file exclusively, but the compressor reopens it by name, and in a
+# directory others can write to that name can be unlinked and replaced in
+# between. A 0700 directory nobody else can traverse removes the window. The
+# stub records the path it was handed and that directory's mode, so both are
+# checked directly rather than inferred.
+echo "[bash] archive stages inside a private directory"
+setup_single_file
+mkdir -p "$WORK/stagebin"
+cat > "$WORK/stagebin/zstd" <<'STUB'
+#!/bin/sh
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        *)  shift ;;
+    esac
+done
+printf '%s %s\n' "$out" "$(ls -ld "${out%/*}" | cut -c1-10)" > "$STAGE_LOG"
+printf 'STUB' > "$out"
+STUB
+chmod +x "$WORK/stagebin/zstd"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stagebin:$PATH' STAGE_LOG='$WORK/stage.log'; cd '$WORK/one' && archive 'out.zst' payload.bin" >/dev/null 2>&1
+assert_success "bash/archive staged run exit code" "$?"
+assert_contains "bash/archive staged in a .archive directory" "/.archive." "$(cat "$WORK/stage.log" 2>/dev/null)"
+assert_contains "bash/archive staging directory is private" "drwx------" "$(cat "$WORK/stage.log" 2>/dev/null)"
+assert_exists "bash/archive published the staged file" "$WORK/one/out.zst"
+assert_eq "bash/archive removed the staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
+
+# 'command -v' answers with the bare name for a shell function, so a local
+# `gzip` passed the availability check and then took the call itself. Two
+# halves: with the real gzip on PATH the function must never run and the round
+# trip must still work; with only the function and no binary the branch must
+# say the tool is missing rather than run it.
+echo "[bash] archive and extract run the program, not a shell function"
+setup_single_file
+SHADOW="gzip() { echo ran > '$WORK/one/shadow-marker'; }; zstd() { echo ran > '$WORK/one/shadow-marker'; }"
+run_bash "$FUNCTIONS_SH" "true; $SHADOW; cd '$WORK/one' && archive 'payload.bin.gz' payload.bin && archive 'payload.bin.zst' payload.bin" >/dev/null 2>&1
+assert_success "bash/archive shadowed run exit code" "$?"
+assert_not_exists "bash/archive ran no shadowing function" "$WORK/one/shadow-marker"
+assert_exists "bash/archive still wrote the real .gz" "$WORK/one/payload.bin.gz"
+assert_exists "bash/archive still wrote the real .zst" "$WORK/one/payload.bin.zst"
+mkdir -p "$WORK/back"
+cp "$WORK/one/payload.bin.gz" "$WORK/back/"
+run_bash "$FUNCTIONS_SH" "true; gunzip() { echo ran > '$WORK/back/shadow-marker'; }; cd '$WORK/back' && extract 'payload.bin.gz'" >/dev/null 2>&1
+assert_not_exists "bash/extract ran no shadowing function" "$WORK/back/shadow-marker"
+assert_eq "bash/extract round-trips past the shadowing function" "$PAYLOAD_SHA" "$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)"
+
+# A function is not an installed program: with no gzip binary reachable, the
+# branch must report it missing instead of calling the function.
+echo "[bash] archive does not accept a shell function as the compressor"
+setup_single_file
+mkdir -p "$WORK/nogzip"
+for _t in mktemp mv rm chmod ls; do
+    _p=$(command -v "$_t") && ln -sf "$_p" "$WORK/nogzip/$_t"
+done
+err=$(run_bash_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nogzip'; gzip() { echo ran > '$WORK/one/shadow-marker'; }; cd '$WORK/one' && archive 'out.gz' payload.bin")
+assert_contains "bash/archive function-only gzip reported missing" "archive: gzip is not installed" "$err"
+assert_not_exists "bash/archive function-only gzip never ran" "$WORK/one/shadow-marker"
+assert_not_exists "bash/archive function-only gzip wrote nothing" "$WORK/one/out.gz"
 
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
@@ -476,6 +770,265 @@ assert_success "zsh/extract tar.xz exit code" "$?"
 assert_exists "zsh/extract tar.xz" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.tar.xz" "$WORK/extracted"
 
+echo "[zsh] archive + extract tar.zst / tzst"
+for _ext in tar.zst tzst; do
+    setup_fixtures
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/test.$_ext' src" 2>/dev/null
+    assert_success "zsh/archive .$_ext exit code" "$?"
+    assert_exists "zsh/archive .$_ext" "$WORK/test.$_ext"
+    mkdir -p "$WORK/extracted"
+    cp "$WORK/test.$_ext" "$WORK/extracted/"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/extracted' && extract 'test.$_ext'" 2>/dev/null
+    assert_success "zsh/extract .$_ext exit code" "$?"
+    assert_exists "zsh/extract .$_ext" "$WORK/extracted/src/file1.txt"
+done
+
+echo "[zsh] archive + extract single-file formats"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'payload.bin.$_ext' payload.bin" 2>/dev/null
+    assert_success "zsh/archive single-file .$_ext exit code" "$?"
+    assert_exists "zsh/archive single-file .$_ext wrote the output" "$WORK/one/payload.bin.$_ext"
+    assert_exists "zsh/archive single-file .$_ext kept the source" "$WORK/one/payload.bin"
+    mkdir -p "$WORK/back"
+    cp "$WORK/one/payload.bin.$_ext" "$WORK/back/"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/back' && extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_success "zsh/extract single-file .$_ext exit code" "$?"
+    actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
+    assert_eq "zsh/extract single-file .$_ext round-trips the bytes" "$PAYLOAD_SHA" "$actual"
+done
+
+echo "[zsh] archive single-file refuses several sources and directories"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    cp "$WORK/one/payload.bin" "$WORK/one/second.bin"
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'multi.$_ext' payload.bin second.bin")
+    assert_contains "zsh/archive .$_ext several sources usage" "$SINGLE_USAGE" "$err"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'multi.$_ext' payload.bin second.bin" 2>/dev/null
+    assert_eq "zsh/archive .$_ext several sources exits 1" "1" "$?"
+    assert_not_exists "zsh/archive .$_ext several sources wrote nothing" "$WORK/one/multi.$_ext"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK' && archive '$WORK/dir.$_ext' one" 2>/dev/null
+    assert_eq "zsh/archive .$_ext directory exits 1" "1" "$?"
+    assert_not_exists "zsh/archive .$_ext directory wrote nothing" "$WORK/dir.$_ext"
+done
+
+echo "[zsh] archive and extract report a missing compressor"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    single_tools "$_ext"
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/one' && archive 'gone.$_ext' payload.bin")
+    assert_contains "zsh/archive missing $CTOOL message" "archive: $CTOOL is not installed" "$err"
+    run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/one' && archive 'gone.$_ext' payload.bin" 2>/dev/null
+    assert_eq "zsh/archive missing $CTOOL exits 1" "1" "$?"
+    assert_not_exists "zsh/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
+    mkdir -p "$WORK/noload"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$WORK/noload/payload.bin.$_ext' payload.bin" 2>/dev/null
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'")
+    assert_contains "zsh/extract missing $DTOOL message" "extract: $DTOOL is not installed" "$err"
+    run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nobin'; cd '$WORK/noload' && extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_eq "zsh/extract missing $DTOOL exits 1" "1" "$?"
+    assert_not_exists "zsh/extract missing $DTOOL wrote nothing" "$WORK/noload/payload.bin"
+done
+
+# A source that does not exist used to reach the compressor, which meant the
+# output had already been created or truncated by the time it failed: naming
+# an existing archive as the output destroyed it. Nothing may be written.
+echo "[zsh] archive single-file refuses a missing source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'keep.$_ext' missing.bin")
+    assert_contains "zsh/archive .$_ext missing source usage" "$SINGLE_USAGE" "$err"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'keep.$_ext' missing.bin" 2>/dev/null
+    assert_eq "zsh/archive .$_ext missing source exits 1" "1" "$?"
+    assert_eq "zsh/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
+    assert_not_exists "zsh/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
+done
+
+# `archive f.gz f.gz` opened f.gz for the compressor's output before reading
+# it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
+# exited 0 doing it. Spellings that resolve to the same path are refused
+# outright, with the file left exactly as it was; names that reach the source
+# through a link are the next block's business.
+echo "[zsh] archive single-file refuses an output that is the source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'ORIGINAL' > "$WORK/one/self.$_ext"
+    for _spell in "self.$_ext" "./self.$_ext"; do
+        err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_spell' 'self.$_ext'")
+        assert_contains "zsh/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
+        assert_eq "zsh/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
+    done
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'self.$_ext' 'self.$_ext'" 2>/dev/null
+    assert_eq "zsh/archive .$_ext output is the source exits 1" "1" "$?"
+done
+
+# Comparing resolved paths does not establish identity: a hard link and a chain
+# of symlinks name the same file by a different path, and a check that only
+# compares strings lets them through. What actually keeps the source safe is
+# that the compressor writes a temporary sibling of the output which is renamed
+# into place afterwards — the source is never the file being written, whatever
+# it is called — so what is asserted here is the source surviving, in the lane
+# that refuses these and in the lane that goes ahead and compresses them.
+echo "[zsh] archive single-file cannot truncate the source through another name"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    ln -s payload.bin "$WORK/one/hop1.$_ext"
+    ln -s "hop1.$_ext" "$WORK/one/hop2.$_ext"
+    for _hop in "hop1.$_ext" "hop2.$_ext"; do
+        run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_hop' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "zsh/archive .$_ext symlink '$_hop' left the source intact" "$PAYLOAD_SHA" "$actual"
+    done
+    if ln "$WORK/one/payload.bin" "$WORK/one/hard.$_ext" 2>/dev/null; then
+        run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'hard.$_ext' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "zsh/archive .$_ext hard link left the source intact" "$PAYLOAD_SHA" "$actual"
+    else
+        echo "  SKIP: zsh/archive .$_ext hard link (filesystem refused)"
+    fi
+done
+
+# A directory sitting where the output should go is not an output. The
+# single-file branch renamed its temporary INTO that directory and reported
+# success with no archive written; the tar and zip branches only failed late,
+# and pwsh's Compress-Archive -Force deleted the directory on the way.
+echo "[zsh] archive refuses a directory at the output path"
+for _fmt in gz tar.gz zip; do
+    setup_single_file
+    mkdir -p "$WORK/one/out.$_fmt"
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'out.$_fmt' payload.bin")
+    assert_contains "zsh/archive .$_fmt directory output message" "is a directory" "$err"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'out.$_fmt' payload.bin" >/dev/null 2>&1
+    assert_eq "zsh/archive .$_fmt directory output exits 1" "1" "$?"
+    assert_exists "zsh/archive .$_fmt directory output still there" "$WORK/one/out.$_fmt"
+    assert_eq "zsh/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
+done
+
+# A compressor that starts and then fails must not look like success: the
+# partial temporary goes, an existing output keeps its contents, and the
+# failure is reported. The stub exits 3 after writing to stdout, so there IS a
+# partial temporary to clean up.
+echo "[zsh] archive reports a compressor that fails"
+    setup_single_file
+    mkdir -p "$WORK/stub3"
+    printf '#!/bin/sh\nprintf PARTIAL\nexit 3\n' > "$WORK/stub3/gzip"
+    chmod +x "$WORK/stub3/gzip"
+    printf 'PRECIOUS' > "$WORK/one/keep.gz"
+    run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stub3:$PATH'; cd '$WORK/one' && archive 'keep.gz' payload.bin" >/dev/null 2>&1
+    assert_eq "zsh/archive compressor failure exits with the tool's code" "3" "$?"
+    assert_eq "zsh/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
+    assert_eq "zsh/archive compressor failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
+
+# Staging happens inside a private 0700 directory nobody else can traverse,
+# which is what keeps the name the compressor reopens from being swapped for a
+# symlink. There is no fallback for a missing mktemp, deliberately: any
+# predictable name would hand that window straight back. These two cases check
+# the branch fails CLOSED instead -- with mktemp gone entirely, and with mktemp
+# present but unable to produce a directory -- writing nothing either way.
+echo "[zsh] archive requires mktemp for the staging directory"
+setup_single_file
+# a PATH carrying the real compressor but no mktemp, so the branch gets past
+# its own tool check and fails on this one
+mkdir -p "$WORK/nomk"
+ln -s "$(command -v gzip)" "$WORK/nomk/gzip"
+err=$(run_zsh_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'out.gz' payload.bin")
+assert_contains "zsh/archive missing mktemp message" "archive: mktemp is not installed" "$err"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "zsh/archive missing mktemp exits 1" "1" "$?"
+assert_not_exists "zsh/archive missing mktemp wrote nothing" "$WORK/one/out.gz"
+
+# mktemp present but unable to produce a directory: refuse, rather than fall
+# back to any name an attacker could have guessed. The old predictable name is
+# planted as a symlink to prove nothing reaches for it any more.
+echo "[zsh] archive falls back to no predictable name when mktemp fails"
+setup_single_file
+mkdir -p "$WORK/failmk"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/failmk/mktemp"
+chmod +x "$WORK/failmk/mktemp"
+printf 'VICTIM' > "$WORK/one/victim"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/failmk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "zsh/archive unusable mktemp exits nonzero" "1" "$?"
+assert_eq "zsh/archive unusable mktemp touched no predictable name" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
+assert_not_exists "zsh/archive unusable mktemp produced no output" "$WORK/one/out.gz"
+# '.archive.' only here: the fixture deliberately plants a file whose own name
+# ends in .tmp.<pid>, and that plant is the point of the case, not a leftover.
+assert_eq "zsh/archive unusable mktemp left no staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
+
+# Publishing the staged archive can fail on its own (a read-only directory, a
+# full disk). The staged file must not be left lying around as a stray .tmp,
+# and the failure must be reported. A stub mv makes it fail as any user.
+echo "[zsh] archive cleans up when the publish fails"
+setup_single_file
+mkdir -p "$WORK/stubmv"
+printf '#!/bin/sh\nexit 7\n' > "$WORK/stubmv/mv"
+chmod +x "$WORK/stubmv/mv"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubmv:$PATH'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "zsh/archive publish failure exits with mv's code" "7" "$?"
+assert_not_exists "zsh/archive publish failure wrote no output" "$WORK/one/out.gz"
+assert_eq "zsh/archive publish failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
+
+# What actually closes the symlink race is WHERE the archive is staged: mktemp
+# creates a file exclusively, but the compressor reopens it by name, and in a
+# directory others can write to that name can be unlinked and replaced in
+# between. A 0700 directory nobody else can traverse removes the window. The
+# stub records the path it was handed and that directory's mode, so both are
+# checked directly rather than inferred.
+echo "[zsh] archive stages inside a private directory"
+setup_single_file
+mkdir -p "$WORK/stagebin"
+cat > "$WORK/stagebin/zstd" <<'STUB'
+#!/bin/sh
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        *)  shift ;;
+    esac
+done
+printf '%s %s\n' "$out" "$(ls -ld "${out%/*}" | cut -c1-10)" > "$STAGE_LOG"
+printf 'STUB' > "$out"
+STUB
+chmod +x "$WORK/stagebin/zstd"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stagebin:$PATH' STAGE_LOG='$WORK/stage.log'; cd '$WORK/one' && archive 'out.zst' payload.bin" >/dev/null 2>&1
+assert_success "zsh/archive staged run exit code" "$?"
+assert_contains "zsh/archive staged in a .archive directory" "/.archive." "$(cat "$WORK/stage.log" 2>/dev/null)"
+assert_contains "zsh/archive staging directory is private" "drwx------" "$(cat "$WORK/stage.log" 2>/dev/null)"
+assert_exists "zsh/archive published the staged file" "$WORK/one/out.zst"
+assert_eq "zsh/archive removed the staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
+
+# 'command -v' answers with the bare name for a shell function, so a local
+# `gzip` passed the availability check and then took the call itself. Two
+# halves: with the real gzip on PATH the function must never run and the round
+# trip must still work; with only the function and no binary the branch must
+# say the tool is missing rather than run it.
+echo "[zsh] archive and extract run the program, not a shell function"
+setup_single_file
+SHADOW="gzip() { echo ran > '$WORK/one/shadow-marker'; }; zstd() { echo ran > '$WORK/one/shadow-marker'; }"
+run_zsh "$FUNCTIONS_SH" "true; $SHADOW; cd '$WORK/one' && archive 'payload.bin.gz' payload.bin && archive 'payload.bin.zst' payload.bin" >/dev/null 2>&1
+assert_success "zsh/archive shadowed run exit code" "$?"
+assert_not_exists "zsh/archive ran no shadowing function" "$WORK/one/shadow-marker"
+assert_exists "zsh/archive still wrote the real .gz" "$WORK/one/payload.bin.gz"
+assert_exists "zsh/archive still wrote the real .zst" "$WORK/one/payload.bin.zst"
+mkdir -p "$WORK/back"
+cp "$WORK/one/payload.bin.gz" "$WORK/back/"
+run_zsh "$FUNCTIONS_SH" "true; gunzip() { echo ran > '$WORK/back/shadow-marker'; }; cd '$WORK/back' && extract 'payload.bin.gz'" >/dev/null 2>&1
+assert_not_exists "zsh/extract ran no shadowing function" "$WORK/back/shadow-marker"
+assert_eq "zsh/extract round-trips past the shadowing function" "$PAYLOAD_SHA" "$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)"
+
+# A function is not an installed program: with no gzip binary reachable, the
+# branch must report it missing instead of calling the function.
+echo "[zsh] archive does not accept a shell function as the compressor"
+setup_single_file
+mkdir -p "$WORK/nogzip"
+for _t in mktemp mv rm chmod ls; do
+    _p=$(command -v "$_t") && ln -sf "$_p" "$WORK/nogzip/$_t"
+done
+err=$(run_zsh_stderr "$FUNCTIONS_SH" "export PATH='$WORK/nogzip'; gzip() { echo ran > '$WORK/one/shadow-marker'; }; cd '$WORK/one' && archive 'out.gz' payload.bin")
+assert_contains "zsh/archive function-only gzip reported missing" "archive: gzip is not installed" "$err"
+assert_not_exists "zsh/archive function-only gzip never ran" "$WORK/one/shadow-marker"
+assert_not_exists "zsh/archive function-only gzip wrote nothing" "$WORK/one/out.gz"
+
 echo "[zsh] path"
 actual=$(run_zsh "$FUNCTIONS_SH" "path")
 assert_contains "zsh/path contains /usr" "/usr" "$actual"
@@ -568,6 +1121,8 @@ assert_exists "pwsh/extract multi second archive" "$WORK/multi/second/file2.txt"
 rm -rf "$WORK/multi" && mkdir -p "$WORK/multi"
 err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/one.tar.gz' '$WORK/missing.tar.gz'" 2>&1 >/dev/null)
 assert_contains "pwsh/extract multi reports the failed archive" "1 of 2 archives failed" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/multi'; extract '$WORK/one.tar.gz' '$WORK/missing.tar.gz'" >/dev/null 2>&1
+assert_eq "pwsh/extract multi with a missing archive exits 1" "1" "$?"
 assert_exists "pwsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 # A corrupt zip goes through the cmdlet path (Expand-Archive), which never sets
 # $LASTEXITCODE; its failure must still be counted, and a healthy archive after
@@ -599,6 +1154,34 @@ assert_success "pwsh/archive crafted tar.gz exit code" "$?"
 assert_not_exists "pwsh/archive crafted tar.gz ran no command" "$WORK/crafted/pwned"
 actual=$(tar tzf "$WORK/out.tar.gz" 2>/dev/null)
 assert_contains "pwsh/archive crafted tar.gz stored the file" "$CRAFTED_SRC" "$actual"
+
+# The output name is a path too. The POSIX twin has always normalised a
+# dash-leading $out with './'; pwsh did it only for extract's $Path. Two
+# branches actually broke without that: 7z reads '-x.7z' as its own exclude
+# switch, and zstd's -o refuses a value starting with '-'. tar (where the name
+# is -f's operand) and the redirected forms were already fine, but every shape
+# is checked here so a later branch cannot regress quietly.
+echo "[pwsh] archive neutralizes a dash-leading output name"
+setup_fixtures
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive '-x.tar.gz' 'src'" 2>/dev/null
+assert_success "pwsh/archive dash-leading tar.gz exit code" "$?"
+assert_exists "pwsh/archive dash-leading tar.gz" "$WORK/-x.tar.gz"
+actual=$(tar tzf "$WORK/-x.tar.gz" 2>/dev/null)
+assert_contains "pwsh/archive dash-leading tar.gz stored the source" "src/file1.txt" "$actual"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/src'; archive '-y.zst' 'file1.txt'" 2>/dev/null
+assert_success "pwsh/archive dash-leading single-file .zst exit code" "$?"
+assert_exists "pwsh/archive dash-leading single-file .zst" "$WORK/src/-y.zst"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/src'; archive '-y.gz' 'file1.txt'" 2>/dev/null
+assert_success "pwsh/archive dash-leading single-file .gz exit code" "$?"
+assert_exists "pwsh/archive dash-leading single-file .gz" "$WORK/src/-y.gz"
+# 7z is the branch that misreads the name outright ('-x' is its exclude
+# switch), and it has no '--' to fall back on, so what it was handed is read
+# off the stub's argv rather than off a result.
+setup_archiver_stubs
+: > "$WORK/stubsrc/plain.txt"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; archive '-x.7z' 'plain.txt'" >/dev/null 2>&1
+actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
+assert_eq "pwsh/archive dash-leading 7z output argv" "a ./-x.7z plain.txt " "$actual"
 
 # Compress-Archive -Path reads [ ] * ? as wildcards, so the zip branch has to
 # name the source literally or it archives the file the pattern happens to hit.
@@ -700,6 +1283,359 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/extracted'; extract 'tes
 assert_success "pwsh/extract tar.xz exit code" "$?"
 assert_exists "pwsh/extract tar.xz" "$WORK/extracted/src/file1.txt"
 rm -rf "$WORK/test.tar.xz" "$WORK/extracted"
+
+echo "[pwsh] archive + extract tar.zst / tzst"
+for _ext in tar.zst tzst; do
+    setup_fixtures
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'test.$_ext' 'src'" 2>/dev/null
+    assert_success "pwsh/archive .$_ext exit code" "$?"
+    assert_exists "pwsh/archive .$_ext" "$WORK/test.$_ext"
+    mkdir -p "$WORK/extracted"
+    cp "$WORK/test.$_ext" "$WORK/extracted/"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/extracted'; extract 'test.$_ext'" 2>/dev/null
+    assert_success "pwsh/extract .$_ext exit code" "$?"
+    assert_exists "pwsh/extract .$_ext" "$WORK/extracted/src/file1.txt"
+done
+
+# The gzip/bzip2/xz branches redirect a native command's stdout into the
+# output: the payload is binary, so a round trip that still matches proves
+# PowerShell wrote those bytes through unchanged.
+echo "[pwsh] archive + extract single-file formats"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'payload.bin.$_ext' 'payload.bin'" 2>/dev/null
+    assert_success "pwsh/archive single-file .$_ext exit code" "$?"
+    assert_exists "pwsh/archive single-file .$_ext wrote the output" "$WORK/one/payload.bin.$_ext"
+    assert_exists "pwsh/archive single-file .$_ext kept the source" "$WORK/one/payload.bin"
+    mkdir -p "$WORK/back"
+    cp "$WORK/one/payload.bin.$_ext" "$WORK/back/"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/back'; extract 'payload.bin.$_ext'" 2>/dev/null
+    assert_success "pwsh/extract single-file .$_ext exit code" "$?"
+    actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
+    assert_eq "pwsh/extract single-file .$_ext round-trips the bytes" "$PAYLOAD_SHA" "$actual"
+done
+
+# pwsh reports these through the error stream, as every other failure in
+# archive/extract does, and terminates so the refusal reaches the process
+# status: the message, exit 1 and the absence of an output are all asserted,
+# the same three things the bash and zsh cases check.
+echo "[pwsh] archive single-file refuses several sources and directories"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    cp "$WORK/one/payload.bin" "$WORK/one/second.bin"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'multi.$_ext' 'payload.bin' 'second.bin'")
+    assert_contains "pwsh/archive .$_ext several sources usage" "$SINGLE_USAGE" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'multi.$_ext' 'payload.bin' 'second.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext several sources exits 1" "1" "$?"
+    assert_not_exists "pwsh/archive .$_ext several sources wrote nothing" "$WORK/one/multi.$_ext"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'dir.$_ext' 'one'")
+    assert_contains "pwsh/archive .$_ext directory usage" "$SINGLE_USAGE" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'dir.$_ext' 'one'" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext directory exits 1" "1" "$?"
+    assert_not_exists "pwsh/archive .$_ext directory wrote nothing" "$WORK/dir.$_ext"
+done
+
+echo "[pwsh] archive and extract report a missing compressor"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    single_tools "$_ext"
+    # A terminating error renders as PowerShell's error block: the activity
+    # ("archive:") and the message land on separate lines, so the message is
+    # what is matched. The "archive: archive:" shape the stderr-format section
+    # forbids cannot occur — the prefix comes from the activity, not the text.
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'")
+    assert_contains "pwsh/archive missing $CTOOL message" "$CTOOL is not installed" "$err"
+    assert_not_contains "pwsh/archive missing $CTOOL no double prefix" "archive: archive:" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive missing $CTOOL exits 1" "1" "$?"
+    assert_not_exists "pwsh/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
+    mkdir -p "$WORK/noload"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$WORK/noload/payload.bin.$_ext' 'payload.bin'" 2>/dev/null
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'")
+    assert_contains "pwsh/extract missing $CTOOL message" "$CTOOL is not installed" "$err"
+    assert_not_contains "pwsh/extract missing $CTOOL no double prefix" "extract: extract:" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'" >/dev/null 2>&1
+    assert_eq "pwsh/extract missing $CTOOL exits 1" "1" "$?"
+    assert_not_exists "pwsh/extract missing $CTOOL wrote nothing" "$WORK/noload/payload.bin"
+done
+
+# A source that does not exist used to reach the compressor, which meant the
+# output had already been created or truncated by the time it failed: naming
+# an existing archive as the output destroyed it. Nothing may be written.
+echo "[pwsh] archive single-file refuses a missing source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'keep.$_ext' missing.bin")
+    assert_contains "pwsh/archive .$_ext missing source usage" "$SINGLE_USAGE" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'keep.$_ext' missing.bin" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext missing source exits 1" "1" "$?"
+    assert_eq "pwsh/archive .$_ext missing source left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
+    assert_not_exists "pwsh/archive .$_ext missing source made no new output" "$WORK/one/missing.bin.$_ext"
+done
+
+# `archive f.gz f.gz` opened f.gz for the compressor's output before reading
+# it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
+# exited 0 doing it. Spellings that resolve to the same path are refused
+# outright, with the file left exactly as it was; names that reach the source
+# through a link are the next block's business.
+echo "[pwsh] archive single-file refuses an output that is the source"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    printf 'ORIGINAL' > "$WORK/one/self.$_ext"
+    for _spell in "self.$_ext" "./self.$_ext"; do
+        err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_spell' 'self.$_ext'")
+        assert_contains "pwsh/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
+        run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_spell' 'self.$_ext'" >/dev/null 2>&1
+        assert_eq "pwsh/archive .$_ext output '$_spell' exits 1" "1" "$?"
+        assert_eq "pwsh/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
+    done
+done
+
+# Comparing resolved paths does not establish identity: a hard link and a chain
+# of symlinks name the same file by a different path, and a check that only
+# compares strings lets them through. What actually keeps the source safe is
+# that the compressor writes a temporary sibling of the output which is renamed
+# into place afterwards — the source is never the file being written, whatever
+# it is called — so what is asserted here is the source surviving, in the lane
+# that refuses these and in the lane that goes ahead and compresses them.
+echo "[pwsh] archive single-file cannot truncate the source through another name"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    ln -s payload.bin "$WORK/one/hop1.$_ext"
+    ln -s "hop1.$_ext" "$WORK/one/hop2.$_ext"
+    for _hop in "hop1.$_ext" "hop2.$_ext"; do
+        run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_hop' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "pwsh/archive .$_ext symlink '$_hop' left the source intact" "$PAYLOAD_SHA" "$actual"
+    done
+    if ln "$WORK/one/payload.bin" "$WORK/one/hard.$_ext" 2>/dev/null; then
+        run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'hard.$_ext' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "pwsh/archive .$_ext hard link left the source intact" "$PAYLOAD_SHA" "$actual"
+    else
+        echo "  SKIP: pwsh/archive .$_ext hard link (filesystem refused)"
+    fi
+done
+
+# Get-Command matches functions and aliases too, but _ArCompressTo starts the
+# compressor through ProcessStartInfo, which can only launch a program. With a
+# gzip FUNCTION defined and no gzip on PATH, the check used to report success
+# and Process.Start then threw; the branch has to say the tool is missing.
+echo "[pwsh] archive does not mistake a function for the compressor"
+setup_single_file
+err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; function gzip { 'not the real gzip' }; Set-Location '$WORK/one'; archive 'shadow.gz' 'payload.bin'")
+assert_contains "pwsh/archive function-shadowed gzip reports it missing" "gzip is not installed" "$err"
+
+# The other half of the same problem: with the real gzip ON PATH, a branch that
+# invoked the bare name would run a same-named PowerShell function instead of
+# the program that was checked for. Every invocation goes through the resolved
+# program path, so the marker the shadow would leave never appears and the
+# round trip still produces a real archive.
+echo "[pwsh] archive and extract run the program, not a same-named function"
+setup_single_file
+SHADOW="function gzip { 'ran' > 'shadow-marker' }; function zstd { 'ran' > 'shadow-marker' }"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "$SHADOW; Set-Location '$WORK/one'; archive 'payload.bin.gz' 'payload.bin'; archive 'payload.bin.zst' 'payload.bin'" >/dev/null 2>&1
+assert_not_exists "pwsh/archive ran no shadowing function" "$WORK/one/shadow-marker"
+assert_exists "pwsh/archive still wrote the real .gz" "$WORK/one/payload.bin.gz"
+assert_exists "pwsh/archive still wrote the real .zst" "$WORK/one/payload.bin.zst"
+mkdir -p "$WORK/back"
+cp "$WORK/one/payload.bin.gz" "$WORK/back/"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "$SHADOW; Set-Location '$WORK/back'; extract 'payload.bin.gz'" >/dev/null 2>&1
+assert_not_exists "pwsh/extract ran no shadowing function" "$WORK/back/shadow-marker"
+actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
+assert_eq "pwsh/extract round-trips past the shadowing function" "$PAYLOAD_SHA" "$actual"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; function gzip { 'x' }; Set-Location '$WORK/one'; archive 'shadow.gz' 'payload.bin'" >/dev/null 2>&1
+assert_eq "pwsh/archive function-shadowed gzip exits 1" "1" "$?"
+assert_not_contains "pwsh/archive function-shadowed gzip did not start a process" "ProcessStartInfo" "$err"
+assert_not_contains "pwsh/archive function-shadowed gzip threw no win32 error" "No such file or directory" "$err"
+assert_not_exists "pwsh/archive function-shadowed gzip wrote nothing" "$WORK/one/shadow.gz"
+
+# A directory sitting where the output should go is not an output. The
+# single-file branch renamed its temporary INTO that directory and reported
+# success with no archive written; the tar and zip branches only failed late,
+# and pwsh's Compress-Archive -Force deleted the directory on the way.
+echo "[pwsh] archive refuses a directory at the output path"
+for _fmt in gz tar.gz zip; do
+    setup_single_file
+    mkdir -p "$WORK/one/out.$_fmt"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'out.$_fmt' payload.bin")
+    assert_contains "pwsh/archive .$_fmt directory output message" "is a directory" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'out.$_fmt' payload.bin" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_fmt directory output exits 1" "1" "$?"
+    assert_exists "pwsh/archive .$_fmt directory output still there" "$WORK/one/out.$_fmt"
+    assert_eq "pwsh/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
+done
+
+# Same as the bash case: a compressor that starts and then fails must not look
+# like success. pwsh raises a terminating error naming the tool and its code,
+# because a terminating error is the only thing that reaches the process status.
+echo "[pwsh] archive reports a compressor that fails"
+    setup_single_file
+    mkdir -p "$WORK/stub3"
+    printf '#!/bin/sh\nprintf PARTIAL\nexit 3\n' > "$WORK/stub3/gzip"
+    chmod +x "$WORK/stub3/gzip"
+    printf 'PRECIOUS' > "$WORK/one/keep.gz"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stub3:' + \$env:PATH; Set-Location '$WORK/one'; archive 'keep.gz' 'payload.bin'")
+    assert_contains "pwsh/archive compressor failure names the tool and code" "gzip exited 3" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stub3:' + \$env:PATH; Set-Location '$WORK/one'; archive 'keep.gz' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive compressor failure exits 1" "1" "$?"
+    assert_eq "pwsh/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
+    # pwsh stages as "<output>.tmp.<random>", not in a directory as POSIX does.
+    assert_eq "pwsh/archive compressor failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
+
+# A destination that cannot be written has to fail too, rather than report an
+# archive nobody can find. root ignores the mode bits, so there it is skipped.
+echo "[pwsh] archive reports an unwritable destination"
+setup_single_file
+mkdir -p "$WORK/ro"
+if [ "$(id -u)" -ne 0 ] && chmod 500 "$WORK/ro" 2>/dev/null; then
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$WORK/ro/out.gz' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive unwritable destination exits 1" "1" "$?"
+    assert_not_exists "pwsh/archive unwritable destination wrote nothing" "$WORK/ro/out.gz"
+    chmod 700 "$WORK/ro"
+else
+    echo "  SKIP: pwsh/archive unwritable destination (running as root)"
+fi
+
+# _ArCompressTo used to start the compressor and only then open the
+# destination, with just the file stream in a finally: when File.Create threw
+# -- an unwritable directory, a path that does not exist -- a started child was
+# left with nobody draining its pipe and was never waited on. The destination
+# is opened first now, so a destination that cannot be opened means the
+# compressor is never started at all. The stub records that it ran; the marker
+# must not appear.
+echo "[pwsh] archive opens the destination before starting the compressor"
+setup_single_file
+mkdir -p "$WORK/markbin"
+printf '#!/bin/sh\ntouch "%s/one/compressor-ran"\ncat\n' "$WORK" > "$WORK/markbin/gzip"
+chmod +x "$WORK/markbin/gzip"
+err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/markbin:' + \$env:PATH; Set-Location '$WORK/one'; archive '$WORK/no-such-dir/out.gz' 'payload.bin'")
+assert_not_exists "pwsh/archive unopenable destination started no compressor" "$WORK/one/compressor-ran"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/markbin:' + \$env:PATH; Set-Location '$WORK/one'; archive '$WORK/no-such-dir/out.gz' 'payload.bin'" >/dev/null 2>&1
+assert_eq "pwsh/archive unopenable destination exits 1" "1" "$?"
+assert_not_exists "pwsh/archive unopenable destination wrote nothing" "$WORK/no-such-dir/out.gz"
+# procps is not in tests/shell/Dockerfile, so the process sweep only runs where
+# pgrep happens to exist; the marker above is the check that always runs.
+if command -v pgrep >/dev/null 2>&1; then
+    assert_eq "pwsh/archive left no compressor process behind" "" "$(pgrep -x gzip | tr -d '\n')"
+else
+    echo "  SKIP: pwsh/archive process sweep (pgrep not installed)"
+fi
+
+# Test-Path -PathType Leaf only means "not a container", so a FIFO, /dev/null
+# and /dev/zero all passed it and `archive out.zst /dev/zero` would run until
+# the disk filled. The POSIX twin refuses these with [ -f ]; pwsh has to ask
+# the same question. The FIFO case runs under `timeout` on purpose: if this
+# check ever regresses, the compressor blocks on the pipe forever rather than
+# failing, and an unguarded run would hang the suite.
+echo "[pwsh] archive single-file refuses a source that is not a regular file"
+setup_single_file
+if command -v mkfifo >/dev/null 2>&1 && mkfifo "$WORK/one/fifo.src" 2>/dev/null; then
+    err=$(timeout 30 pwsh -NoProfile -NonInteractive -Command "
+        . '$FUNCTIONS_PS1_COMBINED'
+        Set-Location '$WORK/one'
+        archive 'fifo.gz' 'fifo.src'
+    " 2>&1 >/dev/null | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
+    assert_contains "pwsh/archive fifo source usage" "$SINGLE_USAGE" "$err"
+    assert_not_exists "pwsh/archive fifo source wrote nothing" "$WORK/one/fifo.gz"
+    assert_eq "pwsh/archive fifo source left no temporary" "" "$(ls "$WORK/one" | grep '^fifo\.gz\.tmp' | tr -d '\n')"
+else
+    echo "  SKIP: pwsh/archive fifo source (mkfifo unavailable)"
+fi
+if [ -c /dev/null ]; then
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'dev.gz' '/dev/null'")
+    assert_contains "pwsh/archive character-device source usage" "$SINGLE_USAGE" "$err"
+    assert_not_exists "pwsh/archive character-device source wrote nothing" "$WORK/one/dev.gz"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'dev.gz' '/dev/null'" >/dev/null 2>&1
+    assert_eq "pwsh/archive character-device source exits 1" "1" "$?"
+else
+    echo "  SKIP: pwsh/archive character-device source (/dev/null not a device here)"
+fi
+# a plain regular file, and a symlink pointing at one, must still be accepted
+ln -sf payload.bin "$WORK/one/via-link.bin"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'viaLink.gz' 'via-link.bin'" >/dev/null 2>&1
+assert_eq "pwsh/archive still accepts a symlink to a regular file" "0" "$?"
+assert_exists "pwsh/archive symlink source produced the archive" "$WORK/one/viaLink.gz"
+
+# The refusal is load-bearing, not just a nicer message: staging keeps the
+# source readable while the archive is built, but the final rename lands ON the
+# output, so wherever the output and the source are one directory entry the
+# source is replaced by its own compressed form. A case-sensitive path compare
+# missed every alias -- hard link, symlink chain, and on a case-insensitive
+# volume a different spelling. The check asks the filesystem now (device and
+# inode), so these are refused outright rather than merely survived.
+echo "[pwsh] archive refuses an output aliasing the source, by file identity"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    ln -s payload.bin "$WORK/one/hop1.$_ext"
+    ln -s "hop1.$_ext" "$WORK/one/hop2.$_ext"
+    for _alias in "hop1.$_ext" "hop2.$_ext"; do
+        err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_alias' 'payload.bin'")
+        assert_contains "pwsh/archive .$_ext '$_alias' refused as the source" "is the source file" "$err"
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "pwsh/archive .$_ext '$_alias' left the source intact" "$PAYLOAD_SHA" "$actual"
+    done
+    if ln "$WORK/one/payload.bin" "$WORK/one/hard.$_ext" 2>/dev/null; then
+        err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'hard.$_ext' 'payload.bin'")
+        assert_contains "pwsh/archive .$_ext hard link refused as the source" "is the source file" "$err"
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "pwsh/archive .$_ext hard link left the source intact" "$PAYLOAD_SHA" "$actual"
+    else
+        echo "  SKIP: pwsh/archive .$_ext hard link alias (filesystem refused)"
+    fi
+done
+
+# The case-insensitive spelling that motivated all of this can only be
+# exercised where the filesystem actually folds case. Linux CI cannot make such
+# a volume, so this runs on Windows only.
+echo "[pwsh] archive refuses a different-case spelling of the source"
+if [ "$(run_pwsh "$FUNCTIONS_PS1_COMBINED" 'if ($IsWindows) { "yes" } else { "no" }' 2>/dev/null | tr -d '\r')" = "yes" ]; then
+    setup_single_file
+    cp "$WORK/one/payload.bin" "$WORK/one/self.gz"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'SELF.GZ' 'self.gz'")
+    assert_contains "pwsh/archive different-case output refused" "is the source file" "$err"
+    assert_eq "pwsh/archive different-case output left the source intact" "$PAYLOAD_SHA" "$(sha256sum "$WORK/one/self.gz" | cut -d' ' -f1)"
+else
+    echo "  SKIP: pwsh/archive different-case output (needs a case-insensitive volume; Windows only)"
+fi
+
+# On Windows there is no 'test -ef', so identity is established from the item's
+# own link information: a symlink is resolved to its target, and a hard link
+# reports its OTHER names in .Target. Neither can be exercised on Linux -- the
+# Windows branch is not even reached -- so the refusals are Windows-only. The
+# helpers themselves are smoke-checked everywhere, since a shape they cannot
+# handle would throw on the platform that does use them.
+echo "[pwsh] archive same-file helpers behave on link input"
+setup_single_file
+ln -s payload.bin "$WORK/one/smoke-link.bin"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    Set-Location '$WORK/one'
+    \$i = Get-Item -LiteralPath 'smoke-link.bin' -Force
+    (_ArLinkTarget \$i) + '|' + (_ArVolumeRelative 'C:\Some\Where.gz') + '|' + (_ArVolumeRelative '/tmp/x')
+" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/_ArLinkTarget resolves a symlink to its target" "payload.bin" "$actual"
+# The volume root is only recognised on the platform that has volumes, so all
+# that holds everywhere is: the answer is backslash-rooted and keeps the tail.
+assert_contains "pwsh/_ArVolumeRelative keeps the path tail" 'Some\Where.gz' "$actual"
+assert_contains "pwsh/_ArVolumeRelative returns a rooted path" '|\' "$actual"
+
+echo "[pwsh] archive refuses a Windows hard link or symlink aliasing the source"
+if [ "$(run_pwsh "$FUNCTIONS_PS1_COMBINED" 'if ($IsWindows) { "yes" } else { "no" }' 2>/dev/null | tr -d '\r')" = "yes" ]; then
+    actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "_ArVolumeRelative 'C:\Some\Where.gz'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/_ArVolumeRelative drops the volume root on windows" '\Some\Where.gz' "$actual"
+    setup_single_file
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "New-Item -ItemType HardLink -Path '$WORK/one/hardlink.gz' -Target '$WORK/one/payload.bin' | Out-Null" >/dev/null 2>&1
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'hardlink.gz' 'payload.bin'")
+    assert_contains "pwsh/archive windows hard link refused as the source" "is the source file" "$err"
+    assert_eq "pwsh/archive windows hard link left the source intact" "$PAYLOAD_SHA" "$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "New-Item -ItemType SymbolicLink -Path '$WORK/one/symlink.gz' -Target '$WORK/one/payload.bin' | Out-Null" >/dev/null 2>&1
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'symlink.gz' 'payload.bin'")
+    assert_contains "pwsh/archive windows symlink refused as the source" "is the source file" "$err"
+    assert_eq "pwsh/archive windows symlink left the source intact" "$PAYLOAD_SHA" "$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)"
+else
+    echo "  SKIP: pwsh/archive windows link aliases (Windows only; the -ef path covers Unix)"
+fi
 
 echo "[pwsh] extract unsupported format"
 touch "$WORK/test.foo"

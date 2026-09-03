@@ -15,7 +15,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 
 # =============================================================================
-# System packages: bash, zsh, git, coreutils, findutils, zip/unzip
+# System packages: bash, zsh, git, coreutils, findutils, zip/unzip,
+# bzip2/xz-utils/zstd (archive + extract's single-file and .tar.zst branches)
 # =============================================================================
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -31,6 +32,7 @@ RUN apt-get update && \
         unzip \
         bzip2 \
         xz-utils \
+        zstd \
         parallel \
         pigz \
         pbzip2 \
