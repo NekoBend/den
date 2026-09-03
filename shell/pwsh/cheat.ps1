@@ -26,11 +26,14 @@ function _CheatRender([string]$Dir, [string]$Rel) {
     }
 }
 
+# No message here writes a "cheat: " prefix of its own: PowerShell attributes an
+# error to the function that RAISED it, so one would reach stderr as
+# "cheat: cheat: ..." (the shape tests/shell/test_cheat.sh now forbids).
 function cheat {
     $name = if ($args.Count -gt 0) { [string]$args[0] } else { '' }
     $dir = _CheatDir
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
-        Write-Error 'cheat: no cheatsheets installed. Run: den install cheatsheets'
+        Write-Error 'no cheatsheets installed. Run: den install cheatsheets'
         return
     }
     if ($name -in @('-h', '--help', 'help')) {
@@ -43,7 +46,7 @@ function cheat {
     $sel = $null
     if (-not $name) {
         if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
-            Write-Error "cheat: fzf not found; use 'cheat <name>' or 'cheat ls'"
+            Write-Error "fzf not found; use 'cheat <name>' or 'cheat ls'"
             return
         }
         $sel = $all | fzf --no-multi --prompt 'cheat> '
@@ -51,14 +54,14 @@ function cheat {
         $hit = @($all | Where-Object { $_ -eq $name })
         if ($hit.Count -eq 0) { $hit = @($all | Where-Object { $_ -like "*$name*" }) }
         if ($hit.Count -eq 0) {
-            Write-Error "cheat: no cheatsheet matching '$name'"
+            Write-Error "no cheatsheet matching '$name'"
             return
         } elseif ($hit.Count -eq 1) {
             $sel = $hit[0]
         } elseif (Get-Command fzf -ErrorAction SilentlyContinue) {
             $sel = $hit | fzf --no-multi --prompt 'cheat> '
         } else {
-            Write-Error "cheat: '$name' is ambiguous:"
+            Write-Error "'$name' is ambiguous:"
             $hit | ForEach-Object { Write-Host "  $_" }
             return
         }

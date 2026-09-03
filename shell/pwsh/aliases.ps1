@@ -157,6 +157,9 @@ function _ShapeCmdArgs([object[]]$Arguments) {
 # name: this function is itself named `code`, so a bare `code` would recurse, and
 # probing only `code.cmd` -- a Windows-only launcher name -- meant Linux/macOS
 # pwsh with stable VS Code installed reported "not installed" instead of opening it.
+# No message here writes a "code: " prefix of its own: PowerShell attributes an
+# error to the function that RAISED it, so one would reach stderr as
+# "code: code: ...".
 function code {
   $exe = _ResolveCmd 'code-insiders' 'App'
   if (-not $exe) { $exe = _ResolveCmd 'code' 'App' }
@@ -173,7 +176,7 @@ function code {
   if ($exe -match '\.(cmd|bat)$') {
     try { $shaped = _ShapeCmdArgs $Args }
     catch {
-      Write-Error "code: $($_.Exception.Message) - cmd.exe would re-parse it. Open the file from inside VS Code, or call the launcher yourself."
+      Write-Error "$($_.Exception.Message) - cmd.exe would re-parse it. Open the file from inside VS Code, or call the launcher yourself."
       return
     }
     & $exe @shaped
