@@ -1423,11 +1423,12 @@ echo "[pwsh] archive and extract report a missing compressor"
 for _ext in $SINGLE_FMTS; do
     setup_single_file
     single_tools "$_ext"
-    # A terminating error renders as PowerShell's error block: the activity
-    # ("archive:") and the message land on separate lines, so the message is
-    # what is matched. The "archive: archive:" shape the stderr-format section
-    # forbids cannot occur — the prefix comes from the activity, not the text.
-    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'")
+    # run_pwsh_stderr_oneline, not run_pwsh_stderr: the double-prefix check is
+    # only meaningful in ConciseView's compact "archive: <message>" form, which
+    # PowerShell renders for a single-line command. The multi-line form puts
+    # the prefix it adds and the message on separate lines, where a doubled
+    # prefix is invisible to a substring match.
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'")
     assert_contains "pwsh/archive missing $CTOOL message" "$CTOOL is not installed" "$err"
     assert_not_contains "pwsh/archive missing $CTOOL no double prefix" "archive: archive:" "$err"
     run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'" >/dev/null 2>&1
@@ -1435,7 +1436,7 @@ for _ext in $SINGLE_FMTS; do
     assert_not_exists "pwsh/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
     mkdir -p "$WORK/noload"
     run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$WORK/noload/payload.bin.$_ext' 'payload.bin'" 2>/dev/null
-    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'")
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'")
     assert_contains "pwsh/extract missing $CTOOL message" "$CTOOL is not installed" "$err"
     assert_not_contains "pwsh/extract missing $CTOOL no double prefix" "extract: extract:" "$err"
     run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'" >/dev/null 2>&1
@@ -1776,6 +1777,10 @@ echo ""
 echo "================================================"
 echo "  Testing stderr format (no double-prefix)"
 echo "================================================"
+# These cases go through run_pwsh_stderr_oneline on purpose: see the runner's
+# comment in helpers.sh. With the multi-line run_pwsh_stderr the forbidden
+# "<fn>: <fn>:" shape is split across two lines and every assertion below
+# passes whether or not the bug is present.
 
 echo "[pwsh] digest usage stderr"
 err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "digest sha256")
@@ -1785,17 +1790,17 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256" >/dev/null 2>&1
 assert_eq "pwsh/digest usage exits 1" "1" "$?"
 
 echo "[pwsh] mkcd usage stderr"
-err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "mkcd")
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "mkcd")
 assert_contains "pwsh/mkcd stderr has usage" "usage:" "$err"
 assert_not_contains "pwsh/mkcd no double prefix" "mkcd: mkcd:" "$err"
 
 echo "[pwsh] again usage stderr"
-err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "again -N 0")
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "again -N 0")
 assert_contains "pwsh/again stderr has usage" "usage:" "$err"
 assert_not_contains "pwsh/again no double prefix" "again: again:" "$err"
 
 echo "[pwsh] back usage stderr"
-err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "back -N 0")
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "back -N 0")
 assert_contains "pwsh/back stderr has usage" "usage:" "$err"
 assert_not_contains "pwsh/back no double prefix" "back: back:" "$err"
 
