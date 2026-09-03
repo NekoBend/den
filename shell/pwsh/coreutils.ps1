@@ -105,12 +105,19 @@ function head {
 function split {
   $__cu = _CoreutilsBin
   if ($__cu) { $input | & $__cu split @Args; return }
+  # Every captured operand is cast to [string]. PowerShell binds a bare
+  # numeric argument as a NUMBER, and "$x -ne ''" coerces the right side to
+  # the left side's type, so [int]'' is 0 and `-n 0` compared equal to "not
+  # given": the invalid-chunk-count guard below was unreachable and
+  # `split -n 0` silently fell through to the 1000-line default instead of
+  # being refused. The same held for `-b 0`, and for a file literally named
+  # "0", which "$path -eq ''" read as "no file, use stdin".
   $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixLen = 2; $i = 0
   while ($i -lt $Args.Count) {
-    $a = $Args[$i]
+    $a = [string]$Args[$i]
     if ($a -eq '-l' -and ($i + 1) -lt $Args.Count) { $lines = [int]$Args[$i + 1]; $i += 2 }
-    elseif ($a -eq '-n' -and ($i + 1) -lt $Args.Count) { $chunks = $Args[$i + 1]; $i += 2 }
-    elseif ($a -eq '-b' -and ($i + 1) -lt $Args.Count) { $bytes = $Args[$i + 1]; $i += 2 }
+    elseif ($a -eq '-n' -and ($i + 1) -lt $Args.Count) { $chunks = [string]$Args[$i + 1]; $i += 2 }
+    elseif ($a -eq '-b' -and ($i + 1) -lt $Args.Count) { $bytes = [string]$Args[$i + 1]; $i += 2 }
     elseif ($a -eq '-a' -and ($i + 1) -lt $Args.Count) { $suffixLen = [int]$Args[$i + 1]; $i += 2 }
     else {
       if ($path -eq '') { $path = $a } else { $prefix = $a }
@@ -133,6 +140,10 @@ function split {
     # Byte splitting
     $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB }
     $sz = if ($bytes -match '^(\d+)([KMG])$') { [long]$Matches[1] * $mult[$Matches[2]] } else { [long]$bytes }
+    # A size of 0 advances the write loop by 0 bytes for ever, so it has to be
+    # refused rather than run. It was unreachable while `-b 0` was read as
+    # "-b not given"; the [string] cast above is what makes it reachable.
+    if ($sz -lt 1) { Write-Error "invalid byte size '$bytes'"; return }
     if ($path -eq '') {
       $data = [System.Text.Encoding]::UTF8.GetBytes(($content -join "`n") + "`n")
     } else {

@@ -223,6 +223,33 @@ assert_exists "split writes the literal out[1]aa" "$WORK/out[1]aa"
 assert_eq "split -l leaves the decoy untouched" "DECOY" "$(cat "$WORK/out1aa")"
 rm -f "$WORK/out1aa" "$WORK/out[1]aa" "$WORK/split_literal.txt"
 
+# PowerShell binds a bare numeric argument as a NUMBER, and "$x -ne ''"
+# coerces the right side to the left side's type, so [int]'' is 0 and a
+# zero operand compared equal to "not given". split therefore skipped the
+# branch it was handed and silently used its 1000-line default; the [string]
+# casts in split are what make these three reachable at all.
+echo "[pwsh] split refuses a zero count or size, and reads a file named 0"
+rm -rf "$WORK/zero" && mkdir -p "$WORK/zero"
+seq 1 5 > "$WORK/zero/f.txt"
+err=$(run_pwsh_stderr_oneline "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK/zero'; split -n 0 f.txt")
+assert_contains "split -n 0 is refused" "invalid chunk count '0'" "$err"
+assert_eq "split -n 0 wrote no chunk" "f.txt" "$(ls -A "$WORK/zero" | tr '\n' ' ' | sed 's/ $//')"
+# A size of 0 advances the byte loop by 0 for ever: without the guard this
+# case does not fail, it HANGS, so it runs under a timeout.
+err=$(timeout 60 bash -c "$(declare -f run_pwsh_stderr_oneline); run_pwsh_stderr_oneline '$COREUTILS_PS1_STRIPPED' \"Set-Location '$WORK/zero'; split -b 0 f.txt\"")
+assert_eq "split -b 0 terminates" "0" "$?"
+assert_contains "split -b 0 is refused" "invalid byte size '0'" "$err"
+assert_eq "split -b 0 wrote no chunk" "f.txt" "$(ls -A "$WORK/zero" | tr '\n' ' ' | sed 's/ $//')"
+# A file whose NAME is "0" is a file, not "no file given, read stdin". The
+# directory is reset first so this cannot pass on an "xaa" left behind by a
+# failing case above.
+rm -rf "$WORK/zero" && mkdir -p "$WORK/zero"
+seq 1 5 > "$WORK/zero/0"
+run_pwsh "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK/zero'; split -l 10 0" >/dev/null 2>&1
+assert_exists "split reads a file named 0" "$WORK/zero/xaa"
+assert_eq "split read the file named 0, not stdin" "$(cat "$WORK/zero/0")" "$(cat "$WORK/zero/xaa")"
+rm -rf "$WORK/zero"
+
 # =============================================================================
 # touch
 # =============================================================================
@@ -403,18 +430,25 @@ echo "================================================"
 echo "  Testing stderr format (no double-prefix)"
 echo "================================================"
 
-# split writes its chunks into the CURRENT directory, so this case has to run
-# inside $WORK like every other split case above: without the Set-Location it
-# dropped an "xaa" into whatever directory the suite was invoked from. The
-# before/after listing is the regression guard -- it is what would have caught
-# the leak, and it covers any output name, not just "xaa".
+# The refusal itself is the subject: this case asserted only the absence of a
+# doubled prefix, which passed while split quietly wrote a chunk instead of
+# refusing `-n 0` at all. It also runs in a directory of its own -- split
+# writes its chunks into the CURRENT one, so without that the suite dropped a
+# stray "xaa" into whatever directory it was invoked from; the before/after
+# listing is the guard for that, and it covers any output name, not just
+# "xaa". run_pwsh_stderr_oneline, not run_pwsh_stderr: see the runner's
+# comment in helpers.sh.
 echo "[pwsh] split stderr"
+rm -rf "$WORK/splitref" && mkdir -p "$WORK/splitref"
 _split_cwd_before=$(ls -A . 2>/dev/null | sort)
-err=$(run_pwsh_stderr "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK'; echo 'x' | split -n 0")
+err=$(run_pwsh_stderr_oneline "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK/splitref'; echo 'x' | split -n 0")
+assert_contains "pwsh/split refuses a zero chunk count" "invalid chunk count '0'" "$err"
 assert_not_contains "pwsh/split no double prefix" "split: split:" "$err"
+assert_eq "pwsh/split refused without writing a chunk" "" "$(ls -A "$WORK/splitref")"
 assert_eq "pwsh/split wrote nothing into the invoking directory" \
     "$_split_cwd_before" "$(ls -A . 2>/dev/null | sort)"
 unset _split_cwd_before
+rm -rf "$WORK/splitref"
 
 echo "[pwsh] touch usage stderr"
 err=$(run_pwsh_stderr "$COREUTILS_PS1_STRIPPED" "touch")
