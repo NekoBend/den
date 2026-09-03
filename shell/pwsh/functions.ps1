@@ -192,6 +192,14 @@ function archive {
   # would otherwise read a dash-leading relative name as a switch (7z), or
   # refuse it outright (zstd's -o rejects a value starting with '-').
   if ($Output.StartsWith('-')) { $Output = Join-Path '.' $Output }
+  # A directory already sitting at the output path is not an output. Checked
+  # for every format, before any of them starts: the single-file branch's
+  # Move-Item would otherwise put the temporary INSIDE that directory and
+  # report success with no archive written at all, and Compress-Archive -Force
+  # deletes the directory before failing on it.
+  if (Test-Path -LiteralPath $Output -PathType Container) {
+    Write-Error "output '$Output' is a directory" -ErrorAction Stop
+  }
   switch -Regex ($Output) {
     '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; break }
     '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }

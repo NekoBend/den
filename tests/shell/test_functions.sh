@@ -427,6 +427,22 @@ for _ext in $SINGLE_FMTS; do
     fi
 done
 
+# A directory sitting where the output should go is not an output. The
+# single-file branch renamed its temporary INTO that directory and reported
+# success with no archive written; the tar and zip branches only failed late,
+# and pwsh's Compress-Archive -Force deleted the directory on the way.
+echo "[bash] archive refuses a directory at the output path"
+for _fmt in gz tar.gz zip; do
+    setup_single_file
+    mkdir -p "$WORK/one/out.$_fmt"
+    err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'out.$_fmt' payload.bin")
+    assert_contains "bash/archive .$_fmt directory output message" "is a directory" "$err"
+    run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'out.$_fmt' payload.bin" >/dev/null 2>&1
+    assert_eq "bash/archive .$_fmt directory output exits 1" "1" "$?"
+    assert_exists "bash/archive .$_fmt directory output still there" "$WORK/one/out.$_fmt"
+    assert_eq "bash/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
+done
+
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
 actual=$(run_bash "$FUNCTIONS_SH" "extract '$WORK/test.foo' 2>&1")
@@ -747,6 +763,22 @@ for _ext in $SINGLE_FMTS; do
     else
         echo "  SKIP: zsh/archive .$_ext hard link (filesystem refused)"
     fi
+done
+
+# A directory sitting where the output should go is not an output. The
+# single-file branch renamed its temporary INTO that directory and reported
+# success with no archive written; the tar and zip branches only failed late,
+# and pwsh's Compress-Archive -Force deleted the directory on the way.
+echo "[zsh] archive refuses a directory at the output path"
+for _fmt in gz tar.gz zip; do
+    setup_single_file
+    mkdir -p "$WORK/one/out.$_fmt"
+    err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'out.$_fmt' payload.bin")
+    assert_contains "zsh/archive .$_fmt directory output message" "is a directory" "$err"
+    run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'out.$_fmt' payload.bin" >/dev/null 2>&1
+    assert_eq "zsh/archive .$_fmt directory output exits 1" "1" "$?"
+    assert_exists "zsh/archive .$_fmt directory output still there" "$WORK/one/out.$_fmt"
+    assert_eq "zsh/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
 done
 
 echo "[zsh] path"
@@ -1150,6 +1182,22 @@ assert_eq "pwsh/archive function-shadowed gzip exits 1" "1" "$?"
 assert_not_contains "pwsh/archive function-shadowed gzip did not start a process" "ProcessStartInfo" "$err"
 assert_not_contains "pwsh/archive function-shadowed gzip threw no win32 error" "No such file or directory" "$err"
 assert_not_exists "pwsh/archive function-shadowed gzip wrote nothing" "$WORK/one/shadow.gz"
+
+# A directory sitting where the output should go is not an output. The
+# single-file branch renamed its temporary INTO that directory and reported
+# success with no archive written; the tar and zip branches only failed late,
+# and pwsh's Compress-Archive -Force deleted the directory on the way.
+echo "[pwsh] archive refuses a directory at the output path"
+for _fmt in gz tar.gz zip; do
+    setup_single_file
+    mkdir -p "$WORK/one/out.$_fmt"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'out.$_fmt' payload.bin")
+    assert_contains "pwsh/archive .$_fmt directory output message" "is a directory" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'out.$_fmt' payload.bin" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_fmt directory output exits 1" "1" "$?"
+    assert_exists "pwsh/archive .$_fmt directory output still there" "$WORK/one/out.$_fmt"
+    assert_eq "pwsh/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
+done
 
 echo "[pwsh] extract unsupported format"
 touch "$WORK/test.foo"

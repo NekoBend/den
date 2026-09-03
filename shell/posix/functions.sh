@@ -141,6 +141,15 @@ archive() {
     local _ar_arg _ar_n _ar_tool _ar_tmp _ar_rc
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
+    # A directory already sitting at the output path is not an output. Checked
+    # for every format, before any of them starts: the single-file branch's
+    # rename would otherwise put the temporary INSIDE that directory and report
+    # success with no archive written at all, and the tar/zip branches only
+    # fail late, with the archiver's own message.
+    if [ -d "$out" ]; then
+        echo "archive: output '$out' is a directory" >&2
+        return 1
+    fi
     case "$out" in
         *.tar.gz|*.tgz)     tar czf "$out" -- "$@"   ;;
         *.tar.bz2|*.tbz2)   tar cjf "$out" -- "$@"   ;;
