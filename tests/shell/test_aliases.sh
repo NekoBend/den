@@ -168,6 +168,10 @@ err=$(run_pwsh_stderr "$HELPERS_PS1" "
     code 'a%USERPROFILE%b'
 ")
 assert_contains "pwsh/code refuses a percent argument" "percent sign" "$err"
+# PowerShell adds its own "code: "; run_pwsh_stderr_oneline is the runner whose
+# single-line command shows that prefix and the message together, which is the
+# only form a hand-written second prefix is visible in (see helpers.sh).
+assert_not_contains "pwsh/code no double prefix" "code: code:" "$(run_pwsh_stderr_oneline "$HELPERS_PS1" "\$env:_DEN_FORCE_INTERACTIVE='1'; \$env:PATH='$CODE_CMD_BIN'; . '$P/aliases.ps1'; code 'a%USERPROFILE%b'")"
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:_DEN_FORCE_INTERACTIVE = '1'
     \$env:PATH = '$CODE_CMD_BIN'

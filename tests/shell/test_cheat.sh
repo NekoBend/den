@@ -91,6 +91,10 @@ fi
 # pwsh port: same $XDG_DATA_HOME/den/cheatsheets store and same ls/render/missing/
 # no-store/ambiguous logic as cheat.sh. cheat.ps1's diagnostics use Write-Error, so
 # those cases capture the error stream with a bash-side 2>&1 (as test_snippet.sh does).
+# The no-double-prefix checks go through run_pwsh_stderr_oneline instead: PowerShell
+# adds its own "cheat: " to every one of these, and only ConciseView's single-line
+# form puts that prefix and the message on the same line, where a hand-written
+# second one is visible as a substring (see the runner's comment in helpers.sh).
 if command -v pwsh >/dev/null 2>&1; then
     echo "================================================"
     echo "  Testing cheat.ps1 with pwsh"
@@ -114,19 +118,23 @@ if command -v pwsh >/dev/null 2>&1; then
     echo "[pwsh] a missing name fails with a message"
     actual=$(run_pwsh "$CHEAT_PS1" "cheat no-such-sheet-xyz" 2>&1 | tr -d '\r')
     assert_contains "pwsh/missing msg" "no cheatsheet matching" "$actual"
+    assert_not_contains "pwsh/missing no double prefix" "cheat: cheat:" "$(run_pwsh_stderr_oneline "$CHEAT_PS1" "cheat no-such-sheet-xyz")"
 
     echo "[pwsh] no cheatsheets installed fails with a hint"
     actual=$(run_pwsh "$CHEAT_PS1" "\$env:XDG_DATA_HOME='$EMPTY_XDG'; cheat ls" 2>&1 | tr -d '\r')
     assert_contains "pwsh/no-store msg" "no cheatsheets installed" "$actual"
+    assert_not_contains "pwsh/no-store no double prefix" "cheat: cheat:" "$(run_pwsh_stderr_oneline "$CHEAT_PS1" "\$env:XDG_DATA_HOME='$EMPTY_XDG'; cheat ls")"
 
     if ! command -v fzf >/dev/null 2>&1; then
         echo "[pwsh] an ambiguous name without fzf lists candidates"
         actual=$(run_pwsh "$CHEAT_PS1" "cheat regex" 2>&1 | tr -d '\r')
         assert_contains "pwsh/ambiguous msg" "is ambiguous" "$actual"
+        assert_not_contains "pwsh/ambiguous no double prefix" "cheat: cheat:" "$(run_pwsh_stderr_oneline "$CHEAT_PS1" "cheat regex")"
 
         echo "[pwsh] no-arg cheat without fzf falls back gracefully"
         actual=$(run_pwsh "$CHEAT_PS1" "cheat" 2>&1 | tr -d '\r')
         assert_contains "pwsh/no-fzf msg" "fzf not found" "$actual"
+        assert_not_contains "pwsh/no-fzf no double prefix" "cheat: cheat:" "$(run_pwsh_stderr_oneline "$CHEAT_PS1" "cheat")"
     else
         echo "  SKIP: fzf present, cannot test the pwsh no-fzf fallbacks non-interactively"
     fi

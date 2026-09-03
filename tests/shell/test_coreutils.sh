@@ -451,12 +451,12 @@ unset _split_cwd_before
 rm -rf "$WORK/splitref"
 
 echo "[pwsh] touch usage stderr"
-err=$(run_pwsh_stderr "$COREUTILS_PS1_STRIPPED" "touch")
+err=$(run_pwsh_stderr_oneline "$COREUTILS_PS1_STRIPPED" "touch")
 assert_contains "pwsh/touch stderr has message" "usage:" "$err"
 assert_not_contains "pwsh/touch no double prefix" "touch: touch:" "$err"
 
 echo "[pwsh] which usage stderr"
-err=$(run_pwsh_stderr "$COREUTILS_PS1_STRIPPED" "which")
+err=$(run_pwsh_stderr_oneline "$COREUTILS_PS1_STRIPPED" "which")
 assert_contains "pwsh/which stderr has message" "usage:" "$err"
 assert_not_contains "pwsh/which no double prefix" "which: which:" "$err"
 
