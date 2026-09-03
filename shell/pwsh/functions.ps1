@@ -5,6 +5,10 @@
 
 # digest → unified hash function (md5, sha256, sha512)
 function digest {
+  # No hand-written "digest: " prefix on any message here: PowerShell already
+  # attributes an error to the function that RAISED it, so one would reach
+  # stderr as "digest: digest: ..." (same reason extract/archive dropped
+  # theirs).
   param(
     [Parameter(Mandatory, Position = 0)]
     [ValidateSet('md5', 'sha256', 'sha512')]
@@ -13,22 +17,41 @@ function digest {
     [string[]]$Path
   )
   if (-not $Path -or $Path.Count -eq 0) {
-    Write-Error "usage: digest {md5|sha256|sha512} <file...>"
-    return
+    Write-Error "usage: digest {md5|sha256|sha512} <file...>" -ErrorAction Stop
   }
   # One file prints the bare hash (scriptable); several print hash and name
   # per line so the lines stay attributable.
+  #
+  # The per-file errors are non-terminating, so one bad path does not swallow
+  # the hashes of the files after it; the final summary IS terminating, which
+  # is what carries the failure into the process status -- a plain Write-Error
+  # inside a function leaves `pwsh -Command 'digest sha256 missing.txt'`
+  # exiting 0, and automation reads that as success. Same shape as extract.
   $failed = 0
   foreach ($p in $Path) {
     if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
-      Write-Error "digest: '$p' is not a file"
+      Write-Error "'$p' is not a file"
       $failed++
       continue
     }
-    $h = (Get-FileHash -LiteralPath $p -Algorithm $Algorithm.ToUpper()).Hash
+    # A file that exists can still not be readable, and Get-FileHash reports
+    # that non-terminatingly: without this the loop would print an empty line
+    # for it and count it as a success.
+    try {
+      $h = (Get-FileHash -LiteralPath $p -Algorithm $Algorithm.ToUpper() -ErrorAction Stop).Hash
+    } catch {
+      Write-Error "'$p': $($_.Exception.Message)"
+      $failed++
+      continue
+    }
     if ($Path.Count -gt 1) { "$h  $p" } else { $h }
   }
-  if ($failed) { Write-Error "digest: $failed of $($Path.Count) files failed" }
+  # Terminating, so the process status is nonzero. It fires after the loop, so
+  # a failure on one file still does not stop the rest. $LASTEXITCODE cannot
+  # carry this -- PowerShell does not use it for the process status unless the
+  # last command was a native one -- and `exit` would end an interactive
+  # session.
+  if ($failed) { Write-Error "$failed of $($Path.Count) files failed" -ErrorAction Stop }
 }
 
 # mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)

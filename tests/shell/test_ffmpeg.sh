@@ -4,7 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
-DOTFILES="/root/.dotfiles"
+# helpers.sh already honours a DOTFILES override so the suite can run against a
+# checkout; hardcoding it here silently discarded that and tested the INSTALLED
+# copy instead, whatever DOTFILES said.
+DOTFILES="${DOTFILES:-/root/.dotfiles}"
 FFMPEG_SH_GUARDED="$DOTFILES/shell/posix/ffmpeg.sh"
 FFMPEG_PS1="$DOTFILES/shell/pwsh/ffmpeg.ps1"
 

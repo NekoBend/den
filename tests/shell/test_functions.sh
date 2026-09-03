@@ -124,6 +124,11 @@ single_tools() {
 }
 SINGLE_USAGE="usage: archive <output.gz|.bz2|.xz|.zst> <one-file>"
 
+# sha256 of the multi-file fixture's content ("one"), uppercase as
+# Get-FileHash prints it: a refusal case still has to show the good file's
+# hash.
+SHA256_ONE="7692C3AD3540BB803C020B3AEE66CD8887123234EA0C6E7143C0ADD73FF431ED"
+
 # sha256 of the literal file's content ("real") and of the decoy's ("decoy")
 SHA256_REAL="aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f"
 SHA256_DECOY="bdeb9ba22af8fa73e59fe7c4d3c48ae1165617dd76c720773cdf6cbc33a91dd7"
@@ -275,6 +280,21 @@ assert_contains "bash/digest multi names the file" "$WORK/d2.txt" "$actual"
 run_bash "$FUNCTIONS_SH" "digest sha256 '$WORK/d1.txt' '$WORK/missing.txt'" 2>/dev/null
 assert_eq "bash/digest multi with a missing file exits 1" "1" "$?"
 rm -rf "$WORK/d1.txt" "$WORK/d2.txt"
+
+# `[ -f ]` is true for a file that cannot be READ, and the hash used to be
+# piped into awk, whose status is the one the pipeline reports: the *sum
+# tool's "Permission denied" reached stderr while digest printed an empty
+# line and returned 0. root ignores the mode bits, so there it is skipped.
+echo "[bash] digest reports an unreadable file"
+: > "$WORK/noread.txt"
+if [ "$(id -u)" -ne 0 ] && chmod 000 "$WORK/noread.txt" 2>/dev/null && [ ! -r "$WORK/noread.txt" ]; then
+    run_bash "$FUNCTIONS_SH" "digest sha256 '$WORK/noread.txt'" >/dev/null 2>&1
+    assert_eq "bash/digest unreadable file exits 1" "1" "$?"
+    chmod 600 "$WORK/noread.txt"
+else
+    echo "  SKIP: bash/digest unreadable file (running as root)"
+fi
+rm -f "$WORK/noread.txt"
 
 echo "[bash] archive + extract tar.bz2"
 setup_fixtures
@@ -688,6 +708,21 @@ assert_contains "zsh/digest multi names the file" "$WORK/d2.txt" "$actual"
 run_zsh "$FUNCTIONS_SH" "digest sha256 '$WORK/d1.txt' '$WORK/missing.txt'" 2>/dev/null
 assert_eq "zsh/digest multi with a missing file exits 1" "1" "$?"
 rm -rf "$WORK/d1.txt" "$WORK/d2.txt"
+
+# `[ -f ]` is true for a file that cannot be READ, and the hash used to be
+# piped into awk, whose status is the one the pipeline reports: the *sum
+# tool's "Permission denied" reached stderr while digest printed an empty
+# line and returned 0. root ignores the mode bits, so there it is skipped.
+echo "[zsh] digest reports an unreadable file"
+: > "$WORK/noread.txt"
+if [ "$(id -u)" -ne 0 ] && chmod 000 "$WORK/noread.txt" 2>/dev/null && [ ! -r "$WORK/noread.txt" ]; then
+    run_zsh "$FUNCTIONS_SH" "digest sha256 '$WORK/noread.txt'" >/dev/null 2>&1
+    assert_eq "zsh/digest unreadable file exits 1" "1" "$?"
+    chmod 600 "$WORK/noread.txt"
+else
+    echo "  SKIP: zsh/digest unreadable file (running as root)"
+fi
+rm -f "$WORK/noread.txt"
 
 echo "[zsh] archive + extract zip"
 setup_fixtures
@@ -1248,6 +1283,55 @@ err=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/d1.txt' '$WORK/mi
 assert_contains "pwsh/digest multi reports the missing file" "1 of 2 files failed" "$err"
 rm -rf "$WORK/d1.txt" "$WORK/d2.txt"
 
+# A refusal has to reach the PROCESS status: `pwsh -Command 'digest sha256
+# missing.txt'` exited 0 while the per-file error and the summary were both
+# plain (non-terminating) Write-Errors, and automation reads that as success.
+# The same messages must carry exactly ONE "digest:" prefix -- PowerShell
+# attributes an error to the function that raised it, so a hand-written prefix
+# doubles it (the rule this file enforces for mkcd/again/back below).
+echo "[pwsh] digest refusals exit 1 with a single prefix"
+setup_fixtures
+printf 'one' > "$WORK/d1.txt"
+mkdir -p "$WORK/adir"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/missing.txt'" >/dev/null 2>&1
+assert_eq "pwsh/digest missing file exits 1" "1" "$?"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/missing.txt'")
+assert_contains "pwsh/digest missing file is refused" "is not a file" "$err"
+assert_not_contains "pwsh/digest missing file no double prefix" "digest: digest:" "$err"
+
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/adir'" >/dev/null 2>&1
+assert_eq "pwsh/digest directory exits 1" "1" "$?"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/adir'")
+assert_contains "pwsh/digest directory is refused" "is not a file" "$err"
+assert_not_contains "pwsh/digest directory no double prefix" "digest: digest:" "$err"
+
+# Mixed list: only the SUMMARY terminates, so the good file is still hashed
+# and printed before the run fails.
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/d1.txt' '$WORK/missing.txt'" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/digest mixed list still prints the good hash" "$SHA256_ONE" "$actual"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/d1.txt' '$WORK/missing.txt'" >/dev/null 2>&1
+assert_eq "pwsh/digest mixed list exits 1" "1" "$?"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/d1.txt' '$WORK/missing.txt'")
+assert_contains "pwsh/digest mixed list summarises the failure" "1 of 2 files failed" "$err"
+assert_not_contains "pwsh/digest mixed list no double prefix" "digest: digest:" "$err"
+rm -rf "$WORK/d1.txt" "$WORK/adir"
+
+# A file that exists can still be unreadable, and Get-FileHash reports that
+# non-terminatingly: digest used to print an empty line for it and exit 0.
+# root ignores the mode bits, so there it is skipped.
+echo "[pwsh] digest reports an unreadable file"
+: > "$WORK/noread.txt"
+if [ "$(id -u)" -ne 0 ] && chmod 000 "$WORK/noread.txt" 2>/dev/null && [ ! -r "$WORK/noread.txt" ]; then
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/noread.txt'" >/dev/null 2>&1
+    assert_eq "pwsh/digest unreadable file exits 1" "1" "$?"
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "digest sha256 '$WORK/noread.txt'")
+    assert_not_contains "pwsh/digest unreadable file no double prefix" "digest: digest:" "$err"
+    chmod 600 "$WORK/noread.txt"
+else
+    echo "  SKIP: pwsh/digest unreadable file (running as root)"
+fi
+rm -f "$WORK/noread.txt"
+
 echo "[pwsh] archive + extract zip"
 setup_fixtures
 run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive 'test.zip' 'src'"
@@ -1339,11 +1423,12 @@ echo "[pwsh] archive and extract report a missing compressor"
 for _ext in $SINGLE_FMTS; do
     setup_single_file
     single_tools "$_ext"
-    # A terminating error renders as PowerShell's error block: the activity
-    # ("archive:") and the message land on separate lines, so the message is
-    # what is matched. The "archive: archive:" shape the stderr-format section
-    # forbids cannot occur — the prefix comes from the activity, not the text.
-    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'")
+    # run_pwsh_stderr_oneline, not run_pwsh_stderr: the double-prefix check is
+    # only meaningful in ConciseView's compact "archive: <message>" form, which
+    # PowerShell renders for a single-line command. The multi-line form puts
+    # the prefix it adds and the message on separate lines, where a doubled
+    # prefix is invisible to a substring match.
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'")
     assert_contains "pwsh/archive missing $CTOOL message" "$CTOOL is not installed" "$err"
     assert_not_contains "pwsh/archive missing $CTOOL no double prefix" "archive: archive:" "$err"
     run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/one'; archive 'gone.$_ext' 'payload.bin'" >/dev/null 2>&1
@@ -1351,7 +1436,7 @@ for _ext in $SINGLE_FMTS; do
     assert_not_exists "pwsh/archive missing $CTOOL wrote nothing" "$WORK/one/gone.$_ext"
     mkdir -p "$WORK/noload"
     run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$WORK/noload/payload.bin.$_ext' 'payload.bin'" 2>/dev/null
-    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'")
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'")
     assert_contains "pwsh/extract missing $CTOOL message" "$CTOOL is not installed" "$err"
     assert_not_contains "pwsh/extract missing $CTOOL no double prefix" "extract: extract:" "$err"
     run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; Set-Location '$WORK/noload'; extract 'payload.bin.$_ext'" >/dev/null 2>&1
@@ -1692,19 +1777,30 @@ echo ""
 echo "================================================"
 echo "  Testing stderr format (no double-prefix)"
 echo "================================================"
+# These cases go through run_pwsh_stderr_oneline on purpose: see the runner's
+# comment in helpers.sh. With the multi-line run_pwsh_stderr the forbidden
+# "<fn>: <fn>:" shape is split across two lines and every assertion below
+# passes whether or not the bug is present.
+
+echo "[pwsh] digest usage stderr"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "digest sha256")
+assert_contains "pwsh/digest stderr has usage" "usage:" "$err"
+assert_not_contains "pwsh/digest no double prefix" "digest: digest:" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "digest sha256" >/dev/null 2>&1
+assert_eq "pwsh/digest usage exits 1" "1" "$?"
 
 echo "[pwsh] mkcd usage stderr"
-err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "mkcd")
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "mkcd")
 assert_contains "pwsh/mkcd stderr has usage" "usage:" "$err"
 assert_not_contains "pwsh/mkcd no double prefix" "mkcd: mkcd:" "$err"
 
 echo "[pwsh] again usage stderr"
-err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "again -N 0")
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "again -N 0")
 assert_contains "pwsh/again stderr has usage" "usage:" "$err"
 assert_not_contains "pwsh/again no double prefix" "again: again:" "$err"
 
 echo "[pwsh] back usage stderr"
-err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "back -N 0")
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "back -N 0")
 assert_contains "pwsh/back stderr has usage" "usage:" "$err"
 assert_not_contains "pwsh/back no double prefix" "back: back:" "$err"
 

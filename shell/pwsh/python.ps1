@@ -104,6 +104,9 @@ function py {
 # ===== venv management =====
 
 # va → activate Python venv (default: .venv)
+# No message here writes a "va: " prefix of its own: PowerShell attributes an
+# error to the function that RAISED it, so one would reach stderr as
+# "va: va: ...".
 function va {
   param([string]$Name = '.venv')
   # Scripts/ on Windows, bin/ on Linux/macOS (uv/venv place Activate.ps1 there).
@@ -129,7 +132,7 @@ function va {
       # Name what git actually reports: the match may be pyvenv.cfg alone, so a
       # message about the activate script would be wrong.
       $trackedList = (@($tracked) -join ', ')
-      Write-Error "va: '$Name': venv content is tracked by git ($trackedList) - a venv committed to the repo; dot-source it yourself if you trust it: . $activatePath"
+      Write-Error "'$Name': venv content is tracked by git ($trackedList) - a venv committed to the repo; dot-source it yourself if you trust it: . $activatePath"
       return
     }
   }
@@ -139,7 +142,7 @@ function va {
   $item = Get-Item -LiteralPath $activatePath -ErrorAction SilentlyContinue
   $unixMode = if ($item -and $item.PSObject.Properties['UnixMode']) { [string]$item.UnixMode } else { '' }
   if ($unixMode.Length -ge 9 -and $unixMode[8] -eq 'w') {
-    Write-Error "va: '$activatePath' is world-writable - dot-source it yourself if you trust it: . $activatePath"
+    Write-Error "'$activatePath' is world-writable - dot-source it yourself if you trust it: . $activatePath"
     return
   }
   . $activatePath

@@ -4,7 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
-DOTFILES="/root/.dotfiles"
+# helpers.sh already honours a DOTFILES override so the suite can run against a
+# checkout; hardcoding it here silently discarded that and tested the INSTALLED
+# copy instead, whatever DOTFILES said.
+DOTFILES="${DOTFILES:-/root/.dotfiles}"
 PYTHON_SH_GUARDED="$DOTFILES/shell/posix/python.sh"
 PYTHON_PS1="$DOTFILES/shell/pwsh/python.ps1"
 
@@ -282,6 +285,10 @@ mk_venv_ps "$WORK/ps_venv_tracked" "3.12.0"
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked'; va")
 assert_contains "pwsh/va refuses git-tracked activate" "tracked by git" "$err"
 assert_contains "pwsh/va names the tracked files" "pyvenv.cfg" "$err"
+# PowerShell adds its own "va: "; run_pwsh_stderr_oneline is the runner whose
+# single-line command shows that prefix and the message together, which is the
+# only form a hand-written second prefix is visible in (see helpers.sh).
+assert_not_contains "pwsh/va tracked no double prefix" "va: va:" "$(run_pwsh_stderr_oneline "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked'; va")"
 
 mk_venv_ps "$WORK/ps_venv_cfg_only" "3.12.0"
 (
@@ -314,6 +321,7 @@ mk_venv_ps "$WORK/ps_venv_ww" "3.12.0"
 chmod 666 "$WORK/ps_venv_ww/.venv/bin/Activate.ps1"
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_ww'; \$env:VIRTUAL_ENV = \$null; va")
 assert_contains "pwsh/va refuses world-writable activate" "world-writable" "$err"
+assert_not_contains "pwsh/va world-writable no double prefix" "va: va:" "$(run_pwsh_stderr_oneline "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_ww'; \$env:VIRTUAL_ENV = \$null; va")"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     Set-Location '$WORK/ps_venv_ww'
     \$env:VIRTUAL_ENV = \$null
