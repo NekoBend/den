@@ -98,6 +98,29 @@ function _ArRegularFile([string]$Path) {
   return $true
 }
 
+# _ArSameFile → do $A and $B name the same file? Comparing resolved path
+# strings is not enough, and here that matters: on a case-insensitive volume
+# (macOS by default) 'self.gz' and 'SELF.GZ' are ONE directory entry, so a
+# case-sensitive compare says they differ and the staged output is renamed over
+# the source, which was supposed to be kept. Hard links and symlink chains fold
+# the same way. Ask the filesystem instead -- 'test -ef' compares device and
+# inode, exactly what the POSIX twin uses -- and keep the string compare only
+# as a fast path that answers the common case without a fork. Windows has no
+# such test; NTFS is case-insensitive, so comparing full paths that way is the
+# right question there.
+function _ArSameFile([string]$A, [string]$B) {
+  $fa = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($A)
+  $fb = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($B)
+  if ($IsWindows -or $env:OS -eq 'Windows_NT') { return ($fa -eq $fb) }
+  if ($fa -ceq $fb) { return $true }
+  # -ef needs both to exist; an output that is not there yet collides with
+  # nothing, and skipping the fork is the common case.
+  if (-not (Test-Path -LiteralPath $fb)) { return $false }
+  if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { return $false }
+  & /bin/sh -c 'test "$1" -ef "$2"' _ $fa $fb
+  return ($LASTEXITCODE -eq 0)
+}
+
 # _ArCompressTo → run a stdout compressor and put its raw bytes in $Dest.
 # gzip/bzip2/xz have no -o, and PowerShell only redirects a native command's
 # stdout byte-for-byte from 7.4 on: before that the text pipeline re-encodes
@@ -271,20 +294,13 @@ function archive {
         Write-Error "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" -ErrorAction Stop
       }
       $src = $Sources[0]
-      # Naming the source as the output is refused outright, for the clear
-      # message. Comparing the paths the provider resolves them to catches the
-      # spellings people actually type ('out.gz' vs './out.gz'); it does NOT
-      # establish file identity — a hard link or a chain of symlinks has a
-      # different path and the same inode — so it is not what makes this safe.
-      # The staging below is. Only Windows compares case-insensitively.
-      $outResolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
-      $srcResolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($src)
-      $sameFile = if ($IsWindows -or $env:OS -eq 'Windows_NT') {
-        $outResolved -eq  $srcResolved
-      } else {
-        $outResolved -ceq $srcResolved
-      }
-      if ($sameFile) {
+      # Naming the source as the output is refused. Staging keeps the source
+      # readable while the archive is built, but the final rename still lands
+      # ON the output, so where the output and the source are one directory
+      # entry -- a case-insensitive volume, most obviously -- the source would
+      # be replaced by its own compressed form despite the promise to keep it.
+      # _ArSameFile settles that by device and inode, not by path text.
+      if (_ArSameFile $src $Output) {
         Write-Error "output '$Output' is the source file" -ErrorAction Stop
       }
       $toolPath = _ArTool $tool

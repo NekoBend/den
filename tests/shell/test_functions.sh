@@ -1433,6 +1433,48 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'viaLink.g
 assert_eq "pwsh/archive still accepts a symlink to a regular file" "0" "$?"
 assert_exists "pwsh/archive symlink source produced the archive" "$WORK/one/viaLink.gz"
 
+# The refusal is load-bearing, not just a nicer message: staging keeps the
+# source readable while the archive is built, but the final rename lands ON the
+# output, so wherever the output and the source are one directory entry the
+# source is replaced by its own compressed form. A case-sensitive path compare
+# missed every alias -- hard link, symlink chain, and on a case-insensitive
+# volume a different spelling. The check asks the filesystem now (device and
+# inode), so these are refused outright rather than merely survived.
+echo "[pwsh] archive refuses an output aliasing the source, by file identity"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    ln -s payload.bin "$WORK/one/hop1.$_ext"
+    ln -s "hop1.$_ext" "$WORK/one/hop2.$_ext"
+    for _alias in "hop1.$_ext" "hop2.$_ext"; do
+        err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_alias' 'payload.bin'")
+        assert_contains "pwsh/archive .$_ext '$_alias' refused as the source" "is the source file" "$err"
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "pwsh/archive .$_ext '$_alias' left the source intact" "$PAYLOAD_SHA" "$actual"
+    done
+    if ln "$WORK/one/payload.bin" "$WORK/one/hard.$_ext" 2>/dev/null; then
+        err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'hard.$_ext' 'payload.bin'")
+        assert_contains "pwsh/archive .$_ext hard link refused as the source" "is the source file" "$err"
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "pwsh/archive .$_ext hard link left the source intact" "$PAYLOAD_SHA" "$actual"
+    else
+        echo "  SKIP: pwsh/archive .$_ext hard link alias (filesystem refused)"
+    fi
+done
+
+# The case-insensitive spelling that motivated all of this can only be
+# exercised where the filesystem actually folds case. Linux CI cannot make such
+# a volume, so this runs on Windows only.
+echo "[pwsh] archive refuses a different-case spelling of the source"
+if [ "$(run_pwsh "$FUNCTIONS_PS1_COMBINED" 'if ($IsWindows) { "yes" } else { "no" }' 2>/dev/null | tr -d '\r')" = "yes" ]; then
+    setup_single_file
+    cp "$WORK/one/payload.bin" "$WORK/one/self.gz"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'SELF.GZ' 'self.gz'")
+    assert_contains "pwsh/archive different-case output refused" "is the source file" "$err"
+    assert_eq "pwsh/archive different-case output left the source intact" "$PAYLOAD_SHA" "$(sha256sum "$WORK/one/self.gz" | cut -d' ' -f1)"
+else
+    echo "  SKIP: pwsh/archive different-case output (needs a case-insensitive volume; Windows only)"
+fi
+
 echo "[pwsh] extract unsupported format"
 touch "$WORK/test.foo"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "extract '$WORK/test.foo'")
