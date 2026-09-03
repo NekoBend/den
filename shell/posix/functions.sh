@@ -138,7 +138,7 @@ archive() {
         return 1
     fi
     local out="$1"; shift
-    local _ar_arg _ar_n _ar_tool
+    local _ar_arg _ar_n _ar_tool _ar_tmp _ar_rc
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
     case "$out" in
@@ -167,33 +167,42 @@ archive() {
                 echo "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" >&2
                 return 1
             fi
-            # The compressor's output is opened before it reads the source,
-            # so an output that IS the source leaves a compressed empty stream
-            # where the file this branch promised to keep used to be, and it
-            # exited 0 while doing it. '-ef' compares device and inode, so a
-            # './' spelling or a symlink aliasing the source is caught too.
-            # zstd refuses this itself; gzip/bzip2/xz do not.
+            # Naming the source as the output is refused outright, for the
+            # clear message: '-ef' compares device and inode, so a './'
+            # spelling, a hard link and a chain of symlinks all resolve to the
+            # same file and are caught. It is not what makes this SAFE, though
+            # — the staging below is — so it can stay this cheap.
             # shellcheck disable=SC3013  # -ef: not in POSIX, but in dash/bash/zsh
             if [ "$out" -ef "$1" ]; then
                 echo "archive: output '$out' is the source file" >&2
                 return 1
             fi
-            # The tool check comes before the redirection below, so a missing
-            # compressor leaves no truncated output behind.
+            # The tool check comes before anything is written, so a missing
+            # compressor leaves nothing behind at all.
             _ar_have archive "$_ar_tool" || return 1
+            # Compress into a temporary sibling of the output and rename that
+            # into place only once the compressor has succeeded. The file being
+            # written is never the source under any name, so nothing can
+            # truncate the source before it is read; a failed run leaves an
+            # existing output exactly as it was; and the rename is atomic
+            # because the temporary is in the output's own directory.
             # '--' stops each tool's option parsing (all four support it), so a
             # source named like a switch reaches it as a path — the same rule
             # the tar branches above follow.
+            _ar_tmp="$out.tmp.$$"
             if [ "$_ar_tool" = zstd ]; then
-                # zstd is the only one of the four with -o, and it PROMPTS
-                # before clobbering an existing output; -f keeps the branch
-                # non-interactive and overwriting, as every other branch is.
-                zstd -q -k -f -o "$out" -- "$1"
+                # zstd is the only one of the four with -o; the others have
+                # none, so -k -c writes the bytes and the shell names the file.
+                zstd -q -k -f -o "$_ar_tmp" -- "$1"
             else
-                # The others have no -o: -k -c writes the compressed bytes to
-                # stdout and the shell names the output.
-                "$_ar_tool" -k -c -- "$1" > "$out"
+                "$_ar_tool" -k -c -- "$1" > "$_ar_tmp"
             fi
+            _ar_rc=$?
+            if [ "$_ar_rc" -ne 0 ]; then
+                rm -f -- "$_ar_tmp"
+                return "$_ar_rc"
+            fi
+            mv -f -- "$_ar_tmp" "$out"
             ;;
         *.zip)              zip -r "$out" -- "$@"    ;;
         *.7z)

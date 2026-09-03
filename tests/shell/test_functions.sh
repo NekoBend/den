@@ -385,20 +385,46 @@ done
 
 # `archive f.gz f.gz` opened f.gz for the compressor's output before reading
 # it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
-# exited 0 doing it. Every spelling of the same file has to be refused, the
-# symlink alias included, and the file left exactly as it was.
+# exited 0 doing it. Spellings that resolve to the same path are refused
+# outright, with the file left exactly as it was; names that reach the source
+# through a link are the next block's business.
 echo "[bash] archive single-file refuses an output that is the source"
 for _ext in $SINGLE_FMTS; do
     setup_single_file
     printf 'ORIGINAL' > "$WORK/one/self.$_ext"
-    ln -sf "self.$_ext" "$WORK/one/alias.$_ext"
-    for _spell in "self.$_ext" "./self.$_ext" "alias.$_ext"; do
+    for _spell in "self.$_ext" "./self.$_ext"; do
         err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_spell' 'self.$_ext'")
         assert_contains "bash/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
         assert_eq "bash/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
     done
     run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'self.$_ext' 'self.$_ext'" 2>/dev/null
     assert_eq "bash/archive .$_ext output is the source exits 1" "1" "$?"
+done
+
+# Comparing resolved paths does not establish identity: a hard link and a chain
+# of symlinks name the same file by a different path, and a check that only
+# compares strings lets them through. What actually keeps the source safe is
+# that the compressor writes a temporary sibling of the output which is renamed
+# into place afterwards — the source is never the file being written, whatever
+# it is called — so what is asserted here is the source surviving, in the lane
+# that refuses these and in the lane that goes ahead and compresses them.
+echo "[bash] archive single-file cannot truncate the source through another name"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    ln -s payload.bin "$WORK/one/hop1.$_ext"
+    ln -s "hop1.$_ext" "$WORK/one/hop2.$_ext"
+    for _hop in "hop1.$_ext" "hop2.$_ext"; do
+        run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_hop' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "bash/archive .$_ext symlink '$_hop' left the source intact" "$PAYLOAD_SHA" "$actual"
+    done
+    if ln "$WORK/one/payload.bin" "$WORK/one/hard.$_ext" 2>/dev/null; then
+        run_bash "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'hard.$_ext' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "bash/archive .$_ext hard link left the source intact" "$PAYLOAD_SHA" "$actual"
+    else
+        echo "  SKIP: bash/archive .$_ext hard link (filesystem refused)"
+    fi
 done
 
 echo "[bash] extract unsupported format"
@@ -681,20 +707,46 @@ done
 
 # `archive f.gz f.gz` opened f.gz for the compressor's output before reading
 # it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
-# exited 0 doing it. Every spelling of the same file has to be refused, the
-# symlink alias included, and the file left exactly as it was.
+# exited 0 doing it. Spellings that resolve to the same path are refused
+# outright, with the file left exactly as it was; names that reach the source
+# through a link are the next block's business.
 echo "[zsh] archive single-file refuses an output that is the source"
 for _ext in $SINGLE_FMTS; do
     setup_single_file
     printf 'ORIGINAL' > "$WORK/one/self.$_ext"
-    ln -sf "self.$_ext" "$WORK/one/alias.$_ext"
-    for _spell in "self.$_ext" "./self.$_ext" "alias.$_ext"; do
+    for _spell in "self.$_ext" "./self.$_ext"; do
         err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_spell' 'self.$_ext'")
         assert_contains "zsh/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
         assert_eq "zsh/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
     done
     run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'self.$_ext' 'self.$_ext'" 2>/dev/null
     assert_eq "zsh/archive .$_ext output is the source exits 1" "1" "$?"
+done
+
+# Comparing resolved paths does not establish identity: a hard link and a chain
+# of symlinks name the same file by a different path, and a check that only
+# compares strings lets them through. What actually keeps the source safe is
+# that the compressor writes a temporary sibling of the output which is renamed
+# into place afterwards — the source is never the file being written, whatever
+# it is called — so what is asserted here is the source surviving, in the lane
+# that refuses these and in the lane that goes ahead and compresses them.
+echo "[zsh] archive single-file cannot truncate the source through another name"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    ln -s payload.bin "$WORK/one/hop1.$_ext"
+    ln -s "hop1.$_ext" "$WORK/one/hop2.$_ext"
+    for _hop in "hop1.$_ext" "hop2.$_ext"; do
+        run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive '$_hop' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "zsh/archive .$_ext symlink '$_hop' left the source intact" "$PAYLOAD_SHA" "$actual"
+    done
+    if ln "$WORK/one/payload.bin" "$WORK/one/hard.$_ext" 2>/dev/null; then
+        run_zsh "$FUNCTIONS_SH" "cd '$WORK/one' && archive 'hard.$_ext' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "zsh/archive .$_ext hard link left the source intact" "$PAYLOAD_SHA" "$actual"
+    else
+        echo "  SKIP: zsh/archive .$_ext hard link (filesystem refused)"
+    fi
 done
 
 echo "[zsh] path"
@@ -1025,18 +1077,44 @@ done
 
 # `archive f.gz f.gz` opened f.gz for the compressor's output before reading
 # it, so the source came back as a compressed EMPTY stream — and gzip/bzip2/xz
-# exited 0 doing it. Every spelling of the same file has to be refused, the
-# symlink alias included, and the file left exactly as it was.
+# exited 0 doing it. Spellings that resolve to the same path are refused
+# outright, with the file left exactly as it was; names that reach the source
+# through a link are the next block's business.
 echo "[pwsh] archive single-file refuses an output that is the source"
 for _ext in $SINGLE_FMTS; do
     setup_single_file
     printf 'ORIGINAL' > "$WORK/one/self.$_ext"
-    ln -sf "self.$_ext" "$WORK/one/alias.$_ext"
-    for _spell in "self.$_ext" "./self.$_ext" "alias.$_ext"; do
+    for _spell in "self.$_ext" "./self.$_ext"; do
         err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_spell' 'self.$_ext'")
         assert_contains "pwsh/archive .$_ext output '$_spell' is the source" "is the source file" "$err"
         assert_eq "pwsh/archive .$_ext output '$_spell' left the source intact" "ORIGINAL" "$(cat "$WORK/one/self.$_ext" 2>/dev/null)"
     done
+done
+
+# Comparing resolved paths does not establish identity: a hard link and a chain
+# of symlinks name the same file by a different path, and a check that only
+# compares strings lets them through. What actually keeps the source safe is
+# that the compressor writes a temporary sibling of the output which is renamed
+# into place afterwards — the source is never the file being written, whatever
+# it is called — so what is asserted here is the source surviving, in the lane
+# that refuses these and in the lane that goes ahead and compresses them.
+echo "[pwsh] archive single-file cannot truncate the source through another name"
+for _ext in $SINGLE_FMTS; do
+    setup_single_file
+    ln -s payload.bin "$WORK/one/hop1.$_ext"
+    ln -s "hop1.$_ext" "$WORK/one/hop2.$_ext"
+    for _hop in "hop1.$_ext" "hop2.$_ext"; do
+        run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$_hop' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "pwsh/archive .$_ext symlink '$_hop' left the source intact" "$PAYLOAD_SHA" "$actual"
+    done
+    if ln "$WORK/one/payload.bin" "$WORK/one/hard.$_ext" 2>/dev/null; then
+        run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'hard.$_ext' payload.bin" >/dev/null 2>&1
+        actual=$(sha256sum "$WORK/one/payload.bin" 2>/dev/null | cut -d' ' -f1)
+        assert_eq "pwsh/archive .$_ext hard link left the source intact" "$PAYLOAD_SHA" "$actual"
+    else
+        echo "  SKIP: pwsh/archive .$_ext hard link (filesystem refused)"
+    fi
 done
 
 echo "[pwsh] extract unsupported format"

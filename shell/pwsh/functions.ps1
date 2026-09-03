@@ -63,23 +63,6 @@ function _ArHave([string]$Caller, [string]$Tool) {
   return $false
 }
 
-# _ArRealPath → the filesystem path $Path names, with one symlink hop followed.
-# Used to tell whether archive's output and its source are the same file.
-# ResolveLinkTarget is 7.2+, so the link is read off .Target, which every pwsh
-# 7 has (7.0 types it string[], later ones string; @()[0] takes either). A
-# missing file or a broken link just yields the normalised path.
-function _ArRealPath([string]$Path) {
-  $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
-  $item = Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
-  if ($item -and $item.Target) {
-    $target = @($item.Target)[0]
-    if ($target) {
-      $full = [System.IO.Path]::GetFullPath($target, [System.IO.Path]::GetDirectoryName($full))
-    }
-  }
-  return $full
-}
-
 # _ArCompressTo → run a stdout compressor and put its raw bytes in $Dest.
 # gzip/bzip2/xz have no -o, and PowerShell only redirects a native command's
 # stdout byte-for-byte from 7.4 on: before that the text pipeline re-encodes
@@ -222,35 +205,49 @@ function archive {
         break
       }
       $src = $Sources[0]
-      # The compressor's output is opened before it reads the source, so an
-      # output that IS the source leaves a compressed empty stream where the
-      # file this branch promised to keep used to be, and it reported success
-      # while doing it. Paths are compared as the provider resolves them, one
-      # symlink hop followed, so './out.gz' and a link aliasing the source are
-      # caught too. Only Windows compares case-insensitively.
+      # Naming the source as the output is refused outright, for the clear
+      # message. Comparing the paths the provider resolves them to catches the
+      # spellings people actually type ('out.gz' vs './out.gz'); it does NOT
+      # establish file identity — a hard link or a chain of symlinks has a
+      # different path and the same inode — so it is not what makes this safe.
+      # The staging below is. Only Windows compares case-insensitively.
+      $outResolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
+      $srcResolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($src)
       $sameFile = if ($IsWindows -or $env:OS -eq 'Windows_NT') {
-        (_ArRealPath $Output) -eq  (_ArRealPath $src)
+        $outResolved -eq  $srcResolved
       } else {
-        (_ArRealPath $Output) -ceq (_ArRealPath $src)
+        $outResolved -ceq $srcResolved
       }
       if ($sameFile) {
-        Write-Error "archive: output '$Output' is the source file"
+        Write-Error "output '$Output' is the source file"
         break
       }
       if (-not (_ArHave 'archive' $tool)) { break }
+      # Compress into a temporary sibling of the output and rename that into
+      # place only once the compressor has succeeded. The file being written is
+      # never the source under any name, so nothing can truncate the source
+      # before it is read; a failed run leaves an existing output exactly as it
+      # was; and the rename is atomic because the temporary is in the output's
+      # own directory. Move-Item reads -Destination literally, so a name
+      # holding [ ] * ? still lands where it says.
       # '--' stops each tool's option parsing (all four support it), so a
       # source named like a switch reaches it as a path, as in the tar branches.
-      if ($tool -eq 'zstd') {
-        # zstd is the only one of the four with -o, and it PROMPTS before
-        # clobbering an existing output; -f keeps the branch non-interactive
-        # and overwriting, as every other branch is.
-        & zstd -q -k -f -o $Output -- $src
-      } else {
-        # The others have no -o, so their stdout is captured as raw bytes and
-        # written to $Output; see _ArCompressTo for why not '> $Output'. The
-        # exit code goes where a native command would have left it, so the
-        # branch reports failure like every other one.
-        $global:LASTEXITCODE = _ArCompressTo $tool $src $Output
+      $tmp = "$Output.tmp." + [System.IO.Path]::GetRandomFileName()
+      $moved = $false
+      try {
+        if ($tool -eq 'zstd') {
+          # zstd is the only one of the four with -o; the others have none, so
+          # _ArCompressTo captures their stdout as raw bytes instead.
+          & zstd -q -k -f -o $tmp -- $src
+        } else {
+          $global:LASTEXITCODE = _ArCompressTo $tool $src $tmp
+        }
+        if ($LASTEXITCODE -eq 0) {
+          Move-Item -LiteralPath $tmp -Destination $Output -Force
+          $moved = $true
+        }
+      } finally {
+        if (-not $moved) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
       }
       break
     }
