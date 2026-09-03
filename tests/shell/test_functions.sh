@@ -1398,6 +1398,41 @@ else
     echo "  SKIP: pwsh/archive process sweep (pgrep not installed)"
 fi
 
+# Test-Path -PathType Leaf only means "not a container", so a FIFO, /dev/null
+# and /dev/zero all passed it and `archive out.zst /dev/zero` would run until
+# the disk filled. The POSIX twin refuses these with [ -f ]; pwsh has to ask
+# the same question. The FIFO case runs under `timeout` on purpose: if this
+# check ever regresses, the compressor blocks on the pipe forever rather than
+# failing, and an unguarded run would hang the suite.
+echo "[pwsh] archive single-file refuses a source that is not a regular file"
+setup_single_file
+if command -v mkfifo >/dev/null 2>&1 && mkfifo "$WORK/one/fifo.src" 2>/dev/null; then
+    err=$(timeout 30 pwsh -NoProfile -NonInteractive -Command "
+        . '$FUNCTIONS_PS1_COMBINED'
+        Set-Location '$WORK/one'
+        archive 'fifo.gz' 'fifo.src'
+    " 2>&1 >/dev/null | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
+    assert_contains "pwsh/archive fifo source usage" "$SINGLE_USAGE" "$err"
+    assert_not_exists "pwsh/archive fifo source wrote nothing" "$WORK/one/fifo.gz"
+    assert_eq "pwsh/archive fifo source left no temporary" "" "$(ls "$WORK/one" | grep '^fifo\.gz\.tmp' | tr -d '\n')"
+else
+    echo "  SKIP: pwsh/archive fifo source (mkfifo unavailable)"
+fi
+if [ -c /dev/null ]; then
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'dev.gz' '/dev/null'")
+    assert_contains "pwsh/archive character-device source usage" "$SINGLE_USAGE" "$err"
+    assert_not_exists "pwsh/archive character-device source wrote nothing" "$WORK/one/dev.gz"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'dev.gz' '/dev/null'" >/dev/null 2>&1
+    assert_eq "pwsh/archive character-device source exits 1" "1" "$?"
+else
+    echo "  SKIP: pwsh/archive character-device source (/dev/null not a device here)"
+fi
+# a plain regular file, and a symlink pointing at one, must still be accepted
+ln -sf payload.bin "$WORK/one/via-link.bin"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'viaLink.gz' 'via-link.bin'" >/dev/null 2>&1
+assert_eq "pwsh/archive still accepts a symlink to a regular file" "0" "$?"
+assert_exists "pwsh/archive symlink source produced the archive" "$WORK/one/viaLink.gz"
+
 echo "[pwsh] extract unsupported format"
 touch "$WORK/test.foo"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "extract '$WORK/test.foo'")

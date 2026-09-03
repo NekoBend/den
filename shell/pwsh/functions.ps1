@@ -71,6 +71,33 @@ function _ArTool([string]$Tool) {
   return $null
 }
 
+# _ArRegularFile → is $Path an existing REGULAR file? Test-Path -PathType Leaf
+# only means "not a container", so a FIFO, a character device or a socket all
+# pass it, and `archive out.zst /dev/zero` then runs until the disk is full.
+# The POSIX twin gets this right for free with [ -f ], so on Unix this asks the
+# same question the same way: 'test -f' follows a symlink to its target and is
+# true only for a regular file. PowerShell's own UnixMode cannot stand in for
+# it -- measured on 7.6.3, a FIFO reports "-rw-r--r--", the same leading '-' as
+# a regular file -- so it is only the fallback for a system with no /bin/sh,
+# where it at least rules out devices, sockets and directories.
+function _ArRegularFile([string]$Path) {
+  $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+  # Rules out a directory and a path that is not there at all, on every OS.
+  if (-not [System.IO.File]::Exists($full)) { return $false }
+  if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+    $attrs = [System.IO.File]::GetAttributes($full)
+    return -not ($attrs.HasFlag([System.IO.FileAttributes]::Device) -or
+                 $attrs.HasFlag([System.IO.FileAttributes]::Directory))
+  }
+  if (Test-Path -LiteralPath '/bin/sh' -PathType Leaf) {
+    & /bin/sh -c 'test -f "$1"' _ $full
+    return ($LASTEXITCODE -eq 0)
+  }
+  $mode = (Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue).UnixMode
+  if ($mode) { return $mode.StartsWith('-') }
+  return $true
+}
+
 # _ArCompressTo → run a stdout compressor and put its raw bytes in $Dest.
 # gzip/bzip2/xz have no -o, and PowerShell only redirects a native command's
 # stdout byte-for-byte from 7.4 on: before that the text pipeline re-encodes
@@ -238,11 +265,9 @@ function archive {
               elseif ($Output -match '\.bz2$') { 'bzip2' }
               elseif ($Output -match '\.xz$')  { 'xz'    }
               else                             { 'zstd'  }
-      # Exactly one source, and it must already be a regular file. Testing
-      # only for Container was false for a path that does not exist, so a
-      # typo'd source got this far and the output was created or truncated
-      # before the compressor failed on it.
-      if ($Sources.Count -ne 1 -or -not (Test-Path -LiteralPath $Sources[0] -PathType Leaf)) {
+      # Exactly one source, and it must already be a REGULAR file -- see
+      # _ArRegularFile for why "not a container" was not enough.
+      if ($Sources.Count -ne 1 -or -not (_ArRegularFile $Sources[0])) {
         Write-Error "usage: archive <output.gz|.bz2|.xz|.zst> <one-file>" -ErrorAction Stop
       }
       $src = $Sources[0]
