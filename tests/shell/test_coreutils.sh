@@ -403,9 +403,18 @@ echo "================================================"
 echo "  Testing stderr format (no double-prefix)"
 echo "================================================"
 
+# split writes its chunks into the CURRENT directory, so this case has to run
+# inside $WORK like every other split case above: without the Set-Location it
+# dropped an "xaa" into whatever directory the suite was invoked from. The
+# before/after listing is the regression guard -- it is what would have caught
+# the leak, and it covers any output name, not just "xaa".
 echo "[pwsh] split stderr"
-err=$(run_pwsh_stderr "$COREUTILS_PS1_STRIPPED" "echo 'x' | split -n 0")
+_split_cwd_before=$(ls -A . 2>/dev/null | sort)
+err=$(run_pwsh_stderr "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK'; echo 'x' | split -n 0")
 assert_not_contains "pwsh/split no double prefix" "split: split:" "$err"
+assert_eq "pwsh/split wrote nothing into the invoking directory" \
+    "$_split_cwd_before" "$(ls -A . 2>/dev/null | sort)"
+unset _split_cwd_before
 
 echo "[pwsh] touch usage stderr"
 err=$(run_pwsh_stderr "$COREUTILS_PS1_STRIPPED" "touch")
