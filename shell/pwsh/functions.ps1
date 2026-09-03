@@ -58,7 +58,15 @@ function mkfile {
 # instead of a CommandNotFoundException from the branch, and archive checks it
 # BEFORE the redirection that would create the output.
 function _ArHave([string]$Caller, [string]$Tool) {
-  if (Get-Command $Tool -ErrorAction SilentlyContinue) { return $true }
+  # -CommandType Application because these branches start a PROGRAM:
+  # _ArCompressTo goes through ProcessStartInfo, which can only launch an
+  # executable, so a PowerShell function or alias of the same name is not the
+  # thing being looked for — without the restriction a shadowing function made
+  # this report success and Process.Start then threw. _ResolveCmd in
+  # _helpers.ps1 draws the same line for the wrappers; it is not reused here
+  # because its cache is keyed for wrapper resolution and would go on saying
+  # "not installed" after a compressor was installed later in the session.
+  if (Get-Command $Tool -CommandType Application -ErrorAction SilentlyContinue) { return $true }
   Write-Error "${Caller}: $Tool is not installed"
   return $false
 }

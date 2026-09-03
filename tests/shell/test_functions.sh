@@ -1117,6 +1117,18 @@ for _ext in $SINGLE_FMTS; do
     fi
 done
 
+# Get-Command matches functions and aliases too, but _ArCompressTo starts the
+# compressor through ProcessStartInfo, which can only launch a program. With a
+# gzip FUNCTION defined and no gzip on PATH, the check used to report success
+# and Process.Start then threw; the branch has to say the tool is missing.
+echo "[pwsh] archive does not mistake a function for the compressor"
+setup_single_file
+err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; function gzip { 'not the real gzip' }; Set-Location '$WORK/one'; archive 'shadow.gz' 'payload.bin'")
+assert_contains "pwsh/archive function-shadowed gzip reports it missing" "gzip is not installed" "$err"
+assert_not_contains "pwsh/archive function-shadowed gzip did not start a process" "ProcessStartInfo" "$err"
+assert_not_contains "pwsh/archive function-shadowed gzip threw no win32 error" "No such file or directory" "$err"
+assert_not_exists "pwsh/archive function-shadowed gzip wrote nothing" "$WORK/one/shadow.gz"
+
 echo "[pwsh] extract unsupported format"
 touch "$WORK/test.foo"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "extract '$WORK/test.foo'")
