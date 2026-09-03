@@ -1600,6 +1600,43 @@ else
     echo "  SKIP: pwsh/archive different-case output (needs a case-insensitive volume; Windows only)"
 fi
 
+# On Windows there is no 'test -ef', so identity is established from the item's
+# own link information: a symlink is resolved to its target, and a hard link
+# reports its OTHER names in .Target. Neither can be exercised on Linux -- the
+# Windows branch is not even reached -- so the refusals are Windows-only. The
+# helpers themselves are smoke-checked everywhere, since a shape they cannot
+# handle would throw on the platform that does use them.
+echo "[pwsh] archive same-file helpers behave on link input"
+setup_single_file
+ln -s payload.bin "$WORK/one/smoke-link.bin"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    Set-Location '$WORK/one'
+    \$i = Get-Item -LiteralPath 'smoke-link.bin' -Force
+    (_ArLinkTarget \$i) + '|' + (_ArVolumeRelative 'C:\Some\Where.gz') + '|' + (_ArVolumeRelative '/tmp/x')
+" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/_ArLinkTarget resolves a symlink to its target" "payload.bin" "$actual"
+# The volume root is only recognised on the platform that has volumes, so all
+# that holds everywhere is: the answer is backslash-rooted and keeps the tail.
+assert_contains "pwsh/_ArVolumeRelative keeps the path tail" 'Some\Where.gz' "$actual"
+assert_contains "pwsh/_ArVolumeRelative returns a rooted path" '|\' "$actual"
+
+echo "[pwsh] archive refuses a Windows hard link or symlink aliasing the source"
+if [ "$(run_pwsh "$FUNCTIONS_PS1_COMBINED" 'if ($IsWindows) { "yes" } else { "no" }' 2>/dev/null | tr -d '\r')" = "yes" ]; then
+    actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "_ArVolumeRelative 'C:\Some\Where.gz'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/_ArVolumeRelative drops the volume root on windows" '\Some\Where.gz' "$actual"
+    setup_single_file
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "New-Item -ItemType HardLink -Path '$WORK/one/hardlink.gz' -Target '$WORK/one/payload.bin' | Out-Null" >/dev/null 2>&1
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'hardlink.gz' 'payload.bin'")
+    assert_contains "pwsh/archive windows hard link refused as the source" "is the source file" "$err"
+    assert_eq "pwsh/archive windows hard link left the source intact" "$PAYLOAD_SHA" "$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "New-Item -ItemType SymbolicLink -Path '$WORK/one/symlink.gz' -Target '$WORK/one/payload.bin' | Out-Null" >/dev/null 2>&1
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'symlink.gz' 'payload.bin'")
+    assert_contains "pwsh/archive windows symlink refused as the source" "is the source file" "$err"
+    assert_eq "pwsh/archive windows symlink left the source intact" "$PAYLOAD_SHA" "$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)"
+else
+    echo "  SKIP: pwsh/archive windows link aliases (Windows only; the -ef path covers Unix)"
+fi
+
 echo "[pwsh] extract unsupported format"
 touch "$WORK/test.foo"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "extract '$WORK/test.foo'")

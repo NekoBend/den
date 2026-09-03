@@ -108,17 +108,71 @@ function _ArRegularFile([string]$Path) {
 # as a fast path that answers the common case without a fork. Windows has no
 # such test; NTFS is case-insensitive, so comparing full paths that way is the
 # right question there.
+# _ArVolumeRelative → a Windows path with its volume root dropped, so a full
+# path can be compared with the volume-relative names a hard link reports.
+function _ArVolumeRelative([string]$Path) {
+  $root = try { [System.IO.Path]::GetPathRoot($Path) } catch { '' }
+  if ($root -and $Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return '\' + $Path.Substring($root.Length).TrimStart('\', '/')
+  }
+  return '\' + $Path.TrimStart('\', '/')
+}
+
+# _ArLinkTarget → what a symlink points at, else the item's own path.
+# ResolveLinkTarget is 7.2+; .Target is the one-hop stand-in on 7.0/7.1.
+function _ArLinkTarget($Item) {
+  try {
+    if ($Item.LinkType -eq 'SymbolicLink') {
+      if ($Item | Get-Member -Name ResolveLinkTarget) {
+        $t = $Item.ResolveLinkTarget($true)
+        if ($t) { return $t.FullName }
+      }
+      $t = @($Item.Target)[0]
+      if ($t) {
+        return [System.IO.Path]::GetFullPath($t, [System.IO.Path]::GetDirectoryName($Item.FullName))
+      }
+    }
+  } catch { }
+  return $Item.FullName
+}
+
 function _ArSameFile([string]$A, [string]$B) {
   $fa = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($A)
   $fb = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($B)
-  if ($IsWindows -or $env:OS -eq 'Windows_NT') { return ($fa -eq $fb) }
-  if ($fa -ceq $fb) { return $true }
-  # -ef needs both to exist; an output that is not there yet collides with
-  # nothing, and skipping the fork is the common case.
+  if (-not ($IsWindows -or $env:OS -eq 'Windows_NT')) {
+    if ($fa -ceq $fb) { return $true }
+    # -ef needs both to exist; an output that is not there yet collides with
+    # nothing, and skipping the fork is the common case.
+    if (-not (Test-Path -LiteralPath $fb)) { return $false }
+    if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { return $false }
+    & /bin/sh -c 'test "$1" -ef "$2"' _ $fa $fb
+    return ($LASTEXITCODE -eq 0)
+  }
+  # Windows. The case-insensitive compare settles the spellings people type,
+  # NTFS being case-insensitive, and is only the fast path: Windows has hard
+  # links and symlinks too, and no -ef to ask about them.
+  if ($fa -eq $fb) { return $true }
   if (-not (Test-Path -LiteralPath $fb)) { return $false }
-  if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { return $false }
-  & /bin/sh -c 'test "$1" -ef "$2"' _ $fa $fb
-  return ($LASTEXITCODE -eq 0)
+  $ia = Get-Item -LiteralPath $fa -Force -ErrorAction SilentlyContinue
+  $ib = Get-Item -LiteralPath $fb -Force -ErrorAction SilentlyContinue
+  if (-not $ia -or -not $ib) { return $false }
+  # A symlink names another path: compare what each one actually points at.
+  $ra = _ArLinkTarget $ia
+  $rb = _ArLinkTarget $ib
+  if ($ra -eq $rb) { return $true }
+  # A hard link is one file under several names, and on Windows .Target
+  # enumerates the OTHER names for LinkType 'HardLink'. They come back
+  # volume-relative, so both sides are compared with the root dropped;
+  # -contains is case-insensitive, which is what NTFS wants.
+  foreach ($side in @(@($ia, $rb), @($ib, $ra))) {
+    $item = $side[0]
+    $other = _ArVolumeRelative $side[1]
+    if ($item.LinkType -eq 'HardLink' -and $item.Target) {
+      $names = @($item.Target | ForEach-Object { _ArVolumeRelative $_ })
+      if ($names -contains $other) { return $true }
+    }
+  }
+  return $false
 }
 
 # _ArCompressTo → run a stdout compressor and put its raw bytes in $Dest.
