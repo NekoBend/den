@@ -146,6 +146,19 @@ run_pwsh_stderr() {
     " 2>&1 1>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r'
 }
 
+# Same, but with the command on ONE line. PowerShell's ConciseView only
+# renders the compact "<function>: <message>" form when the failing command
+# occupies a single line; the multi-line -Command that run_pwsh_stderr builds
+# gets the "Line | ..." block instead, and there the prefix PowerShell adds and
+# the message itself land on SEPARATE lines -- so a hand-written prefix that
+# doubles it is not visible as one substring. Use this runner for the
+# no-double-prefix assertions; use run_pwsh_stderr for message content.
+run_pwsh_stderr_oneline() {
+    local script="$1" cmd="$2"
+    pwsh -NoProfile -NonInteractive -Command ". '$script'; $cmd" 2>&1 1>/dev/null |
+        sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r'
+}
+
 # Run bash command and capture stderr only
 run_bash_stderr() {
     bash -c "source '$1' && $2" 2>&1 1>/dev/null | tr -d '\r'

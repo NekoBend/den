@@ -35,13 +35,23 @@ digest() {
         fi
         # Neutralize a leading-dash filename so it is not parsed as an option.
         case "$_h_f" in -*) _h_f="./$_h_f" ;; esac
+        # The hash is taken in a command substitution rather than piped into
+        # awk, so the *sum tool's OWN status is still readable: a pipeline
+        # reports the status of its last command, so an unreadable file --
+        # `[ -f ]` is true for one -- used to leave the tool's "Permission
+        # denied" on stderr while digest printed an empty line and returned 0.
+        if ! _h_out=$("${_h_algo}sum" "$_h_f"); then
+            _h_fail=1
+            continue
+        fi
+        # "<hash>  <name>" from every *sum tool; cut at the first space.
         if [ "$_h_many" -gt 1 ]; then
-            "${_h_algo}sum" "$_h_f" | awk -v f="$_h_f" '{ print $1 "  " f }'
+            printf '%s  %s\n' "${_h_out%% *}" "$_h_f"
         else
-            "${_h_algo}sum" "$_h_f" | awk '{ print $1 }'
+            printf '%s\n' "${_h_out%% *}"
         fi
     done
-    unset _h_algo _h_f _h_many
+    unset _h_algo _h_f _h_many _h_out
     if [ "$_h_fail" -ne 0 ]; then unset _h_fail; return 1; fi
     unset _h_fail
     return 0
