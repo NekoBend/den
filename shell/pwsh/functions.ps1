@@ -95,12 +95,28 @@ function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
   $psi.UseShellExecute = $false
   # stderr is deliberately NOT redirected: the tool's diagnostics reach the
   # console, and there is no second pipe to deadlock on while stdout drains.
-  $proc = [System.Diagnostics.Process]::Start($psi)
+  # Open the destination BEFORE starting the compressor. The other order left
+  # a started child with nobody draining its pipe whenever File.Create threw --
+  # an unwritable directory, a path that does not exist -- and only the file
+  # stream was in a finally, so the process was never waited on or disposed.
   $fs = [System.IO.File]::Create($dstFull)
-  try { $proc.StandardOutput.BaseStream.CopyTo($fs) } finally { $fs.Dispose() }
-  $proc.WaitForExit()
-  $code = $proc.ExitCode
-  $proc.Dispose()
+  try {
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    try {
+      $proc.StandardOutput.BaseStream.CopyTo($fs)
+      $proc.WaitForExit()
+      $code = $proc.ExitCode
+    } finally {
+      # Reached on every path out, CopyTo throwing included: a child still
+      # running at this point is one nothing will ever read from again.
+      # HasExited can go true between the test and the call, and that race is
+      # exactly the outcome wanted, so the kill is allowed to fail.
+      try { if (-not $proc.HasExited) { $proc.Kill(); $proc.WaitForExit() } } catch { }
+      $proc.Dispose()
+    }
+  } finally {
+    $fs.Dispose()
+  }
   return $code
 }
 
@@ -266,7 +282,12 @@ function archive {
           # the resolved program path, never the bare name.
           & $toolPath -q -k -f -o $tmp -- $src
         } else {
-          $global:LASTEXITCODE = _ArCompressTo $toolPath $src $tmp
+          # A .NET exception out of _ArCompressTo (destination unopenable, say)
+          # is only STATEMENT-terminating, so on its own it would leave
+          # `pwsh -Command` exiting 0 -- the same hole the refusals had.
+          # Re-raise it as this function's own terminating error.
+          try { $global:LASTEXITCODE = _ArCompressTo $toolPath $src $tmp }
+          catch { Write-Error $_.Exception.Message -ErrorAction Stop }
         }
         # A compressor that started and then failed used to leave archive
         # reporting success: the move was skipped, finally deleted the
