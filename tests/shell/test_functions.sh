@@ -456,18 +456,15 @@ echo "[bash] archive reports a compressor that fails"
     run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stub3:$PATH'; cd '$WORK/one' && archive 'keep.gz' payload.bin" >/dev/null 2>&1
     assert_eq "bash/archive compressor failure exits with the tool's code" "3" "$?"
     assert_eq "bash/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
-    assert_eq "bash/archive compressor failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^keep\.gz\.tmp' | tr -d '\n')"
+    assert_eq "bash/archive compressor failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
 
-# The temporary used to be "$out.tmp.$$", a name another user in a shared
-# directory can predict and pre-plant as a symlink, so the truncating redirect
-# rewrote whatever it pointed at. mktemp is forced to fail here so the noclobber
-# fallback is the thing under test, and the link is planted from inside the very
-# shell whose $$ the fallback uses.
-# An unguessable temporary name is the ONLY thing that closes the symlink race,
-# so mktemp is required rather than fallen back on. A noclobber 'set -C'
-# redirect would guard only the creation; the compressor reopens that same
-# predictable path straight afterwards, leaving the window wide open.
-echo "[bash] archive requires mktemp for the staging temporary"
+# Staging happens inside a private 0700 directory nobody else can traverse,
+# which is what keeps the name the compressor reopens from being swapped for a
+# symlink. There is no fallback for a missing mktemp, deliberately: any
+# predictable name would hand that window straight back. These two cases check
+# the branch fails CLOSED instead -- with mktemp gone entirely, and with mktemp
+# present but unable to produce a directory -- writing nothing either way.
+echo "[bash] archive requires mktemp for the staging directory"
 setup_single_file
 # a PATH carrying the real compressor but no mktemp, so the branch gets past
 # its own tool check and fails on this one
@@ -479,18 +476,22 @@ run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'o
 assert_eq "bash/archive missing mktemp exits 1" "1" "$?"
 assert_not_exists "bash/archive missing mktemp wrote nothing" "$WORK/one/out.gz"
 
-# mktemp present but unable to produce a name: still refuse, and still never
-# touch the predictable name a symlink would have been planted at.
-echo "[bash] archive's temporary does not follow a planted symlink"
+# mktemp present but unable to produce a directory: refuse, rather than fall
+# back to any name an attacker could have guessed. The old predictable name is
+# planted as a symlink to prove nothing reaches for it any more.
+echo "[bash] archive falls back to no predictable name when mktemp fails"
 setup_single_file
 mkdir -p "$WORK/failmk"
 printf '#!/bin/sh\nexit 1\n' > "$WORK/failmk/mktemp"
 chmod +x "$WORK/failmk/mktemp"
 printf 'VICTIM' > "$WORK/one/victim"
 run_bash "$FUNCTIONS_SH" "export PATH='$WORK/failmk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
-assert_eq "bash/archive planted temp symlink exits nonzero" "1" "$?"
-assert_eq "bash/archive did not write through the planted symlink" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
-assert_not_exists "bash/archive planted symlink produced no output" "$WORK/one/out.gz"
+assert_eq "bash/archive unusable mktemp exits nonzero" "1" "$?"
+assert_eq "bash/archive unusable mktemp touched no predictable name" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
+assert_not_exists "bash/archive unusable mktemp produced no output" "$WORK/one/out.gz"
+# '.archive.' only here: the fixture deliberately plants a file whose own name
+# ends in .tmp.<pid>, and that plant is the point of the case, not a leftover.
+assert_eq "bash/archive unusable mktemp left no staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
 
 # Publishing the staged archive can fail on its own (a read-only directory, a
 # full disk). The staged file must not be left lying around as a stray .tmp,
@@ -503,7 +504,36 @@ chmod +x "$WORK/stubmv/mv"
 run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubmv:$PATH'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
 assert_eq "bash/archive publish failure exits with mv's code" "7" "$?"
 assert_not_exists "bash/archive publish failure wrote no output" "$WORK/one/out.gz"
-assert_eq "bash/archive publish failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^out\.gz\.tmp' | tr -d '\n')"
+assert_eq "bash/archive publish failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
+
+# What actually closes the symlink race is WHERE the archive is staged: mktemp
+# creates a file exclusively, but the compressor reopens it by name, and in a
+# directory others can write to that name can be unlinked and replaced in
+# between. A 0700 directory nobody else can traverse removes the window. The
+# stub records the path it was handed and that directory's mode, so both are
+# checked directly rather than inferred.
+echo "[bash] archive stages inside a private directory"
+setup_single_file
+mkdir -p "$WORK/stagebin"
+cat > "$WORK/stagebin/zstd" <<'STUB'
+#!/bin/sh
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        *)  shift ;;
+    esac
+done
+printf '%s %s\n' "$out" "$(ls -ld "${out%/*}" | cut -c1-10)" > "$STAGE_LOG"
+printf 'STUB' > "$out"
+STUB
+chmod +x "$WORK/stagebin/zstd"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stagebin:$PATH' STAGE_LOG='$WORK/stage.log'; cd '$WORK/one' && archive 'out.zst' payload.bin" >/dev/null 2>&1
+assert_success "bash/archive staged run exit code" "$?"
+assert_contains "bash/archive staged in a .archive directory" "/.archive." "$(cat "$WORK/stage.log" 2>/dev/null)"
+assert_contains "bash/archive staging directory is private" "drwx------" "$(cat "$WORK/stage.log" 2>/dev/null)"
+assert_exists "bash/archive published the staged file" "$WORK/one/out.zst"
+assert_eq "bash/archive removed the staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
 
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
@@ -856,18 +886,15 @@ echo "[zsh] archive reports a compressor that fails"
     run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stub3:$PATH'; cd '$WORK/one' && archive 'keep.gz' payload.bin" >/dev/null 2>&1
     assert_eq "zsh/archive compressor failure exits with the tool's code" "3" "$?"
     assert_eq "zsh/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
-    assert_eq "zsh/archive compressor failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^keep\.gz\.tmp' | tr -d '\n')"
+    assert_eq "zsh/archive compressor failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
 
-# The temporary used to be "$out.tmp.$$", a name another user in a shared
-# directory can predict and pre-plant as a symlink, so the truncating redirect
-# rewrote whatever it pointed at. mktemp is forced to fail here so the noclobber
-# fallback is the thing under test, and the link is planted from inside the very
-# shell whose $$ the fallback uses.
-# An unguessable temporary name is the ONLY thing that closes the symlink race,
-# so mktemp is required rather than fallen back on. A noclobber 'set -C'
-# redirect would guard only the creation; the compressor reopens that same
-# predictable path straight afterwards, leaving the window wide open.
-echo "[zsh] archive requires mktemp for the staging temporary"
+# Staging happens inside a private 0700 directory nobody else can traverse,
+# which is what keeps the name the compressor reopens from being swapped for a
+# symlink. There is no fallback for a missing mktemp, deliberately: any
+# predictable name would hand that window straight back. These two cases check
+# the branch fails CLOSED instead -- with mktemp gone entirely, and with mktemp
+# present but unable to produce a directory -- writing nothing either way.
+echo "[zsh] archive requires mktemp for the staging directory"
 setup_single_file
 # a PATH carrying the real compressor but no mktemp, so the branch gets past
 # its own tool check and fails on this one
@@ -879,18 +906,22 @@ run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nomk'; cd '$WORK/one' && archive 'ou
 assert_eq "zsh/archive missing mktemp exits 1" "1" "$?"
 assert_not_exists "zsh/archive missing mktemp wrote nothing" "$WORK/one/out.gz"
 
-# mktemp present but unable to produce a name: still refuse, and still never
-# touch the predictable name a symlink would have been planted at.
-echo "[zsh] archive's temporary does not follow a planted symlink"
+# mktemp present but unable to produce a directory: refuse, rather than fall
+# back to any name an attacker could have guessed. The old predictable name is
+# planted as a symlink to prove nothing reaches for it any more.
+echo "[zsh] archive falls back to no predictable name when mktemp fails"
 setup_single_file
 mkdir -p "$WORK/failmk"
 printf '#!/bin/sh\nexit 1\n' > "$WORK/failmk/mktemp"
 chmod +x "$WORK/failmk/mktemp"
 printf 'VICTIM' > "$WORK/one/victim"
 run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/failmk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
-assert_eq "zsh/archive planted temp symlink exits nonzero" "1" "$?"
-assert_eq "zsh/archive did not write through the planted symlink" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
-assert_not_exists "zsh/archive planted symlink produced no output" "$WORK/one/out.gz"
+assert_eq "zsh/archive unusable mktemp exits nonzero" "1" "$?"
+assert_eq "zsh/archive unusable mktemp touched no predictable name" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
+assert_not_exists "zsh/archive unusable mktemp produced no output" "$WORK/one/out.gz"
+# '.archive.' only here: the fixture deliberately plants a file whose own name
+# ends in .tmp.<pid>, and that plant is the point of the case, not a leftover.
+assert_eq "zsh/archive unusable mktemp left no staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
 
 # Publishing the staged archive can fail on its own (a read-only directory, a
 # full disk). The staged file must not be left lying around as a stray .tmp,
@@ -903,7 +934,36 @@ chmod +x "$WORK/stubmv/mv"
 run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubmv:$PATH'; cd '$WORK/one' && archive 'out.gz' payload.bin" >/dev/null 2>&1
 assert_eq "zsh/archive publish failure exits with mv's code" "7" "$?"
 assert_not_exists "zsh/archive publish failure wrote no output" "$WORK/one/out.gz"
-assert_eq "zsh/archive publish failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^out\.gz\.tmp' | tr -d '\n')"
+assert_eq "zsh/archive publish failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
+
+# What actually closes the symlink race is WHERE the archive is staged: mktemp
+# creates a file exclusively, but the compressor reopens it by name, and in a
+# directory others can write to that name can be unlinked and replaced in
+# between. A 0700 directory nobody else can traverse removes the window. The
+# stub records the path it was handed and that directory's mode, so both are
+# checked directly rather than inferred.
+echo "[zsh] archive stages inside a private directory"
+setup_single_file
+mkdir -p "$WORK/stagebin"
+cat > "$WORK/stagebin/zstd" <<'STUB'
+#!/bin/sh
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        *)  shift ;;
+    esac
+done
+printf '%s %s\n' "$out" "$(ls -ld "${out%/*}" | cut -c1-10)" > "$STAGE_LOG"
+printf 'STUB' > "$out"
+STUB
+chmod +x "$WORK/stagebin/zstd"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stagebin:$PATH' STAGE_LOG='$WORK/stage.log'; cd '$WORK/one' && archive 'out.zst' payload.bin" >/dev/null 2>&1
+assert_success "zsh/archive staged run exit code" "$?"
+assert_contains "zsh/archive staged in a .archive directory" "/.archive." "$(cat "$WORK/stage.log" 2>/dev/null)"
+assert_contains "zsh/archive staging directory is private" "drwx------" "$(cat "$WORK/stage.log" 2>/dev/null)"
+assert_exists "zsh/archive published the staged file" "$WORK/one/out.zst"
+assert_eq "zsh/archive removed the staging directory" "" "$(ls -A "$WORK/one" | grep '^\.archive\.' | tr -d '\n')"
 
 echo "[zsh] path"
 actual=$(run_zsh "$FUNCTIONS_SH" "path")
@@ -1357,7 +1417,8 @@ echo "[pwsh] archive reports a compressor that fails"
     run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stub3:' + \$env:PATH; Set-Location '$WORK/one'; archive 'keep.gz' 'payload.bin'" >/dev/null 2>&1
     assert_eq "pwsh/archive compressor failure exits 1" "1" "$?"
     assert_eq "pwsh/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
-    assert_eq "pwsh/archive compressor failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^keep\.gz\.tmp' | tr -d '\n')"
+    # pwsh stages as "<output>.tmp.<random>", not in a directory as POSIX does.
+    assert_eq "pwsh/archive compressor failure left no temporary behind" "" "$(ls -A "$WORK/one" | grep -E '^\.archive\.|\.tmp\.' | tr -d '\n')"
 
 # A destination that cannot be written has to fail too, rather than report an
 # archive nobody can find. root ignores the mode bits, so there it is skipped.

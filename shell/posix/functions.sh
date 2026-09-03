@@ -138,7 +138,7 @@ archive() {
         return 1
     fi
     local out="$1"; shift
-    local _ar_arg _ar_n _ar_tool _ar_tmp _ar_rc
+    local _ar_arg _ar_n _ar_tool _ar_tmp _ar_rc _ar_tmpd _ar_outdir
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
     # A directory already sitting at the output path is not an output. Checked
@@ -198,24 +198,29 @@ archive() {
             # '--' stops each tool's option parsing (all four support it), so a
             # source named like a switch reaches it as a path — the same rule
             # the tar branches above follow.
-            # Create the temporary EXCLUSIVELY rather than opening a
-            # predictable "$out.tmp.$$" with a truncating redirect: in a shared
-            # directory another user can pre-plant that exact name as a symlink
-            # and have the redirect rewrite whatever it points at. mktemp is
-            # O_EXCL + 0600 + a random suffix.
-            #
-            # There is deliberately NO noclobber fallback. 'set -C' would only
-            # guard the one redirect that creates the file; the compressor
-            # below reopens that same predictable path without it, so the
-            # symlink can simply be planted in between. An unguessable name is
-            # the only thing that closes the race, so a missing mktemp is a
-            # missing tool like any other.
+            # Stage inside a private DIRECTORY, not a temporary file. mktemp
+            # creates a file exclusively, but the compressor then reopens it by
+            # pathname, and in a directory anyone else can write to that file
+            # can be unlinked and replaced with a symlink in between -- the
+            # exclusive creation does not survive being reopened. A 0700
+            # directory (mktemp -d's default) nobody else can traverse means
+            # the name inside it cannot be swapped at all, so there is no
+            # window to race. A predictable-name fallback would give the window
+            # straight back, so a missing mktemp is a missing tool like any
+            # other, and the branch fails closed.
+            case "$out" in
+                */*) _ar_outdir="${out%/*}" ;;
+                *)   _ar_outdir="." ;;
+            esac
             _ar_have archive mktemp || return 1
-            _ar_tmp=$(command mktemp "$out.tmp.XXXXXX" 2>/dev/null)
-            if [ -z "$_ar_tmp" ]; then
-                echo "archive: cannot create a temporary file next to '$out'" >&2
+            _ar_tmpd=$(command mktemp -d "$_ar_outdir/.archive.XXXXXX" 2>/dev/null)
+            if [ -z "$_ar_tmpd" ]; then
+                echo "archive: cannot create a temporary directory in '$_ar_outdir'" >&2
                 return 1
             fi
+            # The name inside is fixed: the directory is what makes it private,
+            # and staging beside the output keeps the publish below a rename.
+            _ar_tmp="$_ar_tmpd/archive"
             if [ "$_ar_tool" = zstd ]; then
                 # zstd is the only one of the four with -o; the others have
                 # none, so -k -c writes the bytes and the shell names the file.
@@ -225,26 +230,24 @@ archive() {
             fi
             _ar_rc=$?
             if [ "$_ar_rc" -ne 0 ]; then
-                # The compressor started and failed. Drop the partial
-                # temporary and report ITS code, the way the tar and zip
-                # branches report the archiver's; an existing output at $out
-                # was never opened, so it is still whatever it was.
-                rm -f -- "$_ar_tmp"
+                # The compressor started and failed. Take the staging directory
+                # with it and report ITS code, the way the tar and zip branches
+                # report the archiver's; an existing output at $out was never
+                # opened, so it is still whatever it was.
+                rm -rf -- "$_ar_tmpd"
                 return "$_ar_rc"
             fi
-            # mktemp makes the temporary 0600. The archive itself should land
-            # with the user's umask, as the tar and zip branches' outputs do --
-            # 'umask -S' gives the directory form, so strip the execute bits it
-            # carries.
+            # Inside a 0700 directory the file is 0600. The archive itself
+            # should land with the user's umask, as the tar and zip branches'
+            # outputs do -- 'umask -S' gives the directory form, so strip the
+            # execute bits it carries.
             chmod "$(umask -S)" "$_ar_tmp" 2>/dev/null && chmod a-x "$_ar_tmp" 2>/dev/null
             # Publishing can fail too (a read-only directory, a full disk).
-            # Report the failure and take the staged archive with it, rather
-            # than leaving a stray .tmp behind for the caller to find.
+            # Report that, and take the staging directory with it on every exit
+            # path rather than leaving one behind for the caller to find.
             mv -f -- "$_ar_tmp" "$out"
             _ar_rc=$?
-            if [ "$_ar_rc" -ne 0 ]; then
-                rm -f -- "$_ar_tmp"
-            fi
+            rm -rf -- "$_ar_tmpd"
             return "$_ar_rc"
             ;;
         *.zip)              zip -r "$out" -- "$@"    ;;
