@@ -52,22 +52,23 @@ function mkfile {
   Write-Host "Created $Path ($Size → $bytes bytes)"
 }
 
-# _ArHave → is $Tool available to a branch of extract/archive? A predicate
-# only: PowerShell prefixes an error with the name of the function that RAISED
-# it, so a message written here would reach stderr as "_ArHave: ..." instead of
-# "archive: ..." — each caller reports its own, which also lets archive make it
-# terminating while extract keeps going through the rest of its archives.
-function _ArHave([string]$Tool) {
-  # -CommandType Application because these branches start a PROGRAM:
-  # _ArCompressTo goes through ProcessStartInfo, which can only launch an
-  # executable, so a PowerShell function or alias of the same name is not the
-  # thing being looked for — without the restriction a shadowing function made
-  # this report success and Process.Start then threw. _ResolveCmd in
-  # _helpers.ps1 draws the same line for the wrappers; it is not reused here
-  # because its cache is keyed for wrapper resolution and would go on saying
-  # "not installed" after a compressor was installed later in the session.
-  if (Get-Command $Tool -CommandType Application -ErrorAction SilentlyContinue) { return $true }
-  return $false
+# _ArTool → the PROGRAM $Tool resolves to on PATH, or $null. The path, not a
+# yes/no, because a branch that then invokes the bare name with & would run a
+# same-named PowerShell function or alias instead of the program that was
+# checked for; callers run what this returns. -CommandType Application is what
+# makes it a program: _ArCompressTo starts it through ProcessStartInfo, which
+# cannot launch a function anyway. No message is written here — PowerShell
+# attributes an error to the function that RAISED it, so it would reach stderr
+# as "_ArTool: ..." instead of "archive: ...". Each caller reports its own,
+# which is also what lets archive make it terminating while extract keeps going
+# through the rest of its archives. _ResolveCmd in _helpers.ps1 draws the same
+# Application line for the wrappers; it is not reused because its cache is
+# keyed for wrapper resolution and would go on reporting a compressor missing
+# after it was installed later in the session.
+function _ArTool([string]$Tool) {
+  $cmd = Get-Command $Tool -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cmd) { return $cmd.Source }
+  return $null
 }
 
 # _ArCompressTo → run a stdout compressor and put its raw bytes in $Dest.
@@ -79,14 +80,14 @@ function _ArHave([string]$Tool) {
 # any version. Letting the tool write its own '<source>.<ext>' next to the
 # source and moving that onto $Dest would also avoid the redirect, but it
 # destroys a pre-existing file of that name. Returns the tool's exit code.
-function _ArCompressTo([string]$Tool, [string]$Source, [string]$Dest) {
+function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
   # .NET resolves relative paths against the process directory, which
   # Set-Location never updates; resolve against the PowerShell location first
   # (the same rule mkfile follows).
   $srcFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Source)
   $dstFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dest)
   $psi = [System.Diagnostics.ProcessStartInfo]::new()
-  $psi.FileName = $Tool
+  $psi.FileName = $ToolPath
   # ArgumentList passes each argument verbatim, no quoting round-trip. '--'
   # keeps a source named like a switch a path, as the tar branches do.
   foreach ($a in @('-k', '-c', '--', $srcFull)) { $psi.ArgumentList.Add($a) }
@@ -135,16 +136,19 @@ function extract {
       '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
       '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
       # tar shells zstd out for these, so the guard is on zstd, not tar.
-      '\.tar\.zst$|\.tzst$'   { if (_ArHave 'zstd') { tar --zstd -xf $Path } else { Write-Error 'zstd is not installed'; $ok = $false }; break }
+      # tar spawns zstd itself, in its own process, so a PowerShell function
+      # cannot shadow that one and there is no path to hand tar; the resolved
+      # path is only used where THIS shell does the invoking.
+      '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -xf $Path } else { Write-Error 'zstd is not installed'; $ok = $false }; break }
       '\.tar$'                { tar xf $Path; break }
       # Single file: each tool writes the decompressed file next to the
       # archive. gzip/bzip2/xz consume the archive and zstd keeps it — that is
       # each tool's own default, and the POSIX twin behaves the same way. The
       # name is './'-normalised above, so no branch needs a '--' marker.
-      '\.gz$'                 { if (_ArHave 'gzip')  { gzip -d $Path }  else { Write-Error 'gzip is not installed';  $ok = $false }; break }
-      '\.bz2$'                { if (_ArHave 'bzip2') { bzip2 -d $Path } else { Write-Error 'bzip2 is not installed'; $ok = $false }; break }
-      '\.xz$'                 { if (_ArHave 'xz')    { xz -d $Path }    else { Write-Error 'xz is not installed';    $ok = $false }; break }
-      '\.zst$'                { if (_ArHave 'zstd')  { zstd -d $Path }  else { Write-Error 'zstd is not installed';  $ok = $false }; break }
+      '\.gz$'   { $t = _ArTool 'gzip';  if ($t) { & $t -d $Path } else { Write-Error 'gzip is not installed';  $ok = $false }; break }
+      '\.bz2$'  { $t = _ArTool 'bzip2'; if ($t) { & $t -d $Path } else { Write-Error 'bzip2 is not installed'; $ok = $false }; break }
+      '\.xz$'   { $t = _ArTool 'xz';    if ($t) { & $t -d $Path } else { Write-Error 'xz is not installed';    $ok = $false }; break }
+      '\.zst$'  { $t = _ArTool 'zstd';  if ($t) { & $t -d $Path } else { Write-Error 'zstd is not installed';  $ok = $false }; break }
       '\.zip$'                {
         try { Expand-Archive -LiteralPath $Path -DestinationPath . -Force -ErrorAction Stop }
         catch { Write-Error "'$Path': $($_.Exception.Message)"; $ok = $false }
@@ -205,7 +209,7 @@ function archive {
     '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }
     '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; break }
     # tar shells zstd out for these, so the guard is on zstd, not tar.
-    '\.tar\.zst$|\.tzst$'   { if (_ArHave 'zstd') { tar --zstd -cf $Output -- @Sources } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
+    '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -cf $Output -- @Sources } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
     '\.tar$'                { tar cf $Output -- @Sources; break }
     # Single-file compression. Every '.tar.*' form and its 't*' alias is
     # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and these
@@ -240,7 +244,8 @@ function archive {
       if ($sameFile) {
         Write-Error "output '$Output' is the source file" -ErrorAction Stop
       }
-      if (-not (_ArHave $tool)) { Write-Error "$tool is not installed" -ErrorAction Stop }
+      $toolPath = _ArTool $tool
+      if (-not $toolPath) { Write-Error "$tool is not installed" -ErrorAction Stop }
       # Compress into a temporary sibling of the output and rename that into
       # place only once the compressor has succeeded. The file being written is
       # never the source under any name, so nothing can truncate the source
@@ -255,10 +260,11 @@ function archive {
       try {
         if ($tool -eq 'zstd') {
           # zstd is the only one of the four with -o; the others have none, so
-          # _ArCompressTo captures their stdout as raw bytes instead.
-          & zstd -q -k -f -o $tmp -- $src
+          # _ArCompressTo captures their stdout as raw bytes instead. Both run
+          # the resolved program path, never the bare name.
+          & $toolPath -q -k -f -o $tmp -- $src
         } else {
-          $global:LASTEXITCODE = _ArCompressTo $tool $src $tmp
+          $global:LASTEXITCODE = _ArCompressTo $toolPath $src $tmp
         }
         if ($LASTEXITCODE -eq 0) {
           Move-Item -LiteralPath $tmp -Destination $Output -Force

@@ -1177,6 +1177,25 @@ echo "[pwsh] archive does not mistake a function for the compressor"
 setup_single_file
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; function gzip { 'not the real gzip' }; Set-Location '$WORK/one'; archive 'shadow.gz' 'payload.bin'")
 assert_contains "pwsh/archive function-shadowed gzip reports it missing" "gzip is not installed" "$err"
+
+# The other half of the same problem: with the real gzip ON PATH, a branch that
+# invoked the bare name would run a same-named PowerShell function instead of
+# the program that was checked for. Every invocation goes through the resolved
+# program path, so the marker the shadow would leave never appears and the
+# round trip still produces a real archive.
+echo "[pwsh] archive and extract run the program, not a same-named function"
+setup_single_file
+SHADOW="function gzip { 'ran' > 'shadow-marker' }; function zstd { 'ran' > 'shadow-marker' }"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "$SHADOW; Set-Location '$WORK/one'; archive 'payload.bin.gz' 'payload.bin'; archive 'payload.bin.zst' 'payload.bin'" >/dev/null 2>&1
+assert_not_exists "pwsh/archive ran no shadowing function" "$WORK/one/shadow-marker"
+assert_exists "pwsh/archive still wrote the real .gz" "$WORK/one/payload.bin.gz"
+assert_exists "pwsh/archive still wrote the real .zst" "$WORK/one/payload.bin.zst"
+mkdir -p "$WORK/back"
+cp "$WORK/one/payload.bin.gz" "$WORK/back/"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "$SHADOW; Set-Location '$WORK/back'; extract 'payload.bin.gz'" >/dev/null 2>&1
+assert_not_exists "pwsh/extract ran no shadowing function" "$WORK/back/shadow-marker"
+actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
+assert_eq "pwsh/extract round-trips past the shadowing function" "$PAYLOAD_SHA" "$actual"
 run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/nobin'; function gzip { 'x' }; Set-Location '$WORK/one'; archive 'shadow.gz' 'payload.bin'" >/dev/null 2>&1
 assert_eq "pwsh/archive function-shadowed gzip exits 1" "1" "$?"
 assert_not_contains "pwsh/archive function-shadowed gzip did not start a process" "ProcessStartInfo" "$err"
