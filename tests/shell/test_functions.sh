@@ -443,6 +443,37 @@ for _fmt in gz tar.gz zip; do
     assert_eq "bash/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
 done
 
+# A compressor that starts and then fails must not look like success: the
+# partial temporary goes, an existing output keeps its contents, and the
+# failure is reported. The stub exits 3 after writing to stdout, so there IS a
+# partial temporary to clean up.
+echo "[bash] archive reports a compressor that fails"
+    setup_single_file
+    mkdir -p "$WORK/stub3"
+    printf '#!/bin/sh\nprintf PARTIAL\nexit 3\n' > "$WORK/stub3/gzip"
+    chmod +x "$WORK/stub3/gzip"
+    printf 'PRECIOUS' > "$WORK/one/keep.gz"
+    run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stub3:$PATH'; cd '$WORK/one' && archive 'keep.gz' payload.bin" >/dev/null 2>&1
+    assert_eq "bash/archive compressor failure exits with the tool's code" "3" "$?"
+    assert_eq "bash/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
+    assert_eq "bash/archive compressor failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^keep\.gz\.tmp' | tr -d '\n')"
+
+# The temporary used to be "$out.tmp.$$", a name another user in a shared
+# directory can predict and pre-plant as a symlink, so the truncating redirect
+# rewrote whatever it pointed at. mktemp is forced to fail here so the noclobber
+# fallback is the thing under test, and the link is planted from inside the very
+# shell whose $$ the fallback uses.
+echo "[bash] archive's temporary does not follow a planted symlink"
+setup_single_file
+mkdir -p "$WORK/nomk"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/nomk/mktemp"
+chmod +x "$WORK/nomk/mktemp"
+printf 'VICTIM' > "$WORK/one/victim"
+run_bash "$FUNCTIONS_SH" "export PATH='$WORK/nomk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "bash/archive planted temp symlink exits nonzero" "1" "$?"
+assert_eq "bash/archive did not write through the planted symlink" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
+assert_not_exists "bash/archive planted symlink produced no output" "$WORK/one/out.gz"
+
 echo "[bash] extract unsupported format"
 touch "$WORK/test.foo"
 actual=$(run_bash "$FUNCTIONS_SH" "extract '$WORK/test.foo' 2>&1")
@@ -780,6 +811,37 @@ for _fmt in gz tar.gz zip; do
     assert_exists "zsh/archive .$_fmt directory output still there" "$WORK/one/out.$_fmt"
     assert_eq "zsh/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
 done
+
+# A compressor that starts and then fails must not look like success: the
+# partial temporary goes, an existing output keeps its contents, and the
+# failure is reported. The stub exits 3 after writing to stdout, so there IS a
+# partial temporary to clean up.
+echo "[zsh] archive reports a compressor that fails"
+    setup_single_file
+    mkdir -p "$WORK/stub3"
+    printf '#!/bin/sh\nprintf PARTIAL\nexit 3\n' > "$WORK/stub3/gzip"
+    chmod +x "$WORK/stub3/gzip"
+    printf 'PRECIOUS' > "$WORK/one/keep.gz"
+    run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stub3:$PATH'; cd '$WORK/one' && archive 'keep.gz' payload.bin" >/dev/null 2>&1
+    assert_eq "zsh/archive compressor failure exits with the tool's code" "3" "$?"
+    assert_eq "zsh/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
+    assert_eq "zsh/archive compressor failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^keep\.gz\.tmp' | tr -d '\n')"
+
+# The temporary used to be "$out.tmp.$$", a name another user in a shared
+# directory can predict and pre-plant as a symlink, so the truncating redirect
+# rewrote whatever it pointed at. mktemp is forced to fail here so the noclobber
+# fallback is the thing under test, and the link is planted from inside the very
+# shell whose $$ the fallback uses.
+echo "[zsh] archive's temporary does not follow a planted symlink"
+setup_single_file
+mkdir -p "$WORK/nomk"
+printf '#!/bin/sh\nexit 1\n' > "$WORK/nomk/mktemp"
+chmod +x "$WORK/nomk/mktemp"
+printf 'VICTIM' > "$WORK/one/victim"
+run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/nomk:$PATH'; cd '$WORK/one' && ln -s victim \"out.gz.tmp.\$\$\" && archive 'out.gz' payload.bin" >/dev/null 2>&1
+assert_eq "zsh/archive planted temp symlink exits nonzero" "1" "$?"
+assert_eq "zsh/archive did not write through the planted symlink" "VICTIM" "$(cat "$WORK/one/victim" 2>/dev/null)"
+assert_not_exists "zsh/archive planted symlink produced no output" "$WORK/one/out.gz"
 
 echo "[zsh] path"
 actual=$(run_zsh "$FUNCTIONS_SH" "path")
@@ -1217,6 +1279,36 @@ for _fmt in gz tar.gz zip; do
     assert_exists "pwsh/archive .$_fmt directory output still there" "$WORK/one/out.$_fmt"
     assert_eq "pwsh/archive .$_fmt directory output stayed empty" "" "$(ls "$WORK/one/out.$_fmt")"
 done
+
+# Same as the bash case: a compressor that starts and then fails must not look
+# like success. pwsh raises a terminating error naming the tool and its code,
+# because a terminating error is the only thing that reaches the process status.
+echo "[pwsh] archive reports a compressor that fails"
+    setup_single_file
+    mkdir -p "$WORK/stub3"
+    printf '#!/bin/sh\nprintf PARTIAL\nexit 3\n' > "$WORK/stub3/gzip"
+    chmod +x "$WORK/stub3/gzip"
+    printf 'PRECIOUS' > "$WORK/one/keep.gz"
+    err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stub3:' + \$env:PATH; Set-Location '$WORK/one'; archive 'keep.gz' 'payload.bin'")
+    assert_contains "pwsh/archive compressor failure names the tool and code" "gzip exited 3" "$err"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stub3:' + \$env:PATH; Set-Location '$WORK/one'; archive 'keep.gz' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive compressor failure exits 1" "1" "$?"
+    assert_eq "pwsh/archive compressor failure left the output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.gz" 2>/dev/null)"
+    assert_eq "pwsh/archive compressor failure left no temporary behind" "" "$(ls "$WORK/one" | grep '^keep\.gz\.tmp' | tr -d '\n')"
+
+# A destination that cannot be written has to fail too, rather than report an
+# archive nobody can find. root ignores the mode bits, so there it is skipped.
+echo "[pwsh] archive reports an unwritable destination"
+setup_single_file
+mkdir -p "$WORK/ro"
+if [ "$(id -u)" -ne 0 ] && chmod 500 "$WORK/ro" 2>/dev/null; then
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive '$WORK/ro/out.gz' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive unwritable destination exits 1" "1" "$?"
+    assert_not_exists "pwsh/archive unwritable destination wrote nothing" "$WORK/ro/out.gz"
+    chmod 700 "$WORK/ro"
+else
+    echo "  SKIP: pwsh/archive unwritable destination (running as root)"
+fi
 
 echo "[pwsh] extract unsupported format"
 touch "$WORK/test.foo"

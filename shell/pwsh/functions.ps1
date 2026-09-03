@@ -266,10 +266,15 @@ function archive {
         } else {
           $global:LASTEXITCODE = _ArCompressTo $toolPath $src $tmp
         }
-        if ($LASTEXITCODE -eq 0) {
-          Move-Item -LiteralPath $tmp -Destination $Output -Force
-          $moved = $true
-        }
+        # A compressor that started and then failed used to leave archive
+        # reporting success: the move was skipped, finally deleted the
+        # temporary, and nothing was raised. Move-Item was non-terminating
+        # too, so a failed publish still set $moved and left no trace. Both
+        # terminate now, or the caller is told an archive exists that does not.
+        $code = $LASTEXITCODE
+        if ($code -ne 0) { Write-Error "$tool exited $code" -ErrorAction Stop }
+        Move-Item -LiteralPath $tmp -Destination $Output -Force -ErrorAction Stop
+        $moved = $true
       } finally {
         if (-not $moved) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
       }
