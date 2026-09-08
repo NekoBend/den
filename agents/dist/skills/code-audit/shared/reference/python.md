@@ -478,3 +478,158 @@ failure the model knows about but reliably under-applies.
   `text=True` normalizes `\r\n` to `\n`, which is right for parsing;
   bytes mode preserves the child's exact output,
   which is what hashing or byte-faithful round-trips need.
+
+## 18. Interrupt handling: Ctrl-C ends the run cleanly
+
+**Rule:** A program that runs for more than a few seconds
+catches `KeyboardInterrupt` exactly once, at the entry point,
+finishes its cleanup, prints one line, and exits with status 130.
+No other function catches it.
+
+**Why:** an interrupted run that dumps a traceback,
+leaves a half-written file,
+or keeps worker processes alive
+is worse than one that never handled the signal.
+Catching the interrupt deep inside a loop hides it from the caller
+and turns a stop request into a partial run that looks complete.
+
+- Entry point shape:
+
+```python
+def main() -> int:
+    try:
+        return run()
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+- Cleanup lives in `finally` blocks and `with` statements,
+  which run whether the function returns or the interrupt passes through.
+- Executors: call `executor.shutdown(wait=False, cancel_futures=True)` in a `finally`,
+  then let the `with` block wait for the workers that are still running.
+  Workers of a `ProcessPoolExecutor` receive the same signal;
+  a worker that must finish its item first installs
+  `signal.signal(signal.SIGINT, signal.SIG_IGN)` in the pool's initializer,
+  and the parent terminates the pool explicitly.
+- Files: write to a temporary path in the same directory
+  and `os.replace` it into place at the end,
+  so an interrupt leaves the old file or the new one, never a truncated one.
+- `signal.signal` works only on the main thread; worker threads cannot install handlers.
+- asyncio: `asyncio.run` already turns the signal into cancellation of the main task.
+  Catch `asyncio.CancelledError` only to clean up, and re-raise it;
+  put the cleanup in `finally` inside the coroutine.
+- Exit status 130 is the convention for "terminated by Ctrl-C"; shells and callers test for it.
+
+## 19. Progress reporting: count, elapsed, remaining
+
+**Rule:** Work with a known item count shows a progress bar
+that displays the count, the elapsed time and the estimated remaining time.
+When output is not a terminal, the bar is disabled
+and a one-line log every N items takes its place.
+
+**Why:** a bar with only a percentage leaves the user's two questions
+(how far, how long) unanswered;
+a bar written to a log file fills it with carriage returns;
+a `print` inside the loop tears the bar apart.
+
+- tqdm: `tqdm(items, desc="convert", unit="file", disable=not sys.stderr.isatty())`.
+  The default format already shows count, elapsed and remaining.
+  While a bar is active, every message goes through `tqdm.write(...)`.
+- rich: name the columns; the default `Progress()` omits the count and both times.
+
+```python
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+
+columns = (
+    TextColumn("[progress.description]{task.description}"),
+    BarColumn(),
+    MofNCompleteColumn(),
+    TimeElapsedColumn(),
+    TimeRemainingColumn(),
+)
+with Progress(*columns, disable=not sys.stderr.isatty()) as progress:
+    task = progress.add_task("convert", total=len(items))
+    for item in items:
+        work(item)
+        progress.advance(task)
+```
+
+  Messages go through `progress.log(...)` or `progress.console.print(...)`.
+- The total counts items, unless the work is byte-bound (a copy, a download);
+  then the total is bytes, with `unit="B", unit_scale=True` in tqdm.
+- Unknown total: a counter with `total=None` and the elapsed time, never a guessed total.
+- Concurrency: advance the bar from the thread that collects results
+  (the `as_completed` loop), not from inside the workers;
+  a process pool reports through a queue.
+- Copyable functions for every execution model are in the `progress` cheatsheets
+  (`cheat ls` lists them).
+
+## 20. Timeouts on everything that waits
+
+**Rule:** Every call that waits on something outside the process
+(a network peer, a child process, a lock, a queue, another thread)
+carries an explicit timeout,
+and the code states what happens when it expires.
+
+**Why:** a missing timeout turns a remote failure into a hang
+that nothing in the program can detect;
+the process then looks alive and busy while doing nothing.
+
+- `httpx` and `requests`: `timeout=` on every call or on the client object.
+  `requests` has no default timeout at all.
+- `subprocess.run(..., timeout=...)` (section 17);
+  when `TimeoutExpired` is raised the child has already been killed.
+- `asyncio.timeout(...)` (3.11+) or `asyncio.wait_for(coro, timeout)` around awaits on I/O.
+- `future.result(timeout=...)`, `queue.get(timeout=...)`, `lock.acquire(timeout=...)`,
+  and `thread.join(timeout=...)` followed by a check of `is_alive()`.
+- On expiry: retry a bounded number of times with backoff when the operation is idempotent;
+  otherwise fail with a message that names the operation and the limit.
+- A deliberately unbounded wait (a watch mode, an interactive child)
+  is stated in a comment at the call site, so it reads as a decision.
+
+## 21. Logging setup
+
+**Rule:** `logging.basicConfig(...)` is called once, in the entry point.
+Every module uses `logger = logging.getLogger(__name__)`
+and never configures handlers or levels itself.
+Library code logs; it does not `print`.
+
+**Why:** a module that configures logging at import time
+fights the application's configuration and duplicates handlers;
+a module that prints cannot be silenced or redirected by its caller.
+
+- Entry point:
+
+```python
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stderr,
+)
+```
+
+- Levels: `DEBUG` for values that matter only while diagnosing,
+  `INFO` for milestones a user expects to see,
+  `WARNING` for recoverable surprises,
+  `ERROR` through `logger.exception(...)` where an exception is handled.
+- Lazy formatting: `logger.info("processed %d files", n)`, not an f-string,
+  so the message is built only when the level is enabled.
+- Progress bars and logging share stderr:
+  send the handler through `tqdm.write`
+  (a `logging.Handler` subclass whose `emit` calls `tqdm.write`)
+  or use `rich.logging.RichHandler`;
+  otherwise every log line breaks the bar.
+- Structured JSON output, file rotation and per-request context
+  are in the `logging-config` cheatsheet.
