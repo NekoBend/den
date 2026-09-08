@@ -1,0 +1,749 @@
+"""ProcessPoolExecutor Progress Bars - Copy-Paste Cheatsheet.
+
+CPU-bound work on processes (bypasses the GIL) with tqdm / rich bars, from a
+one-liner to per-worker bars fed from inside the workers.
+
+| Function                       | Best for                              | Failures    |
+|--------------------------------|---------------------------------------|-------------|
+| run_process_tqdm_easy          | CPU-bound one-liner                   | raise first |
+| run_process_tqdm_manual        | CPU-bound, per-item failures kept     | as outcomes |
+| run_process_rich               | CPU-bound, pretty UI, failures kept   | as outcomes |
+| run_process_rich_ordered       | Stream results in input order         | raise+cancel|
+| run_process_rich_bounded       | Huge / lazy iterables, bounded memory | as outcomes |
+| run_process_rich_chunked       | Millions of tiny items (less IPC)     | as outcomes |
+| run_process_rich_sharded       | N records -> shard per CPU -> blocks  | as outcomes |
+| run_process_thread_rich_nested | Shard per CPU, threads inside for IO  | as outcomes |
+| run_process_rich_per_worker    | One bar per worker + inner progress   | as outcomes |
+| run_process_rich_fail_fast     | Stop everything on the first failure  | raise+cancel|
+| run_pool_rich_imap             | stdlib Pool, incremental, finish order| raise first |
+
+Usage:
+    1. Copy the function you need (its imports travel with it). Functions
+       that run inside the workers (``_apply_block``, ``_process_shard``,
+       ``_threaded_block``, ``_report_to_queue``) sit next to their callers:
+       copy them too.
+    2. Call it with your own TOP-LEVEL ``func`` (see Note).
+
+Dependencies:
+    pip install tqdm rich
+
+Note:
+    - Process pools pickle ``func`` and every item. ``func`` must be a
+      top-level ``def``: no lambda, no closure, nothing defined inside
+      ``if __name__ == "__main__":``. Under the ``spawn`` start method (macOS,
+      Windows, Python 3.14 on Linux) the child re-imports your module, so a
+      function that only exists in the main guard is missing there. The sanity
+      check below runs under ``spawn`` for that reason.
+    - "as outcomes": the result is ``list[R | BaseException]`` in INPUT order.
+      A failed item holds its exception; nothing is dropped, nothing raised.
+    - ``as_completed`` yields in finish order; futures are mapped back to
+      their input index so the returned list keeps the input order.
+    - A running process cannot be cancelled: ``cancel_futures=True`` drops the
+      queued items, the ones already running finish first.
+    - Chunked vs sharded: chunked submits many small futures (dynamic load
+      balancing, one overall bar); sharded submits one future per worker
+      (static split, a bar per shard, block-level progress from inside).
+"""
+
+import os
+from collections.abc import Callable, Iterable, Sequence
+from queue import Queue
+
+# =============================================================================
+# 1. One overall bar
+# =============================================================================
+
+
+def run_process_tqdm_easy[T, R](
+    items: Sequence[T], func: Callable[[T], R], max_workers: int = 4, chunksize: int = 1
+) -> list[R]:
+    """Run ``func`` on a process pool with tqdm's ``process_map`` one-liner.
+
+    [Best for] Heavy CPU work with no per-item error handling.
+    [Note] Results keep input order; the first exception propagates.
+           Raise ``chunksize`` for tiny items: every chunk is one pickle
+           round-trip, and the bar still advances per item.
+    """
+    from tqdm.contrib.concurrent import process_map
+
+    return process_map(
+        func,
+        items,
+        max_workers=max_workers,
+        chunksize=chunksize,
+        desc="Processes (easy)",
+    )
+
+
+def run_process_tqdm_manual[T, R](
+    items: Sequence[T], func: Callable[[T], R], max_workers: int = 4
+) -> list[R | BaseException]:
+    """Run ``func`` on a process pool, tqdm bar, every failure kept as data.
+
+    [Best for] CPU batches where one bad item must not stop the rest.
+    [Note] ``future.exception()`` avoids a try/except per item;
+           ``tqdm.write`` logs the failure without breaking the bar.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from tqdm import tqdm
+
+    outcomes: dict[int, R | BaseException] = {}
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        index_of = {
+            executor.submit(func, item): index for index, item in enumerate(items)
+        }
+        for future in tqdm(
+            as_completed(index_of), total=len(items), desc="Processes (manual)"
+        ):
+            index = index_of[future]
+            error = future.exception()
+            if error is not None:
+                tqdm.write(f"item {index} failed: {error!r}")
+            outcomes[index] = error if error is not None else future.result()
+    return [outcomes[index] for index in range(len(items))]
+
+
+def run_process_rich[T, R](
+    items: Sequence[T], func: Callable[[T], R], max_workers: int = 4
+) -> list[R | BaseException]:
+    """Run ``func`` on a process pool, rich bar, every failure kept as data.
+
+    [Best for] The same CPU batch with count, elapsed and ETA columns.
+    [Note] ``progress.log`` prints above the bar with a timestamp. Only the
+           parent touches ``progress``: a worker process cannot update it
+           (see ``run_process_rich_per_worker`` for progress from inside).
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
+
+    outcomes: dict[int, R | BaseException] = {}
+    with (
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress,
+        ProcessPoolExecutor(max_workers=max_workers) as executor,
+    ):
+        task = progress.add_task("Processes (rich)", total=len(items))
+        index_of = {
+            executor.submit(func, item): index for index, item in enumerate(items)
+        }
+        for future in as_completed(index_of):
+            index = index_of[future]
+            error = future.exception()
+            if error is not None:
+                progress.log(f"item {index} failed: {error!r}")
+            outcomes[index] = error if error is not None else future.result()
+            progress.advance(task)
+    return [outcomes[index] for index in range(len(items))]
+
+
+def run_process_rich_ordered[T, R](
+    items: Sequence[T], func: Callable[[T], R], max_workers: int = 4, chunksize: int = 1
+) -> list[R]:
+    """Stream results in input order with ``executor.map`` under rich's ``track``.
+
+    [Best for] Pipelines that consume results in order as they arrive
+               (write to a file, feed the next stage) without waiting for all.
+    [Note] ``map`` submits every item up front and yields results in input
+           order, so one slow early item delays the later ones. The first
+           exception propagates when its position is reached and the
+           not-yet-started items are cancelled.
+    """
+    from concurrent.futures import ProcessPoolExecutor
+
+    from rich.progress import track
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        return list(
+            track(
+                executor.map(func, items, chunksize=chunksize),
+                total=len(items),
+                description="Processes (ordered)",
+            )
+        )
+
+
+# =============================================================================
+# 2. Large inputs: bounded in-flight window, chunks, shards
+# =============================================================================
+
+
+def run_process_rich_bounded[T, R](
+    items: Iterable[T],
+    func: Callable[[T], R],
+    max_workers: int = 4,
+    total: int | None = None,
+    in_flight: int | None = None,
+) -> list[R | BaseException]:
+    """Run ``func`` with at most ``in_flight`` items submitted at any time.
+
+    [Best for] Millions of items or a lazy generator (database cursor, file
+               lines): only the window is pickled and held in memory.
+    [Note] ``in_flight`` defaults to ``2 * max_workers``: enough that no
+           worker idles, small enough to bound memory. Pass ``total`` when
+           the iterable has no ``len()`` and you still want an ETA.
+    """
+    from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+
+    window = in_flight or 2 * max_workers
+    outcomes: dict[int, R | BaseException] = {}
+    index_of: dict[Future[R], int] = {}
+    with (
+        Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+        ) as progress,
+        ProcessPoolExecutor(max_workers=max_workers) as executor,
+    ):
+        task = progress.add_task("Processes (bounded)", total=total)
+
+        def collect(done: set[Future[R]]) -> None:
+            for future in done:
+                error = future.exception()
+                outcomes[index_of.pop(future)] = (
+                    error if error is not None else future.result()
+                )
+                progress.advance(task)
+
+        pending: set[Future[R]] = set()
+        for index, item in enumerate(items):
+            if len(pending) >= window:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                collect(done)
+            future = executor.submit(func, item)
+            index_of[future] = index
+            pending.add(future)
+        collect(wait(pending).done)
+    return [outcomes[index] for index in range(len(outcomes))]
+
+
+def _apply_block[T, R](
+    func: Callable[[T], R], block: Sequence[T]
+) -> list[R | BaseException]:
+    """Apply ``func`` to every item of ``block`` inside a worker, failures kept.
+
+    Runs in the worker process. The per-item exception is returned as data
+    so one bad item does not fail the whole block.
+    """
+    outcomes: list[R | BaseException] = []
+    for item in block:
+        try:
+            outcomes.append(func(item))
+        except Exception as exc:  # ruff: ignore[blind-except] - returned to the parent as data
+            outcomes.append(exc)
+    return outcomes
+
+
+def run_process_rich_chunked[T, R](
+    items: Sequence[T],
+    func: Callable[[T], R],
+    max_workers: int = 4,
+    chunk_size: int = 1_000,
+) -> list[R | BaseException]:
+    """Run ``func`` over ``items`` in chunks: one future per chunk, not per item.
+
+    [Best for] Millions of tiny items where per-item pickling and future
+               bookkeeping would cost more than the work itself.
+    [Note] Chunks are handed out as workers free up (dynamic load balancing).
+           The bar advances by ``len(chunk)`` as each chunk completes, so it
+           moves in steps: pick ``chunk_size`` so a chunk takes ~1 second.
+           Pair with ``_apply_block``.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+
+    chunks = [
+        items[start : start + chunk_size] for start in range(0, len(items), chunk_size)
+    ]
+    outcomes_by_chunk: list[list[R | BaseException]] = [[] for _ in chunks]
+    with (
+        Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+        ) as progress,
+        ProcessPoolExecutor(max_workers=max_workers) as executor,
+    ):
+        task = progress.add_task("Processes (chunked)", total=len(items))
+        index_of = {
+            executor.submit(_apply_block, func, chunk): index
+            for index, chunk in enumerate(chunks)
+        }
+        for future in as_completed(index_of):
+            index = index_of[future]
+            outcomes_by_chunk[index] = future.result()  # ty: ignore[invalid-assignment] - _apply_block's R is not bound through submit (ty 0.0.55)
+            progress.advance(task, len(chunks[index]))
+    return [outcome for chunk in outcomes_by_chunk for outcome in chunk]
+
+
+def _process_shard[T, R](
+    shard_id: int,
+    shard: Sequence[T],
+    block_func: Callable[[Sequence[T]], Sequence[R]],
+    block_size: int,
+    reports: Queue[tuple[int, int, int] | None],
+) -> list[R | BaseException]:
+    """Process one shard block by block, reporting after every block.
+
+    Runs in the worker process. Puts ``(shard_id, records_done, shard_len)``
+    on ``reports`` after each block; a block that raises, or returns the wrong
+    number of results, yields that exception once per record of the block.
+    """
+    outcomes: list[R | BaseException] = []
+    for start in range(0, len(shard), block_size):
+        block = shard[start : start + block_size]
+        try:
+            results: list[R | BaseException] = list(block_func(block))
+        except Exception as exc:  # ruff: ignore[blind-except] - returned to the parent as data
+            results = [exc] * len(block)
+        if len(results) != len(block):
+            mismatch = ValueError(
+                f"block_func returned {len(results)} results for {len(block)} records"
+            )
+            results = [mismatch] * len(block)
+        outcomes.extend(results)
+        reports.put((shard_id, len(outcomes), len(shard)))
+    return outcomes
+
+
+def run_process_rich_sharded[T, R](
+    records: Sequence[T],
+    block_func: Callable[[Sequence[T]], Sequence[R]],
+    max_workers: int = 4,
+    block_size: int = 10_000,
+) -> list[R | BaseException]:
+    """Split ``records`` into one shard per worker, process each shard in blocks.
+
+    [Best for] "1M records on N CPUs": every worker owns one contiguous shard,
+               walks it block by block (``block_func`` sees a whole block, so
+               it can vectorise with numpy/pandas or loop), and the parent
+               shows one bar per shard plus the overall record count.
+    [Note] One future per worker means one pickle of each shard; for data
+           that is expensive to pickle, pass shard BOUNDS instead and let
+           ``block_func`` load its own slice. Progress messages travel over a
+           ``Manager().Queue()`` (a plain ``multiprocessing.Queue`` cannot be
+           submitted to an executor). One message per block, not per record,
+           keeps the IPC cost negligible. Pair with ``_process_shard``.
+    """
+    import math
+    import multiprocessing
+    import threading
+    from concurrent.futures import ProcessPoolExecutor
+
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+
+    shard_size = max(1, math.ceil(len(records) / max_workers))
+    shards = [
+        records[start : start + shard_size]
+        for start in range(0, len(records), shard_size)
+    ]
+    with (
+        Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+        ) as progress,
+        multiprocessing.Manager() as manager,
+        ProcessPoolExecutor(max_workers=max_workers) as executor,
+    ):
+        reports: Queue[tuple[int, int, int] | None] = manager.Queue()
+        overall = progress.add_task("Records", total=len(records))
+        bars = [
+            progress.add_task(f"Shard {shard_id}", total=len(shard))
+            for shard_id, shard in enumerate(shards)
+        ]
+
+        def pump() -> None:
+            done_by_shard = [0] * len(shards)
+            while (report := reports.get()) is not None:
+                shard_id, done, total = report
+                progress.update(bars[shard_id], completed=done, total=total)
+                progress.advance(overall, done - done_by_shard[shard_id])
+                done_by_shard[shard_id] = done
+
+        pump_thread = threading.Thread(target=pump, daemon=True)
+        pump_thread.start()
+        try:
+            futures = [
+                executor.submit(
+                    _process_shard, shard_id, shard, block_func, block_size, reports
+                )
+                for shard_id, shard in enumerate(shards)
+            ]
+            outcomes = [outcome for future in futures for outcome in future.result()]
+        finally:
+            reports.put(None)
+            pump_thread.join()
+    return outcomes  # ty: ignore[invalid-return-type] - _process_shard's R is not bound through submit (ty 0.0.55)
+
+
+def _threaded_block[T, R](
+    block: Sequence[T], func: Callable[[T], R], max_threads: int
+) -> list[R | BaseException]:
+    """Run ``func`` over one block on a thread pool inside the worker.
+
+    Runs in the worker process: the process owns a shard (CPU split), the
+    threads fan out the block's items (IO split). Failures are kept per item.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    outcomes: dict[int, R | BaseException] = {}
+    with ThreadPoolExecutor(max_workers=max_threads) as threads:
+        index_of = {
+            threads.submit(func, item): index for index, item in enumerate(block)
+        }
+        for future in as_completed(index_of):
+            error = future.exception()
+            outcomes[index_of[future]] = error if error is not None else future.result()
+    return [outcomes[index] for index in range(len(block))]
+
+
+def run_process_thread_rich_nested[T, R](
+    records: Sequence[T],
+    func: Callable[[T], R],
+    max_workers: int = 4,
+    max_threads: int = 8,
+    block_size: int = 1_000,
+) -> list[R | BaseException]:
+    """Shard ``records`` across processes, fan each block out on threads.
+
+    [Best for] Records that need CPU work AND IO per item (parse + fetch,
+               transform + upload): processes for the CPU split, a thread
+               pool inside every worker for the IO fan-out.
+    [Note] Built on ``run_process_rich_sharded``: the block function is a
+           ``partial`` of ``_threaded_block`` (a partial of a top-level
+           function pickles; a closure does not). Each shard bar advances per
+           block, so ``block_size`` sets the display granularity and
+           ``max_threads`` the IO concurrency PER PROCESS (total in flight is
+           ``max_workers * max_threads``).
+    """
+    from functools import partial
+
+    block_func = partial(_threaded_block, func=func, max_threads=max_threads)
+    return run_process_rich_sharded(
+        records, block_func, max_workers=max_workers, block_size=block_size
+    )
+
+
+# =============================================================================
+# 3. Progress reported from inside the workers
+# =============================================================================
+
+
+def _report_to_queue[T, R](
+    func: Callable[[T, Callable[[int, int], None]], R],
+    item: T,
+    reports: Queue[tuple[int, str, int, int] | None],
+) -> R:
+    """Call ``func(item, report)`` in a worker, forwarding reports to the parent.
+
+    Runs in the worker process. ``report(done, total)`` puts
+    ``(pid, repr(item), done, total)`` on ``reports``; the parent keys its
+    per-worker bars by ``pid``.
+    """
+    pid = os.getpid()
+    label = repr(item)
+
+    def report(done: int, total: int) -> None:
+        reports.put((pid, label, done, total))
+
+    return func(item, report)
+
+
+def run_process_rich_per_worker[T, R](
+    items: Sequence[T],
+    func: Callable[[T, Callable[[int, int], None]], R],
+    max_workers: int = 4,
+) -> list[R | BaseException]:
+    """Run ``func(item, report)`` with an overall bar plus one bar per worker.
+
+    [Best for] Long-running items (a video, a big file, a model) where each
+               worker should show WHICH item it is on and HOW FAR into it.
+    [Note] ``func`` calls ``report(done, total)`` as it makes progress; the
+           parent keeps a bar per worker pid, retitled for each new item.
+           Messages travel over a ``Manager().Queue()`` and a pump thread
+           applies them to the display (rich's ``Progress`` is thread-safe).
+           Pair with ``_report_to_queue``.
+    """
+    import multiprocessing
+    import threading
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TaskID,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+
+    outcomes: dict[int, R | BaseException] = {}
+    with (
+        Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+        ) as progress,
+        multiprocessing.Manager() as manager,
+        ProcessPoolExecutor(max_workers=max_workers) as executor,
+    ):
+        reports: Queue[tuple[int, str, int, int] | None] = manager.Queue()
+        overall = progress.add_task("Overall", total=len(items))
+        bars: dict[int, TaskID] = {}
+
+        def pump() -> None:
+            while (report := reports.get()) is not None:
+                pid, label, done, total = report
+                bar = bars.get(pid)
+                if bar is None:
+                    bar = bars[pid] = progress.add_task(f"pid {pid}", total=total)
+                progress.update(
+                    bar, description=f"pid {pid}: {label}", completed=done, total=total
+                )
+
+        pump_thread = threading.Thread(target=pump, daemon=True)
+        pump_thread.start()
+        try:
+            index_of = {
+                executor.submit(_report_to_queue, func, item, reports): index
+                for index, item in enumerate(items)
+            }
+            for future in as_completed(index_of):
+                error = future.exception()
+                outcomes[index_of[future]] = (  # ty: ignore[invalid-assignment] - _report_to_queue's R is not bound through submit (ty 0.0.55)
+                    error if error is not None else future.result()
+                )
+                progress.advance(overall)
+        finally:
+            reports.put(None)
+            pump_thread.join()
+    return [outcomes[index] for index in range(len(items))]
+
+
+# =============================================================================
+# 4. Fail fast and stdlib Pool
+# =============================================================================
+
+
+def run_process_rich_fail_fast[T, R](
+    items: Sequence[T], func: Callable[[T], R], max_workers: int = 4
+) -> list[R]:
+    """Run ``func`` on a process pool and stop at the first failure.
+
+    [Best for] All-or-nothing jobs: a single bad item makes the run useless,
+               so do not burn CPU on the rest.
+    [Note] ``future.result()`` re-raises the worker's exception in the
+           parent; the ``finally`` cancels every queued item (the running
+           ones finish, a process cannot be killed mid-item). Ctrl-C takes
+           the same path. ``transient=True`` removes the bar afterwards so
+           the traceback is what remains on screen.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
+
+    results: dict[int, R] = {}
+    with (
+        Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            transient=True,
+        ) as progress,
+        ProcessPoolExecutor(max_workers=max_workers) as executor,
+    ):
+        task = progress.add_task("Processes (fail fast)", total=len(items))
+        index_of = {
+            executor.submit(func, item): index for index, item in enumerate(items)
+        }
+        try:
+            for future in as_completed(index_of):
+                results[index_of[future]] = future.result()
+                progress.advance(task)
+        finally:
+            # No-op after a clean run (nothing is queued any more); after an
+            # exception or Ctrl-C it drops every item that has not started.
+            executor.shutdown(wait=False, cancel_futures=True)
+    return [results[index] for index in range(len(items))]
+
+
+def run_pool_rich_imap[T, R](
+    items: Sequence[T], func: Callable[[T], R], max_workers: int = 4, chunksize: int = 1
+) -> list[R]:
+    """Run ``func`` with stdlib ``multiprocessing.Pool.imap_unordered`` + rich.
+
+    [Best for] Code that already uses ``Pool``; results stream as they finish.
+    [Note] ``imap`` (ordered) and ``imap_unordered`` consume the input
+           incrementally in a feeder thread, but do not bound the queue: use
+           ``run_process_rich_bounded`` for strict memory limits. The first
+           exception propagates.
+    """
+    import multiprocessing
+
+    from rich.progress import track
+
+    with multiprocessing.Pool(processes=max_workers) as pool:
+        return list(
+            track(
+                pool.imap_unordered(func, items, chunksize=chunksize),
+                total=len(items),
+                description="Pool (imap_unordered)",
+            )
+        )
+
+
+# =============================================================================
+# Quick Sanity Check (runs under the spawn start method on purpose)
+# =============================================================================
+
+
+def _demo_task(item: int) -> int:
+    """Dummy CPU work: sleep briefly and double the item; item 7 always fails."""
+    import time
+
+    time.sleep(0.02)
+    if item == 7:
+        raise ValueError("item 7 is broken on purpose")
+    return item * 2
+
+
+def _demo_block(block: Sequence[int]) -> list[int]:
+    """Dummy block work: double every record; a block holding record 7 fails."""
+    import time
+
+    time.sleep(0.01)
+    if 7 in block:
+        raise ValueError("the block holding record 7 is broken on purpose")
+    return [record * 2 for record in block]
+
+
+def _demo_step_task(item: int, report: Callable[[int, int], None]) -> int:
+    """Dummy long item: report five steps, then double the item; 7 fails."""
+    import time
+
+    for step in range(1, 6):
+        time.sleep(0.02)
+        report(step, 5)
+    if item == 7:
+        raise ValueError("item 7 is broken on purpose")
+    return item * 2
+
+
+def _check_outcomes(
+    name: str, outcomes: list[int | BaseException], failing: Callable[[int], bool]
+) -> None:
+    """Assert every outcome is ``index * 2`` except where ``failing(index)``."""
+    for index, outcome in enumerate(outcomes):
+        want_error = failing(index)
+        if isinstance(outcome, BaseException) != want_error:
+            raise SystemExit(f"{name}: outcome {index} is {outcome!r}")
+        if not want_error and outcome != index * 2:
+            raise SystemExit(f"{name}: outcome {index} is {outcome!r}")
+    failures = sum(isinstance(outcome, BaseException) for outcome in outcomes)
+    print(f"ok: {name} ({len(outcomes)} outcomes, {failures} failed as expected)")
+
+
+if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.set_start_method("spawn")
+
+    sample = list(range(20))
+    clean = [item for item in sample if item != 7]
+    doubled_clean = [item * 2 for item in clean]
+    is_seven = lambda index: index == 7  # ruff: ignore[lambda-assignment] - one-line predicate for the checks
+
+    for name, results in (
+        ("process tqdm easy", run_process_tqdm_easy(clean, _demo_task)),
+        ("process rich ordered", run_process_rich_ordered(clean, _demo_task)),
+        ("process rich fail fast", run_process_rich_fail_fast(clean, _demo_task)),
+        ("pool rich imap", sorted(run_pool_rich_imap(clean, _demo_task))),
+    ):
+        if results != doubled_clean:
+            raise SystemExit(f"{name}: unexpected results {results!r}")
+        print(f"ok: {name} ({len(results)} results)")
+
+    _check_outcomes(
+        "process tqdm manual", run_process_tqdm_manual(sample, _demo_task), is_seven
+    )
+    _check_outcomes("process rich", run_process_rich(sample, _demo_task), is_seven)
+    _check_outcomes(
+        "process rich bounded",
+        run_process_rich_bounded(iter(sample), _demo_task, total=len(sample)),
+        is_seven,
+    )
+    _check_outcomes(
+        "process rich chunked",
+        run_process_rich_chunked(sample, _demo_task, chunk_size=6),
+        is_seven,
+    )
+    _check_outcomes(
+        "process rich per worker",
+        run_process_rich_per_worker(sample, _demo_step_task, max_workers=3),
+        is_seven,
+    )
+
+    records = list(range(20_000))
+    _check_outcomes(
+        "process rich sharded",
+        run_process_rich_sharded(records, _demo_block, max_workers=4, block_size=500),
+        lambda index: index < 500,  # the first block of shard 0 holds record 7
+    )
+
+    _check_outcomes(
+        "process thread rich nested",
+        run_process_thread_rich_nested(
+            records[:2_000], _demo_task, max_workers=4, max_threads=8, block_size=100
+        ),
+        is_seven,
+    )
+
+    try:
+        run_process_rich_fail_fast(sample, _demo_task)
+    except ValueError as exc:
+        print(f"ok: process rich fail fast raised {exc!r}")
+    else:
+        raise SystemExit("process rich fail fast: expected a ValueError")
+    print("All sanity checks passed.")
