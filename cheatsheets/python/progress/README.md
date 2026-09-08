@@ -89,9 +89,19 @@ carries its own imports; the module tops only import stdlib typing helpers.
   in memory. Use `run_process_rich_bounded` (a fixed in-flight window) or
   `run_process_rich_chunked` (batches) instead.
 - **Rich lives in the parent only.** A worker process cannot touch the
-  parent's `Progress`; it sends `(id, done, total)` messages and a pump thread
-  in the parent applies them (`run_process_rich_sharded`,
+  parent's `Progress`: its lock is a `threading.RLock` and a `Console` does
+  not pickle, so "using the same console" is not possible across processes
+  (under `fork` the worker gets a copy that even replays the live display's
+  control codes). The worker sends progress messages and a pump thread in
+  the parent applies them (`run_process_rich_sharded`,
   `run_process_rich_per_worker`). Threads inside a process (`_threaded_block`)
   report through the same queue, so PPE x TPE nesting costs nothing extra.
+- **Never print from a worker.** A `print` or `console.print` in a worker
+  writes into the live area and leaves stale copies of the bars behind. The
+  sharded and per-worker runners hand the worker a `log(text)` callback; the
+  text travels over the progress queue and the parent prints it above the
+  bars with `progress.log`. If your worker code logs through `logging`, the
+  equivalent is a `QueueHandler` in the worker and a `QueueListener` with
+  `RichHandler(console=progress.console)` in the parent.
 - **A running process cannot be cancelled.** `shutdown(cancel_futures=True)`
   drops queued items only; the items already running finish first.

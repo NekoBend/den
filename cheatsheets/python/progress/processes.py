@@ -43,11 +43,46 @@ Note:
     - Chunked vs sharded: chunked submits many small futures (dynamic load
       balancing, one overall bar); sharded submits one future per worker
       (static split, a bar per shard, block-level progress from inside).
+    - Never print from a worker, not even through "the same" Console: a
+      process cannot share the parent's ``Progress`` (its lock is a
+      ``threading.RLock``, a ``Console`` does not pickle), so the worker's
+      bytes land inside the live area and leave stale copies of the bars.
+      The sharded and per-worker runners hand the worker a ``log(text)``
+      callback instead; it travels over the same queue as the progress
+      messages and the parent prints it above the bars with ``progress.log``.
 """
 
 import os
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from queue import Queue
+
+
+@dataclass(frozen=True)
+class ShardProgress:
+    """Progress message from ``_process_shard``: records done in one shard."""
+
+    shard_id: int
+    done: int
+    total: int
+
+
+@dataclass(frozen=True)
+class WorkerProgress:
+    """Progress message from ``_report_to_queue``: one worker's current item."""
+
+    pid: int
+    label: str
+    done: int
+    total: int
+
+
+@dataclass(frozen=True)
+class WorkerLog:
+    """Log line from a worker; the parent prints it above the bars."""
+
+    text: str
+
 
 # =============================================================================
 # 1. One overall bar
@@ -312,51 +347,62 @@ def run_process_rich_chunked[T, R](
 def _process_shard[T, R](
     shard_id: int,
     shard: Sequence[T],
-    block_func: Callable[[Sequence[T]], Sequence[R]],
+    block_func: Callable[[Sequence[T], Callable[[str], None]], Sequence[R]],
     block_size: int,
-    reports: Queue[tuple[int, int, int] | None],
+    reports: Queue[ShardProgress | WorkerLog | None],
 ) -> list[R | BaseException]:
     """Process one shard block by block, reporting after every block.
 
-    Runs in the worker process. Puts ``(shard_id, records_done, shard_len)``
-    on ``reports`` after each block; a block that raises, or returns the wrong
-    number of results, yields that exception once per record of the block.
+    Runs in the worker process. Calls ``block_func(block, log)`` and puts a
+    ``ShardProgress`` on ``reports`` after each block; ``log(text)`` puts a
+    ``WorkerLog`` on the same queue. A block that raises, or returns the wrong
+    number of results, yields that exception once per record of the block
+    and logs it.
     """
+
+    def log(text: str) -> None:
+        reports.put(WorkerLog(f"shard {shard_id}: {text}"))
+
     outcomes: list[R | BaseException] = []
     for start in range(0, len(shard), block_size):
         block = shard[start : start + block_size]
         try:
-            results: list[R | BaseException] = list(block_func(block))
+            results: list[R | BaseException] = list(block_func(block, log))
         except Exception as exc:  # ruff: ignore[blind-except] - returned to the parent as data
+            log(f"block at {start} failed: {exc!r}")
             results = [exc] * len(block)
         if len(results) != len(block):
             mismatch = ValueError(
                 f"block_func returned {len(results)} results for {len(block)} records"
             )
+            log(repr(mismatch))
             results = [mismatch] * len(block)
         outcomes.extend(results)
-        reports.put((shard_id, len(outcomes), len(shard)))
+        reports.put(ShardProgress(shard_id, len(outcomes), len(shard)))
     return outcomes
 
 
 def run_process_rich_sharded[T, R](
     records: Sequence[T],
-    block_func: Callable[[Sequence[T]], Sequence[R]],
+    block_func: Callable[[Sequence[T], Callable[[str], None]], Sequence[R]],
     max_workers: int = 4,
     block_size: int = 10_000,
 ) -> list[R | BaseException]:
     """Split ``records`` into one shard per worker, process each shard in blocks.
 
     [Best for] "1M records on N CPUs": every worker owns one contiguous shard,
-               walks it block by block (``block_func`` sees a whole block, so
-               it can vectorise with numpy/pandas or loop), and the parent
-               shows one bar per shard plus the overall record count.
-    [Note] One future per worker means one pickle of each shard; for data
+               walks it block by block (``block_func(block, log)`` sees a
+               whole block, so it can vectorise with numpy/pandas or loop),
+               and the parent shows one bar per shard plus the overall count.
+    [Note] ``log(text)`` is how a worker prints: the line goes over the
+           queue and the parent shows it above the bars with ``progress.log``
+           (a worker writing to the terminal itself corrupts the display).
+           One future per worker means one pickle of each shard; for data
            that is expensive to pickle, pass shard BOUNDS instead and let
-           ``block_func`` load its own slice. Progress messages travel over a
+           ``block_func`` load its own slice. Messages travel over a
            ``Manager().Queue()`` (a plain ``multiprocessing.Queue`` cannot be
-           submitted to an executor). One message per block, not per record,
-           keeps the IPC cost negligible. Pair with ``_process_shard``.
+           submitted to an executor); one per block, not per record, keeps
+           the IPC cost negligible. Pair with ``_process_shard``.
     """
     import math
     import multiprocessing
@@ -386,7 +432,7 @@ def run_process_rich_sharded[T, R](
         multiprocessing.Manager() as manager,
         ProcessPoolExecutor(max_workers=max_workers) as executor,
     ):
-        reports: Queue[tuple[int, int, int] | None] = manager.Queue()
+        reports: Queue[ShardProgress | WorkerLog | None] = manager.Queue()
         overall = progress.add_task("Records", total=len(records))
         bars = [
             progress.add_task(f"Shard {shard_id}", total=len(shard))
@@ -396,10 +442,14 @@ def run_process_rich_sharded[T, R](
         def pump() -> None:
             done_by_shard = [0] * len(shards)
             while (report := reports.get()) is not None:
-                shard_id, done, total = report
-                progress.update(bars[shard_id], completed=done, total=total)
-                progress.advance(overall, done - done_by_shard[shard_id])
-                done_by_shard[shard_id] = done
+                if isinstance(report, WorkerLog):
+                    progress.log(report.text)
+                    continue
+                progress.update(
+                    bars[report.shard_id], completed=report.done, total=report.total
+                )
+                progress.advance(overall, report.done - done_by_shard[report.shard_id])
+                done_by_shard[report.shard_id] = report.done
 
         pump_thread = threading.Thread(target=pump, daemon=True)
         pump_thread.start()
@@ -418,12 +468,16 @@ def run_process_rich_sharded[T, R](
 
 
 def _threaded_block[T, R](
-    block: Sequence[T], func: Callable[[T], R], max_threads: int
+    block: Sequence[T],
+    log: Callable[[str], None],
+    func: Callable[[T], R],
+    max_threads: int,
 ) -> list[R | BaseException]:
     """Run ``func`` over one block on a thread pool inside the worker.
 
     Runs in the worker process: the process owns a shard (CPU split), the
-    threads fan out the block's items (IO split). Failures are kept per item.
+    threads fan out the block's items (IO split). Failures are kept per item
+    and reported through ``log``.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -434,6 +488,8 @@ def _threaded_block[T, R](
         }
         for future in as_completed(index_of):
             error = future.exception()
+            if error is not None:
+                log(f"item {block[index_of[future]]!r} failed: {error!r}")
             outcomes[index_of[future]] = error if error is not None else future.result()
     return [outcomes[index] for index in range(len(block))]
 
@@ -455,7 +511,8 @@ def run_process_thread_rich_nested[T, R](
            function pickles; a closure does not). Each shard bar advances per
            block, so ``block_size`` sets the display granularity and
            ``max_threads`` the IO concurrency PER PROCESS (total in flight is
-           ``max_workers * max_threads``).
+           ``max_workers * max_threads``). Per-item failures are logged above
+           the bars through the shard's ``log`` callback.
     """
     from functools import partial
 
@@ -471,39 +528,43 @@ def run_process_thread_rich_nested[T, R](
 
 
 def _report_to_queue[T, R](
-    func: Callable[[T, Callable[[int, int], None]], R],
+    func: Callable[[T, Callable[[int, int], None], Callable[[str], None]], R],
     item: T,
-    reports: Queue[tuple[int, str, int, int] | None],
+    reports: Queue[WorkerProgress | WorkerLog | None],
 ) -> R:
-    """Call ``func(item, report)`` in a worker, forwarding reports to the parent.
+    """Call ``func(item, report, log)`` in a worker, forwarding both to the parent.
 
-    Runs in the worker process. ``report(done, total)`` puts
-    ``(pid, repr(item), done, total)`` on ``reports``; the parent keys its
-    per-worker bars by ``pid``.
+    Runs in the worker process. ``report(done, total)`` puts a
+    ``WorkerProgress`` keyed by this worker's pid on ``reports``; ``log(text)``
+    puts a ``WorkerLog`` prefixed with the pid and item on the same queue.
     """
     pid = os.getpid()
     label = repr(item)
 
     def report(done: int, total: int) -> None:
-        reports.put((pid, label, done, total))
+        reports.put(WorkerProgress(pid, label, done, total))
 
-    return func(item, report)
+    def log(text: str) -> None:
+        reports.put(WorkerLog(f"pid {pid} {label}: {text}"))
+
+    return func(item, report, log)
 
 
 def run_process_rich_per_worker[T, R](
     items: Sequence[T],
-    func: Callable[[T, Callable[[int, int], None]], R],
+    func: Callable[[T, Callable[[int, int], None], Callable[[str], None]], R],
     max_workers: int = 4,
 ) -> list[R | BaseException]:
-    """Run ``func(item, report)`` with an overall bar plus one bar per worker.
+    """Run ``func(item, report, log)`` with an overall bar and a bar per worker.
 
     [Best for] Long-running items (a video, a big file, a model) where each
                worker should show WHICH item it is on and HOW FAR into it.
-    [Note] ``func`` calls ``report(done, total)`` as it makes progress; the
-           parent keeps a bar per worker pid, retitled for each new item.
-           Messages travel over a ``Manager().Queue()`` and a pump thread
-           applies them to the display (rich's ``Progress`` is thread-safe).
-           Pair with ``_report_to_queue``.
+    [Note] ``func`` calls ``report(done, total)`` as it makes progress and
+           ``log(text)`` for anything it would otherwise print; the parent
+           keeps a bar per worker pid, retitled for each new item, and prints
+           log lines above the bars. Messages travel over a
+           ``Manager().Queue()`` and a pump thread applies them to the display
+           (rich's ``Progress`` is thread-safe). Pair with ``_report_to_queue``.
     """
     import multiprocessing
     import threading
@@ -529,18 +590,25 @@ def run_process_rich_per_worker[T, R](
         multiprocessing.Manager() as manager,
         ProcessPoolExecutor(max_workers=max_workers) as executor,
     ):
-        reports: Queue[tuple[int, str, int, int] | None] = manager.Queue()
+        reports: Queue[WorkerProgress | WorkerLog | None] = manager.Queue()
         overall = progress.add_task("Overall", total=len(items))
         bars: dict[int, TaskID] = {}
 
         def pump() -> None:
             while (report := reports.get()) is not None:
-                pid, label, done, total = report
-                bar = bars.get(pid)
+                if isinstance(report, WorkerLog):
+                    progress.log(report.text)
+                    continue
+                bar = bars.get(report.pid)
                 if bar is None:
-                    bar = bars[pid] = progress.add_task(f"pid {pid}", total=total)
+                    bar = bars[report.pid] = progress.add_task(
+                        f"pid {report.pid}", total=report.total
+                    )
                 progress.update(
-                    bar, description=f"pid {pid}: {label}", completed=done, total=total
+                    bar,
+                    description=f"pid {report.pid}: {report.label}",
+                    completed=report.done,
+                    total=report.total,
                 )
 
         pump_thread = threading.Thread(target=pump, daemon=True)
@@ -649,23 +717,29 @@ def _demo_task(item: int) -> int:
     return item * 2
 
 
-def _demo_block(block: Sequence[int]) -> list[int]:
+def _demo_block(block: Sequence[int], log: Callable[[str], None]) -> list[int]:
     """Dummy block work: double every record; a block holding record 7 fails."""
     import time
 
     time.sleep(0.01)
+    if block[0] % 5_000 == 0:
+        log(f"block starting at record {block[0]}")
     if 7 in block:
         raise ValueError("the block holding record 7 is broken on purpose")
     return [record * 2 for record in block]
 
 
-def _demo_step_task(item: int, report: Callable[[int, int], None]) -> int:
+def _demo_step_task(
+    item: int, report: Callable[[int, int], None], log: Callable[[str], None]
+) -> int:
     """Dummy long item: report five steps, then double the item; 7 fails."""
     import time
 
     for step in range(1, 6):
         time.sleep(0.02)
         report(step, 5)
+    if item % 10 == 0:
+        log("halfway marker reached")
     if item == 7:
         raise ValueError("item 7 is broken on purpose")
     return item * 2
