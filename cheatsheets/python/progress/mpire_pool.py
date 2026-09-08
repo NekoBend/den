@@ -76,14 +76,23 @@ def run_mpire_rich[T, R](
 
 
 def run_mpire_lazy[T, R](
-    items: Iterable[T], func: Callable[[T], R], total: int, max_workers: int = 4
+    items: Iterable[T], func: Callable[[T], R], max_workers: int = 4
 ) -> list[R]:
     """Run ``func`` over a lazy iterable with ``imap_unordered`` and a bar.
 
     [Best for] Generators (cursor, file lines) where the whole input should
                not be materialised first.
-    [Note] mpire needs ``iterable_len`` to size the bar and split chunks
-           when the input has no ``len()``. Results arrive in finish order.
+    [Note] Deliberately NO ``iterable_len``: mpire treats it as the
+           authoritative number of tasks, not as a bar hint. A value below the
+           real length makes ``chunk_tasks`` stop pulling there and silently
+           drop the tail (``iterable_len=4`` over 20 items returns 4 results
+           under a green 4/4 bar); a value above it raises. An exact count
+           makes the bar exact, and an estimate - a stale ``SELECT COUNT(*)``,
+           say - loses data, so pass it only if it cannot be wrong.
+           ``chunk_size=1`` is the part mpire really needs: with neither a
+           length nor a chunk size it warns and falls back to 1 anyway. The bar
+           counts up without a total until the input is exhausted, then shows
+           n/n. Results arrive in finish order.
     """
     from mpire import WorkerPool
 
@@ -92,7 +101,7 @@ def run_mpire_lazy[T, R](
             pool.imap_unordered(
                 func,
                 items,
-                iterable_len=total,
+                chunk_size=1,
                 progress_bar=True,
                 progress_bar_options={"desc": "mpire (lazy)"},
             )
@@ -112,6 +121,23 @@ def _demo_task(item: int) -> int:
     return item * 2
 
 
+def _boom_task(item: int) -> int:
+    """Dummy CPU work that fails on item 7, to prove the failure reaches here."""
+    if item == 7:
+        raise ValueError("item 7 is broken on purpose")
+    return item * 2
+
+
+def _check_raises(name: str, run: Callable[[], object]) -> None:
+    """Assert ``run()`` propagates the worker's ValueError (mpire's contract)."""
+    try:
+        run()
+    except ValueError as exc:
+        print(f"ok: {name} raised {exc!r}")
+    else:
+        raise SystemExit(f"{name}: expected the worker's ValueError")
+
+
 if __name__ == "__main__":
     sample = list(range(20))
     expected = [item * 2 for item in sample]
@@ -119,9 +145,21 @@ if __name__ == "__main__":
     for name, results in (
         ("mpire", run_mpire(sample, _demo_task)),
         ("mpire rich", run_mpire_rich(sample, _demo_task)),
-        ("mpire lazy", sorted(run_mpire_lazy(iter(sample), _demo_task, total=20))),
     ):
         if results != expected:
             raise SystemExit(f"{name}: unexpected results {results!r}")
-        print(f"ok: {name} ({len(results)} results)")
+        print(f"ok: {name} ({len(results)} results, input order)")
+
+    # A generator has no ``len()``: every item must still be processed.
+    generated = 200
+    lazy = sorted(run_mpire_lazy((item for item in range(generated)), _demo_task))
+    if lazy != [item * 2 for item in range(generated)]:
+        raise SystemExit(
+            f"mpire lazy: {len(lazy)} of {generated} generated items came back"
+        )
+    print(f"ok: mpire lazy ({len(lazy)} of {generated} generated items, finish order)")
+
+    _check_raises("mpire", lambda: run_mpire(sample, _boom_task))
+    _check_raises("mpire rich", lambda: run_mpire_rich(sample, _boom_task))
+    _check_raises("mpire lazy", lambda: run_mpire_lazy(iter(sample), _boom_task))
     print("All sanity checks passed.")
