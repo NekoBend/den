@@ -21,7 +21,10 @@ Usage:
     1. Copy the function you need (its imports travel with it). Functions
        that run inside the workers (``_apply_block``, ``_process_shard``,
        ``_threaded_block``, ``_report_to_queue``) sit next to their callers:
-       copy them too.
+       copy them too, together with the ``ShardProgress`` / ``WorkerProgress``
+       / ``WorkerLog`` messages they put on the queue - those are the only
+       names in this sheet that live at module level, because worker and
+       parent both have to see the same class.
     2. Call it with your own TOP-LEVEL ``func`` (see Note).
 
 Dependencies:
@@ -58,7 +61,6 @@ Note:
       messages and the parent prints it above the bars with ``progress.log``.
 """
 
-import os
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from queue import Queue
@@ -576,6 +578,8 @@ def _report_to_queue[T, R](
     ``WorkerProgress`` keyed by this worker's pid on ``reports``; ``log(text)``
     puts a ``WorkerLog`` prefixed with the pid and item on the same queue.
     """
+    import os
+
     pid = os.getpid()
     label = repr(item)
 

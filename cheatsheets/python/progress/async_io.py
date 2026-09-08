@@ -25,7 +25,6 @@ Note:
       loop and the bar with it. Use ``asyncio.sleep`` / ``httpx.AsyncClient``.
 """
 
-import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 
 # =============================================================================
@@ -43,6 +42,8 @@ async def run_async_tqdm[T, R](
            and still returns results in input order. It has no
            ``return_exceptions``, so ``guarded`` keeps failures as data.
     """
+    import asyncio
+
     from tqdm.asyncio import tqdm
 
     semaphore = asyncio.Semaphore(concurrency)
@@ -67,6 +68,8 @@ async def run_async_rich[T, R](
            failures as data; the bar advances inside ``tracked`` so it moves
            as items finish, not when ``gather`` returns.
     """
+    import asyncio
+
     from rich.progress import (
         BarColumn,
         MofNCompleteColumn,
@@ -116,6 +119,8 @@ async def run_async_rich_as_completed[T, R](
            list is in finish order too. The bar's description shows the last
            finished item.
     """
+    import asyncio
+
     from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
     semaphore = asyncio.Semaphore(concurrency)
@@ -148,6 +153,8 @@ async def run_async_rich_as_completed[T, R](
 
 async def _demo_task(item: int) -> int:
     """Dummy IO: sleep briefly and double the item; item 7 always fails."""
+    import asyncio
+
     await asyncio.sleep(0.02)
     if item == 7:
         raise ValueError("item 7 is broken on purpose")
@@ -155,18 +162,22 @@ async def _demo_task(item: int) -> int:
 
 
 def _check_outcomes(
-    name: str, outcomes: list[int | BaseException], *, ordered: bool
+    name: str, outcomes: list[int | BaseException], *, expected: int, ordered: bool
 ) -> None:
-    """Assert 20 outcomes, item 7 failed, the rest doubled (sorted if unordered)."""
+    """Assert ``expected`` outcomes: item 7 failed, the rest doubled (sorted if
+    the runner returns them in finish order)."""
+    if len(outcomes) != expected:
+        raise SystemExit(f"{name}: expected {expected} outcomes, got {len(outcomes)}")
     values = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
     failures = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
-    expected = [item * 2 for item in range(20) if item != 7]
+    doubled = [item * 2 for item in range(expected) if item != 7]
     got = values if ordered else sorted(values)
-    if len(failures) != 1 or got != expected:
+    if len(failures) != 1 or got != doubled:
         raise SystemExit(f"{name}: unexpected outcomes {outcomes!r}")
     if ordered and not isinstance(outcomes[7], BaseException):
         raise SystemExit(f"{name}: item 7 not at index 7: {outcomes!r}")
-    print(f"ok: {name} (20 outcomes, item 7 failed as expected)")
+    order = "input order" if ordered else "finish order"
+    print(f"ok: {name} ({expected} outcomes in {order}, item 7 failed as expected)")
 
 
 async def _main() -> None:
@@ -174,20 +185,25 @@ async def _main() -> None:
     _check_outcomes(
         "async tqdm",
         await run_async_tqdm(sample, _demo_task, concurrency=5),
+        expected=len(sample),
         ordered=True,
     )
     _check_outcomes(
         "async rich",
         await run_async_rich(sample, _demo_task, concurrency=5),
+        expected=len(sample),
         ordered=True,
     )
     _check_outcomes(
         "async rich as_completed",
         await run_async_rich_as_completed(sample, _demo_task, concurrency=5),
+        expected=len(sample),
         ordered=False,
     )
     print("All sanity checks passed.")
 
 
 if __name__ == "__main__":
+    import asyncio
+
     asyncio.run(_main())

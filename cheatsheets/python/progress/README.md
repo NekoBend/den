@@ -64,6 +64,10 @@ pip install tqdm rich mpire
 
 Each function imports what it needs inside its body, so a copied function
 carries its own imports; the module tops only import stdlib typing helpers.
+The one thing a copy needs from a module top is in `processes.py`: the
+`ShardProgress` / `WorkerProgress` / `WorkerLog` message classes, which a
+worker and its parent both have to see, so copy them alongside
+`_process_shard` / `_report_to_queue`.
 
 ## Pitfalls the sheets avoid
 
