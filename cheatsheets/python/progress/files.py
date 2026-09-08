@@ -22,29 +22,41 @@ Dependencies:
 
 Note:
     Every function returns the number of bytes consumed. Errors propagate:
-    a half-written destination is the caller's to clean up.
+    a half-written destination is the caller's to clean up. The two copiers
+    match ``shutil.copy2``: metadata travels with the bytes and a destination
+    that is the source raises ``shutil.SameFileError`` instead of truncating
+    it.
 """
 
 from collections.abc import Callable, Iterable
 from pathlib import Path
-
-# 64 KiB matches shutil.copyfileobj's default and keeps the bar refresh
-# frequent enough to look live on a fast disk.
-CHUNK_SIZE = 64 * 1024
 
 # =============================================================================
 # 1. Copying a file
 # =============================================================================
 
 
-def copy_file_tqdm(src: Path, dst: Path, chunk_size: int = CHUNK_SIZE) -> int:
+def copy_file_tqdm(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
     """Copy ``src`` to ``dst`` with a tqdm bar measured in bytes.
 
     [Best for] Any copy/convert step where the user waits on a large file.
-    [Note] ``unit="B", unit_scale=True, unit_divisor=1024`` renders "12.3MiB/s".
+    [Note] ``samefile`` first: ``dst.open("wb")`` truncates before the first
+           read, so copying a file onto itself (a symlink or hardlink to the
+           source, or ``out_dir / src.name`` when ``out_dir`` is the source's
+           own directory) would destroy it and report 0 bytes copied.
+           ``shutil.copystat`` at the end keeps mode and times, as
+           ``shutil.copy2`` does; without it a 0600 secret lands 0644.
+           ``unit="B", unit_scale=True, unit_divisor=1024`` divides by 1024 but
+           labels it "12.3MB/s": tqdm's prefixes never carry the "i".
+           64 KiB is ``shutil.copyfileobj``'s block size and keeps the bar
+           refresh frequent enough to look live on a fast disk.
     """
+    import shutil
+
     from tqdm import tqdm
 
+    if dst.exists() and src.samefile(dst):
+        raise shutil.SameFileError(f"{src} and {dst} are the same file")
     total = src.stat().st_size
     written = 0
     with (
@@ -57,25 +69,49 @@ def copy_file_tqdm(src: Path, dst: Path, chunk_size: int = CHUNK_SIZE) -> int:
         while chunk := reader.read(chunk_size):
             written += writer.write(chunk)
             bar.update(len(chunk))
+    shutil.copystat(src, dst)
     return written
 
 
-def copy_file_rich(src: Path, dst: Path, chunk_size: int = CHUNK_SIZE) -> int:
+def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
     """Copy ``src`` to ``dst`` with a rich bar measured in bytes.
 
     [Best for] The same copy with rich's transfer columns.
-    [Note] ``rich.progress.open`` wraps the file so every ``read`` advances the
-           bar; the bar shows size, speed and remaining time by default.
+    [Note] ``progress.open`` wraps the file so every ``read`` advances the bar.
+           The module-level ``rich.progress.open`` hard-codes its columns to
+           description, bar, ``DownloadColumn`` and ``TimeRemainingColumn`` and
+           takes no ``columns`` argument, so the speed readout needs an
+           explicit ``Progress`` with ``TransferSpeedColumn``. Same
+           ``samefile`` guard and ``shutil.copystat`` as ``copy_file_tqdm``.
     """
-    import rich.progress
+    import shutil
 
+    from rich.progress import (
+        BarColumn,
+        DownloadColumn,
+        Progress,
+        TextColumn,
+        TimeRemainingColumn,
+        TransferSpeedColumn,
+    )
+
+    if dst.exists() and src.samefile(dst):
+        raise shutil.SameFileError(f"{src} and {dst} are the same file")
     written = 0
     with (
-        rich.progress.open(src, "rb", description=src.name) as reader,
+        Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+        ) as progress,
+        progress.open(src, "rb", description=src.name) as reader,
         dst.open("wb") as writer,
     ):
         while chunk := reader.read(chunk_size):
             written += writer.write(chunk)
+    shutil.copystat(src, dst)
     return written
 
 
@@ -145,15 +181,42 @@ def consume_chunks_rich(
 # =============================================================================
 
 if __name__ == "__main__":
+    import shutil
+    import stat
     import tempfile
 
-    with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "source.bin"
-        src.write_bytes(bytes(range(256)) * 4096)  # 1 MiB
-        size = src.stat().st_size
+    copiers = {"copy tqdm": copy_file_tqdm, "copy rich": copy_file_rich}
 
-        got_tqdm = copy_file_tqdm(src, Path(tmp) / "copy-tqdm.bin", chunk_size=4096)
-        got_rich = copy_file_rich(src, Path(tmp) / "copy-rich.bin", chunk_size=4096)
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        src = out_dir / "source.bin"
+        src.write_bytes(bytes(range(256)) * 4096)  # 1 MiB
+        src.chmod(0o640)
+        size = src.stat().st_size
+        payload = src.read_bytes()
+
+        for name, copier in copiers.items():
+            dst = out_dir / f"{name.replace(' ', '-')}.bin"
+            written = copier(src, dst, chunk_size=4096)
+            if written != size:
+                raise SystemExit(f"{name}: wrote {written} bytes, expected {size}")
+            if dst.read_bytes() != payload:
+                raise SystemExit(f"{name}: the copy differs from the source")
+            mode = stat.S_IMODE(dst.stat().st_mode)
+            if mode != 0o640:
+                raise SystemExit(f"{name}: mode is {mode:#o}, expected 0o640")
+            print(f"ok: {name} ({written} bytes, mode {mode:#o})")
+
+            # The ordinary call shape that aims the destination at the source.
+            try:
+                copier(src, out_dir / src.name, chunk_size=4096)
+            except shutil.SameFileError:
+                pass
+            else:
+                raise SystemExit(f"{name}: copying onto the source was not refused")
+            if src.stat().st_size != size or src.read_bytes() != payload:
+                raise SystemExit(f"{name}: the source was damaged by a same-file copy")
+            print(f"ok: {name} refused a same-file copy, source intact")
 
         def chunks(count: int, size: int = 4096) -> Iterable[bytes]:
             """Yield ``count`` chunks of ``size`` zero bytes."""
@@ -166,14 +229,14 @@ if __name__ == "__main__":
         )
         got_stream_rich = consume_chunks_rich(chunks(256), collected.extend)
 
-    checks = {
-        "copy tqdm": (got_tqdm, size),
-        "copy rich": (got_rich, size),
+    streamed = {
         "stream tqdm": (got_stream_tqdm, 256 * 4096),
         "stream rich": (got_stream_rich, 256 * 4096),
     }
-    for name, (got, want) in checks.items():
+    for name, (got, want) in streamed.items():
         if got != want:
-            raise SystemExit(f"{name}: wrote {got} bytes, expected {want}")
+            raise SystemExit(f"{name}: consumed {got} bytes, expected {want}")
         print(f"ok: {name} ({got} bytes)")
+    if len(collected) != 2 * 256 * 4096:
+        raise SystemExit(f"sink: collected {len(collected)} bytes, expected 2 MiB")
     print("All sanity checks passed.")
