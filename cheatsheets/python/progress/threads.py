@@ -21,6 +21,12 @@ Note:
       A failed item holds its exception; nothing is dropped, nothing raised.
     - ``as_completed`` yields in finish order; each future is mapped back to
       its input index so the returned list keeps the input order.
+    - Every runner collects inside a ``try`` whose ``finally`` calls
+      ``executor.shutdown(wait=True, cancel_futures=True)``: Ctrl-C then drops
+      the queued items instead of running them all through the executor's own
+      ``__exit__``. ``wait=True`` is required - ``wait=False`` makes the
+      ``__exit__``'s own ``shutdown(wait=True)`` reset the cancel flag before
+      the pool acts on it, and nothing is cancelled at all.
     - Threads share the GIL: use ``processes.py`` for CPU-bound work.
 """
 
@@ -37,8 +43,10 @@ def run_thread_tqdm_easy[T, R](
     """Run ``func`` on a thread pool with tqdm's ``thread_map`` one-liner.
 
     [Best for] Fire-and-forget IO parallelism.
-    [Note] Results keep input order. The first exception propagates once
-           its result is collected; the other threads still run to the end.
+    [Note] Results keep input order. The first exception propagates once its
+           result is collected; ``Executor.map``'s iterator then cancels every
+           item that has not started (``thread_map`` returns
+           ``list(ex.map(...))``), so only the ones already running finish.
     """
     from tqdm.contrib.concurrent import thread_map
 
@@ -52,7 +60,9 @@ def run_thread_tqdm_manual[T, R](
 
     [Best for] Batch IO where one bad item must not stop the rest.
     [Note] ``future.exception()`` avoids a try/except per item;
-           ``tqdm.write`` logs the failure without breaking the bar.
+           ``tqdm.write`` logs the failure without breaking the bar. The
+           ``finally`` drops the queued items, so Ctrl-C ends the run instead
+           of letting the pool drain (see the module Note on ``wait=True``).
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -63,14 +73,17 @@ def run_thread_tqdm_manual[T, R](
         index_of = {
             executor.submit(func, item): index for index, item in enumerate(items)
         }
-        for future in tqdm(
-            as_completed(index_of), total=len(items), desc="Threads (manual)"
-        ):
-            index = index_of[future]
-            error = future.exception()
-            if error is not None:
-                tqdm.write(f"item {index} failed: {error!r}")
-            outcomes[index] = error if error is not None else future.result()
+        try:
+            for future in tqdm(
+                as_completed(index_of), total=len(items), desc="Threads (manual)"
+            ):
+                index = index_of[future]
+                error = future.exception()
+                if error is not None:
+                    tqdm.write(f"item {index} failed: {error!r}")
+                outcomes[index] = error if error is not None else future.result()
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
     return [outcomes[index] for index in range(len(items))]
 
 
@@ -82,6 +95,7 @@ def run_thread_rich[T, R](
     [Best for] The same batch IO with count, elapsed and ETA columns.
     [Note] ``progress.log`` prints above the bar with a timestamp. Rich's
            ``Progress`` is thread-safe, so workers may call ``advance`` too.
+           The ``finally`` drops the queued items on Ctrl-C.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -111,13 +125,16 @@ def run_thread_rich[T, R](
         index_of = {
             executor.submit(func, item): index for index, item in enumerate(items)
         }
-        for future in as_completed(index_of):
-            index = index_of[future]
-            error = future.exception()
-            if error is not None:
-                progress.log(f"item {index} failed: {error!r}")
-            outcomes[index] = error if error is not None else future.result()
-            progress.advance(task)
+        try:
+            for future in as_completed(index_of):
+                index = index_of[future]
+                error = future.exception()
+                if error is not None:
+                    progress.log(f"item {index} failed: {error!r}")
+                outcomes[index] = error if error is not None else future.result()
+                progress.advance(task)
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
     return [outcomes[index] for index in range(len(items))]
 
 
@@ -140,7 +157,8 @@ def run_thread_rich_per_task[T, R](
            (``steps_per_item`` is the per-item total). Threads share memory,
            so the callback updates the live display directly; for processes
            see ``processes.run_process_rich_per_worker``.
-           Finished item bars are hidden to keep the display bounded.
+           Finished item bars are hidden to keep the display bounded, and the
+           ``finally`` drops the queued items on Ctrl-C.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -180,11 +198,14 @@ def run_thread_rich_per_task[T, R](
             ): index
             for index, item in enumerate(items)
         }
-        for future in as_completed(index_of):
-            index = index_of[future]
-            error = future.exception()
-            outcomes[index] = error if error is not None else future.result()
-            progress.advance(overall)
+        try:
+            for future in as_completed(index_of):
+                index = index_of[future]
+                error = future.exception()
+                outcomes[index] = error if error is not None else future.result()
+                progress.advance(overall)
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
     return [outcomes[index] for index in range(len(items))]
 
 
@@ -204,43 +225,88 @@ def _demo_task(item: int) -> int:
 
 
 def _demo_step_task(item: int, advance: Callable[[int], None]) -> int:
-    """Dummy transfer: report 100 steps of progress, then return the item."""
+    """Dummy transfer: report 100 steps, then double the item; item 3 fails."""
     import time
 
     for _ in range(10):
         time.sleep(0.01)
         advance(10)
+    if item == 3:
+        raise ValueError("item 3 is broken on purpose")
     return item * 2
 
 
-def _check_outcomes(name: str, outcomes: list[int | BaseException]) -> None:
-    """Assert the outcome list mirrors the sample: item 7 failed, rest doubled."""
-    if len(outcomes) != 20:
-        raise SystemExit(f"{name}: expected 20 outcomes, got {len(outcomes)}")
+def _check_outcomes(
+    name: str,
+    outcomes: list[int | BaseException],
+    *,
+    expected: int,
+    failing: Callable[[int], bool],
+) -> None:
+    """Assert ``expected`` outcomes, in input order, failed exactly where promised."""
+    if len(outcomes) != expected:
+        raise SystemExit(f"{name}: expected {expected} outcomes, got {len(outcomes)}")
     for index, outcome in enumerate(outcomes):
-        want_error = index == 7
+        want_error = failing(index)
         if isinstance(outcome, BaseException) != want_error:
             raise SystemExit(f"{name}: outcome {index} is {outcome!r}")
         if not want_error and outcome != index * 2:
             raise SystemExit(f"{name}: outcome {index} is {outcome!r}")
-    print(f"ok: {name} (20 outcomes, item 7 failed as expected)")
+    failures = sum(isinstance(outcome, BaseException) for outcome in outcomes)
+    print(f"ok: {name} ({expected} outcomes in input order, {failures} failed)")
 
 
 if __name__ == "__main__":
+    import threading
+    import time
+
     sample = list(range(20))
     clean = [item for item in sample if item != 7]
 
-    if run_thread_tqdm_easy(clean, _demo_task, max_workers=4) != [
-        item * 2 for item in clean
-    ]:
-        raise SystemExit("thread tqdm easy: unexpected results")
-    print("ok: thread tqdm easy (19 results)")
+    easy = run_thread_tqdm_easy(clean, _demo_task, max_workers=4)
+    if easy != [item * 2 for item in clean]:
+        raise SystemExit(f"thread tqdm easy: unexpected results {easy!r}")
+    print(f"ok: thread tqdm easy ({len(easy)} results in input order)")
 
-    _check_outcomes("thread tqdm manual", run_thread_tqdm_manual(sample, _demo_task))
-    _check_outcomes("thread rich", run_thread_rich(sample, _demo_task))
+    _check_outcomes(
+        "thread tqdm manual",
+        run_thread_tqdm_manual(sample, _demo_task),
+        expected=len(sample),
+        failing=lambda index: index == 7,
+    )
+    _check_outcomes(
+        "thread rich",
+        run_thread_rich(sample, _demo_task),
+        expected=len(sample),
+        failing=lambda index: index == 7,
+    )
+    _check_outcomes(
+        "thread rich per task",
+        run_thread_rich_per_task(sample[:6], _demo_step_task, max_workers=3),
+        expected=6,
+        failing=lambda index: index == 3,
+    )
 
-    per_task = run_thread_rich_per_task(sample[:6], _demo_step_task, max_workers=3)
-    if per_task != [item * 2 for item in sample[:6]]:
-        raise SystemExit(f"thread rich per task: unexpected results {per_task!r}")
-    print("ok: thread rich per task (6 results)")
+    # "raise (first)" also means the queued items are cancelled, not run.
+    ran: list[int] = []
+    lock = threading.Lock()
+
+    def _recorded(item: int) -> int:
+        """Record the items that really ran; item 0 fails before any other."""
+        with lock:
+            ran.append(item)
+        if item == 0:
+            raise ValueError("item 0 is broken on purpose")
+        time.sleep(0.05)
+        return item * 2
+
+    try:
+        run_thread_tqdm_easy(list(range(40)), _recorded, max_workers=2)
+    except ValueError:
+        time.sleep(0.3)  # let the threads that were already running finish
+    else:
+        raise SystemExit("thread tqdm easy: expected the first failure to propagate")
+    if len(ran) > 10:
+        raise SystemExit(f"thread tqdm easy: {len(ran)}/40 ran, nothing was cancelled")
+    print(f"ok: thread tqdm easy raised, {40 - len(ran)} of 40 items never started")
     print("All sanity checks passed.")

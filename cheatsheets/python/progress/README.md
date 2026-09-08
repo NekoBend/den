@@ -104,4 +104,9 @@ carries its own imports; the module tops only import stdlib typing helpers.
   equivalent is a `QueueHandler` in the worker and a `QueueListener` with
   `RichHandler(console=progress.console)` in the parent.
 - **A running process cannot be cancelled.** `shutdown(cancel_futures=True)`
-  drops queued items only; the items already running finish first.
+  drops queued items only; the items already running finish first. Every
+  runner calls it from a `finally`, so Ctrl-C ends the run instead of letting
+  the pool drain, and it has to be `shutdown(wait=True, cancel_futures=True)`:
+  with `wait=False` the executor's own `__exit__` calls `shutdown(wait=True)`
+  immediately after, resetting the cancel flag before the pool acts on it, and
+  nothing is cancelled at all.

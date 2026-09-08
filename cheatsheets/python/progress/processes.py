@@ -39,7 +39,13 @@ Note:
     - ``as_completed`` yields in finish order; futures are mapped back to
       their input index so the returned list keeps the input order.
     - A running process cannot be cancelled: ``cancel_futures=True`` drops the
-      queued items, the ones already running finish first.
+      queued items, the ones already running finish first. Every runner does
+      it in a ``finally`` so Ctrl-C ends the run, and it has to be
+      ``shutdown(wait=True, cancel_futures=True)``: with ``wait=False`` the
+      ``with`` block's own ``__exit__`` calls ``shutdown(wait=True)`` right
+      after, which resets the cancel flag (and clears the manager thread the
+      first call left behind) before the pool ever acts on it - the pool then
+      runs every queued item while the parent has already moved on.
     - Chunked vs sharded: chunked submits many small futures (dynamic load
       balancing, one overall bar); sharded submits one future per worker
       (static split, a bar per shard, block-level progress from inside).
@@ -117,7 +123,8 @@ def run_process_tqdm_manual[T, R](
 
     [Best for] CPU batches where one bad item must not stop the rest.
     [Note] ``future.exception()`` avoids a try/except per item;
-           ``tqdm.write`` logs the failure without breaking the bar.
+           ``tqdm.write`` logs the failure without breaking the bar. The
+           ``finally`` drops the queued items on Ctrl-C (see the module Note).
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -128,14 +135,17 @@ def run_process_tqdm_manual[T, R](
         index_of = {
             executor.submit(func, item): index for index, item in enumerate(items)
         }
-        for future in tqdm(
-            as_completed(index_of), total=len(items), desc="Processes (manual)"
-        ):
-            index = index_of[future]
-            error = future.exception()
-            if error is not None:
-                tqdm.write(f"item {index} failed: {error!r}")
-            outcomes[index] = error if error is not None else future.result()
+        try:
+            for future in tqdm(
+                as_completed(index_of), total=len(items), desc="Processes (manual)"
+            ):
+                index = index_of[future]
+                error = future.exception()
+                if error is not None:
+                    tqdm.write(f"item {index} failed: {error!r}")
+                outcomes[index] = error if error is not None else future.result()
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
     return [outcomes[index] for index in range(len(items))]
 
 
@@ -148,6 +158,7 @@ def run_process_rich[T, R](
     [Note] ``progress.log`` prints above the bar with a timestamp. Only the
            parent touches ``progress``: a worker process cannot update it
            (see ``run_process_rich_per_worker`` for progress from inside).
+           The ``finally`` drops the queued items on Ctrl-C.
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -177,13 +188,16 @@ def run_process_rich[T, R](
         index_of = {
             executor.submit(func, item): index for index, item in enumerate(items)
         }
-        for future in as_completed(index_of):
-            index = index_of[future]
-            error = future.exception()
-            if error is not None:
-                progress.log(f"item {index} failed: {error!r}")
-            outcomes[index] = error if error is not None else future.result()
-            progress.advance(task)
+        try:
+            for future in as_completed(index_of):
+                index = index_of[future]
+                error = future.exception()
+                if error is not None:
+                    progress.log(f"item {index} failed: {error!r}")
+                outcomes[index] = error if error is not None else future.result()
+                progress.advance(task)
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
     return [outcomes[index] for index in range(len(items))]
 
 
@@ -307,6 +321,7 @@ def run_process_rich_chunked[T, R](
     [Note] Chunks are handed out as workers free up (dynamic load balancing).
            The bar advances by ``len(chunk)`` as each chunk completes, so it
            moves in steps: pick ``chunk_size`` so a chunk takes ~1 second.
+           The ``finally`` drops the queued chunks on Ctrl-C.
            Pair with ``_apply_block``.
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -337,10 +352,13 @@ def run_process_rich_chunked[T, R](
             executor.submit(_apply_block, func, chunk): index
             for index, chunk in enumerate(chunks)
         }
-        for future in as_completed(index_of):
-            index = index_of[future]
-            outcomes_by_chunk[index] = future.result()  # ty: ignore[invalid-assignment] - _apply_block's R is not bound through submit (ty 0.0.55)
-            progress.advance(task, len(chunks[index]))
+        try:
+            for future in as_completed(index_of):
+                index = index_of[future]
+                outcomes_by_chunk[index] = future.result()  # ty: ignore[invalid-assignment] - _apply_block's R is not bound through submit (ty 0.0.55)
+                progress.advance(task, len(chunks[index]))
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
     return [outcome for chunk in outcomes_by_chunk for outcome in chunk]
 
 
@@ -564,7 +582,10 @@ def run_process_rich_per_worker[T, R](
            keeps a bar per worker pid, retitled for each new item, and prints
            log lines above the bars. Messages travel over a
            ``Manager().Queue()`` and a pump thread applies them to the display
-           (rich's ``Progress`` is thread-safe). Pair with ``_report_to_queue``.
+           (rich's ``Progress`` is thread-safe). The ``finally`` drops the
+           queued items on Ctrl-C, then stops the pump thread - in that order,
+           so the workers that are still finishing keep a live queue to report
+           on. Pair with ``_report_to_queue``.
     """
     import multiprocessing
     import threading
@@ -625,6 +646,7 @@ def run_process_rich_per_worker[T, R](
                 )
                 progress.advance(overall)
         finally:
+            executor.shutdown(wait=True, cancel_futures=True)
             reports.put(None)
             pump_thread.join()
     return [outcomes[index] for index in range(len(items))]
@@ -644,9 +666,11 @@ def run_process_rich_fail_fast[T, R](
                so do not burn CPU on the rest.
     [Note] ``future.result()`` re-raises the worker's exception in the
            parent; the ``finally`` cancels every queued item (the running
-           ones finish, a process cannot be killed mid-item). Ctrl-C takes
-           the same path. ``transient=True`` removes the bar afterwards so
-           the traceback is what remains on screen.
+           ones finish, a process cannot be killed mid-item) and waits for
+           them, so the call returns with the pool stopped rather than with
+           the rest of the batch still burning CPU in the background. Ctrl-C
+           takes the same path. ``transient=True`` removes the bar afterwards
+           so the traceback is what remains on screen.
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -673,7 +697,10 @@ def run_process_rich_fail_fast[T, R](
         finally:
             # No-op after a clean run (nothing is queued any more); after an
             # exception or Ctrl-C it drops every item that has not started.
-            executor.shutdown(wait=False, cancel_futures=True)
+            # wait=True is load-bearing: with wait=False the executor's own
+            # __exit__ calls shutdown(wait=True) next, resetting the cancel
+            # flag before the pool reads it, so nothing is cancelled at all.
+            executor.shutdown(wait=True, cancel_futures=True)
     return [results[index] for index in range(len(items))]
 
 
@@ -742,6 +769,17 @@ def _demo_step_task(
         log("halfway marker reached")
     if item == 7:
         raise ValueError("item 7 is broken on purpose")
+    return item * 2
+
+
+def _cancel_probe(item: int, seen: Queue[int]) -> int:
+    """Report that this item really ran; item 0 fails at once, the rest linger."""
+    import time
+
+    seen.put(item)
+    if item == 0:
+        raise ValueError("item 0 is broken on purpose")
+    time.sleep(0.15)
     return item * 2
 
 
@@ -814,10 +852,33 @@ if __name__ == "__main__":
         is_seven,
     )
 
-    try:
-        run_process_rich_fail_fast(sample, _demo_task)
-    except ValueError as exc:
-        print(f"ok: process rich fail fast raised {exc!r}")
-    else:
-        raise SystemExit("process rich fail fast: expected a ValueError")
+    # Fail fast must raise AND stop the pool: the call has to come back
+    # quickly and leave the queued items unrun, not return while the workers
+    # chew through the rest of the batch in the background.
+    import time
+    from functools import partial
+
+    with multiprocessing.Manager() as manager:
+        seen: Queue[int] = manager.Queue()
+        started = time.perf_counter()
+        try:
+            run_process_rich_fail_fast(
+                list(range(24)), partial(_cancel_probe, seen=seen), max_workers=4
+            )
+        except ValueError as exc:
+            elapsed = time.perf_counter() - started
+            print(f"ok: process rich fail fast raised {exc!r} after {elapsed:.1f}s")
+        else:
+            raise SystemExit("process rich fail fast: expected a ValueError")
+        if elapsed > 10:
+            raise SystemExit(f"process rich fail fast: returned only after {elapsed}s")
+        # 24 items x 0.15s over 4 workers is ~0.9s of work: an uncancelled pool
+        # has finished every one of them by the time this sleep is over.
+        time.sleep(1.5)
+        ran = seen.qsize()
+    # At most the 4 running items plus the handful already handed to the call
+    # queue may run; without the cancel every one of the 24 does.
+    if ran > 16:
+        raise SystemExit(f"process rich fail fast: {ran}/24 ran, nothing was cancelled")
+    print(f"ok: process rich fail fast cancelled the queue ({ran} of 24 items ran)")
     print("All sanity checks passed.")
