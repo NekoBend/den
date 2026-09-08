@@ -39,6 +39,8 @@ progress/
 | run_process_rich_ordered       | processes     | stream results in input order             | yes      | yes   | raise (first)   |
 | run_process_rich_bounded       | processes     | huge / lazy iterables, bounded memory     | yes      | yes   | as outcomes     |
 | run_process_rich_chunked       | processes     | millions of tiny items (less IPC)         | yes      | yes   | as outcomes     |
+| run_process_rich_sharded       | processes     | N records -> shard per CPU -> blocks      | yes      | yes   | as outcomes     |
+| run_process_thread_rich_nested | processes     | shard per CPU, threads inside for IO      | yes      | yes   | as outcomes     |
 | run_process_rich_per_worker    | processes     | one bar per worker + inner progress       | yes      | yes   | as outcomes     |
 | run_process_rich_fail_fast     | processes     | stop everything on the first failure      | yes      | yes   | raise + cancel  |
 | run_pool_rich_imap             | processes     | stdlib Pool, lazy, finish order           | yes      | no    | raise (first)   |
@@ -63,10 +65,10 @@ pip install tqdm rich mpire
 ```
 
 Each function imports what it needs inside its body, so a copied function
-carries its own imports; the module tops only import stdlib typing helpers.
-The one thing a copy needs from a module top is in `processes.py`: the
-`ShardProgress` / `WorkerProgress` / `WorkerLog` message classes, which a
-worker and its parent both have to see, so copy them alongside
+carries its own imports; the module tops hold nothing but stdlib typing
+helpers - plus, in `processes.py`, the three `@dataclass` message classes
+(`ShardProgress` / `WorkerProgress` / `WorkerLog`) with their `dataclasses`
+import, which a worker and its parent both have to see. Copy those alongside
 `_process_shard` / `_report_to_queue`.
 
 ## Pitfalls the sheets avoid
@@ -74,15 +76,20 @@ worker and its parent both have to see, so copy them alongside
 - **Printing while a bar is live** corrupts the display. tqdm: `tqdm.write()`.
   rich: `progress.log()` / `progress.console.print()` (rich also redirects a
   plain `print()` while `Progress` is running, tqdm does not).
-- **Rich `Progress()` shows only the columns you give it.** `track()` and the
-  default `Progress()` include elapsed/ETA; a custom column list does not
-  unless you add `TimeElapsedColumn` / `TimeRemainingColumn` /
-  `MofNCompleteColumn`.
+- **Rich `Progress()` shows only the columns you give it.** `track()` and
+  `Progress.get_default_columns()` are the same four - description, bar,
+  percentage, time remaining - with no elapsed column and no "n/total"
+  (`track` differs only in swapping the ETA for the elapsed time once a task
+  finishes, and showing a rate instead of a percentage when the total is
+  unknown). A custom column list gets exactly what you list, so add
+  `TimeElapsedColumn` / `TimeRemainingColumn` / `MofNCompleteColumn`
+  yourself.
 - **Process pools pickle the function and its arguments.** The function must be
   a top-level `def` (no lambda, no closure, no function defined inside
-  `if __name__ == "__main__":`). Under the `spawn` start method (macOS,
-  Windows, and the Python 3.14 default on Linux) the child re-imports your
-  module, so a function redefined inside the main guard does not exist there.
+  `if __name__ == "__main__":`). Under `spawn` (macOS, Windows) and under
+  `forkserver` (Python 3.14's new default on Linux, replacing `fork`) the
+  child re-imports your module, so a function redefined inside the main guard
+  does not exist there.
   Every sanity check in `processes.py` runs under `spawn` on purpose.
 - **`as_completed` yields in finish order.** The sheets map each future back to
   its input index so the returned list is still in input order.
@@ -110,7 +117,9 @@ worker and its parent both have to see, so copy them alongside
 - **A running process cannot be cancelled.** `shutdown(cancel_futures=True)`
   drops queued items only; the items already running finish first. Every
   runner calls it from a `finally`, so Ctrl-C ends the run instead of letting
-  the pool drain, and it has to be `shutdown(wait=True, cancel_futures=True)`:
-  with `wait=False` the executor's own `__exit__` calls `shutdown(wait=True)`
-  immediately after, resetting the cancel flag before the pool acts on it, and
-  nothing is cancelled at all.
+  the pool drain, and on a `ProcessPoolExecutor` it has to be
+  `shutdown(wait=True, cancel_futures=True)`: with `wait=False` the executor's
+  own `__exit__` calls `shutdown(wait=True)` immediately after, resetting the
+  cancel flag before the pool acts on it, and nothing is cancelled at all. (A
+  `ThreadPoolExecutor` cancels inside the call itself, so only the process
+  pools depend on `wait=True` for it.)

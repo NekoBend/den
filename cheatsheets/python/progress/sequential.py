@@ -49,8 +49,11 @@ def run_sequential_rich[T, R](items: Sequence[T], func: Callable[[T], R]) -> lis
     """Run ``func`` over ``items`` with rich's one-liner ``track``.
 
     [Best for] CLI apps where aesthetics matter.
-    [Note] ``track`` ships bar, percentage, elapsed and ETA by default;
-           pass ``total=`` when ``items`` has no ``len()``.
+    [Note] ``track`` ships description, bar, percentage and time remaining -
+           the same four as ``Progress.get_default_columns()``, with no
+           elapsed column and no "n/total" (the ETA turns into the elapsed
+           time once the task is finished). Pass ``total=`` when ``items``
+           has no ``len()``.
     """
     from rich.progress import track
 
@@ -220,22 +223,69 @@ def _demo_task(item: int) -> int:
     return item * 2
 
 
+def _boom_task(item: int) -> int:
+    """Dummy work that fails on item 3: a sequential loop must let it out."""
+    if item == 3:
+        raise ValueError("item 3 is broken on purpose")
+    return item * 2
+
+
+def _check_raises(name: str, run: Callable[[], object]) -> None:
+    """Assert ``run()`` propagates the first failure (this module's contract)."""
+    try:
+        run()
+    except ValueError as exc:
+        print(f"ok: {name} raised {exc!r}")
+    else:
+        raise SystemExit(f"{name}: expected the failure to propagate")
+
+
 if __name__ == "__main__":
     sample = list(range(20))
     expected = [item * 2 for item in sample]
     groups = [sample[0:7], sample[7:14], sample[14:20]]
+    head = sample[:5]
 
-    checks: list[tuple[str, list[int]]] = [
-        ("sequential tqdm", run_sequential_tqdm(sample, _demo_task)),
-        ("sequential rich", run_sequential_rich(sample, _demo_task)),
-        ("sequential rich detailed", run_sequential_rich_detailed(sample, _demo_task)),
-        ("nested tqdm", run_nested_tqdm(groups, _demo_task)),
-        ("nested rich", run_nested_rich(groups, _demo_task)),
-        ("tqdm with log", run_sequential_tqdm_with_log(sample[:5], _demo_task)),
-        ("rich with log", run_sequential_rich_with_log(sample[:5], _demo_task)),
+    checks: list[tuple[str, list[int], list[int]]] = [
+        ("sequential tqdm", run_sequential_tqdm(sample, _demo_task), expected),
+        ("sequential rich", run_sequential_rich(sample, _demo_task), expected),
+        (
+            "sequential rich detailed",
+            run_sequential_rich_detailed(sample, _demo_task),
+            expected,
+        ),
+        ("nested tqdm", run_nested_tqdm(groups, _demo_task), expected),
+        ("nested rich", run_nested_rich(groups, _demo_task), expected),
+        (
+            "tqdm with log",
+            run_sequential_tqdm_with_log(head, _demo_task),
+            expected[: len(head)],
+        ),
+        (
+            "rich with log",
+            run_sequential_rich_with_log(head, _demo_task),
+            expected[: len(head)],
+        ),
     ]
-    for name, results in checks:
-        if results != expected[: len(results)]:
+    for name, results, want in checks:
+        if len(results) != len(want):
+            raise SystemExit(f"{name}: {len(results)} results, expected {len(want)}")
+        if results != want:
             raise SystemExit(f"{name}: unexpected results {results!r}")
-        print(f"ok: {name} ({len(results)} results)")
+        print(f"ok: {name} ({len(results)} results in input order)")
+
+    _check_raises("sequential tqdm", lambda: run_sequential_tqdm(sample, _boom_task))
+    _check_raises("sequential rich", lambda: run_sequential_rich(sample, _boom_task))
+    _check_raises(
+        "sequential rich detailed",
+        lambda: run_sequential_rich_detailed(sample, _boom_task),
+    )
+    _check_raises("nested tqdm", lambda: run_nested_tqdm(groups, _boom_task))
+    _check_raises("nested rich", lambda: run_nested_rich(groups, _boom_task))
+    _check_raises(
+        "tqdm with log", lambda: run_sequential_tqdm_with_log(head, _boom_task)
+    )
+    _check_raises(
+        "rich with log", lambda: run_sequential_rich_with_log(head, _boom_task)
+    )
     print("All sanity checks passed.")

@@ -24,9 +24,10 @@ Note:
     - Every runner collects inside a ``try`` whose ``finally`` calls
       ``executor.shutdown(wait=True, cancel_futures=True)``: Ctrl-C then drops
       the queued items instead of running them all through the executor's own
-      ``__exit__``. ``wait=True`` is required - ``wait=False`` makes the
-      ``__exit__``'s own ``shutdown(wait=True)`` reset the cancel flag before
-      the pool acts on it, and nothing is cancelled at all.
+      ``__exit__``. ``ThreadPoolExecutor`` drains and cancels them inside that
+      call whatever ``wait`` says; ``wait=True`` keeps the line identical to
+      the one in ``processes.py``, where it IS load-bearing, and means the
+      pool has really stopped by the time the function returns.
     - Threads share the GIL: use ``processes.py`` for CPU-bound work.
 """
 

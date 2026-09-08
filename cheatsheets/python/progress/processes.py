@@ -22,9 +22,9 @@ Usage:
        that run inside the workers (``_apply_block``, ``_process_shard``,
        ``_threaded_block``, ``_report_to_queue``) sit next to their callers:
        copy them too, together with the ``ShardProgress`` / ``WorkerProgress``
-       / ``WorkerLog`` messages they put on the queue - those are the only
-       names in this sheet that live at module level, because worker and
-       parent both have to see the same class.
+       / ``WorkerLog`` messages they put on the queue: those three classes are
+       the only module-level code in this sheet a copy needs, because the
+       worker and the parent must see the same class.
     2. Call it with your own TOP-LEVEL ``func`` (see Note).
 
 Dependencies:
@@ -33,10 +33,11 @@ Dependencies:
 Note:
     - Process pools pickle ``func`` and every item. ``func`` must be a
       top-level ``def``: no lambda, no closure, nothing defined inside
-      ``if __name__ == "__main__":``. Under the ``spawn`` start method (macOS,
-      Windows, Python 3.14 on Linux) the child re-imports your module, so a
-      function that only exists in the main guard is missing there. The sanity
-      check below runs under ``spawn`` for that reason.
+      ``if __name__ == "__main__":``. Under ``spawn`` (macOS, Windows) and
+      under ``forkserver`` (Python 3.14's new default on Linux, replacing
+      ``fork``) the child re-imports your module, so a function that only
+      exists in the main guard is missing there. The sanity check below runs
+      under ``spawn`` for that reason.
     - "as outcomes": the result is ``list[R | BaseException]`` in INPUT order.
       A failed item holds its exception; nothing is dropped, nothing raised.
     - ``as_completed`` yields in finish order; futures are mapped back to
