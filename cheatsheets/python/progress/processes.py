@@ -322,7 +322,12 @@ def run_process_rich_chunked[T, R](
            The bar advances by ``len(chunk)`` as each chunk completes, so it
            moves in steps: pick ``chunk_size`` so a chunk takes ~1 second.
            The ``finally`` drops the queued chunks on Ctrl-C.
-           Pair with ``_apply_block``.
+           ``_apply_block`` keeps per-ITEM failures as data; a CHUNK-level one
+           (a result that will not pickle, a worker the OOM killer took, a
+           ``BrokenProcessPool``) reaches the parent as the future's exception,
+           so it is written across that chunk's records - ``future.result()``
+           here would raise instead and throw away every chunk already
+           collected. Pair with ``_apply_block``.
     """
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -355,7 +360,12 @@ def run_process_rich_chunked[T, R](
         try:
             for future in as_completed(index_of):
                 index = index_of[future]
-                outcomes_by_chunk[index] = future.result()  # ty: ignore[invalid-assignment] - _apply_block's R is not bound through submit (ty 0.0.55)
+                error = future.exception()
+                outcomes_by_chunk[index] = (  # ty: ignore[invalid-assignment] - _apply_block's R is not bound through submit (ty 0.0.55)
+                    [error] * len(chunks[index])
+                    if error is not None
+                    else future.result()
+                )
                 progress.advance(task, len(chunks[index]))
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
@@ -420,7 +430,11 @@ def run_process_rich_sharded[T, R](
            ``block_func`` load its own slice. Messages travel over a
            ``Manager().Queue()`` (a plain ``multiprocessing.Queue`` cannot be
            submitted to an executor); one per block, not per record, keeps
-           the IPC cost negligible. Pair with ``_process_shard``.
+           the IPC cost negligible. ``_process_shard`` keeps a failing BLOCK
+           as data; a shard-level failure (an unpicklable result, a dead
+           worker) arrives as the future's exception and is written across
+           that shard's records, so the other shards still come back.
+           Pair with ``_process_shard``.
     """
     import math
     import multiprocessing
@@ -478,11 +492,17 @@ def run_process_rich_sharded[T, R](
                 )
                 for shard_id, shard in enumerate(shards)
             ]
-            outcomes = [outcome for future in futures for outcome in future.result()]
+            outcomes: list[R | BaseException] = []
+            for shard, future in zip(shards, futures, strict=True):
+                error = future.exception()
+                results: list[R | BaseException] = (  # ty: ignore[invalid-assignment] - _process_shard's R is not bound through submit (ty 0.0.55)
+                    [error] * len(shard) if error is not None else future.result()
+                )
+                outcomes.extend(results)
         finally:
             reports.put(None)
             pump_thread.join()
-    return outcomes  # ty: ignore[invalid-return-type] - _process_shard's R is not bound through submit (ty 0.0.55)
+    return outcomes
 
 
 def _threaded_block[T, R](
@@ -783,10 +803,37 @@ def _cancel_probe(item: int, seen: Queue[int]) -> int:
     return item * 2
 
 
+def _unpicklable_task(item: int) -> int:
+    """Double the item; item 7 returns a value the worker cannot pickle back."""
+
+    class Doubled(int):
+        """Locally defined, so pickling an instance of it fails by design."""
+
+    return Doubled(item * 2) if item == 7 else item * 2
+
+
+def _unpicklable_block(block: Sequence[int], log: Callable[[str], None]) -> list[int]:
+    """Double every record; the first shard's results cannot be pickled back."""
+
+    class Doubled(int):
+        """Locally defined, so pickling an instance of it fails by design."""
+
+    if block[0] < 20:
+        log(f"block at {block[0]} will fail to pickle its results")
+        return [Doubled(record * 2) for record in block]
+    return [record * 2 for record in block]
+
+
 def _check_outcomes(
-    name: str, outcomes: list[int | BaseException], failing: Callable[[int], bool]
+    name: str,
+    outcomes: list[int | BaseException],
+    *,
+    expected: int,
+    failing: Callable[[int], bool],
 ) -> None:
-    """Assert every outcome is ``index * 2`` except where ``failing(index)``."""
+    """Assert ``expected`` outcomes, in input order, failed exactly where promised."""
+    if len(outcomes) != expected:
+        raise SystemExit(f"{name}: expected {expected} outcomes, got {len(outcomes)}")
     for index, outcome in enumerate(outcomes):
         want_error = failing(index)
         if isinstance(outcome, BaseException) != want_error:
@@ -794,18 +841,29 @@ def _check_outcomes(
         if not want_error and outcome != index * 2:
             raise SystemExit(f"{name}: outcome {index} is {outcome!r}")
     failures = sum(isinstance(outcome, BaseException) for outcome in outcomes)
-    print(f"ok: {name} ({len(outcomes)} outcomes, {failures} failed as expected)")
+    print(f"ok: {name} ({expected} outcomes in input order, {failures} failed)")
+
+
+def _check_raises(name: str, run: Callable[[], object]) -> None:
+    """Assert ``run()`` propagates the worker's ValueError ("raise (first)")."""
+    try:
+        run()
+    except ValueError as exc:
+        print(f"ok: {name} raised {exc!r}")
+    else:
+        raise SystemExit(f"{name}: expected the worker's ValueError")
 
 
 if __name__ == "__main__":
     import multiprocessing
+    import time
+    from functools import partial
 
     multiprocessing.set_start_method("spawn")
 
     sample = list(range(20))
     clean = [item for item in sample if item != 7]
     doubled_clean = [item * 2 for item in clean]
-    is_seven = lambda index: index == 7  # ruff: ignore[lambda-assignment] - one-line predicate for the checks
 
     for name, results in (
         ("process tqdm easy", run_process_tqdm_easy(clean, _demo_task)),
@@ -815,49 +873,88 @@ if __name__ == "__main__":
     ):
         if results != doubled_clean:
             raise SystemExit(f"{name}: unexpected results {results!r}")
-        print(f"ok: {name} ({len(results)} results)")
+        print(f"ok: {name} ({len(results)} results in input order)")
+
+    # The "raise (first)" runners must hand the worker's exception to the caller.
+    failing_head = sample[:8]  # item 7 is the last one, so the head is done first
+    _check_raises(
+        "process tqdm easy", lambda: run_process_tqdm_easy(failing_head, _demo_task)
+    )
+    _check_raises(
+        "process rich ordered",
+        lambda: run_process_rich_ordered(failing_head, _demo_task),
+    )
+    _check_raises(
+        "pool rich imap", lambda: run_pool_rich_imap(failing_head, _demo_task)
+    )
 
     _check_outcomes(
-        "process tqdm manual", run_process_tqdm_manual(sample, _demo_task), is_seven
+        "process tqdm manual",
+        run_process_tqdm_manual(sample, _demo_task),
+        expected=len(sample),
+        failing=lambda index: index == 7,
     )
-    _check_outcomes("process rich", run_process_rich(sample, _demo_task), is_seven)
+    _check_outcomes(
+        "process rich",
+        run_process_rich(sample, _demo_task),
+        expected=len(sample),
+        failing=lambda index: index == 7,
+    )
     _check_outcomes(
         "process rich bounded",
         run_process_rich_bounded(iter(sample), _demo_task, total=len(sample)),
-        is_seven,
+        expected=len(sample),
+        failing=lambda index: index == 7,
     )
     _check_outcomes(
         "process rich chunked",
         run_process_rich_chunked(sample, _demo_task, chunk_size=6),
-        is_seven,
+        expected=len(sample),
+        failing=lambda index: index == 7,
     )
     _check_outcomes(
         "process rich per worker",
         run_process_rich_per_worker(sample, _demo_step_task, max_workers=3),
-        is_seven,
+        expected=len(sample),
+        failing=lambda index: index == 7,
+    )
+
+    # A failure the worker cannot keep as data (its result will not pickle)
+    # must still come back as outcomes: it lands on the whole chunk / shard.
+    _check_outcomes(
+        "process rich chunked (chunk-level failure)",
+        run_process_rich_chunked(sample, _unpicklable_task, chunk_size=6),
+        expected=len(sample),
+        failing=lambda index: 6 <= index < 12,
+    )
+    _check_outcomes(
+        "process rich sharded (shard-level failure)",
+        run_process_rich_sharded(
+            list(range(40)), _unpicklable_block, max_workers=2, block_size=10
+        ),
+        expected=40,
+        failing=lambda index: index < 20,
     )
 
     records = list(range(20_000))
     _check_outcomes(
         "process rich sharded",
         run_process_rich_sharded(records, _demo_block, max_workers=4, block_size=500),
-        lambda index: index < 500,  # the first block of shard 0 holds record 7
+        expected=len(records),
+        failing=lambda index: index < 500,  # the first block of shard 0 holds record 7
     )
-
     _check_outcomes(
         "process thread rich nested",
         run_process_thread_rich_nested(
             records[:2_000], _demo_task, max_workers=4, max_threads=8, block_size=100
         ),
-        is_seven,
+        expected=2_000,
+        failing=lambda index: index == 7,
     )
 
     # Fail fast must raise AND stop the pool: the call has to come back
     # quickly and leave the queued items unrun, not return while the workers
     # chew through the rest of the batch in the background.
-    import time
-    from functools import partial
-
     with multiprocessing.Manager() as manager:
         seen: Queue[int] = manager.Queue()
         started = time.perf_counter()
