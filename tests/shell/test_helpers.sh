@@ -392,6 +392,93 @@ assert_eq "pwsh/_DenInteractive -NoExit -nonint -Command" "DENI=False" "$(run_pw
 echo "[pwsh] _DenInteractive -NoExit -NonInter -Command"
 assert_eq "pwsh/_DenInteractive -NoExit -NonInter -Command" "DENI=False" "$(run_pwsh_deni '' -NoExit -NonInter -Command "$DENI_CMD")"
 
+# More real launches for the switch forms _DenLaunchIsRepl reads the way pwsh does.
+echo "[pwsh] _DenInteractive /noexit -command (slash prefix)"
+assert_eq "pwsh/_DenInteractive /noexit -command" "DENI=True" "$(run_pwsh_deni '' /noexit -command "$DENI_CMD")"
+
+echo "[pwsh] _DenInteractive -ExecutionPolicy Bypass (switch value is not a script)"
+assert_eq "pwsh/_DenInteractive -ExecutionPolicy Bypass" "DENI=True" "$(run_pwsh_deni "$DENI_CMD" -ExecutionPolicy Bypass)"
+
+echo "[pwsh] _DenInteractive -fi <script> (abbreviated -File)"
+assert_eq "pwsh/_DenInteractive -fi" "DENI=False" "$(run_pwsh_deni '' -fi "$WORK/deni.ps1")"
+
+echo "[pwsh] _DenInteractive <script> (implicit -File)"
+assert_eq "pwsh/_DenInteractive bare script" "DENI=False" "$(run_pwsh_deni '' "$WORK/deni.ps1")"
+
+echo "[pwsh] _DenInteractive -enc <b64> (abbreviated -EncodedCommand)"
+assert_eq "pwsh/_DenInteractive -enc" "DENI=False" "$(run_pwsh_deni '' -enc "$DENI_EC")"
+
+# --- _DenLaunchIsRepl: pwsh's switch parsing, case by case ---
+# Each expected value is what pwsh 7.6.6 did with the same arguments: True where
+# a REPL stayed open, False where pwsh ran a payload (or printed) and exited.
+# Two kinds of case differ from pwsh on purpose: -NonInteractive keeps a REPL
+# open, but den treats it as non-interactive, and -s starts pwsh's server mode,
+# which reads stdin but is no REPL. One pwsh process runs them all;
+# each line is `<expected>|<arguments>`, arguments separated by `|`, with
+# {EN} standing for an en dash (U+2013) and {EMPTY} for an empty argument.
+LAUNCH_CASES='True|
+True|-noexit|-c|x
+True|/noexit|-c|x
+True|--noexit|-c|x
+True|{EN}noexit|-c|x
+True|-ExecutionPolicy|Bypass
+True|-ep|Bypass
+True|-ex|Bypass
+True|-wd|/tmp
+True|-wo|/tmp
+True|-inp|text
+True|-if|text
+True|-o|text
+True|-of|text
+True|-settings|/dev/null
+True|-custompipename|x
+True|-l
+True|-noprofileloadtime
+True|-noexit|script.ps1
+True|-NoLogo|-NoExit|-ep|Bypass|-c|x
+True|-interactive|-noexit|-c|x
+True|-enc|Zm9v|-noexit
+False|-c|x
+False|-com|x
+False|-f|s.ps1
+False|-fi|s.ps1
+False|script.ps1|a|b
+False|/abs/script.ps1
+False|-e|Zm9v
+False|-enc|Zm9v
+False|-cwa|x|y
+False|-commandwithargs|x
+False|-bogus
+False|/bogus
+False|{EMPTY}
+False|-ExecutionPolicy:Bypass
+False|-in|text
+False|-i|-c|x
+False|-no
+False|-s
+False|-v
+False|-h
+False|-?
+False|-noni
+False|-NoExit|-nonint|-c|x
+False|-c|x|-noexit
+False|-f|s.ps1|-noexit'
+LAUNCH_OUT=$(LAUNCH_CASES="$LAUNCH_CASES" run_pwsh "$HELPERS_PS1" '
+    foreach ($line in ($env:LAUNCH_CASES -split "`n")) {
+        $parts = $line.Split("|")
+        $launch = @($parts | Select-Object -Skip 1 | ForEach-Object {
+            if ($_ -eq "{EMPTY}") { "" } else { $_.Replace("{EN}", [string][char]0x2013) }
+        })
+        if ($line -match "^(True|False)\|$") { $launch = @() }
+        "{0} => {1}" -f $line, (_DenLaunchIsRepl -Arguments $launch)
+    }
+' | tr -d '\r')
+while IFS= read -r case_line; do
+    expected="${case_line%%|*}"
+    assert_eq "pwsh/_DenLaunchIsRepl ${case_line#*|}" "$case_line => $expected" \
+        "$(printf '%s\n' "$LAUNCH_OUT" | grep -F -x -- "$case_line => True" || printf '%s\n' "$LAUNCH_OUT" | grep -F -x -- "$case_line => False")"
+done <<<"$LAUNCH_CASES"
+
 # =============================================================================
 # Summary
 # =============================================================================
