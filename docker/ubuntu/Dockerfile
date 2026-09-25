@@ -146,6 +146,10 @@ fi
 apt-get install -y --no-install-recommends "$gh_package" bubblewrap \
     libacl1-dev libattr1-dev libidn2-dev liblz4-dev libpopt-dev \
     libxxhash-dev libzstd-dev zlib1g-dev
+# Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq)
+# plus the archive and media tools den's shell functions wrap.
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    bats ffmpeg jq lua5.4 p7zip-full parallel pbzip2 pigz shellcheck unrar-free zstd
 rm -rf /var/lib/apt/lists/*
 INSTALL_UTILITIES_DEPS
 
