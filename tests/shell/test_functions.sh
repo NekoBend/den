@@ -636,7 +636,7 @@ err=$(run_bash_stderr "$FUNCTIONS_SH" "back 2")
 assert_contains "bash/back 2 unsupported" "only N=1" "$err"
 
 echo "[bash] back with OLDPWD"
-actual=$(run_bash "$FUNCTIONS_SH" "cd /tmp && cd /root && back" 2>/dev/null)
+actual=$(run_bash "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "bash/back OLDPWD" "/tmp" "$actual"
 
 # =============================================================================
@@ -1096,7 +1096,7 @@ err=$(run_zsh_stderr "$FUNCTIONS_SH" "back 2")
 assert_contains "zsh/back 2 unsupported" "only N=1" "$err"
 
 echo "[zsh] back with OLDPWD"
-actual=$(run_zsh "$FUNCTIONS_SH" "cd /tmp && cd /root && back" 2>/dev/null)
+actual=$(run_zsh "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "zsh/back OLDPWD" "/tmp" "$actual"
 
 # =============================================================================
