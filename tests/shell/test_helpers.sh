@@ -369,6 +369,37 @@ assert_contains "pwsh/owner = another user refused" "other-user=False" "$actual"
 assert_contains "pwsh/empty owner refused" "empty-owner=False" "$actual"
 assert_contains "pwsh/empty owner + empty user refused" "empty-owner-empty-user=False" "$actual"
 
+# --- _DenTokenGroupSids: enabled groups plus deny-only groups ---
+# Under UAC a non-elevated admin holds Administrators only as a deny-only group,
+# which WindowsIdentity.Groups leaves out; the DenyOnlySid claims carry it. A
+# stand-in object replaces the WindowsIdentity so this runs off Windows.
+echo "[pwsh] _DenTokenGroupSids includes deny-only groups"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$u = '$_user_sid'
+    \$claim = { param(\$t, \$v) [pscustomobject]@{ Type = \$t; Value = \$v } }
+    \$filtered = [pscustomobject]@{
+        Groups = @([pscustomobject]@{ Value = 'S-1-1-0' }, [pscustomobject]@{ Value = 'S-1-5-32-545' })
+        Claims = @(
+            (& \$claim ([System.Security.Claims.ClaimTypes]::GroupSid) 'S-1-5-32-545'),
+            (& \$claim ([System.Security.Claims.ClaimTypes]::DenyOnlySid) 'S-1-5-32-544'),
+            (& \$claim ([System.Security.Claims.ClaimTypes]::Name) 'S-1-5-32-551')
+        )
+    }
+    \$plain = [pscustomobject]@{
+        Groups = @([pscustomobject]@{ Value = 'S-1-1-0' })
+        Claims = @((& \$claim ([System.Security.Claims.ClaimTypes]::GroupSid) 'S-1-1-0'))
+    }
+    \$fs = @(_DenTokenGroupSids \$filtered)
+    \$ps = @(_DenTokenGroupSids \$plain)
+    'filtered=' + (\$fs -join ',')
+    'filtered-admins-trusted=' + (_DenTrustedCacheOwner -OwnerSid 'S-1-5-32-544' -UserSid \$u -UserGroupSids \$fs)
+    'plain-admins-trusted=' + (_DenTrustedCacheOwner -OwnerSid 'S-1-5-32-544' -UserSid \$u -UserGroupSids \$ps)
+" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/token groups = enabled + deny-only only" "filtered=S-1-1-0,S-1-5-32-545,S-1-5-32-544" \
+    "$(printf '%s\n' "$actual" | grep '^filtered=')"
+assert_contains "pwsh/deny-only Administrators trusted" "filtered-admins-trusted=True" "$actual"
+assert_contains "pwsh/Administrators absent from token refused" "plain-admins-trusted=False" "$actual"
+
 # --- Test-CacheSafe: the Windows owner branch, through its seam ---
 # _OnWindows and _DenCacheOwnerFacts hold every Windows-only read on this path, so
 # redefining them after dot-sourcing runs Test-CacheSafe's Windows branch here. The

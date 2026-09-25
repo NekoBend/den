@@ -226,6 +226,22 @@ function _DenTrustedCacheOwner([string]$OwnerSid, [string]$UserSid, [string[]]$U
     return $false
 }
 
+# _DenTokenGroupSids <identity> - the group SIDs in a WindowsIdentity's token, for
+# _DenTrustedCacheOwner: the enabled groups (.Groups) PLUS the deny-only ones
+# (DenyOnlySid claims). .Groups skips deny-only groups, and under UAC a
+# non-elevated admin holds Administrators only as deny-only, so a cache written
+# once from an elevated session (owned by BUILTIN\Administrators, and not
+# regenerated until the tool binary changes) would be refused in every normal
+# session. Takes the identity as a parameter so a stand-in object tests it off
+# Windows.
+function _DenTokenGroupSids($Identity) {
+    $denyOnly = [System.Security.Claims.ClaimTypes]::DenyOnlySid
+    foreach ($g in $Identity.Groups) { $g.Value }
+    foreach ($c in $Identity.Claims) {
+        if ($c.Type -eq $denyOnly) { $c.Value }
+    }
+}
+
 # _DenCacheOwnerFacts <path> - the Windows-only reads behind Test-CacheSafe's owner
 # check: the file's owner (Get-Acl) and the current user's token (WindowsIdentity),
 # as OwnerSid, OwnerName, UserSid, UserName, GroupSids. Kept apart so the tests can
@@ -239,7 +255,7 @@ function _DenCacheOwnerFacts([string]$Path) {
     $userSid = $identity.User.Value
     $groupSids = @()
     if ($ownerSid -ne $userSid) {
-        $groupSids = @(foreach ($g in $identity.Groups) { $g.Value })
+        $groupSids = @(_DenTokenGroupSids $identity)
     }
     [pscustomobject]@{
         OwnerSid  = $ownerSid
