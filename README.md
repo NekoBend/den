@@ -42,7 +42,7 @@ stateless uninstall cannot reach files den no longer deploys.
 - `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `uninstall`, `hook`, `memory`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
 - `shell/`       the interactive shell sources: bash/zsh, a PowerShell port, CMD shims, starship (deployed by `den install shell`). See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).
-- `docker/`      the Ubuntu dev container image.
+- `docker/`      the Ubuntu dev container image. See `docker/README.md`.
 - `tests/`       `tests/den/` pytest suite for the `den` CLI plus `tests/shell/` bash/zsh/pwsh functional tests (via `tests/shell/Dockerfile`).
 
 ## The den CLI
@@ -86,9 +86,9 @@ sourceless install), `shell` (shellcheck + PSScriptAnalyzer, errors only),
 ## Status
 
 - `agents/` is complete and verified (build, install, and tests pass in CI).
-- The environment (`shell/`, `cheatsheets/`, `docker/`, `tests/`) has been
-  migrated out of the old dotfiles repo, security- and performance-reviewed, and
-  wired into CI. The shell layer keeps its existing modern -> native -> fallback
-  wrapper design.
+- The environment (`shell/`, `cheatsheets/`, `tests/`) has been migrated out
+  of the old dotfiles repo, security- and performance-reviewed, and wired into
+  CI. The shell layer keeps its existing modern -> native -> fallback wrapper
+  design. `docker/` holds the dev container image, which CI does not build.
 - The bash/PowerShell installers were retired; `den install` is the one
   cross-platform installer.
