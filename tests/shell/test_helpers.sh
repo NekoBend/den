@@ -332,6 +332,66 @@ run_pwsh "$HELPERS_PS1" "
     Remove-Item Env:\PWSH_CACHE_TEST -ErrorAction SilentlyContinue
 " >/dev/null 2>&1
 
+# --- _DenInteractive reads pwsh's real launch switches ---
+# _DenInteractive inspects [Environment]::GetCommandLineArgs(), so these cases
+# launch pwsh with the switches under test instead of going through run_pwsh
+# (which adds -NonInteractive), and run with _DEN_FORCE_INTERACTIVE unset. The
+# first argument is the text fed on stdin: `exit` ends the REPL that -NoExit (or
+# a plain launch) starts, and a run without a REPL never reads it. DENI=<bool>
+# is grepped out of the prompt noise; the REPL's echo of the typed command shows
+# the literal `DENI=$(...)`, which the True|False alternation skips.
+run_pwsh_deni() {
+    local input="$1"
+    shift
+    printf '%s\nexit\n' "$input" |
+        env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoProfile -NoLogo "$@" 2>&1 |
+        grep -oE 'DENI=(True|False)' | head -n 1
+}
+DENI_CMD=". '$HELPERS_PS1'; \"DENI=\$(_DenInteractive)\""
+printf '%s\n' "$DENI_CMD" > "$WORK/deni.ps1"
+DENI_EC=$(DENI_CMD="$DENI_CMD" pwsh -NoProfile -NonInteractive -Command '[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($env:DENI_CMD))' | tr -d '\r')
+
+echo "[pwsh] _DenInteractive plain REPL"
+assert_eq "pwsh/_DenInteractive plain REPL" "DENI=True" "$(run_pwsh_deni "$DENI_CMD")"
+
+echo "[pwsh] _DenInteractive -Command alone"
+assert_eq "pwsh/_DenInteractive -Command" "DENI=False" "$(run_pwsh_deni '' -Command "$DENI_CMD")"
+
+echo "[pwsh] _DenInteractive -noexit -command (VS Code shell integration)"
+assert_eq "pwsh/_DenInteractive -noexit -command" "DENI=True" "$(run_pwsh_deni '' -noexit -command "$DENI_CMD")"
+
+echo "[pwsh] _DenInteractive -noe (shortest -NoExit abbreviation)"
+assert_eq "pwsh/_DenInteractive -noe -c" "DENI=True" "$(run_pwsh_deni '' -noe -c "$DENI_CMD")"
+
+echo "[pwsh] _DenInteractive -NoExit -File"
+assert_eq "pwsh/_DenInteractive -NoExit -File" "DENI=True" "$(run_pwsh_deni '' -NoExit -File "$WORK/deni.ps1")"
+
+echo "[pwsh] _DenInteractive -EncodedCommand then -NoExit"
+assert_eq "pwsh/_DenInteractive -ec then -NoExit" "DENI=True" "$(run_pwsh_deni '' -EncodedCommand "$DENI_EC" -NoExit)"
+
+# pwsh reads every argument after -Command as command text and every argument
+# after the -File path as a script argument, so a trailing -NoExit starts no REPL.
+# The command text ends in `#` so the appended " -NoExit" is a comment.
+echo "[pwsh] _DenInteractive -Command then -NoExit (command text)"
+assert_eq "pwsh/_DenInteractive -Command then -NoExit" "DENI=False" "$(run_pwsh_deni '' -Command "$DENI_CMD #" -NoExit)"
+
+echo "[pwsh] _DenInteractive -File then -NoExit (script argument)"
+assert_eq "pwsh/_DenInteractive -File then -NoExit" "DENI=False" "$(run_pwsh_deni '' -File "$WORK/deni.ps1" -NoExit)"
+
+# -NonInteractive stays authoritative even though -NoExit keeps a REPL open.
+echo "[pwsh] _DenInteractive -NonInteractive -NoExit -Command"
+assert_eq "pwsh/_DenInteractive -NonInteractive -NoExit -Command" "DENI=False" "$(run_pwsh_deni '' -NonInteractive -NoExit -Command "$DENI_CMD")"
+
+echo "[pwsh] _DenInteractive -NoExit -noni -Command"
+assert_eq "pwsh/_DenInteractive -NoExit -noni -Command" "DENI=False" "$(run_pwsh_deni '' -NoExit -noni -Command "$DENI_CMD")"
+
+# pwsh accepts every prefix of -NonInteractive down to -noni.
+echo "[pwsh] _DenInteractive -NoExit -nonint -Command"
+assert_eq "pwsh/_DenInteractive -NoExit -nonint -Command" "DENI=False" "$(run_pwsh_deni '' -NoExit -nonint -Command "$DENI_CMD")"
+
+echo "[pwsh] _DenInteractive -NoExit -NonInter -Command"
+assert_eq "pwsh/_DenInteractive -NoExit -NonInter -Command" "DENI=False" "$(run_pwsh_deni '' -NoExit -NonInter -Command "$DENI_CMD")"
+
 # =============================================================================
 # Summary
 # =============================================================================
