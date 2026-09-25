@@ -404,6 +404,9 @@ These pins are the ecosystem's settled choices;
 the model knows all the alternatives equally well,
 and this section decides which one applies.
 
+- Test functions follow the same rules as the code they test:
+  a one-line docstring naming the behavior the test pins down,
+  and a `-> None` return annotation (sections 2 and 5 apply to tests too).
 - Plain `assert` with an expressive expression; no `self.assertEqual`.
 - Exception checks are `pytest.raises(SomeError, match=...)`.
 - Temporary files and directories default to the `tmp_path` fixture
