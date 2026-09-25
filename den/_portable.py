@@ -35,9 +35,9 @@ Generated from `agents/src/skills/` by `python3 -m den._portable`; do not edit
 here. Each directory is a self-contained skill: copy it into the directory your
 tool reads skills from (for example `~/.claude/skills/<name>/`) and it works
 without den installed. Compared with the source skills: the `den verify`
-shortcut mentions and the den board paragraphs are removed (each skill
-names its checks tool-by-tool), and `shared/` paths are relative to the
-skill.
+shortcut mentions, the den board paragraphs and the pointer to den's
+cheatsheets are removed (each skill names its checks tool-by-tool), and
+`shared/` paths are relative to the skill.
 """
 
 
@@ -55,6 +55,19 @@ def strip_den_cli(name: str, text: str) -> str:
             raise ValueError(msg)
         text = text.replace(entry["from"], entry["to"], 1)
     return text
+
+
+def strip_shared(work: Path) -> None:
+    """Apply the `shared/...` tables to the shared files bundled in skill copy `work`.
+
+    A key names a path under agents/src/; the skill copy holds its shared/ files
+    at the same relative path, so a file the skill does not bundle is skipped.
+    """
+    for key in table():
+        target = work / key
+        if key.startswith("shared/") and target.is_file():
+            text = target.read_text(encoding="utf-8")
+            target.write_text(strip_den_cli(key, text), encoding="utf-8")
 
 
 def _add_preamble(skill_md: Path) -> None:

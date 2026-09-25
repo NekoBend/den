@@ -63,8 +63,8 @@ setup_wildcard() {
 
 # What an archiver is actually handed cannot be read off the extracted result,
 # so these cases run against stub archivers on PATH that record their argv.
-# 7z is installed neither here nor in tests/shell/Dockerfile, which is the
-# other reason its branches need a stub at all.
+# 7z is not in tests/shell/Dockerfile (the CI test image), which is the other
+# reason its branches need a stub at all.
 #
 # The names being defended against: every one of these tools reads a leading
 # '-' as a switch, and 7z additionally reads a leading '@' as a LISTFILE — it
@@ -636,7 +636,7 @@ err=$(run_bash_stderr "$FUNCTIONS_SH" "back 2")
 assert_contains "bash/back 2 unsupported" "only N=1" "$err"
 
 echo "[bash] back with OLDPWD"
-actual=$(run_bash "$FUNCTIONS_SH" "cd /tmp && cd /root && back" 2>/dev/null)
+actual=$(run_bash "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "bash/back OLDPWD" "/tmp" "$actual"
 
 # =============================================================================
@@ -1096,7 +1096,7 @@ err=$(run_zsh_stderr "$FUNCTIONS_SH" "back 2")
 assert_contains "zsh/back 2 unsupported" "only N=1" "$err"
 
 echo "[zsh] back with OLDPWD"
-actual=$(run_zsh "$FUNCTIONS_SH" "cd /tmp && cd /root && back" 2>/dev/null)
+actual=$(run_zsh "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "zsh/back OLDPWD" "/tmp" "$actual"
 
 # =============================================================================

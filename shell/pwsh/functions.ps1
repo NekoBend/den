@@ -302,8 +302,8 @@ function extract {
       '\.7z$'                 {
         # 7z also reads a leading '@' as a listfile — it would extract the
         # archives named INSIDE that file rather than the file itself. 7z is
-        # in neither this image nor tests/shell/Dockerfile, so its '--' marker
-        # cannot be exercised; './' neutralises the name without depending on
+        # not in tests/shell/Dockerfile, so its '--' marker cannot be
+        # exercised in CI; './' neutralises the name without depending on
         # marker support, as archive() does.
         if ($Path.StartsWith('@')) { $Path = Join-Path '.' $Path }
         & 7z x $Path
