@@ -133,9 +133,8 @@ extract() {
                 # 7z reads a leading '-' as a switch (already neutralised
                 # above) and a leading '@' as a listfile — it would extract
                 # the archives named INSIDE that file rather than the file
-                # itself. 7z is in neither this image nor
-                # tests/shell/Dockerfile, so its '--' marker cannot be
-                # exercised; './' neutralises both forms without depending on
+                # itself. 7z is not in tests/shell/Dockerfile, so its '--'
+                # marker cannot be exercised in CI; './' neutralises both forms without depending on
                 # marker support, as archive() does.
                 case "$_ex_f" in @*) _ex_f="./$_ex_f" ;; esac
                 7z x "$_ex_f"

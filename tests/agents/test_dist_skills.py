@@ -55,6 +55,29 @@ def test_anchor_drift_fails_the_build(monkeypatch):
         _portable.strip_den_cli("coding", "some skill text")
 
 
+def test_shared_anchor_drift_fails_the_build(monkeypatch, tmp_path) -> None:
+    """Check that a stale anchor in a shared-file table fails the build."""
+    monkeypatch.setattr(
+        _portable,
+        "table",
+        lambda: {"shared/reference/python.md": [{"from": "NOT IN THE FILE", "to": ""}]},
+    )
+    with pytest.raises(ValueError, match="occurs 0 times"):
+        _portable.build_tree(tmp_path)
+
+
+def test_every_table_names_a_skill_or_a_bundled_shared_file(tmp_path) -> None:
+    """Check that no table is silently skipped because its key matches nothing."""
+    _portable.build_tree(tmp_path)
+    skills = set(_skill_names())
+    for key in _portable.table():
+        if key in skills:
+            continue
+        assert key.startswith("shared/"), key
+        bundled = any((tmp_path / skill / key).is_file() for skill in skills)
+        assert bundled, f"{key}: no skill bundles this file"
+
+
 def test_install_flag_applies_the_table(tmp_path):
     assert install_main(["skills", "--target", str(tmp_path), "--no-den-cli"]) == 0
     text = (tmp_path / "skills" / "coding" / "SKILL.md").read_text(encoding="utf-8")

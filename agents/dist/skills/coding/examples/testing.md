@@ -39,28 +39,34 @@ import pytest
 from order import order_total_cents
 
 
-def test_empty_quantities_returns_zero():
+def test_empty_quantities_returns_zero() -> None:
+    """Check that an order with no lines totals zero."""
     assert order_total_cents([], 500) == 0
 
 
-def test_single_line():
+def test_single_line() -> None:
+    """Check that one line totals its quantity times the unit price."""
     assert order_total_cents([3], 500) == 1500
 
 
-def test_multiple_lines_sum():
+def test_multiple_lines_sum() -> None:
+    """Check that the totals of several lines add up."""
     assert order_total_cents([1, 2, 3], 100) == 600
 
 
-def test_zero_unit_price_is_allowed():
+def test_zero_unit_price_is_allowed() -> None:
+    """Check that a zero unit price is accepted and totals zero."""
     assert order_total_cents([4], 0) == 0
 
 
-def test_negative_quantity_raises():
+def test_negative_quantity_raises() -> None:
+    """Check that a negative quantity raises ValueError."""
     with pytest.raises(ValueError, match="quantity"):
         order_total_cents([1, -1], 500)
 
 
-def test_negative_unit_price_raises():
+def test_negative_unit_price_raises() -> None:
+    """Check that a negative unit price raises ValueError."""
     with pytest.raises(ValueError, match="unit_cents"):
         order_total_cents([1], -1)
 ```
@@ -72,6 +78,8 @@ def test_negative_unit_price_raises():
 - Meaningful assertions: each asserts the exact result, or the exact error.
 - Determinism and independence: no clock, randomness, or shared state;
   each test stands alone.
-- Clear intent: each name states the behavior, so a failure names what broke.
+- Clear intent: each name and its one-line docstring state the behavior,
+  so a failure names what broke.
+- Same rules as any function: every test has a docstring and a `-> None` annotation.
 
 Run with: `pytest test_order.py`
