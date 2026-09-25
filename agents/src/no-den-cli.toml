@@ -56,3 +56,10 @@ from = """- With den's cheatsheets installed (`den install cheatsheets`),
   so adapt them to the project's floor (section 13).
 """
 to = ""
+
+[["shared/reference/python.md"]]
+from = """- With den's cheatsheets installed (`den install cheatsheets`),
+  structured JSON output, file rotation and per-request context are in
+  `${XDG_DATA_HOME:-$HOME/.local/share}/den/cheatsheets/python/logging-config.py`.
+"""
+to = ""

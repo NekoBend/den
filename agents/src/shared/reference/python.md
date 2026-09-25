@@ -499,6 +499,14 @@ and turns a stop request into a partial run that looks complete.
 - Entry point shape:
 
 ```python
+import sys
+
+
+def run() -> int:
+    # the program's work
+    return 0
+
+
 def main() -> int:
     try:
         return run()
@@ -717,5 +725,6 @@ logging.basicConfig(
   There is no `stream=`:
   `basicConfig` raises `ValueError` when it gets both `stream=` and `handlers=`,
   and the console already writes to stderr.
-- Structured JSON output, file rotation and per-request context
-  are in the `logging-config` cheatsheet.
+- With den's cheatsheets installed (`den install cheatsheets`),
+  structured JSON output, file rotation and per-request context are in
+  `${XDG_DATA_HOME:-$HOME/.local/share}/den/cheatsheets/python/logging-config.py`.
