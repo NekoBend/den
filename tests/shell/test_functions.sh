@@ -63,8 +63,8 @@ setup_wildcard() {
 
 # What an archiver is actually handed cannot be read off the extracted result,
 # so these cases run against stub archivers on PATH that record their argv.
-# 7z is installed neither here nor in tests/shell/Dockerfile, which is the
-# other reason its branches need a stub at all.
+# 7z is not in tests/shell/Dockerfile (the CI test image), which is the other
+# reason its branches need a stub at all.
 #
 # The names being defended against: every one of these tools reads a leading
 # '-' as a switch, and 7z additionally reads a leading '@' as a LISTFILE — it
