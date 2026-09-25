@@ -192,7 +192,7 @@ RUN --mount=type=cache,id=uv-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME
     git clone --depth 1 https://github.com/NekoBend/den.git /tmp/den && \
     uv tool install --python /usr/bin/python3 --link-mode copy /tmp/den && \
     den install shell --force --bin && \
-    den install skills --tool claude --tool codex --force && \
+    den install skills --tool claude --tool codex --with-parent --force && \
     rm -rf /tmp/den
 
 # 6. Runtime entrypoint and defaults.
