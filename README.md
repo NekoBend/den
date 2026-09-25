@@ -42,7 +42,7 @@ stateless uninstall cannot reach files den no longer deploys.
 - `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `uninstall`, `hook`, `memory`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
 - `shell/`       the interactive shell sources: bash/zsh, a PowerShell port, CMD shims, starship (deployed by `den install shell`). See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).
-- `docker/`      dev container images (Ubuntu, Arch).
+- `docker/`      the Ubuntu dev container image.
 - `tests/`       `tests/den/` pytest suite for the `den` CLI plus `tests/shell/` bash/zsh/pwsh functional tests (via `tests/shell/Dockerfile`).
 
 ## The den CLI
