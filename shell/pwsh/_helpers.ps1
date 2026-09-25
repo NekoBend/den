@@ -24,41 +24,98 @@ function _OnWindows {
     [bool]($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop')
 }
 
-# _DenInteractive — true only for an interactive REPL. den's wrappers/aliases/
+# _DenInteractive - true only for an interactive REPL. den's wrappers/aliases/
 # coreutils/completion load only here, so a `pwsh -File script.ps1` / `pwsh -Command
 # ...` run does NOT get ls/cat/rm/grep/find silently replaced by den's functions.
 # [Environment]::UserInteractive is unreliable for this: it is $true for -File/-Command
 # in a desktop session (which still load $PROFILE) and ALWAYS $true on non-Windows
-# pwsh, so the plain gate was a no-op off Windows. So also inspect the launch switches
-# ([Environment]::GetCommandLineArgs()) for a script/command payload; a REPL has none.
-# A payload launched with -NoExit IS followed by a REPL, so it counts as interactive:
-# VS Code's shell integration starts every terminal as
-# `pwsh -noexit -command ". <shellIntegration.ps1>"`, and without this the VS Code
-# terminal got no wrappers/aliases/coreutils/completion. pwsh reads every argument
-# after -Command as command text and every argument after the -File path as a script
-# argument, so only a -NoExit BEFORE those two counts (after -EncodedCommand's single
-# value, parsing goes on). -NonInteractive always wins, even with -NoExit.
+# pwsh, so the plain gate was a no-op off Windows. So also read the launch switches
+# ([Environment]::GetCommandLineArgs(), minus argv[0], the pwsh binary) the way pwsh
+# does; see _DenLaunchIsRepl.
 # Set _DEN_FORCE_INTERACTIVE=1 to force-load (used by the shell tests, which run under
 # `pwsh -NonInteractive -Command`).
 function _DenInteractive {
     if ($env:_DEN_FORCE_INTERACTIVE -eq '1') { return $true }
     if (-not [Environment]::UserInteractive) { return $false }
+    $argv = [Environment]::GetCommandLineArgs()
+    $launch = @()
+    if ($argv.Count -gt 1) { $launch = $argv[1..($argv.Count - 1)] }
+    return (_DenLaunchIsRepl -Arguments $launch)
+}
+
+# _DenLaunchIsRepl <args> - whether pwsh launched with these arguments ends in a
+# REPL, following pwsh's own parsing (checked against pwsh 7.6):
+# - A switch starts with -, --, / or a Unicode dash (en dash, em dash, horizontal
+#   bar), and is named by any prefix of its name down to its shortest form, or by an
+#   alias: -noe, -noexit, --noexit and /noexit are all -NoExit.
+# - -Command, -CommandWithArgs and -File take the rest of the line; -EncodedCommand
+#   and switches such as -ExecutionPolicy take exactly one value.
+# - The first argument that is not a known switch (a script path, an unknown switch,
+#   an empty string, a colon form such as -ExecutionPolicy:Bypass) is the script
+#   path of pwsh's implicit -File.
+# A payload (script, command, encoded command) ends the session unless -NoExit comes
+# before it: VS Code's shell integration starts every terminal as
+# `pwsh -noexit -command ". <shellIntegration.ps1>"`, which IS followed by a REPL.
+# -NonInteractive always wins, even with -NoExit; -Version and -Help print and exit.
+# Windows PowerShell 5.1 differs in -Version, which takes a value there.
+function _DenLaunchIsRepl([string[]]$Arguments) {
+    $versionKind = 'exit'
+    if ($PSVersionTable.PSEdition -eq 'Desktop') { $versionKind = 'value' }
+    # Kind: rest = the rest of the line is the payload; encoded = a payload in one
+    # value; value = takes one value; flag = takes none.
+    $switches = @(
+        @{ Name = 'command'; Min = 'c'; Alias = @(); Kind = 'rest' }
+        @{ Name = 'commandwithargs'; Min = 'commandwithargs'; Alias = @('cwa'); Kind = 'rest' }
+        @{ Name = 'file'; Min = 'f'; Alias = @(); Kind = 'rest' }
+        @{ Name = 'encodedcommand'; Min = 'e'; Alias = @('ec'); Kind = 'encoded' }
+        @{ Name = 'encodedarguments'; Min = 'encodeda'; Alias = @('ea'); Kind = 'value' }
+        @{ Name = 'executionpolicy'; Min = 'ex'; Alias = @('ep'); Kind = 'value' }
+        @{ Name = 'inputformat'; Min = 'inp'; Alias = @('if'); Kind = 'value' }
+        @{ Name = 'outputformat'; Min = 'o'; Alias = @('of'); Kind = 'value' }
+        @{ Name = 'workingdirectory'; Min = 'wo'; Alias = @('wd'); Kind = 'value' }
+        @{ Name = 'windowstyle'; Min = 'w'; Alias = @(); Kind = 'value' }
+        @{ Name = 'configurationname'; Min = 'config'; Alias = @(); Kind = 'value' }
+        @{ Name = 'configurationfile'; Min = 'configurationfile'; Alias = @(); Kind = 'value' }
+        @{ Name = 'custompipename'; Min = 'custompipename'; Alias = @(); Kind = 'value' }
+        @{ Name = 'settingsfile'; Min = 'settings'; Alias = @(); Kind = 'value' }
+        @{ Name = 'noexit'; Min = 'noe'; Alias = @(); Kind = 'noexit' }
+        @{ Name = 'noninteractive'; Min = 'noni'; Alias = @(); Kind = 'noninteractive' }
+        @{ Name = 'nologo'; Min = 'nol'; Alias = @(); Kind = 'flag' }
+        @{ Name = 'noprofile'; Min = 'nop'; Alias = @(); Kind = 'flag' }
+        @{ Name = 'noprofileloadtime'; Min = 'noprofileloadtime'; Alias = @(); Kind = 'flag' }
+        @{ Name = 'interactive'; Min = 'i'; Alias = @(); Kind = 'flag' }
+        @{ Name = 'login'; Min = 'l'; Alias = @(); Kind = 'flag' }
+        @{ Name = 'sta'; Min = 'sta'; Alias = @(); Kind = 'flag' }
+        @{ Name = 'mta'; Min = 'mta'; Alias = @(); Kind = 'flag' }
+        @{ Name = 'version'; Min = 'v'; Alias = @(); Kind = $versionKind }
+        @{ Name = 'help'; Min = 'h'; Alias = @('?'); Kind = 'exit' }
+    )
     $payload = $false
     $noExit = $false
-    foreach ($a in [Environment]::GetCommandLineArgs()) {
-        # The ^...$ anchors stop a short form from matching a longer switch with the
-        # same prefix (-e vs -ExecutionPolicy; -c vs -ConfigurationName,
-        # -CommandWithArgs, -CustomPipeName).
-        # -NonInteractive and every abbreviation pwsh accepts (-noni is the shortest):
-        # never a REPL for den, even with -NoExit.
-        if ($a -match '^-noni(n(t(e(r(a(c(t(i(ve?)?)?)?)?)?)?)?)?)?$') { return $false }
-        # -NoExit and the abbreviations pwsh accepts (-noe is the shortest; -no is
-        # ambiguous with -NoLogo/-NoProfile and pwsh rejects it).
-        if ($a -match '^-noe(x(it?)?)?$') { $noExit = $true; continue }
-        # -File/-f, -Command/-c: the rest of the line is the payload, not switches.
-        if ($a -match '^-(f(ile)?|c(ommand)?)$') { $payload = $true; break }
-        # -EncodedCommand/-ec/-e: takes one value, then switch parsing continues.
-        if ($a -match '^-(e(ncodedcommand)?|ec)$') { $payload = $true }
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $kind = 'script'
+        $a = "$($Arguments[$i])".Trim()
+        if ($a.Length -ge 2) {
+            $c = [int]$a[0]
+            $dash = $c -eq 0x2D -or ($c -ge 0x2013 -and $c -le 0x2015)
+            if ($dash -or $c -eq 0x2F) {
+                $key = $a.Substring(1)
+                if ($dash -and $key.Length -gt 0 -and [int]$key[0] -eq $c) { $key = $key.Substring(1) }
+                $key = $key.ToLowerInvariant()
+                foreach ($s in $switches) {
+                    if (($s.Alias -contains $key) -or
+                        ($key.Length -ge $s.Min.Length -and $s.Name.StartsWith($key, [StringComparison]::Ordinal))) {
+                        $kind = $s.Kind
+                        break
+                    }
+                }
+            }
+        }
+        if ($kind -eq 'noninteractive' -or $kind -eq 'exit') { return $false }
+        if ($kind -eq 'noexit') { $noExit = $true }
+        elseif ($kind -eq 'value') { $i++ }
+        elseif ($kind -eq 'encoded') { $payload = $true; $i++ }
+        elseif ($kind -eq 'rest' -or $kind -eq 'script') { $payload = $true; break }
     }
     return (-not $payload) -or $noExit
 }
