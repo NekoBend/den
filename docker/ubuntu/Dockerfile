@@ -41,6 +41,11 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # =============================================================================
 # Python tools (astral.sh)
 # =============================================================================
+# The astral installers put uv, ty and ruff in ~/.local/bin (not ~/.cargo/bin
+# as older uv releases did) and only edit shell rc files, which later RUN steps
+# never source; put the directory on PATH here so `uv tool install` below finds
+# uv, and so `den` (a uv tool shim in the same directory) is on PATH at runtime.
+ENV PATH="/root/.local/bin:${PATH}"
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     curl -LsSf https://astral.sh/ty/install.sh | sh && \
     curl -LsSf https://astral.sh/ruff/install.sh | sh
@@ -74,7 +79,7 @@ RUN cargo install --locked \
 # =============================================================================
 RUN git clone --depth 1 https://github.com/NekoBend/den.git /tmp/den && \
     uv tool install /tmp/den && \
-    /root/.local/bin/den install shell --force && \
+    den install shell --force && \
     rm -rf /tmp/den
 
 # =============================================================================
