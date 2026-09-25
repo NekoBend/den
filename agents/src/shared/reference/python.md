@@ -623,8 +623,12 @@ def convert_all(
   Progress from inside one item of a process-pool worker
   travels over a `multiprocessing.Manager().Queue()`,
   never a plain `multiprocessing.Queue` (that cannot be passed to `submit`).
-- Copyable functions for every execution model are in the `progress` cheatsheets
-  (`cheat ls` lists them).
+- With den's cheatsheets installed (`den install cheatsheets`),
+  copyable functions for every execution model are the files under
+  `${XDG_DATA_HOME:-$HOME/.local/share}/den/cheatsheets/python/progress/`;
+  read them directly.
+  Most of them use PEP 695 generic syntax (3.12+),
+  so adapt them to the project's floor (section 13).
 
 ## 20. Timeouts on everything that waits
 

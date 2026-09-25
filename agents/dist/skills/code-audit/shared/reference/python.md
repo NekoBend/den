@@ -623,8 +623,6 @@ def convert_all(
   Progress from inside one item of a process-pool worker
   travels over a `multiprocessing.Manager().Queue()`,
   never a plain `multiprocessing.Queue` (that cannot be passed to `submit`).
-- Copyable functions for every execution model are in the `progress` cheatsheets
-  (`cheat ls` lists them).
 
 ## 20. Timeouts on everything that waits
 

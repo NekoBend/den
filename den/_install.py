@@ -235,8 +235,10 @@ def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-re
     """Copy skill `name` to `work` as a self-contained unit: the shared/
     resources it references are copied inside it and every shared/ reference
     is rewritten to `ref_prefix` + kind + '/'. With no_den_cli the substitution
-    table (agents/src/no-den-cli.toml) is applied first, removing every
-    mention of den's own CLI. Returns the number of rewritten .md files."""
+    table (agents/src/no-den-cli.toml) is applied to SKILL.md and to the
+    bundled shared/ files it names before any reference is rewritten,
+    removing every mention of den's own CLI and cheatsheets. Returns the
+    number of rewritten .md files."""
     src = skills_dir() / name
     rewritten = 0
     shutil.copytree(src, work, ignore=_ignore)
@@ -272,6 +274,10 @@ def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-re
                     shutil.copy2(srcf, ref_dest / f"{rf}.md")
         if need_scripts:
             shutil.copytree(sh / "scripts", work / "shared" / "scripts", ignore=_ignore)
+        if no_den_cli:  # before the rewrite below, so anchors match the source text
+            from ._portable import strip_shared
+
+            strip_shared(work)
 
         # Rewrite shared/... refs to their destination under the skill itself.
         for md in work.rglob("*.md"):
