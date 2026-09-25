@@ -31,19 +31,36 @@ function _OnWindows {
 # in a desktop session (which still load $PROFILE) and ALWAYS $true on non-Windows
 # pwsh, so the plain gate was a no-op off Windows. So also inspect the launch switches
 # ([Environment]::GetCommandLineArgs()) for a script/command payload; a REPL has none.
+# A payload launched with -NoExit IS followed by a REPL, so it counts as interactive:
+# VS Code's shell integration starts every terminal as
+# `pwsh -noexit -command ". <shellIntegration.ps1>"`, and without this the VS Code
+# terminal got no wrappers/aliases/coreutils/completion. pwsh reads every argument
+# after -Command as command text and every argument after the -File path as a script
+# argument, so only a -NoExit BEFORE those two counts (after -EncodedCommand's single
+# value, parsing goes on). -NonInteractive always wins, even with -NoExit.
 # Set _DEN_FORCE_INTERACTIVE=1 to force-load (used by the shell tests, which run under
 # `pwsh -NonInteractive -Command`).
 function _DenInteractive {
     if ($env:_DEN_FORCE_INTERACTIVE -eq '1') { return $true }
     if (-not [Environment]::UserInteractive) { return $false }
+    $payload = $false
+    $noExit = $false
     foreach ($a in [Environment]::GetCommandLineArgs()) {
-        # -File/-f, -Command/-c, -EncodedCommand/-ec/-e, -NonInteractive/-noni. The $
-        # anchor keeps -ExecutionPolicy / -NoProfile / -NoLogo from matching -e / -noni.
-        if ($a -match '^-(f(ile)?|c(ommand)?|e(ncodedcommand)?|ec|noni(nteractive)?)$') {
-            return $false
-        }
+        # The ^...$ anchors stop a short form from matching a longer switch with the
+        # same prefix (-e vs -ExecutionPolicy; -c vs -ConfigurationName,
+        # -CommandWithArgs, -CustomPipeName).
+        # -NonInteractive and every abbreviation pwsh accepts (-noni is the shortest):
+        # never a REPL for den, even with -NoExit.
+        if ($a -match '^-noni(n(t(e(r(a(c(t(i(ve?)?)?)?)?)?)?)?)?)?$') { return $false }
+        # -NoExit and the abbreviations pwsh accepts (-noe is the shortest; -no is
+        # ambiguous with -NoLogo/-NoProfile and pwsh rejects it).
+        if ($a -match '^-noe(x(it?)?)?$') { $noExit = $true; continue }
+        # -File/-f, -Command/-c: the rest of the line is the payload, not switches.
+        if ($a -match '^-(f(ile)?|c(ommand)?)$') { $payload = $true; break }
+        # -EncodedCommand/-ec/-e: takes one value, then switch parsing continues.
+        if ($a -match '^-(e(ncodedcommand)?|ec)$') { $payload = $true }
     }
-    return $true
+    return (-not $payload) -or $noExit
 }
 
 # _CoreutilsBin — path to the microsoft/coreutils multi-call binary, or $null. This
