@@ -6,6 +6,13 @@ source "$SCRIPT_DIR/helpers.sh"
 HELPERS_SH="$DOTFILES/shell/posix/_helpers.sh"
 HELPERS_PS1="$DOTFILES/shell/pwsh/_helpers.ps1"
 
+# Isolate pwsh's LocalApplicationData (XDG_DATA_HOME off Windows) under WORK so the
+# Initialize-Cache tests never touch the real ~/.local/share/shell-cache. The
+# directory must exist: GetFolderPath('LocalApplicationData') returns '' when
+# XDG_DATA_HOME names a missing one.
+export XDG_DATA_HOME="$WORK/xdg"
+mkdir -p "$XDG_DATA_HOME"
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -331,6 +338,95 @@ run_pwsh "$HELPERS_PS1" "
     Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1') -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\PWSH_CACHE_TEST -ErrorAction SilentlyContinue
 " >/dev/null 2>&1
+
+# --- _DenTrustedCacheOwner: the Windows cache-owner decision, by SID ---
+# Test-CacheSafe compares security identifiers, not account names: a file created
+# from an elevated session (or with UAC off) is owned by BUILTIN\Administrators
+# (S-1-5-32-544), the likely cause of the refusals a name comparison gave, and
+# account-name formats can also differ. This pure helper is the whole decision and
+# runs anywhere; the Test-CacheSafe block below drives it through the Windows branch.
+echo "[pwsh] _DenTrustedCacheOwner decides by SID"
+_user_sid='S-1-5-21-1111111111-2222222222-3333333333-1001'
+_other_sid='S-1-5-21-1111111111-2222222222-3333333333-1002'
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$u = '$_user_sid'
+    \$g = @('S-1-1-0', 'S-1-5-32-545', 'S-1-5-11')
+    'user=' + (_DenTrustedCacheOwner -OwnerSid \$u -UserSid \$u -UserGroupSids \$g)
+    'system=' + (_DenTrustedCacheOwner -OwnerSid 'S-1-5-18' -UserSid \$u -UserGroupSids \$g)
+    'admins-in-token=' + (_DenTrustedCacheOwner -OwnerSid 'S-1-5-32-544' -UserSid \$u -UserGroupSids (\$g + 'S-1-5-32-544'))
+    'admins-not-in-token=' + (_DenTrustedCacheOwner -OwnerSid 'S-1-5-32-544' -UserSid \$u -UserGroupSids \$g)
+    'admins-no-groups=' + (_DenTrustedCacheOwner -OwnerSid 'S-1-5-32-544' -UserSid \$u -UserGroupSids @())
+    'other-user=' + (_DenTrustedCacheOwner -OwnerSid '$_other_sid' -UserSid \$u -UserGroupSids (\$g + '$_other_sid'))
+    'empty-owner=' + (_DenTrustedCacheOwner -OwnerSid '' -UserSid \$u -UserGroupSids \$g)
+    'empty-owner-empty-user=' + (_DenTrustedCacheOwner -OwnerSid '' -UserSid '' -UserGroupSids @(''))
+" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/owner = user SID trusted" "user=True" "$actual"
+assert_contains "pwsh/owner = SYSTEM trusted" "system=True" "$actual"
+assert_contains "pwsh/owner = Administrators, in token, trusted" "admins-in-token=True" "$actual"
+assert_contains "pwsh/owner = Administrators, not in token, refused" "admins-not-in-token=False" "$actual"
+assert_contains "pwsh/owner = Administrators, no groups, refused" "admins-no-groups=False" "$actual"
+assert_contains "pwsh/owner = another user refused" "other-user=False" "$actual"
+assert_contains "pwsh/empty owner refused" "empty-owner=False" "$actual"
+assert_contains "pwsh/empty owner + empty user refused" "empty-owner-empty-user=False" "$actual"
+
+# --- Test-CacheSafe: the Windows owner branch, through its seam ---
+# _OnWindows and _DenCacheOwnerFacts hold every Windows-only read on this path, so
+# redefining them after dot-sourcing runs Test-CacheSafe's Windows branch here. The
+# account names DISAGREE with the SID verdicts (Administrators and the user's own
+# SID under other names, another SID under the user's name), so a name comparison
+# fails every case, and asked=1 shows the branch consulted the owner facts at all.
+echo "[pwsh] Test-CacheSafe decides the Windows owner check by SID"
+printf '%s\n' "\$env:PWSH_CACHE_OWNER = 'ok'" > "$WORK/pwsh_owner.ps1"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    function _OnWindows { \$true }
+    function _DenCacheOwnerFacts([string]\$Path) { \$global:asked++; \$global:facts }
+    function probe([string]\$ownerSid, [string]\$ownerName) {
+        \$global:asked = 0
+        \$global:facts = [pscustomobject]@{
+            OwnerSid = \$ownerSid; OwnerName = \$ownerName
+            UserSid = '$_user_sid'; UserName = 'HOST\me'
+            GroupSids = @('S-1-1-0', 'S-1-5-32-545', 'S-1-5-32-544')
+        }
+        \$why = \$null
+        \$ok = Test-CacheSafe -Path '$WORK/pwsh_owner.ps1' -Reason ([ref]\$why)
+        \"\$ok asked=\$(\$global:asked) why=\$why\"
+    }
+    'admins=' + (probe 'S-1-5-32-544' 'BUILTIN\Administrators')
+    'other=' + (probe '$_other_sid' 'HOST\me')
+    'self=' + (probe '$_user_sid' 'OTHER\me')
+" 2>/dev/null | tr -d '\r')
+other_line=$(printf '%s\n' "$actual" | grep '^other=')
+assert_contains "pwsh/Test-CacheSafe trusts Administrators owner in token" "admins=True asked=1" "$actual"
+assert_contains "pwsh/Test-CacheSafe refuses another user's SID" "other=False asked=1" "$other_line"
+assert_contains "pwsh/Test-CacheSafe reason names owner SID" "($_other_sid)" "$other_line"
+assert_contains "pwsh/Test-CacheSafe reason names user SID" "($_user_sid)" "$other_line"
+assert_contains "pwsh/Test-CacheSafe trusts user's own SID" "self=True asked=1" "$actual"
+
+# --- Initialize-Cache warning says WHY the cache was refused and how to fix it ---
+# A symlinked cache is refused on every OS (reparse point); the warning must carry
+# the reason (so a report from the field is diagnosable) and the remedy.
+echo "[pwsh] Initialize-Cache refusal warning names the reason and remedy"
+mkdir -p "$WORK/pwsh_iclink"
+cat > "$WORK/pwsh_iclink/pwshcachelink" <<'EOF'
+#!/bin/sh
+printf "%s\n" "\$env:PWSH_CACHE_LINK = 'regenerated'"
+EOF
+chmod +x "$WORK/pwsh_iclink/pwshcachelink"
+printf "%s\n" "\$env:PWSH_CACHE_LINK = 'linked'" > "$WORK/pwsh_iclink/target.ps1"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$cacheDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache'
+    [void](New-Item -ItemType Directory -Path \$cacheDir -Force)
+    \$cacheFile = Join-Path \$cacheDir 'pwshcachelink-init.ps1'
+    Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
+    [void](New-Item -ItemType SymbolicLink -Path \$cacheFile -Target '$WORK/pwsh_iclink/target.ps1')
+    \$env:PATH = '$WORK/pwsh_iclink:' + \$env:PATH
+    \$r = Initialize-Cache 'pwshcachelink' @('init', 'powershell') 3>&1
+    Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
+    \$r | ForEach-Object { 'out: ' + \$_ }
+" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/Initialize-Cache refuses symlinked cache" "refusing to source unsafe cache file" "$actual"
+assert_contains "pwsh/Initialize-Cache warning names reason" "reparse point" "$actual"
+assert_contains "pwsh/Initialize-Cache warning names remedy" "delete it to regenerate" "$actual"
 
 # =============================================================================
 # Summary

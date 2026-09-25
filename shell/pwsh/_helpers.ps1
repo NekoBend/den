@@ -210,28 +210,78 @@ function toggle-wrapper {
 
 # ========== cache init ==========
 
-# Test-CacheSafe <path> — verify generated cache file is safe to dot-source.
-function Test-CacheSafe([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+# _DenTrustedCacheOwner -OwnerSid -UserSid -UserGroupSids - pure decision (no ACL
+# access, so it is unit-tested off Windows): may a cache file owned by OwnerSid be
+# dot-sourced by the user whose token is UserSid + UserGroupSids? Compares security
+# identifiers, never account names. The likely cause of the refusals a name
+# comparison gave (not confirmed): a file created from an elevated session (or with
+# UAC off) is owned by BUILTIN\Administrators, not the user; account-name formats
+# can also differ. Trusted owners: the user itself, LocalSystem (S-1-5-18), and
+# BUILTIN\Administrators (S-1-5-32-544) only when that group is in the user's token.
+function _DenTrustedCacheOwner([string]$OwnerSid, [string]$UserSid, [string[]]$UserGroupSids) {
+    if ([string]::IsNullOrEmpty($OwnerSid)) { return $false }
+    if (-not [string]::IsNullOrEmpty($UserSid) -and $OwnerSid -eq $UserSid) { return $true }
+    if ($OwnerSid -eq 'S-1-5-18') { return $true }
+    if ($OwnerSid -eq 'S-1-5-32-544' -and @($UserGroupSids) -contains $OwnerSid) { return $true }
+    return $false
+}
+
+# _DenCacheOwnerFacts <path> - the Windows-only reads behind Test-CacheSafe's owner
+# check: the file's owner (Get-Acl) and the current user's token (WindowsIdentity),
+# as OwnerSid, OwnerName, UserSid, UserName, GroupSids. Kept apart so the tests can
+# redefine it (and _OnWindows) and run Test-CacheSafe's Windows branch off Windows.
+# GroupSids is read only when the owner is not the user. Throws when the owner
+# cannot be read.
+function _DenCacheOwnerFacts([string]$Path) {
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $userSid = $identity.User.Value
+    $groupSids = @()
+    if ($ownerSid -ne $userSid) {
+        $groupSids = @(foreach ($g in $identity.Groups) { $g.Value })
+    }
+    [pscustomobject]@{
+        OwnerSid  = $ownerSid
+        OwnerName = $acl.Owner
+        UserSid   = $userSid
+        UserName  = $identity.Name
+        GroupSids = $groupSids
+    }
+}
+
+# Test-CacheSafe <path> [-Reason <[ref]>] - verify generated cache file is safe to
+# dot-source. On refusal, -Reason (optional) receives a one-line why, e.g. the
+# owner that was refused, so the caller's warning is diagnosable.
+function Test-CacheSafe([string]$Path, [ref]$Reason) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        if ($null -ne $Reason) { $Reason.Value = 'not a regular file' }
+        return $false
+    }
 
     try {
         $cacheItem = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     } catch {
+        if ($null -ne $Reason) { $Reason.Value = "cannot stat it ($($_.Exception.Message))" }
         return $false
     }
 
     if ($cacheItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($null -ne $Reason) { $Reason.Value = 'it is a reparse point (symlink or junction)' }
         return $false
     }
 
-    if ($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop') {
+    if (_OnWindows) {
         try {
-            $cacheOwner = (Get-Acl -LiteralPath $Path -ErrorAction Stop).Owner
-            $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $f = _DenCacheOwnerFacts $Path
         } catch {
+            if ($null -ne $Reason) { $Reason.Value = "cannot read its owner ($($_.Exception.Message))" }
             return $false
         }
-        if ($cacheOwner -ne $currentUser) {
+        if (-not (_DenTrustedCacheOwner -OwnerSid $f.OwnerSid -UserSid $f.UserSid -UserGroupSids $f.GroupSids)) {
+            if ($null -ne $Reason) {
+                $Reason.Value = "owned by $($f.OwnerName) ($($f.OwnerSid)), expected $($f.UserName) ($($f.UserSid))"
+            }
             return $false
         }
     }
@@ -280,11 +330,13 @@ function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix 
     }
 
     # Return the cache path for the caller to dot-source at GLOBAL scope (a prior good
-    # cache is reused if regen was skipped above).
+    # cache is reused if regen was skipped above). A refused cache is kept until the
+    # tool binary changes, so the warning names the remedy along with the reason.
     if (Test-Path -LiteralPath $_cf -PathType Leaf) {
-        if (Test-CacheSafe -Path $_cf) {
+        $why = $null
+        if (Test-CacheSafe -Path $_cf -Reason ([ref]$why)) {
             return $_cf
         }
-        Write-Warning "Initialize-Cache: refusing to source unsafe cache file '$_cf'"
+        Write-Warning "Initialize-Cache: refusing to source unsafe cache file '$_cf': $why; delete it to regenerate"
     }
 }
