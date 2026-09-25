@@ -513,12 +513,21 @@ if __name__ == "__main__":
 
 - Cleanup lives in `finally` blocks and `with` statements,
   which run whether the function returns or the interrupt passes through.
-- Executors: call `executor.shutdown(wait=False, cancel_futures=True)` in a `finally`,
-  then let the `with` block wait for the workers that are still running.
-  Workers of a `ProcessPoolExecutor` receive the same signal;
-  a worker that must finish its item first installs
-  `signal.signal(signal.SIGINT, signal.SIG_IGN)` in the pool's initializer,
-  and the parent terminates the pool explicitly.
+- Executors: call `executor.shutdown(wait=True, cancel_futures=True)` in a `finally`.
+  Items not yet handed to a worker are dropped.
+  Items already handed to a worker still run:
+  the running ones, plus the few a `ProcessPoolExecutor` has already queued to its workers.
+  The `with` block exits after they finish.
+  `wait=False` is wrong here for a `ProcessPoolExecutor`:
+  its `with` exit then neither waits nor cancels
+  (the exit's own `shutdown` resets the cancel flag).
+- Workers of a `ProcessPoolExecutor` receive the same signal.
+  A worker that must finish its current item
+  installs `signal.signal(signal.SIGINT, signal.SIG_IGN)`
+  in the pool's `initializer` (a module-level function, so it pickles);
+  the parent's `finally` shutdown above then waits for that item.
+  `ProcessPoolExecutor` has no call that terminates its workers before 3.14,
+  and the 3.14 `terminate_workers()` and `kill_workers()` kill the running item.
 - Files: write to a temporary path in the same directory
   and `os.replace` it into place at the end,
   so an interrupt leaves the old file or the new one, never a truncated one.
@@ -585,22 +594,28 @@ with Progress(*columns, disable=not sys.stderr.isatty()) as progress:
 (a network peer, a child process, a lock, a queue, another thread)
 carries an explicit timeout,
 and the code states what happens when it expires.
+A deliberately unbounded wait (a watch mode, an interactive child; section 17)
+carries a comment at the call site instead, so it reads as a decision.
 
 **Why:** a missing timeout turns a remote failure into a hang
 that nothing in the program can detect;
 the process then looks alive and busy while doing nothing.
 
-- `httpx` and `requests`: `timeout=` on every call or on the client object.
-  `requests` has no default timeout at all.
+- `httpx`: `timeout=` on the `Client` or on each call (the default is 5 s).
+- `requests`: `timeout=` on every call; `requests` has no default timeout at all.
+  A `Session` has no timeout setting, and it ignores a `timeout` attribute set on it.
 - `subprocess.run(..., timeout=...)` (section 17);
   when `TimeoutExpired` is raised the child has already been killed.
 - `asyncio.timeout(...)` (3.11+) or `asyncio.wait_for(coro, timeout)` around awaits on I/O.
-- `future.result(timeout=...)`, `queue.get(timeout=...)`, `lock.acquire(timeout=...)`,
-  and `thread.join(timeout=...)` followed by a check of `is_alive()`.
+- `future.result(timeout=...)` raises `concurrent.futures.TimeoutError`
+  (the builtin `TimeoutError` from 3.11 on)
+  and `queue.get(timeout=...)` raises `queue.Empty` when the time runs out.
+- `lock.acquire(timeout=...)` reports expiry only through its return value:
+  `if not lock.acquire(timeout=...): raise TimeoutError(...)`,
+  then the critical section runs in a `try` with `lock.release()` in its `finally`.
+- `thread.join(timeout=...)` is followed by a check of `is_alive()`.
 - On expiry: retry a bounded number of times with backoff when the operation is idempotent;
   otherwise fail with a message that names the operation and the limit.
-- A deliberately unbounded wait (a watch mode, an interactive child)
-  is stated in a comment at the call site, so it reads as a decision.
 
 ## 21. Logging setup
 
