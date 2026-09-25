@@ -191,7 +191,7 @@ FROM utilities AS workspace
 RUN --mount=type=cache,id=uv-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     git clone --depth 1 https://github.com/NekoBend/den.git /tmp/den && \
     uv tool install --python /usr/bin/python3 --link-mode copy /tmp/den && \
-    den install shell --force --bin && \
+    den install shell --force --bin --zsh-plugins && \
     den install skills --tool claude --tool codex --with-parent --force && \
     rm -rf /tmp/den
 
