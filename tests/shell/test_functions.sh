@@ -2086,6 +2086,51 @@ assert_eq "pwsh/mkcd, up, .1, .. each recorded" "  5  ~/start
   1  ~
   *  ~/c" "$out"
 rm -rf "$DH/a/n"
+# The same for zd, zdi, cdi, cdf and y, each through a stub: __zoxide_z /
+# __zoxide_zi just Set-Location, fzf is the fixture's stub (fd is left off PATH
+# so cdf lists full paths), and yazi writes $YAZI_CWD to its --cwd-file.
+mkdir -p "$DH/c/d" "$DH/ybin"
+cat > "$DH/ybin/yazi" <<'STUB'
+#!/bin/sh
+for a; do
+    case $a in --cwd-file=*) printf '%s\n' "$YAZI_CWD" > "${a#--cwd-file=}" ;; esac
+done
+STUB
+chmod +x "$DH/ybin/yazi"
+out=$(dh_pwsh "\$env:PATH = '$DH/fzfbin:$DH/ybin'; function global:__zoxide_z { Set-Location @args }; function global:__zoxide_zi { Set-Location @args }; zd '$DH/a'; zdi '$DH/b'; cdi '$DH/c'; \$env:FZF_PICK = '$DH/c/d'; cdf; \$env:YAZI_CWD = '$DH/a'; y; Set-Location '$DH/start'; back -l")
+assert_eq "pwsh/zd, zdi, cdi, cdf, y each recorded" "  6  ~/start
+  5  ~/a
+  4  ~/b
+  3  ~/c
+  2  ~/c/d
+  1  ~/a
+  *  ~/start" "$out"
+rm -rf "$DH/c/d"
+
+# init.ps1 installs the recorder: it wraps the prompt after starship's init has
+# replaced it. A stub starship stands in for the real one, and HOME /
+# XDG_DATA_HOME point into the fixture, so the init cache is written there and
+# never over the user's own.
+echo "[pwsh] init.ps1 wraps starship's prompt with the recorder"
+mkdir -p "$DH/stbin" "$DH/.local/share"
+cat > "$DH/stbin/starship" <<'STUB'
+#!/bin/sh
+printf '%s\n' 'function global:prompt { "stub:$($global:?)>" }'
+STUB
+chmod +x "$DH/stbin/starship"
+dh_pwsh_init() {
+    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+        pwsh -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; $1" 2>/dev/null | tr -d '\r')
+}
+out=$(dh_pwsh_init "\$function:prompt -eq \$global:_DenDirPrompt; \"\$global:_DenDirPromptOld\".Trim(); Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt")
+assert_eq "pwsh/init.ps1 prompt is den's wrapper around starship's, which still gets \$?" 'True
+"stub:$($global:?)>"
+stub:False>' "$out"
+out=$(dh_pwsh_init "Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; back; \$null = prompt; & '$DH/scr/pushpop.ps1'; \$null = prompt; back -l; fwd; (Get-Location).Path")
+assert_eq "pwsh/init.ps1 prompt records moves, not a script's Push-/Pop-Location" "  1  ~/start
+  *  ~/a
+ +1  ~/b
+$DH/b" "$out"
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention
