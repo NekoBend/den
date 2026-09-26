@@ -677,6 +677,7 @@ True|-o|text
 True|-of|text
 True|-settings|/dev/null
 True|-custompipename|x
+True|-cus|x
 True|-l
 True|-noprofileloadtime
 True|-noexit|script.ps1

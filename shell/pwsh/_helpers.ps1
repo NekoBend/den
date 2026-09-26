@@ -83,7 +83,7 @@ function _DenLaunchSwitches([string[]]$Arguments) {
         @{ Name = 'windowstyle'; Min = 'w'; Alias = @(); Kind = 'value' }
         @{ Name = 'configurationname'; Min = 'config'; Alias = @(); Kind = 'value' }
         @{ Name = 'configurationfile'; Min = 'configurationfile'; Alias = @(); Kind = 'value' }
-        @{ Name = 'custompipename'; Min = 'custompipename'; Alias = @(); Kind = 'value' }
+        @{ Name = 'custompipename'; Min = 'cus'; Alias = @(); Kind = 'value' }
         @{ Name = 'settingsfile'; Min = 'settings'; Alias = @(); Kind = 'value' }
         @{ Name = 'noexit'; Min = 'noe'; Alias = @(); Kind = 'noexit' }
         @{ Name = 'noninteractive'; Min = 'noni'; Alias = @(); Kind = 'noninteractive' }
