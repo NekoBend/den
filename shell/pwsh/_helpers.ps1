@@ -282,6 +282,11 @@ function toggle-wrapper {
     }
 }
 
+# tgl-wr → short name for toggle-wrapper
+function tgl-wr {
+    toggle-wrapper @Args
+}
+
 # ========== cache init ==========
 
 # _DenTrustedCacheOwner -OwnerSid -UserSid -UserGroupSids - pure decision (no ACL

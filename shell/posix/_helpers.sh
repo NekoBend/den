@@ -68,6 +68,12 @@ toggle-wrapper() {
     fi
 }
 
+# tgl-wr → short name for toggle-wrapper.
+# A function, not an alias: aliases expand only in interactive shells.
+tgl-wr() {
+    toggle-wrapper "$@"
+}
+
 # ========== PATH ==========
 
 # _init_path <dir>... — add to PATH if not already present

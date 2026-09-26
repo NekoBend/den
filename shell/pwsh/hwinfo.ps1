@@ -125,4 +125,9 @@ function toggle-hwinfo {
   }
 }
 
+# tgl-hw → short name for toggle-hwinfo
+function tgl-hw {
+  toggle-hwinfo @Args
+}
+
 Remove-Variable _hwCache, _hwVars, cur, escapedValue, lines, tmp, v, val -ErrorAction SilentlyContinue

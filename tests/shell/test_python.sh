@@ -192,6 +192,19 @@ echo "[bash] toggle-uv sets env var"
 actual=$(run_bash "$PYTHON_SH_TEST" "toggle-uv >/dev/null 2>&1; echo \$_DEN_UV_OVERRIDE")
 assert_eq "bash/toggle-uv env" "0" "$actual"
 
+# tgl-uv is the short name: a function (not an interactive-only alias) that
+# does exactly what toggle-uv does, down to dropping the pip override.
+echo "[bash] tgl-uv flips like toggle-uv"
+actual=$(run_bash "$PYTHON_SH_TEST" "
+    echo \"TYPE=\$(type -t tgl-uv)\"
+    tgl-uv
+    case \$(type pip 2>/dev/null) in *function*) pip=kept ;; *) pip=gone ;; esac
+    echo \"ENV=\$_DEN_UV_OVERRIDE PIP=\$pip\"
+" 2>/dev/null) || true
+assert_eq "bash/tgl-uv OFF" "TYPE=function
+uv override: OFF (using system python/pip)
+ENV=0 PIP=gone" "$actual"
+
 # =============================================================================
 # Zsh tests
 # =============================================================================
@@ -221,6 +234,17 @@ echo "[zsh] toggle-uv OFF"
 actual=$(run_zsh "$PYTHON_SH_TEST" "toggle-uv" 2>/dev/null)
 assert_contains "zsh/toggle-uv OFF" "OFF" "$actual"
 
+echo "[zsh] tgl-uv flips like toggle-uv"
+actual=$(run_zsh "$PYTHON_SH_TEST" "
+    whence -w tgl-uv
+    tgl-uv
+    case \$(type pip 2>/dev/null) in *function*) pip=kept ;; *) pip=gone ;; esac
+    echo \"ENV=\$_DEN_UV_OVERRIDE PIP=\$pip\"
+" 2>/dev/null) || true
+assert_eq "zsh/tgl-uv OFF" "tgl-uv: function
+uv override: OFF (using system python/pip)
+ENV=0 PIP=gone" "$actual"
+
 # =============================================================================
 # PowerShell tests
 # =============================================================================
@@ -240,6 +264,16 @@ assert_eq "pwsh/toggle-uv OFF env" "0" "$actual"
 echo "[pwsh] toggle-uv removes functions"
 actual=$(run_pwsh "$PYTHON_PS1_TEST" "toggle-uv *>\$null; if (Get-Command pip -ErrorAction SilentlyContinue) { 'exists' } else { 'removed' }" | tr -d '\r')
 assert_eq "pwsh/toggle-uv removes pip" "removed" "$actual"
+
+echo "[pwsh] tgl-uv flips like toggle-uv"
+actual=$(run_pwsh "$PYTHON_PS1_TEST" "
+    Write-Output \"TYPE=\$((Get-Command tgl-uv -ErrorAction SilentlyContinue).CommandType)\"
+    \$msg = @(tgl-uv 6>&1) -join ''
+    \$pip = if (Get-Command pip -CommandType Function -ErrorAction SilentlyContinue) { 'kept' } else { 'gone' }
+    Write-Output \"\$msg|ENV=\$env:_DEN_UV_OVERRIDE|PIP=\$pip\"
+" 2>/dev/null | tr -d '\r') || true
+assert_eq "pwsh/tgl-uv OFF" "TYPE=Function
+uv override: OFF (using system python/pip)|ENV=0|PIP=gone" "$actual"
 
 echo "[pwsh] va activates a Linux/macOS venv (bin/Activate.ps1)"
 mkdir -p "$WORK/venvtest/.venv/bin"

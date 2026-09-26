@@ -220,3 +220,8 @@ function toggle-uv {
     Write-Host ' (python/pip → uv)'
   }
 }
+
+# tgl-uv → short name for toggle-uv
+function tgl-uv {
+  toggle-uv @Args
+}

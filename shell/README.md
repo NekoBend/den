@@ -100,8 +100,9 @@ Ways to get the native command:
 
 - **One-off (POSIX):** prefix `command`, e.g. `command ls -la --color=never`.
   This bypasses the wrapper for that single call.
-- **This session:** run `toggle-wrapper` (flips `_DEN_WRAPPERS`), or
-  `export _DEN_WRAPPERS=0` (PowerShell: `$env:_DEN_WRAPPERS = '0'`).
+- **This session:** run `toggle-wrapper` or its short name `tgl-wr` (flips
+  `_DEN_WRAPPERS`), or `export _DEN_WRAPPERS=0` (PowerShell:
+  `$env:_DEN_WRAPPERS = '0'`).
 - **Silence the notice** (without changing behavior): `_DEN_WRAPPER_LOG=0`.
 
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
@@ -146,7 +147,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `va [DIR]` | activate a venv (default `.venv`) |
 | `vd` | deactivate |
 | `vv` / `vva` | `uv venv` (create / create + activate) |
-| `toggle-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
+| `toggle-uv` / `tgl-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
 
 ### Parallel file ops
 | Command | What it does |
@@ -234,7 +235,7 @@ exports `STARSHIP_CPU_*` / `STARSHIP_GPU_*`.
   `$XDG_RUNTIME_DIR/den-hwinfo.<machine-id>.sh` (mode 600); PowerShell
   caches under LocalAppData keyed by `$COMPUTERNAME`. This keeps a shared or
   synced `$HOME` from showing one machine's hardware on another.
-- `toggle-hwinfo` shows/hides the info in the prompt.
+- `toggle-hwinfo` (short: `tgl-hw`) shows/hides the info in the prompt.
 - `refresh-hwinfo` clears the cache so the next shell re-detects.
 
 ## Tab completion (pwsh)
@@ -268,7 +269,7 @@ time each session.
 ```
 shell/
   posix/       core config for bash/zsh (sh-compatible)
-    _helpers.sh   wrapper generator (_wrap), PATH, cache init, toggle-wrapper
+    _helpers.sh   wrapper generator (_wrap), PATH, cache init, toggle-wrapper/tgl-wr
     wrappers.sh   the ls/cat/grep/find wrapper definitions
     functions.sh  file/navigation/history utilities
     aliases.sh    navigation / git / docker aliases

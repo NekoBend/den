@@ -85,6 +85,25 @@ assert_contains "bash/roundtrip cpu" "CPU=i9-13900K" "$actual"
 assert_contains "bash/roundtrip gpu" "GPU=RTX 4090" "$actual"
 assert_contains "bash/roundtrip hidden" "HIDDEN=0" "$actual"
 
+# tgl-hw is the short name: a function (not an interactive-only alias) that
+# does exactly what toggle-hwinfo does. The trailing echo keeps the status 0,
+# so a missing tgl-hw fails the assertion instead of stopping the suite.
+echo "[bash] tgl-hw flips like toggle-hwinfo"
+actual=$(run_bash "$HWINFO_SH" '
+    unset STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL
+    export STARSHIP_CPU_INTEL="i9-13900K"
+    echo "TYPE=$(type -t tgl-hw)"
+    tgl-hw
+    echo "OFF:CPU=${STARSHIP_CPU_INTEL:-UNSET} HIDDEN=$_DEN_HWINFO_HIDDEN"
+    tgl-hw
+    echo "ON:CPU=$STARSHIP_CPU_INTEL HIDDEN=$_DEN_HWINFO_HIDDEN"
+' 2>/dev/null)
+assert_eq "bash/tgl-hw OFF then ON" "TYPE=function
+hwinfo: OFF (hidden from prompt)
+OFF:CPU=UNSET HIDDEN=1
+hwinfo: ON (visible in prompt)
+ON:CPU=i9-13900K HIDDEN=0" "$actual"
+
 echo "[bash] guard: non-interactive source skips hwinfo"
 actual=$(bash -c "
     source '$HWINFO_SH_GUARDED'
@@ -164,6 +183,22 @@ actual=$(run_zsh "$HWINFO_SH" '
 assert_contains "zsh/roundtrip OFF cleared" "OFF:CPU=UNSET" "$actual"
 assert_contains "zsh/roundtrip ON restored" "ON:CPU=Ryzen 9 7950X" "$actual"
 
+echo "[zsh] tgl-hw flips like toggle-hwinfo"
+actual=$(run_zsh "$HWINFO_SH" '
+    unset STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL
+    export STARSHIP_CPU_INTEL="Ryzen 9 7950X"
+    whence -w tgl-hw
+    tgl-hw
+    echo "OFF:CPU=${STARSHIP_CPU_INTEL:-UNSET} HIDDEN=$_DEN_HWINFO_HIDDEN"
+    tgl-hw
+    echo "ON:CPU=$STARSHIP_CPU_INTEL HIDDEN=$_DEN_HWINFO_HIDDEN"
+' 2>/dev/null)
+assert_eq "zsh/tgl-hw OFF then ON" "tgl-hw: function
+hwinfo: OFF (hidden from prompt)
+OFF:CPU=UNSET HIDDEN=1
+hwinfo: ON (visible in prompt)
+ON:CPU=Ryzen 9 7950X HIDDEN=0" "$actual"
+
 # =============================================================================
 # PowerShell tests
 # =============================================================================
@@ -201,6 +236,19 @@ actual=$(run_pwsh "$HWINFO_PS1_TOGGLE" '
 ' | tr -d '\r')
 assert_contains "pwsh/roundtrip ON message" "ON" "$actual"
 assert_contains "pwsh/roundtrip cpu restored" "CPU=i9-13900K" "$actual"
+
+echo "[pwsh] tgl-hw flips like toggle-hwinfo"
+actual=$(run_pwsh "$HWINFO_PS1_TOGGLE" '
+    $env:STARSHIP_CPU_INTEL = "i9-13900K"
+    Write-Output "TYPE=$((Get-Command tgl-hw -ErrorAction SilentlyContinue).CommandType)"
+    $msg = @(tgl-hw 6>&1) -join ""
+    Write-Output "$msg|CPU=$env:STARSHIP_CPU_INTEL|HIDDEN=$env:_DEN_HWINFO_HIDDEN"
+    $msg = @(tgl-hw 6>&1) -join ""
+    Write-Output "$msg|CPU=$env:STARSHIP_CPU_INTEL|HIDDEN=$env:_DEN_HWINFO_HIDDEN"
+' 2>/dev/null | tr -d '\r') || true
+assert_eq "pwsh/tgl-hw OFF then ON" "TYPE=Function
+hwinfo: OFF (hidden from prompt)|CPU=|HIDDEN=1
+hwinfo: ON (visible in prompt)|CPU=i9-13900K|HIDDEN=0" "$actual"
 
 print_summary "test_hwinfo"
 [ "$FAIL" -eq 0 ]

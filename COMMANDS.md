@@ -23,7 +23,9 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
-  `on` / `off`.
+  `on` / `off`. Each also has a short name that does exactly what the long name
+  does, in every shell: `tgl-wr` (`toggle-wrapper`), `tgl-hw` (`toggle-hwinfo`),
+  `tgl-uv` (`toggle-uv`).
 
 ## Navigation and directories
 
@@ -94,7 +96,7 @@ the modern tool, bypassing the toggle.
 | `find` | `fd` → native `find` | ✓ | ✓ | ✓ |
 | `ripgrep` | `rg` passthrough (no fallback) | ✓ | ✓ | — |
 | `catw` / `findw` / `grepw` / `lsw` | always bat / fd / rg / lsd | ✓ | ✓ | — |
-| `toggle-wrapper` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
+| `toggle-wrapper` / `tgl-wr` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
 
 On Windows, `cp` / `mv` / `rm` / `mkdir` / `rmdir` gain Unix-flag behavior via
 microsoft/coreutils when it is installed (pwsh only); otherwise they keep the stock
@@ -142,7 +144,7 @@ pip directly, while `python` / `python3` / `py` still run through
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
 | `vva [name]` | `uv venv` then activate | ✓ | ✓ | — |
-| `toggle-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
+| `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.
 
@@ -192,7 +194,7 @@ live under `$XDG_CONFIG_HOME`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `toggle-hwinfo` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
+| `toggle-hwinfo` / `tgl-hw` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
 | `refresh-hwinfo` | clear the per-boot hardware cache so it re-detects | ✓ | ✓ | — |
 
 ## History, session, editor

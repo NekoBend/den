@@ -74,6 +74,21 @@ echo "[bash] toggle clears STARSHIP_WRAPPER_STATE"
 actual=$(run_bash "$HELPERS_SH" "toggle-wrapper >/dev/null; toggle-wrapper >/dev/null; echo \${STARSHIP_WRAPPER_STATE:-unset}")
 assert_eq "bash/toggle STARSHIP ON" "unset" "$actual"
 
+# --- tgl-wr: the short name for toggle-wrapper ---
+# `bash -c` is non-interactive, so an alias would not even expand here: this
+# checks that tgl-wr is a real function that does what toggle-wrapper does.
+echo "[bash] tgl-wr is a function"
+actual=$(run_bash "$HELPERS_SH" "type -t tgl-wr")
+assert_eq "bash/tgl-wr type" "function" "$actual"
+
+echo "[bash] tgl-wr flips like toggle-wrapper"
+actual=$(run_bash "$HELPERS_SH" "tgl-wr; echo \"\$_DEN_WRAPPERS \$STARSHIP_WRAPPER_STATE\"")
+assert_eq "bash/tgl-wr OFF" "wrappers: OFF (using native commands)
+0 OFF" "$actual"
+actual=$(run_bash "$HELPERS_SH" "tgl-wr >/dev/null; tgl-wr; echo \"\$_DEN_WRAPPERS \${STARSHIP_WRAPPER_STATE:-unset}\"")
+assert_eq "bash/tgl-wr ON again" "wrappers: ON (using modern tools)
+1 unset" "$actual"
+
 # --- _wrap respects toggle ---
 echo "[bash] _wrap respects toggle OFF"
 echo "native test" > "$WORK/toggle_test.txt"
@@ -170,6 +185,18 @@ assert_eq "zsh/toggle OFF" "0" "$actual"
 echo "[zsh] toggle round trip"
 actual=$(run_zsh "$HELPERS_SH" "toggle-wrapper >/dev/null; toggle-wrapper >/dev/null; echo \$_DEN_WRAPPERS")
 assert_eq "zsh/toggle ON again" "1" "$actual"
+
+echo "[zsh] tgl-wr is a function"
+actual=$(run_zsh "$HELPERS_SH" "whence -w tgl-wr")
+assert_eq "zsh/tgl-wr type" "tgl-wr: function" "$actual"
+
+echo "[zsh] tgl-wr flips like toggle-wrapper"
+actual=$(run_zsh "$HELPERS_SH" "tgl-wr; echo \"\$_DEN_WRAPPERS \$STARSHIP_WRAPPER_STATE\"")
+assert_eq "zsh/tgl-wr OFF" "wrappers: OFF (using native commands)
+0 OFF" "$actual"
+actual=$(run_zsh "$HELPERS_SH" "tgl-wr >/dev/null; tgl-wr; echo \"\$_DEN_WRAPPERS \${STARSHIP_WRAPPER_STATE:-unset}\"")
+assert_eq "zsh/tgl-wr ON again" "wrappers: ON (using modern tools)
+1 unset" "$actual"
 
 echo "[zsh] _init_path adds to PATH"
 actual=$(run_zsh "$HELPERS_SH" "_init_path /test/new/path; echo \$PATH" 2>/dev/null)
@@ -270,6 +297,22 @@ actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:STARSHIP_WRAPPER_STATE
 " | tr -d '\r')
 assert_eq "pwsh/toggle STARSHIP OFF" "OFF" "$actual"
+
+# --- tgl-wr: the short name for toggle-wrapper ---
+echo "[pwsh] tgl-wr is a function"
+actual=$(run_pwsh "$HELPERS_PS1" "(Get-Command tgl-wr).CommandType" | tr -d '\r')
+assert_eq "pwsh/tgl-wr type" "Function" "$actual"
+
+echo "[pwsh] tgl-wr flips like toggle-wrapper"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_WRAPPERS = '1'
+    \$msg = @(tgl-wr 6>&1) -join ''
+    Write-Output \"\$msg|\$env:_DEN_WRAPPERS|\$env:STARSHIP_WRAPPER_STATE\"
+    \$msg = @(tgl-wr 6>&1) -join ''
+    Write-Output \"\$msg|\$env:_DEN_WRAPPERS|\$([bool]\$env:STARSHIP_WRAPPER_STATE)\"
+" | tr -d '\r')
+assert_eq "pwsh/tgl-wr OFF then ON" "wrappers: OFF (using native commands)|0|OFF
+wrappers: ON (using modern tools)|1|False" "$actual"
 
 # --- New-Wrapper respects toggle OFF ---
 echo "[pwsh] New-Wrapper respects toggle OFF"
