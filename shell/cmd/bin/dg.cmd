@@ -277,6 +277,9 @@ rem the name is taken, so two dg runs that draw the same random number (cmd
 rem seeds it from the clock) cannot read each other's output. Where no
 rem directory can be made, it gives up after 20 draws, as for an unreadable
 rem file.
+rem certutil refuses a 0-byte file (the Windows CI run shows it), but
+rem the digest of empty input is a constant per algorithm.
+for %%F in ("!_p!") do if "%%~zF"=="0" goto :hash_empty
 set /a "_try=0"
 :hash_dir
 set /a "_try+=1"
@@ -290,6 +293,11 @@ if defined _h set "_h=!_h: =!"
 if defined _h call :ishex _h || set "_h="
 rem Lowercase: cmd's replace ignores case, so a=a turns every A into a.
 if defined _h for %%C in (a b c d e f) do set "_h=!_h:%%C=%%C!"
+goto :hash_done
+:hash_empty
+if /i "!_alg!"=="MD5" set "_h=d41d8cd98f00b204e9800998ecf8427e"
+if /i "!_alg!"=="SHA256" set "_h=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+if /i "!_alg!"=="SHA512" set "_h=cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
 :hash_done
 endlocal & set "_h=%_h%"
 exit /b 0

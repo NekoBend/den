@@ -466,31 +466,18 @@ jobs:
           call "%DIGEST%" md5 a.txt %SHA256_A% >"%O%" 2>"%R%"
           call :expect %errorlevel% 2 "digest md5 a.txt sha256-hex: exit 2 passes through"
 
-          rem A 0-byte file: dg.cmd documents no limit here and certutil's
-          rem handling of empty files is not documented either, so this
-          rem records which end it reached: the empty-input SHA-256 with exit 0,
-          rem or dg's "could not be read" with exit 1. Anything else fails.
-          set /a "N+=1"
+          rem A 0-byte file: certutil refuses it, so dg.cmd answers with the
+          rem constant digest of empty input.
           type nul >"%X%"
           >"%E%" echo(%SHA256_EMPTY%
           call "%DG%" empty.txt >"%O%" 2>"%R%"
-          set "RC=%errorlevel%"
-          call :match %RC% 0
-          if not errorlevel 1 goto :empty_hashed
-          type nul >"%E%"
-          >"%X%" echo(dg: 'empty.txt' could not be read
-          call :match %RC% 1
-          if not errorlevel 1 goto :empty_unread
-          set /a "FAILS+=1"
-          echo ::error::dg.cmd: dg empty.txt exited %RC% with neither the empty-input hash nor could-not-be-read
-          call :dump
-          goto :empty_done
-          :empty_hashed
-          echo ::notice::dg.cmd: certutil hashed the 0-byte file; dg printed the empty-input SHA-256 and exited 0
-          goto :empty_done
-          :empty_unread
-          echo ::warning::dg.cmd: certutil could not hash the 0-byte file; dg reported it as unreadable and exited 1
-          :empty_done
+          call :expect %errorlevel% 0 "dg empty.txt: the empty-input SHA-256"
+          >"%E%" echo(d41d8cd98f00b204e9800998ecf8427e
+          call "%DG%" 5 empty.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg 5 empty.txt: the empty-input MD5"
+          >"%E%" echo(OK  empty.txt
+          call "%DG%" empty.txt %SHA256_EMPTY% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg empty.txt empty-sha256: OK"
 
           rem Every hash removed the directory it made.
           set /a "N+=1"
