@@ -201,12 +201,21 @@ live under `$XDG_CONFIG_HOME`.
 |---|---|:---:|:---:|:---:|
 | `again [N]` | re-run the Nth previous command after a confirm | ✓ | ✓ | ✓ (N=1) |
 | `sagain [N]` | `again` with sudo | ✓ | ✓ | — |
-| `reload` | clear den's shell caches and reload the config (re-exec on bash/zsh, re-source in place on pwsh) | ✓ | ✓ | — |
+| `reload` | clear den's shell caches and restart the shell to load the config (`exec` on bash/zsh; a new pwsh on pwsh, see below) | ✓ | ✓ | — |
 | `code` | launch VS Code (prefers code-insiders) | ✓ | ✓ | ✓ |
 | `open <path>` | open a file/dir with the default app | — | ✓ | — |
 
 On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 `code`); posix/pwsh fall back.
+
+On pwsh, `reload` cannot replace the running process, so it starts the same
+pwsh with the arguments this session was launched with (a VS Code terminal
+keeps its shell integration), in the current directory and environment, waits
+for it, and exits with its exit code; leaving the new shell closes the terminal.
+Each reload nests one more pwsh process, and variables set in the session do
+not carry over (environment variables do). A `-File` or `-Command` run, a
+`-NonInteractive` launch or a non-console host (the ISE) is not restarted:
+`reload` clears the caches and prints a warning.
 
 ## Standalone helper
 

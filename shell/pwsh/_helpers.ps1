@@ -120,6 +120,39 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
     return (-not $payload) -or $noExit
 }
 
+# _DenRelaunchArgs <argv> [-Legacy] - the arguments that start PowerShell again the
+# way this session was started, for reload. <argv> is what
+# [Environment]::GetCommandLineArgs() returns (a parameter, so the tests can call
+# this). Its first element names the program, in a form that differs by host
+# (/opt/microsoft/powershell/7/pwsh.dll on Linux pwsh 7.6; not checked on Windows),
+# so it is always dropped and never used: reload runs (Get-Process -Id $PID).Path.
+# -Legacy quotes each argument by the Windows command-line rules first, for a host
+# that passes native arguments the legacy way (see _DenLegacyArgPassing): such a
+# host joins the arguments into one command line without escaping a double quote
+# and drops an empty argument, so VS Code's `try { . "<path>" } catch {}` payload
+# would split at a space in <path>. A token quoted here passes through unchanged.
+function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) {
+    for ($i = 1; $i -lt @($CommandLineArgs).Count; $i++) {
+        $a = [string]$CommandLineArgs[$i]
+        if ($Legacy -and ($a.Length -eq 0 -or $a -match '[\s"]')) {
+            # Backslashes double before a quote and at the end; each quote is escaped.
+            $a = '"' + (($a -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
+        }
+        $a
+    }
+}
+
+# _DenLegacyArgPassing - whether this host passes native-command arguments the
+# legacy way: Windows PowerShell 5.1, pwsh before 7.3 (where
+# $PSNativeCommandArgumentPassing is absent), or that variable set to 'Legacy'.
+# 'Windows', the 7.3+ default on Windows, is legacy only for batch files and a few
+# named programs, and pwsh is not one of them.
+function _DenLegacyArgPassing {
+    if ($PSVersionTable.PSVersion.Major -lt 7) { return $true }
+    $style = Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue
+    return ($null -eq $style) -or ("$style" -eq 'Legacy')
+}
+
 # _CoreutilsBin — path to the microsoft/coreutils multi-call binary, or $null. This
 # is the middle dispatch tier on Windows (modern -> coreutils -> native -> PS
 # fallback): microsoft/coreutils bundles uutils/coreutils + findutils + grep into
@@ -134,8 +167,8 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
 # Per-session command-resolution cache. Get-Command is slow (a MISS especially so
 # on Windows), and the generated wrappers run it on every ls/cat/grep/... call;
 # memoizing per session reaches bash's hashed-command parity. A tool installed
-# mid-session is picked up after `reload` (which re-sources this file and so resets
-# the cache). Value is the resolved path/name, or '' = absent. App-lookup keys also
+# mid-session is picked up after `reload` (which starts a new session, and so an
+# empty cache). Value is the resolved path/name, or '' = absent. App-lookup keys also
 # carry $VIRTUAL_ENV (see _ResolveCmd) so a venv switch re-resolves pip/python.
 $script:_DenCmdCache = @{}
 

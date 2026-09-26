@@ -26,13 +26,59 @@ if (Get-Module -Name PSReadLine) {
   }
 }
 
-# reload PowerShell profile (clears cache)
-# Uses Invoke-Command with -NoNewScope to dot-source in the caller's (global) scope.
+# reload - clear den's shell caches and start PowerShell afresh, the counterpart of
+# bash/zsh's `exec`. PowerShell cannot replace its own process, so reload runs the
+# same executable with the arguments this session was started with (a VS Code
+# terminal's `-noexit -command ". <shellIntegration.ps1>"` keeps its shell
+# integration), in the current directory and environment, waits for it, and exits
+# with its exit code: leaving the new shell closes the terminal, as after exec. Each
+# reload nests one more process, and variables made in this session do not carry
+# over (environment variables do). Dot-sourcing $PROFILE from here instead defines
+# everything in this function's scope, which is gone when it returns.
+# PSReadLine's default HistorySaveStyle, SaveIncrementally, has written this
+# session's commands, reload included, before the new shell reads the history file;
+# SaveAtExit would write them only when this process exits, after the new shell.
+# Only an interactive console session restarts; a -File or -Command run, a
+# -NonInteractive launch or another host (the ISE, VS Code's extension terminal)
+# gets the caches cleared and a warning.
 function reload {
-  $_cd = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache'
-  if (Test-Path $_cd) { Remove-Item (Join-Path $_cd '*') -Force -ErrorAction SilentlyContinue }
-  $sb = [scriptblock]::Create(". '$PROFILE'")
-  Invoke-Command -ScriptBlock $sb -NoNewScope
+  $_base = [Environment]::GetFolderPath('LocalApplicationData')
+  if ($_base) {
+    $_cd = Join-Path $_base 'shell-cache'
+    if (Test-Path $_cd) { Remove-Item (Join-Path $_cd '*') -Force -ErrorAction SilentlyContinue }
+  }
+  $exe = (Get-Process -Id $PID).Path
+  $argv = [Environment]::GetCommandLineArgs()
+  $launch = @(_DenRelaunchArgs -CommandLineArgs $argv)
+  # Not _DenInteractive: its _DEN_FORCE_INTERACTIVE override would restart a
+  # `-NonInteractive -Command` run, which runs its command again.
+  $why = $null
+  if ($Host.Name -ne 'ConsoleHost') {
+    $why = "the '$($Host.Name)' host is not a console shell"
+  } elseif (-not ([Environment]::UserInteractive -and (_DenLaunchIsRepl -Arguments $launch))) {
+    $why = 'this session was not started as an interactive shell (-File, -Command or -NonInteractive)'
+  } elseif (-not $exe) {
+    $why = 'the path of this PowerShell executable is unknown'
+  }
+  if ($why) {
+    Write-Warning "reload: caches cleared, but not restarting: $why. Open a new session to load the config."
+    return
+  }
+  if (_DenLegacyArgPassing) { $launch = @(_DenRelaunchArgs -CommandLineArgs $argv -Legacy) }
+  # exit runs in finally: a Ctrl+C in the new shell reaches this process too and
+  # stops this pipeline, which still waits for the new shell but then skips the
+  # statements after it, so a later exit would land back in this stale session.
+  # Only a failure to start is caught; any other error (such as a nonzero exit
+  # under $PSNativeCommandUseErrorActionPreference) still exits.
+  $failed = $false
+  try {
+    & $exe @launch
+  } catch [System.Management.Automation.CommandNotFoundException], [System.Management.Automation.ApplicationFailedException] {
+    $failed = $true
+    Write-Warning "reload: could not start ${exe}: $($_.Exception.Message)"
+  } finally {
+    if (-not $failed) { exit $LASTEXITCODE }
+  }
 }
 
 # ===== Init tools (cached) =====

@@ -302,7 +302,10 @@ of zoxide and starship. zsh and PowerShell mirror this.
 - `~/.cache/shell/` holds the zoxide/starship init caches. They regenerate when
   the tool binary is newer than the cache, and are sourced only if they are a
   regular file owned by you (symlink and owner guarded).
-- `reload` rebuilds the caches and re-execs the shell.
+- `reload` clears the caches and restarts the shell, which rebuilds them.
+  bash/zsh `exec` a new shell. pwsh cannot, so it starts the same pwsh with
+  the same launch arguments, waits for it, and exits with its exit code; each
+  reload nests one more pwsh process (see `COMMANDS.md`).
 
 ## Toggles and environment
 
