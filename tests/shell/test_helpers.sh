@@ -496,10 +496,53 @@ native test
 fallback" "$actual"
 assert_eq "pwsh/helpers under strict mode, as 5.1: no errors" "" "$(strip_ansi < "$WORK/pwsh_strict51.err" | tr -d '\r')"
 
+# _CoreutilsBin's cache is global too, but only Windows pwsh reaches it; setting
+# $IsWindows (read-only, so -Force) opens that tier here, with a stub coreutils.
+# The path it resolves must stay in the session, not in the calling script.
+echo "[pwsh] the coreutils tier works from a user script"
+mkdir -p "$WORK/pwsh_cu"
+printf '#!/bin/sh\necho "CU $*"\n' > "$WORK/pwsh_cu/coreutils"
+chmod +x "$WORK/pwsh_cu/coreutils"
+cat > "$WORK/pwsh_cu_caller.ps1" <<'EOF'
+mycat a.txt
+function Invoke-Inner { mycat b.txt }
+Invoke-Inner
+EOF
+actual=$(run_pwsh "$HELPERS_PS1" "
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    \$env:_DEN_COREUTILS = '$WORK/pwsh_cu/coreutils'
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-Wrapper 'mycat' 'nonexistent_modern' '' 'cat' '' ''
+    & '$WORK/pwsh_cu_caller.ps1'
+    \"cached:\$global:_DenCoreutils\"
+" 2>"$WORK/pwsh_cu.err" | tr -d '\r')
+assert_eq "pwsh/coreutils tier from a script" "CU cat a.txt
+CU cat b.txt
+cached:$WORK/pwsh_cu/coreutils" "$actual"
+assert_eq "pwsh/coreutils tier from a script: no errors" "" "$(strip_ansi < "$WORK/pwsh_cu.err" | tr -d '\r')"
+
 # The whole class: any function that reads $script: state breaks the same way,
-# so den's pwsh files keep none (comments aside).
+# so den's pwsh files keep none (comments aside), in any of its spellings: the
+# prefix, the -Scope Script of the *-Variable cmdlets, and the variable: drive.
+script_state() {
+    grep -HinE "\\\$\{?script:|-Scope[[:space:]:]+['\"]?script|variable:script:" "$@" |
+        grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' || true
+}
+cat > "$WORK/pwsh_script_state.ps1" <<'EOF'
+$script:a = 1
+${script:b} = 2
+Set-Variable c 3 -Scope Script
+Get-Variable -Scope:'script' c
+Get-Item variable:script:c
+# $script:a in a comment
+$global:d = 4
+Set-Variable e 5 -Scope Global
+EOF
+echo "[pwsh] the \$script: state check flags each spelling, and nothing else"
+actual=$(script_state "$WORK/pwsh_script_state.ps1" | cut -d: -f2 | paste -sd' ' -)
+assert_eq "pwsh/\$script: state check fixture lines" "1 2 3 4 5" "$actual"
 echo "[pwsh] no \$script: state in shell/pwsh"
-actual=$(grep -inE '\$\{?script:' "$DOTFILES"/shell/pwsh/*.ps1 | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' || true)
+actual=$(script_state "$DOTFILES"/shell/pwsh/*.ps1)
 assert_eq "pwsh/no \$script: state" "" "$actual"
 
 # --- Initialize-Cache regenerates when binary is newer ---
