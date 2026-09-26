@@ -736,23 +736,203 @@ again() {
 # sagain → backward-compatible wrapper
 sagain() { again --sudo "$@"; }
 
-# back → go back to the Nth previous directory (default N=1)
+# ===== Directory History (back / fwd) =====
+# Browser-style history for this shell session, never written to disk.
+# _den_dh_back / _den_dh_fwd hold one directory per line, nearest first, and
+# _den_dh_last is the directory the history saw last. Any change of directory
+# (den's cd, builtin cd, pushd/popd, mkcd, up, cdf, y) pushes the directory it
+# left onto the back list and clears the forward list, as a browser does.
+# zsh reports every change through a chpwd hook; bash has none, so it compares
+# $PWD at each prompt (PROMPT_COMMAND), and den's cd records at once so several
+# cds on one command line are each kept. back/fwd walk the lists themselves and
+# set _den_dh_nav so the hook does not take their move for a new one.
+# A directory whose name holds a newline cannot be stored and is left out.
+_den_dh_max=50
+_den_dh_back=${_den_dh_back-}
+_den_dh_fwd=${_den_dh_fwd-}
+_den_dh_last=${_den_dh_last:-$PWD}
+
+# _den_dh_record → note a change of directory (the chpwd / prompt hook). Returns
+# the status it was called with, so it can sit anywhere in PROMPT_COMMAND.
+_den_dh_record() {
+    local rc=$? nl='
+' rest kept='' i=0
+    [ "$PWD" = "${_den_dh_last-}" ] && return "$rc"
+    if [ -n "${_den_dh_nav-}" ]; then
+        _den_dh_nav=
+    elif [ -n "${_den_dh_last-}" ]; then
+        case $_den_dh_last in
+            *"$nl"*) ;;
+            *)
+                # A consecutive duplicate is kept once, and only the nearest
+                # _den_dh_max entries are kept at all.
+                if [ "${_den_dh_back%%"$nl"*}" != "$_den_dh_last" ]; then
+                    rest="$_den_dh_last$nl${_den_dh_back-}"
+                    while [ -n "$rest" ] && [ "$i" -lt "$_den_dh_max" ]; do
+                        kept="$kept${rest%%"$nl"*}$nl"
+                        rest=${rest#*"$nl"}
+                        i=$((i + 1))
+                    done
+                    _den_dh_back=$kept
+                fi
+                ;;
+        esac
+        _den_dh_fwd=
+    fi
+    _den_dh_last=$PWD
+    return "$rc"
+}
+
+# _den_dh_go <back|fwd> <N> → move N entries along that list (N already
+# validated). The entries passed over and the directory being left go to the
+# other list, nearest first, so `back 3` then `fwd 3` returns to the start.
+_den_dh_go() {
+    local nl='
+' word to rest item target='' before='' passed='' here noun i=0
+    if [ "$1" = back ]; then word=back to=fwd; else word=forward to=back; fi
+    eval "rest=\${_den_dh_$1-}"
+    while [ -n "$rest" ]; do
+        item=${rest%%"$nl"*}
+        rest=${rest#*"$nl"}
+        i=$((i + 1))
+        # String compare: N is canonical digits, and may be too big for -eq.
+        if [ "$i" = "$2" ]; then
+            target=$item
+            break
+        fi
+        before="$before$item$nl"
+        passed="$item$nl$passed"
+    done
+    if [ -z "$target" ]; then
+        if [ "$i" = 1 ]; then noun=entry; else noun=entries; fi
+        echo "$1: history has $i $word $noun, cannot go $word $2" >&2
+        return 1
+    fi
+    if [ ! -d "$target" ]; then
+        eval "_den_dh_$1=\$before\$rest"
+        echo "$1: $target no longer exists, dropped from history" >&2
+        return 1
+    fi
+    here=$PWD
+    _den_dh_nav=1
+    builtin cd -- "$target" || { _den_dh_nav=; return 1; }
+    _den_dh_nav=
+    _den_dh_last=$PWD
+    case $here in *"$nl"*) here= ;; *) here="$here$nl" ;; esac
+    eval "_den_dh_$to=\$passed\$here\${_den_dh_$to-}"
+    eval "_den_dh_$1=\$rest"
+    pwd
+}
+
+# _den_dh_show <label> <dir> → one line of `back -l`, with $HOME shown as ~
+_den_dh_show() {
+    if [ -n "${HOME-}" ] && [ "$HOME" != / ]; then
+        case $2 in
+            "$HOME") set -- "$1" '~' ;;
+            "$HOME"/*) set -- "$1" "~${2#"$HOME"}" ;;
+        esac
+    fi
+    printf '%3s  %s\n' "$1" "$2"
+}
+
+# _den_dh_list → `back -l`: back entries farthest first, then the current
+# directory as *, then forward entries as +1, +2 ...
+_den_dh_list() {
+    local nl='
+' rest rev='' i=0
+    rest=${_den_dh_back-}
+    while [ -n "$rest" ]; do
+        rev="${rest%%"$nl"*}$nl$rev"
+        rest=${rest#*"$nl"}
+        i=$((i + 1))
+    done
+    while [ -n "$rev" ]; do
+        _den_dh_show "$i" "${rev%%"$nl"*}"
+        rev=${rev#*"$nl"}
+        i=$((i - 1))
+    done
+    _den_dh_show '*' "$PWD"
+    rest=${_den_dh_fwd-}
+    while [ -n "$rest" ]; do
+        i=$((i + 1))
+        _den_dh_show "+$i" "${rest%%"$nl"*}"
+        rest=${rest#*"$nl"}
+    done
+}
+
+# back → go back N entries in the directory history (default 1); -l lists the
+# history, -i picks an entry with fzf
 back() {
-    local n="${1:-1}"
+    local n="${1:-1}" pick label
     case "$n" in
+        -l)
+            _den_dh_record
+            _den_dh_list
+            return
+            ;;
+        -i)
+            if ! command -v fzf >/dev/null 2>&1; then
+                echo "back: fzf is not installed." >&2
+                return 1
+            fi
+            _den_dh_record
+            # --tac shows the list in `back -l` order; the label in front of
+            # the pick says which move reaches it.
+            pick=$(_den_dh_list | fzf --tac --no-sort --prompt='back> ') || return
+            pick=${pick#"${pick%%[! ]*}"}
+            label=${pick%% *}
+            case $label in
+                '*') return 0 ;;
+                +*) fwd "${label#+}" ;;
+                *) back "$label" ;;
+            esac
+            return
+            ;;
         ''|*[!0-9]*|0|0[0-9]*)
-            echo "usage: back [N]  (N=positive integer, default 1)" >&2
+            echo "usage: back [N | -l | -i]  (N=positive integer, default 1)" >&2
             return 1
             ;;
     esac
-    if [ "$n" -eq 1 ]; then
-        builtin cd - >/dev/null && pwd
-    else
-        echo "back: only N=1 is supported (uses cd -)" >&2
-        echo "hint: use 'pushd'/'popd' or enable AUTO_PUSHD for deeper history" >&2
-        return 1
-    fi
+    _den_dh_record  # a move bash has not seen yet (no prompt since) comes first
+    _den_dh_go back "$n"
 }
+
+# fwd → go forward N entries in the directory history (default 1), undoing back
+fwd() {
+    local n="${1:-1}"
+    case "$n" in
+        ''|*[!0-9]*|0|0[0-9]*)
+            echo "usage: fwd [N]  (N=positive integer, default 1)" >&2
+            return 1
+            ;;
+    esac
+    _den_dh_record
+    _den_dh_go fwd "$n"
+}
+
+# Hook the recorder in. zsh: chpwd (add-zsh-hook skips a duplicate). bash: add
+# it to PROMPT_COMMAND once; that is a string, or (bash 5.1+) may be an array.
+# zoxide and starship add their hooks after this file and keep what is there,
+# and the recorder returns the status it was given, so $? reaches them intact.
+if [ -n "${ZSH_VERSION-}" ]; then
+    autoload -Uz add-zsh-hook && add-zsh-hook chpwd _den_dh_record
+elif [ -n "${BASH_VERSION-}" ]; then
+    if [ -z "${PROMPT_COMMAND-}" ]; then
+        PROMPT_COMMAND=_den_dh_record
+    else
+        # shellcheck disable=SC3044  # declare: this branch runs only in bash
+        case $(declare -p PROMPT_COMMAND) in
+            *_den_dh_record*) ;;
+            # eval: array syntax would stop a POSIX parser reading this file
+            'declare -a'*) eval 'PROMPT_COMMAND+=(_den_dh_record)' ;;
+            *)
+                # Drop trailing ';' and blanks first: ';;' is a syntax error.
+                PROMPT_COMMAND="${PROMPT_COMMAND%"${PROMPT_COMMAND##*[![:space:];]}"}"
+                PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_den_dh_record"
+                ;;
+        esac
+    fi
+fi
 
 # ===== Zoxide Navigation =====
 
@@ -762,7 +942,10 @@ cd() {
         __zoxide_z "$@"
     else
         builtin cd "$@"
-    fi
+    fi || return
+    # Record now rather than at the next prompt (bash), so each cd on one
+    # command line is kept.
+    _den_dh_record
 }
 
 # cdi → wrapper ON: __zoxide_zi (interactive)

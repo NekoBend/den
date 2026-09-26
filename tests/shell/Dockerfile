@@ -55,6 +55,16 @@ RUN . /etc/os-release && \
     rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
+# lua5.4: test_functions.sh drives the cmd directory-history filter in
+# shell/cmd/starship.lua against a stubbed Clink. A layer of its own, after
+# PowerShell, so adding it does not invalidate the cached layers above (an
+# uncached PowerShell layer has taken 12 to 39 minutes).
+# =============================================================================
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends lua5.4 && \
+    rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
 # Copy dotfiles and test suite
 # =============================================================================
 COPY shell/ /root/.dotfiles/shell/

@@ -40,3 +40,11 @@ function reload {
 $_s = Initialize-Cache 'starship' @('init', 'powershell')
 if ($_s) { . $_s }
 Remove-Variable _s -ErrorAction SilentlyContinue
+
+# ===== Directory history =====
+# back/fwd history records moves at each prompt (see functions.ps1). Hooked
+# here, after starship, because starship's init replaces the prompt function.
+# A prompt defined after this file (a later line in $PROFILE, such as an
+# oh-my-posh or posh-git init) replaces the wrapper the same way; then only den's
+# navigation commands and back/fwd record, as COMMANDS.md warns.
+_DenDirHookPrompt

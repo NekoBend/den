@@ -900,13 +900,150 @@ echo "[bash] back 0"
 err=$(run_bash_stderr "$FUNCTIONS_SH" "back 0")
 assert_contains "bash/back 0 usage" "usage" "$err"
 
-echo "[bash] back 2"
+# back N>1 is supported now (browser-style history); with nothing recorded
+# yet it reports the empty history instead of "only N=1".
+echo "[bash] back 2 with no history"
 err=$(run_bash_stderr "$FUNCTIONS_SH" "back 2")
-assert_contains "bash/back 2 unsupported" "only N=1" "$err"
+assert_contains "bash/back 2 with no history" "history has 0 back entries" "$err"
 
 echo "[bash] back with OLDPWD"
 actual=$(run_bash "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "bash/back OLDPWD" "/tmp" "$actual"
+
+# --- directory history: back / fwd (browser-style) ---
+# Every case starts a fresh shell in $DH/start (where the history begins) with
+# HOME=$DH, so `back -l` shows ~ forms. The fzf stub prints the input line
+# whose label is $FZF_PICK, the way a user's pick would come back from fzf.
+DH="$WORK/dh"
+setup_dirhist() {
+    rm -rf "$DH"
+    mkdir -p "$DH/start" "$DH/a" "$DH/b" "$DH/c" "$DH/fzfbin" "$DH/nobin"
+    cat > "$DH/fzfbin/fzf" <<'STUB'
+#!/bin/sh
+while IFS= read -r line; do
+    l=${line#"${line%%[! ]*}"}
+    [ "${l%% *}" = "$FZF_PICK" ] && printf '%s\n' "$line"
+done
+exit 0
+STUB
+    chmod +x "$DH/fzfbin/fzf"
+}
+
+# dh_run <shell> <commands> - stdout and stderr, in order
+dh_run() {
+    (cd "$DH/start" && HOME="$DH" "$1" -c "source '$FUNCTIONS_SH' && $2" 2>&1)
+}
+
+dirhist_posix_cases() {
+    local sh="$1" out bad
+    setup_dirhist
+
+    echo "[$sh] back N / fwd N"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back 2 && fwd && fwd")
+    assert_eq "$sh/back 2, fwd, fwd" "$DH/a
+$DH/b
+$DH/c" "$out"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && back 2 >/dev/null && fwd 2")
+    assert_eq "$sh/back 2 then fwd 2 returns" "$DH/b" "$out"
+
+    echo "[$sh] back -l"
+    out=$(dh_run "$sh" "cd '$DH' && cd / && cd '$DH/b' && cd '$DH/c' && back 2 >/dev/null && back -l")
+    assert_eq "$sh/back -l lists back, current and forward" "  2  ~/start
+  1  ~
+  *  /
+ +1  ~/b
+ +2  ~/c" "$out"
+
+    echo "[$sh] a consecutive duplicate is recorded once"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/a' && cd . && back -l")
+    assert_eq "$sh/no consecutive duplicates" "  1  ~/start
+  *  ~/a" "$out"
+
+    echo "[$sh] a new move clears the forward list"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && back >/dev/null && cd '$DH/c' && fwd; echo rc=\$?; pwd")
+    assert_eq "$sh/new move clears forward" "fwd: history has 0 forward entries, cannot go forward 1
+rc=1
+$DH/c" "$out"
+
+    echo "[$sh] N larger than the history"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && back 5; echo rc=\$?; pwd")
+    assert_eq "$sh/back 5 says how many and stays" "back: history has 2 back entries, cannot go back 5
+rc=1
+$DH/b" "$out"
+    out=$(dh_run "$sh" "cd '$DH/a' && back 99999999999999999999; echo rc=\$?")
+    assert_eq "$sh/back huge N" "back: history has 1 back entry, cannot go back 99999999999999999999
+rc=1" "$out"
+
+    echo "[$sh] N not a positive integer"
+    for bad in abc 01 -x; do
+        out=$(dh_run "$sh" "back $bad; echo rc=\$?")
+        assert_eq "$sh/back $bad usage" "usage: back [N | -l | -i]  (N=positive integer, default 1)
+rc=1" "$out"
+    done
+    out=$(dh_run "$sh" "fwd 0; echo rc=\$?")
+    assert_eq "$sh/fwd 0 usage" "usage: fwd [N]  (N=positive integer, default 1)
+rc=1" "$out"
+
+    echo "[$sh] a target that no longer exists is dropped"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && rmdir '$DH/a' && back; echo rc=\$?; pwd; back -l")
+    assert_eq "$sh/removed target dropped, stays put" "back: $DH/a no longer exists, dropped from history
+rc=1
+$DH/b
+  1  ~/start
+  *  ~/b" "$out"
+    mkdir -p "$DH/a"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back 2 >/dev/null && rmdir '$DH/b' && fwd; echo rc=\$?; pwd; back -l")
+    assert_eq "$sh/removed forward target dropped, stays put" "fwd: $DH/b no longer exists, dropped from history
+rc=1
+$DH/a
+  1  ~/start
+  *  ~/a
+ +1  ~/c" "$out"
+    mkdir -p "$DH/b"
+
+    echo "[$sh] cd - still toggles, as a normal move"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd - >/dev/null && pwd && cd - >/dev/null && pwd && back")
+    assert_eq "$sh/cd - toggles and is recorded" "$DH/a
+$DH/b
+$DH/a" "$out"
+
+    echo "[$sh] the back list keeps 50 entries"
+    out=$(dh_run "$sh" "i=0; while [ \$i -lt 30 ]; do cd '$DH/a'; cd '$DH/b'; i=\$((i + 1)); done; back -l | wc -l")
+    assert_eq "$sh/back list capped at 50" "51" "$(printf '%s' "$out" | tr -d ' ')"
+
+    echo "[$sh] back -i picks an entry with fzf"
+    out=$(dh_run "$sh" "PATH='$DH/fzfbin':\$PATH; export FZF_PICK=2; cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back -i && FZF_PICK=+2 && back -i && FZF_PICK='*' && back -i; echo rc=\$?; pwd")
+    assert_eq "$sh/back -i back, forward, current" "$DH/a
+$DH/c
+rc=0
+$DH/c" "$out"
+    out=$(dh_run "$sh" "PATH='$DH/nobin'; back -i; echo rc=\$?")
+    assert_eq "$sh/back -i without fzf" "back: fzf is not installed.
+rc=1" "$out"
+}
+
+dirhist_posix_cases bash
+
+# bash has no chpwd: the recorder runs from PROMPT_COMMAND, which is a string
+# or (bash 5.1+) an array, and must be joined once without breaking either.
+echo "[bash] PROMPT_COMMAND hook"
+out=$(bash -c "source '$FUNCTIONS_SH' && printf '%s' \"\$PROMPT_COMMAND\"")
+assert_eq "bash/PROMPT_COMMAND set when empty" "_den_dh_record" "$out"
+out=$(bash -c "PROMPT_COMMAND='history -a; '; source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && printf '%s' \"\$PROMPT_COMMAND\"")
+assert_eq "bash/PROMPT_COMMAND string appended once" "history -a; _den_dh_record" "$out"
+out=$(bash -c "PROMPT_COMMAND=(one two); source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && declare -p PROMPT_COMMAND")
+assert_eq "bash/PROMPT_COMMAND array appended once" 'declare -a PROMPT_COMMAND=([0]="one" [1]="two" [2]="_den_dh_record")' "$out"
+out=$(bash -c "source '$FUNCTIONS_SH' && false; _den_dh_record; echo \$?")
+assert_eq "bash/recorder keeps the exit status" "1" "$out"
+
+echo "[bash] moves den's cd does not see are recorded at the prompt"
+out=$(dh_run bash "builtin cd '$DH/a'; eval \"\$PROMPT_COMMAND\"; pushd '$DH/b' >/dev/null; eval \"\$PROMPT_COMMAND\"; mkcd '$DH/c'; eval \"\$PROMPT_COMMAND\"; back -l")
+assert_eq "bash/builtin cd, pushd, mkcd recorded" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/c" "$out"
+out=$(dh_run bash "cd '$DH/a' && cd '$DH/b' && back >/dev/null && eval \"\$PROMPT_COMMAND\" && fwd")
+assert_eq "bash/prompt does not record back as a new move" "$DH/b" "$out"
 
 # =============================================================================
 # Zsh tests
@@ -1365,13 +1502,28 @@ echo "[zsh] back 0"
 err=$(run_zsh_stderr "$FUNCTIONS_SH" "back 0")
 assert_contains "zsh/back 0 usage" "usage" "$err"
 
-echo "[zsh] back 2"
+# back N>1 is supported now (browser-style history); with nothing recorded
+# yet it reports the empty history instead of "only N=1".
+echo "[zsh] back 2 with no history"
 err=$(run_zsh_stderr "$FUNCTIONS_SH" "back 2")
-assert_contains "zsh/back 2 unsupported" "only N=1" "$err"
+assert_contains "zsh/back 2 with no history" "history has 0 back entries" "$err"
 
 echo "[zsh] back with OLDPWD"
 actual=$(run_zsh "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "zsh/back OLDPWD" "/tmp" "$actual"
+
+dirhist_posix_cases zsh
+
+echo "[zsh] chpwd hook"
+out=$(zsh -c "source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && print -r -- \${(j:,:)chpwd_functions}")
+assert_eq "zsh/chpwd hook added once" "_den_dh_record" "$out"
+
+echo "[zsh] moves den's cd does not make are recorded"
+out=$(dh_run zsh "builtin cd '$DH/a'; pushd '$DH/b' >/dev/null; mkcd '$DH/c'; back -l")
+assert_eq "zsh/builtin cd, pushd, mkcd recorded" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/c" "$out"
 
 # =============================================================================
 # PowerShell tests
@@ -2184,19 +2336,229 @@ echo "[pwsh] sagain 0"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "sagain -N 0")
 assert_contains "pwsh/sagain 0 usage" "usage" "$err"
 
-echo "[pwsh] back 2"
+# back N>1 is supported now (browser-style history); with nothing recorded
+# yet it reports the empty history instead of "only N=1".
+echo "[pwsh] back 2 with no history"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "back -N 2")
-assert_contains "pwsh/back 2 unsupported" "only N=1" "$err"
+assert_contains "pwsh/back 2 with no history" "history has 0 back entries" "$err"
 
-echo "[pwsh] back returns to the previous directory (Set-Location -)"
+echo "[pwsh] back returns to the previous directory"
 actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "cd '$WORK'; cd /; back *>\$null; (Get-Location).Path" 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/back previous dir" "$WORK" "$actual"
 
-# NB: the "no previous directory" catch branch is intentionally not unit-tested.
-# `Set-Location -` on a fresh runspace depends on pwsh's internal location-history
-# state (empty vs. a single startup entry), which varies by host and pwsh version,
-# so any fresh-session assertion is flaky. The happy-path round-trip above covers
-# the fix; the try/catch is a defensive guard for genuine failures.
+# --- directory history: back / fwd (browser-style) ---
+# Same fixture as the bash/zsh cases: a fresh pwsh in $DH/start with HOME=$DH.
+# pwsh records moves at the prompt (init.ps1 installs _DenDirHookPrompt), and
+# den's navigation commands record at once when typed there. A command at the
+# top level of -Command counts as typed (CommandOrigin Runspace, as at an
+# interactive prompt); a case that needs the prompt installs the hook and calls
+# `prompt` where one would come.
+setup_dirhist
+
+# dh_pwsh <commands> - stdout; dh_pwsh_err <commands> - stderr (one line, so
+# errors show as "<function>: <message>"). back/fwd errors are terminating, so
+# `try { ... } catch { 'failed' }` lets a case go on to check where it stayed.
+dh_pwsh() {
+    (cd "$DH/start" && HOME="$DH" pwsh -NoProfile -NonInteractive -Command ". '$FUNCTIONS_PS1_COMBINED'; $1" 2>/dev/null | tr -d '\r')
+}
+dh_pwsh_err() {
+    (cd "$DH/start" && HOME="$DH" pwsh -NoProfile -NonInteractive -Command ". '$FUNCTIONS_PS1_COMBINED'; $1" 2>&1 >/dev/null |
+        sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
+}
+
+echo "[pwsh] back N / fwd N"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; Set-Location '$DH/c'; back 2; (Get-Location).Path; fwd; (Get-Location).Path; fwd; (Get-Location).Path")
+assert_eq "pwsh/back 2, fwd, fwd" "$DH/a
+$DH/b
+$DH/c" "$out"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; back 2; fwd 2; (Get-Location).Path")
+assert_eq "pwsh/back 2 then fwd 2 returns" "$DH/b" "$out"
+
+echo "[pwsh] back -l"
+out=$(dh_pwsh "cd '$DH'; cd /; cd '$DH/b'; cd '$DH/c'; back 2; back -l")
+assert_eq "pwsh/back -l lists back, current and forward" "  2  ~/start
+  1  ~
+  *  /
+ +1  ~/b
+ +2  ~/c" "$out"
+
+echo "[pwsh] a consecutive duplicate is recorded once"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/a'; Set-Location .; back -l")
+assert_eq "pwsh/no consecutive duplicates" "  1  ~/start
+  *  ~/a" "$out"
+
+echo "[pwsh] a new move clears the forward list"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; back; cd '$DH/c'; try { fwd } catch { 'failed' }; (Get-Location).Path")
+assert_eq "pwsh/new move clears forward (stays)" "failed
+$DH/c" "$out"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; back; cd '$DH/c'; fwd")
+assert_eq "pwsh/new move clears forward (message)" "fwd: history has 0 forward entries, cannot go forward 1" "$err"
+
+echo "[pwsh] N larger than the history"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; try { back 5 } catch { 'failed' }; (Get-Location).Path")
+assert_eq "pwsh/back 5 stays" "failed
+$DH/b" "$out"
+dh_pwsh "cd '$DH/a'; back 5" >/dev/null
+assert_eq "pwsh/back 5 exits 1" "1" "$?"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; back 5")
+assert_eq "pwsh/back 5 says how many" "back: history has 2 back entries, cannot go back 5" "$err"
+err=$(dh_pwsh_err "cd '$DH/a'; back 99999999999999999999")
+assert_eq "pwsh/back huge N" "back: history has 1 back entry, cannot go back 99999999999999999999" "$err"
+
+echo "[pwsh] N not a positive integer"
+for bad in abc 01; do
+    err=$(dh_pwsh_err "back $bad")
+    assert_eq "pwsh/back $bad usage" "back: usage: [N | -l | -i]  (N=positive integer, default 1)" "$err"
+done
+err=$(dh_pwsh_err "fwd 0")
+assert_eq "pwsh/fwd 0 usage" "fwd: usage: [N]  (N=positive integer, default 1)" "$err"
+dh_pwsh "fwd 0" >/dev/null
+assert_eq "pwsh/fwd 0 exits 1" "1" "$?"
+
+echo "[pwsh] a target that no longer exists is dropped"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; Remove-Item '$DH/a'; try { back } catch { 'failed' }; (Get-Location).Path; back -l")
+assert_eq "pwsh/removed target dropped, stays put" "failed
+$DH/b
+  1  ~/start
+  *  ~/b" "$out"
+mkdir -p "$DH/a"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; Remove-Item '$DH/a'; back")
+assert_eq "pwsh/removed target message" "back: $DH/a no longer exists, dropped from history" "$err"
+mkdir -p "$DH/a"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back 2; Remove-Item '$DH/b'; try { fwd } catch { 'failed' }; (Get-Location).Path; back -l")
+assert_eq "pwsh/removed forward target dropped, stays put" "failed
+$DH/a
+  1  ~/start
+  *  ~/a
+ +1  ~/c" "$out"
+mkdir -p "$DH/b"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back 2; Remove-Item '$DH/b'; fwd")
+assert_eq "pwsh/removed forward target message" "fwd: $DH/b no longer exists, dropped from history" "$err"
+mkdir -p "$DH/b"
+
+echo "[pwsh] Push-Location / Pop-Location are recorded at the prompt"
+out=$(dh_pwsh "_DenDirHookPrompt; Push-Location '$DH/a'; \$null = prompt; Push-Location '$DH/b'; \$null = prompt; Pop-Location; \$null = prompt; back -l")
+assert_eq "pwsh/Push-Location and Pop-Location recorded" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/a" "$out"
+
+echo "[pwsh] the back list keeps 50 entries"
+out=$(dh_pwsh "_DenDirHookPrompt; 1..30 | ForEach-Object { Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt }; @(back -l).Count")
+assert_eq "pwsh/back list capped at 50" "51" "$out"
+
+echo "[pwsh] back -i picks an entry with fzf"
+out=$(dh_pwsh "\$env:PATH = '$DH/fzfbin:' + \$env:PATH; \$env:FZF_PICK = '2'; cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back -i; (Get-Location).Path; \$env:FZF_PICK = '+2'; back -i; (Get-Location).Path; \$env:FZF_PICK = '*'; back -i; (Get-Location).Path")
+assert_eq "pwsh/back -i back, forward, current" "$DH/a
+$DH/c
+$DH/c" "$out"
+err=$(dh_pwsh_err "\$env:PATH = '$DH/nobin'; back -i")
+assert_contains "pwsh/back -i without fzf" "back: fzf is not installed." "$err"
+dh_pwsh "\$env:PATH = '$DH/nobin'; back -i" >/dev/null
+assert_eq "pwsh/back -i without fzf exits 1" "1" "$?"
+
+# LocationChangedAction also fires for every move a script makes, so den does
+# not hook it; a handler set before den loads stays as it was and keeps running.
+echo "[pwsh] LocationChangedAction is left alone"
+out=$(cd "$DH/start" && HOME="$DH" pwsh -NoProfile -NonInteractive -Command "\$global:hits = 0; \$ExecutionContext.InvokeCommand.LocationChangedAction = { \$global:hits++ }; \$before = \$ExecutionContext.InvokeCommand.LocationChangedAction; . '$FUNCTIONS_PS1_COMBINED'; \"kept=\$([object]::ReferenceEquals(\$before, \$ExecutionContext.InvokeCommand.LocationChangedAction))\"; cd '$DH/a'; cd '$DH/b'; back; \"hits=\$global:hits\"; (Get-Location).Path" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/LocationChangedAction not replaced, still runs" "kept=True
+hits=3
+$DH/a" "$out"
+
+# The prompt is the recorder on every PowerShell (Windows PowerShell 5.1 has no
+# LocationChangedAction at all); init.ps1 wraps starship's prompt with it.
+echo "[pwsh] prompt hook"
+out=$(dh_pwsh "function global:prompt { 'st=' + \$global:? }; _DenDirHookPrompt; _DenDirHookPrompt; Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt; \$null = 1; prompt; back -l")
+assert_eq "pwsh/prompt hook records, keeps \$?, wraps once" "st=False
+st=True
+  2  ~/start
+  1  ~/a
+  *  ~/b" "$out"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd '$DH/b'; back; \$null = prompt; fwd; (Get-Location).Path")
+assert_eq "pwsh/prompt does not record back as a new move" "$DH/b" "$out"
+
+# Only where the session is at each prompt counts, as with bash's
+# PROMPT_COMMAND: moves on the way there (several Set-Location on one line, the
+# moves a script or a function makes, den's cd among them) are not history.
+echo "[pwsh] moves between two prompts count once"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd '$DH/b'; Set-Location '$DH/c'; Set-Location '$DH/start'; \$null = prompt; back -l")
+assert_eq "pwsh/Set-Location twice on one line is one move" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/start" "$out"
+mkdir -p "$DH/scr"
+printf '%s\n' 'Push-Location $PSScriptRoot' 'try {} finally { Pop-Location }' > "$DH/scr/pushpop.ps1"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd ../b; back; \$null = prompt; & '$DH/scr/pushpop.ps1'; \$null = prompt; back -l; fwd; (Get-Location).Path")
+assert_eq "pwsh/script Push-Location, Pop-Location leave the history" "  1  ~/start
+  *  ~/a
+ +1  ~/b
+$DH/b" "$out"
+printf '%s\n' 'Set-Location $PSScriptRoot' 'cd ../a' 'Push-Location ../b' 'mkcd ../c' > "$DH/scr/net.ps1"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/b'; & '$DH/scr/net.ps1'; \$null = prompt; back -l")
+assert_eq "pwsh/script ending elsewhere is one move" "  2  ~/start
+  1  ~/b
+  *  ~/c" "$out"
+out=$(dh_pwsh "function global:proj { cd '$DH/a'; mkcd '$DH/b'; up }; proj; back -l")
+assert_eq "pwsh/function's den cd, mkcd, up are one move" "  1  ~/start
+  *  ~" "$out"
+
+# Typed at the prompt, each den navigation command records its move at once;
+# the Set-Location after them only shows up through back -l. `.1` is called as
+# `& '.1'`: a bare .1 is the number 0.1 to PowerShell.
+echo "[pwsh] den's navigation commands typed at the prompt record at once"
+out=$(dh_pwsh "mkcd '$DH/a/n/m'; up; & '.1'; ..; Set-Location '$DH/c'; back -l")
+assert_eq "pwsh/mkcd, up, .1, .. each recorded" "  5  ~/start
+  4  ~/a/n/m
+  3  ~/a/n
+  2  ~/a
+  1  ~
+  *  ~/c" "$out"
+rm -rf "$DH/a/n"
+# The same for zd, zdi, cdi, cdf and y, each through a stub: __zoxide_z /
+# __zoxide_zi just Set-Location, fzf is the fixture's stub (fd is left off PATH
+# so cdf lists full paths), and yazi writes $YAZI_CWD to its --cwd-file.
+mkdir -p "$DH/c/d" "$DH/ybin"
+cat > "$DH/ybin/yazi" <<'STUB'
+#!/bin/sh
+for a; do
+    case $a in --cwd-file=*) printf '%s\n' "$YAZI_CWD" > "${a#--cwd-file=}" ;; esac
+done
+STUB
+chmod +x "$DH/ybin/yazi"
+out=$(dh_pwsh "\$env:PATH = '$DH/fzfbin:$DH/ybin'; function global:__zoxide_z { Set-Location @args }; function global:__zoxide_zi { Set-Location @args }; zd '$DH/a'; zdi '$DH/b'; cdi '$DH/c'; \$env:FZF_PICK = '$DH/c/d'; cdf; \$env:YAZI_CWD = '$DH/a'; y; Set-Location '$DH/start'; back -l")
+assert_eq "pwsh/zd, zdi, cdi, cdf, y each recorded" "  6  ~/start
+  5  ~/a
+  4  ~/b
+  3  ~/c
+  2  ~/c/d
+  1  ~/a
+  *  ~/start" "$out"
+rm -rf "$DH/c/d"
+
+# init.ps1 installs the recorder: it wraps the prompt after starship's init has
+# replaced it. A stub starship stands in for the real one, and HOME /
+# XDG_DATA_HOME point into the fixture, so the init cache is written there and
+# never over the user's own.
+echo "[pwsh] init.ps1 wraps starship's prompt with the recorder"
+mkdir -p "$DH/stbin" "$DH/.local/share"
+cat > "$DH/stbin/starship" <<'STUB'
+#!/bin/sh
+printf '%s\n' 'function global:prompt { "stub:$($global:?)>" }'
+STUB
+chmod +x "$DH/stbin/starship"
+dh_pwsh_init() {
+    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+        pwsh -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; $1" 2>/dev/null | tr -d '\r')
+}
+out=$(dh_pwsh_init "\$function:prompt -eq \$global:_DenDirPrompt; \"\$global:_DenDirPromptOld\".Trim(); Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt")
+assert_eq "pwsh/init.ps1 prompt is den's wrapper around starship's, which still gets \$?" 'True
+"stub:$($global:?)>"
+stub:False>' "$out"
+out=$(dh_pwsh_init "Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; back; \$null = prompt; & '$DH/scr/pushpop.ps1'; \$null = prompt; back -l; fwd; (Get-Location).Path")
+assert_eq "pwsh/init.ps1 prompt records moves, not a script's Push-/Pop-Location" "  1  ~/start
+  *  ~/a
+ +1  ~/b
+$DH/b" "$out"
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention
@@ -2231,6 +2593,90 @@ echo "[pwsh] back usage stderr"
 err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "back -N 0")
 assert_contains "pwsh/back stderr has usage" "usage:" "$err"
 assert_not_contains "pwsh/back no double prefix" "back: back:" "$err"
+
+# =============================================================================
+# cmd: the directory-history promptfilter in starship.lua (Lua, stubbed Clink)
+# =============================================================================
+# cmd and Clink cannot run here, but the filter is plain Lua: load starship.lua
+# against a stub of the Clink calls it makes and drive it prompt by prompt. The
+# shim() below does what back.cmd does to the lists: back N takes the Nth entry
+# from the END of _DEN_DIRBACK (stored farthest first), fwd N the Nth of
+# _DEN_DIRFWD, then it changes directory and leaves its note in _DEN_DIRNAV.
+echo ""
+echo "================================================"
+echo "  Testing starship.lua (cmd) directory history with Lua"
+echo "================================================"
+
+LUA_BIN=$(command -v lua5.4 || command -v lua5.3 || command -v lua || true)
+if [ -z "$LUA_BIN" ]; then
+    echo "  SKIP: cmd/directory history filter (no lua interpreter)"
+else
+    cat > "$WORK/dirhist_harness.lua" <<'LUA'
+local env = { LOCALAPPDATA = "C:\\L", PATH = "", STARSHIP_CPU_INTEL = "stub",
+              _DEN_DIRBACK = "C:\\old", _DEN_DIRFWD = "C:\\old", _DEN_DIRNAV = "back:1" }
+local cwd = "C:\\start"
+local gone = {}
+settings = { set = function() end }
+os.getenv = function(n) return env[n] end
+os.setenv = function(n, v) env[n] = v; return true end
+os.getcwd = function() return cwd end
+os.isdir = function(p) return not gone[p:lower()] end
+os.execute = function() return true end
+local filters = {}
+clink = { promptfilter = function() local f = {}; filters[#filters + 1] = f; return f end }
+dofile(arg[1])
+
+local function prompt() for _, f in ipairs(filters) do f:filter("") end end
+local function state(label)
+    print(label .. ": back=" .. (env._DEN_DIRBACK or "") .. " fwd=" .. (env._DEN_DIRFWD or "")
+        .. " nav=" .. (env._DEN_DIRNAV or "") .. " oldpwd=" .. (env._OLDPWD or ""))
+end
+local function cd(d) cwd = d; prompt() end
+local function shim(cmd, n)
+    local t = {}
+    for x in ((cmd == "back" and env._DEN_DIRBACK or env._DEN_DIRFWD) or ""):gmatch("[^|]+") do
+        t[#t + 1] = x
+    end
+    local target = t[cmd == "back" and (#t - n + 1) or n]
+    if gone[target:lower()] then
+        env._DEN_DIRNAV = "drop" .. cmd .. ":" .. n
+    else
+        env._DEN_DIRNAV = cmd .. ":" .. n
+        cwd = target
+    end
+    prompt()
+end
+
+state("load")
+cd("C:\\a"); cd("C:\\b"); cd("C:\\c"); state("moves")
+cd("c:\\C"); state("same dir, other case")
+shim("back", 2); state("back 2")
+shim("fwd", 1); state("fwd 1")
+shim("back", 1); cd("C:\\d"); state("back 1, then a move")
+gone["c:\\a"] = true; shim("back", 1); state("back 1 to a removed dir")
+env._DEN_DIRNAV = "back:1"; prompt(); state("note without a move")
+cd("C:\\e"); cd("C:\\f"); shim("back", 3); state("back 3")
+gone["c:\\e"] = true; shim("fwd", 2); state("fwd 2 to a removed dir")
+shim("fwd", 2); state("fwd 2 after the drop")
+for i = 1, 30 do cd("C:\\a"); cd("C:\\b") end
+local n = 0
+for _ in env._DEN_DIRBACK:gmatch("[^|]+") do n = n + 1 end
+print("entries after 60 moves: " .. n)
+LUA
+    out=$("$LUA_BIN" "$WORK/dirhist_harness.lua" "$DOTFILES/shell/cmd/starship.lua" 2>&1)
+    assert_eq "cmd/filter lists: start empty, record, rotate, drop, cap" 'load: back= fwd= nav= oldpwd=
+moves: back=C:\start|C:\a|C:\b fwd= nav= oldpwd=C:\b
+same dir, other case: back=C:\start|C:\a|C:\b fwd= nav= oldpwd=C:\c
+back 2: back=C:\start fwd=C:\b|c:\C nav= oldpwd=c:\C
+fwd 1: back=C:\start|C:\a fwd=c:\C nav= oldpwd=C:\a
+back 1, then a move: back=C:\start|C:\a fwd= nav= oldpwd=C:\a
+back 1 to a removed dir: back=C:\start fwd= nav= oldpwd=C:\a
+note without a move: back=C:\start fwd= nav= oldpwd=C:\a
+back 3: back= fwd=C:\d|C:\e|C:\f nav= oldpwd=C:\f
+fwd 2 to a removed dir: back= fwd=C:\d|C:\f nav= oldpwd=C:\f
+fwd 2 after the drop: back=C:\start|C:\d fwd= nav= oldpwd=C:\start
+entries after 60 moves: 25' "$out"
+fi
 
 # =============================================================================
 # Summary

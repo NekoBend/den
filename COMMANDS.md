@@ -38,7 +38,9 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 | `..`, `.1`–`.9` | go up 1..9 levels (`..` = one) | ✓ | ✓ | ✓ |
 | `mkcd <dir>` | `mkdir -p` then cd into it | ✓ | ✓ | ✓ |
 | `cdf` | fuzzy-find a subdirectory (fd + fzf) and cd into it | ✓ | ✓ | — |
-| `back` | cd to the previous directory (N=1 only) | ✓ | ✓ | ✓ |
+| `back [N]` | go N entries back in the directory history (default 1) | ✓ | ✓ | ✓ |
+| `fwd [N]` | go N entries forward again, undoing `back` (default 1) | ✓ | ✓ | ✓ |
+| `back -l` / `back -i` | list the history / pick an entry with fzf and go there | ✓ | ✓ | `-l` |
 | `y` | launch the yazi file manager, cd to its exit directory | ✓ | ✓ | — |
 | `c` | clear the screen | ✓ | ✓ | ✓ |
 
@@ -46,6 +48,47 @@ den initializes zoxide with `--no-cmd` in bash/zsh/pwsh, so bare `z` / `zi` do n
 exist there — you jump through den's toggle-aware `cd` / `cdi` or the always-on
 `zd` / `zdi`. Only cmd runs `zoxide init cmd` without `--no-cmd`, so there `z` / `zi`
 work directly (with `zd` / `zdi` as doskey aliases for them).
+
+`back` / `fwd` work like a browser's back and forward buttons over this shell
+session's directory history (kept in memory, never written to disk):
+
+```
+$ back -l
+  3  ~/experiments/llm-test
+  2  /tmp
+  1  ~/projects/den
+  *  ~/projects/den/shell
+ +1  ~/projects/den/tests
+```
+
+- A move is recorded whatever made it: `cd`, `builtin cd` / `Set-Location`,
+  `pushd` / `popd`, `mkcd`, `up`, `cdf`, `y`. zsh sees every change of
+  directory; bash, PowerShell and cmd see where the shell is at each prompt, so
+  two `builtin cd` / `Set-Location` on one command line count as one move (on
+  bash den's `cd`, and on PowerShell den's navigation commands, record at once;
+  see "How moves are seen" below). A new move after going back clears the
+  forward entries; entering the same directory twice in a row is recorded once.
+- `back N` moves the N-1 entries it passes over, and the directory it leaves, to
+  the forward list, so `back 3` then `fwd 3` returns to the start. `back -i`
+  turns the pick into the matching `back N` / `fwd N`. On pwsh the flags are
+  `-List` / `-Interactive`, which `-l` / `-i` abbreviate.
+- An N larger than the history says how many entries there are and stays put;
+  a target that no longer exists is an error too, and that entry is dropped.
+- The back list keeps 50 entries; on cmd, 25, because a cmd shim reads the whole
+  list on one command line and cmd caps a line at 8191 characters.
+- `cd -` is unchanged, and counts as an ordinary move.
+- How moves are seen: zsh `chpwd`; bash `PROMPT_COMMAND` (den's `cd` records at
+  once, other moves at the next prompt); PowerShell the prompt (den's navigation
+  commands, `cd`, `cdi`, `zd`, `zdi`, `up`, `..`, `.1`-`.9`, `mkcd`, `cdf`, `y`,
+  record at once when typed, not when a script or a function runs them, so a
+  script counts only by where it ends up); cmd the Clink prompt filter in
+  `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`
+  (`_OLDPWD` is still set too).
+- On PowerShell the prompt recorder wraps the `prompt` function when den's line
+  in `$PROFILE` runs, after the starship prompt den sets up there. A prompt set
+  up after that line (oh-my-posh, posh-git, your own `function prompt`) replaces
+  the wrapper, and then only den's navigation commands and `back` / `fwd`
+  themselves notice a move: put any other prompt setup before den's line.
 
 ## Git shortcuts
 

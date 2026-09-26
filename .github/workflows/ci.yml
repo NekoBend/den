@@ -294,6 +294,105 @@ jobs:
           }
           if ($shadowed) { throw "den functions shadowed by builtin aliases: $($shadowed -join ', ')" }
           Write-Output "no builtin alias shadows den's wrappers: $($collide -join ', ')"
+      - name: cmd back/fwd shims (lists seeded by hand)
+        # starship.lua's Clink filter keeps _DEN_DIRBACK / _DEN_DIRFWD and cannot
+        # run here, so seed the lists and check what back.cmd / fwd.cmd print,
+        # return, change and leave in _DEN_DIRNAV. The Linux Lua harness covers
+        # the filter; this is the only run of the batch code itself. 'a b' and
+        # 'c (1)' need quoting all the way through, and 'd!e' survives only
+        # while delayed expansion is on just around !var! reads; in `back -l`,
+        # +1 is %USERPROFILE% itself (shown as ~) and +2 only shares its prefix
+        # (shown in full). A cmd step does not stop on a failed command, so every
+        # check exits 1 itself. A shim's return code is read from ERRORLEVEL on
+        # the next line, and `verify other` sets it to 1 before a call that
+        # should succeed, so a 0 left by an earlier check cannot pass for the
+        # shim's.
+        shell: cmd
+        run: |
+          set "BIN=%GITHUB_WORKSPACE%\shell\cmd\bin"
+          set "T=%RUNNER_TEMP%\dh"
+          mkdir "%T%\start" "%T%\a b" "%T%\c (1)" || exit /b 1
+          set "USERPROFILE=%T%"
+          cd /d "%T%\start"
+          set "_DEN_DIRBACK=%T%\a b|%T%\c (1)"
+          set "_DEN_DIRFWD=%T%|%T%2"
+          set "_DEN_DIRNAV="
+          verify other 2>nul
+          call "%BIN%\back.cmd" -l >"%T%\got.txt"
+          if not "%ERRORLEVEL%"=="0" exit /b 1
+          >"%T%\want.txt" echo(  2  ~\a b
+          >>"%T%\want.txt" echo(  1  ~\c (1)
+          >>"%T%\want.txt" echo(  *  ~\start
+          >>"%T%\want.txt" echo( +1  ~
+          >>"%T%\want.txt" echo( +2  %T%2
+          fc "%T%\want.txt" "%T%\got.txt" || exit /b 1
+          call "%BIN%\back.cmd" 0 2>"%T%\got.txt"
+          if not "%ERRORLEVEL%"=="1" exit /b 1
+          >"%T%\want.txt" echo(usage: back [N ^| -l]  ^(N=positive integer, default 1^)
+          fc "%T%\want.txt" "%T%\got.txt" || exit /b 1
+          call "%BIN%\back.cmd" 9 2>"%T%\got.txt"
+          if not "%ERRORLEVEL%"=="1" exit /b 1
+          >"%T%\want.txt" echo(back: history has 2 back entries, cannot go back 9
+          fc "%T%\want.txt" "%T%\got.txt" || exit /b 1
+          if /i not "%CD%"=="%T%\start" exit /b 1
+          if defined _DEN_DIRNAV exit /b 1
+          verify other 2>nul
+          call "%BIN%\back.cmd" 2
+          if not "%ERRORLEVEL%"=="0" exit /b 1
+          if /i not "%CD%"=="%T%\a b" exit /b 1
+          if not "%_DEN_DIRNAV%"=="back:2" exit /b 1
+          set "_DEN_DIRBACK="
+          set "_DEN_DIRFWD=%T%\c (1)|%T%\start"
+          set "_DEN_DIRNAV="
+          verify other 2>nul
+          call "%BIN%\fwd.cmd" 2
+          if not "%ERRORLEVEL%"=="0" exit /b 1
+          if /i not "%CD%"=="%T%\start" exit /b 1
+          if not "%_DEN_DIRNAV%"=="fwd:2" exit /b 1
+          set "_DEN_DIRNAV="
+          rmdir "%T%\c (1)" || exit /b 1
+          call "%BIN%\fwd.cmd" 2>"%T%\got.txt"
+          if not "%ERRORLEVEL%"=="1" exit /b 1
+          >"%T%\want.txt" echo(fwd: %T%\c (1) no longer exists, dropped from history
+          fc "%T%\want.txt" "%T%\got.txt" || exit /b 1
+          if /i not "%CD%"=="%T%\start" exit /b 1
+          if not "%_DEN_DIRNAV%"=="dropfwd:1" exit /b 1
+          set "_DEN_DIRNAV="
+          call "%BIN%\fwd.cmd" 0 2>"%T%\got.txt"
+          if not "%ERRORLEVEL%"=="1" exit /b 1
+          >"%T%\want.txt" echo(usage: fwd [N]  ^(N=positive integer, default 1^)
+          fc "%T%\want.txt" "%T%\got.txt" || exit /b 1
+          set "_DEN_DIRFWD=%T%\start"
+          call "%BIN%\fwd.cmd" 2 2>"%T%\got.txt"
+          if not "%ERRORLEVEL%"=="1" exit /b 1
+          >"%T%\want.txt" echo(fwd: history has 1 forward entry, cannot go forward 2
+          fc "%T%\want.txt" "%T%\got.txt" || exit /b 1
+          if /i not "%CD%"=="%T%\start" exit /b 1
+          if defined _DEN_DIRNAV exit /b 1
+          mkdir "%T%\d!e" || exit /b 1
+          set "_DEN_DIRBACK=%T%\d!e"
+          set "_DEN_DIRFWD="
+          verify other 2>nul
+          call "%BIN%\back.cmd" -l >"%T%\got.txt"
+          if not "%ERRORLEVEL%"=="0" exit /b 1
+          >"%T%\want.txt" echo(  1  ~\d!e
+          >>"%T%\want.txt" echo(  *  ~\start
+          fc "%T%\want.txt" "%T%\got.txt" || exit /b 1
+          verify other 2>nul
+          call "%BIN%\back.cmd"
+          if not "%ERRORLEVEL%"=="0" exit /b 1
+          if /i not "%CD%"=="%T%\d!e" exit /b 1
+          if not "%_DEN_DIRNAV%"=="back:1" exit /b 1
+          set "_DEN_DIRNAV="
+          rmdir "%T%\a b" || exit /b 1
+          set "_DEN_DIRBACK=%T%\a b"
+          call "%BIN%\back.cmd" 2>"%T%\got.txt"
+          if not "%ERRORLEVEL%"=="1" exit /b 1
+          >"%T%\want.txt" echo(back: %T%\a b no longer exists, dropped from history
+          fc "%T%\want.txt" "%T%\got.txt" || exit /b 1
+          if /i not "%CD%"=="%T%\d!e" exit /b 1
+          if not "%_DEN_DIRNAV%"=="dropback:1" exit /b 1
+          echo cmd back/fwd shims: ok
       - name: cmd dg.cmd hashes, checks, compares and verifies files
         # dg.cmd (certutil) runs nowhere else: the Linux jobs have no cmd.
         # The fixture bytes are fixed, so every digest below is a constant

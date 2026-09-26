@@ -73,6 +73,7 @@ def test_cmd_core_shims_present():
         "ll",  # wrappers
         "up",
         "back",
+        "fwd",
         "mkcd",
         "again",  # navigation
         "python",
