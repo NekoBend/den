@@ -46,26 +46,30 @@ function _DenInteractive {
     return (_DenLaunchIsRepl -Arguments $launch)
 }
 
-# _DenLaunchIsRepl <args> - whether pwsh launched with these arguments ends in a
-# REPL, following pwsh's own parsing (checked against pwsh 7.6):
+# _DenLaunchSwitches <args> - read pwsh launch arguments the way pwsh does (checked
+# against pwsh 7.6 and its CommandLineParameterParser.cs), for _DenLaunchIsRepl and
+# _DenRelaunchArgs. Returns one hashtable per switch, in order, up to the payload:
+# Index (its position in <args>), Name (its full name in lower case, '' for a script
+# path) and Kind:
+#   value    takes one value, the argument at Index + 1 (which gets no entry)
+#   encoded  a payload in one value (-EncodedCommand), at Index + 1
+#   rest     the rest of the line is the payload (-Command, -CommandWithArgs, -File)
+#   script   the script path of pwsh's implicit -File; the rest are its arguments
+#   flag     takes no value, and so do noexit and noninteractive
+#   exit     prints and exits (-Version, -Help)
+# A rest or script entry is the last one: nothing after it is a switch, however it
+# is spelled.
 # - A switch starts with -, --, / or a Unicode dash (en dash, em dash, horizontal
 #   bar), and is named by any prefix of its name down to its shortest form, or by an
 #   alias: -noe, -noexit, --noexit and /noexit are all -NoExit.
-# - -Command, -CommandWithArgs and -File take the rest of the line; -EncodedCommand
-#   and switches such as -ExecutionPolicy take exactly one value.
 # - The first argument that is not a known switch (a script path, an unknown switch,
-#   an empty string, a colon form such as -ExecutionPolicy:Bypass) is the script
-#   path of pwsh's implicit -File.
-# A payload (script, command, encoded command) ends the session unless -NoExit comes
-# before it: VS Code's shell integration starts every terminal as
-# `pwsh -noexit -command ". <shellIntegration.ps1>"`, which IS followed by a REPL.
-# -NonInteractive always wins, even with -NoExit; -Version and -Help print and exit.
+#   an empty string, a colon form such as -ExecutionPolicy:Bypass) is a script path.
 # Windows PowerShell 5.1 differs in -Version, which takes a value there.
-function _DenLaunchIsRepl([string[]]$Arguments) {
+# -RemoveWorkingDirectoryTrailingCharacter exists on Windows only; elsewhere pwsh
+# refuses to start with it.
+function _DenLaunchSwitches([string[]]$Arguments) {
     $versionKind = 'exit'
     if ($PSVersionTable.PSEdition -eq 'Desktop') { $versionKind = 'value' }
-    # Kind: rest = the rest of the line is the payload; encoded = a payload in one
-    # value; value = takes one value; flag = takes none.
     $switches = @(
         @{ Name = 'command'; Min = 'c'; Alias = @(); Kind = 'rest' }
         @{ Name = 'commandwithargs'; Min = 'commandwithargs'; Alias = @('cwa'); Kind = 'rest' }
@@ -79,13 +83,14 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
         @{ Name = 'windowstyle'; Min = 'w'; Alias = @(); Kind = 'value' }
         @{ Name = 'configurationname'; Min = 'config'; Alias = @(); Kind = 'value' }
         @{ Name = 'configurationfile'; Min = 'configurationfile'; Alias = @(); Kind = 'value' }
-        @{ Name = 'custompipename'; Min = 'custompipename'; Alias = @(); Kind = 'value' }
+        @{ Name = 'custompipename'; Min = 'cus'; Alias = @(); Kind = 'value' }
         @{ Name = 'settingsfile'; Min = 'settings'; Alias = @(); Kind = 'value' }
         @{ Name = 'noexit'; Min = 'noe'; Alias = @(); Kind = 'noexit' }
         @{ Name = 'noninteractive'; Min = 'noni'; Alias = @(); Kind = 'noninteractive' }
         @{ Name = 'nologo'; Min = 'nol'; Alias = @(); Kind = 'flag' }
         @{ Name = 'noprofile'; Min = 'nop'; Alias = @(); Kind = 'flag' }
         @{ Name = 'noprofileloadtime'; Min = 'noprofileloadtime'; Alias = @(); Kind = 'flag' }
+        @{ Name = 'removeworkingdirectorytrailingcharacter'; Min = 'removeworkingdirectorytrailingcharacter'; Alias = @(); Kind = 'flag' }
         @{ Name = 'interactive'; Min = 'i'; Alias = @(); Kind = 'flag' }
         @{ Name = 'login'; Min = 'l'; Alias = @(); Kind = 'flag' }
         @{ Name = 'sta'; Min = 'sta'; Alias = @(); Kind = 'flag' }
@@ -93,9 +98,8 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
         @{ Name = 'version'; Min = 'v'; Alias = @(); Kind = $versionKind }
         @{ Name = 'help'; Min = 'h'; Alias = @('?'); Kind = 'exit' }
     )
-    $payload = $false
-    $noExit = $false
     for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $name = ''
         $kind = 'script'
         $a = "$($Arguments[$i])".Trim()
         if ($a.Length -ge 2) {
@@ -108,19 +112,153 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
                 foreach ($s in $switches) {
                     if (($s.Alias -contains $key) -or
                         ($key.Length -ge $s.Min.Length -and $s.Name.StartsWith($key, [StringComparison]::Ordinal))) {
+                        $name = $s.Name
                         $kind = $s.Kind
                         break
                     }
                 }
             }
         }
-        if ($kind -eq 'noninteractive' -or $kind -eq 'exit') { return $false }
-        if ($kind -eq 'noexit') { $noExit = $true }
-        elseif ($kind -eq 'value') { $i++ }
-        elseif ($kind -eq 'encoded') { $payload = $true; $i++ }
-        elseif ($kind -eq 'rest' -or $kind -eq 'script') { $payload = $true; break }
+        @{ Index = $i; Name = $name; Kind = $kind }
+        if ($kind -eq 'rest' -or $kind -eq 'script') { return }
+        if ($kind -eq 'value' -or $kind -eq 'encoded') { $i++ }
+    }
+}
+
+# _DenLaunchIsRepl <args> - whether pwsh launched with these arguments ends in a
+# REPL, reading them with _DenLaunchSwitches. A payload (script, command, encoded
+# command) ends the session unless -NoExit comes before it: VS Code's shell
+# integration starts every terminal as `pwsh -noexit -command ". <shellIntegration.ps1>"`,
+# which IS followed by a REPL. -NonInteractive always wins, even with -NoExit;
+# -Version and -Help print and exit.
+function _DenLaunchIsRepl([string[]]$Arguments) {
+    $payload = $false
+    $noExit = $false
+    foreach ($s in @(_DenLaunchSwitches -Arguments $Arguments)) {
+        if ($s.Kind -eq 'noninteractive' -or $s.Kind -eq 'exit') { return $false }
+        if ($s.Kind -eq 'noexit') { $noExit = $true }
+        elseif ($s.Kind -eq 'encoded' -or $s.Kind -eq 'rest' -or $s.Kind -eq 'script') { $payload = $true }
     }
     return (-not $payload) -or $noExit
+}
+
+# _DenRelaunchArgs <argv> [-Legacy] - the arguments that start PowerShell again the
+# way this session was started, for reload. <argv> is what
+# [Environment]::GetCommandLineArgs() returns (a parameter, so the tests can call
+# this). Its first element names the program, in a form that differs by host
+# (/opt/microsoft/powershell/7/pwsh.dll on Linux pwsh 7.6; not checked on Windows),
+# so it is always dropped and never used: reload runs (Get-Process -Id $PID).Path.
+# -WorkingDirectory is dropped too, with its value, in every spelling
+# _DenLaunchSwitches reads (-wd, -wo, --workingdirectory, /wd, ...), and so is
+# -RemoveWorkingDirectoryTrailingCharacter, which Explorer's "Open here" entry for
+# pwsh passes with -WorkingDirectory "%V!": the new shell starts in the directory
+# reload runs in, which it inherits. Only switches go; the same words inside a
+# -Command, -File or script payload stay.
+# -Legacy prepares each argument for a host that passes native arguments the legacy
+# way (see _DenLegacyArgPassing). Such a host joins them into one command line,
+# drops an empty one, and puts double quotes around one when its check finds
+# whitespace outside quotes, escaping no quote inside it. So every quote here is
+# escaped (\", with the backslashes before it doubled), and an argument with
+# whitespace gets no quotes of its own: the host's check finds the whitespace and
+# quotes it. With quotes of its own, Windows PowerShell 5.1 could quote it again,
+# since its check counts an escaped quote as a quote (pwsh 6 fixed that in
+# PowerShell/PowerShell commit 8bca1f50c5), and VS Code's
+# `try { . "<path>" } catch {}` payload reached the new shell split at the spaces
+# of <path>. Trailing backslashes go doubled into a quoted pair of their own ("\\")
+# at the end, so that the argument does not end in one: pwsh 6 and later double
+# the trailing backslashes of an argument they quote, and 5.1 does not. An empty
+# argument goes as "". One case still breaks on 5.1: an argument whose every
+# whitespace follows an odd number of quotes (such as "C:\a b", quotes included),
+# which 5.1 leaves unquoted, so the new shell gets it split at its spaces.
+function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) {
+    $count = @($CommandLineArgs).Count
+    $launch = @()
+    if ($count -gt 1) { $launch = @($CommandLineArgs[1..($count - 1)]) }
+    $drop = @{}
+    foreach ($s in @(_DenLaunchSwitches -Arguments $launch)) {
+        if ($s.Name -eq 'workingdirectory') { $drop[$s.Index] = $true; $drop[$s.Index + 1] = $true }
+        elseif ($s.Name -eq 'removeworkingdirectorytrailingcharacter') { $drop[$s.Index] = $true }
+    }
+    for ($i = 0; $i -lt $launch.Count; $i++) {
+        if ($drop.ContainsKey($i)) { continue }
+        $a = [string]$launch[$i]
+        if ($Legacy -and $a.Length -eq 0) {
+            $a = '""'
+        } elseif ($Legacy -and $a -match '[\s"]') {
+            $a = $a -replace '(\\*)"', '$1$1\"'
+            $body = $a.TrimEnd([char]'\')
+            $tail = $a.Length - $body.Length
+            if ($tail -gt 0) { $a = $body + '"' + ('\' * (2 * $tail)) + '"' }
+        }
+        $a
+    }
+}
+
+# _DenLaunchMissingFile <args> <dir> - the first file named in these launch arguments
+# that pwsh, started in <dir>, would not find, or $null. pwsh reads the path given
+# to -File (or as a script path), -SettingsFile and -ConfigurationFile from its
+# working directory as it starts, and exits (64, or 70 for -ConfigurationFile) when
+# no file is there. For reload, whose new shell starts in the current directory: a
+# relative path that named a file where this session started may name none there,
+# and the new shell's exit would end this session. The path is read as pwsh reads
+# it (CommandLineParameterParser.NormalizeFilePath: the other slash turned into
+# this system's, then made full), from <dir>. -File - (commands from stdin) names
+# no file.
+function _DenLaunchMissingFile([string[]]$Arguments, [string]$Directory) {
+    $unix = [System.IO.Path]::DirectorySeparatorChar -eq [char]'/'
+    foreach ($s in @(_DenLaunchSwitches -Arguments $Arguments)) {
+        $at = -1
+        if ($s.Kind -eq 'script') { $at = $s.Index }
+        elseif ('file', 'settingsfile', 'configurationfile' -contains $s.Name) { $at = $s.Index + 1 }
+        if ($at -lt 0 -or $at -ge $Arguments.Count) { continue }
+        $path = [string]$Arguments[$at]
+        if ($s.Name -eq 'file' -and $path -eq '-') { continue }
+        if ($unix) { $normal = $path.Replace('\', '/') } else { $normal = $path.Replace('/', '\') }
+        $found = $false
+        try {
+            $found = [System.IO.File]::Exists([System.IO.Path]::GetFullPath([System.IO.Path]::Combine($Directory, $normal)))
+        } catch {
+            $found = $false
+        }
+        if (-not $found) { return $path }
+    }
+    return $null
+}
+
+# _DenLegacyArgPassing - whether this host passes native-command arguments the
+# legacy way: Windows PowerShell 5.1, pwsh before 7.3 (where
+# $PSNativeCommandArgumentPassing is absent), or that variable set to 'Legacy'.
+# 'Windows', the 7.3+ default on Windows, is legacy only for batch files and a few
+# named programs, and pwsh is not one of them.
+function _DenLegacyArgPassing {
+    if ($PSVersionTable.PSVersion.Major -lt 7) { return $true }
+    $style = Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue
+    return ($null -eq $style) -or ("$style" -eq 'Legacy')
+}
+
+# _DenVSCodeEnv - the environment variables VS Code's shell integration took out of
+# this session, as a hashtable of name = value, for reload to hand back to the shell
+# it starts. The integration script copies VSCODE_NONCE, VSCODE_STABLE,
+# VSCODE_A11Y_MODE and VSCODE_SHELL_ENV_REPORTING into $Global:__VSCodeState and
+# deletes them from the environment, so the new shell's copy of the script would
+# find them gone: VS Code would not trust the command lines it reports (they carry
+# the nonce), and PSReadLine would not get the screen reader mode VS Code asked
+# for. VSCODE_ENV_REPLACE, _PREPEND and _APPEND stay out: the script has applied
+# them to the environment already, which the new shell inherits. Empty outside
+# VS Code.
+function _DenVSCodeEnv {
+    $vars = @{}
+    if (-not (Test-Path -Path variable:global:__VSCodeState)) { return $vars }
+    $state = $Global:__VSCodeState
+    if ($state -isnot [System.Collections.IDictionary]) { return $vars }
+    $keys = @{ VSCODE_NONCE = 'Nonce'; VSCODE_STABLE = 'IsStable'; VSCODE_A11Y_MODE = 'IsA11yMode' }
+    foreach ($name in $keys.Keys) {
+        $value = "$($state[$keys[$name]])"
+        if ($value) { $vars[$name] = $value }
+    }
+    $report = @($state['EnvVarsToReport'] | Where-Object { $_ })
+    if ($report.Count -gt 0) { $vars['VSCODE_SHELL_ENV_REPORTING'] = $report -join ',' }
+    return $vars
 }
 
 # _CoreutilsBin — path to the microsoft/coreutils multi-call binary, or $null. This
@@ -137,8 +275,8 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
 # Per-session command-resolution cache. Get-Command is slow (a MISS especially so
 # on Windows), and the generated wrappers run it on every ls/cat/grep/... call;
 # memoizing per session reaches bash's hashed-command parity. A tool installed
-# mid-session is picked up after `reload` (which re-sources this file and so resets
-# the cache). Value is the resolved path/name, or '' = absent. App-lookup keys also
+# mid-session is picked up after `reload` (which starts a new session, and so an
+# empty cache). Value is the resolved path/name, or '' = absent. App-lookup keys also
 # carry $VIRTUAL_ENV (see _ResolveCmd) so a venv switch re-resolves pip/python.
 $script:_DenCmdCache = @{}
 

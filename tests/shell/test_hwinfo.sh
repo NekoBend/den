@@ -349,6 +349,12 @@ actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$DOTFILES/sh
     actual="${actual}[scan exited $?]"
 assert_eq "pwsh/5.1-parsable syntax" "" "$actual"
 
+# tests/shell/relaunch_argv.ps1 runs under Windows PowerShell 5.1 in CI.
+echo "[pwsh] no PowerShell 6/7-only syntax in tests/shell/*.ps1"
+actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$SCRIPT_DIR" | tr -d '\r') ||
+    actual="${actual}[scan exited $?]"
+assert_eq "pwsh/5.1-parsable syntax in tests/shell" "" "$actual"
+
 # PSUseCompatibleSyntax is the analyzer's view of part of the same class
 # (PSScriptAnalyzer 1.25 flags lines 1-5 of the fixture only); the shell test
 # image has no PSScriptAnalyzer, so the scan above is what runs there.
@@ -376,6 +382,8 @@ if pwsh -NoProfile -NonInteractive -Command 'if (Get-Module -ListAvailable PSScr
     assert_contains "pwsh/PSUseCompatibleSyntax flags the fixture's ?." "all7.ps1:5:" "$actual"
     actual=$(pssa_compat "$DOTFILES/shell/pwsh") || actual="${actual}[analyzer exited $?]"
     assert_eq "pwsh/PSUseCompatibleSyntax 5.1 and 7.0" "" "$actual"
+    actual=$(pssa_compat "$SCRIPT_DIR") || actual="${actual}[analyzer exited $?]"
+    assert_eq "pwsh/PSUseCompatibleSyntax 5.1 and 7.0 in tests/shell" "" "$actual"
 else
     echo "  SKIP: pwsh/PSUseCompatibleSyntax (PSScriptAnalyzer not installed)"
 fi
