@@ -287,9 +287,7 @@ certutil -hashfile "!_p!" !_alg! >"!_d!\out.txt" 2>&1
 for /f "usebackq skip=1 delims=" %%H in ("!_d!\out.txt") do if not defined _h set "_h=%%H"
 rd /s /q "!_d!" >nul 2>&1
 if defined _h set "_h=!_h: =!"
-if defined _h (
-    set _h 2>nul | findstr /r /x /c:"_h=[0123456789abcdefABCDEF][0123456789abcdefABCDEF]*" >nul || set "_h="
-)
+if defined _h call :ishex _h || set "_h="
 rem Lowercase: cmd's replace ignores case, so a=a turns every A into a.
 if defined _h for %%C in (a b c d e f) do set "_h=!_h:%%C=%%C!"
 :hash_done
@@ -324,7 +322,7 @@ for /f "tokens=1,2" %%A in ("!_x!") do (
     set "_x2=%%B"
 )
 if defined _x2 goto :expected_no
-set _x 2>nul | findstr /r /x /c:"_x=[0123456789abcdefABCDEF][0123456789abcdefABCDEF]*" >nul || goto :expected_no
+call :ishex _x || goto :expected_no
 if not "!_x:~31,1!"=="" if "!_x:~32,1!"=="" set "_xa=MD5"
 if not "!_x:~63,1!"=="" if "!_x:~64,1!"=="" set "_xa=SHA256"
 if not "!_x:~127,1!"=="" if "!_x:~128,1!"=="" set "_xa=SHA512"
@@ -407,7 +405,7 @@ set "_x=!_ln:~0,128!"
 set "_nm=!_ln:~130!"
 :check_line_hex
 if not defined _nm goto :check_line_end
-set _x 2>nul | findstr /r /x /c:"_x=[0123456789abcdefABCDEF][0123456789abcdefABCDEF]*" >nul || goto :check_line_end
+call :ishex _x || goto :check_line_end
 rem A Windows name cannot hold a newline, so only \\ needs undoing.
 if defined _esc set "_nm=!_nm:\\=\!"
 set "_st=MISSING"
@@ -436,6 +434,19 @@ rem :say2 PRE - print "PRE<_f>  <_g>" (dg -e's verdict line).
 :say2
 setlocal EnableDelayedExpansion
 echo(%~1!_f!  !_g!
+exit /b 0
+
+rem :ishex VAR - errorlevel 0 when VAR holds at least one character and only
+rem hex digits. cmd's replace ignores case, so taking out 0-9 and a-f also
+rem takes out A-F, and anything left is not hex. (findstr /r /x over `set VAR`
+rem output did this first, but on Windows it matched no line, valid hex
+rem included, so every hash and every expected hash was refused.)
+:ishex
+setlocal EnableDelayedExpansion
+set "_r=!%~1!"
+if not defined _r exit /b 1
+for %%C in (0 1 2 3 4 5 6 7 8 9 a b c d e f) do if defined _r set "_r=!_r:%%C=!"
+if defined _r exit /b 1
 exit /b 0
 
 rem :err VAR MSG - print "dg: '<name in VAR>'MSG" to stderr.
