@@ -198,26 +198,45 @@ function vva {
 
 # toggle-uv → flip uv python/pip override on/off
 function toggle-uv {
+  $overrides = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage'
   if ($env:_DEN_UV_OVERRIDE -ne '0') {
-    Remove-Item Function:\uv -ErrorAction SilentlyContinue
-    Remove-Item Function:\python -ErrorAction SilentlyContinue
-    Remove-Item Function:\python3 -ErrorAction SilentlyContinue
-    Remove-Item Function:\pip -ErrorAction SilentlyContinue
-    Remove-Item Function:\pip3 -ErrorAction SilentlyContinue
-    Remove-Item Function:\py -ErrorAction SilentlyContinue
-    Remove-Item Function:\Show-UvOnlyMessage -ErrorAction SilentlyContinue
+    foreach ($name in $overrides) { Remove-Item "Function:\$name" -ErrorAction SilentlyContinue }
     $env:_DEN_UV_OVERRIDE = '0'
     Write-Host 'uv override: ' -NoNewline
     Write-Host 'OFF' -ForegroundColor Yellow -NoNewline
     Write-Host ' (using system python/pip)'
   }
   else {
-    $profileDir = Split-Path -Parent $PROFILE
-    . "$profileDir\python.ps1"
+    # Re-read the python.ps1 this function came from ($PSScriptRoot, where
+    # init.ps1 loaded it), not the one next to $PROFILE: that is another copy,
+    # or none, when init.ps1 runs from a checkout.
+    $src = Join-Path $PSScriptRoot 'python.ps1'
+    if (Test-Path -LiteralPath $src) { . $src }
+    # Dot-sourcing from inside a function defines everything in THIS function's
+    # scope, gone once toggle-uv returns; copy the overrides to global scope so
+    # they outlive the call (posix functions are always global, hence no such
+    # step in python.sh).
+    $restored = 0
+    foreach ($name in $overrides) {
+      $fn = Get-Item "Function:\$name" -ErrorAction SilentlyContinue
+      if ($fn) {
+        Set-Item -Path "Function:global:$name" -Value $fn.ScriptBlock
+        $restored++
+      }
+    }
+    # python.ps1 defines nothing once uv stops resolving (its first line), so
+    # claiming ON here would leave plain python/pip behind an ON message.
+    if ($restored -eq 0) {
+      Write-Warning "toggle-uv: could not load the uv overrides from $src (is uv on PATH?); still OFF"
+      return
+    }
     $env:_DEN_UV_OVERRIDE = '1'
     Write-Host 'uv override: ' -NoNewline
     Write-Host 'ON' -ForegroundColor Green -NoNewline
-    Write-Host ' (python/pip → uv)'
+    # Double quotes: Windows PowerShell 5.1 reads this BOM-less file in the ANSI
+    # code page, where the arrow's last byte is a curly ' that would end a
+    # single-quoted string and leave the whole file unparsable.
+    Write-Host " (python/pip → uv)"
   }
 }
 

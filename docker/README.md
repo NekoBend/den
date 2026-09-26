@@ -102,30 +102,5 @@ already match.
 
 `/home/dev` lives in the container's writable layer. It survives
 `docker restart` but not `docker rm`, and moving to a rebuilt image means a new
-container. Logins and history go with it: `~/.claude`, `~/.claude.json`,
-`~/.codex`, `~/.config/gh`.
-
-To keep `~/.claude`, mount a Docker named volume on it:
-
-```sh
-docker volume create den-claude
-docker run -dit --name den-dev \
-  -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-  -v "$PWD:/workspace" -v den-claude:/home/dev/.claude \
-  den-dev
-```
-
-- Use a named volume, not a bind mount of the host's `~/.claude`. The image
-  keeps the host's Claude credentials and transcripts out of the container on
-  purpose.
-- Docker fills an empty named volume from the image the first time it is
-  mounted (den's skills and `CLAUDE.md`, the acpx skill). After that the volume
-  wins, so skills from a rebuilt image do not reach it. Run
-  `den install skills --tool claude --with-parent --force` inside the container
-  to refresh them.
-- The entrypoint does not re-own files inside a volume, because it does not
-  cross into other file systems. If `HOST_UID`/`HOST_GID` differ from the
-  build's IDs, build with matching `USER_UID`/`USER_GID` instead, so the
-  volume's files stay owned by `dev`.
-- `~/.claude.json` sits next to the directory, not inside it, so this volume
-  does not keep it.
+container. Logins and history go with it (`~/.claude`, `~/.claude.json`,
+`~/.codex`, `~/.config/gh`), so log in again in the new container.
