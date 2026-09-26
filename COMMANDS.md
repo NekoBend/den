@@ -309,7 +309,10 @@ in the session do not carry over (environment variables do). `reload` clears
 the caches and prints a warning instead of restarting in a `-File` or
 `-Command` run without `-NoExit`, a `-NonInteractive` launch, a non-console
 host (the ISE), a nested prompt (the debugger), a shell that 8 reloads in a row
-led to, or when the launch arguments hold `--%`.
+led to, or when the launch arguments hold `--%` or name a file (`-File`, a
+script path, `-SettingsFile`, `-ConfigurationFile`) that the new pwsh would not
+find from the current directory (it would exit at once, and the session with
+it).
 
 ## Standalone helper
 

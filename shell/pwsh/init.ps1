@@ -45,10 +45,12 @@ if (Get-Module -Name PSReadLine) {
 # SaveAtExit would write them only when this process exits, after the new shell.
 # Only an interactive console session at its top-level prompt restarts, and only
 # while fewer than 8 reloads in a row led to it (a reload in the startup payload
-# would otherwise start shells without end). Otherwise (a -File or -Command run, a
-# -NonInteractive launch, another host such as the ISE or VS Code's extension
-# terminal, a nested prompt such as the debugger's, where exit would only leave the
-# nested prompt) reload clears the caches and warns.
+# would otherwise start shells without end). Otherwise (a -File or -Command run; a
+# -NonInteractive launch; another host such as the ISE or VS Code's extension
+# terminal; a nested prompt such as the debugger's, where exit would only leave the
+# nested prompt; launch arguments that hold '--%' or name a file the new shell
+# would not find from the current directory, where it would exit at once and end
+# this session too) reload clears the caches and warns.
 # $global:_DenReloadDepth counts the reloads in a row that led to this session:
 # reload passes the count on in _DEN_RELOAD_DEPTH, which is taken out of the
 # environment here, so that programs started from this session do not inherit it.
@@ -65,6 +67,9 @@ function reload {
   $argv = [Environment]::GetCommandLineArgs()
   $launch = @(_DenRelaunchArgs -CommandLineArgs $argv)
   $depth = [int]$global:_DenReloadDepth
+  # The new shell starts in the current file system location, and pwsh exits when a
+  # file its arguments name is not there (see _DenLaunchMissingFile).
+  $missing = _DenLaunchMissingFile -Arguments $launch -Directory (Get-Location -PSProvider FileSystem).ProviderPath
   # Not _DenInteractive: its _DEN_FORCE_INTERACTIVE override would restart a
   # `-NonInteractive -Command` run, which runs its command again.
   $why = $null
@@ -78,6 +83,8 @@ function reload {
     $why = "$depth reloads in a row led to this shell, each one nested in the one before"
   } elseif ($launch -contains '--%') {
     $why = "its launch arguments hold '--%', which cannot be passed on"
+  } elseif ($null -ne $missing) {
+    $why = "its launch arguments name the file '$missing', which the new shell would not find from the current directory"
   } elseif (-not $exe) {
     $why = 'the path of this PowerShell executable is unknown'
   }

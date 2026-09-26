@@ -194,6 +194,37 @@ function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) {
     }
 }
 
+# _DenLaunchMissingFile <args> <dir> - the first file named in these launch arguments
+# that pwsh, started in <dir>, would not find, or $null. pwsh reads the path given
+# to -File (or as a script path), -SettingsFile and -ConfigurationFile from its
+# working directory as it starts, and exits (64, or 70 for -ConfigurationFile) when
+# no file is there. For reload, whose new shell starts in the current directory: a
+# relative path that named a file where this session started may name none there,
+# and the new shell's exit would end this session. The path is read as pwsh reads
+# it (CommandLineParameterParser.NormalizeFilePath: the other slash turned into
+# this system's, then made full), from <dir>. -File - (commands from stdin) names
+# no file.
+function _DenLaunchMissingFile([string[]]$Arguments, [string]$Directory) {
+    $unix = [System.IO.Path]::DirectorySeparatorChar -eq [char]'/'
+    foreach ($s in @(_DenLaunchSwitches -Arguments $Arguments)) {
+        $at = -1
+        if ($s.Kind -eq 'script') { $at = $s.Index }
+        elseif ('file', 'settingsfile', 'configurationfile' -contains $s.Name) { $at = $s.Index + 1 }
+        if ($at -lt 0 -or $at -ge $Arguments.Count) { continue }
+        $path = [string]$Arguments[$at]
+        if ($s.Name -eq 'file' -and $path -eq '-') { continue }
+        if ($unix) { $normal = $path.Replace('\', '/') } else { $normal = $path.Replace('/', '\') }
+        $found = $false
+        try {
+            $found = [System.IO.File]::Exists([System.IO.Path]::GetFullPath([System.IO.Path]::Combine($Directory, $normal)))
+        } catch {
+            $found = $false
+        }
+        if (-not $found) { return $path }
+    }
+    return $null
+}
+
 # _DenLegacyArgPassing - whether this host passes native-command arguments the
 # legacy way: Windows PowerShell 5.1, pwsh before 7.3 (where
 # $PSNativeCommandArgumentPassing is absent), or that variable set to 'Legacy'.

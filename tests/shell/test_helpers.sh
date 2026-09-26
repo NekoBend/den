@@ -947,6 +947,66 @@ assert_eq "pwsh/_DenRelaunchArgs -wd as another switch's value stays" \
 assert_eq "pwsh/_DenRelaunchArgs -Legacy drops -wd before quoting" \
     'legacy n=3:<-noexit><-c><x>' "$(relaunch_wd_case legacy)"
 
+# --- _DenLaunchMissingFile: a launch file the new shell would not find ---
+# The new shell starts in the current directory, and pwsh exits (64, or 70) when
+# the file given to -File, as a script path, to -SettingsFile or to
+# -ConfigurationFile is not there, which would end the session reload runs in.
+# "here" holds the files, "elsewhere" none. Each line is `<label> <result>`, the
+# result <path> or (none).
+LF_DIR="$WORK/launch files"
+mkdir -p "$LF_DIR/here" "$LF_DIR/elsewhere"
+: >"$LF_DIR/here/s.ps1"
+: >"$LF_DIR/here/settings.json"
+: >"$LF_DIR/here/c.pssc"
+cat > "$WORK/launch_missing_cases.ps1" <<EOF
+function lm([string]\$dir, [string[]]\$launch) {
+    \$r = _DenLaunchMissingFile -Arguments \$launch -Directory "$LF_DIR/\$dir"
+    if (\$null -eq \$r) { '(none)' } else { "<\$r>" }
+}
+'none ' + (lm elsewhere @())
+'file-here ' + (lm here @('-NoExit', '-File', './s.ps1'))
+'file-elsewhere ' + (lm elsewhere @('-NoExit', '-File', './s.ps1'))
+'file-bare-elsewhere ' + (lm elsewhere @('-noe', '--f', 's.ps1'))
+'script-here ' + (lm here @('-nol', '-NoExit', 's.ps1', 'a', 'b'))
+'script-elsewhere ' + (lm elsewhere @('-NoExit', 's.ps1'))
+'backslash-here ' + (lm here @('-NoExit', '-File', '.\s.ps1'))
+'backslash-elsewhere ' + (lm elsewhere @('-NoExit', '-File', '.\s.ps1'))
+'absolute-elsewhere ' + (lm elsewhere @('-NoExit', '-File', '$LF_DIR/here/s.ps1'))
+'absolute-gone ' + (lm here @('-NoExit', '-File', '$LF_DIR/here/gone.ps1'))
+'stdin ' + (lm elsewhere @('-File', '-'))
+'settings-here ' + (lm here @('-settings', './settings.json', '-NoExit'))
+'settings-elsewhere ' + (lm elsewhere @('-SettingsFile', './settings.json', '-NoExit'))
+'config-here ' + (lm here @('-ConfigurationFile', 'c.pssc'))
+'config-elsewhere ' + (lm elsewhere @('-ConfigurationFile', 'c.pssc'))
+'command-payload ' + (lm elsewhere @('-NoExit', '-Command', '. ./s.ps1', './s.ps1'))
+'script-arguments ' + (lm here @('-NoExit', '-File', './s.ps1', './gone.ps1', '-SettingsFile', 'x'))
+'value-not-script ' + (lm elsewhere @('-ep', 'Bypass', '-NoExit'))
+'empty-script ' + (lm here @('-NoExit', ''))
+EOF
+LM_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/launch_missing_cases.ps1'" | tr -d '\r')
+launch_missing_case() { printf '%s\n' "$LM_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenLaunchMissingFile finds the launch files from the given directory"
+assert_eq "pwsh/_DenLaunchMissingFile no arguments" "none (none)" "$(launch_missing_case none)"
+assert_eq "pwsh/_DenLaunchMissingFile -File found" "file-here (none)" "$(launch_missing_case file-here)"
+assert_eq "pwsh/_DenLaunchMissingFile -File not found" "file-elsewhere <./s.ps1>" "$(launch_missing_case file-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile --f bare name not found" "file-bare-elsewhere <s.ps1>" "$(launch_missing_case file-bare-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile script path found" "script-here (none)" "$(launch_missing_case script-here)"
+assert_eq "pwsh/_DenLaunchMissingFile script path not found" "script-elsewhere <s.ps1>" "$(launch_missing_case script-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile reads the other slash as pwsh does" "backslash-here (none)" "$(launch_missing_case backslash-here)"
+assert_eq "pwsh/_DenLaunchMissingFile other slash not found" 'backslash-elsewhere <.\s.ps1>' "$(launch_missing_case backslash-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile absolute path found anywhere" "absolute-elsewhere (none)" "$(launch_missing_case absolute-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile absolute path gone" "absolute-gone <$LF_DIR/here/gone.ps1>" "$(launch_missing_case absolute-gone)"
+assert_eq "pwsh/_DenLaunchMissingFile -File - names no file" "stdin (none)" "$(launch_missing_case stdin)"
+assert_eq "pwsh/_DenLaunchMissingFile -settings found" "settings-here (none)" "$(launch_missing_case settings-here)"
+assert_eq "pwsh/_DenLaunchMissingFile -SettingsFile not found" "settings-elsewhere <./settings.json>" "$(launch_missing_case settings-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile -ConfigurationFile found" "config-here (none)" "$(launch_missing_case config-here)"
+assert_eq "pwsh/_DenLaunchMissingFile -ConfigurationFile not found" "config-elsewhere <c.pssc>" "$(launch_missing_case config-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile -Command payload names no file" "command-payload (none)" "$(launch_missing_case command-payload)"
+assert_eq "pwsh/_DenLaunchMissingFile reads no script arguments" "script-arguments (none)" "$(launch_missing_case script-arguments)"
+assert_eq "pwsh/_DenLaunchMissingFile skips a switch's value" "value-not-script (none)" "$(launch_missing_case value-not-script)"
+assert_eq "pwsh/_DenLaunchMissingFile empty script path" "empty-script <>" "$(launch_missing_case empty-script)"
+
 # --- _DenVSCodeEnv: what VS Code's shell integration took out of the environment ---
 # The integration script moves VSCODE_NONCE, _STABLE, _A11Y_MODE and
 # _SHELL_ENV_REPORTING into $Global:__VSCodeState; reload hands them back.
@@ -1073,6 +1133,27 @@ RL_OUT=$(RL_PRE="$RL_MOVE" run_reload_session -wd "$RL_WD/start" -noexit -comman
 assert_eq "pwsh/reload -wd: a relative payload path is read from the current directory" \
     "RL-WHERE=start"$'\n'"RL-WHERE=moved" "$(printf '%s\n' "$RL_OUT" | grep -oE '^RL-WHERE=[a-z]+')"
 assert_contains "pwsh/reload -wd relative payload exits with the new shell's code" "RC=7" "$RL_OUT"
+
+# pwsh reads a relative -File path from its working directory as it starts, and
+# exits 64 when the file is not there. The new shell starts in the current
+# directory, so after a move reload warns instead of ending the session; where the
+# file is found, it restarts.
+printf '%s\n' '"RL-FILE-RAN PWD=[$($PWD.Path)]"' >"$RL_WD/start/rl-file.ps1"
+echo "[pwsh] reload does not restart when its -File is not found from the current directory"
+actual=$(cd "$RL_WD/start" && printf '%s\n' "Set-Location -LiteralPath '$RL_WD/moved'" 'reload' '"STILL-HERE PWD=[$($PWD.Path)]"' 'exit 3' |
+    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -File ./rl-file.ps1 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+assert_contains "pwsh/reload missing -File warns" \
+    "not restarting: its launch arguments name the file './rl-file.ps1', which the new shell would not find from the current directory" "$actual"
+assert_contains "pwsh/reload missing -File stays in the session" "STILL-HERE PWD=[$RL_WD/moved]" "$actual"
+assert_eq "pwsh/reload missing -File starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
+assert_contains "pwsh/reload missing -File exit code is the session's" "RC=3" "$actual"
+
+echo "[pwsh] reload restarts a -NoExit -File launch whose file is found"
+RL_OUT=$(cd "$RL_WD/start" && run_reload_session -NoExit -File ./rl-file.ps1 | tr -d '\r')
+assert_eq "pwsh/reload -File found: the file runs again" "2" "$(printf '%s\n' "$RL_OUT" | grep -cxF "RL-FILE-RAN PWD=[$RL_WD/start]")"
+assert_contains "pwsh/reload -File found: the new shell sees the added function" "PROBE-OK PID=$(reload_pid 2)" "$RL_OUT"
+assert_contains "pwsh/reload -File found exits with the new shell's code" "RC=7" "$RL_OUT"
 
 # A -Command or -File run is no REPL, so reload only clears the caches and warns.
 # _DEN_FORCE_INTERACTIVE=1 must not change that. The script calls reload only on
