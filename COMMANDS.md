@@ -299,8 +299,10 @@ pwsh with the arguments this session was launched with, in the current
 directory and environment, waits for it, and exits with its exit code; leaving
 the new shell closes the terminal. A `-WorkingDirectory` is left out, so the
 new shell starts in the current directory too; the other arguments take effect
-again, and a `-NoExit` launch runs its `-Command` or `-File` again. In a VS
-Code terminal that loads the shell integration again, and `reload` passes on
+again, and a `-NoExit` launch runs its `-Command` or `-File` again there:
+relative paths in them, and those given to `-File`, `-SettingsFile` or
+`-ConfigurationFile`, are read from the current directory. In a VS Code
+terminal that loads the shell integration again, and `reload` passes on
 the values the first load took out of the environment (the nonce and the
 accessibility mode). Each reload nests one more pwsh process, and variables set
 in the session do not carry over (environment variables do). `reload` clears

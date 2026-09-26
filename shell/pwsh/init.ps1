@@ -33,7 +33,8 @@ if (Get-Module -Name PSReadLine) {
 # new shell closes the terminal, as after exec. Those arguments apply again, but for
 # -WorkingDirectory, which reload leaves out (see _DenRelaunchArgs) so that the new
 # shell stays in the current directory: a -NoExit -Command or -File payload runs
-# again. In a VS Code terminal that payload is
+# again there, and a relative path in it, or given to -File, -SettingsFile or
+# -ConfigurationFile, is read from there. In a VS Code terminal that payload is
 # `-noexit -command ". <shellIntegration.ps1>"`, and reload hands back the values
 # the integration script took out of the environment (see _DenVSCodeEnv). Each
 # reload nests one more process, and variables made in this session do not carry

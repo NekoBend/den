@@ -1064,6 +1064,16 @@ assert_eq "pwsh/reload -WorkingDirectory: the new shell gets the rest" \
 assert_contains "pwsh/reload -WorkingDirectory: the new shell is in the current directory" \
     "PROBE-OK PID=$(reload_pid 2) PWD=[$RL_WD/moved]" "$RL_OUT"
 
+# The payload runs again in the current directory too, so a relative path in it
+# names the file there: pwsh applied -wd before the first run of the payload.
+printf '%s\n' '"RL-WHERE=start"' >"$RL_WD/start/rl-where.ps1"
+printf '%s\n' '"RL-WHERE=moved"' >"$RL_WD/moved/rl-where.ps1"
+echo "[pwsh] reload runs a -noexit -command payload again in the current directory"
+RL_OUT=$(RL_PRE="$RL_MOVE" run_reload_session -wd "$RL_WD/start" -noexit -command '. ./rl-where.ps1' | tr -d '\r')
+assert_eq "pwsh/reload -wd: a relative payload path is read from the current directory" \
+    "RL-WHERE=start"$'\n'"RL-WHERE=moved" "$(printf '%s\n' "$RL_OUT" | grep -oE '^RL-WHERE=[a-z]+')"
+assert_contains "pwsh/reload -wd relative payload exits with the new shell's code" "RC=7" "$RL_OUT"
+
 # A -Command or -File run is no REPL, so reload only clears the caches and warns.
 # _DEN_FORCE_INTERACTIVE=1 must not change that. The script calls reload only on
 # its first run, so a guard that failed shows up as a second run, not a loop.
