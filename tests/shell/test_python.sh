@@ -54,6 +54,18 @@ mk_venv_ps() {
     printf 'version_info = %s\n' "$2" > "$1/.venv/pyvenv.cfg"
 }
 
+# toggle-uv ON re-reads python.ps1 from the $PROFILE directory, where den deploys
+# it; PS_SET_PROFILE points $PROFILE at a copy of the file under test. The mock
+# system pip keeps a missing redirect from reaching a real `pip install`.
+PS_PROFILE_DIR="$WORK/ps_profile"
+mkdir -p "$PS_PROFILE_DIR"
+cp "$PYTHON_PS1" "$PS_PROFILE_DIR/python.ps1"
+PS_SET_PROFILE="\$PROFILE = '$PS_PROFILE_DIR/Microsoft.PowerShell_profile.ps1'"
+MOCK_PIP_BIN="$WORK/mock-pip-bin"
+mkdir -p "$MOCK_PIP_BIN"
+printf '#!/bin/sh\necho "system-pip $*"\n' > "$MOCK_PIP_BIN/pip"
+chmod +x "$MOCK_PIP_BIN/pip"
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -240,6 +252,43 @@ assert_eq "pwsh/toggle-uv OFF env" "0" "$actual"
 echo "[pwsh] toggle-uv removes functions"
 actual=$(run_pwsh "$PYTHON_PS1_TEST" "toggle-uv *>\$null; if (Get-Command pip -ErrorAction SilentlyContinue) { 'exists' } else { 'removed' }" | tr -d '\r')
 assert_eq "pwsh/toggle-uv removes pip" "removed" "$actual"
+
+# ON dot-sources python.ps1 inside toggle-uv; the overrides must still exist once
+# it returns, not only in its own scope.
+echo "[pwsh] toggle-uv OFF then ON restores the override functions"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    $PS_SET_PROFILE
+    toggle-uv *>\$null
+    toggle-uv *>\$null
+    \$missing = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage' |
+        Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
+    \"ENV=[\$env:_DEN_UV_OVERRIDE] MISSING=[\$(\$missing -join ',')]\"
+" | tr -d '\r')
+assert_eq "pwsh/toggle-uv ON restores every override" "ENV=[1] MISSING=[]" "$actual"
+
+echo "[pwsh] toggle-uv OFF then ON redirects pip to uv pip again"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    $PS_SET_PROFILE
+    \$env:PATH = '$MOCK_PIP_BIN' + [IO.Path]::PathSeparator + \$env:PATH
+    \$env:VIRTUAL_ENV = \$null
+    toggle-uv *>\$null
+    toggle-uv *>\$null
+    pip install rich 6>\$null
+" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/toggle-uv ON pip goes to uv pip" "mock-uv pip install rich" "$actual"
+
+echo "[pwsh] toggle-uv OFF removes every override, also after an ON"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    $PS_SET_PROFILE
+    \$names = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage'
+    toggle-uv *>\$null
+    \$left1 = \$names | Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
+    toggle-uv *>\$null
+    toggle-uv *>\$null
+    \$left2 = \$names | Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
+    \"ENV=[\$env:_DEN_UV_OVERRIDE] OFF1=[\$(\$left1 -join ',')] OFF2=[\$(\$left2 -join ',')]\"
+" | tr -d '\r')
+assert_eq "pwsh/toggle-uv OFF leaves no override" "ENV=[0] OFF1=[] OFF2=[]" "$actual"
 
 echo "[pwsh] va activates a Linux/macOS venv (bin/Activate.ps1)"
 mkdir -p "$WORK/venvtest/.venv/bin"

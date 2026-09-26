@@ -214,6 +214,14 @@ function toggle-uv {
   else {
     $profileDir = Split-Path -Parent $PROFILE
     . "$profileDir\python.ps1"
+    # Dot-sourcing from inside a function defines everything in THIS function's
+    # scope, gone once toggle-uv returns; copy the overrides to global scope so
+    # they outlive the call (posix functions are always global, hence no such
+    # step in python.sh).
+    foreach ($name in 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage') {
+      $fn = Get-Item "Function:\$name" -ErrorAction SilentlyContinue
+      if ($fn) { Set-Item "Function:global:$name" $fn.ScriptBlock }
+    }
     $env:_DEN_UV_OVERRIDE = '1'
     Write-Host 'uv override: ' -NoNewline
     Write-Host 'ON' -ForegroundColor Green -NoNewline
