@@ -211,19 +211,33 @@ assert_contains "pwsh/roundtrip cpu restored" "CPU=i9-13900K" "$actual"
 # parse PowerShell 6/7 syntax and then runs none of the file: hwinfo.ps1's
 # `(...)?.Trim()` put toggle-hwinfo at stake. pwsh 7's parser still reads that
 # syntax, so its AST and tokens find it without a 5.1 host. The scan knows the
-# constructs it lists (PowerShell 6.0 to 7.3), nothing newer.
+# constructs it lists (PowerShell 6.0 to 7.3), nothing newer. 5.1 also reads a
+# file without a BOM in the ANSI code page, so the scan parses it that way too.
 
 PWSH_SYNTAX_SCAN="$WORK/pwsh_syntax_scan.ps1"
 cat > "$PWSH_SYNTAX_SCAN" << 'PS1'
 param([string]$Dir)
 # A wrong directory must fail the scan, not pass it with no findings.
 $ErrorActionPreference = 'Stop'
+[System.Text.Encoding]::RegisterProvider([System.Text.CodePagesEncodingProvider]::Instance)
 $files = @(Get-ChildItem -LiteralPath $Dir -Filter *.ps1 -File)
 if ($files.Count -eq 0) { throw "no .ps1 files in $Dir" }
 foreach ($f in $files) {
   $tokens = $null; $errors = $null
   $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
-  foreach ($e in $errors) { "$($f.Name):$($e.Extent.StartLineNumber): parse error: $($e.Message)" }
+  # A message can span lines (it quotes the token); keep one finding per line.
+  foreach ($e in $errors) { "$($f.Name):$($e.Extent.StartLineNumber): parse error: $($e.Message -replace '\s+', ' ')" }
+  # Common ANSI code pages; in cp1252 the last byte of a UTF-8 arrow is a curly
+  # quote, which PowerShell accepts as a quote.
+  $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+  if (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) {
+    foreach ($cp in 1250, 1251, 1252, 932, 936, 949, 950) {
+      $text = [System.Text.Encoding]::GetEncoding($cp).GetString($bytes)
+      $ansiTokens = $null; $ansiErrors = $null
+      [void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$ansiTokens, [ref]$ansiErrors)
+      foreach ($e in $ansiErrors) { "$($f.Name):$($e.Extent.StartLineNumber): parse error as cp${cp}: $($e.Message -replace '\s+', ' ')" }
+    }
+  }
   $hits = @($ast.FindAll({
       param($n)
       # ternary, ??, ??=, && and || (7.0); ?. and ?[] (7.1)
@@ -248,7 +262,9 @@ foreach ($f in $files) {
 }
 PS1
 
-# One line per construct the scan knows (1-12), then 5.1-valid look-alikes (13-14).
+# One line per construct the scan knows (1-12), then 5.1-valid look-alikes (13-14),
+# then a UTF-8 arrow in double quotes (15, fine) and in single quotes (16, broken
+# when read as cp1252; last, so the broken string cannot swallow another line).
 PWSH7_FIXTURE="$WORK/pwsh7_fixture"
 mkdir -p "$PWSH7_FIXTURE" "$WORK/pwsh_empty"
 cat > "$PWSH7_FIXTURE/all7.ps1" << 'PS1'
@@ -266,12 +282,14 @@ $h = 0b1010
 $i = 5u
 $ok = 0x1b + 2gb + 5l + 1.5d + 1e3 + $b?.Length
 $lit = "``u{0}" + '`u{2192}'
+$arrow = "→ x"
+$arrow = '→ x'
 PS1
 
 echo "[pwsh] the syntax scan flags each construct it lists, and nothing else"
 actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$PWSH7_FIXTURE" | tr -d '\r' |
     cut -d: -f2 | sort -nu | paste -sd' ' -) || actual="${actual}[scan exited $?]"
-assert_eq "pwsh/syntax scan fixture lines" "1 2 3 4 5 6 7 8 9 10 11 12" "$actual"
+assert_eq "pwsh/syntax scan fixture lines" "1 2 3 4 5 6 7 8 9 10 11 12 16" "$actual"
 
 echo "[pwsh] the syntax scan fails on a directory without .ps1 files"
 rc=0

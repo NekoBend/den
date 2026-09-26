@@ -225,6 +225,9 @@ function toggle-uv {
     $env:_DEN_UV_OVERRIDE = '1'
     Write-Host 'uv override: ' -NoNewline
     Write-Host 'ON' -ForegroundColor Green -NoNewline
-    Write-Host ' (python/pip → uv)'
+    # Double quotes: Windows PowerShell 5.1 reads this BOM-less file in the ANSI
+    # code page, where the arrow's last byte is a curly ' that would end a
+    # single-quoted string and leave the whole file unparsable.
+    Write-Host " (python/pip → uv)"
   }
 }
