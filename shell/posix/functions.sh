@@ -8,54 +8,325 @@ case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 
 # ===== File Utils =====
 
-# digest → unified hash function (md5, sha256, sha512)
-digest() {
+# _dg_usage → dg's usage text on stdout (a refusal sends it to stderr).
+_dg_usage() {
+    printf '%s\n' \
+        "usage: dg [algo] <file...>        hash; one file prints the bare hash" \
+        "       dg [algo] <file> <hash>    check a file against an expected hash" \
+        "       dg -e [algo] <a> <b>       do a and b have the same content?" \
+        "       dg -c <sumsfile...>        verify checksum files (GNU or BSD lines)" \
+        "algo: md5|sha256|sha512 or 5|256|512; default sha256, or the one the" \
+        "<hash>'s length implies. -- ends option and algo parsing. digest = dg."
+}
+
+# _dg_token → the algorithm an algo token names (md5, sha256, sha512; 5, 256
+# and 512 are short for them), or status 1 when $1 is not one.
+_dg_token() {
     case "$1" in
-        md5|sha256|sha512) ;;
-        *)
-            echo "usage: digest {md5|sha256|sha512} <file...>" >&2
-            return 1
+        md5|MD5|5)         echo md5 ;;
+        sha256|SHA256|256) echo sha256 ;;
+        sha512|SHA512|512) echo sha512 ;;
+        *) return 1 ;;
+    esac
+}
+
+# _dg_bylen → the algorithm whose hex digest is $1 characters long.
+_dg_bylen() {
+    case "$1" in
+        32)  echo md5 ;;
+        64)  echo sha256 ;;
+        128) echo sha512 ;;
+        *) return 1 ;;
+    esac
+}
+
+# _dg_hash → the bare hash of file $2 with algorithm $1, in lowercase hex;
+# status 1 (after the *sum tool's own message) when it cannot be read.
+_dg_hash() {
+    # Neutralize a leading-dash filename so it is not parsed as an option.
+    case "$2" in -*) set -- "$1" "./$2" ;; esac
+    # The hash is taken in a command substitution rather than piped into
+    # awk, so the *sum tool's OWN status is still readable: a pipeline
+    # reports the status of its last command, so an unreadable file --
+    # `[ -f ]` is true for one -- used to leave the tool's "Permission
+    # denied" on stderr while digest printed an empty line and returned 0.
+    _dg_out=$("${1}sum" "$2") || return 1
+    # "<hash>  <name>" from every *sum tool; cut at the first space. GNU
+    # starts the line with a backslash when it had to escape the name (one
+    # holding a backslash or a newline), and that is not part of the hash.
+    _dg_out=${_dg_out%% *}
+    printf '%s\n' "${_dg_out#\\}"
+}
+
+# _dg_expect → can $1 be an expected hash? Trimmed, lowercased and with an
+# optional "md5:" / "sha256:" / "sha512:" prefix taken off (blanks after it
+# too, as in "SHA256: <hex>"), it must be 32, 64 or 128 hex digits. Sets
+# _dg_xh (the hex) and _dg_xp (the prefix's algorithm, or empty).
+_dg_expect() {
+    _dg_xh=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    _dg_xh=${_dg_xh#"${_dg_xh%%[![:space:]]*}"}
+    _dg_xh=${_dg_xh%"${_dg_xh##*[![:space:]]}"}
+    _dg_xp=
+    case $_dg_xh in
+        md5:*|sha256:*|sha512:*)
+            _dg_xp=${_dg_xh%%:*}
+            _dg_xh=${_dg_xh#*:}
+            _dg_xh=${_dg_xh#"${_dg_xh%%[![:space:]]*}"}
             ;;
     esac
-    _h_algo="$1"; shift
-    if [ $# -eq 0 ]; then
-        echo "usage: digest $_h_algo <file...>" >&2
-        unset _h_algo
-        return 1
-    fi
+    case $_dg_xh in ''|*[!0123456789abcdef]*) return 1 ;; esac
+    _dg_bylen "${#_dg_xh}" >/dev/null
+}
+
+# _dg_print → dg [algo] <file...>: $1 is the algorithm, then the files.
+_dg_print() {
+    _dg_a=$1; shift
     # One file prints the bare hash (scriptable); several print hash and
     # name per line, like the *sum tools, so the lines stay attributable.
-    _h_many=$#
-    _h_fail=0
-    for _h_f in "$@"; do
-        if [ ! -f "$_h_f" ]; then
-            echo "digest: '$_h_f' is not a file" >&2
-            _h_fail=1
+    _dg_many=$#
+    _dg_fail=0
+    for _dg_f in "$@"; do
+        if [ ! -f "$_dg_f" ]; then
+            echo "dg: '$_dg_f' is not a file" >&2
+            _dg_fail=1
             continue
         fi
-        # Neutralize a leading-dash filename so it is not parsed as an option.
-        case "$_h_f" in -*) _h_f="./$_h_f" ;; esac
-        # The hash is taken in a command substitution rather than piped into
-        # awk, so the *sum tool's OWN status is still readable: a pipeline
-        # reports the status of its last command, so an unreadable file --
-        # `[ -f ]` is true for one -- used to leave the tool's "Permission
-        # denied" on stderr while digest printed an empty line and returned 0.
-        if ! _h_out=$("${_h_algo}sum" "$_h_f"); then
-            _h_fail=1
+        if ! _dg_h=$(_dg_hash "$_dg_a" "$_dg_f"); then
+            _dg_fail=1
             continue
         fi
-        # "<hash>  <name>" from every *sum tool; cut at the first space.
-        if [ "$_h_many" -gt 1 ]; then
-            printf '%s  %s\n' "${_h_out%% *}" "$_h_f"
+        if [ "$_dg_many" -gt 1 ]; then
+            printf '%s  %s\n' "$_dg_h" "$_dg_f"
         else
-            printf '%s\n' "${_h_out%% *}"
+            printf '%s\n' "$_dg_h"
         fi
     done
-    unset _h_algo _h_f _h_many _h_out
-    if [ "$_h_fail" -ne 0 ]; then unset _h_fail; return 1; fi
-    unset _h_fail
+    return "$_dg_fail"
+}
+
+# _dg_compare → dg [algo] <file> <hash>: $1 is the algo token's algorithm
+# (or empty), $2 the file, and _dg_expect has read the hash. The algorithm
+# is the one the hash's length implies; an algo token or prefix that names
+# another is refused. 0 OK, 1 MISMATCH, 2 when it cannot be checked.
+_dg_compare() {
+    _dg_by=$(_dg_bylen "${#_dg_xh}")
+    for _dg_named in "$1" "$_dg_xp"; do
+        if [ -n "$_dg_named" ] && [ "$_dg_named" != "$_dg_by" ]; then
+            echo "dg: the expected hash is ${#_dg_xh} hex digits ($_dg_by), not $_dg_named" >&2
+            return 2
+        fi
+    done
+    if [ ! -f "$2" ]; then
+        echo "dg: '$2' is not a file" >&2
+        return 2
+    fi
+    _dg_h=$(_dg_hash "$_dg_by" "$2") || return 2
+    if [ "$_dg_h" = "$_dg_xh" ]; then
+        printf 'OK  %s\n' "$2"
+        return 0
+    fi
+    printf 'MISMATCH  %s\n  expected %s\n  actual   %s\n' "$2" "$_dg_xh" "$_dg_h"
+    return 1
+}
+
+# _dg_equal → dg -e [algo] <a> <b>: $1 is the algorithm, then the operands.
+# 0 SAME, 1 DIFFERENT, 2 when they cannot be compared.
+_dg_equal() {
+    if [ $# -ne 3 ]; then
+        echo "usage: dg -e [algo] <a> <b>" >&2
+        return 2
+    fi
+    _dg_fail=0
+    for _dg_f in "$2" "$3"; do
+        if [ ! -f "$_dg_f" ]; then
+            echo "dg: '$_dg_f' is not a file" >&2
+            _dg_fail=1
+        fi
+    done
+    [ "$_dg_fail" -eq 0 ] || return 2
+    _dg_ha=$(_dg_hash "$1" "$2") || return 2
+    _dg_hb=$(_dg_hash "$1" "$3") || return 2
+    if [ "$_dg_ha" = "$_dg_hb" ]; then
+        printf 'SAME  %s  %s\n' "$2" "$3"
+        return 0
+    fi
+    printf 'DIFFERENT  %s  %s\n  %s  %s\n  %s  %s\n' "$2" "$3" "$_dg_ha" "$2" "$_dg_hb" "$3"
+    return 1
+}
+
+# _dg_line → parse one checksum-file line ($1): GNU "<hash>  <name>" or
+# "<hash> *<name>", or BSD "SHA256 (<name>) = <hash>" (MD5, SHA512 alike).
+# Sets _dg_la (algorithm, from the tag or the hash's length), _dg_lh
+# (lowercase hash) and _dg_ln (name) and returns 0; returns 1 for a blank
+# or # comment line and 2 for a malformed one.
+_dg_line() {
+    _dg_l=${1%"$_dg_cr"}
+    case $_dg_l in '#'*) return 1 ;; esac
+    case $_dg_l in *[![:space:]]*) ;; *) return 1 ;; esac
+    # GNU starts a line with a backslash when it escaped the name in it.
+    _dg_le=
+    case $_dg_l in \\*) _dg_le=1; _dg_l=${_dg_l#?} ;; esac
+    case $_dg_l in
+        'MD5 ('*') = '*|'SHA256 ('*') = '*|'SHA512 ('*') = '*)
+            _dg_la=${_dg_l%% *}
+            _dg_l=${_dg_l#*' ('}
+            # The LAST ") = " ends the name, so a name may hold one.
+            _dg_lh=${_dg_l##*') = '}
+            _dg_ln=${_dg_l%') = '*}
+            ;;
+        *)
+            _dg_la=
+            _dg_lh=${_dg_l%% *}
+            _dg_ln=${_dg_l#"$_dg_lh"}
+            case $_dg_ln in
+                '  '?*|' *'?*) _dg_ln=${_dg_ln#??} ;;
+                *) return 2 ;;
+            esac
+            ;;
+    esac
+    case $_dg_lh in ''|*[!0123456789abcdefABCDEF]*) return 2 ;; esac
+    [ -n "$_dg_ln" ] || return 2
+    _dg_lh=$(printf '%s' "$_dg_lh" | tr ABCDEF abcdef)
+    _dg_l=$(_dg_bylen "${#_dg_lh}") || return 2
+    # A BSD tag has to agree with the hash's length.
+    case $_dg_la in
+        '')     ;;
+        MD5)    [ "$_dg_l" = md5 ] || return 2 ;;
+        SHA256) [ "$_dg_l" = sha256 ] || return 2 ;;
+        *)      [ "$_dg_l" = sha512 ] || return 2 ;;
+    esac
+    _dg_la=$_dg_l
+    if [ -n "$_dg_le" ]; then
+        # Undo GNU's escaping (\\, \n, \r); the x keeps a trailing newline
+        # from being stripped by the command substitution.
+        _dg_ln=$(printf '%bx' "$_dg_ln")
+        _dg_ln=${_dg_ln%x}
+    fi
     return 0
 }
+
+# _dg_check → dg -c <sumsfile...>: verify every entry of every checksum
+# file. Names are relative to the current directory, as with sha256sum -c.
+_dg_check() {
+    _dg_cr=$(printf '\r')
+    _dg_ok=0; _dg_bad=0; _dg_miss=0; _dg_unread=0
+    for _dg_sums in "$@"; do
+        if [ ! -f "$_dg_sums" ] || [ ! -r "$_dg_sums" ]; then
+            echo "dg: '$_dg_sums' is not a readable file" >&2
+            _dg_unread=$((_dg_unread + 1))
+            continue
+        fi
+        _dg_mal=0
+        # Read on fd 3, so nothing run for an entry can eat the lines.
+        while IFS= read -r _dg_raw <&3 || [ -n "$_dg_raw" ]; do
+            _dg_line "$_dg_raw"
+            case $? in
+                1) continue ;;
+                2) _dg_mal=$((_dg_mal + 1)); continue ;;
+            esac
+            if [ ! -e "$_dg_ln" ]; then
+                printf '%s: MISSING\n' "$_dg_ln"
+                _dg_miss=$((_dg_miss + 1))
+            elif _dg_h=$(_dg_hash "$_dg_la" "$_dg_ln") && [ "$_dg_h" = "$_dg_lh" ]; then
+                printf '%s: OK\n' "$_dg_ln"
+                _dg_ok=$((_dg_ok + 1))
+            else
+                printf '%s: FAILED\n' "$_dg_ln"
+                _dg_bad=$((_dg_bad + 1))
+            fi
+        done 3< "$_dg_sums"
+        if [ "$_dg_mal" -gt 0 ]; then
+            echo "dg: '$_dg_sums': $_dg_mal malformed line(s) ignored" >&2
+        fi
+    done
+    _dg_n=$((_dg_ok + _dg_bad + _dg_miss))
+    if [ "$_dg_n" -eq 0 ]; then
+        echo "dg: no checksum lines found" >&2
+        return 1
+    fi
+    [ $((_dg_bad + _dg_miss + _dg_unread)) -eq 0 ] && return 0
+    _dg_msg="$_dg_bad FAILED, $_dg_miss MISSING of $_dg_n checked"
+    if [ "$_dg_unread" -gt 0 ]; then
+        _dg_msg="$_dg_msg, $_dg_unread sums file(s) unreadable"
+    fi
+    echo "dg: $_dg_msg" >&2
+    return 1
+}
+
+# _dg_main → dg's body; dg itself only clears the variables afterwards.
+_dg_main() {
+    _dg_mode="hash"
+    _dg_dd=
+    # Options come first. -- ends them and the algo token as well, so
+    # `dg -- 256` hashes a file named 256.
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -e|-c)
+                _dg_o=equal
+                [ "$1" = -c ] && _dg_o=check
+                if [ "$_dg_mode" != hash ] && [ "$_dg_mode" != "$_dg_o" ]; then
+                    echo "dg: -e and -c cannot be combined" >&2
+                    return 1
+                fi
+                _dg_mode=$_dg_o
+                ;;
+            -h|--help) _dg_usage; return 0 ;;
+            --) _dg_dd=1; shift; break ;;
+            -?*)
+                echo "dg: unknown option '$1'" >&2
+                _dg_usage >&2
+                return 1
+                ;;
+            *) break ;;
+        esac
+        shift
+    done
+    _dg_alg=
+    if [ -z "$_dg_dd" ] && [ $# -gt 0 ] && _dg_alg=$(_dg_token "$1"); then
+        shift
+        # `dg sha256 -- -x.txt` ends parsing too.
+        if [ "${1-}" = -- ]; then shift; fi
+    fi
+    case $_dg_mode in
+        check)
+            if [ -n "$_dg_alg" ]; then
+                echo "dg: -c takes no algo (each line names its own)" >&2
+                return 1
+            fi
+            if [ $# -eq 0 ]; then _dg_usage >&2; return 1; fi
+            _dg_check "$@"
+            ;;
+        equal)
+            _dg_equal "${_dg_alg:-sha256}" "$@"
+            ;;
+        *)
+            if [ $# -eq 0 ]; then _dg_usage >&2; return 1; fi
+            # Two operands where the second is no path but reads as a hash:
+            # check the first against it.
+            if [ $# -eq 2 ] && [ ! -e "$2" ] && _dg_expect "$2"; then
+                _dg_compare "$_dg_alg" "$1"
+            else
+                _dg_print "${_dg_alg:-sha256}" "$@"
+            fi
+            ;;
+    esac
+}
+
+# dg → file hashes (md5, sha256, sha512): print them, check a file against
+# an expected hash, compare two files, or verify checksum files. See
+# _dg_usage for the forms.
+dg() {
+    _dg_main "$@"
+    set -- "$?"
+    unset _dg_mode _dg_dd _dg_o _dg_alg _dg_out _dg_xh _dg_xp _dg_a \
+        _dg_many _dg_fail _dg_f _dg_h _dg_by _dg_named _dg_ha _dg_hb \
+        _dg_cr _dg_ok _dg_bad _dg_miss _dg_unread _dg_sums _dg_mal \
+        _dg_raw _dg_n _dg_msg _dg_l _dg_le _dg_la _dg_lh _dg_ln
+    return "$1"
+}
+
+# digest → dg under its older name; every form works the same.
+digest() { dg "$@"; }
 
 # mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)
 mkfile() {
@@ -291,6 +562,16 @@ archive() {
             ;;
         *) echo "archive: unsupported format '$out'" >&2; return 1 ;;
     esac
+}
+
+# xt / pk → short names for extract / archive. Every argument and the exit
+# status pass through unchanged, and messages keep the long name.
+xt() {
+    extract "$@"
+}
+
+pk() {
+    archive "$@"
 }
 
 # ===== System =====

@@ -393,3 +393,277 @@ jobs:
           if /i not "%CD%"=="%T%\d!e" exit /b 1
           if not "%_DEN_DIRNAV%"=="dropback:1" exit /b 1
           echo cmd back/fwd shims: ok
+      - name: cmd dg.cmd hashes, checks, compares and verifies files
+        # dg.cmd (certutil) runs nowhere else: the Linux jobs have no cmd.
+        # The fixture bytes are fixed, so every digest below is a constant
+        # (md5sum/sha256sum/sha512sum of the same bytes): a.txt is "hello",
+        # 68 65 6c 6c 6f (set /p writes no line end), b.txt is those 5 bytes
+        # plus 0d 0a (echo ends every line with CR LF), and c.txt, "sp ace.txt",
+        # 256 and "a!b!&c.txt" are byte copies of them. The runner writes this
+        # script with CRLF line ends and starts it as
+        # cmd /D /E:ON /V:OFF /S /C "CALL <script>.cmd", so "!" is literal
+        # here, the :labels below are found, and exit /b ends the step with
+        # that code. Each run is checked on its exit code and on stdout and
+        # stderr, byte for byte.
+        shell: cmd
+        run: |
+          setlocal EnableExtensions DisableDelayedExpansion
+          set "DG=%GITHUB_WORKSPACE%\shell\cmd\bin\dg.cmd"
+          set "DIGEST=%GITHUB_WORKSPACE%\shell\cmd\bin\digest.cmd"
+          set "FC=%SystemRoot%\System32\fc.exe"
+          set "W=%RUNNER_TEMP%\dg-ci"
+          set "O=%RUNNER_TEMP%\dg-stdout.txt"
+          set "R=%RUNNER_TEMP%\dg-stderr.txt"
+          set "E=%RUNNER_TEMP%\dg-want-stdout.txt"
+          set "X=%RUNNER_TEMP%\dg-want-stderr.txt"
+          set "N=0"
+          set "FAILS=0"
+          rem dg.cmd makes its per-hash directories under %TEMP%: give it one
+          rem of its own, so the last check can see that none is left behind.
+          set "TEMP=%RUNNER_TEMP%\dg-tmp"
+          set "MD5_A=5d41402abc4b2a76b9719d911017c592"
+          set "SHA256_A=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          set "SHA256_A_UC=2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824"
+          set "SHA512_A=9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043"
+          set "MD5_B=af5597c29467a96523a70787c319f4db"
+          set "SHA256_B=cd2eca3535741f27a8ae40c31b0c41d4057a7a7b912b33b9aed86485d1c84676"
+          set "SHA256_EMPTY=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+          if exist "%W%" rd /s /q "%W%"
+          if exist "%TEMP%" rd /s /q "%TEMP%"
+          md "%W%" || exit /b 1
+          md "%TEMP%" || exit /b 1
+          cd /d "%W%" || exit /b 1
+          <nul >a.txt set /p "=hello"
+          >b.txt echo hello
+          type nul >empty.txt
+          copy /b a.txt c.txt >nul
+          copy /b a.txt "sp ace.txt" >nul
+          copy /b a.txt 256 >nul
+          copy /b b.txt "a!b!&c.txt" >nul
+          rem ok.sums: 9 CRLF lines, 603 bytes; bad.sums: 3 CRLF lines, 173 bytes.
+          rem Its last line is GNU-escaped (a leading backslash) with no \\ to undo.
+          >ok.sums echo(# dg -c fixture: comment and blank lines are skipped
+          >>ok.sums echo(
+          >>ok.sums echo(%SHA256_A%  a.txt
+          >>ok.sums echo(%MD5_B% *b.txt
+          >>ok.sums echo(SHA512 (sp ace.txt) = %SHA512_A%
+          >>ok.sums echo(%SHA256_B%  a!b!^&c.txt
+          >>ok.sums echo(MD5 (c.txt) = %MD5_A%
+          >>ok.sums echo(SHA256 (256) = %SHA256_A%
+          >>ok.sums echo(\%SHA256_A%  c.txt
+          >bad.sums echo(%SHA256_A%  b.txt
+          >>bad.sums echo(MD5 (missing.txt) = %MD5_A%
+          >>bad.sums echo(%MD5_A%  sp ace.txt
+          call :size a.txt 5
+          call :size b.txt 7
+          call :size empty.txt 0
+          call :size ok.sums 603
+          call :size bad.sums 173
+
+          rem One file prints the bare hash, for every algo token.
+          type nul >"%X%"
+          >"%E%" echo(%SHA256_A%
+          call "%DG%" a.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg a.txt: default sha256"
+          call "%DG%" 256 a.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg 256 a.txt"
+          call "%DG%" sha256 a.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg sha256 a.txt"
+          call "%DG%" -- 256 >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg -- 256: hashes the file named 256"
+          >"%E%" echo(%MD5_A%
+          call "%DG%" 5 a.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg 5 a.txt"
+          call "%DG%" md5 a.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg md5 a.txt"
+          >"%E%" echo(%SHA512_A%
+          call "%DG%" 512 a.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg 512 a.txt"
+          call "%DG%" SHA512 a.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg SHA512 a.txt: algo name in any case"
+
+          rem Several files print hash and name per line.
+          >"%E%" echo(%SHA256_A%  a.txt
+          >>"%E%" echo(%SHA256_B%  b.txt
+          call "%DG%" a.txt b.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg a.txt b.txt"
+          >"%E%" echo(%MD5_A%  a.txt
+          >>"%E%" echo(%MD5_A%  sp ace.txt
+          >>"%E%" echo(%MD5_B%  a!b!^&c.txt
+          call "%DG%" md5 a.txt "sp ace.txt" "a!b!&c.txt" >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg md5 on three files incl. a spaced and a bang-amp name"
+
+          rem FILE HASH: OK exits 0, MISMATCH exits 1.
+          >"%E%" echo(OK  a.txt
+          call "%DG%" a.txt %SHA256_A% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg a.txt sha256-hex: OK"
+          call "%DG%" a.txt "SHA256: %SHA256_A_UC%" >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg a.txt 'SHA256: UPPERCASE-HEX': OK"
+          >"%E%" echo(OK  sp ace.txt
+          call "%DG%" 512 "sp ace.txt" %SHA512_A% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg 512 sp-ace.txt sha512-hex: OK"
+          >"%E%" echo(MISMATCH  a.txt
+          >>"%E%" echo(  expected %MD5_B%
+          >>"%E%" echo(  actual   %MD5_A%
+          call "%DG%" a.txt %MD5_B% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 1 "dg a.txt md5-of-b.txt: MISMATCH"
+          >"%E%" echo(MISMATCH  a!b!^&c.txt
+          >>"%E%" echo(  expected %SHA256_A%
+          >>"%E%" echo(  actual   %SHA256_B%
+          call "%DG%" "a!b!&c.txt" %SHA256_A% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 1 "dg bang-amp-name sha256-of-a.txt: MISMATCH"
+
+          rem An algo token or prefix that disagrees with the length exits 2.
+          type nul >"%E%"
+          >"%X%" echo(dg: the expected hash is 64 hex digits (SHA256), not MD5
+          call "%DG%" md5 a.txt %SHA256_A% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 2 "dg md5 a.txt sha256-hex: algo disagrees"
+          call "%DG%" a.txt md5:%SHA256_A% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 2 "dg a.txt md5:sha256-hex: prefix disagrees"
+          type nul >"%X%"
+
+          rem -e: SAME exits 0, DIFFERENT exits 1 with both hashes.
+          >"%E%" echo(SAME  a.txt  sp ace.txt
+          call "%DG%" -e a.txt "sp ace.txt" >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg -e a.txt sp-ace.txt: SAME"
+          >"%E%" echo(DIFFERENT  a.txt  a!b!^&c.txt
+          >>"%E%" echo(  %MD5_A%  a.txt
+          >>"%E%" echo(  %MD5_B%  a!b!^&c.txt
+          call "%DG%" -e md5 a.txt "a!b!&c.txt" >"%O%" 2>"%R%"
+          call :expect %errorlevel% 1 "dg -e md5 a.txt bang-amp-name: DIFFERENT"
+
+          rem -c: GNU and BSD lines from CRLF files, names relative to here.
+          >"%E%" echo(a.txt: OK
+          >>"%E%" echo(b.txt: OK
+          >>"%E%" echo(sp ace.txt: OK
+          >>"%E%" echo(a!b!^&c.txt: OK
+          >>"%E%" echo(c.txt: OK
+          >>"%E%" echo(256: OK
+          >>"%E%" echo(c.txt: OK
+          call "%DG%" -c ok.sums >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg -c ok.sums: every entry OK"
+          >"%E%" echo(b.txt: FAILED
+          >>"%E%" echo(missing.txt: MISSING
+          >>"%E%" echo(sp ace.txt: OK
+          >"%X%" echo(dg: 1 FAILED, 1 MISSING of 3 checked
+          call "%DG%" -c bad.sums >"%O%" 2>"%R%"
+          call :expect %errorlevel% 1 "dg -c bad.sums: FAILED and MISSING"
+          type nul >"%X%"
+
+          rem digest.cmd hands its arguments to dg.cmd, whose exit code ends it.
+          >"%E%" echo(%MD5_A%
+          call "%DIGEST%" 5 a.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "digest 5 a.txt"
+          >"%E%" echo(MISMATCH  a.txt
+          >>"%E%" echo(  expected %MD5_B%
+          >>"%E%" echo(  actual   %MD5_A%
+          call "%DIGEST%" a.txt %MD5_B% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 1 "digest a.txt md5-of-b.txt: exit 1 passes through"
+          type nul >"%E%"
+          >"%X%" echo(dg: the expected hash is 64 hex digits (SHA256), not MD5
+          call "%DIGEST%" md5 a.txt %SHA256_A% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 2 "digest md5 a.txt sha256-hex: exit 2 passes through"
+
+          rem A 0-byte file: certutil refuses it, so dg.cmd answers with the
+          rem constant digest of empty input.
+          type nul >"%X%"
+          >"%E%" echo(%SHA256_EMPTY%
+          call "%DG%" empty.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg empty.txt: the empty-input SHA-256"
+          >"%E%" echo(d41d8cd98f00b204e9800998ecf8427e
+          call "%DG%" 5 empty.txt >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg 5 empty.txt: the empty-input MD5"
+          >"%E%" echo(OK  empty.txt
+          call "%DG%" empty.txt %SHA256_EMPTY% >"%O%" 2>"%R%"
+          call :expect %errorlevel% 0 "dg empty.txt empty-sha256: OK"
+
+          rem Every hash removed the directory it made.
+          set /a "N+=1"
+          dir /b /ad "%TEMP%\dg-*" >nul 2>&1
+          if errorlevel 1 goto :tmp_clean
+          set /a "FAILS+=1"
+          echo ::error::dg.cmd left dg-* directories in %TEMP%
+          dir /b /ad "%TEMP%\dg-*"
+          :tmp_clean
+
+          if not "%FAILS%"=="0" goto :failed
+          echo dg.cmd: all %N% checks passed
+          exit /b 0
+          :failed
+          echo ::error::dg.cmd: %FAILS% of %N% checks failed
+          rem Diagnostics: certutil's raw output as text and as hex, then one
+          rem hash through a copy of dg.cmd without "@echo off", so the log
+          rem shows every command it ran with its values expanded.
+          echo ::group::certutil -hashfile a.txt SHA256, raw
+          certutil -hashfile a.txt SHA256 >"%RUNNER_TEMP%\dg-raw.txt" 2>&1
+          echo certutil exit %errorlevel%
+          type "%RUNNER_TEMP%\dg-raw.txt"
+          certutil -f -encodehex "%RUNNER_TEMP%\dg-raw.txt" "%RUNNER_TEMP%\dg-raw.hex" 4 >nul
+          type "%RUNNER_TEMP%\dg-raw.hex"
+          echo ::endgroup::
+          echo ::group::the hex check dg.cmd applies, on its own
+          set "_h=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          set _h
+          set _h 2>nul | findstr /r /x /c:"_h=[0123456789abcdefABCDEF][0123456789abcdefABCDEF]*"
+          echo findstr exit %errorlevel%
+          set "_h="
+          echo ::endgroup::
+          echo ::group::dg.cmd a.txt, traced
+          rem The step runs with echo off, so the copy turns it on explicitly.
+          powershell -NoProfile -Command "(Get-Content -LiteralPath $env:DG) -replace '^@echo off$','@echo on' | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'dg-trace.cmd')"
+          call "%RUNNER_TEMP%\dg-trace.cmd" a.txt
+          echo dg-trace exit %errorlevel%
+          echo ::endgroup::
+          exit /b 1
+
+          rem :expect RC WANT LABEL - the run exited RC; it passes when RC is
+          rem WANT and its stdout and stderr hold the bytes in E and X.
+          :expect
+          set /a "N+=1"
+          call :match %1 %2
+          if errorlevel 1 goto :expect_fail
+          echo ok   %~3
+          exit /b 0
+          :expect_fail
+          set /a "FAILS+=1"
+          echo ::error::dg.cmd: %~3: exit %~1, want %~2
+          call :dump
+          exit /b 0
+
+          rem :match RC WANT - errorlevel 0 when RC is WANT, O equals E and R equals X.
+          :match
+          if not "%~1"=="%~2" exit /b 1
+          call :same "%E%" "%O%"
+          if errorlevel 1 exit /b 1
+          call :same "%X%" "%R%"
+          if errorlevel 1 exit /b 1
+          exit /b 0
+
+          rem :same A B - errorlevel 0 when the two files hold the same bytes.
+          rem Sizes go first, so an empty file on one side never reaches fc.
+          :same
+          if not "%~z1"=="%~z2" exit /b 1
+          if "%~z1"=="0" exit /b 0
+          "%FC%" /b "%~1" "%~2" >nul 2>&1
+          if errorlevel 1 exit /b 1
+          exit /b 0
+
+          :dump
+          echo --- want stdout:
+          type "%E%"
+          echo --- got stdout:
+          type "%O%"
+          echo --- want stderr:
+          type "%X%"
+          echo --- got stderr:
+          type "%R%"
+          exit /b 0
+
+          rem :size FILE BYTES - a fixture has the byte count it was built with.
+          :size
+          set /a "N+=1"
+          if "%~z1"=="%~2" exit /b 0
+          set /a "FAILS+=1"
+          echo ::error::dg.cmd: fixture %~1 is %~z1 bytes, want %~2
+          exit /b 0

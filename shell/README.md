@@ -85,8 +85,15 @@ wrapper substitutes the modern one. To make that visible, a dim notice prints on
 **every** wrapped call:
 
 ```
-[den] ls -> lsd  | native one-off: command ls ...  | disable: run toggle-wrapper, or export _DEN_WRAPPERS=0
+[den] ls -> lsd  (native: command ls, off: tgl-wr)
 ```
+
+`native:` is the native command for a one-off call (it keeps the wrapper's own
+fallback flags, e.g. `command ls -A` for `la`, minus presentation-only ones such
+as `--color=auto`, and is left out when
+the wrapper has no native equivalent); `off:` turns the wrappers off for the
+session (`tgl-wr` is short for `toggle-wrapper`). PowerShell prints only the
+second hint: `[den] ls -> lsd  (off: tgl-wr)`.
 
 One difference is easy to miss when you are vetting code you did not write: `rg`
 and `fd` honor a repository's own `.gitignore`, `.ignore`, `.rgignore` and
@@ -100,12 +107,13 @@ Ways to get the native command:
 
 - **One-off (POSIX):** prefix `command`, e.g. `command ls -la --color=never`.
   This bypasses the wrapper for that single call.
-- **This session:** run `toggle-wrapper` (flips `_DEN_WRAPPERS`), or
-  `export _DEN_WRAPPERS=0` (PowerShell: `$env:_DEN_WRAPPERS = '0'`).
+- **This session:** run `toggle-wrapper` or its short name `tgl-wr` (flips
+  `_DEN_WRAPPERS`), or `export _DEN_WRAPPERS=0` (PowerShell:
+  `$env:_DEN_WRAPPERS = '0'`).
 - **Silence the notice** (without changing behavior): `_DEN_WRAPPER_LOG=0`.
 
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
-tool, ignoring the toggle.
+tool, ignoring the toggle, and print no notice.
 
 On PowerShell, piping objects into a wrapper that resolves to a modern tool,
 microsoft/coreutils, or a native exe (e.g. `Get-ChildItem | wc -l`) sends the
@@ -131,10 +139,14 @@ native PowerShell cmdlets, when you need object-accurate results.
 ### Files
 | Command | What it does |
 |---------|--------------|
-| `digest {md5\|sha256\|sha512} FILE...` | hash files (several: hash and name per line) |
+| `dg [ALGO] FILE...` | hash files; ALGO is md5/sha256/sha512 or 5/256/512, default sha256 (several: hash and name per line) |
+| `dg [ALGO] FILE HASH` | check FILE against an expected hash (the algo follows the hash's length) |
+| `dg -e [ALGO] A B` | do A and B have the same content? |
+| `dg -c SUMSFILE...` | verify checksum files, GNU or BSD lines, like `sha256sum -c` |
+| `digest ...` | the older name of `dg`, same forms |
 | `mkfile SIZE PATH` | create a dummy file (e.g. `mkfile 10M test.bin`) |
-| `extract ARCHIVE...` | auto-detect and extract each archive; a failure is reported and the rest still run (exit 1 if any failed). Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst |
-| `archive OUT FILES...` | create an archive (format from `OUT` extension); every argument after `OUT` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) |
+| `extract ARCHIVE...` / `xt` | auto-detect and extract each archive; a failure is reported and the rest still run (exit 1 if any failed). Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst |
+| `archive OUT FILES...` / `pk` | create an archive (format from `OUT` extension); every argument after `OUT` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) |
 | `y` | yazi file manager (returns you to the dir you exit in) |
 | `again [N]` / `sagain` | re-run the Nth previous command (`sagain` = with sudo) |
 
@@ -147,7 +159,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `va [DIR]` | activate a venv (default `.venv`) |
 | `vd` | deactivate |
 | `vv` / `vva` | `uv venv` (create / create + activate) |
-| `toggle-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
+| `toggle-uv` / `tgl-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
 
 ### Parallel file ops
 | Command | What it does |
@@ -235,7 +247,7 @@ exports `STARSHIP_CPU_*` / `STARSHIP_GPU_*`.
   `$XDG_RUNTIME_DIR/den-hwinfo.<machine-id>.sh` (mode 600); PowerShell
   caches under LocalAppData keyed by `$COMPUTERNAME`. This keeps a shared or
   synced `$HOME` from showing one machine's hardware on another.
-- `toggle-hwinfo` shows/hides the info in the prompt.
+- `toggle-hwinfo` (short: `tgl-hw`) shows/hides the info in the prompt.
 - `refresh-hwinfo` clears the cache so the next shell re-detects.
 
 ## Tab completion (pwsh)
@@ -269,7 +281,7 @@ time each session.
 ```
 shell/
   posix/       core config for bash/zsh (sh-compatible)
-    _helpers.sh   wrapper generator (_wrap), PATH, cache init, toggle-wrapper
+    _helpers.sh   wrapper generator (_wrap), PATH, cache init, toggle-wrapper/tgl-wr
     wrappers.sh   the ls/cat/grep/find wrapper definitions
     functions.sh  file/navigation/history utilities
     aliases.sh    navigation / git / docker aliases
@@ -310,8 +322,8 @@ of zoxide and starship. zsh and PowerShell mirror this.
 | Variable | Effect |
 |----------|--------|
 | `_DEN_WRAPPERS=0` | use native commands instead of modern tools |
-| `_DEN_WRAPPER_LOG=0` | silence the one-time wrapper hint |
+| `_DEN_WRAPPER_LOG=0` | silence the wrapper notice (printed on every wrapped call) |
 | `_DEN_COREUTILS=<path>` | use a specific microsoft/coreutils binary, e.g. `C:\Program Files\coreutils\coreutils.exe` (Windows) |
 | `_DEN_COREUTILS=0` | disable the microsoft/coreutils tier (Windows) |
-| `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv`) |
-| `_DEN_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo`) |
+| `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv` / `tgl-uv`) |
+| `_DEN_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo` / `tgl-hw`) |

@@ -46,7 +46,10 @@ if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
         # Prefer nvidia-smi for NVIDIA GPUs (more accurate than Win32_VideoController)
         $gpuName = ''
         if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-          $gpuName = (nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null | Select-Object -First 1)?.Trim()
+          # Not `(...)?.Trim()`: null-conditional access is PowerShell 7.1+ syntax,
+          # and Windows PowerShell 5.1 would reject the whole file over it.
+          $gpuName = nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null | Select-Object -First 1
+          if ($gpuName) { $gpuName = $gpuName.Trim() }
         }
         if (-not $gpuName) {
           $gpuName = (Get-CimInstance Win32_VideoController -ErrorAction Stop | Select-Object -First 1).Name.Trim()
@@ -123,6 +126,11 @@ function toggle-hwinfo {
     Write-Host 'ON' -ForegroundColor Green -NoNewline
     Write-Host ' (visible in prompt)'
   }
+}
+
+# tgl-hw → short name for toggle-hwinfo
+function tgl-hw {
+  toggle-hwinfo @Args
 }
 
 Remove-Variable _hwCache, _hwVars, cur, escapedValue, lines, tmp, v, val -ErrorAction SilentlyContinue
