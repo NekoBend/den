@@ -681,6 +681,27 @@ echo "[pwsh] _DenRelaunchArgs on a real launch drops only the program"
 actual=$(pwsh -NoProfile -NonInteractive -Command ". '$HELPERS_PS1'; \$r = @(_DenRelaunchArgs -CommandLineArgs ([Environment]::GetCommandLineArgs())); '{0}|{1}|{2}' -f \$r.Count, \$r[0], \$r[1]" | tr -d '\r')
 assert_eq "pwsh/_DenRelaunchArgs real launch" "4|-NoProfile|-NonInteractive" "$actual"
 
+# --- _DenVSCodeEnv: what VS Code's shell integration took out of the environment ---
+# The integration script moves VSCODE_NONCE, _STABLE, _A11Y_MODE and
+# _SHELL_ENV_REPORTING into $Global:__VSCodeState; reload hands them back.
+cat > "$WORK/vscode_env.ps1" <<'EOF'
+function envs([hashtable]$h) { "n=$($h.Count):" + (($h.Keys | Sort-Object | ForEach-Object { "$_=$($h[$_])" }) -join ';') }
+'outside ' + (envs (_DenVSCodeEnv))
+$Global:__VSCodeState = @{ Nonce = 'n0'; IsStable = '1'; IsA11yMode = $null; EnvVarsToReport = @('PATH', 'VIRTUAL_ENV') }
+'full ' + (envs (_DenVSCodeEnv))
+$Global:__VSCodeState = @{ Nonce = ''; IsA11yMode = '1'; EnvVarsToReport = @() }
+'a11y ' + (envs (_DenVSCodeEnv))
+EOF
+VSENV_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/vscode_env.ps1'" | tr -d '\r')
+vsenv_case() { printf '%s\n' "$VSENV_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenVSCodeEnv outside VS Code"
+assert_eq "pwsh/_DenVSCodeEnv outside VS Code" "outside n=0:" "$(vsenv_case outside)"
+echo "[pwsh] _DenVSCodeEnv restores what the integration script took"
+assert_eq "pwsh/_DenVSCodeEnv full state" \
+    "full n=3:VSCODE_NONCE=n0;VSCODE_SHELL_ENV_REPORTING=PATH,VIRTUAL_ENV;VSCODE_STABLE=1" "$(vsenv_case full)"
+assert_eq "pwsh/_DenVSCodeEnv skips empty values" "a11y n=1:VSCODE_A11Y_MODE=1" "$(vsenv_case a11y)"
+
 # --- reload (init.ps1) starts pwsh again ---
 # reload used to dot-source $PROFILE inside its own function scope, so a function
 # added to the config was gone again when reload returned. It now starts the same
@@ -695,17 +716,22 @@ cp "$DOTFILES"/shell/pwsh/*.ps1 "$RL_CFG/"
 printf '%s\n' '$env:_RL_LOADS = 1 + [int]$env:_RL_LOADS' \
     'if ([int]$env:_RL_LOADS -gt 4) { "RUNAWAY"; [Environment]::Exit(99) }' \
     '"PROFILE-LOADED PID=$PID"' ". '$RL_CFG/init.ps1'" >"$RL_HOME/.config/powershell/Microsoft.PowerShell_profile.ps1"
-printf '%s\n' '"SI-LOADED ARGS=$(([Environment]::GetCommandLineArgs() | Select-Object -Skip 1) -join "|")"' >"$WORK/reload dir/si.ps1"
+# si.ps1 stands in for VS Code's shellIntegration.ps1, which moves VSCODE_NONCE
+# out of the environment into $Global:__VSCodeState.
+printf '%s\n' \
+    'if (-not (Test-Path variable:global:__VSCodeState)) { $Global:__VSCodeState = @{ Nonce = $env:VSCODE_NONCE }; $env:VSCODE_NONCE = $null }' \
+    '"SI-LOADED ARGS=$(([Environment]::GetCommandLineArgs() | Select-Object -Skip 1) -join "|")"' \
+    '"SI-NONCE=[$($Global:__VSCodeState.Nonce)] ENV=[$env:VSCODE_NONCE]"' >"$WORK/reload dir/si.ps1"
 
 # run_reload_session <pwsh args...> - start pwsh as a REPL on pipes, add a function
 # to a fresh copy of functions.ps1 and run reload; once a second shell has loaded
-# the profile, call that function and exit 7. Prints the output, then RC=<exit
-# code>. The second half of the input goes out only then, so the relaunched shell
-# reads it.
+# the profile, call that function and exit 7. VSCODE_NONCE is set, as VS Code
+# sets it. Prints the output, then RC=<exit code>. The second half of the input
+# goes out only then, so the relaunched shell reads it.
 run_reload_session() {
     local line out='' loaded=0 rc pid rfd wfd
     cp "$DOTFILES/shell/pwsh/functions.ps1" "$RL_CFG/functions.ps1"
-    coproc RLS { env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 90 pwsh -NoLogo "$@" 2>&1; }
+    coproc RLS { env -u _DEN_FORCE_INTERACTIVE VSCODE_NONCE=rl-nonce HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 90 pwsh -NoLogo "$@" 2>&1; }
     pid=$RLS_PID
     exec {rfd}<&"${RLS[0]}" {wfd}>&"${RLS[1]}"
     printf '%s\n' "Add-Content -LiteralPath '$RL_CFG/functions.ps1' -Value 'function reload-probe { \"PROBE-OK PID=\$PID\" }'" 'reload' >&"$wfd"
@@ -743,6 +769,8 @@ assert_eq "pwsh/reload runs the -command payload again" "2" "$(printf '%s\n' "$R
 assert_eq "pwsh/reload passes the same arguments" "SI-LOADED ARGS=-NoLogo|-noexit|-command|$RL_PAYLOAD" "$(printf '%s\n' "$RL_SI" | sed -n 2p)"
 assert_contains "pwsh/reload under -noexit -command sees the added function" "PROBE-OK PID=$(reload_pid 2)" "$RL_OUT"
 assert_contains "pwsh/reload under -noexit -command exits with the new shell's code" "RC=7" "$RL_OUT"
+assert_eq "pwsh/reload hands VS Code's nonce back to the new shell" \
+    "SI-NONCE=[rl-nonce] ENV=[]"$'\n'"SI-NONCE=[rl-nonce] ENV=[]" "$(printf '%s\n' "$RL_OUT" | grep -oE 'SI-NONCE=.*')"
 
 # A -Command or -File run is no REPL, so reload only clears the caches and warns.
 # _DEN_FORCE_INTERACTIVE=1 must not change that. The script calls reload only on

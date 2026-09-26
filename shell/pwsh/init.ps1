@@ -33,8 +33,8 @@ if (Get-Module -Name PSReadLine) {
 # new shell closes the terminal, as after exec. Those arguments apply again: a
 # -WorkingDirectory changes to that directory, and a -NoExit -Command or -File
 # payload runs again. In a VS Code terminal that payload is
-# `-noexit -command ". <shellIntegration.ps1>"`, which loads the shell integration
-# again. Each
+# `-noexit -command ". <shellIntegration.ps1>"`, and reload hands back the values
+# the integration script took out of the environment (see _DenVSCodeEnv). Each
 # reload nests one more process, and variables made in this session do not carry
 # over (environment variables do). Dot-sourcing $PROFILE from here instead defines
 # everything in this function's scope, which is gone when it returns.
@@ -85,7 +85,9 @@ function reload {
   }
   if (_DenLegacyArgPassing) { $launch = @(_DenRelaunchArgs -CommandLineArgs $argv -Legacy) }
   # Only for the new shell: this process exits once it ends, unless it cannot start.
-  $env:_DEN_RELOAD_DEPTH = [string]($depth + 1)
+  $handOn = _DenVSCodeEnv
+  $handOn['_DEN_RELOAD_DEPTH'] = [string]($depth + 1)
+  foreach ($name in $handOn.Keys) { [Environment]::SetEnvironmentVariable($name, $handOn[$name]) }
   # exit runs in finally: a Ctrl+C in the new shell reaches this process too and
   # stops this pipeline, which still waits for the new shell but then skips the
   # statements after it, so a later exit would land back in this stale session.
@@ -96,7 +98,7 @@ function reload {
     & $exe @launch
   } catch [System.Management.Automation.CommandNotFoundException], [System.Management.Automation.ApplicationFailedException] {
     $failed = $true
-    $env:_DEN_RELOAD_DEPTH = $null
+    foreach ($name in $handOn.Keys) { [Environment]::SetEnvironmentVariable($name, $null) }
     Write-Warning "reload: could not start ${exe}: $($_.Exception.Message)"
   } finally {
     if (-not $failed) { exit $LASTEXITCODE }

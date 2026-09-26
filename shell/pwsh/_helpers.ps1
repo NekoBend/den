@@ -159,6 +159,31 @@ function _DenLegacyArgPassing {
     return ($null -eq $style) -or ("$style" -eq 'Legacy')
 }
 
+# _DenVSCodeEnv - the environment variables VS Code's shell integration took out of
+# this session, as a hashtable of name = value, for reload to hand back to the shell
+# it starts. The integration script copies VSCODE_NONCE, VSCODE_STABLE,
+# VSCODE_A11Y_MODE and VSCODE_SHELL_ENV_REPORTING into $Global:__VSCodeState and
+# deletes them from the environment, so the new shell's copy of the script would
+# find them gone: VS Code would not trust the command lines it reports (they carry
+# the nonce), and PSReadLine would not get the screen reader mode VS Code asked
+# for. VSCODE_ENV_REPLACE, _PREPEND and _APPEND stay out: the script has applied
+# them to the environment already, which the new shell inherits. Empty outside
+# VS Code.
+function _DenVSCodeEnv {
+    $vars = @{}
+    if (-not (Test-Path -Path variable:global:__VSCodeState)) { return $vars }
+    $state = $Global:__VSCodeState
+    if ($state -isnot [System.Collections.IDictionary]) { return $vars }
+    $keys = @{ VSCODE_NONCE = 'Nonce'; VSCODE_STABLE = 'IsStable'; VSCODE_A11Y_MODE = 'IsA11yMode' }
+    foreach ($name in $keys.Keys) {
+        $value = "$($state[$keys[$name]])"
+        if ($value) { $vars[$name] = $value }
+    }
+    $report = @($state['EnvVarsToReport'] | Where-Object { $_ })
+    if ($report.Count -gt 0) { $vars['VSCODE_SHELL_ENV_REPORTING'] = $report -join ',' }
+    return $vars
+}
+
 # _CoreutilsBin — path to the microsoft/coreutils multi-call binary, or $null. This
 # is the middle dispatch tier on Windows (modern -> coreutils -> native -> PS
 # fallback): microsoft/coreutils bundles uutils/coreutils + findutils + grep into
