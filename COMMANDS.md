@@ -73,10 +73,11 @@ $ back -l
   list on one command line and cmd caps a line at 8191 characters.
 - `cd -` is unchanged, and counts as an ordinary move.
 - How moves are seen: zsh `chpwd`; bash `PROMPT_COMMAND` (den's `cd` records at
-  once, other moves at the next prompt); PowerShell 6.1+ `LocationChangedAction`;
-  Windows PowerShell 5.1 the prompt; cmd the Clink prompt filter in
-  `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`
-  (`_OLDPWD` is still set too).
+  once, other moves at the next prompt); PowerShell the prompt (den's `cd`,
+  `mkcd`, `up`, `cdf`, `y` record at once when typed, not when a script or a
+  function runs them, so a script counts only by where it ends up); cmd the
+  Clink prompt filter in `starship.lua`, which keeps the lists in
+  `_DEN_DIRBACK` / `_DEN_DIRFWD` (`_OLDPWD` is still set too).
 
 ## Git shortcuts
 

@@ -1920,7 +1920,11 @@ assert_eq "pwsh/back previous dir" "$WORK" "$actual"
 
 # --- directory history: back / fwd (browser-style) ---
 # Same fixture as the bash/zsh cases: a fresh pwsh in $DH/start with HOME=$DH.
-# The history is recorded by functions.ps1's LocationChangedAction hook.
+# pwsh records moves at the prompt (init.ps1 installs _DenDirHookPrompt), and
+# den's navigation commands record at once when typed there. A command at the
+# top level of -Command counts as typed (CommandOrigin Runspace, as at an
+# interactive prompt); a case that needs the prompt installs the hook and calls
+# `prompt` where one would come.
 setup_dirhist
 
 # dh_pwsh <commands> - stdout; dh_pwsh_err <commands> - stderr (one line, so
@@ -2004,15 +2008,15 @@ err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back 2; Remove-Item '$DH/
 assert_eq "pwsh/removed forward target message" "fwd: $DH/b no longer exists, dropped from history" "$err"
 mkdir -p "$DH/b"
 
-echo "[pwsh] Push-Location / Pop-Location are recorded"
-out=$(dh_pwsh "Push-Location '$DH/a'; Push-Location '$DH/b'; Pop-Location; back -l")
+echo "[pwsh] Push-Location / Pop-Location are recorded at the prompt"
+out=$(dh_pwsh "_DenDirHookPrompt; Push-Location '$DH/a'; \$null = prompt; Push-Location '$DH/b'; \$null = prompt; Pop-Location; \$null = prompt; back -l")
 assert_eq "pwsh/Push-Location and Pop-Location recorded" "  3  ~/start
   2  ~/a
   1  ~/b
   *  ~/a" "$out"
 
 echo "[pwsh] the back list keeps 50 entries"
-out=$(dh_pwsh "1..30 | ForEach-Object { Set-Location '$DH/a'; Set-Location '$DH/b' }; @(back -l).Count")
+out=$(dh_pwsh "_DenDirHookPrompt; 1..30 | ForEach-Object { Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt }; @(back -l).Count")
 assert_eq "pwsh/back list capped at 50" "51" "$out"
 
 echo "[pwsh] back -i picks an entry with fzf"
@@ -2025,20 +2029,63 @@ assert_contains "pwsh/back -i without fzf" "back: fzf is not installed." "$err"
 dh_pwsh "\$env:PATH = '$DH/nobin'; back -i" >/dev/null
 assert_eq "pwsh/back -i without fzf exits 1" "1" "$?"
 
-echo "[pwsh] an existing LocationChangedAction keeps running"
-out=$(cd "$DH/start" && HOME="$DH" pwsh -NoProfile -NonInteractive -Command "\$global:hits = 0; \$ExecutionContext.InvokeCommand.LocationChangedAction = { \$global:hits++ }; . '$FUNCTIONS_PS1_COMBINED'; Set-Location '$DH/a'; Set-Location '$DH/b'; back; \"hits=\$global:hits\"; (Get-Location).Path" 2>/dev/null | tr -d '\r')
-assert_eq "pwsh/previous handler chained" "hits=3
+# LocationChangedAction also fires for every move a script makes, so den does
+# not hook it; a handler set before den loads stays as it was and keeps running.
+echo "[pwsh] LocationChangedAction is left alone"
+out=$(cd "$DH/start" && HOME="$DH" pwsh -NoProfile -NonInteractive -Command "\$global:hits = 0; \$ExecutionContext.InvokeCommand.LocationChangedAction = { \$global:hits++ }; \$before = \$ExecutionContext.InvokeCommand.LocationChangedAction; . '$FUNCTIONS_PS1_COMBINED'; \"kept=\$([object]::ReferenceEquals(\$before, \$ExecutionContext.InvokeCommand.LocationChangedAction))\"; cd '$DH/a'; cd '$DH/b'; back; \"hits=\$global:hits\"; (Get-Location).Path" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/LocationChangedAction not replaced, still runs" "kept=True
+hits=3
 $DH/a" "$out"
 
-# Windows PowerShell 5.1 has no LocationChangedAction; init.ps1 wraps the prompt
-# instead. Exercised here with the event hook switched off.
-echo "[pwsh] prompt hook (Windows PowerShell 5.1 path)"
-out=$(dh_pwsh "\$ExecutionContext.InvokeCommand.LocationChangedAction = \$null; function global:prompt { 'st=' + \$global:? }; _DenDirHookPrompt; _DenDirHookPrompt; Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt; \$null = 1; prompt; back -l")
+# The prompt is the recorder on every PowerShell (Windows PowerShell 5.1 has no
+# LocationChangedAction at all); init.ps1 wraps starship's prompt with it.
+echo "[pwsh] prompt hook"
+out=$(dh_pwsh "function global:prompt { 'st=' + \$global:? }; _DenDirHookPrompt; _DenDirHookPrompt; Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt; \$null = 1; prompt; back -l")
 assert_eq "pwsh/prompt hook records, keeps \$?, wraps once" "st=False
 st=True
   2  ~/start
   1  ~/a
   *  ~/b" "$out"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd '$DH/b'; back; \$null = prompt; fwd; (Get-Location).Path")
+assert_eq "pwsh/prompt does not record back as a new move" "$DH/b" "$out"
+
+# Only where the session is at each prompt counts, as with bash's
+# PROMPT_COMMAND: moves on the way there (several Set-Location on one line, the
+# moves a script or a function makes, den's cd among them) are not history.
+echo "[pwsh] moves between two prompts count once"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd '$DH/b'; Set-Location '$DH/c'; Set-Location '$DH/start'; \$null = prompt; back -l")
+assert_eq "pwsh/Set-Location twice on one line is one move" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/start" "$out"
+mkdir -p "$DH/scr"
+printf '%s\n' 'Push-Location $PSScriptRoot' 'try {} finally { Pop-Location }' > "$DH/scr/pushpop.ps1"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd ../b; back; \$null = prompt; & '$DH/scr/pushpop.ps1'; \$null = prompt; back -l; fwd; (Get-Location).Path")
+assert_eq "pwsh/script Push-Location, Pop-Location leave the history" "  1  ~/start
+  *  ~/a
+ +1  ~/b
+$DH/b" "$out"
+printf '%s\n' 'Set-Location $PSScriptRoot' 'cd ../a' 'Push-Location ../b' 'mkcd ../c' > "$DH/scr/net.ps1"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/b'; & '$DH/scr/net.ps1'; \$null = prompt; back -l")
+assert_eq "pwsh/script ending elsewhere is one move" "  2  ~/start
+  1  ~/b
+  *  ~/c" "$out"
+out=$(dh_pwsh "function global:proj { cd '$DH/a'; mkcd '$DH/b'; up }; proj; back -l")
+assert_eq "pwsh/function's den cd, mkcd, up are one move" "  1  ~/start
+  *  ~" "$out"
+
+# Typed at the prompt, each den navigation command records its move at once;
+# the Set-Location after them only shows up through back -l. `.1` is called as
+# `& '.1'`: a bare .1 is the number 0.1 to PowerShell.
+echo "[pwsh] den's navigation commands typed at the prompt record at once"
+out=$(dh_pwsh "mkcd '$DH/a/n/m'; up; & '.1'; ..; Set-Location '$DH/c'; back -l")
+assert_eq "pwsh/mkcd, up, .1, .. each recorded" "  5  ~/start
+  4  ~/a/n/m
+  3  ~/a/n
+  2  ~/a
+  1  ~
+  *  ~/c" "$out"
+rm -rf "$DH/a/n"
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention

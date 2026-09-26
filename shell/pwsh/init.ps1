@@ -41,8 +41,7 @@ $_s = Initialize-Cache 'starship' @('init', 'powershell')
 if ($_s) { . $_s }
 Remove-Variable _s -ErrorAction SilentlyContinue
 
-# ===== Directory history on Windows PowerShell 5.1 =====
-# functions.ps1 records back/fwd history through LocationChangedAction, which
-# PowerShell only has from 6.1; without it, record at each prompt instead. Done
+# ===== Directory history =====
+# back/fwd history records moves at each prompt (see functions.ps1). Hooked
 # here, after starship, because starship's init replaces the prompt function.
-if (-not $global:_DenDirHooked) { _DenDirHookPrompt }
+_DenDirHookPrompt
