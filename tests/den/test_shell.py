@@ -102,6 +102,24 @@ def test_cmd_digest_forwards_to_dg():
     assert dg.count(b"\n") == dg.count(b"\r\n"), "dg.cmd must use CRLF line endings"
 
 
+def test_cmd_short_toggle_shims_call_their_long_names():
+    # cmd cannot run here, so this pins the shape that makes the short names
+    # work: CALL (a bare name would end the shim there) of the long shim by
+    # this shim's own folder (%~dp0, never the current directory), every
+    # argument passed on (%*), and no setlocal, which would undo the toggle's
+    # set commands when the shim returns.
+    pairs = {
+        "tgl-wr": "toggle-wrapper",
+        "tgl-hw": "toggle-hwinfo",
+        "tgl-uv": "toggle-uv",
+    }
+    for short, long in pairs.items():
+        assert (_CMD_BIN / f"{long}.cmd").is_file(), long
+        lines = (_CMD_BIN / f"{short}.cmd").read_text().splitlines()
+        code = [ln for ln in lines if ln.strip() and not ln.lower().startswith("rem ")]
+        assert code == ["@echo off", f'call "%~dp0{long}.cmd" %*'], short
+
+
 def test_pwsh_dir_honors_queried_profile_on_windows(tmp_path, monkeypatch):
     prof = tmp_path / "OneDrive" / "Documents" / "PowerShell" / _shell._PWSH_PROFILE
     monkeypatch.setattr(_shell, "_windows", lambda: True)

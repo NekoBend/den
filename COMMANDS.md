@@ -23,7 +23,9 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
-  `on` / `off`.
+  `on` / `off`. Each also has a short name that does exactly what the long name
+  does, in every shell: `tgl-wr` (`toggle-wrapper`), `tgl-hw` (`toggle-hwinfo`),
+  `tgl-uv` (`toggle-uv`).
 
 ## Navigation and directories
 
@@ -81,8 +83,23 @@ fall back with a message.
 ## Modern-tool wrappers (ls / cat / grep / find)
 
 Each prefers a modern tool when installed and falls back to the native command;
-all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper`). The `*w` names always use
-the modern tool, bypassing the toggle.
+all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper` / `tgl-wr`). The `*w` names
+always use the modern tool, bypassing the toggle.
+
+On bash/zsh and pwsh, each time a wrapper that obeys the toggle runs the modern
+tool, it prints one dim line (stderr on bash/zsh); the `*w` names print nothing:
+
+```
+[den] ls -> lsd  (native: command ls, off: tgl-wr)
+```
+
+`native:` is the command that runs the native tool for one call, with the
+wrapper's own fallback flags except those that only change how the output
+looks, such as `--color=auto` (bash/zsh only, left out when there is no native
+equivalent); `off:` turns the wrappers off for the session.
+pwsh prints `[den] ls -> lsd  (off: tgl-wr)`. `_DEN_WRAPPER_LOG=0` silences the
+line without changing what runs; `_DEN_WRAPPERS=0` turns the wrappers off, as
+`tgl-wr` does. cmd prints no line.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
@@ -94,7 +111,7 @@ the modern tool, bypassing the toggle.
 | `find` | `fd` → native `find` | ✓ | ✓ | ✓ |
 | `ripgrep` | `rg` passthrough (no fallback) | ✓ | ✓ | — |
 | `catw` / `findw` / `grepw` / `lsw` | always bat / fd / rg / lsd | ✓ | ✓ | — |
-| `toggle-wrapper` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
+| `toggle-wrapper` / `tgl-wr` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
 
 On Windows, `cp` / `mv` / `rm` / `mkdir` / `rmdir` gain Unix-flag behavior via
 microsoft/coreutils when it is installed (pwsh only); otherwise they keep the stock
@@ -125,8 +142,8 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `dg -c <sumsfile...>` | verify checksum files like `sha256sum -c`: GNU (`<hash>  <name>`, `<hash> *<name>`) and BSD (`SHA256 (<name>) = <hash>`) lines, the algo per line from its tag or length, names relative to the current directory; `<name>: OK` / `FAILED` / `MISSING` per entry, exit 0 only when every entry is OK | ✓ | ✓ | ✓ |
 | `digest ...` | the older name of `dg`; every form works the same | ✓ | ✓ | ✓ |
 | `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
-| `extract <archive...>` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
-| `archive <out> <in>...` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
+| `extract <archive...>` / `xt` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
+| `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
 
@@ -168,7 +185,7 @@ pip directly, while `python` / `python3` / `py` still run through
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
 | `vva [name]` | `uv venv` then activate | ✓ | ✓ | — |
-| `toggle-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
+| `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.
 
@@ -218,7 +235,7 @@ live under `$XDG_CONFIG_HOME`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `toggle-hwinfo` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
+| `toggle-hwinfo` / `tgl-hw` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
 | `refresh-hwinfo` | clear the per-boot hardware cache so it re-detects | ✓ | ✓ | — |
 
 ## History, session, editor

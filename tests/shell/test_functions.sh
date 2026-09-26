@@ -325,6 +325,74 @@ a.txt: OK" "$actual"
     rm -rf "${d:?}"
 }
 
+# xt / pk are the short names for extract / archive. The same call through
+# either name has to give the same stdout, stderr and exit status, so each
+# case below runs once per name and the two outcomes are compared whole; the
+# failure is also checked, so two equally broken runs cannot pass as a match.
+# Usage: assert_same_as_long <bash|zsh> <label> <short command> <long command>
+assert_same_as_long() {
+    local sh="$1" label="$2" short long
+    short=$("run_$sh" "$FUNCTIONS_SH" "cd '$WORK' && $3" 2>&1; echo "status=$?")
+    long=$("run_$sh" "$FUNCTIONS_SH" "cd '$WORK' && $4" 2>&1; echo "status=$?")
+    assert_not_contains "$sh/$label fails" "status=0" "$long"
+    assert_eq "$sh/$label matches the long name" "$long" "$short"
+}
+
+# The bash and zsh cases for xt / pk. `type` says "function" in both shells;
+# an alias would not even expand in these non-interactive runs. The round trip
+# holds a source with a space in its name, so the arguments have to reach
+# archive one word each, exactly as given.
+short_name_tests() {
+    local sh="$1" actual
+    echo "[$sh] xt / pk are functions"
+    actual=$("run_$sh" "$FUNCTIONS_SH" "for f in xt pk; do case \$(type \$f) in *function*) echo \"\$f function\" ;; *) echo \"\$f missing\" ;; esac; done" 2>/dev/null)
+    assert_eq "$sh/xt pk are functions" "xt function
+pk function" "$actual"
+
+    echo "[$sh] pk / xt round trip"
+    setup_fixtures
+    mkdir -p "$WORK/sp ace" && echo spaced > "$WORK/sp ace/file4.txt"
+    "run_$sh" "$FUNCTIONS_SH" "cd '$WORK' && pk '$WORK/short.tar.gz' src 'sp ace'" 2>/dev/null
+    assert_success "$sh/pk exit code" "$?"
+    mkdir -p "$WORK/short"
+    "run_$sh" "$FUNCTIONS_SH" "cd '$WORK/short' && xt '$WORK/short.tar.gz'" 2>/dev/null
+    assert_success "$sh/xt exit code" "$?"
+    assert_exists "$sh/xt extracted the first source" "$WORK/short/src/file1.txt"
+    assert_exists "$sh/xt extracted the source with a space" "$WORK/short/sp ace/file4.txt"
+
+    echo "[$sh] xt / pk fail exactly as extract / archive do"
+    assert_same_as_long "$sh" "xt with a missing archive" \
+        "xt '$WORK/short.tar.gz' '$WORK/missing.tar.gz'" "extract '$WORK/short.tar.gz' '$WORK/missing.tar.gz'"
+    assert_same_as_long "$sh" "xt without arguments" "xt" "extract"
+    assert_same_as_long "$sh" "pk without sources" "pk '$WORK/x.tar.gz'" "archive '$WORK/x.tar.gz'"
+    assert_same_as_long "$sh" "pk with an unsupported format" "pk '$WORK/x.rar' src" "archive '$WORK/x.rar' src"
+    assert_same_as_long "$sh" "pk with an option-shaped source" \
+        "pk '$WORK/opt.tar.gz' -C src" "archive '$WORK/opt.tar.gz' -C src"
+    rm -rf "$WORK/short" "$WORK/short.tar.gz" "$WORK/sp ace" "$WORK/opt.tar.gz"
+}
+
+# pwsh: stdout, stderr (color codes stripped) and the process exit status of
+# one -Command run in $WORK, with an 'after' line to show whether the run went
+# on past the command. Usage: pwsh_outcome <command>
+pwsh_outcome() {
+    pwsh -NoProfile -NonInteractive -Command ". '$FUNCTIONS_PS1_COMBINED'; Set-Location '$WORK'; $1; 'after'" \
+        > "$WORK/pwsh.out" 2> "$WORK/pwsh.err"
+    local status=$?
+    printf 'out=%s\nerr=%s\nstatus=%s\n' \
+        "$(tr -d '\r' < "$WORK/pwsh.out")" \
+        "$(sed 's/\x1b\[[0-9;]*m//g' "$WORK/pwsh.err" | tr -d '\r')" "$status"
+    rm -f "$WORK/pwsh.out" "$WORK/pwsh.err"
+}
+
+# Usage: assert_pwsh_same_as_long <label> <short command> <long command>
+assert_pwsh_same_as_long() {
+    local label="$1" short long
+    short=$(pwsh_outcome "$2")
+    long=$(pwsh_outcome "$3")
+    assert_match "pwsh/$label reports an error" "^err=.+" "$long"
+    assert_eq "pwsh/$label matches the long name" "$long" "$short"
+}
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -465,6 +533,9 @@ run_bash "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/
 assert_eq "bash/extract multi with a missing archive exits 1" "1" "$?"
 assert_exists "bash/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+
+# --- xt / pk: short names for extract / archive ---
+short_name_tests bash
 
 echo "[bash] digest several files"
 setup_fixtures
@@ -895,6 +966,9 @@ run_zsh "$FUNCTIONS_SH" "cd '$WORK/multi' && extract '$WORK/one.tar.gz' '$WORK/m
 assert_eq "zsh/extract multi with a missing archive exits 1" "1" "$?"
 assert_exists "zsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+
+# --- xt / pk: short names for extract / archive ---
+short_name_tests zsh
 
 echo "[zsh] digest several files"
 setup_fixtures
@@ -1380,6 +1454,44 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/zipped'; extract '$WORK/
 assert_exists "pwsh/archive zip first source" "$WORK/zipped/src/file1.txt"
 assert_exists "pwsh/archive zip second source" "$WORK/zipped/second/file2.txt"
 rm -rf "$WORK/broken.zip" "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+
+# --- xt / pk: short names for extract / archive ---
+# Aliases, so the call IS extract / archive: named parameters, $?, the
+# terminating summary and the "extract:" / "archive:" prefix all come from the
+# long function. Each case still runs through both names and is compared.
+echo "[pwsh] xt / pk are aliases of extract / archive"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "(Get-Alias xt).Definition; (Get-Alias pk).Definition" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/xt pk resolve to the long names" "extract
+archive" "$actual"
+
+echo "[pwsh] pk / xt round trip"
+setup_fixtures
+mkdir -p "$WORK/sp ace" && echo spaced > "$WORK/sp ace/file4.txt"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; pk 'short.tar.gz' src 'sp ace'" >/dev/null 2>&1
+assert_success "pwsh/pk exit code" "$?"
+mkdir -p "$WORK/short"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/short'; xt '$WORK/short.tar.gz'; \"ok=\$?\"" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/xt sets \$? like extract" "ok=True" "$actual"
+assert_exists "pwsh/xt extracted the first source" "$WORK/short/src/file1.txt"
+assert_exists "pwsh/xt extracted the source with a space" "$WORK/short/sp ace/file4.txt"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; pk -Output 'named.zip' -Sources src" >/dev/null 2>&1
+assert_success "pwsh/pk named parameters exit code" "$?"
+assert_exists "pwsh/pk named parameters" "$WORK/named.zip"
+
+echo "[pwsh] xt / pk fail exactly as extract / archive do"
+assert_pwsh_same_as_long "xt with a missing archive" "xt 'missing.tar.gz'" "extract 'missing.tar.gz'"
+assert_pwsh_same_as_long "xt without arguments" "xt" "extract"
+assert_pwsh_same_as_long "pk without arguments" "pk" "archive"
+assert_pwsh_same_as_long "pk with an unsupported format" "pk 'x.rar' src" "archive 'x.rar' src"
+actual=$(pwsh_outcome "xt 'missing.tar.gz'")
+assert_contains "pwsh/xt with a missing archive exits 1" "status=1" "$actual"
+assert_contains "pwsh/xt with a missing archive has one prefix" "extract: 1 of 1 archives failed" "$actual"
+assert_not_contains "pwsh/xt with a missing archive stops the run" "out=after" "$actual"
+short=$(pwsh_outcome "try { xt 'missing.tar.gz' 2>\$null } catch { 'caught: ' + \$_.Exception.Message }")
+long=$(pwsh_outcome "try { extract 'missing.tar.gz' 2>\$null } catch { 'caught: ' + \$_.Exception.Message }")
+assert_contains "pwsh/xt terminating error can be caught" "caught: 1 of 1 archives failed" "$short"
+assert_eq "pwsh/xt caught error matches the long name" "$long" "$short"
+rm -rf "$WORK/short" "$WORK/short.tar.gz" "$WORK/sp ace" "$WORK/named.zip"
 
 # --- archive: a source named like an option must never be parsed as one ---
 echo "[pwsh] archive neutralizes an option-shaped source name (tar.gz)"

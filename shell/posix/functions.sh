@@ -564,6 +564,16 @@ archive() {
     esac
 }
 
+# xt / pk → short names for extract / archive. Every argument and the exit
+# status pass through unchanged, and messages keep the long name.
+xt() {
+    extract "$@"
+}
+
+pk() {
+    archive "$@"
+}
+
 # ===== System =====
 
 # path → display PATH entries one per line

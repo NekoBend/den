@@ -196,3 +196,8 @@ toggle-hwinfo() {
         echo "hwinfo: ON (visible in prompt)"
     fi
 }
+
+# tgl-hw → short name for toggle-hwinfo
+tgl-hw() {
+    toggle-hwinfo "$@"
+}
