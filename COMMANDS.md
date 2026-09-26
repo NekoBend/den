@@ -137,8 +137,8 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 |---|---|:---:|:---:|:---:|
 | `digest {md5\|sha256\|sha512} <file...>` | file hash; with several files, hash and name per line | ✓ | ✓ | ✓ |
 | `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
-| `extract <archive...>` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
-| `archive <out> <in>...` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
+| `extract <archive...>` / `xt` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
+| `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
 
