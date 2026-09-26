@@ -23,7 +23,9 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
-  `on` / `off`.
+  `on` / `off`. Each also has a short name that does exactly what the long name
+  does, in every shell: `tgl-wr` (`toggle-wrapper`), `tgl-hw` (`toggle-hwinfo`),
+  `tgl-uv` (`toggle-uv`).
 
 ## Navigation and directories
 
@@ -36,7 +38,9 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 | `..`, `.1`–`.9` | go up 1..9 levels (`..` = one) | ✓ | ✓ | ✓ |
 | `mkcd <dir>` | `mkdir -p` then cd into it | ✓ | ✓ | ✓ |
 | `cdf` | fuzzy-find a subdirectory (fd + fzf) and cd into it | ✓ | ✓ | — |
-| `back` | cd to the previous directory (N=1 only) | ✓ | ✓ | ✓ |
+| `back [N]` | go N entries back in the directory history (default 1) | ✓ | ✓ | ✓ |
+| `fwd [N]` | go N entries forward again, undoing `back` (default 1) | ✓ | ✓ | ✓ |
+| `back -l` / `back -i` | list the history / pick an entry with fzf and go there | ✓ | ✓ | `-l` |
 | `y` | launch the yazi file manager, cd to its exit directory | ✓ | ✓ | — |
 | `c` | clear the screen | ✓ | ✓ | ✓ |
 
@@ -44,6 +48,47 @@ den initializes zoxide with `--no-cmd` in bash/zsh/pwsh, so bare `z` / `zi` do n
 exist there — you jump through den's toggle-aware `cd` / `cdi` or the always-on
 `zd` / `zdi`. Only cmd runs `zoxide init cmd` without `--no-cmd`, so there `z` / `zi`
 work directly (with `zd` / `zdi` as doskey aliases for them).
+
+`back` / `fwd` work like a browser's back and forward buttons over this shell
+session's directory history (kept in memory, never written to disk):
+
+```
+$ back -l
+  3  ~/experiments/llm-test
+  2  /tmp
+  1  ~/projects/den
+  *  ~/projects/den/shell
+ +1  ~/projects/den/tests
+```
+
+- A move is recorded whatever made it: `cd`, `builtin cd` / `Set-Location`,
+  `pushd` / `popd`, `mkcd`, `up`, `cdf`, `y`. zsh sees every change of
+  directory; bash, PowerShell and cmd see where the shell is at each prompt, so
+  two `builtin cd` / `Set-Location` on one command line count as one move (on
+  bash den's `cd`, and on PowerShell den's navigation commands, record at once;
+  see "How moves are seen" below). A new move after going back clears the
+  forward entries; entering the same directory twice in a row is recorded once.
+- `back N` moves the N-1 entries it passes over, and the directory it leaves, to
+  the forward list, so `back 3` then `fwd 3` returns to the start. `back -i`
+  turns the pick into the matching `back N` / `fwd N`. On pwsh the flags are
+  `-List` / `-Interactive`, which `-l` / `-i` abbreviate.
+- An N larger than the history says how many entries there are and stays put;
+  a target that no longer exists is an error too, and that entry is dropped.
+- The back list keeps 50 entries; on cmd, 25, because a cmd shim reads the whole
+  list on one command line and cmd caps a line at 8191 characters.
+- `cd -` is unchanged, and counts as an ordinary move.
+- How moves are seen: zsh `chpwd`; bash `PROMPT_COMMAND` (den's `cd` records at
+  once, other moves at the next prompt); PowerShell the prompt (den's navigation
+  commands, `cd`, `cdi`, `zd`, `zdi`, `up`, `..`, `.1`-`.9`, `mkcd`, `cdf`, `y`,
+  record at once when typed, not when a script or a function runs them, so a
+  script counts only by where it ends up); cmd the Clink prompt filter in
+  `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`
+  (`_OLDPWD` is still set too).
+- On PowerShell the prompt recorder wraps the `prompt` function when den's line
+  in `$PROFILE` runs, after the starship prompt den sets up there. A prompt set
+  up after that line (oh-my-posh, posh-git, your own `function prompt`) replaces
+  the wrapper, and then only den's navigation commands and `back` / `fwd`
+  themselves notice a move: put any other prompt setup before den's line.
 
 ## Git shortcuts
 
@@ -81,8 +126,23 @@ fall back with a message.
 ## Modern-tool wrappers (ls / cat / grep / find)
 
 Each prefers a modern tool when installed and falls back to the native command;
-all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper`). The `*w` names always use
-the modern tool, bypassing the toggle.
+all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper` / `tgl-wr`). The `*w` names
+always use the modern tool, bypassing the toggle.
+
+On bash/zsh and pwsh, each time a wrapper that obeys the toggle runs the modern
+tool, it prints one dim line (stderr on bash/zsh); the `*w` names print nothing:
+
+```
+[den] ls -> lsd  (native: command ls, off: tgl-wr)
+```
+
+`native:` is the command that runs the native tool for one call, with the
+wrapper's own fallback flags except those that only change how the output
+looks, such as `--color=auto` (bash/zsh only, left out when there is no native
+equivalent); `off:` turns the wrappers off for the session.
+pwsh prints `[den] ls -> lsd  (off: tgl-wr)`. `_DEN_WRAPPER_LOG=0` silences the
+line without changing what runs; `_DEN_WRAPPERS=0` turns the wrappers off, as
+`tgl-wr` does. cmd prints no line.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
@@ -94,7 +154,7 @@ the modern tool, bypassing the toggle.
 | `find` | `fd` → native `find` | ✓ | ✓ | ✓ |
 | `ripgrep` | `rg` passthrough (no fallback) | ✓ | ✓ | — |
 | `catw` / `findw` / `grepw` / `lsw` | always bat / fd / rg / lsd | ✓ | ✓ | — |
-| `toggle-wrapper` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
+| `toggle-wrapper` / `tgl-wr` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
 
 On Windows, `cp` / `mv` / `rm` / `mkdir` / `rmdir` gain Unix-flag behavior via
 microsoft/coreutils when it is installed (pwsh only); otherwise they keep the stock
@@ -119,12 +179,38 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `digest {md5\|sha256\|sha512} <file...>` | file hash; with several files, hash and name per line | ✓ | ✓ | ✓ |
+| `dg [algo] <file...>` | file hash; algo is `md5` / `sha256` / `sha512` or `5` / `256` / `512`, default sha256; with several files, hash and name per line | ✓ | ✓ | ✓ |
+| `dg [algo] <file> <hash>` | check a file against an expected hash: `OK` (exit 0) or `MISMATCH` with both hashes (exit 1). The algo follows the hash's length (32 / 64 / 128 hex digits); a `sha256:`-style prefix (a blank after it too, as in `SHA256: <hex>`), surrounding blanks and uppercase are accepted | ✓ | ✓ | ✓ |
+| `dg -e [algo] <a> <b>` | do two files have the same content? `SAME` (exit 0) or `DIFFERENT` with both hashes (exit 1) | ✓ | ✓ | ✓ |
+| `dg -c <sumsfile...>` | verify checksum files like `sha256sum -c`: GNU (`<hash>  <name>`, `<hash> *<name>`) and BSD (`SHA256 (<name>) = <hash>`) lines, the algo per line from its tag or length, names relative to the current directory; `<name>: OK` / `FAILED` / `MISSING` per entry, exit 0 only when every entry is OK | ✓ | ✓ | ✓ |
+| `digest ...` | the older name of `dg`; every form works the same | ✓ | ✓ | ✓ |
 | `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
-| `extract <archive...>` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
-| `archive <out> <in>...` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
+| `extract <archive...>` / `xt` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
+| `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
+
+`dg` treats its first operand as the algo only when it is one of those tokens,
+and reads two operands as `<file> <hash>` only when the second is no existing
+path and looks like a hash. `--` ends option and algo parsing, so `dg -- 256`
+hashes a file named `256`. The compare and `-e` forms exit 2 when they cannot
+check at all (a missing file, or an algo that disagrees with the hash's length);
+`-c` skips blank and `#` lines and warns about malformed ones.
+
+- **pwsh**: every failure is a terminating error, so `$?` is false and
+  `pwsh -Command` exits 1; there is no separate exit 2. PowerShell removes a bare
+  `--` before the function sees it, so write it quoted: `dg '--' 256`. It also
+  binds any other unquoted word that starts with `-` as a parameter: `-d` / `-v`
+  quietly become `-Debug` / `-Verbose`, `-i` / `-p` fail as ambiguous, and
+  `-x.txt` splits at the dot into `-x` and `.txt`, so quote such a file name:
+  `dg '-x.txt'`. `-e` and `-c` are switches and work anywhere on the line
+  (`dg 256 a -e b`); bash/zsh and cmd take them only before the algo and the
+  files. Hash mode keeps Get-FileHash's uppercase hex; the other forms print
+  lowercase.
+- **cmd**: hashes with `certutil`. It reads a checksum file in the console code
+  page, so run `chcp 65001` first when its names are UTF-8. Only `\\` is undone in
+  a GNU-escaped name (a Windows name cannot hold a newline). An unknown `-x` is
+  a file name here; bash/zsh refuse it as an unknown option.
 
 ## Python and uv
 
@@ -142,7 +228,7 @@ pip directly, while `python` / `python3` / `py` still run through
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
 | `vva [name]` | `uv venv` then activate | ✓ | ✓ | — |
-| `toggle-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
+| `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.
 
@@ -192,7 +278,7 @@ live under `$XDG_CONFIG_HOME`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `toggle-hwinfo` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
+| `toggle-hwinfo` / `tgl-hw` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
 | `refresh-hwinfo` | clear the per-boot hardware cache so it re-detects | ✓ | ✓ | — |
 
 ## History, session, editor

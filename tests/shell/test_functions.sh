@@ -133,6 +133,266 @@ SHA256_ONE="7692C3AD3540BB803C020B3AEE66CD8887123234EA0C6E7143C0ADD73FF431ED"
 SHA256_REAL="aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f"
 SHA256_DECOY="bdeb9ba22af8fa73e59fe7c4d3c48ae1165617dd76c720773cdf6cbc33a91dd7"
 
+# dg (digest's new name). ZERO64 is a well-formed sha256 that matches nothing;
+# MD5_ONE and SHA256_ONE_LC are the hashes of "one" (the -e fixture).
+ZERO64="0000000000000000000000000000000000000000000000000000000000000000"
+MD5_ONE="f97c5d29941bfb1b2fdab0874906ab82"
+SHA256_ONE_LC="7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed"
+
+# Files for every dg form under $WORK/dg, and checksum files written by the
+# real GNU tools (so their escaping and binary markers are the genuine ones):
+#   SHA256SUMS  GNU lines: a name with a space, an escaped backslash name, a
+#               "*" binary marker, a comment and a blank line
+#   MIXED       BSD MD5 and SHA512 lines plus a GNU md5 line: the algorithm
+#               comes from each line's tag or length
+#   CRLF        SHA256SUMS with Windows line endings
+#   NEWLINE     an escaped name that holds a newline
+#   BAD         a malformed line, a missing file, a wrong hash, one good entry
+#               and a BSD tag that disagrees with its hash's length
+#   EMPTY       comments only
+setup_dg() {
+    rm -rf "${WORK:?}/dg"
+    mkdir -p "$WORK/dg"
+    (
+        cd "$WORK/dg" || exit 1
+        printf 'test content' > h.txt
+        printf 'one' > a.txt
+        printf 'one' > b.txt
+        printf 'two' > c.txt
+        printf 'x' > 'sp ace.txt'
+        printf 'y' > 'back\slash.txt'
+        printf 'z' > 256
+        printf 'n' > "$(printf 'new\nline.txt')"
+        sha256sum h.txt 'sp ace.txt' 'back\slash.txt' > SHA256SUMS
+        sha256sum -b a.txt >> SHA256SUMS
+        printf '# comment\n\n' >> SHA256SUMS
+        md5sum --tag c.txt > MIXED
+        sha512sum --tag 'sp ace.txt' >> MIXED
+        md5sum a.txt >> MIXED
+        sed 's/$/\r/' SHA256SUMS > CRLF
+        sha256sum "$(printf 'new\nline.txt')" > NEWLINE
+        {
+            echo 'garbage line'
+            echo "$SHA256_ONE_LC  gone.txt"
+            echo "$ZERO64  c.txt"
+            echo "$MD5_ONE  a.txt"
+            echo "SHA256 (a.txt) = $MD5_ONE"
+        } > BAD
+        printf '# only a comment\n\n' > EMPTY
+    )
+}
+
+# The dg cases, the same for bash and zsh: $1 is the shell (its run_<shell>
+# and run_<shell>_stderr runners are used).
+dg_posix_cases() {
+    local sh="$1" run="run_$1" run_err="run_$1_stderr" d="$WORK/dg" actual err rc
+    setup_dg
+
+    echo "[$sh] dg default and numeric algorithms"
+    actual=$($run "$FUNCTIONS_SH" "dg '$d/h.txt'")
+    assert_eq "$sh/dg defaults to sha256" "$EXPECTED_SHA256" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "dg 5 '$d/h.txt'")
+    assert_eq "$sh/dg 5 is md5" "$EXPECTED_MD5" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "dg 256 '$d/h.txt'")
+    assert_eq "$sh/dg 256 is sha256" "$EXPECTED_SHA256" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "dg 512 '$d/h.txt'")
+    assert_eq "$sh/dg 512 is sha512" "$EXPECTED_SHA512" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "digest 5 '$d/h.txt'")
+    assert_eq "$sh/digest takes the numeric algo too" "$EXPECTED_MD5" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt a.txt")
+    assert_eq "$sh/dg default algo with several files" "$EXPECTED_SHA256  h.txt
+$SHA256_ONE_LC  a.txt" "$actual"
+
+    echo "[$sh] dg -- ends option and algo parsing"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -- 256")
+    assert_eq "$sh/dg -- 256 hashes the file named 256" "$(sha256sum "$d/256" | cut -d' ' -f1)" "$actual"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg 256" >/dev/null 2>&1
+    assert_eq "$sh/dg 256 alone is an algo with no file" "1" "$?"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && cp h.txt ./-h.txt && dg 5 -- -h.txt")
+    assert_eq "$sh/dg algo -- takes a dash name" "$EXPECTED_MD5" "$actual"
+
+    # GNU's *sum tools start the line with a backslash when they escape the
+    # name, and that backslash used to be printed as part of the hash.
+    echo "[$sh] dg drops GNU's escape backslash"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && digest sha256 'back\\slash.txt'")
+    assert_eq "$sh/dg backslash name prints the bare hash" "$(printf 'y' | sha256sum | cut -d' ' -f1)" "$actual"
+
+    echo "[$sh] dg help, usage and unknown options"
+    actual=$($run "$FUNCTIONS_SH" "dg -h")
+    assert_success "$sh/dg -h exit code" "$?"
+    assert_contains "$sh/dg -h lists the compare form" "dg [algo] <file> <hash>" "$actual"
+    assert_contains "$sh/dg -h lists -e" "dg -e [algo] <a> <b>" "$actual"
+    assert_contains "$sh/dg -h lists -c" "dg -c <sumsfile...>" "$actual"
+    err=$($run_err "$FUNCTIONS_SH" "dg")
+    assert_contains "$sh/dg without operands prints usage" "usage: dg" "$err"
+    err=$($run_err "$FUNCTIONS_SH" "dg -x '$d/h.txt'")
+    assert_contains "$sh/dg refuses an unknown option" "unknown option '-x'" "$err"
+    $run "$FUNCTIONS_SH" "dg -x '$d/h.txt'" >/dev/null 2>&1
+    assert_eq "$sh/dg unknown option exits 1" "1" "$?"
+
+    echo "[$sh] dg <file> <hash> compares"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt $EXPECTED_SHA256")
+    assert_success "$sh/dg compare OK exit code" "$?"
+    assert_eq "$sh/dg compare OK line" "OK  h.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt '  SHA256:${EXPECTED_SHA256^^} '")
+    assert_eq "$sh/dg compare trims, lowercases and drops the prefix" "OK  h.txt" "$actual"
+    # "SHA256: <hex>" is how download pages tend to print it; pwsh and cmd
+    # take the blanks after the prefix too.
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt 'SHA256:  $EXPECTED_SHA256'")
+    assert_eq "$sh/dg compare drops blanks after the prefix" "OK  h.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt $EXPECTED_MD5")
+    assert_eq "$sh/dg compare infers md5 from the length" "OK  h.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg sha512 h.txt $EXPECTED_SHA512")
+    assert_eq "$sh/dg compare with a matching explicit algo" "OK  h.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt $ZERO64")
+    rc=$?
+    assert_eq "$sh/dg compare MISMATCH exits 1" "1" "$rc"
+    assert_eq "$sh/dg compare MISMATCH lines" "MISMATCH  h.txt
+  expected $ZERO64
+  actual   $EXPECTED_SHA256" "$actual"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg 5 h.txt $EXPECTED_SHA256")
+    assert_contains "$sh/dg compare refuses an algo the length contradicts" "64 hex digits (sha256), not md5" "$err"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg 5 h.txt $EXPECTED_SHA256" >/dev/null 2>&1
+    assert_eq "$sh/dg compare algo mismatch exits 2" "2" "$?"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg h.txt md5:$EXPECTED_SHA256" >/dev/null 2>&1
+    assert_eq "$sh/dg compare prefix mismatch exits 2" "2" "$?"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg missing.txt $EXPECTED_SHA256" >/dev/null 2>&1
+    assert_eq "$sh/dg compare missing file exits 2" "2" "$?"
+    # A second operand that exists is a file, even when it looks like a hash.
+    printf 'q' > "$d/$ZERO64"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt $ZERO64")
+    assert_eq "$sh/dg an existing hash-shaped name is a file" "2" "$(printf '%s\n' "$actual" | wc -l | tr -d ' ')"
+    rm -f "${d:?}/${ZERO64:?}"
+
+    echo "[$sh] dg -e compares two files"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -e a.txt b.txt")
+    assert_success "$sh/dg -e SAME exit code" "$?"
+    assert_eq "$sh/dg -e SAME line" "SAME  a.txt  b.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -e a.txt c.txt")
+    rc=$?
+    assert_eq "$sh/dg -e DIFFERENT exits 1" "1" "$rc"
+    assert_eq "$sh/dg -e DIFFERENT lines" "DIFFERENT  a.txt  c.txt
+  $SHA256_ONE_LC  a.txt
+  $(sha256sum "$d/c.txt" | cut -d' ' -f1)  c.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && digest -e 5 a.txt c.txt")
+    assert_contains "$sh/dg -e takes an algo" "  $MD5_ONE  a.txt" "$actual"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg -e a.txt" >/dev/null 2>&1
+    assert_eq "$sh/dg -e with one file exits 2" "2" "$?"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg -e a.txt missing.txt" >/dev/null 2>&1
+    assert_eq "$sh/dg -e with a missing file exits 2" "2" "$?"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg -e -c a.txt b.txt")
+    assert_contains "$sh/dg -e and -c together are refused" "cannot be combined" "$err"
+    # Options come first here (pwsh's switches bind anywhere; COMMANDS.md says
+    # so): after the algo, -e is one more file.
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg 5 a.txt -e b.txt")
+    assert_contains "$sh/dg -e after the algo is a file name" "'-e' is not a file" "$err"
+
+    echo "[$sh] dg -c verifies checksum files"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c SHA256SUMS")
+    assert_success "$sh/dg -c GNU file exit code" "$?"
+    assert_eq "$sh/dg -c GNU lines" "h.txt: OK
+sp ace.txt: OK
+back\\slash.txt: OK
+a.txt: OK" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && digest -c MIXED CRLF")
+    assert_success "$sh/dg -c BSD, mixed and CRLF files exit code" "$?"
+    assert_eq "$sh/dg -c BSD, mixed and CRLF files all OK" "7" "$(printf '%s\n' "$actual" | grep -c ': OK$')"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c NEWLINE")
+    assert_eq "$sh/dg -c undoes GNU's newline escape" "new
+line.txt: OK" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c BAD 2>/dev/null")
+    rc=$?
+    assert_eq "$sh/dg -c failures exit 1" "1" "$rc"
+    assert_eq "$sh/dg -c MISSING, FAILED and OK lines" "gone.txt: MISSING
+c.txt: FAILED
+a.txt: OK" "$actual"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg -c BAD")
+    assert_contains "$sh/dg -c warns about malformed lines" "'BAD': 2 malformed line(s) ignored" "$err"
+    assert_contains "$sh/dg -c summary" "1 FAILED, 1 MISSING of 3 checked" "$err"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg -c EMPTY")
+    assert_contains "$sh/dg -c with no entries says so" "no checksum lines found" "$err"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg -c EMPTY" >/dev/null 2>&1
+    assert_eq "$sh/dg -c with no entries exits 1" "1" "$?"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg -c missing SHA256SUMS")
+    assert_contains "$sh/dg -c counts an unreadable sums file" "1 sums file(s) unreadable" "$err"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg -c 256 SHA256SUMS" >/dev/null 2>&1
+    assert_eq "$sh/dg -c with an algo exits 1" "1" "$?"
+
+    # dg keeps its state in globals (POSIX sh has no local); none may outlive it.
+    echo "[$sh] dg leaves no _dg_ variables behind"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c BAD >/dev/null 2>&1; dg h.txt $ZERO64 >/dev/null; dg -e a.txt c.txt >/dev/null; dg h.txt a.txt >/dev/null; set | grep '^_dg_[a-z]*='")
+    assert_eq "$sh/dg variables are cleared" "" "$actual"
+    rm -rf "${d:?}"
+}
+
+# xt / pk are the short names for extract / archive. The same call through
+# either name has to give the same stdout, stderr and exit status, so each
+# case below runs once per name and the two outcomes are compared whole; the
+# failure is also checked, so two equally broken runs cannot pass as a match.
+# Usage: assert_same_as_long <bash|zsh> <label> <short command> <long command>
+assert_same_as_long() {
+    local sh="$1" label="$2" short long
+    short=$("run_$sh" "$FUNCTIONS_SH" "cd '$WORK' && $3" 2>&1; echo "status=$?")
+    long=$("run_$sh" "$FUNCTIONS_SH" "cd '$WORK' && $4" 2>&1; echo "status=$?")
+    assert_not_contains "$sh/$label fails" "status=0" "$long"
+    assert_eq "$sh/$label matches the long name" "$long" "$short"
+}
+
+# The bash and zsh cases for xt / pk. `type` says "function" in both shells;
+# an alias would not even expand in these non-interactive runs. The round trip
+# holds a source with a space in its name, so the arguments have to reach
+# archive one word each, exactly as given.
+short_name_tests() {
+    local sh="$1" actual
+    echo "[$sh] xt / pk are functions"
+    actual=$("run_$sh" "$FUNCTIONS_SH" "for f in xt pk; do case \$(type \$f) in *function*) echo \"\$f function\" ;; *) echo \"\$f missing\" ;; esac; done" 2>/dev/null)
+    assert_eq "$sh/xt pk are functions" "xt function
+pk function" "$actual"
+
+    echo "[$sh] pk / xt round trip"
+    setup_fixtures
+    mkdir -p "$WORK/sp ace" && echo spaced > "$WORK/sp ace/file4.txt"
+    "run_$sh" "$FUNCTIONS_SH" "cd '$WORK' && pk '$WORK/short.tar.gz' src 'sp ace'" 2>/dev/null
+    assert_success "$sh/pk exit code" "$?"
+    mkdir -p "$WORK/short"
+    "run_$sh" "$FUNCTIONS_SH" "cd '$WORK/short' && xt '$WORK/short.tar.gz'" 2>/dev/null
+    assert_success "$sh/xt exit code" "$?"
+    assert_exists "$sh/xt extracted the first source" "$WORK/short/src/file1.txt"
+    assert_exists "$sh/xt extracted the source with a space" "$WORK/short/sp ace/file4.txt"
+
+    echo "[$sh] xt / pk fail exactly as extract / archive do"
+    assert_same_as_long "$sh" "xt with a missing archive" \
+        "xt '$WORK/short.tar.gz' '$WORK/missing.tar.gz'" "extract '$WORK/short.tar.gz' '$WORK/missing.tar.gz'"
+    assert_same_as_long "$sh" "xt without arguments" "xt" "extract"
+    assert_same_as_long "$sh" "pk without sources" "pk '$WORK/x.tar.gz'" "archive '$WORK/x.tar.gz'"
+    assert_same_as_long "$sh" "pk with an unsupported format" "pk '$WORK/x.rar' src" "archive '$WORK/x.rar' src"
+    assert_same_as_long "$sh" "pk with an option-shaped source" \
+        "pk '$WORK/opt.tar.gz' -C src" "archive '$WORK/opt.tar.gz' -C src"
+    rm -rf "$WORK/short" "$WORK/short.tar.gz" "$WORK/sp ace" "$WORK/opt.tar.gz"
+}
+
+# pwsh: stdout, stderr (color codes stripped) and the process exit status of
+# one -Command run in $WORK, with an 'after' line to show whether the run went
+# on past the command. Usage: pwsh_outcome <command>
+pwsh_outcome() {
+    pwsh -NoProfile -NonInteractive -Command ". '$FUNCTIONS_PS1_COMBINED'; Set-Location '$WORK'; $1; 'after'" \
+        > "$WORK/pwsh.out" 2> "$WORK/pwsh.err"
+    local status=$?
+    printf 'out=%s\nerr=%s\nstatus=%s\n' \
+        "$(tr -d '\r' < "$WORK/pwsh.out")" \
+        "$(sed 's/\x1b\[[0-9;]*m//g' "$WORK/pwsh.err" | tr -d '\r')" "$status"
+    rm -f "$WORK/pwsh.out" "$WORK/pwsh.err"
+}
+
+# Usage: assert_pwsh_same_as_long <label> <short command> <long command>
+assert_pwsh_same_as_long() {
+    local label="$1" short long
+    short=$(pwsh_outcome "$2")
+    long=$(pwsh_outcome "$3")
+    assert_match "pwsh/$label reports an error" "^err=.+" "$long"
+    assert_eq "pwsh/$label matches the long name" "$long" "$short"
+}
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -158,9 +418,13 @@ setup_hash_file
 actual=$(run_bash "$FUNCTIONS_SH" "digest sha256 '$WORK/hashfile.txt'")
 assert_eq "bash/digest sha256" "$EXPECTED_SHA256" "$actual"
 
-echo "[bash] digest bad algo"
+# A first operand that is no algo token is a file (the algo defaults to
+# sha256), so "bad" is reported as a missing file and the real one is hashed.
+echo "[bash] digest with a non-algo first operand"
 actual=$(run_bash "$FUNCTIONS_SH" "digest bad '$WORK/hashfile.txt' 2>&1; echo \$?")
-assert_contains "bash/digest bad usage" "usage" "$actual"
+assert_contains "bash/digest non-algo operand is a file" "'bad' is not a file" "$actual"
+assert_contains "bash/digest non-algo operand still hashes the rest" "$EXPECTED_SHA256" "$actual"
+assert_eq "bash/digest non-algo operand exits 1" "1" "$(printf '%s\n' "$actual" | tail -1)"
 
 echo "[bash] digest sha512"
 setup_hash_file
@@ -270,6 +534,9 @@ assert_eq "bash/extract multi with a missing archive exits 1" "1" "$?"
 assert_exists "bash/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
+# --- xt / pk: short names for extract / archive ---
+short_name_tests bash
+
 echo "[bash] digest several files"
 setup_fixtures
 printf 'one' > "$WORK/d1.txt"; printf 'two' > "$WORK/d2.txt"
@@ -295,6 +562,8 @@ else
     echo "  SKIP: bash/digest unreadable file (running as root)"
 fi
 rm -f "$WORK/noread.txt"
+
+dg_posix_cases bash
 
 echo "[bash] archive + extract tar.bz2"
 setup_fixtures
@@ -631,13 +900,150 @@ echo "[bash] back 0"
 err=$(run_bash_stderr "$FUNCTIONS_SH" "back 0")
 assert_contains "bash/back 0 usage" "usage" "$err"
 
-echo "[bash] back 2"
+# back N>1 is supported now (browser-style history); with nothing recorded
+# yet it reports the empty history instead of "only N=1".
+echo "[bash] back 2 with no history"
 err=$(run_bash_stderr "$FUNCTIONS_SH" "back 2")
-assert_contains "bash/back 2 unsupported" "only N=1" "$err"
+assert_contains "bash/back 2 with no history" "history has 0 back entries" "$err"
 
 echo "[bash] back with OLDPWD"
 actual=$(run_bash "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "bash/back OLDPWD" "/tmp" "$actual"
+
+# --- directory history: back / fwd (browser-style) ---
+# Every case starts a fresh shell in $DH/start (where the history begins) with
+# HOME=$DH, so `back -l` shows ~ forms. The fzf stub prints the input line
+# whose label is $FZF_PICK, the way a user's pick would come back from fzf.
+DH="$WORK/dh"
+setup_dirhist() {
+    rm -rf "$DH"
+    mkdir -p "$DH/start" "$DH/a" "$DH/b" "$DH/c" "$DH/fzfbin" "$DH/nobin"
+    cat > "$DH/fzfbin/fzf" <<'STUB'
+#!/bin/sh
+while IFS= read -r line; do
+    l=${line#"${line%%[! ]*}"}
+    [ "${l%% *}" = "$FZF_PICK" ] && printf '%s\n' "$line"
+done
+exit 0
+STUB
+    chmod +x "$DH/fzfbin/fzf"
+}
+
+# dh_run <shell> <commands> - stdout and stderr, in order
+dh_run() {
+    (cd "$DH/start" && HOME="$DH" "$1" -c "source '$FUNCTIONS_SH' && $2" 2>&1)
+}
+
+dirhist_posix_cases() {
+    local sh="$1" out bad
+    setup_dirhist
+
+    echo "[$sh] back N / fwd N"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back 2 && fwd && fwd")
+    assert_eq "$sh/back 2, fwd, fwd" "$DH/a
+$DH/b
+$DH/c" "$out"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && back 2 >/dev/null && fwd 2")
+    assert_eq "$sh/back 2 then fwd 2 returns" "$DH/b" "$out"
+
+    echo "[$sh] back -l"
+    out=$(dh_run "$sh" "cd '$DH' && cd / && cd '$DH/b' && cd '$DH/c' && back 2 >/dev/null && back -l")
+    assert_eq "$sh/back -l lists back, current and forward" "  2  ~/start
+  1  ~
+  *  /
+ +1  ~/b
+ +2  ~/c" "$out"
+
+    echo "[$sh] a consecutive duplicate is recorded once"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/a' && cd . && back -l")
+    assert_eq "$sh/no consecutive duplicates" "  1  ~/start
+  *  ~/a" "$out"
+
+    echo "[$sh] a new move clears the forward list"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && back >/dev/null && cd '$DH/c' && fwd; echo rc=\$?; pwd")
+    assert_eq "$sh/new move clears forward" "fwd: history has 0 forward entries, cannot go forward 1
+rc=1
+$DH/c" "$out"
+
+    echo "[$sh] N larger than the history"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && back 5; echo rc=\$?; pwd")
+    assert_eq "$sh/back 5 says how many and stays" "back: history has 2 back entries, cannot go back 5
+rc=1
+$DH/b" "$out"
+    out=$(dh_run "$sh" "cd '$DH/a' && back 99999999999999999999; echo rc=\$?")
+    assert_eq "$sh/back huge N" "back: history has 1 back entry, cannot go back 99999999999999999999
+rc=1" "$out"
+
+    echo "[$sh] N not a positive integer"
+    for bad in abc 01 -x; do
+        out=$(dh_run "$sh" "back $bad; echo rc=\$?")
+        assert_eq "$sh/back $bad usage" "usage: back [N | -l | -i]  (N=positive integer, default 1)
+rc=1" "$out"
+    done
+    out=$(dh_run "$sh" "fwd 0; echo rc=\$?")
+    assert_eq "$sh/fwd 0 usage" "usage: fwd [N]  (N=positive integer, default 1)
+rc=1" "$out"
+
+    echo "[$sh] a target that no longer exists is dropped"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && rmdir '$DH/a' && back; echo rc=\$?; pwd; back -l")
+    assert_eq "$sh/removed target dropped, stays put" "back: $DH/a no longer exists, dropped from history
+rc=1
+$DH/b
+  1  ~/start
+  *  ~/b" "$out"
+    mkdir -p "$DH/a"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back 2 >/dev/null && rmdir '$DH/b' && fwd; echo rc=\$?; pwd; back -l")
+    assert_eq "$sh/removed forward target dropped, stays put" "fwd: $DH/b no longer exists, dropped from history
+rc=1
+$DH/a
+  1  ~/start
+  *  ~/a
+ +1  ~/c" "$out"
+    mkdir -p "$DH/b"
+
+    echo "[$sh] cd - still toggles, as a normal move"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd - >/dev/null && pwd && cd - >/dev/null && pwd && back")
+    assert_eq "$sh/cd - toggles and is recorded" "$DH/a
+$DH/b
+$DH/a" "$out"
+
+    echo "[$sh] the back list keeps 50 entries"
+    out=$(dh_run "$sh" "i=0; while [ \$i -lt 30 ]; do cd '$DH/a'; cd '$DH/b'; i=\$((i + 1)); done; back -l | wc -l")
+    assert_eq "$sh/back list capped at 50" "51" "$(printf '%s' "$out" | tr -d ' ')"
+
+    echo "[$sh] back -i picks an entry with fzf"
+    out=$(dh_run "$sh" "PATH='$DH/fzfbin':\$PATH; export FZF_PICK=2; cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back -i && FZF_PICK=+2 && back -i && FZF_PICK='*' && back -i; echo rc=\$?; pwd")
+    assert_eq "$sh/back -i back, forward, current" "$DH/a
+$DH/c
+rc=0
+$DH/c" "$out"
+    out=$(dh_run "$sh" "PATH='$DH/nobin'; back -i; echo rc=\$?")
+    assert_eq "$sh/back -i without fzf" "back: fzf is not installed.
+rc=1" "$out"
+}
+
+dirhist_posix_cases bash
+
+# bash has no chpwd: the recorder runs from PROMPT_COMMAND, which is a string
+# or (bash 5.1+) an array, and must be joined once without breaking either.
+echo "[bash] PROMPT_COMMAND hook"
+out=$(bash -c "source '$FUNCTIONS_SH' && printf '%s' \"\$PROMPT_COMMAND\"")
+assert_eq "bash/PROMPT_COMMAND set when empty" "_den_dh_record" "$out"
+out=$(bash -c "PROMPT_COMMAND='history -a; '; source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && printf '%s' \"\$PROMPT_COMMAND\"")
+assert_eq "bash/PROMPT_COMMAND string appended once" "history -a; _den_dh_record" "$out"
+out=$(bash -c "PROMPT_COMMAND=(one two); source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && declare -p PROMPT_COMMAND")
+assert_eq "bash/PROMPT_COMMAND array appended once" 'declare -a PROMPT_COMMAND=([0]="one" [1]="two" [2]="_den_dh_record")' "$out"
+out=$(bash -c "source '$FUNCTIONS_SH' && false; _den_dh_record; echo \$?")
+assert_eq "bash/recorder keeps the exit status" "1" "$out"
+
+echo "[bash] moves den's cd does not see are recorded at the prompt"
+out=$(dh_run bash "builtin cd '$DH/a'; eval \"\$PROMPT_COMMAND\"; pushd '$DH/b' >/dev/null; eval \"\$PROMPT_COMMAND\"; mkcd '$DH/c'; eval \"\$PROMPT_COMMAND\"; back -l")
+assert_eq "bash/builtin cd, pushd, mkcd recorded" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/c" "$out"
+out=$(dh_run bash "cd '$DH/a' && cd '$DH/b' && back >/dev/null && eval \"\$PROMPT_COMMAND\" && fwd")
+assert_eq "bash/prompt does not record back as a new move" "$DH/b" "$out"
 
 # =============================================================================
 # Zsh tests
@@ -698,6 +1104,9 @@ assert_eq "zsh/extract multi with a missing archive exits 1" "1" "$?"
 assert_exists "zsh/extract multi still extracted the good archive" "$WORK/multi/src/file1.txt"
 rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
+# --- xt / pk: short names for extract / archive ---
+short_name_tests zsh
+
 echo "[zsh] digest several files"
 setup_fixtures
 printf 'one' > "$WORK/d1.txt"; printf 'two' > "$WORK/d2.txt"
@@ -723,6 +1132,8 @@ else
     echo "  SKIP: zsh/digest unreadable file (running as root)"
 fi
 rm -f "$WORK/noread.txt"
+
+dg_posix_cases zsh
 
 echo "[zsh] archive + extract zip"
 setup_fixtures
@@ -1091,13 +1502,28 @@ echo "[zsh] back 0"
 err=$(run_zsh_stderr "$FUNCTIONS_SH" "back 0")
 assert_contains "zsh/back 0 usage" "usage" "$err"
 
-echo "[zsh] back 2"
+# back N>1 is supported now (browser-style history); with nothing recorded
+# yet it reports the empty history instead of "only N=1".
+echo "[zsh] back 2 with no history"
 err=$(run_zsh_stderr "$FUNCTIONS_SH" "back 2")
-assert_contains "zsh/back 2 unsupported" "only N=1" "$err"
+assert_contains "zsh/back 2 with no history" "history has 0 back entries" "$err"
 
 echo "[zsh] back with OLDPWD"
 actual=$(run_zsh "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "zsh/back OLDPWD" "/tmp" "$actual"
+
+dirhist_posix_cases zsh
+
+echo "[zsh] chpwd hook"
+out=$(zsh -c "source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && print -r -- \${(j:,:)chpwd_functions}")
+assert_eq "zsh/chpwd hook added once" "_den_dh_record" "$out"
+
+echo "[zsh] moves den's cd does not make are recorded"
+out=$(dh_run zsh "builtin cd '$DH/a'; pushd '$DH/b' >/dev/null; mkcd '$DH/c'; back -l")
+assert_eq "zsh/builtin cd, pushd, mkcd recorded" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/c" "$out"
 
 # =============================================================================
 # PowerShell tests
@@ -1180,6 +1606,44 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/zipped'; extract '$WORK/
 assert_exists "pwsh/archive zip first source" "$WORK/zipped/src/file1.txt"
 assert_exists "pwsh/archive zip second source" "$WORK/zipped/second/file2.txt"
 rm -rf "$WORK/broken.zip" "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
+
+# --- xt / pk: short names for extract / archive ---
+# Aliases, so the call IS extract / archive: named parameters, $?, the
+# terminating summary and the "extract:" / "archive:" prefix all come from the
+# long function. Each case still runs through both names and is compared.
+echo "[pwsh] xt / pk are aliases of extract / archive"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "(Get-Alias xt).Definition; (Get-Alias pk).Definition" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/xt pk resolve to the long names" "extract
+archive" "$actual"
+
+echo "[pwsh] pk / xt round trip"
+setup_fixtures
+mkdir -p "$WORK/sp ace" && echo spaced > "$WORK/sp ace/file4.txt"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; pk 'short.tar.gz' src 'sp ace'" >/dev/null 2>&1
+assert_success "pwsh/pk exit code" "$?"
+mkdir -p "$WORK/short"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/short'; xt '$WORK/short.tar.gz'; \"ok=\$?\"" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/xt sets \$? like extract" "ok=True" "$actual"
+assert_exists "pwsh/xt extracted the first source" "$WORK/short/src/file1.txt"
+assert_exists "pwsh/xt extracted the source with a space" "$WORK/short/sp ace/file4.txt"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; pk -Output 'named.zip' -Sources src" >/dev/null 2>&1
+assert_success "pwsh/pk named parameters exit code" "$?"
+assert_exists "pwsh/pk named parameters" "$WORK/named.zip"
+
+echo "[pwsh] xt / pk fail exactly as extract / archive do"
+assert_pwsh_same_as_long "xt with a missing archive" "xt 'missing.tar.gz'" "extract 'missing.tar.gz'"
+assert_pwsh_same_as_long "xt without arguments" "xt" "extract"
+assert_pwsh_same_as_long "pk without arguments" "pk" "archive"
+assert_pwsh_same_as_long "pk with an unsupported format" "pk 'x.rar' src" "archive 'x.rar' src"
+actual=$(pwsh_outcome "xt 'missing.tar.gz'")
+assert_contains "pwsh/xt with a missing archive exits 1" "status=1" "$actual"
+assert_contains "pwsh/xt with a missing archive has one prefix" "extract: 1 of 1 archives failed" "$actual"
+assert_not_contains "pwsh/xt with a missing archive stops the run" "out=after" "$actual"
+short=$(pwsh_outcome "try { xt 'missing.tar.gz' 2>\$null } catch { 'caught: ' + \$_.Exception.Message }")
+long=$(pwsh_outcome "try { extract 'missing.tar.gz' 2>\$null } catch { 'caught: ' + \$_.Exception.Message }")
+assert_contains "pwsh/xt terminating error can be caught" "caught: 1 of 1 archives failed" "$short"
+assert_eq "pwsh/xt caught error matches the long name" "$long" "$short"
+rm -rf "$WORK/short" "$WORK/short.tar.gz" "$WORK/sp ace" "$WORK/named.zip"
 
 # --- archive: a source named like an option must never be parsed as one ---
 echo "[pwsh] archive neutralizes an option-shaped source name (tar.gz)"
@@ -1331,6 +1795,122 @@ else
     echo "  SKIP: pwsh/digest unreadable file (running as root)"
 fi
 rm -f "$WORK/noread.txt"
+
+# dg on pwsh: the forms dg_posix_cases covers for bash/zsh. Hash mode keeps
+# Get-FileHash's uppercase (as digest always printed); the other forms print
+# lowercase. Every failure is a terminating error, so each exits 1: pwsh has
+# no exit 2. PowerShell on Linux reads a backslash as a path separator, so
+# the pwsh sums files leave out the backslash name.
+setup_dg
+d="$WORK/dg"
+grep -v 'slash' "$d/SHA256SUMS" > "$d/PWSUMS"
+sed 's/$/\r/' "$d/PWSUMS" > "$d/PWCRLF"
+SHA256_Z=$(sha256sum "$d/256" | cut -d' ' -f1)
+SHA256_TWO=$(sha256sum "$d/c.txt" | cut -d' ' -f1)
+
+echo "[pwsh] dg default and numeric algorithms"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt; dg 5 h.txt; dg 256 h.txt; dg 512 h.txt; digest MD5 h.txt" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg default and numeric algos" "${EXPECTED_SHA256^^}
+${EXPECTED_MD5^^}
+${EXPECTED_SHA256^^}
+${EXPECTED_SHA512^^}
+${EXPECTED_MD5^^}" "$actual"
+
+# The binder removes a bare --, so the function only ever sees a quoted one.
+echo "[pwsh] dg '--' ends algo parsing"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg '--' 256; dg 5 '--' h.txt" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg '--' 256 hashes the file named 256" "${SHA256_Z^^}
+${EXPECTED_MD5^^}" "$actual"
+# Any other unquoted dash word is bound as a parameter too; quoted, a dash
+# name is an operand (COMMANDS.md tells pwsh users to quote one).
+cp "$d/h.txt" "$d/-q.txt"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg 5 '-q.txt'" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg takes a quoted dash name as a file" "${EXPECTED_MD5^^}" "$actual"
+rm -f "$d/-q.txt"
+
+echo "[pwsh] dg help and usage"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "dg -h" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/dg -h lists the compare form" "dg [algo] <file> <hash>" "$actual"
+assert_contains "pwsh/dg -h lists -e" "dg -e [algo] <a> <b>" "$actual"
+assert_contains "pwsh/dg -h lists -c" "dg -c <sumsfile...>" "$actual"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "dg")
+assert_contains "pwsh/dg without operands prints usage" "usage: dg" "$err"
+assert_not_contains "pwsh/dg usage no double prefix" "dg: dg:" "$err"
+
+echo "[pwsh] dg <file> <hash> compares"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt $EXPECTED_SHA256" 2>/dev/null | tr -d '\r')
+assert_success "pwsh/dg compare OK exit code" "$?"
+assert_eq "pwsh/dg compare OK line" "OK  h.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt '  SHA256:${EXPECTED_SHA256^^} '; dg h.txt $EXPECTED_MD5; digest sha512 h.txt $EXPECTED_SHA512" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg compare normalizes, infers and checks an explicit algo" "OK  h.txt
+OK  h.txt
+OK  h.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt 'SHA256:  $EXPECTED_SHA256'" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg compare drops blanks after the prefix" "OK  h.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt $ZERO64" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg compare MISMATCH exits 1" "1" "$?"
+assert_eq "pwsh/dg compare MISMATCH lines" "MISMATCH  h.txt
+  expected $ZERO64
+  actual   $EXPECTED_SHA256" "$actual"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg 5 h.txt $EXPECTED_SHA256")
+assert_contains "pwsh/dg compare refuses an algo the length contradicts" "64 hex digits (sha256), not md5" "$err"
+assert_not_contains "pwsh/dg compare refusal no double prefix" "dg: dg:" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt md5:$EXPECTED_SHA256" >/dev/null 2>&1
+assert_eq "pwsh/dg compare prefix mismatch exits 1" "1" "$?"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg missing.txt $EXPECTED_SHA256" >/dev/null 2>&1
+assert_eq "pwsh/dg compare missing file exits 1" "1" "$?"
+
+echo "[pwsh] dg -e compares two files"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -e a.txt b.txt" 2>/dev/null | tr -d '\r')
+assert_success "pwsh/dg -e SAME exit code" "$?"
+assert_eq "pwsh/dg -e SAME line" "SAME  a.txt  b.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -Equal a.txt c.txt" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg -e DIFFERENT exits 1" "1" "$?"
+assert_eq "pwsh/dg -e DIFFERENT lines" "DIFFERENT  a.txt  c.txt
+  $SHA256_ONE_LC  a.txt
+  $SHA256_TWO  c.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; digest -e 5 a.txt c.txt" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/dg -e takes an algo" "  $MD5_ONE  a.txt" "$actual"
+# A switch binds wherever it stands (COMMANDS.md says so); bash/zsh take it
+# only up front.
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg 5 a.txt -e b.txt" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg -e works after the algo and a file" "SAME  a.txt  b.txt" "$actual"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -e a.txt" >/dev/null 2>&1
+assert_eq "pwsh/dg -e with one file exits 1" "1" "$?"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -e -c a.txt b.txt")
+assert_contains "pwsh/dg -e and -c together are refused" "cannot be combined" "$err"
+
+echo "[pwsh] dg -c verifies checksum files"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c PWSUMS" 2>/dev/null | tr -d '\r')
+assert_success "pwsh/dg -c GNU file exit code" "$?"
+assert_eq "pwsh/dg -c GNU lines" "h.txt: OK
+sp ace.txt: OK
+a.txt: OK" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; digest -Check MIXED PWCRLF" 2>/dev/null | tr -d '\r')
+assert_success "pwsh/dg -c BSD, mixed and CRLF files exit code" "$?"
+assert_eq "pwsh/dg -c BSD, mixed and CRLF files all OK" "6" "$(printf '%s\n' "$actual" | grep -c ': OK$')"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c NEWLINE; (_DgSumsLine '\\$ZERO64  a\\\\b').Name" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg -c undoes GNU's escapes" "new
+line.txt: OK
+a\\b" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c BAD" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg -c failures exit 1" "1" "$?"
+assert_eq "pwsh/dg -c MISSING, FAILED and OK lines" "gone.txt: MISSING
+c.txt: FAILED
+a.txt: OK" "$actual"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c BAD")
+assert_contains "pwsh/dg -c warns about malformed lines" "'BAD': 2 malformed line(s) ignored" "$err"
+assert_contains "pwsh/dg -c summary" "1 FAILED, 1 MISSING of 3 checked" "$err"
+assert_not_contains "pwsh/dg -c summary no double prefix" "dg: dg:" "$err"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c EMPTY")
+assert_contains "pwsh/dg -c with no entries says so" "no checksum lines found" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c EMPTY" >/dev/null 2>&1
+assert_eq "pwsh/dg -c with no entries exits 1" "1" "$?"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c missing PWSUMS")
+assert_contains "pwsh/dg -c counts an unreadable sums file" "1 sums file(s) unreadable" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c 256 PWSUMS" >/dev/null 2>&1
+assert_eq "pwsh/dg -c with an algo exits 1" "1" "$?"
+rm -rf "${d:?}"
 
 echo "[pwsh] archive + extract zip"
 setup_fixtures
@@ -1756,19 +2336,229 @@ echo "[pwsh] sagain 0"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "sagain -N 0")
 assert_contains "pwsh/sagain 0 usage" "usage" "$err"
 
-echo "[pwsh] back 2"
+# back N>1 is supported now (browser-style history); with nothing recorded
+# yet it reports the empty history instead of "only N=1".
+echo "[pwsh] back 2 with no history"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "back -N 2")
-assert_contains "pwsh/back 2 unsupported" "only N=1" "$err"
+assert_contains "pwsh/back 2 with no history" "history has 0 back entries" "$err"
 
-echo "[pwsh] back returns to the previous directory (Set-Location -)"
+echo "[pwsh] back returns to the previous directory"
 actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "cd '$WORK'; cd /; back *>\$null; (Get-Location).Path" 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/back previous dir" "$WORK" "$actual"
 
-# NB: the "no previous directory" catch branch is intentionally not unit-tested.
-# `Set-Location -` on a fresh runspace depends on pwsh's internal location-history
-# state (empty vs. a single startup entry), which varies by host and pwsh version,
-# so any fresh-session assertion is flaky. The happy-path round-trip above covers
-# the fix; the try/catch is a defensive guard for genuine failures.
+# --- directory history: back / fwd (browser-style) ---
+# Same fixture as the bash/zsh cases: a fresh pwsh in $DH/start with HOME=$DH.
+# pwsh records moves at the prompt (init.ps1 installs _DenDirHookPrompt), and
+# den's navigation commands record at once when typed there. A command at the
+# top level of -Command counts as typed (CommandOrigin Runspace, as at an
+# interactive prompt); a case that needs the prompt installs the hook and calls
+# `prompt` where one would come.
+setup_dirhist
+
+# dh_pwsh <commands> - stdout; dh_pwsh_err <commands> - stderr (one line, so
+# errors show as "<function>: <message>"). back/fwd errors are terminating, so
+# `try { ... } catch { 'failed' }` lets a case go on to check where it stayed.
+dh_pwsh() {
+    (cd "$DH/start" && HOME="$DH" pwsh -NoProfile -NonInteractive -Command ". '$FUNCTIONS_PS1_COMBINED'; $1" 2>/dev/null | tr -d '\r')
+}
+dh_pwsh_err() {
+    (cd "$DH/start" && HOME="$DH" pwsh -NoProfile -NonInteractive -Command ". '$FUNCTIONS_PS1_COMBINED'; $1" 2>&1 >/dev/null |
+        sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
+}
+
+echo "[pwsh] back N / fwd N"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; Set-Location '$DH/c'; back 2; (Get-Location).Path; fwd; (Get-Location).Path; fwd; (Get-Location).Path")
+assert_eq "pwsh/back 2, fwd, fwd" "$DH/a
+$DH/b
+$DH/c" "$out"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; back 2; fwd 2; (Get-Location).Path")
+assert_eq "pwsh/back 2 then fwd 2 returns" "$DH/b" "$out"
+
+echo "[pwsh] back -l"
+out=$(dh_pwsh "cd '$DH'; cd /; cd '$DH/b'; cd '$DH/c'; back 2; back -l")
+assert_eq "pwsh/back -l lists back, current and forward" "  2  ~/start
+  1  ~
+  *  /
+ +1  ~/b
+ +2  ~/c" "$out"
+
+echo "[pwsh] a consecutive duplicate is recorded once"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/a'; Set-Location .; back -l")
+assert_eq "pwsh/no consecutive duplicates" "  1  ~/start
+  *  ~/a" "$out"
+
+echo "[pwsh] a new move clears the forward list"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; back; cd '$DH/c'; try { fwd } catch { 'failed' }; (Get-Location).Path")
+assert_eq "pwsh/new move clears forward (stays)" "failed
+$DH/c" "$out"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; back; cd '$DH/c'; fwd")
+assert_eq "pwsh/new move clears forward (message)" "fwd: history has 0 forward entries, cannot go forward 1" "$err"
+
+echo "[pwsh] N larger than the history"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; try { back 5 } catch { 'failed' }; (Get-Location).Path")
+assert_eq "pwsh/back 5 stays" "failed
+$DH/b" "$out"
+dh_pwsh "cd '$DH/a'; back 5" >/dev/null
+assert_eq "pwsh/back 5 exits 1" "1" "$?"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; back 5")
+assert_eq "pwsh/back 5 says how many" "back: history has 2 back entries, cannot go back 5" "$err"
+err=$(dh_pwsh_err "cd '$DH/a'; back 99999999999999999999")
+assert_eq "pwsh/back huge N" "back: history has 1 back entry, cannot go back 99999999999999999999" "$err"
+
+echo "[pwsh] N not a positive integer"
+for bad in abc 01; do
+    err=$(dh_pwsh_err "back $bad")
+    assert_eq "pwsh/back $bad usage" "back: usage: [N | -l | -i]  (N=positive integer, default 1)" "$err"
+done
+err=$(dh_pwsh_err "fwd 0")
+assert_eq "pwsh/fwd 0 usage" "fwd: usage: [N]  (N=positive integer, default 1)" "$err"
+dh_pwsh "fwd 0" >/dev/null
+assert_eq "pwsh/fwd 0 exits 1" "1" "$?"
+
+echo "[pwsh] a target that no longer exists is dropped"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; Remove-Item '$DH/a'; try { back } catch { 'failed' }; (Get-Location).Path; back -l")
+assert_eq "pwsh/removed target dropped, stays put" "failed
+$DH/b
+  1  ~/start
+  *  ~/b" "$out"
+mkdir -p "$DH/a"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; Remove-Item '$DH/a'; back")
+assert_eq "pwsh/removed target message" "back: $DH/a no longer exists, dropped from history" "$err"
+mkdir -p "$DH/a"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back 2; Remove-Item '$DH/b'; try { fwd } catch { 'failed' }; (Get-Location).Path; back -l")
+assert_eq "pwsh/removed forward target dropped, stays put" "failed
+$DH/a
+  1  ~/start
+  *  ~/a
+ +1  ~/c" "$out"
+mkdir -p "$DH/b"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back 2; Remove-Item '$DH/b'; fwd")
+assert_eq "pwsh/removed forward target message" "fwd: $DH/b no longer exists, dropped from history" "$err"
+mkdir -p "$DH/b"
+
+echo "[pwsh] Push-Location / Pop-Location are recorded at the prompt"
+out=$(dh_pwsh "_DenDirHookPrompt; Push-Location '$DH/a'; \$null = prompt; Push-Location '$DH/b'; \$null = prompt; Pop-Location; \$null = prompt; back -l")
+assert_eq "pwsh/Push-Location and Pop-Location recorded" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/a" "$out"
+
+echo "[pwsh] the back list keeps 50 entries"
+out=$(dh_pwsh "_DenDirHookPrompt; 1..30 | ForEach-Object { Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt }; @(back -l).Count")
+assert_eq "pwsh/back list capped at 50" "51" "$out"
+
+echo "[pwsh] back -i picks an entry with fzf"
+out=$(dh_pwsh "\$env:PATH = '$DH/fzfbin:' + \$env:PATH; \$env:FZF_PICK = '2'; cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back -i; (Get-Location).Path; \$env:FZF_PICK = '+2'; back -i; (Get-Location).Path; \$env:FZF_PICK = '*'; back -i; (Get-Location).Path")
+assert_eq "pwsh/back -i back, forward, current" "$DH/a
+$DH/c
+$DH/c" "$out"
+err=$(dh_pwsh_err "\$env:PATH = '$DH/nobin'; back -i")
+assert_contains "pwsh/back -i without fzf" "back: fzf is not installed." "$err"
+dh_pwsh "\$env:PATH = '$DH/nobin'; back -i" >/dev/null
+assert_eq "pwsh/back -i without fzf exits 1" "1" "$?"
+
+# LocationChangedAction also fires for every move a script makes, so den does
+# not hook it; a handler set before den loads stays as it was and keeps running.
+echo "[pwsh] LocationChangedAction is left alone"
+out=$(cd "$DH/start" && HOME="$DH" pwsh -NoProfile -NonInteractive -Command "\$global:hits = 0; \$ExecutionContext.InvokeCommand.LocationChangedAction = { \$global:hits++ }; \$before = \$ExecutionContext.InvokeCommand.LocationChangedAction; . '$FUNCTIONS_PS1_COMBINED'; \"kept=\$([object]::ReferenceEquals(\$before, \$ExecutionContext.InvokeCommand.LocationChangedAction))\"; cd '$DH/a'; cd '$DH/b'; back; \"hits=\$global:hits\"; (Get-Location).Path" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/LocationChangedAction not replaced, still runs" "kept=True
+hits=3
+$DH/a" "$out"
+
+# The prompt is the recorder on every PowerShell (Windows PowerShell 5.1 has no
+# LocationChangedAction at all); init.ps1 wraps starship's prompt with it.
+echo "[pwsh] prompt hook"
+out=$(dh_pwsh "function global:prompt { 'st=' + \$global:? }; _DenDirHookPrompt; _DenDirHookPrompt; Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt; \$null = 1; prompt; back -l")
+assert_eq "pwsh/prompt hook records, keeps \$?, wraps once" "st=False
+st=True
+  2  ~/start
+  1  ~/a
+  *  ~/b" "$out"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd '$DH/b'; back; \$null = prompt; fwd; (Get-Location).Path")
+assert_eq "pwsh/prompt does not record back as a new move" "$DH/b" "$out"
+
+# Only where the session is at each prompt counts, as with bash's
+# PROMPT_COMMAND: moves on the way there (several Set-Location on one line, the
+# moves a script or a function makes, den's cd among them) are not history.
+echo "[pwsh] moves between two prompts count once"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd '$DH/b'; Set-Location '$DH/c'; Set-Location '$DH/start'; \$null = prompt; back -l")
+assert_eq "pwsh/Set-Location twice on one line is one move" "  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/start" "$out"
+mkdir -p "$DH/scr"
+printf '%s\n' 'Push-Location $PSScriptRoot' 'try {} finally { Pop-Location }' > "$DH/scr/pushpop.ps1"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd ../b; back; \$null = prompt; & '$DH/scr/pushpop.ps1'; \$null = prompt; back -l; fwd; (Get-Location).Path")
+assert_eq "pwsh/script Push-Location, Pop-Location leave the history" "  1  ~/start
+  *  ~/a
+ +1  ~/b
+$DH/b" "$out"
+printf '%s\n' 'Set-Location $PSScriptRoot' 'cd ../a' 'Push-Location ../b' 'mkcd ../c' > "$DH/scr/net.ps1"
+out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/b'; & '$DH/scr/net.ps1'; \$null = prompt; back -l")
+assert_eq "pwsh/script ending elsewhere is one move" "  2  ~/start
+  1  ~/b
+  *  ~/c" "$out"
+out=$(dh_pwsh "function global:proj { cd '$DH/a'; mkcd '$DH/b'; up }; proj; back -l")
+assert_eq "pwsh/function's den cd, mkcd, up are one move" "  1  ~/start
+  *  ~" "$out"
+
+# Typed at the prompt, each den navigation command records its move at once;
+# the Set-Location after them only shows up through back -l. `.1` is called as
+# `& '.1'`: a bare .1 is the number 0.1 to PowerShell.
+echo "[pwsh] den's navigation commands typed at the prompt record at once"
+out=$(dh_pwsh "mkcd '$DH/a/n/m'; up; & '.1'; ..; Set-Location '$DH/c'; back -l")
+assert_eq "pwsh/mkcd, up, .1, .. each recorded" "  5  ~/start
+  4  ~/a/n/m
+  3  ~/a/n
+  2  ~/a
+  1  ~
+  *  ~/c" "$out"
+rm -rf "$DH/a/n"
+# The same for zd, zdi, cdi, cdf and y, each through a stub: __zoxide_z /
+# __zoxide_zi just Set-Location, fzf is the fixture's stub (fd is left off PATH
+# so cdf lists full paths), and yazi writes $YAZI_CWD to its --cwd-file.
+mkdir -p "$DH/c/d" "$DH/ybin"
+cat > "$DH/ybin/yazi" <<'STUB'
+#!/bin/sh
+for a; do
+    case $a in --cwd-file=*) printf '%s\n' "$YAZI_CWD" > "${a#--cwd-file=}" ;; esac
+done
+STUB
+chmod +x "$DH/ybin/yazi"
+out=$(dh_pwsh "\$env:PATH = '$DH/fzfbin:$DH/ybin'; function global:__zoxide_z { Set-Location @args }; function global:__zoxide_zi { Set-Location @args }; zd '$DH/a'; zdi '$DH/b'; cdi '$DH/c'; \$env:FZF_PICK = '$DH/c/d'; cdf; \$env:YAZI_CWD = '$DH/a'; y; Set-Location '$DH/start'; back -l")
+assert_eq "pwsh/zd, zdi, cdi, cdf, y each recorded" "  6  ~/start
+  5  ~/a
+  4  ~/b
+  3  ~/c
+  2  ~/c/d
+  1  ~/a
+  *  ~/start" "$out"
+rm -rf "$DH/c/d"
+
+# init.ps1 installs the recorder: it wraps the prompt after starship's init has
+# replaced it. A stub starship stands in for the real one, and HOME /
+# XDG_DATA_HOME point into the fixture, so the init cache is written there and
+# never over the user's own.
+echo "[pwsh] init.ps1 wraps starship's prompt with the recorder"
+mkdir -p "$DH/stbin" "$DH/.local/share"
+cat > "$DH/stbin/starship" <<'STUB'
+#!/bin/sh
+printf '%s\n' 'function global:prompt { "stub:$($global:?)>" }'
+STUB
+chmod +x "$DH/stbin/starship"
+dh_pwsh_init() {
+    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+        pwsh -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; $1" 2>/dev/null | tr -d '\r')
+}
+out=$(dh_pwsh_init "\$function:prompt -eq \$global:_DenDirPrompt; \"\$global:_DenDirPromptOld\".Trim(); Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt")
+assert_eq "pwsh/init.ps1 prompt is den's wrapper around starship's, which still gets \$?" 'True
+"stub:$($global:?)>"
+stub:False>' "$out"
+out=$(dh_pwsh_init "Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; back; \$null = prompt; & '$DH/scr/pushpop.ps1'; \$null = prompt; back -l; fwd; (Get-Location).Path")
+assert_eq "pwsh/init.ps1 prompt records moves, not a script's Push-/Pop-Location" "  1  ~/start
+  *  ~/a
+ +1  ~/b
+$DH/b" "$out"
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention
@@ -1803,6 +2593,90 @@ echo "[pwsh] back usage stderr"
 err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "back -N 0")
 assert_contains "pwsh/back stderr has usage" "usage:" "$err"
 assert_not_contains "pwsh/back no double prefix" "back: back:" "$err"
+
+# =============================================================================
+# cmd: the directory-history promptfilter in starship.lua (Lua, stubbed Clink)
+# =============================================================================
+# cmd and Clink cannot run here, but the filter is plain Lua: load starship.lua
+# against a stub of the Clink calls it makes and drive it prompt by prompt. The
+# shim() below does what back.cmd does to the lists: back N takes the Nth entry
+# from the END of _DEN_DIRBACK (stored farthest first), fwd N the Nth of
+# _DEN_DIRFWD, then it changes directory and leaves its note in _DEN_DIRNAV.
+echo ""
+echo "================================================"
+echo "  Testing starship.lua (cmd) directory history with Lua"
+echo "================================================"
+
+LUA_BIN=$(command -v lua5.4 || command -v lua5.3 || command -v lua || true)
+if [ -z "$LUA_BIN" ]; then
+    echo "  SKIP: cmd/directory history filter (no lua interpreter)"
+else
+    cat > "$WORK/dirhist_harness.lua" <<'LUA'
+local env = { LOCALAPPDATA = "C:\\L", PATH = "", STARSHIP_CPU_INTEL = "stub",
+              _DEN_DIRBACK = "C:\\old", _DEN_DIRFWD = "C:\\old", _DEN_DIRNAV = "back:1" }
+local cwd = "C:\\start"
+local gone = {}
+settings = { set = function() end }
+os.getenv = function(n) return env[n] end
+os.setenv = function(n, v) env[n] = v; return true end
+os.getcwd = function() return cwd end
+os.isdir = function(p) return not gone[p:lower()] end
+os.execute = function() return true end
+local filters = {}
+clink = { promptfilter = function() local f = {}; filters[#filters + 1] = f; return f end }
+dofile(arg[1])
+
+local function prompt() for _, f in ipairs(filters) do f:filter("") end end
+local function state(label)
+    print(label .. ": back=" .. (env._DEN_DIRBACK or "") .. " fwd=" .. (env._DEN_DIRFWD or "")
+        .. " nav=" .. (env._DEN_DIRNAV or "") .. " oldpwd=" .. (env._OLDPWD or ""))
+end
+local function cd(d) cwd = d; prompt() end
+local function shim(cmd, n)
+    local t = {}
+    for x in ((cmd == "back" and env._DEN_DIRBACK or env._DEN_DIRFWD) or ""):gmatch("[^|]+") do
+        t[#t + 1] = x
+    end
+    local target = t[cmd == "back" and (#t - n + 1) or n]
+    if gone[target:lower()] then
+        env._DEN_DIRNAV = "drop" .. cmd .. ":" .. n
+    else
+        env._DEN_DIRNAV = cmd .. ":" .. n
+        cwd = target
+    end
+    prompt()
+end
+
+state("load")
+cd("C:\\a"); cd("C:\\b"); cd("C:\\c"); state("moves")
+cd("c:\\C"); state("same dir, other case")
+shim("back", 2); state("back 2")
+shim("fwd", 1); state("fwd 1")
+shim("back", 1); cd("C:\\d"); state("back 1, then a move")
+gone["c:\\a"] = true; shim("back", 1); state("back 1 to a removed dir")
+env._DEN_DIRNAV = "back:1"; prompt(); state("note without a move")
+cd("C:\\e"); cd("C:\\f"); shim("back", 3); state("back 3")
+gone["c:\\e"] = true; shim("fwd", 2); state("fwd 2 to a removed dir")
+shim("fwd", 2); state("fwd 2 after the drop")
+for i = 1, 30 do cd("C:\\a"); cd("C:\\b") end
+local n = 0
+for _ in env._DEN_DIRBACK:gmatch("[^|]+") do n = n + 1 end
+print("entries after 60 moves: " .. n)
+LUA
+    out=$("$LUA_BIN" "$WORK/dirhist_harness.lua" "$DOTFILES/shell/cmd/starship.lua" 2>&1)
+    assert_eq "cmd/filter lists: start empty, record, rotate, drop, cap" 'load: back= fwd= nav= oldpwd=
+moves: back=C:\start|C:\a|C:\b fwd= nav= oldpwd=C:\b
+same dir, other case: back=C:\start|C:\a|C:\b fwd= nav= oldpwd=C:\c
+back 2: back=C:\start fwd=C:\b|c:\C nav= oldpwd=c:\C
+fwd 1: back=C:\start|C:\a fwd=c:\C nav= oldpwd=C:\a
+back 1, then a move: back=C:\start|C:\a fwd= nav= oldpwd=C:\a
+back 1 to a removed dir: back=C:\start fwd= nav= oldpwd=C:\a
+note without a move: back=C:\start fwd= nav= oldpwd=C:\a
+back 3: back= fwd=C:\d|C:\e|C:\f nav= oldpwd=C:\f
+fwd 2 to a removed dir: back= fwd=C:\d|C:\f nav= oldpwd=C:\f
+fwd 2 after the drop: back=C:\start|C:\d fwd= nav= oldpwd=C:\start
+entries after 60 moves: 25' "$out"
+fi
 
 # =============================================================================
 # Summary

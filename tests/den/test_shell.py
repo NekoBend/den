@@ -73,6 +73,7 @@ def test_cmd_core_shims_present():
         "ll",  # wrappers
         "up",
         "back",
+        "fwd",
         "mkcd",
         "again",  # navigation
         "python",
@@ -88,6 +89,36 @@ def test_cmd_core_shims_present():
     present = {p.stem for p in _CMD_BIN.glob("*.cmd")}
     missing = required - present
     assert not missing, f"cmd/bin is missing core shims: {sorted(missing)}"
+
+
+def test_cmd_digest_forwards_to_dg():
+    # cmd cannot run in CI, so these hold the shape the batch relies on: digest
+    # hands every argument to dg.cmd without `call` (which would double any
+    # caret in them), and dg.cmd, with its many labels, keeps CRLF line endings
+    # (with bare LF, cmd can miss a label that straddles a 512-byte block).
+    digest = (_CMD_BIN / "digest.cmd").read_text(encoding="utf-8")
+    assert '"%~dp0dg.cmd" %*' in digest
+    assert "call " not in digest.lower()
+    dg = (_CMD_BIN / "dg.cmd").read_bytes()
+    assert dg.count(b"\n") == dg.count(b"\r\n"), "dg.cmd must use CRLF line endings"
+
+
+def test_cmd_short_toggle_shims_call_their_long_names():
+    # cmd cannot run here, so this pins the shape that makes the short names
+    # work: CALL (a bare name would end the shim there) of the long shim by
+    # this shim's own folder (%~dp0, never the current directory), every
+    # argument passed on (%*), and no setlocal, which would undo the toggle's
+    # set commands when the shim returns.
+    pairs = {
+        "tgl-wr": "toggle-wrapper",
+        "tgl-hw": "toggle-hwinfo",
+        "tgl-uv": "toggle-uv",
+    }
+    for short, long in pairs.items():
+        assert (_CMD_BIN / f"{long}.cmd").is_file(), long
+        lines = (_CMD_BIN / f"{short}.cmd").read_text().splitlines()
+        code = [ln for ln in lines if ln.strip() and not ln.lower().startswith("rem ")]
+        assert code == ["@echo off", f'call "%~dp0{long}.cmd" %*'], short
 
 
 def test_pwsh_dir_honors_queried_profile_on_windows(tmp_path, monkeypatch):

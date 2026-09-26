@@ -9,18 +9,39 @@
 # substitution (dim, stderr). Prints on EVERY wrapped call: the modern tool's
 # flags and output differ from the native command, so a silent substitution is
 # easy to miss (and tools or generated commands that assume the native behavior
-# then break). The "native one-off" hint names the actual FALLBACK command
-# (e.g. `command ls -A` for `la`), not the wrapper name, since wrappers like
-# la/ll/lt have no binary of their own. Silence the notice with _DEN_WRAPPER_LOG=0.
+# then break). One short line, both hints in one parenthesis:
+#   [den] ls -> lsd  (native: command ls, off: tgl-wr)
+# "native:" names the actual FALLBACK command for a one-off call (e.g.
+# `command ls -A` for `la`), not the wrapper name, since wrappers like la/ll/lt
+# have no binary of their own; a wrapper with no native equivalent shows only
+# "off:". Flags that only change how the output looks (--color, --colour and
+# their =VALUE forms) are left out of the hint to keep the line short; the
+# fallback itself still runs with them. "off:" is the session switch (tgl-wr = toggle-wrapper).
+# _DEN_WRAPPER_LOG=0 silences the notice and _DEN_WRAPPERS=0 disables the
+# wrappers; both are documented in COMMANDS.md and shell/README.md rather than
+# in the line.
 _wrap_log() {
     [ "${_DEN_WRAPPER_LOG:-1}" = "0" ] && return 0
     if [ -n "$3" ]; then
-        _wl_native="command $3${4:+ $4}"
+        # Split the flags by hand: zsh does not word-split an unquoted $4.
+        _wl_rest="$4"
+        _wl_flags=
+        while [ -n "$_wl_rest" ]; do
+            _wl_f="${_wl_rest%% *}"
+            case "$_wl_rest" in
+                *" "*) _wl_rest="${_wl_rest#* }" ;;
+                *) _wl_rest= ;;
+            esac
+            case "$_wl_f" in
+                ''|--color|--color=*|--colour|--colour=*) ;;
+                *) _wl_flags="${_wl_flags:+$_wl_flags }$_wl_f" ;;
+            esac
+        done
+        printf '\033[2m[den] %s -> %s  (native: command %s, off: tgl-wr)\033[0m\n' "$1" "$2" "$3${_wl_flags:+ $_wl_flags}" >&2
+        unset _wl_rest _wl_flags _wl_f
     else
-        _wl_native="(no native equivalent)"
+        printf '\033[2m[den] %s -> %s  (off: tgl-wr)\033[0m\n' "$1" "$2" >&2
     fi
-    printf '\033[2m[den] %s -> %s  | native one-off: %s  | silence: _DEN_WRAPPER_LOG=0  | disable: toggle-wrapper or export _DEN_WRAPPERS=0\033[0m\n' "$1" "$2" "$_wl_native" >&2
-    unset _wl_native
 }
 
 # ========== wrapper generator ==========
@@ -66,6 +87,12 @@ toggle-wrapper() {
         unset STARSHIP_WRAPPER_STATE
         echo "wrappers: ON (using modern tools)"
     fi
+}
+
+# tgl-wr → short name for toggle-wrapper.
+# A function, not an alias: aliases expand only in interactive shells.
+tgl-wr() {
+    toggle-wrapper "$@"
 }
 
 # ========== PATH ==========

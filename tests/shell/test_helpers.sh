@@ -13,6 +13,11 @@ HELPERS_PS1="$DOTFILES/shell/pwsh/_helpers.ps1"
 export XDG_DATA_HOME="$WORK/xdg"
 mkdir -p "$XDG_DATA_HOME"
 
+# Drop the color codes around the wrapper notice so whole lines can be compared.
+strip_ansi() {
+    sed 's/\x1b\[[0-9;]*m//g'
+}
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -37,15 +42,45 @@ echo "[bash] _wrap no fallback error"
 actual=$(run_bash "$HELPERS_SH" "_wrap mytest nonexistent_tool '' '' ''; mytest 2>&1; echo \$?" 2>/dev/null)
 assert_contains "bash/_wrap no fallback" "not installed" "$actual"
 
-# --- _wrap_log native one-off hint names the FALLBACK, not the wrapper name ---
-echo "[bash] _wrap_log native one-off = fallback command"
+# --- _wrap_log native hint names the FALLBACK, not the wrapper name ---
+echo "[bash] _wrap_log native hint = fallback command"
 actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; myla x >/dev/null")
-assert_contains "bash/native one-off is fallback" "command ls -A" "$actual"
-assert_not_contains "bash/native one-off not wrapper name" "command myla" "$actual"
+assert_contains "bash/native hint is fallback" "command ls -A" "$actual"
+assert_not_contains "bash/native hint not wrapper name" "command myla" "$actual"
 
-echo "[bash] _wrap_log native one-off = none when no fallback"
+echo "[bash] _wrap_log native hint = none when no fallback"
 actual=$(run_bash_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null")
-assert_contains "bash/native one-off none" "(no native equivalent)" "$actual"
+assert_not_contains "bash/native hint none" "native:" "$actual"
+
+# --- _wrap_log line format: short, with the hints in one parenthesis ---
+# The whole line is compared (color codes stripped), so a hint that comes back
+# or a section that moves fails here, not only a missing substring.
+echo "[bash] _wrap_log line with a native fallback"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; myla x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log line with flags" "[den] myla -> echo  (native: command ls -A, off: tgl-wr)" "$actual"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myls echo '' ls ''; myls x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log line without flags" "[den] myls -> echo  (native: command ls, off: tgl-wr)" "$actual"
+
+echo "[bash] _wrap_log hint leaves out presentation-only flags"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myls echo '' ls '--color=auto'; myls x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log hint drops --color=auto" "[den] myls -> echo  (native: command ls, off: tgl-wr)" "$actual"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A --color=auto'; myla x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log hint keeps -A" "[den] myla -> echo  (native: command ls -A, off: tgl-wr)" "$actual"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myll echo '' ls '--colour=always -lF --color'; myll x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log hint keeps -lF only" "[den] myll -> echo  (native: command ls -lF, off: tgl-wr)" "$actual"
+
+echo "[bash] _wrap_log line without a native equivalent"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log line no native" "[den] mytree -> echo  (off: tgl-wr)" "$actual"
+
+echo "[bash] _wrap_log stays dim"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null" | od -An -c | tr -s ' \n' ' ')
+assert_contains "bash/_wrap_log dim on" "033 [ 2 m [ d e n ]" "$actual"
+assert_contains "bash/_wrap_log dim off" "033 [ 0 m \n" "$actual"
+
+echo "[bash] _DEN_WRAPPER_LOG=0 silences the line"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; _DEN_WRAPPER_LOG=0; myla x >/dev/null")
+assert_eq "bash/_DEN_WRAPPER_LOG=0 silences" "" "$actual"
 
 # --- _wsfx creates function ---
 echo "[bash] _wsfx creates function"
@@ -73,6 +108,21 @@ assert_eq "bash/toggle STARSHIP OFF" "OFF" "$actual"
 echo "[bash] toggle clears STARSHIP_WRAPPER_STATE"
 actual=$(run_bash "$HELPERS_SH" "toggle-wrapper >/dev/null; toggle-wrapper >/dev/null; echo \${STARSHIP_WRAPPER_STATE:-unset}")
 assert_eq "bash/toggle STARSHIP ON" "unset" "$actual"
+
+# --- tgl-wr: the short name for toggle-wrapper ---
+# `bash -c` is non-interactive, so an alias would not even expand here: this
+# checks that tgl-wr is a real function that does what toggle-wrapper does.
+echo "[bash] tgl-wr is a function"
+actual=$(run_bash "$HELPERS_SH" "type -t tgl-wr")
+assert_eq "bash/tgl-wr type" "function" "$actual"
+
+echo "[bash] tgl-wr flips like toggle-wrapper"
+actual=$(run_bash "$HELPERS_SH" "tgl-wr; echo \"\$_DEN_WRAPPERS \$STARSHIP_WRAPPER_STATE\"")
+assert_eq "bash/tgl-wr OFF" "wrappers: OFF (using native commands)
+0 OFF" "$actual"
+actual=$(run_bash "$HELPERS_SH" "tgl-wr >/dev/null; tgl-wr; echo \"\$_DEN_WRAPPERS \${STARSHIP_WRAPPER_STATE:-unset}\"")
+assert_eq "bash/tgl-wr ON again" "wrappers: ON (using modern tools)
+1 unset" "$actual"
 
 # --- _wrap respects toggle ---
 echo "[bash] _wrap respects toggle OFF"
@@ -150,14 +200,36 @@ echo "hello test" > "$WORK/wrap_test.txt"
 actual=$(run_zsh "$HELPERS_SH" "_wrap mycat nonexistent_tool '' cat ''; mycat '$WORK/wrap_test.txt'" 2>/dev/null)
 assert_eq "zsh/_wrap fallback" "hello test" "$actual"
 
-echo "[zsh] _wrap_log native one-off = fallback command"
+echo "[zsh] _wrap_log native hint = fallback command"
 actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; myla x >/dev/null")
-assert_contains "zsh/native one-off is fallback" "command ls -A" "$actual"
-assert_not_contains "zsh/native one-off not wrapper name" "command myla" "$actual"
+assert_contains "zsh/native hint is fallback" "command ls -A" "$actual"
+assert_not_contains "zsh/native hint not wrapper name" "command myla" "$actual"
 
-echo "[zsh] _wrap_log native one-off = none when no fallback"
+echo "[zsh] _wrap_log native hint = none when no fallback"
 actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null")
-assert_contains "zsh/native one-off none" "(no native equivalent)" "$actual"
+assert_not_contains "zsh/native hint none" "native:" "$actual"
+
+echo "[zsh] _wrap_log line with a native fallback"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; myla x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log line with flags" "[den] myla -> echo  (native: command ls -A, off: tgl-wr)" "$actual"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myls echo '' ls ''; myls x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log line without flags" "[den] myls -> echo  (native: command ls, off: tgl-wr)" "$actual"
+
+echo "[zsh] _wrap_log hint leaves out presentation-only flags"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myls echo '' ls '--color=auto'; myls x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log hint drops --color=auto" "[den] myls -> echo  (native: command ls, off: tgl-wr)" "$actual"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A --color=auto'; myla x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log hint keeps -A" "[den] myla -> echo  (native: command ls -A, off: tgl-wr)" "$actual"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myll echo '' ls '--colour=always -lF --color'; myll x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log hint keeps -lF only" "[den] myll -> echo  (native: command ls -lF, off: tgl-wr)" "$actual"
+
+echo "[zsh] _wrap_log line without a native equivalent"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log line no native" "[den] mytree -> echo  (off: tgl-wr)" "$actual"
+
+echo "[zsh] _DEN_WRAPPER_LOG=0 silences the line"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; _DEN_WRAPPER_LOG=0; myla x >/dev/null")
+assert_eq "zsh/_DEN_WRAPPER_LOG=0 silences" "" "$actual"
 
 echo "[zsh] _wsfx creates function"
 actual=$(run_zsh "$HELPERS_SH" "_wsfx echow echo ''; type echow" 2>/dev/null)
@@ -170,6 +242,18 @@ assert_eq "zsh/toggle OFF" "0" "$actual"
 echo "[zsh] toggle round trip"
 actual=$(run_zsh "$HELPERS_SH" "toggle-wrapper >/dev/null; toggle-wrapper >/dev/null; echo \$_DEN_WRAPPERS")
 assert_eq "zsh/toggle ON again" "1" "$actual"
+
+echo "[zsh] tgl-wr is a function"
+actual=$(run_zsh "$HELPERS_SH" "whence -w tgl-wr")
+assert_eq "zsh/tgl-wr type" "tgl-wr: function" "$actual"
+
+echo "[zsh] tgl-wr flips like toggle-wrapper"
+actual=$(run_zsh "$HELPERS_SH" "tgl-wr; echo \"\$_DEN_WRAPPERS \$STARSHIP_WRAPPER_STATE\"")
+assert_eq "zsh/tgl-wr OFF" "wrappers: OFF (using native commands)
+0 OFF" "$actual"
+actual=$(run_zsh "$HELPERS_SH" "tgl-wr >/dev/null; tgl-wr; echo \"\$_DEN_WRAPPERS \${STARSHIP_WRAPPER_STATE:-unset}\"")
+assert_eq "zsh/tgl-wr ON again" "wrappers: ON (using modern tools)
+1 unset" "$actual"
 
 echo "[zsh] _init_path adds to PATH"
 actual=$(run_zsh "$HELPERS_SH" "_init_path /test/new/path; echo \$PATH" 2>/dev/null)
@@ -271,6 +355,22 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " | tr -d '\r')
 assert_eq "pwsh/toggle STARSHIP OFF" "OFF" "$actual"
 
+# --- tgl-wr: the short name for toggle-wrapper ---
+echo "[pwsh] tgl-wr is a function"
+actual=$(run_pwsh "$HELPERS_PS1" "(Get-Command tgl-wr).CommandType" | tr -d '\r')
+assert_eq "pwsh/tgl-wr type" "Function" "$actual"
+
+echo "[pwsh] tgl-wr flips like toggle-wrapper"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_WRAPPERS = '1'
+    \$msg = @(tgl-wr 6>&1) -join ''
+    Write-Output \"\$msg|\$env:_DEN_WRAPPERS|\$env:STARSHIP_WRAPPER_STATE\"
+    \$msg = @(tgl-wr 6>&1) -join ''
+    Write-Output \"\$msg|\$env:_DEN_WRAPPERS|\$([bool]\$env:STARSHIP_WRAPPER_STATE)\"
+" | tr -d '\r')
+assert_eq "pwsh/tgl-wr OFF then ON" "wrappers: OFF (using native commands)|0|OFF
+wrappers: ON (using modern tools)|1|False" "$actual"
+
 # --- New-Wrapper respects toggle OFF ---
 echo "[pwsh] New-Wrapper respects toggle OFF"
 echo "toggle test" > "$WORK/pwsh_toggle.txt"
@@ -293,6 +393,24 @@ actual=$(run_pwsh "$HELPERS_PS1" "
     Write-Output \"first:\$([bool]\$log1)|second:\$([bool]\$log2)\"
 " 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/_WrapLog prints every call" "first:True|second:True" "$actual"
+
+# --- _WrapLog line format: short, one hint in a parenthesis, DarkGray ---
+echo "[pwsh] _WrapLog line"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_WRAPPER_LOG = '1'
+    New-Wrapper 'myecho' 'echo' '' '' '' ''
+    \$rec = myecho test1 6>&1 | Where-Object { \$_ -is [System.Management.Automation.InformationRecord] }
+    Write-Output \"\$(\$rec.MessageData.Message)|\$(\$rec.MessageData.ForegroundColor)\"
+" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/_WrapLog line" "[den] myecho -> echo  (off: tgl-wr)|DarkGray" "$actual"
+
+echo "[pwsh] _DEN_WRAPPER_LOG=0 silences the line"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-Wrapper 'myecho' 'echo' '' '' '' ''
+    @(myecho test1 6>&1 | Where-Object { \$_ -is [System.Management.Automation.InformationRecord] }).Count
+" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/_DEN_WRAPPER_LOG=0 silences" "0" "$actual"
 
 # --- Pipeline forwarding ---
 echo "[pwsh] Pipeline forwarding"

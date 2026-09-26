@@ -176,4 +176,9 @@ toggle-uv() {
     fi
 }
 
+# tgl-uv → short name for toggle-uv
+tgl-uv() {
+    toggle-uv "$@"
+}
+
 fi
