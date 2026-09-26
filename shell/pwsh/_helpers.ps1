@@ -154,17 +154,22 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
 # pwsh passes with -WorkingDirectory "%V!": the new shell starts in the directory
 # reload runs in, which it inherits. Only switches go; the same words inside a
 # -Command, -File or script payload stay.
-# -Legacy quotes each argument by the Windows command-line rules first, for a host
-# that passes native arguments the legacy way (see _DenLegacyArgPassing): such a
-# host joins the arguments into one command line without escaping a double quote
-# and drops an empty argument, so VS Code's `try { . "<path>" } catch {}` payload
-# would split at a space in <path>. pwsh 6 and later pass a token quoted here through
-# unchanged. Windows PowerShell 5.1 (not tested) predates that: its check for spaces
-# counts an escaped quote as a real one (pwsh 6 fixed that check in
-# PowerShell/PowerShell commit 8bca1f50c5), so it quotes such a token again and the
-# new shell gets it split at its spaces. A -Command payload, the VS Code case, still
-# arrives whole unless it holds a tab or two spaces in a row, because PowerShell
-# joins the arguments after -Command with one space.
+# -Legacy prepares each argument for a host that passes native arguments the legacy
+# way (see _DenLegacyArgPassing). Such a host joins them into one command line,
+# drops an empty one, and puts double quotes around one when its check finds
+# whitespace outside quotes, escaping no quote inside it. So every quote here is
+# escaped (\", with the backslashes before it doubled), and an argument with
+# whitespace gets no quotes of its own: the host's check finds the whitespace and
+# quotes it. With quotes of its own, Windows PowerShell 5.1 could quote it again,
+# since its check counts an escaped quote as a quote (pwsh 6 fixed that in
+# PowerShell/PowerShell commit 8bca1f50c5), and VS Code's
+# `try { . "<path>" } catch {}` payload reached the new shell split at the spaces
+# of <path>. Trailing backslashes go doubled into a quoted pair of their own ("\\")
+# at the end, so that the argument does not end in one: pwsh 6 and later double
+# the trailing backslashes of an argument they quote, and 5.1 does not. An empty
+# argument goes as "". One case still breaks on 5.1: an argument whose every
+# whitespace follows an odd number of quotes (such as "C:\a b", quotes included),
+# which 5.1 leaves unquoted, so the new shell gets it split at its spaces.
 function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) {
     $count = @($CommandLineArgs).Count
     $launch = @()
@@ -177,9 +182,13 @@ function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) {
     for ($i = 0; $i -lt $launch.Count; $i++) {
         if ($drop.ContainsKey($i)) { continue }
         $a = [string]$launch[$i]
-        if ($Legacy -and ($a.Length -eq 0 -or $a -match '[\s"]')) {
-            # Backslashes double before a quote and at the end; each quote is escaped.
-            $a = '"' + (($a -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
+        if ($Legacy -and $a.Length -eq 0) {
+            $a = '""'
+        } elseif ($Legacy -and $a -match '[\s"]') {
+            $a = $a -replace '(\\*)"', '$1$1\"'
+            $body = $a.TrimEnd([char]'\')
+            $tail = $a.Length - $body.Length
+            if ($tail -gt 0) { $a = $body + '"' + ('\' * (2 * $tail)) + '"' }
         }
         $a
     }

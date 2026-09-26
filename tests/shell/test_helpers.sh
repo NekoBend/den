@@ -760,16 +760,17 @@ assert_eq "pwsh/_DenRelaunchArgs -noexit -command payload" \
 echo "[pwsh] _DenRelaunchArgs keeps empty, spaced, quoted and backslash arguments"
 assert_eq "pwsh/_DenRelaunchArgs odd arguments" 'odd n=4:<><a b><x"y><end\>' "$(relaunch_case odd)"
 
-echo "[pwsh] _DenRelaunchArgs -Legacy quotes by the Windows rules"
+echo "[pwsh] _DenRelaunchArgs -Legacy escapes by the Windows rules and leaves the quoting to the host"
 assert_eq "pwsh/_DenRelaunchArgs -Legacy" \
-    'legacy n=7:<-noexit><-command><"try { . \"C:\Program Files\Microsoft VS Code\si.ps1\" } catch {}"><""><plain\><"dir with space\\"><"a\\\"b">' \
+    'legacy n=7:<-noexit><-command><try { . \"C:\Program Files\Microsoft VS Code\si.ps1\" } catch {}><""><plain\><dir with space"\\"><a\\\"b>' \
     "$(relaunch_case legacy)"
 
 # The same arguments through a real native command, under each argument passing
 # style: every element must arrive intact. Without -Legacy, legacy passing splits
 # or mangles them, which shows these runs do exercise it.
 cat > "$WORK/relaunch_roundtrip.ps1" <<'EOF'
-$argv = @('pwsh.dll', '-noexit', '-command', 'try { . "/p/Microsoft VS Code/si.ps1" } catch {}', '', 'a b', 'x"y', 'dir with space\', 'a\"b', 'plain\')
+$argv = @('pwsh.dll', '-noexit', '-command', 'try { . "/p/Microsoft VS Code/si.ps1" } catch {}', '', 'a b', 'x"y', 'dir with space\', 'a\"b', 'plain\',
+    'say "hi there" now', 'q"\', 'sp q" \\', 'two  spaces', "tab`there")
 $want = ($argv | Select-Object -Skip 1 | ForEach-Object { "[$_]" }) -join ''
 function roundtrip([string[]]$pass) { (@(& printf '[%s]' @pass) -join '') }
 function verdict([string]$got) { if ($got -eq $want) { 'same' } else { "differs: $got" } }
@@ -795,6 +796,56 @@ echo "[pwsh] _DenRelaunchArgs round-trips through a native command"
 assert_eq "pwsh/_DenRelaunchArgs round trip, Standard passing" "standard same" "$(roundtrip_case standard)"
 assert_eq "pwsh/_DenRelaunchArgs -Legacy round trip, Legacy passing" "legacy same" "$(roundtrip_case legacy)"
 assert_eq "pwsh/_DenRelaunchArgs unquoted breaks under Legacy passing" "legacy-unquoted True" "$(roundtrip_case legacy-unquoted)"
+
+# Windows PowerShell 5.1 cannot run here, so its legacy passing is modelled from
+# the binder it shares with PowerShell before PowerShell/PowerShell 8bca1f50c5
+# (NativeCommandParameterBinder.appendOneNativeArgument): the arguments joined
+# with a space, an empty one dropped, and one put in double quotes, as it is,
+# when a whitespace character in it follows an even number of double quotes,
+# escaped ones included. .NET splits ProcessStartInfo.Arguments by the Windows
+# command-line rules on Linux too, which stands in for the new shell. The Windows
+# CI job runs the real 5.1 (tests/shell/relaunch_argv.ps1).
+cat > "$WORK/relaunch_ps51.ps1" <<'EOF'
+function bind51([string[]]$tokens) {
+    $parts = foreach ($t in $tokens) {
+        $quotes = 0
+        $wrap = $false
+        foreach ($ch in $t.ToCharArray()) {
+            if ($ch -eq '"') { $quotes++ } elseif ([char]::IsWhiteSpace($ch) -and $quotes % 2 -eq 0) { $wrap = $true }
+        }
+        if ($wrap) { '"' + $t + '"' } else { $t }
+    }
+    $parts -join ' '
+}
+function split51([string[]]$argv) {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new('printf', '[%s] ' + (bind51 @(_DenRelaunchArgs -Legacy -CommandLineArgs $argv)))
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEnd()
+    $p.WaitForExit()
+    $want = ($argv | Select-Object -Skip 1 | ForEach-Object { "[$_]" }) -join ''
+    if ($out -eq $want) { 'same' } else { "differs: $out" }
+}
+'vscode ' + (split51 @('powershell.exe', '-noexit', '-command', 'try { . "C:\Program Files\Microsoft VS Code\si.ps1" } catch {}'))
+'dot ' + (split51 @('powershell.exe', '-noexit', '-command', '. "C:\Program Files\x\shellIntegration.ps1"'))
+'spaces ' + (split51 @('powershell.exe', 'a b', 'two  spaces', "tab`there", 'dir with space\', 'C:\dir\', 'x\\'))
+'quotes ' + (split51 @('powershell.exe', 'x"y', '"quoted"', 'say "hi there" now', 'a\"b', 'q"\', 'sp q" \\', 'end \"'))
+'empty ' + (split51 @('powershell.exe', '', '-NoLogo', ''))
+'odd-quotes ' + (split51 @('powershell.exe', '"C:\a b"'))
+EOF
+PS51_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/relaunch_ps51.ps1'" | tr -d '\r')
+ps51_case() { printf '%s\n' "$PS51_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenRelaunchArgs -Legacy survives Windows PowerShell 5.1's quoting (modelled)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 VS Code payload" "vscode same" "$(ps51_case vscode)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 dot-source payload" "dot same" "$(ps51_case dot)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 spaces and trailing backslashes" "spaces same" "$(ps51_case spaces)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 embedded quotes" "quotes same" "$(ps51_case quotes)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 empty arguments" "empty same" "$(ps51_case empty)"
+# The one shape 5.1 still splits, as the comment on _DenRelaunchArgs says.
+assert_eq "pwsh/_DenRelaunchArgs 5.1 splits a quoted path with a space" \
+    'odd-quotes differs: ["C:\a][b"]' "$(ps51_case odd-quotes)"
 
 echo "[pwsh] _DenRelaunchArgs on a real launch drops only the program"
 actual=$(pwsh -NoProfile -NonInteractive -Command ". '$HELPERS_PS1'; \$r = @(_DenRelaunchArgs -CommandLineArgs ([Environment]::GetCommandLineArgs())); '{0}|{1}|{2}' -f \$r.Count, \$r[0], \$r[1]" | tr -d '\r')
