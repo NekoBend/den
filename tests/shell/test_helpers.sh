@@ -61,6 +61,14 @@ assert_eq "bash/_wrap_log line with flags" "[den] myla -> echo  (native: command
 actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myls echo '' ls ''; myls x >/dev/null" | strip_ansi)
 assert_eq "bash/_wrap_log line without flags" "[den] myls -> echo  (native: command ls, off: tgl-wr)" "$actual"
 
+echo "[bash] _wrap_log hint leaves out presentation-only flags"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myls echo '' ls '--color=auto'; myls x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log hint drops --color=auto" "[den] myls -> echo  (native: command ls, off: tgl-wr)" "$actual"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A --color=auto'; myla x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log hint keeps -A" "[den] myla -> echo  (native: command ls -A, off: tgl-wr)" "$actual"
+actual=$(run_bash_stderr "$HELPERS_SH" "_wrap myll echo '' ls '--colour=always -lF --color'; myll x >/dev/null" | strip_ansi)
+assert_eq "bash/_wrap_log hint keeps -lF only" "[den] myll -> echo  (native: command ls -lF, off: tgl-wr)" "$actual"
+
 echo "[bash] _wrap_log line without a native equivalent"
 actual=$(run_bash_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null" | strip_ansi)
 assert_eq "bash/_wrap_log line no native" "[den] mytree -> echo  (off: tgl-wr)" "$actual"
@@ -206,6 +214,14 @@ actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; myla x >/dev/
 assert_eq "zsh/_wrap_log line with flags" "[den] myla -> echo  (native: command ls -A, off: tgl-wr)" "$actual"
 actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myls echo '' ls ''; myls x >/dev/null" | strip_ansi)
 assert_eq "zsh/_wrap_log line without flags" "[den] myls -> echo  (native: command ls, off: tgl-wr)" "$actual"
+
+echo "[zsh] _wrap_log hint leaves out presentation-only flags"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myls echo '' ls '--color=auto'; myls x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log hint drops --color=auto" "[den] myls -> echo  (native: command ls, off: tgl-wr)" "$actual"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A --color=auto'; myla x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log hint keeps -A" "[den] myla -> echo  (native: command ls -A, off: tgl-wr)" "$actual"
+actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myll echo '' ls '--colour=always -lF --color'; myll x >/dev/null" | strip_ansi)
+assert_eq "zsh/_wrap_log hint keeps -lF only" "[den] myll -> echo  (native: command ls -lF, off: tgl-wr)" "$actual"
 
 echo "[zsh] _wrap_log line without a native equivalent"
 actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap mytree echo '' '' ''; mytree x >/dev/null" | strip_ansi)

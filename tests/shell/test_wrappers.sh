@@ -440,7 +440,7 @@ run_zsh_i_notice() {
         sed 's/\x1b\[[0-9;]*m//g' | grep '^\[den\]'
 }
 
-LS_NOTICE="[den] ls -> lsd  (native: command ls --color=auto, off: tgl-wr)"
+LS_NOTICE="[den] ls -> lsd  (native: command ls, off: tgl-wr)"
 LS_NOTICE_PWSH="[den] ls -> lsd  (off: tgl-wr)"
 
 for _sh in bash zsh; do
@@ -449,7 +449,7 @@ for _sh in bash zsh; do
     actual=$("$_run" "$WRAPPERS_SH" "ls >/dev/null")
     assert_eq "$_sh/notice ls" "$LS_NOTICE" "$actual"
     actual=$("$_run" "$WRAPPERS_SH" "la >/dev/null")
-    assert_eq "$_sh/notice la" "[den] la -> lsd  (native: command ls -A --color=auto, off: tgl-wr)" "$actual"
+    assert_eq "$_sh/notice la" "[den] la -> lsd  (native: command ls -A, off: tgl-wr)" "$actual"
     actual=$("$_run" "$WRAPPERS_SH" "cat /dev/null")
     assert_eq "$_sh/notice cat" "[den] cat -> bat  (native: command cat, off: tgl-wr)" "$actual"
     actual=$("$_run" "$WRAPPERS_SH" "lt >/dev/null")
@@ -484,7 +484,7 @@ echo "[docs] the docs quote the notice the ls wrapper prints"
 README_MD="$DOTFILES/shell/README.md"
 assert_eq "docs/README quotes the ls notice" "$LS_NOTICE" "$(doc_quote "$README_MD" "$LS_NOTICE")"
 assert_eq "docs/README quotes the pwsh ls notice" "$LS_NOTICE_PWSH" "$(doc_quote "$README_MD" "$LS_NOTICE_PWSH")"
-assert_eq "docs/README la hint keeps its flags" "command ls -A --color=auto" "$(doc_quote "$README_MD" "command ls -A --color=auto")"
+assert_eq "docs/README la hint keeps its flags" "command ls -A\`" "$(doc_quote "$README_MD" "command ls -A\`")"
 # The shell test image copies only shell/ and tests/shell/, not COMMANDS.md.
 if [ -f "$DOTFILES/COMMANDS.md" ]; then
     assert_eq "docs/COMMANDS quotes the ls notice" "$LS_NOTICE" "$(doc_quote "$DOTFILES/COMMANDS.md" "$LS_NOTICE")"

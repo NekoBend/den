@@ -85,11 +85,12 @@ wrapper substitutes the modern one. To make that visible, a dim notice prints on
 **every** wrapped call:
 
 ```
-[den] ls -> lsd  (native: command ls --color=auto, off: tgl-wr)
+[den] ls -> lsd  (native: command ls, off: tgl-wr)
 ```
 
 `native:` is the native command for a one-off call (it keeps the wrapper's own
-fallback flags, e.g. `command ls -A --color=auto` for `la`, and is left out when
+fallback flags, e.g. `command ls -A` for `la`, minus presentation-only ones such
+as `--color=auto`, and is left out when
 the wrapper has no native equivalent); `off:` turns the wrappers off for the
 session (`tgl-wr` is short for `toggle-wrapper`). PowerShell prints only the
 second hint: `[den] ls -> lsd  (off: tgl-wr)`.
