@@ -59,10 +59,13 @@ $ back -l
  +1  ~/projects/den/tests
 ```
 
-- Every change of directory is recorded, whatever made it: `cd`, `builtin cd` /
-  `Set-Location`, `pushd` / `popd`, `mkcd`, `up`, `cdf`, `y`. A new move after
-  going back clears the forward entries; entering the same directory twice in a
-  row is recorded once.
+- A move is recorded whatever made it: `cd`, `builtin cd` / `Set-Location`,
+  `pushd` / `popd`, `mkcd`, `up`, `cdf`, `y`. zsh sees every change of
+  directory; bash, PowerShell and cmd see where the shell is at each prompt, so
+  two `builtin cd` / `Set-Location` on one command line count as one move (on
+  bash den's `cd`, and on PowerShell den's navigation commands, record at once;
+  see "How moves are seen" below). A new move after going back clears the
+  forward entries; entering the same directory twice in a row is recorded once.
 - `back N` moves the N-1 entries it passes over, and the directory it leaves, to
   the forward list, so `back 3` then `fwd 3` returns to the start. `back -i`
   turns the pick into the matching `back N` / `fwd N`. On pwsh the flags are
@@ -73,11 +76,17 @@ $ back -l
   list on one command line and cmd caps a line at 8191 characters.
 - `cd -` is unchanged, and counts as an ordinary move.
 - How moves are seen: zsh `chpwd`; bash `PROMPT_COMMAND` (den's `cd` records at
-  once, other moves at the next prompt); PowerShell the prompt (den's `cd`,
-  `mkcd`, `up`, `cdf`, `y` record at once when typed, not when a script or a
-  function runs them, so a script counts only by where it ends up); cmd the
-  Clink prompt filter in `starship.lua`, which keeps the lists in
-  `_DEN_DIRBACK` / `_DEN_DIRFWD` (`_OLDPWD` is still set too).
+  once, other moves at the next prompt); PowerShell the prompt (den's navigation
+  commands, `cd`, `cdi`, `zd`, `zdi`, `up`, `..`, `.1`-`.9`, `mkcd`, `cdf`, `y`,
+  record at once when typed, not when a script or a function runs them, so a
+  script counts only by where it ends up); cmd the Clink prompt filter in
+  `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`
+  (`_OLDPWD` is still set too).
+- On PowerShell the prompt recorder wraps the `prompt` function when den's line
+  in `$PROFILE` runs, after the starship prompt den sets up there. A prompt set
+  up after that line (oh-my-posh, posh-git, your own `function prompt`) replaces
+  the wrapper, and then only den's navigation commands and `back` / `fwd`
+  themselves notice a move: put any other prompt setup before den's line.
 
 ## Git shortcuts
 

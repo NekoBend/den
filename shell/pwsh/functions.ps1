@@ -621,17 +621,18 @@ function sagain {
 # ===== Directory History (back / fwd) =====
 # Browser-style history for this session, never written to disk.
 # $global:_DenDirBack / _DenDirFwd hold locations nearest first, and _DenDirLast
-# is the location the history saw last. Any change of location (den's cd,
-# Set-Location, Push-/Pop-Location, mkcd, up, cdf, y) pushes the location it
-# left onto the back list and clears the forward list, as a browser does.
-# Changes are seen at each prompt (_DenDirHookPrompt, which init.ps1 installs),
-# as bash does from PROMPT_COMMAND, so a script counts only by where it leaves
-# the session, not by the moves it makes on the way (LocationChangedAction,
-# PowerShell 6.1+, is not used: it fires for each of those). den's navigation
-# commands typed at the prompt also record at once (_DenDirMoved), so several on
-# one line are each kept. back/fwd walk the lists themselves. The state is
-# $global:, not $script: like _helpers.ps1's caches: den's commands also run
-# inside scripts, and there $script: names the running script's scope.
+# is the location the history saw last. A move pushes the location it left onto
+# the back list and clears the forward list, as a browser does. What counts as a
+# move is where the session is at each prompt (_DenDirHookPrompt, which init.ps1
+# installs), whatever took it there (den's cd, Set-Location, Push-/Pop-Location,
+# mkcd, up, cdf, y), as bash does from PROMPT_COMMAND: two Set-Location on one
+# line are one move, and a script counts only by where it leaves the session,
+# not by the moves it makes on the way (LocationChangedAction, PowerShell 6.1+,
+# is not used: it fires for each of those). den's navigation commands typed at
+# the prompt also record at once (_DenDirMoved), so several on one line are each
+# kept. back/fwd walk the lists themselves. The state is $global:, not $script:
+# like _helpers.ps1's caches: den's commands also run inside scripts, and there
+# $script: names the running script's scope.
 if ($null -eq $global:_DenDirBack) {
   $global:_DenDirBack = [System.Collections.Generic.List[string]]::new()
   $global:_DenDirFwd = [System.Collections.Generic.List[string]]::new()
