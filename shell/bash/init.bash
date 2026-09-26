@@ -32,7 +32,12 @@ _init_cache starship bash --print-full-init
 # prompt. zoxide's doctor looks for the hook only in PROMPT_COMMAND and would
 # warn, on the first cd or zd, that zoxide is set up wrong; turn it off only
 # then. (A PROMPT_COMMAND array keeps the hook in place: starship moves only
-# its first element.)
+# its first element.) The cost: a later ~/.bashrc line that overwrites
+# PROMPT_COMMAND stops both hooks, and the doctor no longer says so; starship's
+# prompt then never shows, which does. Putting the hook back in PROMPT_COMMAND,
+# after starship_precmd, would keep the doctor, but on bash before 4.4 any
+# command there restarts starship's timer (a DEBUG trap), so cmd_duration
+# would count the time spent at the prompt.
 case ${STARSHIP_PROMPT_COMMAND-} in *__zoxide_hook*) _ZO_DOCTOR=0 ;; esac
 
 # ===== Reload =====
