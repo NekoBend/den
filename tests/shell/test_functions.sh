@@ -2790,6 +2790,14 @@ $DH/b" "$out"
 else
     echo "  SKIP: pwsh/real zoxide behind starship's prompt (zoxide not installed)"
 fi
+# Without zoxide there is no hook to run: a prompt after a move shows the
+# prompt, with nothing on stderr and nothing new in $Error.
+out=$(pwsh_bin=$(command -v pwsh); nozo_path=$(path_without zoxide)
+    cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$nozo_path" \
+    "$pwsh_bin" -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; \"zoxide: \$([bool](Get-Command zoxide -ErrorAction Ignore))\"; Set-Location '$DH/a'; \$n = \$Error.Count; prompt; \"new errors: \$(\$Error.Count - \$n)\"" 2>&1 | tr -d '\r')
+assert_eq "pwsh/init.ps1 prompt without zoxide shows no error" "zoxide: False
+stub:True>
+new errors: 0" "$out"
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention
