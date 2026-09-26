@@ -83,8 +83,22 @@ fall back with a message.
 ## Modern-tool wrappers (ls / cat / grep / find)
 
 Each prefers a modern tool when installed and falls back to the native command;
-all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper`). The `*w` names always use
-the modern tool, bypassing the toggle.
+all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper` / `tgl-wr`). The `*w` names
+always use the modern tool, bypassing the toggle.
+
+On bash/zsh and pwsh, each time a wrapper that obeys the toggle runs the modern
+tool, it prints one dim line (stderr on bash/zsh); the `*w` names print nothing:
+
+```
+[den] ls -> lsd  (native: command ls --color=auto, off: tgl-wr)
+```
+
+`native:` is the command that runs the native tool for one call, with the
+wrapper's own fallback flags (bash/zsh only, left out when there is no native
+equivalent); `off:` turns the wrappers off for the session.
+pwsh prints `[den] ls -> lsd  (off: tgl-wr)`. `_DEN_WRAPPER_LOG=0` silences the
+line without changing what runs; `_DEN_WRAPPERS=0` turns the wrappers off, as
+`tgl-wr` does. cmd prints no line.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

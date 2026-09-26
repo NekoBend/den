@@ -85,8 +85,14 @@ wrapper substitutes the modern one. To make that visible, a dim notice prints on
 **every** wrapped call:
 
 ```
-[den] ls -> lsd  | native one-off: command ls ...  | disable: run toggle-wrapper, or export _DEN_WRAPPERS=0
+[den] ls -> lsd  (native: command ls --color=auto, off: tgl-wr)
 ```
+
+`native:` is the native command for a one-off call (it keeps the wrapper's own
+fallback flags, e.g. `command ls -A --color=auto` for `la`, and is left out when
+the wrapper has no native equivalent); `off:` turns the wrappers off for the
+session (`tgl-wr` is short for `toggle-wrapper`). PowerShell prints only the
+second hint: `[den] ls -> lsd  (off: tgl-wr)`.
 
 One difference is easy to miss when you are vetting code you did not write: `rg`
 and `fd` honor a repository's own `.gitignore`, `.ignore`, `.rgignore` and
@@ -106,7 +112,7 @@ Ways to get the native command:
 - **Silence the notice** (without changing behavior): `_DEN_WRAPPER_LOG=0`.
 
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
-tool, ignoring the toggle.
+tool, ignoring the toggle, and print no notice.
 
 On PowerShell, piping objects into a wrapper that resolves to a modern tool,
 microsoft/coreutils, or a native exe (e.g. `Get-ChildItem | wc -l`) sends the
@@ -310,8 +316,8 @@ of zoxide and starship. zsh and PowerShell mirror this.
 | Variable | Effect |
 |----------|--------|
 | `_DEN_WRAPPERS=0` | use native commands instead of modern tools |
-| `_DEN_WRAPPER_LOG=0` | silence the one-time wrapper hint |
+| `_DEN_WRAPPER_LOG=0` | silence the wrapper notice (printed on every wrapped call) |
 | `_DEN_COREUTILS=<path>` | use a specific microsoft/coreutils binary, e.g. `C:\Program Files\coreutils\coreutils.exe` (Windows) |
 | `_DEN_COREUTILS=0` | disable the microsoft/coreutils tier (Windows) |
-| `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv`) |
-| `_DEN_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo`) |
+| `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv` / `tgl-uv`) |
+| `_DEN_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo` / `tgl-hw`) |

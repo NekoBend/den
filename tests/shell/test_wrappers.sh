@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test_wrappers.sh — Tests for wrappers.sh (bash/zsh) and wrappers.ps1 (pwsh).
-# Tests fallback paths (bat/fd/rg/lsd are NOT installed in test image).
+# Tests fallback paths (bat/fd/rg/lsd are NOT installed in test image), then the
+# wrapper notice with stub lsd/bat on PATH.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -406,6 +407,91 @@ echo "[pwsh] cat fallback reads stdin (not only file args)"
 # stdin through.
 actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; 'piped-line' | cat" | tr -d '\r')
 assert_eq "pwsh/cat fallback stdin" "piped-line" "$actual"
+
+# =============================================================================
+# Wrapper notice of the real wrappers (stub modern tools)
+# =============================================================================
+# The fallback tests above run without the modern tools; here stub lsd/bat on
+# PATH make the real wrappers take the modern branch, so the notice they print
+# (with each wrapper's own fallback flags) is compared as a whole line, and the
+# docs must quote exactly that line.
+echo ""
+echo "================================================"
+echo "  Testing the wrapper notice (stub lsd/bat)"
+echo "================================================"
+
+STUB_BIN="$WORK/stubbin"
+mkdir -p "$STUB_BIN"
+for _t in lsd bat; do
+    printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/$_t"
+    chmod +x "$STUB_BIN/$_t"
+done
+
+# Keep only the notice lines of stderr, color codes stripped: an interactive
+# shell without a terminal also prints job control warnings there. zsh -f skips
+# ~/.zshrc, as --norc does for bash.
+run_bash_i_notice() {
+    PATH="$STUB_BIN:$PATH" bash --norc -ic "source '$HELPERS_SH' && source '$1' && $2" 2>&1 >/dev/null </dev/null |
+        sed 's/\x1b\[[0-9;]*m//g' | grep '^\[den\]'
+}
+
+run_zsh_i_notice() {
+    PATH="$STUB_BIN:$PATH" zsh -f -ic "source '$HELPERS_SH' && source '$1' && $2" 2>&1 >/dev/null </dev/null |
+        sed 's/\x1b\[[0-9;]*m//g' | grep '^\[den\]'
+}
+
+LS_NOTICE="[den] ls -> lsd  (native: command ls --color=auto, off: tgl-wr)"
+LS_NOTICE_PWSH="[den] ls -> lsd  (off: tgl-wr)"
+
+for _sh in bash zsh; do
+    _run="run_${_sh}_i_notice"
+    echo "[$_sh] real wrappers print their own fallback in the notice"
+    actual=$("$_run" "$WRAPPERS_SH" "ls >/dev/null")
+    assert_eq "$_sh/notice ls" "$LS_NOTICE" "$actual"
+    actual=$("$_run" "$WRAPPERS_SH" "la >/dev/null")
+    assert_eq "$_sh/notice la" "[den] la -> lsd  (native: command ls -A --color=auto, off: tgl-wr)" "$actual"
+    actual=$("$_run" "$WRAPPERS_SH" "cat /dev/null")
+    assert_eq "$_sh/notice cat" "[den] cat -> bat  (native: command cat, off: tgl-wr)" "$actual"
+    actual=$("$_run" "$WRAPPERS_SH" "lt >/dev/null")
+    assert_eq "$_sh/notice lt (no native)" "[den] lt -> lsd  (off: tgl-wr)" "$actual"
+
+    echo "[$_sh] w-suffix names print no notice"
+    actual=$("$_run" "$WRAPPERS_SH" "lsw >/dev/null; catw /dev/null")
+    assert_eq "$_sh/notice none for lsw catw" "" "$actual"
+done
+
+echo "[pwsh] real wrappers print the notice; w-suffix names do not"
+actual=$(PATH="$STUB_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    \$env:_DEN_WRAPPERS = '1'; \$env:_DEN_WRAPPER_LOG = '1'
+    function notice([scriptblock]\$Call) {
+        @(& \$Call 6>&1 | Where-Object { \$_ -is [System.Management.Automation.InformationRecord] } |
+            ForEach-Object { \$_.MessageData.Message }) -join ';'
+    }
+    Write-Output (notice { ls })
+    Write-Output (notice { cat /dev/null })
+    Write-Output ('w:' + (notice { lsw; catw /dev/null }))
+" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/notice ls cat, none for lsw catw" \
+    "$LS_NOTICE_PWSH"$'\n'"[den] cat -> bat  (off: tgl-wr)"$'\n'"w:" "$actual"
+
+# doc_quote <file> <text> prints <text> when the file contains it, else nothing,
+# so a failure shows the missing text instead of the whole file.
+doc_quote() {
+    grep -oF -- "$2" "$1" | head -n 1
+}
+
+echo "[docs] the docs quote the notice the ls wrapper prints"
+README_MD="$DOTFILES/shell/README.md"
+assert_eq "docs/README quotes the ls notice" "$LS_NOTICE" "$(doc_quote "$README_MD" "$LS_NOTICE")"
+assert_eq "docs/README quotes the pwsh ls notice" "$LS_NOTICE_PWSH" "$(doc_quote "$README_MD" "$LS_NOTICE_PWSH")"
+assert_eq "docs/README la hint keeps its flags" "command ls -A --color=auto" "$(doc_quote "$README_MD" "command ls -A --color=auto")"
+# The shell test image copies only shell/ and tests/shell/, not COMMANDS.md.
+if [ -f "$DOTFILES/COMMANDS.md" ]; then
+    assert_eq "docs/COMMANDS quotes the ls notice" "$LS_NOTICE" "$(doc_quote "$DOTFILES/COMMANDS.md" "$LS_NOTICE")"
+    assert_eq "docs/COMMANDS quotes the pwsh ls notice" "$LS_NOTICE_PWSH" "$(doc_quote "$DOTFILES/COMMANDS.md" "$LS_NOTICE_PWSH")"
+else
+    echo "  SKIP: docs/COMMANDS quotes the ls notice (no COMMANDS.md in $DOTFILES)"
+fi
 
 # =============================================================================
 # Summary
