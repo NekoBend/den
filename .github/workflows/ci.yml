@@ -516,8 +516,16 @@ jobs:
           certutil -f -encodehex "%RUNNER_TEMP%\dg-raw.txt" "%RUNNER_TEMP%\dg-raw.hex" 4 >nul
           type "%RUNNER_TEMP%\dg-raw.hex"
           echo ::endgroup::
+          echo ::group::the hex check dg.cmd applies, on its own
+          set "_h=2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          set _h
+          set _h 2>nul | findstr /r /x /c:"_h=[0123456789abcdefABCDEF][0123456789abcdefABCDEF]*"
+          echo findstr exit %errorlevel%
+          set "_h="
+          echo ::endgroup::
           echo ::group::dg.cmd a.txt, traced
-          findstr /v /b /i /c:"@echo off" "%DG%" >"%RUNNER_TEMP%\dg-trace.cmd"
+          rem The step runs with echo off, so the copy turns it on explicitly.
+          powershell -NoProfile -Command "(Get-Content -LiteralPath $env:DG) -replace '^@echo off$','@echo on' | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'dg-trace.cmd')"
           call "%RUNNER_TEMP%\dg-trace.cmd" a.txt
           echo dg-trace exit %errorlevel%
           echo ::endgroup::
