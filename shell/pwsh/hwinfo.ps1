@@ -36,7 +36,7 @@ if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
 
   if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
             $env:STARSHIP_GPU_NVIDIA -or $env:STARSHIP_GPU_AMD -or $env:STARSHIP_GPU_INTEL)) {
-    if ($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop') {
+    if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
       try {
         $cpuName = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction Stop).ProcessorNameString.Trim()
         $cpuShort = ($cpuName -replace '\(R\)' -replace '\(TM\)' -replace '\d+\w+ Gen ' -replace 'Genuine ' -replace 'Intel ' -replace 'AMD ' -replace 'Core ' -replace ' CPU.*$' -replace ' \d+-Core Processor' -replace '\s+', ' ').Trim()

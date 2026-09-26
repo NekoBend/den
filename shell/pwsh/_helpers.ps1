@@ -22,9 +22,11 @@ function _WrapLog([string]$Name, [string]$Tool) {
 # _OnWindows — true on ANY Windows PowerShell, including Windows PowerShell 5.1
 # (Desktop edition) where the $IsWindows automatic variable does not exist (it is
 # $null there). Used to skip the DOS-colliding native commands (see $winNativeSkip
-# in New-Wrapper) on every Windows host, 5.1 included.
+# in New-Wrapper) on every Windows host, 5.1 included. The edition is tested first,
+# so 5.1 never reads $IsWindows: a user's script that runs Set-StrictMode and then
+# calls den's commands would make that read an error inside them.
 function _OnWindows {
-    [bool]($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop')
+    [bool]($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)
 }
 
 # _DenInteractive - true only for an interactive REPL. den's wrappers/aliases/
@@ -161,8 +163,9 @@ function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
     if (-not $global:_DenCmdCache.ContainsKey($key)) {
         $val = ''
         if ($Type -eq 'App') {
-            $src = (Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-            if ($src) { $val = $src }
+            # No .Source on an empty result: a caller's Set-StrictMode makes that an error.
+            $app = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($app) { $val = $app.Source }
         }
         elseif (Get-Command $Name -ErrorAction SilentlyContinue) {
             $val = $Name
@@ -176,17 +179,18 @@ function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
 $global:_DenCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
 function _CoreutilsBin {
     if ($env:_DEN_COREUTILS -eq '0') { return $null }
-    if ($IsWindows -ne $true) { return $null }
+    # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
+    if ($PSVersionTable.PSEdition -ne 'Core' -or $IsWindows -ne $true) { return $null }
     if ($null -eq $global:_DenCoreutils) {
         $found = ''
         if ($env:_DEN_COREUTILS) {
-            $g = (Get-Command $env:_DEN_COREUTILS -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-            if ($g) { $found = $g }
+            $g = Get-Command $env:_DEN_COREUTILS -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($g) { $found = $g.Source }
             elseif (Test-Path -LiteralPath $env:_DEN_COREUTILS -PathType Leaf) { $found = $env:_DEN_COREUTILS }
         }
         if (-not $found) {
-            $g = (Get-Command 'coreutils' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-            if ($g) { $found = $g }
+            $g = Get-Command 'coreutils' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($g) { $found = $g.Source }
         }
         if (-not $found) {
             foreach ($p in @("$env:ProgramFiles\coreutils\coreutils.exe", "${env:ProgramFiles(x86)}\coreutils\coreutils.exe")) {

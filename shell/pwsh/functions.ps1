@@ -304,7 +304,7 @@ function _ArRegularFile([string]$Path) {
   $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
   # Rules out a directory and a path that is not there at all, on every OS.
   if (-not [System.IO.File]::Exists($full)) { return $false }
-  if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+  if ($env:OS -eq 'Windows_NT' -or $IsWindows) {
     $attrs = [System.IO.File]::GetAttributes($full)
     return -not ($attrs.HasFlag([System.IO.FileAttributes]::Device) -or
                  $attrs.HasFlag([System.IO.FileAttributes]::Directory))
@@ -359,7 +359,7 @@ function _ArLinkTarget($Item) {
 function _ArSameFile([string]$A, [string]$B) {
   $fa = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($A)
   $fb = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($B)
-  if (-not ($IsWindows -or $env:OS -eq 'Windows_NT')) {
+  if (-not ($env:OS -eq 'Windows_NT' -or $IsWindows)) {
     if ($fa -ceq $fb) { return $true }
     # -ef needs both to exist; an output that is not there yet collides with
     # nothing, and skipping the fork is the common case.
@@ -652,13 +652,13 @@ Set-Alias pk archive
 
 # display $env:PATH entries one per line
 function path {
-  $sep = if ($IsWindows -or $env:OS -eq 'Windows_NT') { ';' } else { ':' }
+  $sep = if ($env:OS -eq 'Windows_NT' -or $IsWindows) { ';' } else { ':' }
   $env:PATH -split [regex]::Escape($sep) | Where-Object { $_ -ne '' }
 }
 
 # show listening TCP ports with process info
 function ports {
-  if ($IsLinux -or $IsMacOS) {
+  if ($PSVersionTable.PSEdition -eq 'Core' -and ($IsLinux -or $IsMacOS)) {
     if (Get-Command ss -ErrorAction SilentlyContinue) { ss -tlnp }
     elseif (Get-Command netstat -ErrorAction SilentlyContinue) { netstat -tlnp }
     else { Write-Warning "ports: ss/netstat not found" }
