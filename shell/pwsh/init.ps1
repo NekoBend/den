@@ -30,9 +30,10 @@ if (Get-Module -Name PSReadLine) {
 # bash/zsh's `exec`. PowerShell cannot replace its own process, so reload runs the
 # same executable with the arguments this session was started with, in the current
 # directory and environment, waits for it, and exits with its exit code: leaving the
-# new shell closes the terminal, as after exec. Those arguments apply again: a
-# -WorkingDirectory changes to that directory, and a -NoExit -Command or -File
-# payload runs again. In a VS Code terminal that payload is
+# new shell closes the terminal, as after exec. Those arguments apply again, but for
+# -WorkingDirectory, which reload leaves out (see _DenRelaunchArgs) so that the new
+# shell stays in the current directory: a -NoExit -Command or -File payload runs
+# again. In a VS Code terminal that payload is
 # `-noexit -command ". <shellIntegration.ps1>"`, and reload hands back the values
 # the integration script took out of the environment (see _DenVSCodeEnv). Each
 # reload nests one more process, and variables made in this session do not carry

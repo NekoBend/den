@@ -297,17 +297,17 @@ On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 On pwsh, `reload` cannot replace the running process, so it starts the same
 pwsh with the arguments this session was launched with, in the current
 directory and environment, waits for it, and exits with its exit code; leaving
-the new shell closes the terminal. Those arguments take effect again: a
-`-WorkingDirectory` goes back to that directory, and a `-NoExit` launch runs its
-`-Command` or `-File` again. In a VS Code terminal that loads the shell
-integration again, and `reload` passes on the values the first load took out
-of the environment (the nonce and the accessibility mode). Each reload nests
-one more pwsh process, and variables set in the session do not carry over
-(environment variables do). `reload` clears the caches and prints a warning
-instead of restarting in a `-File` or `-Command` run without `-NoExit`, a
-`-NonInteractive` launch, a non-console host (the ISE), a nested prompt (the
-debugger), a shell that 8 reloads in a row led to, or when the launch
-arguments hold `--%`.
+the new shell closes the terminal. A `-WorkingDirectory` is left out, so the
+new shell starts in the current directory too; the other arguments take effect
+again, and a `-NoExit` launch runs its `-Command` or `-File` again. In a VS
+Code terminal that loads the shell integration again, and `reload` passes on
+the values the first load took out of the environment (the nonce and the
+accessibility mode). Each reload nests one more pwsh process, and variables set
+in the session do not carry over (environment variables do). `reload` clears
+the caches and prints a warning instead of restarting in a `-File` or
+`-Command` run without `-NoExit`, a `-NonInteractive` launch, a non-console
+host (the ISE), a nested prompt (the debugger), a shell that 8 reloads in a row
+led to, or when the launch arguments hold `--%`.
 
 ## Standalone helper
 

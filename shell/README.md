@@ -317,8 +317,9 @@ of zoxide and starship. zsh and PowerShell mirror this.
   regular file owned by you (symlink and owner guarded).
 - `reload` clears the caches and restarts the shell, which rebuilds them.
   bash/zsh `exec` a new shell. pwsh cannot, so it starts the same pwsh with
-  the same launch arguments, waits for it, and exits with its exit code; each
-  reload nests one more pwsh process, up to 8 in a row (see `COMMANDS.md`).
+  the same launch arguments (less `-WorkingDirectory`: it stays in the current
+  directory), waits for it, and exits with its exit code; each reload nests one
+  more pwsh process, up to 8 in a row (see `COMMANDS.md`).
 
 ## Toggles and environment
 
