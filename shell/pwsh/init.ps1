@@ -28,19 +28,31 @@ if (Get-Module -Name PSReadLine) {
 
 # reload - clear den's shell caches and start PowerShell afresh, the counterpart of
 # bash/zsh's `exec`. PowerShell cannot replace its own process, so reload runs the
-# same executable with the arguments this session was started with (a VS Code
-# terminal's `-noexit -command ". <shellIntegration.ps1>"` keeps its shell
-# integration), in the current directory and environment, waits for it, and exits
-# with its exit code: leaving the new shell closes the terminal, as after exec. Each
+# same executable with the arguments this session was started with, in the current
+# directory and environment, waits for it, and exits with its exit code: leaving the
+# new shell closes the terminal, as after exec. Those arguments apply again: a
+# -WorkingDirectory changes to that directory, and a -NoExit -Command or -File
+# payload runs again. In a VS Code terminal that payload is
+# `-noexit -command ". <shellIntegration.ps1>"`, which loads the shell integration
+# again. Each
 # reload nests one more process, and variables made in this session do not carry
 # over (environment variables do). Dot-sourcing $PROFILE from here instead defines
 # everything in this function's scope, which is gone when it returns.
 # PSReadLine's default HistorySaveStyle, SaveIncrementally, has written this
 # session's commands, reload included, before the new shell reads the history file;
 # SaveAtExit would write them only when this process exits, after the new shell.
-# Only an interactive console session restarts; a -File or -Command run, a
-# -NonInteractive launch or another host (the ISE, VS Code's extension terminal)
-# gets the caches cleared and a warning.
+# Only an interactive console session at its top-level prompt restarts, and only
+# while fewer than 8 reloads in a row led to it (a reload in the startup payload
+# would otherwise start shells without end). Otherwise (a -File or -Command run, a
+# -NonInteractive launch, another host such as the ISE or VS Code's extension
+# terminal, a nested prompt such as the debugger's, where exit would only leave the
+# nested prompt) reload clears the caches and warns.
+# $global:_DenReloadDepth counts the reloads in a row that led to this session:
+# reload passes the count on in _DEN_RELOAD_DEPTH, which is taken out of the
+# environment here, so that programs started from this session do not inherit it.
+$global:_DenReloadDepth = 0
+if ("$env:_DEN_RELOAD_DEPTH" -match '^[0-9]{1,4}$') { $global:_DenReloadDepth = [int]$env:_DEN_RELOAD_DEPTH }
+$env:_DEN_RELOAD_DEPTH = $null
 function reload {
   $_base = [Environment]::GetFolderPath('LocalApplicationData')
   if ($_base) {
@@ -50,6 +62,7 @@ function reload {
   $exe = (Get-Process -Id $PID).Path
   $argv = [Environment]::GetCommandLineArgs()
   $launch = @(_DenRelaunchArgs -CommandLineArgs $argv)
+  $depth = [int]$global:_DenReloadDepth
   # Not _DenInteractive: its _DEN_FORCE_INTERACTIVE override would restart a
   # `-NonInteractive -Command` run, which runs its command again.
   $why = $null
@@ -57,6 +70,12 @@ function reload {
     $why = "the '$($Host.Name)' host is not a console shell"
   } elseif (-not ([Environment]::UserInteractive -and (_DenLaunchIsRepl -Arguments $launch))) {
     $why = 'this session was not started as an interactive shell (-File, -Command or -NonInteractive)'
+  } elseif ($NestedPromptLevel -gt 0) {
+    $why = 'reload was called from a nested prompt (such as the debugger)'
+  } elseif ($depth -ge 8) {
+    $why = "$depth reloads in a row led to this shell, each one nested in the one before"
+  } elseif ($launch -contains '--%') {
+    $why = "its launch arguments hold '--%', which cannot be passed on"
   } elseif (-not $exe) {
     $why = 'the path of this PowerShell executable is unknown'
   }
@@ -65,6 +84,8 @@ function reload {
     return
   }
   if (_DenLegacyArgPassing) { $launch = @(_DenRelaunchArgs -CommandLineArgs $argv -Legacy) }
+  # Only for the new shell: this process exits once it ends, unless it cannot start.
+  $env:_DEN_RELOAD_DEPTH = [string]($depth + 1)
   # exit runs in finally: a Ctrl+C in the new shell reaches this process too and
   # stops this pipeline, which still waits for the new shell but then skips the
   # statements after it, so a later exit would land back in this stale session.
@@ -75,6 +96,7 @@ function reload {
     & $exe @launch
   } catch [System.Management.Automation.CommandNotFoundException], [System.Management.Automation.ApplicationFailedException] {
     $failed = $true
+    $env:_DEN_RELOAD_DEPTH = $null
     Write-Warning "reload: could not start ${exe}: $($_.Exception.Message)"
   } finally {
     if (-not $failed) { exit $LASTEXITCODE }

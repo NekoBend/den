@@ -209,13 +209,17 @@ On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 `code`); posix/pwsh fall back.
 
 On pwsh, `reload` cannot replace the running process, so it starts the same
-pwsh with the arguments this session was launched with (a VS Code terminal
-keeps its shell integration), in the current directory and environment, waits
-for it, and exits with its exit code; leaving the new shell closes the terminal.
-Each reload nests one more pwsh process, and variables set in the session do
-not carry over (environment variables do). A `-File` or `-Command` run, a
-`-NonInteractive` launch or a non-console host (the ISE) is not restarted:
-`reload` clears the caches and prints a warning.
+pwsh with the arguments this session was launched with, in the current
+directory and environment, waits for it, and exits with its exit code; leaving
+the new shell closes the terminal. Those arguments take effect again: a
+`-WorkingDirectory` goes back to that directory, and a `-NoExit` launch runs its
+`-Command` or `-File` again (in a VS Code terminal, that loads the shell
+integration again). Each reload nests one more pwsh process, and variables set
+in the session do not carry over (environment variables do). `reload` clears
+the caches and prints a warning instead of restarting in a `-File` or
+`-Command` run without `-NoExit`, a `-NonInteractive` launch, a non-console
+host (the ISE), a nested prompt (the debugger), a shell that 8 reloads in a row
+led to, or when the launch arguments hold `--%`.
 
 ## Standalone helper
 

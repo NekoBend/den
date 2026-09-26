@@ -130,7 +130,13 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
 # that passes native arguments the legacy way (see _DenLegacyArgPassing): such a
 # host joins the arguments into one command line without escaping a double quote
 # and drops an empty argument, so VS Code's `try { . "<path>" } catch {}` payload
-# would split at a space in <path>. A token quoted here passes through unchanged.
+# would split at a space in <path>. pwsh 6 and later pass a token quoted here through
+# unchanged. Windows PowerShell 5.1 (not tested) predates that: its check for spaces
+# counts an escaped quote as a real one (pwsh 6 fixed that check in
+# PowerShell/PowerShell commit 8bca1f50c5), so it quotes such a token again and the
+# new shell gets it split at its spaces. A -Command payload, the VS Code case, still
+# arrives whole unless it holds a tab or two spaces in a row, because PowerShell
+# joins the arguments after -Command with one space.
 function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) {
     for ($i = 1; $i -lt @($CommandLineArgs).Count; $i++) {
         $a = [string]$CommandLineArgs[$i]

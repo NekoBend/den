@@ -305,7 +305,7 @@ of zoxide and starship. zsh and PowerShell mirror this.
 - `reload` clears the caches and restarts the shell, which rebuilds them.
   bash/zsh `exec` a new shell. pwsh cannot, so it starts the same pwsh with
   the same launch arguments, waits for it, and exits with its exit code; each
-  reload nests one more pwsh process (see `COMMANDS.md`).
+  reload nests one more pwsh process, up to 8 in a row (see `COMMANDS.md`).
 
 ## Toggles and environment
 

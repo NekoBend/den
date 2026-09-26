@@ -691,7 +691,10 @@ RL_HOME="$WORK/reload_home"
 RL_CFG="$WORK/reload_cfg"
 mkdir -p "$RL_HOME/.config/powershell" "$RL_CFG" "$WORK/reload dir"
 cp "$DOTFILES"/shell/pwsh/*.ps1 "$RL_CFG/"
-printf '%s\n' '"PROFILE-LOADED PID=$PID"' ". '$RL_CFG/init.ps1'" >"$RL_HOME/.config/powershell/Microsoft.PowerShell_profile.ps1"
+# The profile also ends a runaway chain of reloads: the fifth nested shell exits 99.
+printf '%s\n' '$env:_RL_LOADS = 1 + [int]$env:_RL_LOADS' \
+    'if ([int]$env:_RL_LOADS -gt 4) { "RUNAWAY"; [Environment]::Exit(99) }' \
+    '"PROFILE-LOADED PID=$PID"' ". '$RL_CFG/init.ps1'" >"$RL_HOME/.config/powershell/Microsoft.PowerShell_profile.ps1"
 printf '%s\n' '"SI-LOADED ARGS=$(([Environment]::GetCommandLineArgs() | Select-Object -Skip 1) -join "|")"' >"$WORK/reload dir/si.ps1"
 
 # run_reload_session <pwsh args...> - start pwsh as a REPL on pipes, add a function
@@ -769,12 +772,47 @@ assert_eq "pwsh/reload -File runs once" "1" "$(grep -c . "$WORK/reload_runs.txt"
 # When the executable cannot be started, reload warns and the session goes on
 # (it must not exit). Get-Process is shadowed to report a missing executable.
 echo "[pwsh] reload stays in the session when pwsh cannot be started"
-actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" 'reload' "'STILL-HERE'" 'exit 3' |
+actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" 'reload' '"STILL-HERE DEPTH-ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 3' |
     env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload start failure warns" "reload: could not start" "$actual"
-assert_contains "pwsh/reload start failure keeps the session" "STILL-HERE" "$actual"
+assert_contains "pwsh/reload start failure keeps the session" "STILL-HERE DEPTH-ENV=[]" "$actual"
 assert_contains "pwsh/reload start failure exit code is the session's" "RC=3" "$actual"
+
+# exit in a nested prompt (the debugger's, $Host.EnterNestedPrompt()) only leaves
+# that prompt, so a shell started from there would, once it ended, drop the user
+# back into this stale session. reload warns instead.
+echo "[pwsh] reload does not restart from a nested prompt"
+actual=$(printf '%s\n' '$Host.EnterNestedPrompt()' 'reload' '"NESTED-AFTER LEVEL=$NestedPromptLevel PID=$PID"' 'exit' 'exit 3' |
+    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+RL_PID1=$(printf '%s\n' "$actual" | grep -oE 'PROFILE-LOADED PID=[0-9]+' | sed -n '1s/.*=//p')
+assert_contains "pwsh/reload nested prompt warns" "not restarting: reload was called from a nested prompt" "$actual"
+assert_contains "pwsh/reload nested prompt stays in the session" "NESTED-AFTER LEVEL=1 PID=$RL_PID1" "$actual"
+assert_eq "pwsh/reload nested prompt starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
+assert_contains "pwsh/reload nested prompt exit code" "RC=3" "$actual"
+
+# A reload in the startup payload runs again in every shell it starts. The count of
+# reloads in a row travels in _DEN_RELOAD_DEPTH; starting at 7, the first reload
+# starts the eighth shell, whose own startup reload must refuse.
+echo "[pwsh] reload stops after 8 reloads in a row"
+actual=$(printf '%s\n' '"DEEPEST DEPTH=$_DenReloadDepth ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 5' |
+    env -u _DEN_FORCE_INTERACTIVE _DEN_RELOAD_DEPTH=7 HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -Command reload 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+assert_eq "pwsh/reload limit starts one more shell" "2" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
+assert_contains "pwsh/reload limit warns" "not restarting: 8 reloads in a row led to this shell" "$actual"
+assert_contains "pwsh/reload limit passes the count on, out of the environment" "DEEPEST DEPTH=8 ENV=[]" "$actual"
+assert_contains "pwsh/reload limit exit code" "RC=5" "$actual"
+
+# The call operator takes a '--%' element as its own stop-parsing token, so such
+# launch arguments cannot be passed on.
+echo "[pwsh] reload does not restart a launch whose arguments hold --%"
+actual=$(printf '%s\n' 'reload' 'exit 6' |
+    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -Command echo --% x 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+assert_contains "pwsh/reload --% warns" "not restarting: its launch arguments hold '--%'" "$actual"
+assert_eq "pwsh/reload --% starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
+assert_contains "pwsh/reload --% exit code" "RC=6" "$actual"
 
 # =============================================================================
 # Summary
