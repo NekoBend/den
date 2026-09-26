@@ -916,7 +916,7 @@ assert_eq "bash/back OLDPWD" "/tmp" "$actual"
 # whose label is $FZF_PICK, the way a user's pick would come back from fzf.
 DH="$WORK/dh"
 # $PATH without the directories that hold a starship, for the cases that load
-# init.ps1 with no starship at all
+# init.bash or init.ps1 with no starship at all
 nostar_path=$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
     [ -x "$d/starship" ] || printf '%s:' "$d"
 done)
@@ -1051,6 +1051,109 @@ assert_eq "bash/builtin cd, pushd, mkcd recorded" "  3  ~/start
   *  ~/c" "$out"
 out=$(dh_run bash "cd '$DH/a' && cd '$DH/b' && back >/dev/null && eval \"\$PROMPT_COMMAND\" && fwd")
 assert_eq "bash/prompt does not record back as a new move" "$DH/b" "$out"
+
+# init.bash loads zoxide, then starship, whose init moves a PROMPT_COMMAND
+# string (den's recorder and zoxide's hook) into STARSHIP_PROMPT_COMMAND and
+# runs it from starship_precmd. zoxide's doctor looks only in PROMPT_COMMAND, so
+# init.bash turns it off then, and only then. `bash -i -c` passes init.bash's
+# interactive guard without a terminal. The stubs print the parts of zoxide
+# 0.10's `init bash --no-cmd` (the hook, its PROMPT_COMMAND entry, the doctor
+# with its message cut to the first line) and starship 1.26's
+# `init bash --print-full-init` (the PROMPT_COMMAND move) that decide this;
+# `zoxide add` is logged.
+echo "[bash] init.bash: zoxide's doctor behind starship's PROMPT_COMMAND"
+ZI="$WORK/zinit"
+rm -rf "$ZI"
+mkdir -p "$ZI/home/.config/shell" "$ZI/zobin" "$ZI/stbin" "$ZI/d"
+cp "$DOTFILES"/shell/posix/*.sh "$DOTFILES/shell/bash/init.bash" "$ZI/home/.config/shell/"
+cat > "$ZI/zobin/zoxide" <<'STUB'
+#!/bin/sh
+if [ "$1" = add ]; then printf '%s\n' "$*" >> "$ZO_ADDS"; exit 0; fi
+[ "$1" = init ] || exit 0
+cat <<'INIT'
+function __zoxide_pwd() {
+    \builtin pwd -L
+}
+function __zoxide_cd() {
+    \builtin cd -- "$@"
+}
+__zoxide_oldpwd="$(__zoxide_pwd)"
+function __zoxide_hook() {
+    \builtin local -r retval="$?"
+    \builtin local pwd_tmp
+    pwd_tmp="$(__zoxide_pwd)"
+    if [[ ${__zoxide_oldpwd} != "${pwd_tmp}" ]]; then
+        __zoxide_oldpwd="${pwd_tmp}"
+        if [[ -o history ]]; then
+            \command zoxide add -- "${__zoxide_oldpwd}"
+        fi
+    fi
+    return "${retval}"
+}
+if [[ ${PROMPT_COMMAND:=} != *'__zoxide_hook'* ]]; then
+    if [[ "$(declare -p PROMPT_COMMAND 2>&1)" == "declare -a"* ]]; then
+        PROMPT_COMMAND=("${PROMPT_COMMAND[@]}" __zoxide_hook)
+    else
+        PROMPT_COMMAND="${PROMPT_COMMAND%"${PROMPT_COMMAND##*[![:space:];]}"}"
+        PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND};}__zoxide_hook"
+    fi
+fi
+function __zoxide_doctor() {
+    [[ ${_ZO_DOCTOR:-1} -eq 0 ]] && return 0
+    [[ ${PROMPT_COMMAND[@]:-} == *'__zoxide_hook'* ]] && return 0
+    [[ ${__vsc_original_prompt_command[@]:-} == *'__zoxide_hook'* ]] && return 0
+    _ZO_DOCTOR=0
+    \builtin printf '%s\n' 'zoxide: detected a possible configuration issue.' >&2
+}
+function __zoxide_z() {
+    __zoxide_doctor
+    __zoxide_cd "$@"
+}
+INIT
+STUB
+cat > "$ZI/stbin/starship" <<'STUB'
+#!/bin/sh
+cat <<'INIT'
+starship_precmd() {
+    if [[ -n "${STARSHIP_PROMPT_COMMAND-}" ]]; then
+        eval "$STARSHIP_PROMPT_COMMAND"
+    fi
+}
+if [[ -z "${PROMPT_COMMAND-}" ]]; then
+    PROMPT_COMMAND="starship_precmd"
+elif [[ "$PROMPT_COMMAND" != *"starship_precmd"* ]]; then
+    STARSHIP_PROMPT_COMMAND="$PROMPT_COMMAND"
+    PROMPT_COMMAND="starship_precmd"
+fi
+INIT
+STUB
+chmod +x "$ZI/zobin/zoxide" "$ZI/stbin/starship"
+# zi_run <PATH> <commands> - init.bash in an interactive bash with HOME in the
+# fixture and a fresh init cache; stdout, then stderr's zoxide lines, then
+# each `zoxide add`
+zi_run() {
+    local bash_bin
+    bash_bin=$(command -v bash)
+    rm -rf "$ZI/home/.cache" "$ZI/adds" "$ZI/err"
+    (cd "$ZI/home" && HOME="$ZI/home" ZO_ADDS="$ZI/adds" PATH="$1" \
+        "$bash_bin" --norc -i -c ". ~/.config/shell/init.bash; $2" 2>"$ZI/err" </dev/null)
+    grep '^zoxide:' "$ZI/err"
+    if [ -f "$ZI/adds" ]; then sed "s|$ZI|@|" "$ZI/adds"; fi
+}
+out=$(zi_run "$ZI/zobin:$ZI/stbin:$nostar_path" "echo \"PC=\$PROMPT_COMMAND\"; cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"")
+assert_eq "bash/init.bash: no doctor warning behind starship, and zoxide still adds" "PC=starship_precmd
+add -- @/d" "$out"
+out=$(zi_run "$ZI/zobin:$nostar_path" "echo \"PC=\$PROMPT_COMMAND doctor=\${_ZO_DOCTOR-unset}\"; cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"")
+assert_eq "bash/init.bash: without starship the doctor stays on, zoxide adds" "PC=_den_dh_record;__zoxide_hook doctor=unset
+add -- @/d" "$out"
+# The real zoxide and starship, where installed
+if command -v zoxide >/dev/null 2>&1 && command -v starship >/dev/null 2>&1; then
+    out=$(ZO_REAL="$ZI/zoreal"; rm -rf "$ZO_REAL"; mkdir -p "$ZO_REAL"
+        _ZO_DATA_DIR="$ZO_REAL" zi_run "$PATH" "cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"; zoxide query -l")
+    assert_eq "bash/init.bash: real zoxide behind real starship, no doctor warning" "$ZI/d" "$out"
+else
+    echo "  SKIP: bash/init.bash real zoxide and starship (not both installed)"
+fi
 
 # =============================================================================
 # Zsh tests
