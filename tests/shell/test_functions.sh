@@ -723,6 +723,14 @@ $DH/b
   1  ~/start
   *  ~/b" "$out"
     mkdir -p "$DH/a"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back 2 >/dev/null && rmdir '$DH/b' && fwd; echo rc=\$?; pwd; back -l")
+    assert_eq "$sh/removed forward target dropped, stays put" "fwd: $DH/b no longer exists, dropped from history
+rc=1
+$DH/a
+  1  ~/start
+  *  ~/a
+ +1  ~/c" "$out"
+    mkdir -p "$DH/b"
 
     echo "[$sh] cd - still toggles, as a normal move"
     out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd - >/dev/null && pwd && cd - >/dev/null && pwd && back")
@@ -1985,6 +1993,16 @@ mkdir -p "$DH/a"
 err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; Remove-Item '$DH/a'; back")
 assert_eq "pwsh/removed target message" "back: $DH/a no longer exists, dropped from history" "$err"
 mkdir -p "$DH/a"
+out=$(dh_pwsh "cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back 2; Remove-Item '$DH/b'; try { fwd } catch { 'failed' }; (Get-Location).Path; back -l")
+assert_eq "pwsh/removed forward target dropped, stays put" "failed
+$DH/a
+  1  ~/start
+  *  ~/a
+ +1  ~/c" "$out"
+mkdir -p "$DH/b"
+err=$(dh_pwsh_err "cd '$DH/a'; cd '$DH/b'; cd '$DH/c'; back 2; Remove-Item '$DH/b'; fwd")
+assert_eq "pwsh/removed forward target message" "fwd: $DH/b no longer exists, dropped from history" "$err"
+mkdir -p "$DH/b"
 
 echo "[pwsh] Push-Location / Pop-Location are recorded"
 out=$(dh_pwsh "Push-Location '$DH/a'; Push-Location '$DH/b'; Pop-Location; back -l")
@@ -2117,6 +2135,9 @@ shim("fwd", 1); state("fwd 1")
 shim("back", 1); cd("C:\\d"); state("back 1, then a move")
 gone["c:\\a"] = true; shim("back", 1); state("back 1 to a removed dir")
 env._DEN_DIRNAV = "back:1"; prompt(); state("note without a move")
+cd("C:\\e"); cd("C:\\f"); shim("back", 3); state("back 3")
+gone["c:\\e"] = true; shim("fwd", 2); state("fwd 2 to a removed dir")
+shim("fwd", 2); state("fwd 2 after the drop")
 for i = 1, 30 do cd("C:\\a"); cd("C:\\b") end
 local n = 0
 for _ in env._DEN_DIRBACK:gmatch("[^|]+") do n = n + 1 end
@@ -2131,6 +2152,9 @@ fwd 1: back=C:\start|C:\a fwd=c:\C nav= oldpwd=C:\a
 back 1, then a move: back=C:\start|C:\a fwd= nav= oldpwd=C:\a
 back 1 to a removed dir: back=C:\start fwd= nav= oldpwd=C:\a
 note without a move: back=C:\start fwd= nav= oldpwd=C:\a
+back 3: back= fwd=C:\d|C:\e|C:\f nav= oldpwd=C:\f
+fwd 2 to a removed dir: back= fwd=C:\d|C:\f nav= oldpwd=C:\f
+fwd 2 after the drop: back=C:\start|C:\d fwd= nav= oldpwd=C:\start
 entries after 60 moves: 25' "$out"
 fi
 
