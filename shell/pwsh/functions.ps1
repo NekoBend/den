@@ -836,9 +836,9 @@ function sagain {
 # not by the moves it makes on the way (LocationChangedAction, PowerShell 6.1+,
 # is not used: it fires for each of those). den's navigation commands typed at
 # the prompt also record at once (_DenDirMoved), so several on one line are each
-# kept. back/fwd walk the lists themselves. The state is $global:, not $script:
-# like _helpers.ps1's caches: den's commands also run inside scripts, and there
-# $script: names the running script's scope.
+# kept. back/fwd walk the lists themselves. The state is $global: (as are
+# _helpers.ps1's caches) rather than $script:, because den's commands also run
+# inside scripts, where $script: names the running script's scope.
 if ($null -eq $global:_DenDirBack) {
   $global:_DenDirBack = [System.Collections.Generic.List[string]]::new()
   $global:_DenDirFwd = [System.Collections.Generic.List[string]]::new()

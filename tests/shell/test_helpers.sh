@@ -420,6 +420,47 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/pipeline forwarding" "hello_pipe" "$actual"
 
+# --- The helpers and the wrappers they build, called from a user script ---
+# A function's $script: is the scope of the script that is RUNNING it, not of the
+# file that defined it, so the command cache _helpers.ps1 kept there was $null
+# inside a user's .ps1: every call printed "You cannot call a method on a
+# null-valued expression" and the wrapper fell through to its fallback. Called
+# here from a script run with &, and from a function inside that script.
+echo "[pwsh] helpers and wrappers work from a user script"
+echo "native test" > "$WORK/pwsh_script_wrap.txt"
+cat > "$WORK/pwsh_caller.ps1" <<'EOF'
+param([string]$File)
+"any:$(_ResolveCmd 'sh')"
+"app:$([bool](_ResolveCmd 'sh' 'App'))"
+"missing:[$(_ResolveCmd 'nonexistent_xyz' 'App')]"
+mycat $File
+myprintf 'modern\n'
+printfw 'suffix\n'
+function Invoke-Inner([string]$F) { mycat $F }
+Invoke-Inner $File
+EOF
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-Wrapper 'mycat' 'nonexistent_modern' '' 'cat' '' ''
+    New-Wrapper 'myprintf' 'printf' '' '' '' ''
+    New-WrapperSuffix 'printfw' 'printf' ''
+    & '$WORK/pwsh_caller.ps1' '$WORK/pwsh_script_wrap.txt'
+" 2>"$WORK/pwsh_caller.err" | tr -d '\r')
+assert_eq "pwsh/helpers from a script" "any:sh
+app:True
+missing:[]
+native test
+modern
+suffix
+native test" "$actual"
+assert_eq "pwsh/helpers from a script: no errors" "" "$(tr -d '\r' < "$WORK/pwsh_caller.err")"
+
+# The whole class: any function that reads $script: state breaks the same way,
+# so den's pwsh files keep none (comments aside).
+echo "[pwsh] no \$script: state in shell/pwsh"
+actual=$(grep -inE '\$\{?script:' "$DOTFILES"/shell/pwsh/*.ps1 | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' || true)
+assert_eq "pwsh/no \$script: state" "" "$actual"
+
 # --- Initialize-Cache regenerates when binary is newer ---
 echo "[pwsh] Initialize-Cache regenerates when binary newer"
 mkdir -p "$WORK/pwsh_icbin"

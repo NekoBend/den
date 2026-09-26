@@ -381,6 +381,24 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
 " | tr -d '\r')
 assert_eq "pwsh/uv run separates script.py" "mock-uv run --python 3.12 -- script.py" "$actual"
 
+# The overrides resolve uv/pip/python through _ResolveCmd, whose cache was once
+# kept in $script:, which inside a user's .ps1 is that script's scope: there the
+# cache was $null, `uv` did not resolve and `python3` ran `& $null`.
+echo "[pwsh] uv/pip/python3 overrides work from a user script"
+cat > "$WORK/usepy.ps1" <<'EOF'
+$env:VIRTUAL_ENV = $null
+uv --version
+pip install rich
+function Invoke-Py { python3 app.py }
+Invoke-Py
+EOF
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "& '$WORK/usepy.ps1'" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/uv from a script" "mock-uv --version" "$actual"
+assert_contains "pwsh/pip from a script" "mock-uv pip install rich" "$actual"
+assert_contains "pwsh/python3 from a script" "mock-uv run -- python app.py" "$actual"
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "& '$WORK/usepy.ps1'")
+assert_eq "pwsh/python overrides from a script: no errors" "" "$err"
+
 echo "[pwsh] va normalizes pyvenv.cfg version_info"
 mk_venv_ps "$WORK/ps_venv5" "3.11.4.final.0"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv5'; va *>\$null; \$env:_DEN_VENV_PYTHON" | tr -d '\r')

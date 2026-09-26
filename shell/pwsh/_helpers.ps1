@@ -140,7 +140,10 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
 # mid-session is picked up after `reload` (which re-sources this file and so resets
 # the cache). Value is the resolved path/name, or '' = absent. App-lookup keys also
 # carry $VIRTUAL_ENV (see _ResolveCmd) so a venv switch re-resolves pip/python.
-$script:_DenCmdCache = @{}
+# This cache and _CoreutilsBin's live in $global:, not in $script:, because den's
+# commands also run inside a user's scripts, where $script: names the running
+# script's scope and the cache does not exist.
+$global:_DenCmdCache = @{}
 
 # _ResolveCmd <name> [type] — cached Get-Command. Type 'App' resolves to the real
 # executable PATH (CommandType Application), which skips a same-named function or
@@ -155,7 +158,7 @@ function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
     # venv's pip/python path and install into the wrong environment. 'Any' returns
     # the bare name (an existence check), which is venv-insensitive.
     $key = if ($Type -eq 'App') { "App|$Name|$env:VIRTUAL_ENV" } else { "Any|$Name" }
-    if (-not $script:_DenCmdCache.ContainsKey($key)) {
+    if (-not $global:_DenCmdCache.ContainsKey($key)) {
         $val = ''
         if ($Type -eq 'App') {
             $src = (Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -164,17 +167,17 @@ function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
         elseif (Get-Command $Name -ErrorAction SilentlyContinue) {
             $val = $Name
         }
-        $script:_DenCmdCache[$key] = $val
+        $global:_DenCmdCache[$key] = $val
     }
-    $v = $script:_DenCmdCache[$key]
+    $v = $global:_DenCmdCache[$key]
     if ($v -eq '') { return $null } else { return $v }
 }
 
-$script:_DenCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
+$global:_DenCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
 function _CoreutilsBin {
     if ($env:_DEN_COREUTILS -eq '0') { return $null }
     if ($IsWindows -ne $true) { return $null }
-    if ($null -eq $script:_DenCoreutils) {
+    if ($null -eq $global:_DenCoreutils) {
         $found = ''
         if ($env:_DEN_COREUTILS) {
             $g = (Get-Command $env:_DEN_COREUTILS -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
@@ -190,9 +193,9 @@ function _CoreutilsBin {
                 if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { $found = $p; break }
             }
         }
-        $script:_DenCoreutils = $found
+        $global:_DenCoreutils = $found
     }
-    if ($script:_DenCoreutils) { return $script:_DenCoreutils } else { return $null }
+    if ($global:_DenCoreutils) { return $global:_DenCoreutils } else { return $null }
 }
 
 # ========== wrapper generator ==========

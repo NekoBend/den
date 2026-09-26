@@ -283,6 +283,29 @@ actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
 assert_eq "pwsh/cat|head|wc" "5" "$actual"
 
 # =============================================================================
+# PowerShell: wrappers called from a user script
+# =============================================================================
+# A function's $script: is the scope of the script RUNNING it, so the command
+# cache _helpers.ps1 kept there was $null inside a user's .ps1: each wrapper call
+# printed "You cannot call a method on a null-valued expression" and fell through
+# to its PowerShell fallback. Run cat/grep/head from a script with &, and from a
+# function inside it, as a user's script would.
+echo ""
+echo "[pwsh] wrappers called from a user script"
+cat > "$WORK/usewrap.ps1" <<EOF
+cat '$WORK/fruits.txt' | grep 'an'
+function Get-FirstLine { cat '$WORK/lines20.txt' | head -n 2 }
+Get-FirstLine
+EOF
+actual=$(run_pwsh "$COMBINED_PS1" "\$env:_DEN_WRAPPER_LOG = '0'; & '$WORK/usewrap.ps1'" 2>/dev/null)
+actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
+assert_eq "pwsh/wrappers from a script" "banana
+line1
+line2" "$actual"
+err=$(run_pwsh_stderr "$COMBINED_PS1" "\$env:_DEN_WRAPPER_LOG = '0'; & '$WORK/usewrap.ps1'")
+assert_eq "pwsh/wrappers from a script: no errors" "" "$err"
+
+# =============================================================================
 # PowerShell extended tests — grep additional flags
 # =============================================================================
 echo ""
