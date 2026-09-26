@@ -1128,14 +1128,15 @@ fi
 INIT
 STUB
 chmod +x "$ZI/zobin/zoxide" "$ZI/stbin/starship"
-# zi_run <PATH> <commands> - init.bash in an interactive bash with HOME in the
-# fixture and a fresh init cache; stdout, then stderr's zoxide lines, then
+# zi_run <PATH> <commands> - init.bash in an interactive bash with HOME and a
+# fresh init cache in the fixture (never the user's XDG_CACHE_HOME, where the
+# stub inits would outlive the test); stdout, then stderr's zoxide lines, then
 # each `zoxide add`
 zi_run() {
     local bash_bin
     bash_bin=$(command -v bash)
     rm -rf "$ZI/home/.cache" "$ZI/adds" "$ZI/err"
-    (cd "$ZI/home" && HOME="$ZI/home" ZO_ADDS="$ZI/adds" PATH="$1" \
+    (cd "$ZI/home" && HOME="$ZI/home" XDG_CACHE_HOME="$ZI/home/.cache" ZO_ADDS="$ZI/adds" PATH="$1" \
         "$bash_bin" --norc -i -c ". ~/.config/shell/init.bash; $2" 2>"$ZI/err" </dev/null)
     grep '^zoxide:' "$ZI/err"
     if [ -f "$ZI/adds" ]; then sed "s|$ZI|@|" "$ZI/adds"; fi
@@ -2647,8 +2648,9 @@ rm -rf "$DH/c/d"
 
 # init.ps1 installs the recorder: it wraps the prompt after starship's init has
 # replaced it. A stub starship stands in for the real one, and HOME /
-# XDG_DATA_HOME point into the fixture, so the init cache is written there and
-# never over the user's own.
+# XDG_DATA_HOME / _ZO_DATA_DIR point into the fixture, so the init cache and
+# the database that a real zoxide adds to (den's wrapper runs its hook) stay
+# there, never over the user's own.
 echo "[pwsh] init.ps1 wraps starship's prompt with the recorder"
 mkdir -p "$DH/stbin" "$DH/.local/share"
 cat > "$DH/stbin/starship" <<'STUB'
@@ -2657,7 +2659,8 @@ printf '%s\n' 'function global:prompt { "stub:$($global:?)>" }'
 STUB
 chmod +x "$DH/stbin/starship"
 dh_pwsh_init() {
-    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" _ZO_DATA_DIR="$DH/.local/share/zoxide" \
+        PATH="$DH/stbin:$PATH" \
         pwsh -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; $1" 2>/dev/null | tr -d '\r')
 }
 out=$(dh_pwsh_init "\$function:prompt -eq \$global:_DenDirPrompt; \"\$global:_DenDirPromptOld\".Trim(); Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt")
