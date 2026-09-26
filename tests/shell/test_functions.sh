@@ -915,12 +915,31 @@ assert_eq "bash/back OLDPWD" "/tmp" "$actual"
 # HOME=$DH, so `back -l` shows ~ forms. The fzf stub prints the input line
 # whose label is $FZF_PICK, the way a user's pick would come back from fzf.
 DH="$WORK/dh"
-# $PATH without the directories that hold a starship, for the cases that load
-# init.bash or init.ps1 with no starship at all
-nostar_path=$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
-    [ -x "$d/starship" ] || printf '%s:' "$d"
-done)
-nostar_path=${nostar_path%:}
+# path_without <command>... - $PATH with none of <command> on it, for the
+# cases that load init.bash or init.ps1 with no starship or no zoxide. A
+# directory that holds one is replaced by a directory of links to its other
+# entries, not dropped: a distro's starship sits in /usr/bin beside sh and cat.
+# Call it where the PATH is used: the setup_* helpers empty $WORK, links too.
+path_without() {
+    local d c hit out='' n=0 base="$WORK/without"
+    for c in "$@"; do base="$base-$c"; done
+    rm -rf "$base"
+    while IFS= read -r d; do
+        hit=
+        for c in "$@"; do [ -n "$d" ] && [ -x "$d/$c" ] && hit=1; done
+        if [ -n "$hit" ]; then
+            n=$((n + 1))
+            mkdir -p "$base/$n"
+            ln -s "$d"/* "$base/$n/"
+            for c in "$@"; do rm -f "$base/$n/$c"; done
+            d="$base/$n"
+        fi
+        out="$out${out:+:}$d"
+    done <<EOF
+$(printf '%s\n' "$PATH" | tr ':' '\n')
+EOF
+    printf '%s\n' "$out"
+}
 
 setup_dirhist() {
     rm -rf "$DH"
@@ -1141,10 +1160,10 @@ zi_run() {
     grep '^zoxide:' "$ZI/err"
     if [ -f "$ZI/adds" ]; then sed "s|$ZI|@|" "$ZI/adds"; fi
 }
-out=$(zi_run "$ZI/zobin:$ZI/stbin:$nostar_path" "echo \"PC=\$PROMPT_COMMAND\"; cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"")
+out=$(zi_run "$ZI/zobin:$ZI/stbin:$PATH" "echo \"PC=\$PROMPT_COMMAND\"; cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"")
 assert_eq "bash/init.bash: no doctor warning behind starship, and zoxide still adds" "PC=starship_precmd
 add -- @/d" "$out"
-out=$(zi_run "$ZI/zobin:$nostar_path" "echo \"PC=\$PROMPT_COMMAND doctor=\${_ZO_DOCTOR-unset}\"; cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"")
+out=$(zi_run "$ZI/zobin:$(path_without starship)" "echo \"PC=\$PROMPT_COMMAND doctor=\${_ZO_DOCTOR-unset}\"; cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"")
 assert_eq "bash/init.bash: without starship the doctor stays on, zoxide adds" "PC=_den_dh_record;__zoxide_hook doctor=unset
 add -- @/d" "$out"
 # The real zoxide and starship, where installed
@@ -2750,7 +2769,7 @@ add -- ~/a" "$out"
 # Without starship zoxide's own wrapper survives inside den's: its hook call
 # after den's adds nothing, and a reload leaves one den wrapper (two would call
 # each other without end).
-out=$(dh_pwsh_zo "$nostar_path" "\"zoxide's wrapper kept: \$(\"\$global:_DenDirPromptOld\" -match '__zoxide_hook')\"; Set-Location '$DH/a'; \$null = prompt; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; . '$DOTFILES/shell/pwsh/init.ps1'; _DenDirHookPrompt; Set-Location '$DH/c'; (prompt).Trim(); back -l")
+out=$(dh_pwsh_zo "$(path_without starship)" "\"zoxide's wrapper kept: \$(\"\$global:_DenDirPromptOld\" -match '__zoxide_hook')\"; Set-Location '$DH/a'; \$null = prompt; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; . '$DOTFILES/shell/pwsh/init.ps1'; _DenDirHookPrompt; Set-Location '$DH/c'; (prompt).Trim(); back -l")
 assert_eq "pwsh/zoxide adds each move once without starship, and one wrapper after a reload" "zoxide's wrapper kept: True
 PS $DH/c>
   3  ~/start
