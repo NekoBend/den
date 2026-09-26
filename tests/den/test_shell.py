@@ -90,6 +90,18 @@ def test_cmd_core_shims_present():
     assert not missing, f"cmd/bin is missing core shims: {sorted(missing)}"
 
 
+def test_cmd_digest_forwards_to_dg():
+    # cmd cannot run in CI, so these hold the shape the batch relies on: digest
+    # hands every argument to dg.cmd without `call` (which would double any
+    # caret in them), and dg.cmd, with its many labels, keeps CRLF line endings
+    # (with bare LF, cmd can miss a label that straddles a 512-byte block).
+    digest = (_CMD_BIN / "digest.cmd").read_text(encoding="utf-8")
+    assert '"%~dp0dg.cmd" %*' in digest
+    assert "call " not in digest.lower()
+    dg = (_CMD_BIN / "dg.cmd").read_bytes()
+    assert dg.count(b"\n") == dg.count(b"\r\n"), "dg.cmd must use CRLF line endings"
+
+
 def test_pwsh_dir_honors_queried_profile_on_windows(tmp_path, monkeypatch):
     prof = tmp_path / "OneDrive" / "Documents" / "PowerShell" / _shell._PWSH_PROFILE
     monkeypatch.setattr(_shell, "_windows", lambda: True)

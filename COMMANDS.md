@@ -119,12 +119,38 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `digest {md5\|sha256\|sha512} <file...>` | file hash; with several files, hash and name per line | ✓ | ✓ | ✓ |
+| `dg [algo] <file...>` | file hash; algo is `md5` / `sha256` / `sha512` or `5` / `256` / `512`, default sha256; with several files, hash and name per line | ✓ | ✓ | ✓ |
+| `dg [algo] <file> <hash>` | check a file against an expected hash: `OK` (exit 0) or `MISMATCH` with both hashes (exit 1). The algo follows the hash's length (32 / 64 / 128 hex digits); a `sha256:`-style prefix (a blank after it too, as in `SHA256: <hex>`), surrounding blanks and uppercase are accepted | ✓ | ✓ | ✓ |
+| `dg -e [algo] <a> <b>` | do two files have the same content? `SAME` (exit 0) or `DIFFERENT` with both hashes (exit 1) | ✓ | ✓ | ✓ |
+| `dg -c <sumsfile...>` | verify checksum files like `sha256sum -c`: GNU (`<hash>  <name>`, `<hash> *<name>`) and BSD (`SHA256 (<name>) = <hash>`) lines, the algo per line from its tag or length, names relative to the current directory; `<name>: OK` / `FAILED` / `MISSING` per entry, exit 0 only when every entry is OK | ✓ | ✓ | ✓ |
+| `digest ...` | the older name of `dg`; every form works the same | ✓ | ✓ | ✓ |
 | `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
 | `extract <archive...>` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
 | `archive <out> <in>...` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
+
+`dg` treats its first operand as the algo only when it is one of those tokens,
+and reads two operands as `<file> <hash>` only when the second is no existing
+path and looks like a hash. `--` ends option and algo parsing, so `dg -- 256`
+hashes a file named `256`. The compare and `-e` forms exit 2 when they cannot
+check at all (a missing file, or an algo that disagrees with the hash's length);
+`-c` skips blank and `#` lines and warns about malformed ones.
+
+- **pwsh**: every failure is a terminating error, so `$?` is false and
+  `pwsh -Command` exits 1; there is no separate exit 2. PowerShell removes a bare
+  `--` before the function sees it, so write it quoted: `dg '--' 256`. It also
+  binds any other unquoted word that starts with `-` as a parameter: `-d` / `-v`
+  quietly become `-Debug` / `-Verbose`, `-i` / `-p` fail as ambiguous, and
+  `-x.txt` splits at the dot into `-x` and `.txt`, so quote such a file name:
+  `dg '-x.txt'`. `-e` and `-c` are switches and work anywhere on the line
+  (`dg 256 a -e b`); bash/zsh and cmd take them only before the algo and the
+  files. Hash mode keeps Get-FileHash's uppercase hex; the other forms print
+  lowercase.
+- **cmd**: hashes with `certutil`. It reads a checksum file in the console code
+  page, so run `chcp 65001` first when its names are UTF-8. Only `\\` is undone in
+  a GNU-escaped name (a Windows name cannot hold a newline). An unknown `-x` is
+  a file name here; bash/zsh refuse it as an unknown option.
 
 ## Python and uv
 

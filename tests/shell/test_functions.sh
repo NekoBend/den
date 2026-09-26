@@ -133,6 +133,198 @@ SHA256_ONE="7692C3AD3540BB803C020B3AEE66CD8887123234EA0C6E7143C0ADD73FF431ED"
 SHA256_REAL="aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f"
 SHA256_DECOY="bdeb9ba22af8fa73e59fe7c4d3c48ae1165617dd76c720773cdf6cbc33a91dd7"
 
+# dg (digest's new name). ZERO64 is a well-formed sha256 that matches nothing;
+# MD5_ONE and SHA256_ONE_LC are the hashes of "one" (the -e fixture).
+ZERO64="0000000000000000000000000000000000000000000000000000000000000000"
+MD5_ONE="f97c5d29941bfb1b2fdab0874906ab82"
+SHA256_ONE_LC="7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed"
+
+# Files for every dg form under $WORK/dg, and checksum files written by the
+# real GNU tools (so their escaping and binary markers are the genuine ones):
+#   SHA256SUMS  GNU lines: a name with a space, an escaped backslash name, a
+#               "*" binary marker, a comment and a blank line
+#   MIXED       BSD MD5 and SHA512 lines plus a GNU md5 line: the algorithm
+#               comes from each line's tag or length
+#   CRLF        SHA256SUMS with Windows line endings
+#   NEWLINE     an escaped name that holds a newline
+#   BAD         a malformed line, a missing file, a wrong hash, one good entry
+#               and a BSD tag that disagrees with its hash's length
+#   EMPTY       comments only
+setup_dg() {
+    rm -rf "${WORK:?}/dg"
+    mkdir -p "$WORK/dg"
+    (
+        cd "$WORK/dg" || exit 1
+        printf 'test content' > h.txt
+        printf 'one' > a.txt
+        printf 'one' > b.txt
+        printf 'two' > c.txt
+        printf 'x' > 'sp ace.txt'
+        printf 'y' > 'back\slash.txt'
+        printf 'z' > 256
+        printf 'n' > "$(printf 'new\nline.txt')"
+        sha256sum h.txt 'sp ace.txt' 'back\slash.txt' > SHA256SUMS
+        sha256sum -b a.txt >> SHA256SUMS
+        printf '# comment\n\n' >> SHA256SUMS
+        md5sum --tag c.txt > MIXED
+        sha512sum --tag 'sp ace.txt' >> MIXED
+        md5sum a.txt >> MIXED
+        sed 's/$/\r/' SHA256SUMS > CRLF
+        sha256sum "$(printf 'new\nline.txt')" > NEWLINE
+        {
+            echo 'garbage line'
+            echo "$SHA256_ONE_LC  gone.txt"
+            echo "$ZERO64  c.txt"
+            echo "$MD5_ONE  a.txt"
+            echo "SHA256 (a.txt) = $MD5_ONE"
+        } > BAD
+        printf '# only a comment\n\n' > EMPTY
+    )
+}
+
+# The dg cases, the same for bash and zsh: $1 is the shell (its run_<shell>
+# and run_<shell>_stderr runners are used).
+dg_posix_cases() {
+    local sh="$1" run="run_$1" run_err="run_$1_stderr" d="$WORK/dg" actual err rc
+    setup_dg
+
+    echo "[$sh] dg default and numeric algorithms"
+    actual=$($run "$FUNCTIONS_SH" "dg '$d/h.txt'")
+    assert_eq "$sh/dg defaults to sha256" "$EXPECTED_SHA256" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "dg 5 '$d/h.txt'")
+    assert_eq "$sh/dg 5 is md5" "$EXPECTED_MD5" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "dg 256 '$d/h.txt'")
+    assert_eq "$sh/dg 256 is sha256" "$EXPECTED_SHA256" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "dg 512 '$d/h.txt'")
+    assert_eq "$sh/dg 512 is sha512" "$EXPECTED_SHA512" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "digest 5 '$d/h.txt'")
+    assert_eq "$sh/digest takes the numeric algo too" "$EXPECTED_MD5" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt a.txt")
+    assert_eq "$sh/dg default algo with several files" "$EXPECTED_SHA256  h.txt
+$SHA256_ONE_LC  a.txt" "$actual"
+
+    echo "[$sh] dg -- ends option and algo parsing"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -- 256")
+    assert_eq "$sh/dg -- 256 hashes the file named 256" "$(sha256sum "$d/256" | cut -d' ' -f1)" "$actual"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg 256" >/dev/null 2>&1
+    assert_eq "$sh/dg 256 alone is an algo with no file" "1" "$?"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && cp h.txt ./-h.txt && dg 5 -- -h.txt")
+    assert_eq "$sh/dg algo -- takes a dash name" "$EXPECTED_MD5" "$actual"
+
+    # GNU's *sum tools start the line with a backslash when they escape the
+    # name, and that backslash used to be printed as part of the hash.
+    echo "[$sh] dg drops GNU's escape backslash"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && digest sha256 'back\\slash.txt'")
+    assert_eq "$sh/dg backslash name prints the bare hash" "$(printf 'y' | sha256sum | cut -d' ' -f1)" "$actual"
+
+    echo "[$sh] dg help, usage and unknown options"
+    actual=$($run "$FUNCTIONS_SH" "dg -h")
+    assert_success "$sh/dg -h exit code" "$?"
+    assert_contains "$sh/dg -h lists the compare form" "dg [algo] <file> <hash>" "$actual"
+    assert_contains "$sh/dg -h lists -e" "dg -e [algo] <a> <b>" "$actual"
+    assert_contains "$sh/dg -h lists -c" "dg -c <sumsfile...>" "$actual"
+    err=$($run_err "$FUNCTIONS_SH" "dg")
+    assert_contains "$sh/dg without operands prints usage" "usage: dg" "$err"
+    err=$($run_err "$FUNCTIONS_SH" "dg -x '$d/h.txt'")
+    assert_contains "$sh/dg refuses an unknown option" "unknown option '-x'" "$err"
+    $run "$FUNCTIONS_SH" "dg -x '$d/h.txt'" >/dev/null 2>&1
+    assert_eq "$sh/dg unknown option exits 1" "1" "$?"
+
+    echo "[$sh] dg <file> <hash> compares"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt $EXPECTED_SHA256")
+    assert_success "$sh/dg compare OK exit code" "$?"
+    assert_eq "$sh/dg compare OK line" "OK  h.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt '  SHA256:${EXPECTED_SHA256^^} '")
+    assert_eq "$sh/dg compare trims, lowercases and drops the prefix" "OK  h.txt" "$actual"
+    # "SHA256: <hex>" is how download pages tend to print it; pwsh and cmd
+    # take the blanks after the prefix too.
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt 'SHA256:  $EXPECTED_SHA256'")
+    assert_eq "$sh/dg compare drops blanks after the prefix" "OK  h.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt $EXPECTED_MD5")
+    assert_eq "$sh/dg compare infers md5 from the length" "OK  h.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg sha512 h.txt $EXPECTED_SHA512")
+    assert_eq "$sh/dg compare with a matching explicit algo" "OK  h.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt $ZERO64")
+    rc=$?
+    assert_eq "$sh/dg compare MISMATCH exits 1" "1" "$rc"
+    assert_eq "$sh/dg compare MISMATCH lines" "MISMATCH  h.txt
+  expected $ZERO64
+  actual   $EXPECTED_SHA256" "$actual"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg 5 h.txt $EXPECTED_SHA256")
+    assert_contains "$sh/dg compare refuses an algo the length contradicts" "64 hex digits (sha256), not md5" "$err"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg 5 h.txt $EXPECTED_SHA256" >/dev/null 2>&1
+    assert_eq "$sh/dg compare algo mismatch exits 2" "2" "$?"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg h.txt md5:$EXPECTED_SHA256" >/dev/null 2>&1
+    assert_eq "$sh/dg compare prefix mismatch exits 2" "2" "$?"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg missing.txt $EXPECTED_SHA256" >/dev/null 2>&1
+    assert_eq "$sh/dg compare missing file exits 2" "2" "$?"
+    # A second operand that exists is a file, even when it looks like a hash.
+    printf 'q' > "$d/$ZERO64"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt $ZERO64")
+    assert_eq "$sh/dg an existing hash-shaped name is a file" "2" "$(printf '%s\n' "$actual" | wc -l | tr -d ' ')"
+    rm -f "${d:?}/${ZERO64:?}"
+
+    echo "[$sh] dg -e compares two files"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -e a.txt b.txt")
+    assert_success "$sh/dg -e SAME exit code" "$?"
+    assert_eq "$sh/dg -e SAME line" "SAME  a.txt  b.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -e a.txt c.txt")
+    rc=$?
+    assert_eq "$sh/dg -e DIFFERENT exits 1" "1" "$rc"
+    assert_eq "$sh/dg -e DIFFERENT lines" "DIFFERENT  a.txt  c.txt
+  $SHA256_ONE_LC  a.txt
+  $(sha256sum "$d/c.txt" | cut -d' ' -f1)  c.txt" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && digest -e 5 a.txt c.txt")
+    assert_contains "$sh/dg -e takes an algo" "  $MD5_ONE  a.txt" "$actual"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg -e a.txt" >/dev/null 2>&1
+    assert_eq "$sh/dg -e with one file exits 2" "2" "$?"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg -e a.txt missing.txt" >/dev/null 2>&1
+    assert_eq "$sh/dg -e with a missing file exits 2" "2" "$?"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg -e -c a.txt b.txt")
+    assert_contains "$sh/dg -e and -c together are refused" "cannot be combined" "$err"
+    # Options come first here (pwsh's switches bind anywhere; COMMANDS.md says
+    # so): after the algo, -e is one more file.
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg 5 a.txt -e b.txt")
+    assert_contains "$sh/dg -e after the algo is a file name" "'-e' is not a file" "$err"
+
+    echo "[$sh] dg -c verifies checksum files"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c SHA256SUMS")
+    assert_success "$sh/dg -c GNU file exit code" "$?"
+    assert_eq "$sh/dg -c GNU lines" "h.txt: OK
+sp ace.txt: OK
+back\\slash.txt: OK
+a.txt: OK" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && digest -c MIXED CRLF")
+    assert_success "$sh/dg -c BSD, mixed and CRLF files exit code" "$?"
+    assert_eq "$sh/dg -c BSD, mixed and CRLF files all OK" "7" "$(printf '%s\n' "$actual" | grep -c ': OK$')"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c NEWLINE")
+    assert_eq "$sh/dg -c undoes GNU's newline escape" "new
+line.txt: OK" "$actual"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c BAD 2>/dev/null")
+    rc=$?
+    assert_eq "$sh/dg -c failures exit 1" "1" "$rc"
+    assert_eq "$sh/dg -c MISSING, FAILED and OK lines" "gone.txt: MISSING
+c.txt: FAILED
+a.txt: OK" "$actual"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg -c BAD")
+    assert_contains "$sh/dg -c warns about malformed lines" "'BAD': 2 malformed line(s) ignored" "$err"
+    assert_contains "$sh/dg -c summary" "1 FAILED, 1 MISSING of 3 checked" "$err"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg -c EMPTY")
+    assert_contains "$sh/dg -c with no entries says so" "no checksum lines found" "$err"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg -c EMPTY" >/dev/null 2>&1
+    assert_eq "$sh/dg -c with no entries exits 1" "1" "$?"
+    err=$($run_err "$FUNCTIONS_SH" "cd '$d' && dg -c missing SHA256SUMS")
+    assert_contains "$sh/dg -c counts an unreadable sums file" "1 sums file(s) unreadable" "$err"
+    $run "$FUNCTIONS_SH" "cd '$d' && dg -c 256 SHA256SUMS" >/dev/null 2>&1
+    assert_eq "$sh/dg -c with an algo exits 1" "1" "$?"
+
+    # dg keeps its state in globals (POSIX sh has no local); none may outlive it.
+    echo "[$sh] dg leaves no _dg_ variables behind"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c BAD >/dev/null 2>&1; dg h.txt $ZERO64 >/dev/null; dg -e a.txt c.txt >/dev/null; dg h.txt a.txt >/dev/null; set | grep '^_dg_[a-z]*='")
+    assert_eq "$sh/dg variables are cleared" "" "$actual"
+    rm -rf "${d:?}"
+}
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -158,9 +350,13 @@ setup_hash_file
 actual=$(run_bash "$FUNCTIONS_SH" "digest sha256 '$WORK/hashfile.txt'")
 assert_eq "bash/digest sha256" "$EXPECTED_SHA256" "$actual"
 
-echo "[bash] digest bad algo"
+# A first operand that is no algo token is a file (the algo defaults to
+# sha256), so "bad" is reported as a missing file and the real one is hashed.
+echo "[bash] digest with a non-algo first operand"
 actual=$(run_bash "$FUNCTIONS_SH" "digest bad '$WORK/hashfile.txt' 2>&1; echo \$?")
-assert_contains "bash/digest bad usage" "usage" "$actual"
+assert_contains "bash/digest non-algo operand is a file" "'bad' is not a file" "$actual"
+assert_contains "bash/digest non-algo operand still hashes the rest" "$EXPECTED_SHA256" "$actual"
+assert_eq "bash/digest non-algo operand exits 1" "1" "$(printf '%s\n' "$actual" | tail -1)"
 
 echo "[bash] digest sha512"
 setup_hash_file
@@ -295,6 +491,8 @@ else
     echo "  SKIP: bash/digest unreadable file (running as root)"
 fi
 rm -f "$WORK/noread.txt"
+
+dg_posix_cases bash
 
 echo "[bash] archive + extract tar.bz2"
 setup_fixtures
@@ -723,6 +921,8 @@ else
     echo "  SKIP: zsh/digest unreadable file (running as root)"
 fi
 rm -f "$WORK/noread.txt"
+
+dg_posix_cases zsh
 
 echo "[zsh] archive + extract zip"
 setup_fixtures
@@ -1331,6 +1531,122 @@ else
     echo "  SKIP: pwsh/digest unreadable file (running as root)"
 fi
 rm -f "$WORK/noread.txt"
+
+# dg on pwsh: the forms dg_posix_cases covers for bash/zsh. Hash mode keeps
+# Get-FileHash's uppercase (as digest always printed); the other forms print
+# lowercase. Every failure is a terminating error, so each exits 1: pwsh has
+# no exit 2. PowerShell on Linux reads a backslash as a path separator, so
+# the pwsh sums files leave out the backslash name.
+setup_dg
+d="$WORK/dg"
+grep -v 'slash' "$d/SHA256SUMS" > "$d/PWSUMS"
+sed 's/$/\r/' "$d/PWSUMS" > "$d/PWCRLF"
+SHA256_Z=$(sha256sum "$d/256" | cut -d' ' -f1)
+SHA256_TWO=$(sha256sum "$d/c.txt" | cut -d' ' -f1)
+
+echo "[pwsh] dg default and numeric algorithms"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt; dg 5 h.txt; dg 256 h.txt; dg 512 h.txt; digest MD5 h.txt" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg default and numeric algos" "${EXPECTED_SHA256^^}
+${EXPECTED_MD5^^}
+${EXPECTED_SHA256^^}
+${EXPECTED_SHA512^^}
+${EXPECTED_MD5^^}" "$actual"
+
+# The binder removes a bare --, so the function only ever sees a quoted one.
+echo "[pwsh] dg '--' ends algo parsing"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg '--' 256; dg 5 '--' h.txt" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg '--' 256 hashes the file named 256" "${SHA256_Z^^}
+${EXPECTED_MD5^^}" "$actual"
+# Any other unquoted dash word is bound as a parameter too; quoted, a dash
+# name is an operand (COMMANDS.md tells pwsh users to quote one).
+cp "$d/h.txt" "$d/-q.txt"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg 5 '-q.txt'" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg takes a quoted dash name as a file" "${EXPECTED_MD5^^}" "$actual"
+rm -f "$d/-q.txt"
+
+echo "[pwsh] dg help and usage"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "dg -h" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/dg -h lists the compare form" "dg [algo] <file> <hash>" "$actual"
+assert_contains "pwsh/dg -h lists -e" "dg -e [algo] <a> <b>" "$actual"
+assert_contains "pwsh/dg -h lists -c" "dg -c <sumsfile...>" "$actual"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "dg")
+assert_contains "pwsh/dg without operands prints usage" "usage: dg" "$err"
+assert_not_contains "pwsh/dg usage no double prefix" "dg: dg:" "$err"
+
+echo "[pwsh] dg <file> <hash> compares"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt $EXPECTED_SHA256" 2>/dev/null | tr -d '\r')
+assert_success "pwsh/dg compare OK exit code" "$?"
+assert_eq "pwsh/dg compare OK line" "OK  h.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt '  SHA256:${EXPECTED_SHA256^^} '; dg h.txt $EXPECTED_MD5; digest sha512 h.txt $EXPECTED_SHA512" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg compare normalizes, infers and checks an explicit algo" "OK  h.txt
+OK  h.txt
+OK  h.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt 'SHA256:  $EXPECTED_SHA256'" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg compare drops blanks after the prefix" "OK  h.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt $ZERO64" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg compare MISMATCH exits 1" "1" "$?"
+assert_eq "pwsh/dg compare MISMATCH lines" "MISMATCH  h.txt
+  expected $ZERO64
+  actual   $EXPECTED_SHA256" "$actual"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg 5 h.txt $EXPECTED_SHA256")
+assert_contains "pwsh/dg compare refuses an algo the length contradicts" "64 hex digits (sha256), not md5" "$err"
+assert_not_contains "pwsh/dg compare refusal no double prefix" "dg: dg:" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg h.txt md5:$EXPECTED_SHA256" >/dev/null 2>&1
+assert_eq "pwsh/dg compare prefix mismatch exits 1" "1" "$?"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg missing.txt $EXPECTED_SHA256" >/dev/null 2>&1
+assert_eq "pwsh/dg compare missing file exits 1" "1" "$?"
+
+echo "[pwsh] dg -e compares two files"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -e a.txt b.txt" 2>/dev/null | tr -d '\r')
+assert_success "pwsh/dg -e SAME exit code" "$?"
+assert_eq "pwsh/dg -e SAME line" "SAME  a.txt  b.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -Equal a.txt c.txt" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg -e DIFFERENT exits 1" "1" "$?"
+assert_eq "pwsh/dg -e DIFFERENT lines" "DIFFERENT  a.txt  c.txt
+  $SHA256_ONE_LC  a.txt
+  $SHA256_TWO  c.txt" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; digest -e 5 a.txt c.txt" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/dg -e takes an algo" "  $MD5_ONE  a.txt" "$actual"
+# A switch binds wherever it stands (COMMANDS.md says so); bash/zsh take it
+# only up front.
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg 5 a.txt -e b.txt" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg -e works after the algo and a file" "SAME  a.txt  b.txt" "$actual"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -e a.txt" >/dev/null 2>&1
+assert_eq "pwsh/dg -e with one file exits 1" "1" "$?"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -e -c a.txt b.txt")
+assert_contains "pwsh/dg -e and -c together are refused" "cannot be combined" "$err"
+
+echo "[pwsh] dg -c verifies checksum files"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c PWSUMS" 2>/dev/null | tr -d '\r')
+assert_success "pwsh/dg -c GNU file exit code" "$?"
+assert_eq "pwsh/dg -c GNU lines" "h.txt: OK
+sp ace.txt: OK
+a.txt: OK" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; digest -Check MIXED PWCRLF" 2>/dev/null | tr -d '\r')
+assert_success "pwsh/dg -c BSD, mixed and CRLF files exit code" "$?"
+assert_eq "pwsh/dg -c BSD, mixed and CRLF files all OK" "6" "$(printf '%s\n' "$actual" | grep -c ': OK$')"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c NEWLINE; (_DgSumsLine '\\$ZERO64  a\\\\b').Name" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg -c undoes GNU's escapes" "new
+line.txt: OK
+a\\b" "$actual"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c BAD" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/dg -c failures exit 1" "1" "$?"
+assert_eq "pwsh/dg -c MISSING, FAILED and OK lines" "gone.txt: MISSING
+c.txt: FAILED
+a.txt: OK" "$actual"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c BAD")
+assert_contains "pwsh/dg -c warns about malformed lines" "'BAD': 2 malformed line(s) ignored" "$err"
+assert_contains "pwsh/dg -c summary" "1 FAILED, 1 MISSING of 3 checked" "$err"
+assert_not_contains "pwsh/dg -c summary no double prefix" "dg: dg:" "$err"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c EMPTY")
+assert_contains "pwsh/dg -c with no entries says so" "no checksum lines found" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c EMPTY" >/dev/null 2>&1
+assert_eq "pwsh/dg -c with no entries exits 1" "1" "$?"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c missing PWSUMS")
+assert_contains "pwsh/dg -c counts an unreadable sums file" "1 sums file(s) unreadable" "$err"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$d'; dg -c 256 PWSUMS" >/dev/null 2>&1
+assert_eq "pwsh/dg -c with an algo exits 1" "1" "$?"
+rm -rf "${d:?}"
 
 echo "[pwsh] archive + extract zip"
 setup_fixtures

@@ -3,32 +3,226 @@
 
 # ===== File Utils =====
 
-# digest → unified hash function (md5, sha256, sha512)
-function digest {
-  # No hand-written "digest: " prefix on any message here: PowerShell already
-  # attributes an error to the function that RAISED it, so one would reach
-  # stderr as "digest: digest: ..." (same reason extract/archive dropped
-  # theirs).
-  param(
-    [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('md5', 'sha256', 'sha512')]
-    [string]$Algorithm,
-    [Parameter(Position = 1, ValueFromRemainingArguments)]
-    [string[]]$Path
-  )
-  if (-not $Path -or $Path.Count -eq 0) {
-    Write-Error "usage: digest {md5|sha256|sha512} <file...>" -ErrorAction Stop
+# _DgUsage → dg's usage text, one string per line. dg -h prints it; a refusal
+# carries it as its error message.
+function _DgUsage {
+  'usage: dg [algo] <file...>        hash; one file prints the bare hash'
+  '       dg [algo] <file> <hash>    check a file against an expected hash'
+  '       dg -e [algo] <a> <b>       do a and b have the same content?'
+  '       dg -c <sumsfile...>        verify checksum files (GNU or BSD lines)'
+  "algo: md5|sha256|sha512 or 5|256|512; default sha256, or the one the"
+  "<hash>'s length implies. '--' (quoted: PowerShell eats a bare --) ends algo"
+  "parsing. digest = dg."
+}
+
+# _DgAlgo → the algorithm an algo token names (md5, sha256, sha512; 5, 256 and
+# 512 are short for them), or $null when $Token is not one. The table's keys
+# are case-insensitive, as the old ValidateSet was.
+function _DgAlgo([string]$Token) {
+  $algos = @{ 'md5' = 'md5'; '5' = 'md5'; 'sha256' = 'sha256'; '256' = 'sha256'; 'sha512' = 'sha512'; '512' = 'sha512' }
+  return $algos[$Token]
+}
+
+# _DgByLength → the algorithm whose hex digest is $Length characters long.
+function _DgByLength([int]$Length) {
+  switch ($Length) { 32 { 'md5' } 64 { 'sha256' } 128 { 'sha512' } }
+}
+
+# _DgExpected → $Text read as an expected hash: trimmed, lowercased and with an
+# optional "md5:" / "sha256:" / "sha512:" prefix taken off (blanks after it
+# too, as in "SHA256: <hex>"), it must be 32, 64 or 128 hex digits. Returns Hex and Prefix (the prefix's algorithm, or ''),
+# or $null when it is not a hash.
+function _DgExpected([string]$Text) {
+  $t = $Text.Trim().ToLowerInvariant()
+  $prefix = ''
+  if ($t -match '^(md5|sha256|sha512):(.*)$') {
+    $prefix = $Matches[1]
+    $t = $Matches[2].Trim()
   }
+  if ($t -notmatch '^[0-9a-f]+$' -or -not (_DgByLength $t.Length)) { return $null }
+  [pscustomobject]@{ Hex = $t; Prefix = $prefix }
+}
+
+# _DgSumsLine → one checksum-file line: GNU "<hash>  <name>" or "<hash> *<name>",
+# or BSD "SHA256 (<name>) = <hash>" (MD5, SHA512 alike). Returns $null for a
+# blank or # comment line; otherwise Algo (from the tag or the hash's length),
+# Hash (lowercase) and Name, with Algo $null when the line is malformed.
+function _DgSumsLine([string]$Line) {
+  $l = $Line.TrimEnd("`r")
+  if ($l.Trim() -eq '' -or $l.StartsWith('#')) { return $null }
+  $malformed = [pscustomobject]@{ Algo = $null; Hash = $null; Name = $null }
+  # GNU starts a line with a backslash when it escaped the name in it.
+  $escaped = $l.StartsWith('\')
+  if ($escaped) { $l = $l.Substring(1) }
+  # The greedy name makes the LAST ") = " end it, so a name may hold one.
+  if ($l -cmatch '^(MD5|SHA256|SHA512) \((.+)\) = ([0-9A-Fa-f]+)$') {
+    $tag = $Matches[1].ToLowerInvariant(); $name = $Matches[2]; $hash = $Matches[3]
+  } elseif ($l -match '^([0-9A-Fa-f]+) [ *](.+)$') {
+    $tag = $null; $hash = $Matches[1]; $name = $Matches[2]
+  } else {
+    return $malformed
+  }
+  $algo = _DgByLength $hash.Length
+  # A BSD tag has to agree with the hash's length.
+  if (-not $algo -or ($tag -and $tag -ne $algo)) { return $malformed }
+  if ($escaped) {
+    # Undo GNU's escaping (\\, \n, \r); NUL stands in for a real backslash
+    # meanwhile, as no file name can hold one.
+    $name = $name.Replace('\\', "`0").Replace('\n', "`n").Replace('\r', "`r").Replace("`0", '\')
+  }
+  [pscustomobject]@{ Algo = $algo; Hash = $hash.ToLowerInvariant(); Name = $name }
+}
+
+# dg → file hashes (md5, sha256, sha512): print them, check a file against an
+# expected hash, compare two files, or verify checksum files. See _DgUsage for
+# the forms; digest is an alias for it.
+function dg {
+  # No hand-written "dg: " prefix on any error here: PowerShell already
+  # attributes an error to the function that RAISED it, so one would reach
+  # stderr as "dg: dg: ..." (same reason extract/archive dropped theirs). The
+  # _Dg helpers raise none for the same reason; they would name themselves.
+  #
+  # -e and -c are declared as aliases, so they bind by exact name. As a mere
+  # prefix, -e would also match the common -ErrorAction / -ErrorVariable,
+  # which an advanced function has too (pwsh 7 settles that for -Equal; the
+  # alias does not depend on it). -c matches no common parameter and has its
+  # alias for symmetry.
+  param(
+    [Alias('e')][switch]$Equal,
+    [Alias('c')][switch]$Check,
+    [Parameter(Position = 0, ValueFromRemainingArguments)]
+    [string[]]$Operand
+  )
+  $ops = @($Operand | Where-Object { $null -ne $_ })
+  if ($ops.Count -and ($ops[0] -eq '-h' -or $ops[0] -eq '--help')) { _DgUsage; return }
+  if ($Equal -and $Check) { Write-Error '-e and -c cannot be combined' -ErrorAction Stop }
+  # PowerShell's binder removes a bare --, so only a quoted '--' gets here; it
+  # ends algo parsing, so `dg '--' 256` hashes a file named 256.
+  $i = 0
+  $algo = $null
+  if ($ops.Count -gt $i -and $ops[$i] -eq '--') {
+    $i++
+  } elseif ($ops.Count -gt $i) {
+    $algo = _DgAlgo $ops[$i]
+    if ($algo) {
+      $i++
+      if ($ops.Count -gt $i -and $ops[$i] -eq '--') { $i++ }
+    }
+  }
+  $rest = @()
+  if ($ops.Count -gt $i) { $rest = @($ops[$i..($ops.Count - 1)]) }
+  $usage = (_DgUsage) -join "`n"
+
+  # The failures below that must reach the process status are terminating
+  # errors: a plain Write-Error inside a function leaves `pwsh -Command '...'`
+  # exiting 0, and automation reads that as success. Per-item errors stay
+  # non-terminating, so one bad item does not hide the rest.
+  if ($Check) {
+    if ($algo) { Write-Error '-c takes no algo (each line names its own)' -ErrorAction Stop }
+    if (-not $rest.Count) { Write-Error $usage -ErrorAction Stop }
+    $ok = 0; $bad = 0; $miss = 0; $unread = 0
+    foreach ($sums in $rest) {
+      $lines = $null
+      if (Test-Path -LiteralPath $sums -PathType Leaf) {
+        try { $lines = @(Get-Content -LiteralPath $sums -Encoding UTF8 -ErrorAction Stop) } catch { $lines = $null }
+      }
+      if ($null -eq $lines) {
+        Write-Error "'$sums' is not a readable file"
+        $unread++
+        continue
+      }
+      $malformed = 0
+      foreach ($line in $lines) {
+        $entry = _DgSumsLine $line
+        if ($null -eq $entry) { continue }
+        if (-not $entry.Algo) { $malformed++; continue }
+        # Names are relative to the current location, as with sha256sum -c.
+        $name = $entry.Name
+        if (-not (Test-Path -LiteralPath $name)) { "${name}: MISSING"; $miss++; continue }
+        $h = $null
+        try {
+          $h = (Get-FileHash -LiteralPath $name -Algorithm $entry.Algo.ToUpper() -ErrorAction Stop).Hash
+        } catch {
+          Write-Error "'$name': $($_.Exception.Message)"
+        }
+        # -eq ignores case, and Get-FileHash answers in uppercase.
+        if ($h -and $h -eq $entry.Hash) { "${name}: OK"; $ok++ } else { "${name}: FAILED"; $bad++ }
+      }
+      if ($malformed) { [Console]::Error.WriteLine("dg: '$sums': $malformed malformed line(s) ignored") }
+    }
+    $total = $ok + $bad + $miss
+    if (-not $total) { Write-Error 'no checksum lines found' -ErrorAction Stop }
+    if ($bad + $miss + $unread) {
+      $msg = "$bad FAILED, $miss MISSING of $total checked"
+      if ($unread) { $msg += ", $unread sums file(s) unreadable" }
+      Write-Error $msg -ErrorAction Stop
+    }
+    return
+  }
+
+  if ($Equal) {
+    if ($rest.Count -ne 2) { Write-Error 'usage: dg -e [algo] <a> <b>' -ErrorAction Stop }
+    if (-not $algo) { $algo = 'sha256' }
+    $hashes = @()
+    foreach ($p in $rest) {
+      if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
+        Write-Error "'$p' is not a file"
+        continue
+      }
+      try {
+        $hashes += (Get-FileHash -LiteralPath $p -Algorithm $algo.ToUpper() -ErrorAction Stop).Hash.ToLowerInvariant()
+      } catch {
+        Write-Error "'$p': $($_.Exception.Message)"
+      }
+    }
+    $a = $rest[0]; $b = $rest[1]
+    if ($hashes.Count -ne 2) { Write-Error "cannot compare '$a' and '$b'" -ErrorAction Stop }
+    if ($hashes[0] -eq $hashes[1]) { "SAME  $a  $b"; return }
+    "DIFFERENT  $a  $b"
+    "  $($hashes[0])  $a"
+    "  $($hashes[1])  $b"
+    Write-Error "'$a' and '$b' differ" -ErrorAction Stop
+  }
+
+  # Two operands where the second is no path but reads as a hash: check the
+  # first against it, with the algorithm the hash's length implies.
+  $expected = $null
+  if ($rest.Count -eq 2) {
+    $expected = _DgExpected $rest[1]
+    if ($expected -and (Test-Path -LiteralPath $rest[1])) { $expected = $null }
+  }
+  if ($expected) {
+    $f = $rest[0]
+    $byLength = _DgByLength $expected.Hex.Length
+    foreach ($named in @($algo, $expected.Prefix)) {
+      if ($named -and $named -ne $byLength) {
+        Write-Error "the expected hash is $($expected.Hex.Length) hex digits ($byLength), not $named" -ErrorAction Stop
+      }
+    }
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Write-Error "'$f' is not a file" -ErrorAction Stop }
+    try {
+      $h = (Get-FileHash -LiteralPath $f -Algorithm $byLength.ToUpper() -ErrorAction Stop).Hash.ToLowerInvariant()
+    } catch {
+      Write-Error "'$f': $($_.Exception.Message)" -ErrorAction Stop
+    }
+    if ($h -eq $expected.Hex) { "OK  $f"; return }
+    "MISMATCH  $f"
+    "  expected $($expected.Hex)"
+    "  actual   $h"
+    Write-Error "'$f' does not match the expected hash" -ErrorAction Stop
+  }
+
+  if (-not $rest.Count) { Write-Error $usage -ErrorAction Stop }
+  if (-not $algo) { $algo = 'sha256' }
   # One file prints the bare hash (scriptable); several print hash and name
   # per line so the lines stay attributable.
   #
   # The per-file errors are non-terminating, so one bad path does not swallow
   # the hashes of the files after it; the final summary IS terminating, which
-  # is what carries the failure into the process status -- a plain Write-Error
-  # inside a function leaves `pwsh -Command 'digest sha256 missing.txt'`
-  # exiting 0, and automation reads that as success. Same shape as extract.
+  # is what carries the failure into the process status. Same shape as
+  # extract.
   $failed = 0
-  foreach ($p in $Path) {
+  foreach ($p in $rest) {
     if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
       Write-Error "'$p' is not a file"
       $failed++
@@ -38,21 +232,24 @@ function digest {
     # that non-terminatingly: without this the loop would print an empty line
     # for it and count it as a success.
     try {
-      $h = (Get-FileHash -LiteralPath $p -Algorithm $Algorithm.ToUpper() -ErrorAction Stop).Hash
+      $h = (Get-FileHash -LiteralPath $p -Algorithm $algo.ToUpper() -ErrorAction Stop).Hash
     } catch {
       Write-Error "'$p': $($_.Exception.Message)"
       $failed++
       continue
     }
-    if ($Path.Count -gt 1) { "$h  $p" } else { $h }
+    if ($rest.Count -gt 1) { "$h  $p" } else { $h }
   }
   # Terminating, so the process status is nonzero. It fires after the loop, so
   # a failure on one file still does not stop the rest. $LASTEXITCODE cannot
   # carry this -- PowerShell does not use it for the process status unless the
   # last command was a native one -- and `exit` would end an interactive
   # session.
-  if ($failed) { Write-Error "$failed of $($Path.Count) files failed" -ErrorAction Stop }
+  if ($failed) { Write-Error "$failed of $($rest.Count) files failed" -ErrorAction Stop }
 }
+
+# digest → dg under its older name; every form works the same.
+Set-Alias digest dg
 
 # mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)
 function mkfile {
