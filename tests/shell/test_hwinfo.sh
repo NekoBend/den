@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # test_hwinfo.sh — Tests for hwinfo.sh / hwinfo.ps1 (toggle-hwinfo).
+# Also scans every shell/pwsh/*.ps1 for the PowerShell 6/7-only syntax its scan
+# lists, which Windows PowerShell 5.1 rejects or reads differently.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
@@ -201,6 +203,134 @@ actual=$(run_pwsh "$HWINFO_PS1_TOGGLE" '
 ' | tr -d '\r')
 assert_contains "pwsh/roundtrip ON message" "ON" "$actual"
 assert_contains "pwsh/roundtrip cpu restored" "CPU=i9-13900K" "$actual"
+
+# =============================================================================
+# Windows PowerShell 5.1 syntax, over every shell/pwsh/*.ps1
+# =============================================================================
+# init.ps1 dot-sources these files on Windows PowerShell 5.1 too, which cannot
+# parse PowerShell 6/7 syntax and then runs none of the file: hwinfo.ps1's
+# `(...)?.Trim()` put toggle-hwinfo at stake. pwsh 7's parser still reads that
+# syntax, so its AST and tokens find it without a 5.1 host. The scan knows the
+# constructs it lists (PowerShell 6.0 to 7.3), nothing newer. 5.1 also reads a
+# file without a BOM in the ANSI code page, so the scan parses it that way too.
+
+PWSH_SYNTAX_SCAN="$WORK/pwsh_syntax_scan.ps1"
+cat > "$PWSH_SYNTAX_SCAN" << 'PS1'
+param([string]$Dir)
+# A wrong directory must fail the scan, not pass it with no findings.
+$ErrorActionPreference = 'Stop'
+[System.Text.Encoding]::RegisterProvider([System.Text.CodePagesEncodingProvider]::Instance)
+$files = @(Get-ChildItem -LiteralPath $Dir -Filter *.ps1 -File)
+if ($files.Count -eq 0) { throw "no .ps1 files in $Dir" }
+foreach ($f in $files) {
+  $tokens = $null; $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+  # A message can span lines (it quotes the token); keep one finding per line.
+  foreach ($e in $errors) { "$($f.Name):$($e.Extent.StartLineNumber): parse error: $($e.Message -replace '\s+', ' ')" }
+  # Common ANSI code pages; in cp1252 the last byte of a UTF-8 arrow is a curly
+  # quote, which PowerShell accepts as a quote.
+  $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+  if (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) {
+    foreach ($cp in 1250, 1251, 1252, 932, 936, 949, 950) {
+      $text = [System.Text.Encoding]::GetEncoding($cp).GetString($bytes)
+      $ansiTokens = $null; $ansiErrors = $null
+      [void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$ansiTokens, [ref]$ansiErrors)
+      foreach ($e in $ansiErrors) { "$($f.Name):$($e.Extent.StartLineNumber): parse error as cp${cp}: $($e.Message -replace '\s+', ' ')" }
+    }
+  }
+  $hits = @($ast.FindAll({
+      param($n)
+      # ternary, ??, ??=, && and || (7.0); ?. and ?[] (7.1)
+      ($n -is [System.Management.Automation.Language.TernaryExpressionAst]) -or
+      ($n -is [System.Management.Automation.Language.PipelineChainAst]) -or
+      ($n -is [System.Management.Automation.Language.BinaryExpressionAst] -and $n.Operator -eq 'QuestionQuestion') -or
+      ($n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Operator -eq 'QuestionQuestionEquals') -or
+      ($n -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.NullConditional) -or
+      ($n -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.NullConditional) -or
+      # a trailing & that backgrounds a pipeline (6.0); clean {} and M[T]() calls (7.3)
+      ($n -is [System.Management.Automation.Language.PipelineAst] -and $n.Background) -or
+      ($n -is [System.Management.Automation.Language.ScriptBlockAst] -and $n.CleanBlock) -or
+      ($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.GenericTypeArguments)
+    }, $true))
+  # 5.1 parses these tokens but reads them differently: a `u{} escape (6.0) stays
+  # literal text; 0b literals and u/y/s/n type suffixes (6.2, 7.0) are not numbers.
+  $hits += @($tokens | Where-Object {
+      ($_.Kind -eq 'Number' -and $_.Text -match '(?i)^[-+]?0b|(u|y|s|n|ul|us|uy)(kb|mb|gb|tb|pb)?$') -or
+      ($_.Kind -in 'StringExpandable', 'HereStringExpandable' -and $_.Text -match '(?<!`)(``)*`u\{')
+    })
+  foreach ($h in $hits) { "$($f.Name):$($h.Extent.StartLineNumber): $(($h.Extent.Text -split "`n")[0])" }
+}
+PS1
+
+# One line per construct the scan knows (1-12), then 5.1-valid look-alikes (13-14),
+# then a UTF-8 arrow in double quotes (15, fine) and in single quotes (16, broken
+# when read as cp1252; last, so the broken string cannot swallow another line).
+PWSH7_FIXTURE="$WORK/pwsh7_fixture"
+mkdir -p "$PWSH7_FIXTURE" "$WORK/pwsh_empty"
+cat > "$PWSH7_FIXTURE/all7.ps1" << 'PS1'
+$a = $true ? 1 : 2
+$b = $null ?? 1
+$b ??= 2
+Get-Item . && Get-Item .
+$c = ${b}?.Length
+$d = ${b}?[0]
+Start-Sleep 1 &
+function f { process { $_ } clean { 'done' } }
+$e = [System.Linq.Enumerable]::Empty[string]()
+$g = "`u{2192}"
+$h = 0b1010
+$i = 5u
+$ok = 0x1b + 2gb + 5l + 1.5d + 1e3 + $b?.Length
+$lit = "``u{0}" + '`u{2192}'
+$arrow = "→ x"
+$arrow = '→ x'
+PS1
+
+echo "[pwsh] the syntax scan flags each construct it lists, and nothing else"
+actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$PWSH7_FIXTURE" | tr -d '\r' |
+    cut -d: -f2 | sort -nu | paste -sd' ' -) || actual="${actual}[scan exited $?]"
+assert_eq "pwsh/syntax scan fixture lines" "1 2 3 4 5 6 7 8 9 10 11 12 16" "$actual"
+
+echo "[pwsh] the syntax scan fails on a directory without .ps1 files"
+rc=0
+pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$WORK/pwsh_empty" >/dev/null 2>&1 || rc=$?
+assert_failure "pwsh/syntax scan refuses an empty directory" "$rc"
+
+echo "[pwsh] no PowerShell 6/7-only syntax in shell/pwsh/*.ps1"
+actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$DOTFILES/shell/pwsh" | tr -d '\r') ||
+    actual="${actual}[scan exited $?]"
+assert_eq "pwsh/5.1-parsable syntax" "" "$actual"
+
+# PSUseCompatibleSyntax is the analyzer's view of part of the same class
+# (PSScriptAnalyzer 1.25 flags lines 1-5 of the fixture only); the shell test
+# image has no PSScriptAnalyzer, so the scan above is what runs there.
+# pssa_compat <dir> prints one line per finding; it fails when <dir> has no
+# .ps1 files or the analyzer errors, instead of printing nothing.
+pssa_compat() {
+    # A hashtable, not a settings file: see the PSScriptAnalyzer step in ci.yml.
+    pwsh -NoProfile -NonInteractive -Command "
+        \$ErrorActionPreference = 'Stop'
+        \$settings = @{
+            IncludeRules = @('PSUseCompatibleSyntax')
+            Rules = @{ PSUseCompatibleSyntax = @{ Enable = \$true; TargetVersions = @('5.1', '7.0') } }
+        }
+        \$files = @(Get-ChildItem -LiteralPath '$1' -Filter *.ps1 -File)
+        if (\$files.Count -eq 0) { throw 'no .ps1 files in $1' }
+        \$files | ForEach-Object { Invoke-ScriptAnalyzer -Path \$_.FullName -Settings \$settings } |
+            ForEach-Object { '{0}:{1}: {2}' -f \$_.ScriptName, \$_.Line, \$_.Message }
+    " | tr -d '\r'
+}
+
+echo "[pwsh] PSUseCompatibleSyntax (5.1, 7.0) over shell/pwsh/*.ps1"
+if pwsh -NoProfile -NonInteractive -Command 'if (Get-Module -ListAvailable PSScriptAnalyzer) { exit 0 }; exit 1' >/dev/null 2>&1; then
+    # The fixture's ${b}?.Length proves the rule is on, so "" below means clean.
+    actual=$(pssa_compat "$PWSH7_FIXTURE") || actual="${actual}[analyzer exited $?]"
+    assert_contains "pwsh/PSUseCompatibleSyntax flags the fixture's ?." "all7.ps1:5:" "$actual"
+    actual=$(pssa_compat "$DOTFILES/shell/pwsh") || actual="${actual}[analyzer exited $?]"
+    assert_eq "pwsh/PSUseCompatibleSyntax 5.1 and 7.0" "" "$actual"
+else
+    echo "  SKIP: pwsh/PSUseCompatibleSyntax (PSScriptAnalyzer not installed)"
+fi
 
 print_summary "test_hwinfo"
 [ "$FAIL" -eq 0 ]
