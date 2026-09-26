@@ -915,6 +915,13 @@ assert_eq "bash/back OLDPWD" "/tmp" "$actual"
 # HOME=$DH, so `back -l` shows ~ forms. The fzf stub prints the input line
 # whose label is $FZF_PICK, the way a user's pick would come back from fzf.
 DH="$WORK/dh"
+# $PATH without the directories that hold a starship, for the cases that load
+# init.ps1 with no starship at all
+nostar_path=$(printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+    [ -x "$d/starship" ] || printf '%s:' "$d"
+done)
+nostar_path=${nostar_path%:}
+
 setup_dirhist() {
     rm -rf "$DH"
     mkdir -p "$DH/start" "$DH/a" "$DH/b" "$DH/c" "$DH/fzfbin" "$DH/nobin"
@@ -2559,6 +2566,105 @@ assert_eq "pwsh/init.ps1 prompt records moves, not a script's Push-/Pop-Location
   *  ~/a
  +1  ~/b
 $DH/b" "$out"
+
+# On PowerShell zoxide learns a directory only from its prompt hook: its init
+# (functions.ps1, before starship) wraps the prompt to call __zoxide_hook, and
+# starship's init replaces the prompt without calling that wrapper, so den's
+# wrapper calls the hook itself. The stub zoxide prints the part of zoxide
+# 0.10's `init powershell --no-cmd` that learns (the hook and the prompt wrapper
+# that calls it, verbatim) and logs each `zoxide add`.
+echo "[pwsh] zoxide learns moves behind starship's prompt"
+mkdir -p "$DH/zobin" "$DH/stexit"
+cat > "$DH/zobin/zoxide" <<'STUB'
+#!/bin/sh
+if [ "$1" = add ]; then printf '%s\n' "$*" >> "$ZO_ADDS"; exit 0; fi
+[ "$1" = init ] || exit 0
+cat <<'INIT'
+function global:__zoxide_pwd {
+    $cwd = Microsoft.PowerShell.Management\Get-Location
+    if ($cwd.Provider.Name -eq "FileSystem") {
+        $cwd.ProviderPath
+    }
+}
+$global:__zoxide_oldpwd = __zoxide_pwd
+function global:__zoxide_hook {
+    $result = __zoxide_pwd
+    if ($result -ne $global:__zoxide_oldpwd) {
+        if ($null -ne $result) {
+            zoxide add "--" $result
+        }
+        $global:__zoxide_oldpwd = $result
+    }
+}
+$global:__zoxide_hooked = (Microsoft.PowerShell.Utility\Get-Variable __zoxide_hooked -ErrorAction Ignore -ValueOnly)
+if ($global:__zoxide_hooked -ne 1) {
+    $global:__zoxide_hooked = 1
+    $global:__zoxide_prompt_old = $function:prompt
+
+    function global:prompt {
+        if ($null -ne $__zoxide_prompt_old) {
+            & $__zoxide_prompt_old
+        }
+        $null = __zoxide_hook
+    }
+}
+INIT
+STUB
+chmod +x "$DH/zobin/zoxide"
+# A starship whose prompt shows the $LASTEXITCODE it was handed, too
+cat > "$DH/stexit/starship" <<'STUB'
+#!/bin/sh
+printf '%s\n' 'function global:prompt { "stub:$($global:?):$($global:LASTEXITCODE)>" }'
+STUB
+chmod +x "$DH/stexit/starship"
+# dh_pwsh_zo <PATH> <commands> - dh_pwsh_init with the stub zoxide first on
+# <PATH> and a fresh init cache; each `zoxide add` follows the output, with $DH
+# shown as ~.
+dh_pwsh_zo() {
+    local pwsh_bin
+    pwsh_bin=$(command -v pwsh)
+    rm -rf "$DH/zodata" "$DH/zo.log"
+    mkdir -p "$DH/zodata"
+    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/zodata" ZO_ADDS="$DH/zo.log" PATH="$DH/zobin:$1" \
+        "$pwsh_bin" -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; $2" 2>/dev/null | tr -d '\r')
+    if [ -f "$DH/zo.log" ]; then sed "s|$DH|~|" "$DH/zo.log"; fi
+}
+# A move is added once, however many prompts follow it, and still once after a
+# reload (init.ps1 sourced again: starship's init replaces den's wrapper, which
+# then wraps the new prompt).
+out=$(dh_pwsh_zo "$DH/stbin:$PATH" "\"hooked=\$global:__zoxide_hooked\"; Set-Location '$DH/a'; \$null = prompt; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; . '$DOTFILES/shell/pwsh/init.ps1'; \$null = prompt; Set-Location '$DH/c'; \$null = prompt; \$null = prompt")
+assert_eq "pwsh/zoxide adds each move once behind starship's prompt, and after a reload" "hooked=1
+add -- ~/a
+add -- ~/b
+add -- ~/c" "$out"
+out=$(dh_pwsh_zo "$DH/stexit:$PATH" "Set-Location '$DH/a'; sh -c 'exit 3'; prompt; \"after=\$LASTEXITCODE\"")
+assert_eq "pwsh/zoxide's add keeps the \$? and \$LASTEXITCODE starship sees" "stub:False:3>
+after=3
+add -- ~/a" "$out"
+# Without starship zoxide's own wrapper survives inside den's: its hook call
+# after den's adds nothing, and a reload leaves one den wrapper (two would call
+# each other without end).
+out=$(dh_pwsh_zo "$nostar_path" "\"zoxide's wrapper kept: \$(\"\$global:_DenDirPromptOld\" -match '__zoxide_hook')\"; Set-Location '$DH/a'; \$null = prompt; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; . '$DOTFILES/shell/pwsh/init.ps1'; _DenDirHookPrompt; Set-Location '$DH/c'; (prompt).Trim(); back -l")
+assert_eq "pwsh/zoxide adds each move once without starship, and one wrapper after a reload" "zoxide's wrapper kept: True
+PS $DH/c>
+  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/c
+add -- ~/a
+add -- ~/b
+add -- ~/c" "$out"
+# The real zoxide, where installed, against the stub starship
+if command -v zoxide >/dev/null 2>&1; then
+    rm -rf "$DH/zodata" "$DH/zoreal"
+    mkdir -p "$DH/zodata" "$DH/zoreal"
+    out=$(cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/zodata" _ZO_DATA_DIR="$DH/zoreal" PATH="$DH/stbin:$PATH" \
+        pwsh -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; zoxide query -l | Sort-Object" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/real zoxide learns moves behind starship's prompt" "$DH/a
+$DH/b" "$out"
+else
+    echo "  SKIP: pwsh/real zoxide behind starship's prompt (zoxide not installed)"
+fi
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention
