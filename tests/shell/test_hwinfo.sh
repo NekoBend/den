@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # test_hwinfo.sh — Tests for hwinfo.sh / hwinfo.ps1 (toggle-hwinfo).
+# Also checks every shell/pwsh/*.ps1 for syntax Windows PowerShell 5.1 cannot parse.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
@@ -201,6 +202,58 @@ actual=$(run_pwsh "$HWINFO_PS1_TOGGLE" '
 ' | tr -d '\r')
 assert_contains "pwsh/roundtrip ON message" "ON" "$actual"
 assert_contains "pwsh/roundtrip cpu restored" "CPU=i9-13900K" "$actual"
+
+# =============================================================================
+# Windows PowerShell 5.1 syntax, over every shell/pwsh/*.ps1
+# =============================================================================
+# init.ps1 dot-sources these files on Windows PowerShell 5.1 too, which cannot
+# parse PowerShell 7 operators and then runs none of the file: hwinfo.ps1's
+# `(...)?.Trim()` put toggle-hwinfo at stake. pwsh 7's parser still reads those
+# operators, so its AST finds them without a 5.1 host.
+
+PWSH_SYNTAX_SCAN="$WORK/pwsh_syntax_scan.ps1"
+cat > "$PWSH_SYNTAX_SCAN" << 'PS1'
+param([string]$Dir)
+foreach ($f in Get-ChildItem -LiteralPath $Dir -Filter *.ps1 -File) {
+  $tokens = $null; $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+  foreach ($e in $errors) { "$($f.Name):$($e.Extent.StartLineNumber): parse error: $($e.Message)" }
+  # ?. and ?[] (7.1); ternary, ??, ??=, && and || (7.0)
+  $hits = $ast.FindAll({
+      param($n)
+      ($n -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.NullConditional) -or
+      ($n -is [System.Management.Automation.Language.IndexExpressionAst] -and $n.NullConditional) -or
+      ($n -is [System.Management.Automation.Language.TernaryExpressionAst]) -or
+      ($n -is [System.Management.Automation.Language.PipelineChainAst]) -or
+      ($n -is [System.Management.Automation.Language.BinaryExpressionAst] -and $n.Operator -eq 'QuestionQuestion') -or
+      ($n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Operator -eq 'QuestionQuestionEquals')
+    }, $true)
+  foreach ($h in $hits) { "$($f.Name):$($h.Extent.StartLineNumber): $(($h.Extent.Text -split "`n")[0])" }
+}
+PS1
+
+echo "[pwsh] no PowerShell 7-only syntax in shell/pwsh/*.ps1"
+actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$DOTFILES/shell/pwsh" | tr -d '\r')
+assert_eq "pwsh/5.1-parsable syntax" "" "$actual"
+
+# PSUseCompatibleSyntax is the analyzer's view of the same class; the shell test
+# image has no PSScriptAnalyzer, so the AST scan above is what runs there.
+echo "[pwsh] PSUseCompatibleSyntax (5.1, 7.0) over shell/pwsh/*.ps1"
+if pwsh -NoProfile -NonInteractive -Command 'if (Get-Module -ListAvailable PSScriptAnalyzer) { exit 0 }; exit 1' >/dev/null 2>&1; then
+    # A hashtable, not a settings file: see the PSScriptAnalyzer step in ci.yml.
+    actual=$(pwsh -NoProfile -NonInteractive -Command "
+        \$settings = @{
+            IncludeRules = @('PSUseCompatibleSyntax')
+            Rules = @{ PSUseCompatibleSyntax = @{ Enable = \$true; TargetVersions = @('5.1', '7.0') } }
+        }
+        Get-ChildItem -LiteralPath '$DOTFILES/shell/pwsh' -Filter *.ps1 -File |
+            ForEach-Object { Invoke-ScriptAnalyzer -Path \$_.FullName -Settings \$settings } |
+            ForEach-Object { '{0}:{1}: {2}' -f \$_.ScriptName, \$_.Line, \$_.Message }
+    " | tr -d '\r')
+    assert_eq "pwsh/PSUseCompatibleSyntax 5.1 and 7.0" "" "$actual"
+else
+    echo "  SKIP: pwsh/PSUseCompatibleSyntax (PSScriptAnalyzer not installed)"
+fi
 
 print_summary "test_hwinfo"
 [ "$FAIL" -eq 0 ]
