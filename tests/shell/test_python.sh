@@ -54,13 +54,21 @@ mk_venv_ps() {
     printf 'version_info = %s\n' "$2" > "$1/.venv/pyvenv.cfg"
 }
 
-# toggle-uv ON re-reads python.ps1 from the $PROFILE directory, where den deploys
-# it; PS_SET_PROFILE points $PROFILE at a copy of the file under test. The mock
-# system pip keeps a missing redirect from reaching a real `pip install`.
+# toggle-uv ON re-reads python.ps1 from its own directory, which for the combined
+# file is $WORK: put a copy of the file under test there. PS_SET_PROFILE points
+# $PROFILE at a directory whose python.ps1 is a decoy (a pip that says so), so ON
+# cannot pass by reading the copy next to $PROFILE. The mock system pip keeps a
+# missing redirect from reaching a real `pip install`.
+cp "$PYTHON_PS1" "$WORK/python.ps1"
 PS_PROFILE_DIR="$WORK/ps_profile"
 mkdir -p "$PS_PROFILE_DIR"
-cp "$PYTHON_PS1" "$PS_PROFILE_DIR/python.ps1"
+printf '%s\n' "function pip { 'decoy-pip' }" > "$PS_PROFILE_DIR/python.ps1"
 PS_SET_PROFILE="\$PROFILE = '$PS_PROFILE_DIR/Microsoft.PowerShell_profile.ps1'"
+# The same combined file with no python.ps1 beside it, and a $PROFILE directory
+# with none either, for an ON that loads nothing.
+mkdir -p "$WORK/no-python-ps1" "$WORK/empty-profile"
+cp "$PYTHON_PS1_COMBINED" "$WORK/no-python-ps1/python_combined.ps1"
+PS_SET_EMPTY_PROFILE="\$PROFILE = '$WORK/empty-profile/Microsoft.PowerShell_profile.ps1'"
 MOCK_PIP_BIN="$WORK/mock-pip-bin"
 mkdir -p "$MOCK_PIP_BIN"
 printf '#!/bin/sh\necho "system-pip $*"\n' > "$MOCK_PIP_BIN/pip"
@@ -289,6 +297,27 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     \"ENV=[\$env:_DEN_UV_OVERRIDE] OFF1=[\$(\$left1 -join ',')] OFF2=[\$(\$left2 -join ',')]\"
 " | tr -d '\r')
 assert_eq "pwsh/toggle-uv OFF leaves no override" "ENV=[0] OFF1=[] OFF2=[]" "$actual"
+
+echo "[pwsh] toggle-uv ON reports ON with the arrow"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    $PS_SET_PROFILE
+    toggle-uv *>\$null
+    toggle-uv 6>&1
+" | tr -d '\r' | tr -d '\n')
+assert_eq "pwsh/toggle-uv ON message" "uv override: ON (python/pip → uv)" "$actual"
+
+# init.ps1 loads python.ps1 from its own directory, which is not $PROFILE's when
+# it runs from a checkout; nothing loaded must not read as ON.
+echo "[pwsh] toggle-uv ON warns and stays OFF when python.ps1 is not beside it"
+actual=$(run_pwsh "$WORK/no-python-ps1/python_combined.ps1" "
+    $PS_SET_EMPTY_PROFILE
+    toggle-uv *>\$null
+    toggle-uv 6>\$null 3>&1
+    \$pip = if (Get-Command pip -CommandType Function -ErrorAction SilentlyContinue) { 'function' } else { 'none' }
+    \"ENV=[\$env:_DEN_UV_OVERRIDE] PIP=[\$pip]\"
+" | tr -d '\r')
+assert_contains "pwsh/toggle-uv failed ON warns" "could not load the uv overrides" "$actual"
+assert_contains "pwsh/toggle-uv failed ON stays OFF" "ENV=[0] PIP=[none]" "$actual"
 
 echo "[pwsh] va activates a Linux/macOS venv (bin/Activate.ps1)"
 mkdir -p "$WORK/venvtest/.venv/bin"
