@@ -121,7 +121,8 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF |
 | `cdi` | zoxide interactive pick |
 | `zd` / `zdi` | always zoxide (ignore the toggle) |
-| `back [N]` | go back to the Nth previous directory (default 1) |
+| `back [N]` / `fwd [N]` | go N entries back / forward in this session's directory history, browser-style (default 1) |
+| `back -l` / `back -i` | list the history / pick an entry with fzf (no `-i` on cmd); see COMMANDS.md |
 | `up [N]`, `.1`..`.9` | go up N directories (`..` = up 1) |
 | `mkcd DIR` | `mkdir -p` then `cd` |
 | `cdf` | fuzzy-find a subdirectory and cd into it (needs `fd` + `fzf`) |

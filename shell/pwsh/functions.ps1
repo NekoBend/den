@@ -609,19 +609,173 @@ function sagain {
   again -Sudo -N $N
 }
 
-# back → go back to the Nth previous directory (default N=1)
+# ===== Directory History (back / fwd) =====
+# Browser-style history for this session, never written to disk.
+# $global:_DenDirBack / _DenDirFwd hold locations nearest first, and _DenDirLast
+# is the location the history saw last. Any change of location (den's cd,
+# Set-Location, Push-/Pop-Location, mkcd, up, cdf, y) pushes the location it
+# left onto the back list and clears the forward list, as a browser does.
+# PowerShell 6.1+ reports every change through LocationChangedAction; Windows
+# PowerShell 5.1 has no such event, so there init.ps1 records at each prompt
+# instead (_DenDirHookPrompt). back/fwd walk the lists themselves and set
+# _DenDirNav so the hook does not take their move for a new one. The state is
+# $global:, not $script: like _helpers.ps1's caches: the hook also fires inside
+# scripts, and there $script: names the running script's scope.
+if ($null -eq $global:_DenDirBack) {
+  $global:_DenDirBack = [System.Collections.Generic.List[string]]::new()
+  $global:_DenDirFwd = [System.Collections.Generic.List[string]]::new()
+  $global:_DenDirLast = $PWD.Path
+  $global:_DenDirNav = $false
+}
+
+# _DenDirSame <a> <b> - the same location? Windows paths compare case-insensitively.
+function _DenDirSame([string]$A, [string]$B) {
+  $cmp = if (_OnWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+  [string]::Equals($A, $B, $cmp)
+}
+
+# _DenDirRecord - note a change of location (the hook).
+function _DenDirRecord {
+  $here = $PWD.Path
+  if (_DenDirSame $here $global:_DenDirLast) { return }
+  if ($global:_DenDirNav) {
+    $global:_DenDirNav = $false
+  } elseif ($global:_DenDirLast) {
+    # A consecutive duplicate is kept once, and only the nearest 50 entries are
+    # kept at all.
+    $back = $global:_DenDirBack
+    if ($back.Count -eq 0 -or -not (_DenDirSame $back[0] $global:_DenDirLast)) {
+      $back.Insert(0, $global:_DenDirLast)
+      if ($back.Count -gt 50) { $back.RemoveRange(50, $back.Count - 50) }
+    }
+    $global:_DenDirFwd.Clear()
+  }
+  $global:_DenDirLast = $here
+}
+
+# _DenDirGo <back|fwd> <N> - move N entries along that list (N already
+# validated). Returns an error message, or nothing on success, so the caller
+# writes the error under its own name. The entries passed over and the location
+# being left go to the other list, nearest first, so `back 3` then `fwd 3`
+# returns to the start.
+function _DenDirGo([string]$List, [string]$N) {
+  _DenDirRecord  # a move 5.1 has not seen yet (no prompt since) comes first
+  if ($List -eq 'back') {
+    $from = $global:_DenDirBack; $to = $global:_DenDirFwd; $word = 'back'
+  } else {
+    $from = $global:_DenDirFwd; $to = $global:_DenDirBack; $word = 'forward'
+  }
+  if ($N.Length -gt 9 -or [int]$N -gt $from.Count) {
+    $noun = if ($from.Count -eq 1) { 'entry' } else { 'entries' }
+    return "history has $($from.Count) $word $noun, cannot go $word $N"
+  }
+  $count = [int]$N
+  $target = $from[$count - 1]
+  if (-not (Test-Path -LiteralPath $target -PathType Container)) {
+    $from.RemoveAt($count - 1)
+    return "$target no longer exists, dropped from history"
+  }
+  $here = $PWD.Path
+  $global:_DenDirNav = $true
+  try {
+    Set-Location -LiteralPath $target -ErrorAction Stop
+  } catch {
+    return $_.Exception.Message
+  } finally {
+    $global:_DenDirNav = $false
+  }
+  $global:_DenDirLast = $PWD.Path
+  $to.Insert(0, $here)
+  for ($i = 0; $i -lt $count - 1; $i++) { $to.Insert(0, $from[$i]) }
+  $from.RemoveRange(0, $count)
+}
+
+# _DenDirTilde <path> - $HOME shown as ~, for back -l
+function _DenDirTilde([string]$Path) {
+  $h = "$HOME".TrimEnd('\', '/')
+  if ($h) {
+    if (_DenDirSame $Path $h) { return '~' }
+    if ($Path.Length -gt $h.Length -and ($Path[$h.Length] -eq '\' -or $Path[$h.Length] -eq '/') -and
+        (_DenDirSame $Path.Substring(0, $h.Length) $h)) {
+      return '~' + $Path.Substring($h.Length)
+    }
+  }
+  $Path
+}
+
+# _DenDirList - back -l: back entries farthest first, then the current location
+# as *, then forward entries as +1, +2 ...
+function _DenDirList {
+  for ($i = $global:_DenDirBack.Count; $i -ge 1; $i--) {
+    '{0,3}  {1}' -f $i, (_DenDirTilde $global:_DenDirBack[$i - 1])
+  }
+  '{0,3}  {1}' -f '*', (_DenDirTilde $PWD.Path)
+  for ($i = 1; $i -le $global:_DenDirFwd.Count; $i++) {
+    '{0,3}  {1}' -f "+$i", (_DenDirTilde $global:_DenDirFwd[$i - 1])
+  }
+}
+
+# back → go back N entries in the directory history (default 1); -List (-l)
+# shows the history, -Interactive (-i) picks an entry with fzf. Errors are
+# terminating (-ErrorAction Stop) so `pwsh -Command 'back 5'` exits 1, as
+# digest's summary error does.
 function back {
-  param([int]$N = 1)
-  if ($N -lt 1) { Write-Error 'usage: [N]  (N=positive integer, default 1)'; return }
-  if ($N -ne 1) {
-    Write-Error 'only N=1 is supported (uses Set-Location -)'
-    Write-Host 'hint: use Push-Location / Pop-Location for deeper history' -ForegroundColor Yellow
+  param([string]$N = '1', [switch]$List, [switch]$Interactive)
+  if ($List) { _DenDirRecord; _DenDirList; return }
+  if ($Interactive) {
+    if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
+      Write-Error 'fzf is not installed. Install: winget install junegunn.fzf' -ErrorAction Stop
+    }
+    _DenDirRecord
+    # --tac shows the list in `back -l` order; the label in front of the pick
+    # says which move reaches it.
+    $pick = _DenDirList | & fzf --tac --no-sort --prompt 'back> '
+    if (-not $pick) { return }
+    $label = ("$pick".Trim() -split '\s+')[0]
+    if ($label -eq '*') { return }
+    if ($label.StartsWith('+')) { fwd $label.Substring(1) } else { back $label }
     return
   }
-  # pwsh keeps a location history that EVERY Set-Location updates (den's cd, up,
-  # mkcd, cdf, and zoxide's __zoxide_z), so `Set-Location -` is the reliable `cd -`
-  # parity -- the old manual _OLDPWD was only recorded by cd's wrappers-OFF branch.
-  # With no history yet, `Set-Location -` is a silent no-op; the catch only fires on
-  # a genuine failure (e.g. the previous directory was removed).
-  try { Set-Location - -ErrorAction Stop } catch { Write-Error 'no previous directory' }
+  if ($N -notmatch '^[1-9][0-9]*\z') { Write-Error 'usage: [N | -l | -i]  (N=positive integer, default 1)' -ErrorAction Stop }
+  $err = _DenDirGo 'back' $N
+  if ($err) { Write-Error $err -ErrorAction Stop }
+}
+
+# fwd → go forward N entries in the directory history (default 1), undoing back
+function fwd {
+  param([string]$N = '1')
+  if ($N -notmatch '^[1-9][0-9]*\z') { Write-Error 'usage: [N]  (N=positive integer, default 1)' -ErrorAction Stop }
+  $err = _DenDirGo 'fwd' $N
+  if ($err) { Write-Error $err -ErrorAction Stop }
+}
+
+# _DenDirHookPrompt - the Windows PowerShell 5.1 hook: wrap the prompt so each
+# prompt records a change of location made since the last one. init.ps1 calls
+# it after starship, whose init replaces the prompt function; called again (on
+# reload) it wraps the new prompt, never its own wrapper.
+function _DenDirHookPrompt {
+  if ($null -ne $global:_DenDirPrompt -and $function:prompt -eq $global:_DenDirPrompt) { return }
+  $global:_DenDirPromptOld = $function:prompt
+  function global:prompt {
+    # Record first, then hand the wrapped prompt the $? it would have seen, so
+    # it still shows the last command's status (starship reads $?).
+    $ok = $global:?
+    _DenDirRecord
+    if (-not $ok) { Write-Error '' -ErrorAction Ignore }
+    if ($global:_DenDirPromptOld) { & $global:_DenDirPromptOld }
+  }
+  $global:_DenDirPrompt = $function:prompt
+}
+
+# Hook the recorder in. LocationChangedAction exists from PowerShell 6.1; any
+# handler already set there keeps running after ours.
+if (-not $global:_DenDirHooked -and
+    $ExecutionContext.InvokeCommand.PSObject.Properties['LocationChangedAction']) {
+  $global:_DenDirHooked = $true
+  $global:_DenDirPrevAction = $ExecutionContext.InvokeCommand.LocationChangedAction
+  $ExecutionContext.InvokeCommand.LocationChangedAction = {
+    param($s, $e)
+    _DenDirRecord
+    if ($global:_DenDirPrevAction) { $global:_DenDirPrevAction.Invoke($s, $e) }
+  }
 }
