@@ -506,6 +506,21 @@ jobs:
           exit /b 0
           :failed
           echo ::error::dg.cmd: %FAILS% of %N% checks failed
+          rem Diagnostics: certutil's raw output as text and as hex, then one
+          rem hash through a copy of dg.cmd without "@echo off", so the log
+          rem shows every command it ran with its values expanded.
+          echo ::group::certutil -hashfile a.txt SHA256, raw
+          certutil -hashfile a.txt SHA256 >"%RUNNER_TEMP%\dg-raw.txt" 2>&1
+          echo certutil exit %errorlevel%
+          type "%RUNNER_TEMP%\dg-raw.txt"
+          certutil -f -encodehex "%RUNNER_TEMP%\dg-raw.txt" "%RUNNER_TEMP%\dg-raw.hex" 4 >nul
+          type "%RUNNER_TEMP%\dg-raw.hex"
+          echo ::endgroup::
+          echo ::group::dg.cmd a.txt, traced
+          findstr /v /b /i /c:"@echo off" "%DG%" >"%RUNNER_TEMP%\dg-trace.cmd"
+          call "%RUNNER_TEMP%\dg-trace.cmd" a.txt
+          echo dg-trace exit %errorlevel%
+          echo ::endgroup::
           exit /b 1
 
           rem :expect RC WANT LABEL - the run exited RC; it passes when RC is
