@@ -667,3 +667,24 @@ jobs:
           set /a "FAILS+=1"
           echo ::error::dg.cmd: fixture %~1 is %~z1 bytes, want %~2
           exit /b 0
+      - name: reload relaunch arguments under Windows PowerShell 5.1
+        # reload (shell/pwsh/init.ps1) starts PowerShell again with this session's
+        # launch arguments, which Windows PowerShell 5.1 passes the legacy way,
+        # with a quoting bug the Linux tests can only model. relaunch_argv.ps1
+        # dot-sources shell/pwsh/_helpers.ps1 here (so it must load on 5.1),
+        # starts powershell.exe with @(_DenRelaunchArgs ... -Legacy) for VS
+        # Code's payload and arguments with spaces, empty ones, trailing
+        # backslashes, quotes and -WorkingDirectory, and compares the arguments
+        # the new process reports. It prints argv[0] of both processes, marks
+        # each difference, and exits 1 when one is found.
+        shell: powershell
+        run: |
+          ./tests/shell/relaunch_argv.ps1
+          exit $LASTEXITCODE
+      - name: reload relaunch arguments under pwsh 7
+        # The same under pwsh: its default passing ('Windows'), then Standard
+        # and Legacy.
+        shell: pwsh
+        run: |
+          ./tests/shell/relaunch_argv.ps1
+          exit $LASTEXITCODE

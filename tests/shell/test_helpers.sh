@@ -847,6 +847,33 @@ assert_eq "pwsh/_DenRelaunchArgs 5.1 empty arguments" "empty same" "$(ps51_case 
 assert_eq "pwsh/_DenRelaunchArgs 5.1 splits a quoted path with a space" \
     'odd-quotes differs: ["C:\a][b"]' "$(ps51_case odd-quotes)"
 
+# relaunch_argv.ps1 is the check the Windows CI job runs under Windows PowerShell
+# 5.1 and pwsh 7: it starts pwsh again with @(_DenRelaunchArgs ...) for a set of
+# launch arguments and compares the arguments the new process reports. Here it
+# runs under this pwsh, then against a _DenRelaunchArgs that ignores -Legacy,
+# which Legacy passing must catch.
+relaunch_argv() { { pwsh -NoProfile -NonInteractive -File "$SCRIPT_DIR/relaunch_argv.ps1" "$@" 2>&1; echo "RC=$?"; } | tr -d '\r'; }
+
+echo "[pwsh] relaunch_argv.ps1 passes with den's _helpers.ps1"
+actual=$(relaunch_argv -Helpers "$HELPERS_PS1")
+assert_match "pwsh/relaunch_argv.ps1 all checks pass" 'relaunch_argv: all [0-9]+ checks passed' "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 exits 0" "RC=0" "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 prints this host's argv[0]" "relaunch_argv: this host: argv[0] = " "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 tries Legacy passing" "ok   [Legacy passing, pre-quoted (-Legacy)] vscode payload" "$actual"
+assert_not_contains "pwsh/relaunch_argv.ps1 no errors" "::error::" "$actual"
+
+echo "[pwsh] relaunch_argv.ps1 fails loudly when the arguments do not arrive whole"
+printf '%s\n' ". '$HELPERS_PS1'" \
+    'function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) { $CommandLineArgs | Select-Object -Skip 1 }' \
+    >"$WORK/relaunch_noquote.ps1"
+actual=$(relaunch_argv -Helpers "$WORK/relaunch_noquote.ps1")
+assert_contains "pwsh/relaunch_argv.ps1 catches unquoted Legacy passing" \
+    "::error::relaunch_argv: [Legacy passing, pre-quoted (-Legacy)] vscode payload: the new process got other arguments" "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 shows the difference" "! [4] want <-noexit>" "$actual"
+assert_not_contains "pwsh/relaunch_argv.ps1 Standard passing still passes" "::error::relaunch_argv: [Standard passing, not pre-quoted] vscode payload" "$actual"
+assert_match "pwsh/relaunch_argv.ps1 counts the failures" 'relaunch_argv: [1-9][0-9]* of [0-9]+ checks failed' "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 exits 1" "RC=1" "$actual"
+
 echo "[pwsh] _DenRelaunchArgs on a real launch drops only the program"
 actual=$(pwsh -NoProfile -NonInteractive -Command ". '$HELPERS_PS1'; \$r = @(_DenRelaunchArgs -CommandLineArgs ([Environment]::GetCommandLineArgs())); '{0}|{1}|{2}' -f \$r.Count, \$r[0], \$r[1]" | tr -d '\r')
 assert_eq "pwsh/_DenRelaunchArgs real launch" "4|-NoProfile|-NonInteractive" "$actual"
