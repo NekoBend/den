@@ -91,7 +91,7 @@ New-WrapperSuffix 'lsw'   'lsd' ''
 # PowerShell-alias behavior (the builtin cmdlets). With microsoft/coreutils installed
 # these gain real Unix flags (`rm -rf`, `cp -r`, ...); without it they fall back to
 # the same builtin cmdlet, so this never changes the no-coreutils Windows baseline.
-if ($IsWindows) {
+if ($PSVersionTable.PSEdition -eq 'Core' -and $IsWindows) {
     # cp/mv/rm/rmdir are built-in PowerShell ALIASES on Windows (-> Copy-Item /
     # Move-Item / Remove-Item), and an alias outranks a function in command
     # resolution, so the alias must be removed first or the wrapper below never

@@ -420,6 +420,131 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/pipeline forwarding" "hello_pipe" "$actual"
 
+# --- The helpers and the wrappers they build, called from a user script ---
+# A function's $script: is the scope of the script that is RUNNING it, not of the
+# file that defined it, so the command cache _helpers.ps1 kept there was $null
+# inside a user's .ps1: every call printed "You cannot call a method on a
+# null-valued expression" and the wrapper fell through to its fallback. Called
+# here from a script run with &, and from a function inside that script.
+echo "[pwsh] helpers and wrappers work from a user script"
+echo "native test" > "$WORK/pwsh_script_wrap.txt"
+cat > "$WORK/pwsh_caller.ps1" <<'EOF'
+param([string]$File)
+"any:$(_ResolveCmd 'sh')"
+"app:$([bool](_ResolveCmd 'sh' 'App'))"
+"missing:[$(_ResolveCmd 'nonexistent_xyz' 'App')]"
+mycat $File
+myprintf 'modern\n'
+printfw 'suffix\n'
+function Invoke-Inner([string]$F) { mycat $F }
+Invoke-Inner $File
+EOF
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-Wrapper 'mycat' 'nonexistent_modern' '' 'cat' '' ''
+    New-Wrapper 'myprintf' 'printf' '' '' '' ''
+    New-WrapperSuffix 'printfw' 'printf' ''
+    & '$WORK/pwsh_caller.ps1' '$WORK/pwsh_script_wrap.txt'
+" 2>"$WORK/pwsh_caller.err" | tr -d '\r')
+assert_eq "pwsh/helpers from a script" "any:sh
+app:True
+missing:[]
+native test
+modern
+suffix
+native test" "$actual"
+assert_eq "pwsh/helpers from a script: no errors" "" "$(tr -d '\r' < "$WORK/pwsh_caller.err")"
+
+# A user's script that runs Set-StrictMode sets it inside the den functions it
+# calls, and two reads in the helpers were errors there: .Source on Get-Command's
+# empty result (_ResolveCmd 'App' for a command that is not installed, as native
+# cat and grep are not on Windows), and $IsWindows, which Windows PowerShell 5.1
+# does not have. The second run plays 5.1: a copy of _helpers.ps1 that reads its
+# edition as 'Desktop', in a session without $IsWindows.
+echo "[pwsh] helpers and wrappers work from a user script under Set-StrictMode"
+cat > "$WORK/pwsh_strict_caller.ps1" <<'EOF'
+param([string]$File)
+Set-StrictMode -Version Latest
+"app:[$(_ResolveCmd 'nonexistent_xyz' 'App')]"
+"windows:$(_OnWindows)"
+"coreutils:[$(_CoreutilsBin)]"
+mycat $File
+mynone
+EOF
+strict_setup="
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-Wrapper 'mycat' 'nonexistent_modern' '' 'cat' '' ''
+    New-Wrapper 'mynone' 'nonexistent_modern' '' 'nonexistent_native' '' '\"fallback\"'
+    & '$WORK/pwsh_strict_caller.ps1' '$WORK/pwsh_script_wrap.txt'
+"
+actual=$(run_pwsh "$HELPERS_PS1" "$strict_setup" 2>"$WORK/pwsh_strict.err" | tr -d '\r')
+assert_eq "pwsh/helpers under strict mode" "app:[]
+windows:False
+coreutils:[]
+native test
+fallback" "$actual"
+assert_eq "pwsh/helpers under strict mode: no errors" "" "$(strip_ansi < "$WORK/pwsh_strict.err" | tr -d '\r')"
+sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$HELPERS_PS1" > "$WORK/_helpers_desktop.ps1"
+actual=$(run_pwsh "$WORK/_helpers_desktop.ps1" "
+    Remove-Variable -Name IsWindows -Scope Global -Force
+    $strict_setup
+" 2>"$WORK/pwsh_strict51.err" | tr -d '\r')
+assert_eq "pwsh/helpers under strict mode, as 5.1" "app:[]
+windows:True
+coreutils:[]
+native test
+fallback" "$actual"
+assert_eq "pwsh/helpers under strict mode, as 5.1: no errors" "" "$(strip_ansi < "$WORK/pwsh_strict51.err" | tr -d '\r')"
+
+# _CoreutilsBin's cache is global too, but only Windows pwsh reaches it; setting
+# $IsWindows (read-only, so -Force) opens that tier here, with a stub coreutils.
+# The path it resolves must stay in the session, not in the calling script.
+echo "[pwsh] the coreutils tier works from a user script"
+mkdir -p "$WORK/pwsh_cu"
+printf '#!/bin/sh\necho "CU $*"\n' > "$WORK/pwsh_cu/coreutils"
+chmod +x "$WORK/pwsh_cu/coreutils"
+cat > "$WORK/pwsh_cu_caller.ps1" <<'EOF'
+mycat a.txt
+function Invoke-Inner { mycat b.txt }
+Invoke-Inner
+EOF
+actual=$(run_pwsh "$HELPERS_PS1" "
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    \$env:_DEN_COREUTILS = '$WORK/pwsh_cu/coreutils'
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-Wrapper 'mycat' 'nonexistent_modern' '' 'cat' '' ''
+    & '$WORK/pwsh_cu_caller.ps1'
+    \"cached:\$global:_DenCoreutils\"
+" 2>"$WORK/pwsh_cu.err" | tr -d '\r')
+assert_eq "pwsh/coreutils tier from a script" "CU cat a.txt
+CU cat b.txt
+cached:$WORK/pwsh_cu/coreutils" "$actual"
+assert_eq "pwsh/coreutils tier from a script: no errors" "" "$(strip_ansi < "$WORK/pwsh_cu.err" | tr -d '\r')"
+
+# The whole class: any function that reads $script: state breaks the same way,
+# so den's pwsh files keep none (comments aside), in any of its spellings: the
+# prefix, the -Scope Script of the *-Variable cmdlets, and the variable: drive.
+script_state() {
+    grep -HinE "\\\$\{?script:|-Scope[[:space:]:]+['\"]?script|variable:script:" "$@" |
+        grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' || true
+}
+cat > "$WORK/pwsh_script_state.ps1" <<'EOF'
+$script:a = 1
+${script:b} = 2
+Set-Variable c 3 -Scope Script
+Get-Variable -Scope:'script' c
+Get-Item variable:script:c
+# $script:a in a comment
+$global:d = 4
+Set-Variable e 5 -Scope Global
+EOF
+echo "[pwsh] the \$script: state check flags each spelling, and nothing else"
+actual=$(script_state "$WORK/pwsh_script_state.ps1" | cut -d: -f2 | paste -sd' ' -)
+assert_eq "pwsh/\$script: state check fixture lines" "1 2 3 4 5" "$actual"
+echo "[pwsh] no \$script: state in shell/pwsh"
+actual=$(script_state "$DOTFILES"/shell/pwsh/*.ps1)
+assert_eq "pwsh/no \$script: state" "" "$actual"
+
 # --- Initialize-Cache regenerates when binary is newer ---
 echo "[pwsh] Initialize-Cache regenerates when binary newer"
 mkdir -p "$WORK/pwsh_icbin"

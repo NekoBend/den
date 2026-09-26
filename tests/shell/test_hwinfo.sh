@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test_hwinfo.sh — Tests for hwinfo.sh / hwinfo.ps1 (toggle-hwinfo).
 # Also scans every shell/pwsh/*.ps1 for the PowerShell 6/7-only syntax its scan
-# lists, which Windows PowerShell 5.1 rejects or reads differently.
+# lists, which Windows PowerShell 5.1 rejects or reads differently, and for reads
+# of the platform variables ($IsWindows, ...) that 5.1 does not have.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
@@ -379,6 +380,82 @@ if pwsh -NoProfile -NonInteractive -Command 'if (Get-Module -ListAvailable PSScr
 else
     echo "  SKIP: pwsh/PSUseCompatibleSyntax (PSScriptAnalyzer not installed)"
 fi
+
+# =============================================================================
+# Windows PowerShell 5.1 has no $IsWindows, $IsLinux, $IsMacOS or $IsCoreCLR
+# =============================================================================
+# There they read as $null, until Set-StrictMode makes reading them an error. A
+# user's script that sets it and then calls den's commands (cat, grep, ...) sets
+# it for them too, so each read must sit on the right of an -or/-and whose left
+# side settles the answer on 5.1 first: the edition ('Desktop' or 'Core') or
+# $env:OS (Windows_NT). The scan prints each read that does not.
+
+PWSH_PLATFORM_SCAN="$WORK/pwsh_platform_scan.ps1"
+cat > "$PWSH_PLATFORM_SCAN" << 'PS1'
+param([string]$Dir)
+$ErrorActionPreference = 'Stop'
+$files = @(Get-ChildItem -LiteralPath $Dir -Filter *.ps1 -File)
+if ($files.Count -eq 0) { throw "no .ps1 files in $Dir" }
+# A left side that is true on 5.1 (for -or) or false there (for -and).
+$orGuard = "(?i)PSEdition\s+-(eq\s+'Desktop'|ne\s+'Core')|\`$env:OS\s+-eq\s+'Windows_NT'"
+$andGuard = "(?i)PSEdition\s+-(eq\s+'Core'|ne\s+'Desktop')|\`$env:OS\s+-ne\s+'Windows_NT'"
+foreach ($f in $files) {
+  $tokens = $null; $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+  $reads = $ast.FindAll({
+      param($n)
+      $n -is [System.Management.Automation.Language.VariableExpressionAst] -and
+      $n.VariablePath.UserPath -in 'IsWindows', 'IsLinux', 'IsMacOS', 'IsCoreCLR'
+    }, $true)
+  foreach ($v in $reads) {
+    $guarded = $false
+    for ($p = $v.Parent; $p -and -not $guarded; $p = $p.Parent) {
+      if ($p -is [System.Management.Automation.Language.BinaryExpressionAst] -and
+          $v.Extent.StartOffset -ge $p.Right.Extent.StartOffset) {
+        $guarded = ($p.Operator -eq 'Or' -and $p.Left.Extent.Text -match $orGuard) -or
+                   ($p.Operator -eq 'And' -and $p.Left.Extent.Text -match $andGuard)
+      }
+    }
+    if (-not $guarded) { "$($f.Name):$($v.Extent.StartLineNumber): $($v.Extent.Text)" }
+  }
+}
+PS1
+
+# Lines 1-7 read a platform variable unguarded (1, 2, 4, 5) or behind a left side
+# that does not settle 5.1 (3, 6, 7); 8-12 are the guarded forms den uses; 13 is
+# another name.
+PWSH_PLATFORM_FIXTURE="$WORK/pwsh_platform_fixture"
+mkdir -p "$PWSH_PLATFORM_FIXTURE"
+cat > "$PWSH_PLATFORM_FIXTURE/platform.ps1" << 'PS1'
+$a = $IsWindows
+$b = $IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop'
+$c = $PSVersionTable.PSEdition -eq 'Core' -or $IsWindows
+if ($IsLinux -or $IsMacOS) { }
+$h = "on $IsMacOS"
+$i = $env:OS -ne 'Windows_NT' -or $IsCoreCLR
+$j = $PSVersionTable.PSEdition -eq 'Desktop' -and $IsWindows
+$d = $PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows
+$e = $env:OS -eq 'Windows_NT' -or $IsWindows
+$f = $PSVersionTable.PSEdition -ne 'Core' -or $IsWindows -ne $true
+$g = $PSVersionTable.PSEdition -eq 'Core' -and ($IsLinux -or $IsMacOS)
+$k = -not ($env:OS -eq 'Windows_NT' -or $IsWindows)
+$l = $IsWindowsX
+PS1
+
+echo "[pwsh] the platform-variable scan flags each unguarded read, and nothing else"
+actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_PLATFORM_SCAN" "$PWSH_PLATFORM_FIXTURE" | tr -d '\r' |
+    cut -d: -f2 | sort -nu | paste -sd' ' -) || actual="${actual}[scan exited $?]"
+assert_eq "pwsh/platform scan fixture lines" "1 2 3 4 5 6 7" "$actual"
+
+echo "[pwsh] the platform-variable scan fails on a directory without .ps1 files"
+rc=0
+pwsh -NoProfile -NonInteractive -File "$PWSH_PLATFORM_SCAN" "$WORK/pwsh_empty" >/dev/null 2>&1 || rc=$?
+assert_failure "pwsh/platform scan refuses an empty directory" "$rc"
+
+echo "[pwsh] no unguarded \$IsWindows/\$IsLinux/\$IsMacOS read in shell/pwsh/*.ps1"
+actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_PLATFORM_SCAN" "$DOTFILES/shell/pwsh" | tr -d '\r') ||
+    actual="${actual}[scan exited $?]"
+assert_eq "pwsh/platform variables read after the 5.1 check" "" "$actual"
 
 print_summary "test_hwinfo"
 [ "$FAIL" -eq 0 ]
