@@ -442,6 +442,15 @@ function archive {
   }
 }
 
+# xt / pk → short names for extract / archive. Aliases (as `snip` is for
+# snippet), not wrapper functions: an alias invokes the long function itself, so
+# parameter binding (-Output/-Sources, common parameters), tab completion, the
+# terminating errors, $? and the "extract:"/"archive:" error prefix are exactly
+# those of the long name. A PowerShell alias also works outside the prompt,
+# unlike a bash one.
+Set-Alias xt extract
+Set-Alias pk archive
+
 # ===== System =====
 
 # display $env:PATH entries one per line
