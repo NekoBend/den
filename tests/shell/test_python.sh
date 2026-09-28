@@ -98,6 +98,16 @@ ln -s ../tools "$SYMBIN/.venv/bin"
     git -c user.email=t@example.com -c user.name=t commit -q -m "committed bin symlink"
 ) >/dev/null 2>&1
 
+# A real bin/ whose activate scripts are symlinks to scripts elsewhere, outside any
+# repo, so git has nothing to report. A symlink's own mode reads as world-writable
+# on Linux (not on macOS), so the message is what shows the symlink test refused.
+SYMACT="$WORK/venv_symact"
+mkdir -p "$SYMACT/.venv/bin" "$SYMACT/tools"
+printf 'echo sourced > "%s"\n' "$WORK/symact_ran" > "$SYMACT/tools/activate"
+printf '"sourced" | Set-Content -LiteralPath "%s"\n' "$WORK/symact_ran" > "$SYMACT/tools/Activate.ps1"
+ln -s ../../tools/activate "$SYMACT/.venv/bin/activate"
+ln -s ../../tools/Activate.ps1 "$SYMACT/.venv/bin/Activate.ps1"
+
 # git reads a repo owned by another user only when safe.directory allows it;
 # this makes it take every repo as one, whatever the tester's own config says.
 GIT_AS_OTHER_OWNER="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1"
@@ -266,6 +276,13 @@ for sh in bash zsh; do
     assert_contains "$sh/va refuses a symlinked bin/" "bin/ or bin/activate is a symlink" "$err"
     assert_contains "$sh/va symlinked bin/ fails" "rc=1" "$err"
     assert_not_exists "$sh/va sources no script behind a symlinked bin/" "$WORK/symbin_ran"
+
+    echo "[$sh] va refuses a symlinked activate script in a real bin/"
+    rm -f "$WORK/symact_ran"
+    err=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$SYMACT' && va; echo \"rc=\$?\"" 2>&1 | tr -d '\r')
+    assert_contains "$sh/va refuses a symlinked activate" "bin/ or bin/activate is a symlink" "$err"
+    assert_contains "$sh/va symlinked activate fails" "rc=1" "$err"
+    assert_not_exists "$sh/va sources no script behind a symlinked activate" "$WORK/symact_ran"
 
     echo "[$sh] va refuses when git cannot read the repo (dubious ownership)"
     # git exits 128 with no output there; taking that as "not a repo" sourced the
@@ -708,6 +725,12 @@ rm -f "$WORK/symbin_ran"
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMBIN'; \$env:VIRTUAL_ENV = \$null; va")
 assert_contains "pwsh/va refuses a symlinked bin/" "is a symlink or junction" "$err"
 assert_not_exists "pwsh/va dot-sources no script behind a symlinked bin/" "$WORK/symbin_ran"
+
+echo "[pwsh] va refuses a symlinked Activate.ps1 in a real bin/"
+rm -f "$WORK/symact_ran"
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMACT'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses a symlinked Activate.ps1" "Activate.ps1 is a symlink or junction" "$err"
+assert_not_exists "pwsh/va dot-sources no script behind a symlinked Activate.ps1" "$WORK/symact_ran"
 
 echo "[pwsh] va accepts a symlinked venv"
 # `ln -s ~/venvs/proj .venv` is a legitimate layout, not an attack.
