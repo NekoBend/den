@@ -156,6 +156,9 @@ line without changing what runs; `_DEN_WRAPPERS=0` turns the wrappers off, as
 | `catw` / `findw` / `grepw` / `lsw` | always bat / fd / rg / lsd | ✓ | ✓ | — |
 | `toggle-wrapper` / `tgl-wr` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
 
+On Windows PowerShell 5.1, `lt` / `llt` need `lsd`: without it (or with the
+wrappers off) they stop with an error that they require PowerShell 7+ (pwsh).
+
 On Windows, `cp` / `mv` / `rm` / `mkdir` / `rmdir` gain Unix-flag behavior via
 microsoft/coreutils when it is installed (pwsh only); otherwise they keep the stock
 PowerShell cmdlet behavior.
