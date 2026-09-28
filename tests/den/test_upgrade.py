@@ -166,6 +166,8 @@ def test_uv_in_the_working_directory_is_refused(tmp_path, monkeypatch, capsys):
     """A checkout shipping uv(.exe) at its root: what Windows' which() and
     CreateProcess find first. It is refused, never run."""
     monkeypatch.chdir(tmp_path)
+    # Windows: the OS whose which() and CreateProcess search the cwd
+    monkeypatch.setattr("den._exe._windows", lambda: True)
     calls = _wire(monkeypatch)
     monkeypatch.setattr(
         "den._exe.shutil.which", lambda name, path=None: str(tmp_path / name)
@@ -185,10 +187,26 @@ def test_refresh_runs_the_den_uv_just_upgraded(monkeypatch):
     assert calls[1][0] != _tool("den")
 
 
+def test_uv_in_the_working_directory_runs_on_posix(tmp_path, monkeypatch):
+    """POSIX never searches the cwd, so a uv there came from an absolute PATH
+    entry (den upgrade run from ~/.local/bin): it is the uv PATH names and it
+    runs. Refusing it broke den upgrade there for no gain."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("den._exe._windows", lambda: False)
+    calls = _wire(monkeypatch)
+    monkeypatch.setattr(
+        "den._exe.shutil.which", lambda name, path=None: str(tmp_path / name)
+    )
+    assert upgrade_main([]) == 0
+    assert calls == [[str(tmp_path / "uv"), "tool", "upgrade", "den"]]
+
+
 def test_refresh_refuses_a_den_in_the_working_directory(tmp_path, monkeypatch, capsys):
     """A den.cmd committed at the repo root (plain text, trivially shipped) is
     what a cwd-first which("den") used to hand the redeploy."""
     monkeypatch.chdir(tmp_path)
+    # Windows: the OS whose which() and CreateProcess search the cwd
+    monkeypatch.setattr("den._exe._windows", lambda: True)
     calls = _wire(monkeypatch)
 
     def _which(name, path=None):

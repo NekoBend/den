@@ -7,8 +7,9 @@ for a path-less name. A cloned repo or an extracted archive that ships
 run instead of the real tool whenever den is invoked there. So every tool den
 starts (uv, den, pwsh, powershell, winget, git, xdg-user-dir, ruff, ty) is
 resolved here: PATH with its cwd-relative entries dropped, a hit in the
-working directory itself refused, and the absolute path handed to subprocess
-as argv[0] so the OS does no searching of its own.
+working directory itself refused on Windows (POSIX never searches it), and the
+absolute path handed to subprocess as argv[0] so the OS does no searching of
+its own.
 """
 
 from __future__ import annotations
@@ -17,6 +18,12 @@ import os
 import shutil
 import sys
 from pathlib import Path
+
+
+def _windows() -> bool:
+    # Indirection so tests can flip platform without touching os.name globally
+    # (pathlib reads os.name to pick WindowsPath/PosixPath).
+    return os.name == "nt"
 
 
 def search_path() -> str:
@@ -44,15 +51,20 @@ def resolve_tool(name: str, path: str | None = None) -> tuple[str | None, str | 
 
     Only the directory itself is refused, because that is all those two
     searches can reach; a tool under it - a project's own .venv/bin/ruff,
-    the normal case - is the one the project wants and still runs.
+    the normal case - is the one the project wants and still runs. And only
+    on Windows: POSIX searches neither the cwd nor (after search_path) a
+    relative entry, so a hit there came from an absolute PATH entry, as when
+    den upgrade runs from ~/.local/bin, and is the tool PATH names.
     """
     hit = shutil.which(name, path=search_path() if path is None else path)
     if hit is None:
         return None, None
     exe = Path(hit)
-    if not exe.is_absolute():  # only reachable via the Windows curdir entry
+    relative = not exe.is_absolute()  # via the Windows curdir entry, or `path`
+    if relative:
         exe = Path.cwd() / exe
-    if exe.resolve().parent == Path.cwd().resolve():
+    in_cwd = exe.resolve().parent == Path.cwd().resolve()
+    if in_cwd and (relative or _windows()):
         return None, f"refusing {name} resolved inside the workspace ({exe})"
     return str(exe), None
 

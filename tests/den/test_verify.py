@@ -296,11 +296,30 @@ def test_search_path_drops_current_directory_entries(tmp_path, monkeypatch):
     assert _exe.search_path() == str(tmp_path)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the real POSIX search is the point")
+def test_posix_runs_a_tool_its_path_names_from_the_cwd(tmp_path, monkeypatch):
+    """With the real which(): a cwd that is itself an absolute PATH entry
+    supplies its tools (POSIX searches no cwd, so no workspace planted them),
+    while a relative entry that reaches the cwd is still refused."""
+    tool = tmp_path / "uv"
+    tool.write_text("#!/bin/sh\n")
+    tool.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert _exe.resolve_tool("uv") == (str(tool), None)
+    exe, refusal = _exe.resolve_tool("uv", path=os.curdir)
+    assert exe is None
+    assert refusal is not None
+    assert "refusing uv resolved inside the workspace" in refusal
+
+
 def test_tool_in_the_working_directory_is_refused(tmp_path, monkeypatch, capsys):
     """A ruff/ty sitting in the cwd - all the curdir search can reach - is
     refused (SKIP), not executed."""
     f = _py(tmp_path)
     monkeypatch.chdir(tmp_path)  # the workspace `den verify` is invoked from
+    # Windows: the OS whose which() and CreateProcess search the cwd
+    monkeypatch.setattr("den._exe._windows", lambda: True)
     cmds = _capture_cmds(monkeypatch)
     monkeypatch.setattr(  # a repo shipping ./ruff, next to the checked file
         _exe.shutil, "which", lambda name, path=None: str(tmp_path / name)

@@ -215,6 +215,8 @@ def test_query_pwsh_profile_refuses_powershell_in_the_working_directory(
     which() and CreateProcess find first. Neither is run; the caller falls
     back to the default profile dir."""
     monkeypatch.chdir(tmp_path)
+    # Windows: the OS whose which() and CreateProcess search the cwd
+    monkeypatch.setattr("den._exe._windows", lambda: True)
     monkeypatch.setattr(_shell.shutil, "which", lambda e, path=None: str(tmp_path / e))
     ran = []
     monkeypatch.setattr(_shell.subprocess, "run", lambda cmd, **k: ran.append(cmd))
@@ -482,6 +484,8 @@ def test_install_coreutils_refuses_winget_in_the_working_directory(
     tmp_path, monkeypatch, capsys
 ):
     monkeypatch.chdir(tmp_path)
+    # Windows: the OS whose which() and CreateProcess search the cwd
+    monkeypatch.setattr("den._exe._windows", lambda: True)
     monkeypatch.setattr(_shell.shutil, "which", lambda e, path=None: str(tmp_path / e))
     ran = []
     monkeypatch.setattr(_shell.subprocess, "run", lambda cmd, **k: ran.append(cmd))
@@ -829,6 +833,8 @@ def test_clone_zsh_plugins_refuses_git_in_the_working_directory(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("den._shell._windows", lambda: False)
+    # Windows: the OS whose which() and CreateProcess search the cwd
+    monkeypatch.setattr("den._exe._windows", lambda: True)
     monkeypatch.setattr(
         "den._shell.shutil.which",
         lambda name, path=None: (

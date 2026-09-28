@@ -407,6 +407,8 @@ def test_cline_rules_dir_refuses_powershell_in_the_working_directory(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_install, "_windows", lambda: True)
+    # Windows: the OS whose which() and CreateProcess search the cwd
+    monkeypatch.setattr("den._exe._windows", lambda: True)
     monkeypatch.setattr(
         _install.shutil, "which", lambda e, path=None: str(tmp_path / e)
     )
