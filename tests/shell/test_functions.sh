@@ -88,10 +88,13 @@ setup_archiver_stubs() {
     : > "$WORK/stubsrc/-x.tar.gz"
     : > "$WORK/stubsrc/-x.gz"
     : > "$WORK/stubsrc/-x.rar"
+    # `7z a <out>` also creates <out>, as the real one does, so archive's
+    # publish step after it has a file to work with.
     for _stub in 7z tar gzip unrar; do
         cat > "$WORK/stubbin/$_stub" <<STUB
 #!/bin/sh
 printf '%s\n' "\$@" > '$STUB_ARGV'
+if [ "\$1" = a ]; then : > "\$2"; fi
 STUB
         chmod +x "$WORK/stubbin/$_stub"
     done
@@ -373,6 +376,94 @@ pk function" "$actual"
     rm -rf "$WORK/short" "$WORK/short.tar.gz" "$WORK/sp ace" "$WORK/opt.tar.gz"
 }
 
+# The bash and zsh cases for the extension, fresh-archive and 7z source-list
+# fixes in extract/archive.
+archive_posix_tests() {
+    local sh="$1" run="run_$1" actual ext
+    # The format dispatch was case-sensitive: PHOTOS.ZIP and DATA.TAR.GZ from
+    # a camera or a Windows tool were "unsupported", while the pwsh twin
+    # (switch -Regex) took them.
+    echo "[$sh] extract / archive match the extension without regard to case"
+    setup_fixtures
+    (cd "$WORK" && zip -qr PHOTOS.ZIP src && tar czf DATA.TAR.GZ src)
+    mkdir -p "$WORK/uc"
+    $run "$FUNCTIONS_SH" "cd '$WORK/uc' && extract ../PHOTOS.ZIP" >/dev/null 2>&1
+    assert_success "$sh/extract PHOTOS.ZIP exit code" "$?"
+    assert_exists "$sh/extract PHOTOS.ZIP" "$WORK/uc/src/file1.txt"
+    rm -rf "$WORK/uc/src"
+    $run "$FUNCTIONS_SH" "cd '$WORK/uc' && xt ../DATA.TAR.GZ" >/dev/null 2>&1
+    assert_success "$sh/xt DATA.TAR.GZ exit code" "$?"
+    assert_exists "$sh/xt DATA.TAR.GZ" "$WORK/uc/src/file1.txt"
+    $run "$FUNCTIONS_SH" "cd '$WORK' && archive BACKUP.ZIP src && archive BACKUP.Tar.Xz src && pk ONE.GZ src/file1.txt" >/dev/null 2>&1
+    assert_success "$sh/archive upper-case outputs exit code" "$?"
+    assert_contains "$sh/archive BACKUP.ZIP is a zip" "src/file1.txt" "$(unzip -Z1 "$WORK/BACKUP.ZIP" 2>/dev/null)"
+    assert_contains "$sh/archive BACKUP.Tar.Xz is a tar.xz" "src/file1.txt" "$(tar tJf "$WORK/BACKUP.Tar.Xz" 2>/dev/null)"
+    assert_eq "$sh/archive ONE.GZ is one gzipped file" "hello" "$(gzip -dc "$WORK/ONE.GZ" 2>/dev/null)"
+    rm -rf "$WORK/uc" "$WORK"/*.ZIP "$WORK"/*.GZ "$WORK/BACKUP.Tar.Xz"
+
+    # zip -r and 7z a UPDATE an existing archive: a file deleted from the
+    # source stayed in the next run's "new" archive.
+    echo "[$sh] archive .zip builds a fresh archive over an existing one"
+    setup_fixtures
+    echo secret > "$WORK/src/old-secret.txt"
+    $run "$FUNCTIONS_SH" "cd '$WORK' && archive rel.zip src" >/dev/null 2>&1
+    rm -f "$WORK/src/old-secret.txt"
+    $run "$FUNCTIONS_SH" "cd '$WORK' && archive rel.zip src" >/dev/null 2>&1
+    assert_success "$sh/archive .zip over an existing one exit code" "$?"
+    actual=$(unzip -Z1 "$WORK/rel.zip" 2>/dev/null)
+    assert_contains "$sh/archive .zip rerun keeps current files" "src/file1.txt" "$actual"
+    assert_not_contains "$sh/archive .zip rerun drops deleted files" "old-secret.txt" "$actual"
+    assert_eq "$sh/archive .zip leaves no staging directory" "" "$(ls -A "$WORK" | grep '^\.archive\.' | tr -d '\n')"
+    # A failed run (nothing to archive) keeps the previous archive as it was.
+    cp "$WORK/rel.zip" "$WORK/rel.zip.before"
+    $run "$FUNCTIONS_SH" "cd '$WORK' && archive rel.zip missing-src" >/dev/null 2>&1
+    assert_failure "$sh/archive .zip with nothing to archive fails" "$?"
+    assert_eq "$sh/archive .zip failed run keeps the previous archive" "$(sha256sum < "$WORK/rel.zip.before")" "$(sha256sum < "$WORK/rel.zip")"
+    assert_eq "$sh/archive .zip failed run leaves no staging directory" "" "$(ls -A "$WORK" | grep '^\.archive\.' | tr -d '\n')"
+    # An output inside the source: neither the archive being written, nor the
+    # previous one, nor the staging directory may land in it.
+    $run "$FUNCTIONS_SH" "cd '$WORK/src' && archive self.zip . && archive self.zip ." >/dev/null 2>&1
+    assert_success "$sh/archive .zip inside its source exit code" "$?"
+    actual=$(unzip -Z1 "$WORK/src/self.zip" 2>/dev/null)
+    assert_contains "$sh/archive .zip inside its source stored the files" "subdir/file3.txt" "$actual"
+    assert_not_contains "$sh/archive .zip inside its source left itself out" "self.zip" "$actual"
+    assert_not_contains "$sh/archive .zip inside its source left staging out" ".archive." "$actual"
+    rm -f "$WORK/rel.zip" "$WORK/rel.zip.before" "$WORK/src/self.zip"
+
+    # 7z is not in the test image, so a stub stands in with 7z's update
+    # semantics: the names already in <out> stay and the sources are added.
+    echo "[$sh] archive .7z builds a fresh archive, and a failed run keeps the old one"
+    setup_fixtures
+    mkdir -p "$WORK/upd"
+    cat > "$WORK/upd/7z" <<'STUB'
+#!/bin/sh
+[ "$1" = a ] || exit 0
+out=$2; shift 2
+for a; do case $a in -xr!*) ;; *) printf '%s\n' "$a" >> "$out" ;; esac; done
+[ -z "${STUB_FAIL-}" ]
+STUB
+    chmod +x "$WORK/upd/7z"
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/src' && archive ../rel.7z file1.txt file2.txt && archive ../rel.7z file1.txt" >/dev/null 2>&1
+    assert_success "$sh/archive .7z over an existing one exit code" "$?"
+    assert_eq "$sh/archive .7z rerun holds only this run's sources" "file1.txt" "$(cat "$WORK/rel.7z")"
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH' STUB_FAIL=1; cd '$WORK/src' && archive ../rel.7z file2.txt" >/dev/null 2>&1
+    assert_failure "$sh/archive .7z failing archiver fails" "$?"
+    assert_eq "$sh/archive .7z failed run restores the previous archive" "file1.txt" "$(cat "$WORK/rel.7z")"
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH' STUB_FAIL=1; cd '$WORK/src' && archive ../new.7z file2.txt" >/dev/null 2>&1
+    assert_not_exists "$sh/archive .7z failed first run leaves no archive" "$WORK/new.7z"
+    assert_eq "$sh/archive .7z leaves no staging directory" "" "$(ls -A "$WORK" | grep '^\.archive\.' | tr -d '\n')"
+
+    # `set -- "$@" x` per source made the 7z branch quadratic: 20000 sources
+    # took minutes in bash before 7z even started. Linear, it is well under a
+    # second; the timeout only catches the quadratic form.
+    echo "[$sh] archive .7z hands a long source list over in linear time"
+    printf '#!/bin/sh\necho "$# $4 $5 $6" > "%s/argc"\n' "$WORK" > "$WORK/upd/7z"
+    timeout 20 "$sh" -c "source '$FUNCTIONS_SH' && PATH='$WORK/upd:$PATH' && cd '$WORK' && archive long.7z -x @l \$(seq -f 'f%g' 20000)" >/dev/null 2>&1
+    assert_success "$sh/archive .7z 20000 sources within the timeout" "$?"
+    assert_eq "$sh/archive .7z 20000 sources all passed, switch-shaped ones as paths" "20005 ./-x ./@l f1" "$(cat "$WORK/argc" 2>/dev/null)"
+    rm -rf "$WORK/upd" "$WORK/argc" "$WORK/rel.7z" "$WORK/long.7z"
+}
+
 # pwsh: stdout, stderr (color codes stripped) and the process exit status of
 # one -Command run in $WORK, with an 'after' line to show whether the run went
 # on past the command. Usage: pwsh_outcome <command>
@@ -505,8 +596,11 @@ setup_archiver_stubs
 run_bash "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
 assert_exists "bash/archive 7z reached the stub" "$STUB_ARGV"
 actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
-assert_eq "bash/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+# The third word excludes archive's staging directory (see the .zip/.7z
+# branch); what matters here is that the sources arrive as paths.
+assert_match "bash/archive 7z argv" "^a $WORK/out\\.7z -xr!\\.archive\\.[A-Za-z0-9]{6} \\./-x \\./@list $" "$actual"
 assert_not_contains "bash/archive 7z got no -- marker" "--" "$actual"
+assert_exists "bash/archive 7z published the archive" "$WORK/out.7z"
 
 echo "[bash] extract 7z gets neither a switch nor a listfile"
 setup_archiver_stubs
@@ -538,6 +632,7 @@ rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
 # --- xt / pk: short names for extract / archive ---
 short_name_tests bash
+archive_posix_tests bash
 
 echo "[bash] digest several files"
 setup_fixtures
@@ -1238,6 +1333,7 @@ rm -rf "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
 # --- xt / pk: short names for extract / archive ---
 short_name_tests zsh
+archive_posix_tests zsh
 
 echo "[zsh] digest several files"
 setup_fixtures
@@ -1309,8 +1405,11 @@ setup_archiver_stubs
 run_zsh "$FUNCTIONS_SH" "export PATH='$WORK/stubbin:$PATH'; cd '$WORK/stubsrc' && archive '$WORK/out.7z' -x '@list'" >/dev/null 2>&1
 assert_exists "zsh/archive 7z reached the stub" "$STUB_ARGV"
 actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
-assert_eq "zsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+# The third word excludes archive's staging directory (see the .zip/.7z
+# branch); what matters here is that the sources arrive as paths.
+assert_match "zsh/archive 7z argv" "^a $WORK/out\\.7z -xr!\\.archive\\.[A-Za-z0-9]{6} \\./-x \\./@list $" "$actual"
 assert_not_contains "zsh/archive 7z got no -- marker" "--" "$actual"
+assert_exists "zsh/archive 7z published the archive" "$WORK/out.7z"
 
 echo "[zsh] extract 7z gets neither a switch nor a listfile"
 setup_archiver_stubs
@@ -1739,6 +1838,94 @@ assert_exists "pwsh/archive zip first source" "$WORK/zipped/src/file1.txt"
 assert_exists "pwsh/archive zip second source" "$WORK/zipped/second/file2.txt"
 rm -rf "$WORK/broken.zip" "$WORK/one.tar.gz" "$WORK/two.tar.gz" "$WORK/second" "$WORK/multi"
 
+# Compress-Archive lists a directory with Get-ChildItem and no -Force, so
+# every hidden file and folder (.env, .gitignore, .git) was left out of the
+# zip without a word, where the posix twin's `zip -r` keeps them.
+echo "[pwsh] archive zip keeps hidden files and folders"
+setup_fixtures
+mkdir -p "$WORK/src/.git" "$WORK/src/empty"
+echo ref > "$WORK/src/.git/HEAD"
+echo env > "$WORK/src/.env"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive hidden.zip src" >/dev/null 2>&1
+assert_success "pwsh/archive zip with hidden entries exit code" "$?"
+actual=$(unzip -Z1 "$WORK/hidden.zip" 2>/dev/null)
+assert_contains "pwsh/archive zip stored a dotfile" "src/.env" "$actual"
+assert_contains "pwsh/archive zip stored a dot-directory" "src/.git/HEAD" "$actual"
+assert_contains "pwsh/archive zip stored a nested file" "src/subdir/file3.txt" "$actual"
+assert_contains "pwsh/archive zip stored an empty folder" "src/empty/" "$actual"
+rm -rf "$WORK/unzipped" && mkdir -p "$WORK/unzipped"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/unzipped'; extract '$WORK/hidden.zip'" >/dev/null 2>&1
+assert_eq "pwsh/archive zip round trip keeps .env" "env" "$(cat "$WORK/unzipped/src/.env" 2>/dev/null)"
+assert_eq "pwsh/archive zip round trip keeps file bytes" "nested" "$(cat "$WORK/unzipped/src/subdir/file3.txt" 2>/dev/null)"
+# Over an existing zip the result is a fresh archive, and an output inside the
+# source directory is not archived into itself, then or on the next run.
+rm -f "$WORK/src/.env"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK'; archive hidden.zip src" >/dev/null 2>&1
+assert_not_contains "pwsh/archive zip rerun drops deleted files" "src/.env" "$(unzip -Z1 "$WORK/hidden.zip" 2>/dev/null)"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/src'; archive self.zip .; archive self.zip ." >/dev/null 2>&1
+actual=$(unzip -Z1 "$WORK/src/self.zip" 2>/dev/null)
+assert_contains "pwsh/archive zip inside its source stored the files" "src/subdir/file3.txt" "$actual"
+assert_not_contains "pwsh/archive zip inside its source left itself out" "self.zip" "$actual"
+assert_eq "pwsh/archive zip leaves no temporary" "" "$(ls -A "$WORK" "$WORK/src" | grep '\.tmp\.' | tr -d '\n')"
+rm -rf "$WORK/unzipped" "$WORK/hidden.zip" "$WORK/src/self.zip"
+
+# The tar and 7z branches never checked the archiver's exit code, and the zip
+# branch's Compress-Archive error was non-terminating: tar exiting 2 over a
+# missing source still left archive, and `pwsh -Command`, reporting success.
+echo "[pwsh] archive fails when the archiver fails"
+setup_fixtures
+for _out in bad.tar.gz bad.tar.xz bad.tar; do
+    actual=$(pwsh_outcome "archive '$_out' src missing-src")
+    assert_contains "pwsh/archive $_out with a missing source exits 1" "status=1" "$actual"
+    assert_contains "pwsh/archive $_out names tar's exit code" "tar exited 2" "$actual"
+    assert_not_contains "pwsh/archive $_out stops the run" "out=after" "$actual"
+done
+echo PRECIOUS > "$WORK/keep.zip"
+actual=$(pwsh_outcome "archive keep.zip src missing-src")
+assert_contains "pwsh/archive zip with a missing source exits 1" "status=1" "$actual"
+assert_eq "pwsh/archive zip failed run keeps the existing output" "PRECIOUS" "$(cat "$WORK/keep.zip")"
+assert_eq "pwsh/archive zip failed run leaves no temporary" "" "$(ls -A "$WORK" | grep '\.tmp\.' | tr -d '\n')"
+rm -f "$WORK"/bad.tar* "$WORK/keep.zip"
+
+# 7z is not in the test image; a stub stands in with 7z's update semantics
+# (the names already in <out> stay and the sources are added), exiting 2 when
+# STUB_FAIL is set.
+echo "[pwsh] archive 7z builds a fresh archive, and a failed run keeps the old one"
+setup_fixtures
+mkdir -p "$WORK/upd"
+cat > "$WORK/upd/7z" <<'STUB'
+#!/bin/sh
+[ "$1" = a ] || exit 0
+out=$2; shift 2
+for a; do case $a in -xr!*) ;; *) printf '%s\n' "$a" >> "$out" ;; esac; done
+[ -z "${STUB_FAIL-}" ] || exit 2
+STUB
+chmod +x "$WORK/upd/7z"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/upd:' + \$env:PATH; Set-Location '$WORK/src'; archive ../rel.7z file1.txt file2.txt; archive ../rel.7z file1.txt" >/dev/null 2>&1
+assert_success "pwsh/archive 7z over an existing one exit code" "$?"
+assert_eq "pwsh/archive 7z rerun holds only this run's sources" "file1.txt" "$(cat "$WORK/rel.7z")"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/upd:' + \$env:PATH; \$env:STUB_FAIL='1'; archive rel.7z src/file2.txt")
+assert_contains "pwsh/archive 7z failing archiver exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive 7z names 7z's exit code" "7z exited 2" "$actual"
+assert_eq "pwsh/archive 7z failed run keeps the previous archive" "file1.txt" "$(cat "$WORK/rel.7z")"
+assert_eq "pwsh/archive 7z leaves nothing set aside" "" "$(ls -A "$WORK" | grep '\.previous\.' | tr -d '\n')"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/nobin'; archive none.7z src")
+assert_contains "pwsh/archive 7z not installed exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive 7z not installed says so" "7z is not installed" "$actual"
+rm -rf "$WORK/upd" "$WORK/rel.7z"
+
+# extract ran `& 7z` / `& unrar` by bare name: a missing tool raised only a
+# non-terminating CommandNotFound, $LASTEXITCODE stayed 0, and the archive
+# did not count as failed.
+echo "[pwsh] extract counts a missing 7z or unrar as a failed archive"
+: > "$WORK/x.7z"; : > "$WORK/y.rar"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/nobin'; extract x.7z y.rar")
+assert_contains "pwsh/extract without 7z/unrar exits 1" "status=1" "$actual"
+assert_contains "pwsh/extract without 7z/unrar counts both" "2 of 2 archives failed" "$actual"
+assert_contains "pwsh/extract names the missing 7z" "7z is not installed" "$actual"
+assert_contains "pwsh/extract names the missing unrar" "unrar is not installed" "$actual"
+rm -f "$WORK/x.7z" "$WORK/y.rar"
+
 # --- xt / pk: short names for extract / archive ---
 # Aliases, so the call IS extract / archive: named parameters, $?, the
 # terminating summary and the "extract:" / "archive:" prefix all come from the
@@ -1812,7 +1999,10 @@ setup_archiver_stubs
 : > "$WORK/stubsrc/plain.txt"
 run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; archive '-x.7z' 'plain.txt'" >/dev/null 2>&1
 actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
-assert_eq "pwsh/archive dash-leading 7z output argv" "a ./-x.7z plain.txt " "$actual"
+# The second switch excludes an existing output set aside (see the .7z
+# branch); the output name itself must still not start with '-'.
+assert_match "pwsh/archive dash-leading 7z output argv" "^a \\./-x\\.7z -xr!-x\\.7z\\.previous\\.[a-z0-9]{8}\\.[a-z0-9]{3} plain\\.txt $" "$actual"
+assert_exists "pwsh/archive dash-leading 7z published the archive" "$WORK/stubsrc/-x.7z"
 
 # Compress-Archive -Path reads [ ] * ? as wildcards, so the zip branch has to
 # name the source literally or it archives the file the pattern happens to hit.
@@ -1836,7 +2026,8 @@ setup_archiver_stubs
 run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/stubbin:' + \$env:PATH; Set-Location '$WORK/stubsrc'; archive '$WORK/out.7z' '-x' '@list'" >/dev/null 2>&1
 assert_exists "pwsh/archive 7z reached the stub" "$STUB_ARGV"
 actual=$(tr '\n' ' ' < "$STUB_ARGV" 2>/dev/null)
-assert_eq "pwsh/archive 7z argv" "a $WORK/out.7z ./-x ./@list " "$actual"
+assert_match "pwsh/archive 7z argv" "^a $WORK/out\\.7z -xr!out\\.7z\\.previous\\.[a-z0-9]{8}\\.[a-z0-9]{3} \\./-x \\./@list $" "$actual"
+assert_exists "pwsh/archive 7z published the archive" "$WORK/out.7z"
 assert_not_contains "pwsh/archive 7z got no -- marker" "--" "$actual"
 
 echo "[pwsh] extract 7z gets neither a switch nor a listfile"

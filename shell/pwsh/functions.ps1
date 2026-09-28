@@ -456,6 +456,62 @@ function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
   return $code
 }
 
+# _ArZipTo → write a zip of $Sources into $Dest, a file that must not exist
+# yet, for archive. A directory is stored under its own name with everything
+# beneath it, hidden entries included (Get-ChildItem -Force), and a directory
+# entry for every folder, as `zip -r` does; a file is stored under its name.
+# $Skip is the final output: a source directory that holds it does not
+# archive the old archive into the new one. Every path is listed before $Dest
+# is created, so the zip being written is never one of its own entries. Any
+# unreadable source throws, and the caller discards $Dest.
+function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = '') {
+  if (-not $Dest) { return }
+  Add-Type -AssemblyName System.IO.Compression
+  $sess = $ExecutionContext.SessionState.Path
+  $skipFull = if ($Skip) { $sess.GetUnresolvedProviderPathFromPSPath($Skip) } else { '' }
+  $onWindows = ($env:OS -eq 'Windows_NT' -or $IsWindows)
+  # (file item or $null for a folder, entry name) pairs, in archive order.
+  $entries = [System.Collections.Generic.List[object]]::new()
+  foreach ($src in $Sources) {
+    $item = Get-Item -LiteralPath $sess.GetUnresolvedProviderPathFromPSPath($src) -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer) {
+      $entries.Add(@($item, $item.Name))
+      continue
+    }
+    $root = $item.FullName.TrimEnd('\', '/')
+    $entries.Add(@($null, "$($item.Name)/"))
+    foreach ($c in Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction Stop) {
+      $full = $c.FullName
+      $rel = if ($full.Length -gt $root.Length) { $full.Substring($root.Length + 1) } else { $c.Name }
+      $name = "$($item.Name)/" + $rel.Replace('\', '/')
+      if ($c.PSIsContainer) { $entries.Add(@($null, "$name/")); continue }
+      $isOutput = if ($onWindows) { $full -eq $skipFull } else { $full -ceq $skipFull }
+      if (-not $isOutput) { $entries.Add(@($c, $name)) }
+    }
+  }
+  $fs = [System.IO.File]::Open($sess.GetUnresolvedProviderPathFromPSPath($Dest), [System.IO.FileMode]::CreateNew)
+  try {
+    $zip = [System.IO.Compression.ZipArchive]::new($fs, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+      foreach ($e in $entries) {
+        $entry = $zip.CreateEntry($e[1], [System.IO.Compression.CompressionLevel]::Optimal)
+        if ($null -eq $e[0]) { continue }
+        # A zip timestamp holds 1980-2107 only; outside that range the setter
+        # throws, so clamp as Compress-Archive did for the low end.
+        $t = $e[0].LastWriteTime
+        if ($t.Year -lt 1980) { $t = [datetime]::new(1980, 1, 1) }
+        if ($t.Year -gt 2107) { $t = [datetime]::new(2107, 12, 31) }
+        $entry.LastWriteTime = $t
+        $in = [System.IO.File]::OpenRead($e[0].FullName)
+        try {
+          $out = $entry.Open()
+          try { $in.CopyTo($out) } finally { $out.Dispose() }
+        } finally { $in.Dispose() }
+      }
+    } finally { $zip.Dispose() }
+  } finally { $fs.Dispose() }
+}
+
 # extract → auto-detect and extract archives
 function extract {
   # Every argument is an archive; each is extracted in turn and a failure on
@@ -508,6 +564,9 @@ function extract {
         catch { Write-Error "'$Path': $($_.Exception.Message)"; $ok = $false }
         break
       }
+      # 7z and unrar are resolved like the compressors above: a bare `& 7z`
+      # that is not installed raised only a non-terminating CommandNotFound
+      # and left $LASTEXITCODE at 0, so the archive was not counted as failed.
       '\.7z$'                 {
         # 7z also reads a leading '@' as a listfile — it would extract the
         # archives named INSIDE that file rather than the file itself. 7z is
@@ -515,10 +574,10 @@ function extract {
         # exercised in CI; './' neutralises the name without depending on
         # marker support, as archive() does.
         if ($Path.StartsWith('@')) { $Path = Join-Path '.' $Path }
-        & 7z x $Path
+        $t = _ArTool '7z'; if ($t) { & $t x $Path } else { Write-Error '7z is not installed'; $ok = $false }
         break
       }
-      '\.rar$'                { & unrar x $Path; break }
+      '\.rar$'  { $t = _ArTool 'unrar'; if ($t) { & $t x $Path } else { Write-Error 'unrar is not installed'; $ok = $false }; break }
       default                 { Write-Error "unsupported format '$Path'"; $ok = $false }
     }
     if ($LASTEXITCODE -ne 0) { $ok = $false }
@@ -558,13 +617,18 @@ function archive {
   if (Test-Path -LiteralPath $Output -PathType Container) {
     Write-Error "output '$Output' is a directory" -ErrorAction Stop
   }
+  # The tar branches name their tool in $ran, and its exit code is checked
+  # after the switch: a source tar could not read used to leave a partial
+  # archive while archive, and `pwsh -Command`, reported success.
+  $ran = $null
+  $global:LASTEXITCODE = 0
   switch -Regex ($Output) {
-    '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; break }
-    '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; break }
-    '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; break }
+    '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; $ran = 'tar'; break }
+    '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; $ran = 'tar'; break }
+    '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; $ran = 'tar'; break }
     # tar shells zstd out for these, so the guard is on zstd, not tar.
-    '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -cf $Output -- @Sources } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
-    '\.tar$'                { tar cf $Output -- @Sources; break }
+    '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -cf $Output -- @Sources; $ran = 'tar' } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
+    '\.tar$'                { tar cf $Output -- @Sources; $ran = 'tar'; break }
     # Single-file compression. Every '.tar.*' form and its 't*' alias is
     # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and these
     # four tools compress exactly ONE file: several sources or a directory is a
@@ -644,25 +708,75 @@ function archive {
       }
       break
     }
-    # The array goes in as a parameter value: splatting after a named parameter
-    # binds only the first element and leaves the rest as unbindable positionals.
-    # -LiteralPath also stops -Path from reading [ ] * ? in a name as a wildcard
-    # and archiving whichever file that pattern happens to match.
-    '\.zip$'                { Compress-Archive -LiteralPath $Sources -DestinationPath $Output -Force; break }
+    # Compress-Archive left out every hidden file and folder (it lists a
+    # directory with Get-ChildItem and no -Force): all dotfiles and .git on
+    # Linux/macOS, Hidden-attribute items on Windows, so a backup silently
+    # lacked .env and .git where the posix twin's `zip -r` kept them.
+    # _ArZipTo writes the zip itself. Like the single-file branch it builds a
+    # temporary sibling and renames that over the output only once it is
+    # complete, so a failed run keeps an existing archive and terminates.
+    '\.zip$'                {
+      $tmp = "$Output.tmp." + [System.IO.Path]::GetRandomFileName()
+      $moved = $false
+      try {
+        try { _ArZipTo $Sources $Output $tmp }
+        catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+        Move-Item -LiteralPath $tmp -Destination $Output -Force -ErrorAction Stop
+        $moved = $true
+      } finally {
+        if (-not $moved) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+      }
+      break
+    }
     # 7z is not in the test image (tests/shell/Dockerfile), so a '--' marker
     # here cannot be exercised; './' neutralises the two source names 7z reads
     # as something other than a path, without depending on any marker support
     # (parity with the POSIX twin). '-x' is a switch; '@list' is a listfile,
     # i.e. 7z archives the paths named INSIDE the file rather than the file.
+    # `7z a` UPDATES an existing archive, so files since deleted from the
+    # source stayed in it. An existing output is moved aside first, so 7z
+    # always creates a new file; on success the old one is dropped, on failure
+    # whatever 7z left is removed and the old one is put back (posix parity).
+    # 7z still writes the output itself: when it lies inside a source folder
+    # (`archive all.7z .`), 7z leaves the file it is writing out, and the
+    # set-aside previous archive is excluded by its unique name (-xr!).
     '\.7z$'                 {
       $safe = @($Sources | ForEach-Object {
         if ($_.StartsWith('-') -or $_.StartsWith('@')) { Join-Path '.' $_ } else { $_ }
       })
-      & 7z a $Output @safe
+      $sevenZip = _ArTool '7z'
+      if (-not $sevenZip) { Write-Error '7z is not installed' -ErrorAction Stop }
+      $prevName = (Split-Path -Path $Output -Leaf) + '.previous.' + [System.IO.Path]::GetRandomFileName()
+      $prevDir = Split-Path -Path $Output -Parent
+      $prev = if ($prevDir) { Join-Path $prevDir $prevName } else { $prevName }
+      $aside = $false
+      if ($null -ne (Get-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue)) {
+        Move-Item -LiteralPath $Output -Destination $prev -Force -ErrorAction Stop
+        # The cleanup below deletes $Output on failure, so 7z runs only once
+        # the old archive is known to be safe at $prev.
+        if ($null -eq (Get-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue)) {
+          Write-Error "cannot move '$Output' aside" -ErrorAction Stop
+        }
+        $aside = $true
+      }
+      $done = $false
+      try {
+        & $sevenZip a $Output "-xr!$prevName" @safe
+        if ($LASTEXITCODE -ne 0) { Write-Error "7z exited $LASTEXITCODE" -ErrorAction Stop }
+        $done = $true
+      } finally {
+        if (-not $done) {
+          Remove-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue
+          if ($aside) { Move-Item -LiteralPath $prev -Destination $Output -Force -ErrorAction SilentlyContinue }
+        } elseif ($aside) {
+          Remove-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue
+        }
+      }
       break
     }
     default                 { Write-Error "unsupported format '$Output'" -ErrorAction Stop }
   }
+  if ($ran -and $LASTEXITCODE -ne 0) { Write-Error "$ran exited $LASTEXITCODE" -ErrorAction Stop }
 }
 
 # xt / pk → short names for extract / archive. Aliases (as `snip` is for

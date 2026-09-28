@@ -200,6 +200,13 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
 
+`extract` and `archive` read the extension without regard to case
+(`PHOTOS.ZIP`, `DATA.TAR.GZ`). `archive` always writes a fresh archive: over an
+existing `.zip` or `.7z` it replaces the file instead of updating it, so files
+deleted from the sources do not linger, and a run whose archiver fails keeps
+the existing output as it was and exits non-zero. On pwsh the `.zip` holds
+hidden files and folders (`.env`, `.git`) too, as `zip -r` does.
+
 On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
 `.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
 So does a bare `.zst` whose output already exists when it or the source is a

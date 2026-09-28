@@ -545,6 +545,8 @@ Case '_ArSameFile' { _ArSameFile a.txt a.txt; _ArSameFile a.txt link.txt; _ArSam
 Case '_ArRegularFile' { _ArRegularFile a.txt; _ArRegularFile sub; _ArRegularFile missing.txt }
 Case '_ArTool' { _ArTool 'gzip'; _ArTool 'nonexistent-strict' }
 Case '_ArCompressTo' { _ArCompressTo (_ArTool 'gzip') one.txt direct.gz }
+Case '_ArZipTo' { _ArZipTo @('a.txt', 'sub', 'emptydir') 'out.zip' 'direct.zip' }
+Case '_ArZipTo, a missing source' { _ArZipTo @('missing.txt') 'out.zip' 'direct2.zip' }
 Case 'archive .tar.gz' { archive out.tar.gz a.txt b.txt }
 Case 'archive .tgz' { archive out.tgz a.txt }
 Case 'archive .tar.bz2' { archive out.tar.bz2 a.txt }
