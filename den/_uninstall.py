@@ -467,6 +467,12 @@ def _interactive() -> int:
         flags: list[str] = []
         for tool in chosen:
             flags += ["--tool", tool]
+        # Mirror `den install`, which deploys the parent by default; only a
+        # den-identical parent is removed, so an edited one is kept.
+        if _ui.confirm(
+            "Remove the parent prompt (AGENTS.md/CLAUDE.md) too?", default=True
+        ):
+            flags.append("--with-parent")
         rc |= _uninstall_skills(flags)
     else:
         _ui.say("  (no tools selected)")

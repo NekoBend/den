@@ -383,6 +383,57 @@ def test_interactive_uninstalls_cheatsheets(monkeypatch):
     assert ("cheatsheets", []) in calls  # was never dispatched before the fix
 
 
+def _interactive_skills_flags(monkeypatch, *, parent: bool):
+    """The flags interactive `den uninstall` hands _uninstall_skills."""
+    from den import _ui, _uninstall
+
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: ["claude"])
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: parent)
+    monkeypatch.setattr(_uninstall, "_uninstall_shell", lambda argv: 0)
+    monkeypatch.setattr(_uninstall, "_uninstall_cheatsheets", lambda argv: 0)
+    seen = []
+    monkeypatch.setattr(
+        _uninstall, "_uninstall_skills", lambda argv: seen.append(argv) or 0
+    )
+    assert _uninstall._interactive() == 0
+    return seen
+
+
+def test_interactive_uninstall_offers_the_parent_prompt(monkeypatch):
+    """Interactive install deploys the parent by default; interactive
+    uninstall never passed --with-parent, so CLAUDE.md/AGENTS.md stayed
+    loaded, pointing at skills that were gone."""
+    assert _interactive_skills_flags(monkeypatch, parent=True) == [
+        ["--tool", "claude", "--with-parent"]
+    ]
+
+
+def test_interactive_uninstall_keeps_the_parent_when_declined(monkeypatch):
+    assert _interactive_skills_flags(monkeypatch, parent=False) == [
+        ["--tool", "claude"]
+    ]
+
+
+def test_interactive_uninstall_removes_the_parent_install_deployed(
+    tmp_path, monkeypatch
+):
+    from den import _ui, _uninstall
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert install_main(["skills", "--tool", "claude", "--with-parent"]) == 0
+    parent = tmp_path / ".claude" / "CLAUDE.md"
+    assert parent.is_file()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: ["claude"])
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(_uninstall, "_uninstall_shell", lambda argv: 0)
+    monkeypatch.setattr(_uninstall, "_uninstall_cheatsheets", lambda argv: 0)
+    assert _uninstall._interactive() == 0
+    assert not parent.exists()
+    assert not (tmp_path / ".claude" / "skills").exists()
+
+
 def test_uninstall_usage_common_flags_scoped(capsys):
     # The "Common" flags line must not claim --yes/--dry-run apply to every
     # target: `den uninstall hook` rejects them (exit 2), so the line is scoped.
