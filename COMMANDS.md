@@ -260,13 +260,13 @@ Loads only when ffmpeg is installed. pwsh has the same set; cmd has none.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `tomp4` / `towebm` | convert to H.264/AAC mp4 / VP9/Opus webm; `<in> [out] [ffmpeg args]`, one input per call (an `out` without the target extension is refused) | ✓ | ✓ | — |
+| `tomp4` / `towebm` | convert to H.264/AAC mp4 / VP9/Opus webm; `<in> [out] [ffmpeg args]`, one input per call (an `out` without the target extension is refused; `OUT.MP4` counts as `.mp4`) | ✓ | ✓ | — |
 | `tomp3` / `towav` / `toflac` | convert audio to mp3 / wav / flac; same argument shape and one-input rule as `tomp4` | ✓ | ✓ | — |
 | `togif` | convert to GIF (2-pass palette) | ✓ | ✓ | — |
-| `minfo <file...>` | media info via ffprobe, one report per file | ✓ | ✓ | — |
-| `clip` | cut a video segment (stream copy by default) | ✓ | ✓ | — |
+| `minfo <file...> [ffprobe args]` | media info via ffprobe, one report per file; the options from the first `-` word on go to every ffprobe call as given (`-of json`) | ✓ | ✓ | — |
+| `clip` | cut a video segment (stream copy by default); seeks in the input, so a late cut starts at once | ✓ | ✓ | — |
 | `strip-audio` | remove the audio track | ✓ | ✓ | — |
-| `thumbnail` | extract a single frame as an image | ✓ | ✓ | — |
+| `thumbnail` | extract a single frame as an image; seeks in the input, and ffmpeg args still yield one frame | ✓ | ✓ | — |
 
 ## Parallel operations
 
