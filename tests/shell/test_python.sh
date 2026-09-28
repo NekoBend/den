@@ -506,6 +506,22 @@ mv "$WORK/ps_venv_lc_tracked/.venv/bin/Activate.ps1" "$WORK/ps_venv_lc_tracked/.
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:VIRTUAL_ENV = \$null; va")
 assert_contains "pwsh/va refuses git-tracked bin/activate.ps1" "tracked by git (bin/activate.ps1)" "$err"
 
+echo "[pwsh] va activates, or refuses when committed, a Scripts/activate.ps1"
+mk_venv_ps "$WORK/ps_venv_scripts_lc" "3.12.0"
+mkdir -p "$WORK/ps_venv_scripts_lc/.venv/Scripts"
+mv "$WORK/ps_venv_scripts_lc/.venv/bin/Activate.ps1" "$WORK/ps_venv_scripts_lc/.venv/Scripts/activate.ps1"
+rmdir "$WORK/ps_venv_scripts_lc/.venv/bin"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_scripts_lc'; \$env:VIRTUAL_ENV = \$null; va *>\$null; \$env:VIRTUAL_ENV" | tr -d '\r')
+assert_eq "pwsh/va finds Scripts/activate.ps1" "fakevenv" "$actual"
+(
+    cd "$WORK/ps_venv_scripts_lc" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/Scripts/activate.ps1
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed activate.ps1"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_scripts_lc'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses git-tracked Scripts/activate.ps1" "tracked by git (Scripts/activate.ps1)" "$err"
+
 echo "[pwsh] va refuses a committed activate script whose case differs"
 # On NTFS and default APFS, Test-Path for bin/Activate.ps1 also finds a committed
 # bin/ACTIVATE.PS1, the same file there. Here they are two files, which is enough
