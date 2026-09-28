@@ -163,8 +163,11 @@ function va {
   }
   $gitExe = _ResolveCmd 'git' 'App'
   if ($gitExe) {
-    # Ask about all of Scripts/ and bin/: a committed symlink bin -> ../tools is
-    # listed as "bin" and the files behind it not at all.
+    # Ask from inside the activate script's directory, about all of it: git then
+    # learns the directory's name from the file system (Git for Windows asks it for
+    # the stored name), so "." lists what is tracked there under a spelling the
+    # file system folds and :(icase), which folds ASCII only, does not. The ../
+    # pathspecs cover Scripts/, bin/ and pyvenv.cfg as before.
     # Test-Path above ignores case on NTFS and default APFS and git pathspecs do not,
     # so :(icase) also catches a committed SCRIPTS/Activate.ps1. The exact names
     # still match when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
@@ -173,9 +176,9 @@ function va {
     # empty index (nothing tracked) and a core.fsmonitor it runs. Git then refuses,
     # and the refusal below fails closed. Git before 2.38 ignores the key and
     # cannot be kept out of such a repository.
-    $venvPaths = 'Scripts', 'bin', 'pyvenv.cfg'
-    $pathspecs = $venvPaths + ($venvPaths | ForEach-Object { ":(icase)$_" })
-    $tracked = & $gitExe -c safe.bareRepository=explicit -C $Name ls-files -- $pathspecs 2>$null
+    $activateDir = Split-Path -Parent $activatePath
+    $pathspecs = @('.') + ('Scripts', 'bin', 'pyvenv.cfg' | ForEach-Object { "../$_"; ":(icase)../$_" })
+    $tracked = & $gitExe -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
     if ($LASTEXITCODE -ne 0) {
       # Fail closed: only "not a git repository" means nothing to check. Any other
       # failure, such as a checkout git will not open for dubious ownership, leaves
@@ -184,7 +187,7 @@ function va {
       # other messages quote a path that may hold the same words.
       $lcAll = $env:LC_ALL
       $env:LC_ALL = 'C'
-      try { $why = @(& $gitExe -c safe.bareRepository=explicit -C $Name ls-files -- bin 2>&1 | ForEach-Object { "$_" }) }
+      try { $why = @(& $gitExe -c safe.bareRepository=explicit -C $activateDir ls-files -- . 2>&1 | ForEach-Object { "$_" }) }
       catch { $why = @("$_") }
       finally { $env:LC_ALL = $lcAll }
       if (-not ($why -match '^fatal: not a git repository')) {
@@ -197,8 +200,10 @@ function va {
     }
     if ($tracked) {
       # Name what git actually reports: the match may be pyvenv.cfg alone, so a
-      # message about the activate script would be wrong.
-      $trackedList = (@($tracked) -join ', ')
+      # message about the activate script would be wrong. git names paths from the
+      # activate script's directory; name them from the venv, as it always has.
+      $activateDirName = Split-Path -Leaf $activateDir
+      $trackedList = (@($tracked | ForEach-Object { if ($_.StartsWith('../')) { $_.Substring(3) } else { "$activateDirName/$_" } }) -join ', ')
       Write-Error "'$Name': venv content is tracked by git ($trackedList) - a venv committed to the repo; dot-source it yourself if you trust it: . $activatePath"
       return
     }

@@ -300,6 +300,22 @@ ln -sfn "$WORK/venv_symlink_target/.venv" "$WORK/venv_symlink/.venv"
 actual=$(run_bash "$PYTHON_SH_TEST" "cd '$WORK/venv_symlink' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
 assert_eq "bash/va accepts a symlinked venv" "PY=3.12.0" "$actual"
 
+echo "[bash] va refuses a committed bin/ whose case differs"
+# On a case-insensitive file system the test for bin/activate also finds a
+# committed BIN/activate. Here BIN/ is a second directory, which is enough to show
+# that git reports it.
+mk_venv "$WORK/venv_tracked_dircase" "3.12.0"
+mkdir -p "$WORK/venv_tracked_dircase/.venv/BIN"
+: > "$WORK/venv_tracked_dircase/.venv/BIN/activate"
+(
+    cd "$WORK/venv_tracked_dircase" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/BIN/activate
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed BIN/activate"
+) >/dev/null 2>&1
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_tracked_dircase' && va" || true)
+assert_contains "bash/va refuses a tracked BIN/activate" "tracked by git (BIN/activate)" "$err"
+
 mk_venv "$NAGR/r" "3.12.0"
 (
     cd "$NAGR/r" || exit 1
@@ -807,6 +823,19 @@ if [ "$GIT_HAS_SAFE_BARE" -eq 1 ]; then
 else
     echo "  SKIP: pwsh/va venv repository (git before 2.38 has no safe.bareRepository)"
 fi
+
+echo "[pwsh] va still refuses a committed bin/ next to the Scripts/ it activates"
+mk_venv_ps "$WORK/ps_venv_other_dir" "3.12.0"
+mkdir -p "$WORK/ps_venv_other_dir/.venv/Scripts"
+printf '%s\n' '$env:VIRTUAL_ENV = "scripts"' > "$WORK/ps_venv_other_dir/.venv/Scripts/Activate.ps1"
+(
+    cd "$WORK/ps_venv_other_dir" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/Activate.ps1
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed bin/"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_other_dir'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses a tracked bin/ beside Scripts/" "tracked by git (bin/Activate.ps1)" "$err"
 
 echo "[pwsh] va accepts a symlinked venv"
 # `ln -s ~/venvs/proj .venv` is a legitimate layout, not an attack.

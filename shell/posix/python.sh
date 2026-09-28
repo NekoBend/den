@@ -115,8 +115,11 @@ va() {
     local tracked why nl='
 '
     if command -v git >/dev/null 2>&1; then
-        # Ask about all of bin/: a committed symlink bin -> ../scripts is listed as
-        # "bin" and the files behind it not at all.
+        # Ask from inside bin/, about all of it: git then learns the directory's
+        # name from the file system (Git for Windows asks it for the stored name),
+        # so "." lists what is tracked there under a spelling the file system folds
+        # and :(icase), which folds ASCII only, does not. The ../ pathspecs keep
+        # :(icase) for bin/ and reach pyvenv.cfg.
         # The -f test above ignores case on default APFS and git pathspecs do not, so
         # :(icase) also catches a committed BIN/activate. The exact names still match
         # when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
@@ -125,13 +128,13 @@ va() {
         # with an empty index (nothing tracked) and a core.fsmonitor it runs. Git
         # then refuses, and the refusal below fails closed. Git before 2.38 ignores
         # the key and cannot be kept out of such a repository.
-        if ! tracked="$(command git -c safe.bareRepository=explicit -C "$name" ls-files -- bin pyvenv.cfg ':(icase)bin' ':(icase)pyvenv.cfg' 2>/dev/null)"; then
+        if ! tracked="$(command git -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . ../bin ':(icase)../bin' ../pyvenv.cfg ':(icase)../pyvenv.cfg' 2>/dev/null)"; then
             # Fail closed: only "not a git repository" means nothing to check. Any
             # other failure, such as a checkout git will not open for dubious
             # ownership, leaves a committed venv possible. Any line of git's, as
             # trace lines may come first, and only from its start, as other
             # messages quote a path that may hold the same words.
-            why="$nl$(LC_ALL=C command git -c safe.bareRepository=explicit -C "$name" ls-files -- bin 2>&1 >/dev/null)"
+            why="$nl$(LC_ALL=C command git -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . 2>&1 >/dev/null)"
             case "$why" in
                 *"${nl}fatal: "[Nn]"ot a git repository"*) tracked="" ;;
                 *)
@@ -146,7 +149,9 @@ va() {
         fi
         if [ -n "$tracked" ]; then
             # Name what git actually reports: the match may be pyvenv.cfg alone, so
-            # a message about the activate script would be wrong.
+            # a message about the activate script would be wrong. git names paths
+            # from bin/; name them from the venv, as the message always has.
+            tracked="$(printf '%s\n' "$tracked" | sed -e 's|^|bin/|' -e 's|^bin/\.\./||')"
             echo "va: $name: venv content is tracked by git ($(printf '%s' "$tracked" | tr '\n' ' ')) - a venv committed to the repo; source it yourself if you trust it: source $activate" >&2
             return 1
         fi
