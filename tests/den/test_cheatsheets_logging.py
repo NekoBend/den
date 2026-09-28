@@ -46,6 +46,9 @@ def restore_logging() -> Iterator[None]:
     root.handlers[:] = saved_root[1]
     for name, (level, handlers, propagate) in saved.items():
         logger = logging.getLogger(name)
+        for handler in logger.handlers:
+            if handler not in handlers:
+                handler.close()
         logger.setLevel(level)
         logger.handlers[:] = handlers
         logger.propagate = propagate
@@ -97,6 +100,39 @@ def test_setup_dictconfig_keeps_library_debug_and_url_secrets_out(
     assert "app debug line" in err
     assert "SECRET" not in err
     assert "library chatter" not in err
+
+
+@pytest.mark.parametrize(
+    ("filename", "recipe"),
+    [
+        ("fastapi-logging.py", "setup_uvicorn_json"),
+        ("fastapi-logging.py", "setup_uvicorn_file"),
+        ("logging-config.py", "setup_structlog_with_stdlib"),
+    ],
+)
+def test_info_level_recipes_keep_http_client_urls_out(
+    restore_logging, capsys, tmp_path, monkeypatch, filename, recipe
+):
+    # These run at INFO, where httpx logs every request with the whole URL:
+    # the query-string secret reached stderr and the log files.
+    structlog = None
+    if recipe == "setup_structlog_with_stdlib":
+        structlog = pytest.importorskip("structlog")
+    monkeypatch.chdir(tmp_path)  # setup_uvicorn_file writes app.log, access.log
+    sheet = _load(filename)
+    try:
+        getattr(sheet, recipe)()
+        _emit_sample()
+    finally:
+        if structlog is not None:
+            structlog.reset_defaults()
+    err = capsys.readouterr().err
+    assert "app info line" in err
+    assert "SECRET" not in err
+    for log in tmp_path.glob("*.log"):
+        assert "SECRET" not in log.read_text(encoding="utf-8")
+    for name in NOISY:
+        assert logging.getLogger(name).level == logging.WARNING
 
 
 def _rich_handler_output(sheet: ModuleType) -> io.StringIO:

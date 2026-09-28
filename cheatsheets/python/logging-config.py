@@ -236,7 +236,9 @@ def setup_structlog_with_stdlib(log_level: int = 20) -> None:
     [Best for] Apps using structlog that also need library logs (urllib3, sqlalchemy)
                to flow through the same pipeline.
     [Note] stdlib loggers are captured by structlog's ProcessorFormatter,
-           so everything gets the same structured output.
+           so everything gets the same structured output. The chatty HTTP
+           clients (urllib3, httpx, httpcore, botocore) are pinned to WARNING
+           for the reasons in ``setup_dictconfig``: their warnings still flow.
     """
     import logging
     import sys
@@ -280,6 +282,8 @@ def setup_structlog_with_stdlib(log_level: int = 20) -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(log_level)
+    for name in ("urllib3", "httpx", "httpcore", "botocore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 # =============================================================================

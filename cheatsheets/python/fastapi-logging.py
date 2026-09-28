@@ -134,6 +134,9 @@ def setup_uvicorn_json(log_level: str = "info") -> None:
            Configures loggers directly and returns ``None`` so that
            ``uvicorn.run(log_config=None)`` skips its own reconfiguration.
            Call it in the server process (see the module Key Insight).
+           The chatty HTTP clients (urllib3, httpx, httpcore, botocore) are
+           pinned to WARNING: httpx logs every request at INFO with the whole
+           URL, query-string secrets included.
 
     Example::
 
@@ -198,6 +201,8 @@ def setup_uvicorn_json(log_level: str = "info") -> None:
     root.handlers.clear()
     root.addHandler(json_handler)
     root.setLevel(log_level.upper())
+    for name in ("urllib3", "httpx", "httpcore", "botocore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     uv_logger = logging.getLogger("uvicorn")
     uv_logger.handlers.clear()
@@ -329,7 +334,8 @@ def setup_uvicorn_file(
            ``workers>1`` every worker rotates the same files on its own and
            they clobber each other: give each worker its own file (e.g. put
            ``os.getpid()`` in the name) or rotate externally with
-           ``WatchedFileHandler`` + logrotate.
+           ``WatchedFileHandler`` + logrotate. urllib3, httpx, httpcore and
+           botocore are pinned to WARNING, as in ``setup_uvicorn_json``.
 
     Example::
 
@@ -385,6 +391,8 @@ def setup_uvicorn_file(
     root.setLevel(level)
     root.addHandler(console_handler)
     root.addHandler(app_file_handler)
+    for name in ("urllib3", "httpx", "httpcore", "botocore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     # Uvicorn error logger
     uv_error = logging.getLogger("uvicorn.error")
