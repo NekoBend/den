@@ -20,10 +20,15 @@ def _console() -> Any:  # ruff: ignore[any-type]  # rich Console or None
 
 
 def say(message: str, *, style: str | None = None) -> None:
-    """Print, styled via rich when available (rich auto-degrades off-TTY)."""
+    """Print, styled via rich when available (rich auto-degrades off-TTY).
+
+    The message is printed literally: callers list file paths before the
+    overwrite and removal prompts, and Rich markup would drop a `[client]`
+    directory, eat the backslash of a Windows `\\[X]` one, or raise
+    MarkupError on `[/old]`. No caller uses markup; `style` is the styling."""
     console = _console()
     if console is not None:
-        console.print(message, style=style, highlight=False)
+        console.print(message, style=style, highlight=False, markup=False, emoji=False)
     else:
         print(message)
 

@@ -1,5 +1,7 @@
 """Tests for den/_ui.py (interactive prompts that degrade to plain stdin)."""
 
+import pytest
+
 from den import _ui
 
 
@@ -45,3 +47,19 @@ def test_say_without_rich_uses_print(monkeypatch, capsys):
     monkeypatch.setattr(_ui, "_console", lambda: None)
     _ui.say("hello world")
     assert "hello world" in capsys.readouterr().out
+
+
+def test_say_prints_paths_literally_through_rich(capsys):
+    """say() lists file paths before the overwrite and removal prompts. Rich
+    markup parsing dropped a '[client]' directory, ate the backslash before a
+    Windows '\\[Client]' one, and raised MarkupError on 'notes[/old]'."""
+    pytest.importorskip("rich")
+    msgs = [
+        "  rm /w/[client] app/skills/x.md",
+        "  rm C:\\w\\[Client] app\\x.md",
+        "  rm /w/notes[/old]/x.md",
+        "  /w/:smile:/[bold]x[/bold]",
+    ]
+    for m in msgs:
+        _ui.say(m, style="yellow")
+    assert capsys.readouterr().out.splitlines() == msgs
