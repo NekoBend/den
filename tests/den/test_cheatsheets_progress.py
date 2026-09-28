@@ -13,6 +13,7 @@ import os
 import queue
 import sys
 import time
+import traceback
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
@@ -75,6 +76,12 @@ def _bracket_step(
     report(1, 1)
     log(f"saw {item}")
     return item.upper()
+
+
+def _value_error_on_1(item: int) -> int:
+    if item == 1:
+        raise ValueError("bad item")
+    return item
 
 
 def _key_error_on_2(item: int) -> int:
@@ -149,6 +156,21 @@ def test_bounded_keeps_per_item_failures_inside_a_batch():
     assert [o for i, o in enumerate(outcomes) if i != 7] == [
         i * 2 for i in range(20) if i != 7
     ]
+
+
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_bounded_failures_keep_the_worker_traceback(batch_size):
+    # Submitting func itself, the per-item mode's failures carried the
+    # worker's traceback as __cause__; through _apply_block the exception came
+    # back bare, with no trace of where in the worker it was raised.
+    outcomes = processes.run_process_rich_bounded(
+        iter(range(3)), _value_error_on_1, max_workers=2, batch_size=batch_size
+    )
+    assert [outcomes[0], outcomes[2]] == [0, 2]
+    assert isinstance(outcomes[1], ValueError)
+    shown = "".join(traceback.format_exception(outcomes[1]))
+    assert "in _value_error_on_1" in shown
+    assert 'raise ValueError("bad item")' in shown
 
 
 def test_bounded_returns_outcomes_when_a_worker_dies():

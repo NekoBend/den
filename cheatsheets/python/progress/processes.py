@@ -335,13 +335,19 @@ def _apply_block[T, R](
     """Apply ``func`` to every item of ``block`` inside a worker, failures kept.
 
     Runs in the worker process. The per-item exception is returned as data
-    so one bad item does not fail the whole block.
+    so one bad item does not fail the whole block. Its traceback does not
+    survive the pickle back to the parent, so it rides along as a note
+    (``add_note``): ``traceback.print_exception(outcome)`` still shows where
+    in the worker the item failed, as a future's ``_RemoteTraceback`` would.
     """
+    import traceback
+
     outcomes: list[R | BaseException] = []
     for item in block:
         try:
             outcomes.append(func(item))
         except Exception as exc:  # ruff: ignore[blind-except] - returned to the parent as data
+            exc.add_note(traceback.format_exc())
             outcomes.append(exc)
     return outcomes
 
