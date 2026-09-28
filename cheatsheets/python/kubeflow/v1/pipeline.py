@@ -241,15 +241,18 @@ def create_recurring_run(
     experiment_name: str = "scheduled",
     job_name: str = "daily-training",
     params: dict[str, str | int | float] | None = None,
-    cron_expression: str = "0 0 * * *",
+    cron_expression: str = "0 0 0 * * *",
     max_concurrency: int = 1,
     namespace: str = "kubeflow",
 ) -> object:
     """Upload a pipeline and create a cron-triggered recurring run.
 
     [Best for] Nightly retraining, periodic batch inference, scheduled ETL.
-    [Note] ``cron_expression`` follows standard 5-field cron syntax
-    (minute hour day month weekday). The pipeline must already be compiled.
+    [Note] KFP v1 parses ``cron_expression`` with robfig/cron, which takes
+    6 fields: second minute hour day-of-month month day-of-week. A 5-field
+    crontab line is read seconds-first, so "0 2 * * *" fires at minute 2 of
+    EVERY hour; write "0 0 2 * * *" for 02:00 daily. The pipeline must
+    already be compiled.
 
     Args:
         host: KFP API server URL.
@@ -258,7 +261,8 @@ def create_recurring_run(
         experiment_name: Experiment to group recurring runs under.
         job_name: Display name for the recurring run job.
         params: Pipeline parameters.
-        cron_expression: Cron schedule (default: daily at midnight UTC).
+        cron_expression: 6-field cron schedule, seconds first
+            (default "0 0 0 * * *": daily at midnight UTC).
         max_concurrency: Maximum parallel runs (default: 1).
         namespace: Kubernetes namespace.
 
@@ -271,7 +275,7 @@ def create_recurring_run(
             host="http://kfp.example.com",
             package_path="pipeline.yaml",
             pipeline_name="nightly-retrain",
-            cron_expression="0 2 * * *",  # 2 AM UTC daily
+            cron_expression="0 0 2 * * *",  # 2 AM UTC daily (sec min hour ...)
             params={"dataset": "latest"},
         )
     """
