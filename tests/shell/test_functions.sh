@@ -2017,6 +2017,38 @@ assert_success "pwsh/archive .zst and .tar.gz on 5.1 exit 0" "$?"
 assert_exists "pwsh/archive .zst on 5.1 still writes it" "$WORK/one/f.zst"
 assert_exists "pwsh/archive .tar.gz on 5.1 still writes it" "$WORK/one/t.tar.gz"
 
+# The same-file check resolves a symlink with APIs the .NET Framework lacks
+# (ResolveLinkTarget, GetFullPath(path, basePath)), so on 5.1 a link on either
+# side of an existing .zst output is refused instead of being compared as its
+# own path. That check is on the Windows branch, which $env:OS='Windows_NT'
+# selects here. Asserted: the message, exit 1, output, source and link left as
+# they were and no temporary; a symlinked source with no output yet and two
+# plain files still run on 5.1; pwsh 7 still resolves both links to the source.
+echo "[pwsh] archive refuses a symlink it cannot resolve on Windows PowerShell 5.1"
+setup_single_file
+printf 'PRECIOUS' > "$WORK/one/target.zst"
+ln -s target.zst "$WORK/one/src-link"
+ln -s payload.bin "$WORK/one/out-link.zst"
+for _pair in "target.zst:src-link" "out-link.zst:payload.bin"; do
+    _out=${_pair%%:*} _src=${_pair#*:}
+    _cmd="\$env:OS='Windows_NT'; Set-Location '$WORK/one'; archive '$_out' '$_src'"
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_DESKTOP" "$_cmd")
+    assert_contains "pwsh/archive $_out from $_src on 5.1 says it requires pwsh 7" \
+        "archive: a symlinked source or output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" "$err"
+    run_pwsh "$FUNCTIONS_PS1_DESKTOP" "$_cmd" >/dev/null 2>&1
+    assert_eq "pwsh/archive $_out from $_src on 5.1 exits 1" "1" "$?"
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "$_cmd")
+    assert_contains "pwsh/archive $_out from $_src on pwsh 7 is refused as the source" "is the source file" "$err"
+done
+assert_eq "pwsh/archive symlink on 5.1 left the output untouched" "PRECIOUS" "$(cat "$WORK/one/target.zst")"
+assert_eq "pwsh/archive symlink on 5.1 left the source intact" "$PAYLOAD_SHA" "$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)"
+assert_eq "pwsh/archive symlink on 5.1 left the output link a link" "payload.bin" "$(readlink "$WORK/one/out-link.zst")"
+assert_eq "pwsh/archive symlink on 5.1 left no temporary" "" "$(ls -A "$WORK/one" | grep '\.tmp\.' | tr -d '\n')"
+run_pwsh "$FUNCTIONS_PS1_DESKTOP" "\$env:OS='Windows_NT'; Set-Location '$WORK/one'; archive 'new.zst' 'src-link'; archive 'target.zst' 'payload.bin'" >/dev/null 2>&1
+assert_success "pwsh/archive .zst on 5.1 with no link to resolve exits 0" "$?"
+assert_exists "pwsh/archive .zst on 5.1 from a symlinked source, no output yet, writes it" "$WORK/one/new.zst"
+assert_eq "pwsh/archive .zst on 5.1 over a plain output replaces it" "$PAYLOAD_SHA" "$(zstd -dc "$WORK/one/target.zst" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+
 # pwsh reports these through the error stream, as every other failure in
 # archive/extract does, and terminates so the refusal reaches the process
 # status: the message, exit 1 and the absence of an output are all asserted,

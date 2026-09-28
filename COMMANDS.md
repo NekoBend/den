@@ -195,6 +195,8 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 
 On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
 `.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
+So does a bare `.zst` whose output already exists when it or the source is a
+symlink: 5.1 cannot tell whether the link names the other file.
 
 `dg` treats its first operand as the algo only when it is one of those tokens,
 and reads two operands as `<file> <hash>` only when the second is no existing

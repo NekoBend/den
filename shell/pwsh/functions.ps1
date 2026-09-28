@@ -376,6 +376,15 @@ function _ArSameFile([string]$A, [string]$B) {
   $ia = Get-Item -LiteralPath $fa -Force -ErrorAction SilentlyContinue
   $ib = Get-Item -LiteralPath $fb -Force -ErrorAction SilentlyContinue
   if (-not $ia -or -not $ib) { return $false }
+  # _ArLinkTarget needs ResolveLinkTarget or GetFullPath(path, basePath), and
+  # the .NET Framework under Windows PowerShell 5.1 has neither: a symlink would
+  # be compared as its own path, and a source linked to the output would pass
+  # as another file and be overwritten. Thrown there rather than guessed;
+  # archive re-raises it as its own error.
+  if ($PSVersionTable.PSEdition -eq 'Desktop' -and
+      ($ia.LinkType -eq 'SymbolicLink' -or $ib.LinkType -eq 'SymbolicLink')) {
+    throw 'a symlinked source or output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1'
+  }
   # A symlink names another path: compare what each one actually points at.
   $ra = _ArLinkTarget $ia
   $rb = _ArLinkTarget $ib
@@ -585,8 +594,12 @@ function archive {
       # ON the output, so where the output and the source are one directory
       # entry -- a case-insensitive volume, most obviously -- the source would
       # be replaced by its own compressed form despite the promise to keep it.
-      # _ArSameFile settles that by device and inode, not by path text.
-      if (_ArSameFile $src $Output) {
+      # _ArSameFile settles that by device and inode, not by path text. Where
+      # it cannot (a symlink on Windows PowerShell 5.1) it throws; re-raised
+      # here so it reads "archive: ..." and ends the call like the refusals.
+      try { $same = _ArSameFile $src $Output }
+      catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+      if ($same) {
         Write-Error "output '$Output' is the source file" -ErrorAction Stop
       }
       $toolPath = _ArTool $tool
