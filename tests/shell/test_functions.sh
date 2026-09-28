@@ -439,8 +439,13 @@ archive_posix_tests() {
 #!/bin/sh
 [ "$1" = a ] || exit 0
 out=$2; shift 2
+rc=0
+# A source that is not there fails the run, as it does in 7z (exit 1). Like
+# 7z, every source is looked up before <out> is written.
+for a; do case $a in -xr!*) ;; *) [ -e "$a" ] || rc=1 ;; esac; done
 for a; do case $a in -xr!*) ;; *) printf '%s\n' "$a" >> "$out" ;; esac; done
-[ -z "${STUB_FAIL-}" ]
+[ -z "${STUB_FAIL-}" ] || rc=1
+exit "$rc"
 STUB
     chmod +x "$WORK/upd/7z"
     $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/src' && archive ../rel.7z file1.txt file2.txt && archive ../rel.7z file1.txt" >/dev/null 2>&1
@@ -453,6 +458,37 @@ STUB
     assert_not_exists "$sh/archive .7z failed first run leaves no archive" "$WORK/new.7z"
     assert_eq "$sh/archive .7z leaves no staging directory" "" "$(ls -A "$WORK" | grep '^\.archive\.' | tr -d '\n')"
 
+    # A source that IS the output: `pk all.7z *` run again in the folder it
+    # archives. Moved aside, the old archive was a name that no longer
+    # existed, so 7z failed on it and the archive was never refreshed; zip
+    # warned about it.
+    echo "[$sh] archive .zip/.7z leave out a source that is the output itself"
+    mkdir -p "$WORK/self"
+    echo a > "$WORK/self/a"; echo b > "$WORK/self/b"
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/self' && archive all.7z * && echo c > c && rm b && archive all.7z *" >/dev/null 2>&1
+    assert_success "$sh/archive .7z rerun over a glob holding the output exit code" "$?"
+    assert_eq "$sh/archive .7z rerun over a glob holding the output" "a c " "$(tr '\n' ' ' < "$WORK/self/all.7z")"
+    # zip prints that warning on stdout, so the second run's stdout is kept.
+    actual=$($run "$FUNCTIONS_SH" "cd '$WORK/self' && archive all.zip * >/dev/null && archive all.zip ./all.zip '$WORK/self/all.zip' *" 2>&1)
+    assert_success "$sh/archive .zip rerun over a glob holding the output exit code" "$?"
+    assert_not_contains "$sh/archive .zip rerun gives zip no missing name" "not matched" "$actual"
+    assert_eq "$sh/archive .zip rerun over a glob holding the output" "a all.7z c " "$(unzip -Z1 "$WORK/self/all.zip" 2>/dev/null | sort | tr '\n' ' ')"
+    cp "$WORK/self/all.7z" "$WORK/self.before"
+    actual=$($run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/self' && archive all.7z ./all.7z" 2>&1)
+    assert_failure "$sh/archive .7z with only the output as a source fails" "$?"
+    assert_contains "$sh/archive .7z with only the output as a source says so" "no source besides the output" "$actual"
+    assert_eq "$sh/archive .7z with only the output keeps it" "$(cat "$WORK/self.before")" "$(cat "$WORK/self/all.7z")"
+    if command -v 7z >/dev/null 2>&1; then
+        # The real 7z, where one is installed (the test image has none).
+        rm -f "$WORK/self/all.7z"
+        $run "$FUNCTIONS_SH" "cd '$WORK/self' && archive all.7z * && echo d > d && rm a && archive all.7z *" >/dev/null 2>&1
+        assert_success "$sh/archive .7z rerun with the real 7z exit code" "$?"
+        assert_eq "$sh/archive .7z rerun with the real 7z" "all.zip c d " "$(7z l -ba -slt "$WORK/self/all.7z" 2>/dev/null | sed -n 's/^Path = //p' | sort | tr '\n' ' ')"
+    else
+        echo "  SKIP: 7z is not installed"
+    fi
+    rm -rf "$WORK/self" "$WORK/self.before"
+
     # `set -- "$@" x` per source made the 7z branch quadratic: 20000 sources
     # took minutes in bash before 7z even started. Linear, it is well under a
     # second; the timeout only catches the quadratic form.
@@ -461,6 +497,12 @@ STUB
     timeout 20 "$sh" -c "source '$FUNCTIONS_SH' && PATH='$WORK/upd:$PATH' && cd '$WORK' && archive long.7z -x @l \$(seq -f 'f%g' 20000)" >/dev/null 2>&1
     assert_success "$sh/archive .7z 20000 sources within the timeout" "$?"
     assert_eq "$sh/archive .7z 20000 sources all passed, switch-shaped ones as paths" "20005 ./-x ./@l f1" "$(cat "$WORK/argc" 2>/dev/null)"
+    # With the output already there, every source is also checked against it.
+    rm -f "$WORK/argc"
+    : > "$WORK/long.7z"
+    timeout 20 "$sh" -c "source '$FUNCTIONS_SH' && PATH='$WORK/upd:$PATH' && cd '$WORK' && archive long.7z -x @l ./long.7z \$(seq -f 'f%g' 20000)" >/dev/null 2>&1
+    assert_success "$sh/archive .7z 20000 sources over an existing output within the timeout" "$?"
+    assert_eq "$sh/archive .7z 20000 sources over an existing output, itself left out" "20005 ./-x ./@l f1" "$(cat "$WORK/argc" 2>/dev/null)"
     rm -rf "$WORK/upd" "$WORK/argc" "$WORK/rel.7z" "$WORK/long.7z"
 }
 
@@ -1896,9 +1938,13 @@ mkdir -p "$WORK/upd"
 cat > "$WORK/upd/7z" <<'STUB'
 #!/bin/sh
 [ "$1" = a ] || exit 0
-out=$2; shift 2
+out=$2; shift 2; rc=0
+# A source that is not there fails the run, as it does in 7z (exit 1). Like
+# 7z, every source is looked up before <out> is written.
+for a; do case $a in -xr!*) ;; *) [ -e "$a" ] || rc=1 ;; esac; done
 for a; do case $a in -xr!*) ;; *) printf '%s\n' "$a" >> "$out" ;; esac; done
 [ -z "${STUB_FAIL-}" ] || exit 2
+exit "$rc"
 STUB
 chmod +x "$WORK/upd/7z"
 run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/upd:' + \$env:PATH; Set-Location '$WORK/src'; archive ../rel.7z file1.txt file2.txt; archive ../rel.7z file1.txt" >/dev/null 2>&1
@@ -1912,7 +1958,26 @@ assert_eq "pwsh/archive 7z leaves nothing set aside" "" "$(ls -A "$WORK" | grep 
 actual=$(pwsh_outcome "\$env:PATH='$WORK/nobin'; archive none.7z src")
 assert_contains "pwsh/archive 7z not installed exits 1" "status=1" "$actual"
 assert_contains "pwsh/archive 7z not installed says so" "7z is not installed" "$actual"
-rm -rf "$WORK/upd" "$WORK/rel.7z"
+
+# A source that IS the output (a rerun whose list, or glob, holds the old
+# archive): the 7z branch moved the old archive aside and 7z then failed on
+# the missing name, and the zip writer stored the previous archive inside the
+# new one.
+echo "[pwsh] archive zip/7z leave out a source that is the output itself"
+mkdir -p "$WORK/self"
+echo a > "$WORK/self/a"; echo b > "$WORK/self/b"; echo c > "$WORK/self/c"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "\$env:PATH='$WORK/upd:' + \$env:PATH; Set-Location '$WORK/self'; archive all.7z a b; archive all.7z a c all.7z" >/dev/null 2>&1
+assert_success "pwsh/archive 7z rerun naming the output exit code" "$?"
+assert_eq "pwsh/archive 7z rerun naming the output" "a c " "$(tr '\n' ' ' < "$WORK/self/all.7z")"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/self'; archive all.zip a b; archive all.zip a c all.zip ./all.zip '$WORK/self/all.zip'" >/dev/null 2>&1
+assert_success "pwsh/archive zip rerun naming the output exit code" "$?"
+assert_eq "pwsh/archive zip rerun naming the output" "a c " "$(unzip -Z1 "$WORK/self/all.zip" 2>/dev/null | sort | tr '\n' ' ')"
+cp "$WORK/self/all.zip" "$WORK/self.before"
+actual=$(pwsh_outcome "Set-Location '$WORK/self'; archive all.zip ./all.zip")
+assert_contains "pwsh/archive zip with only the output as a source exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive zip with only the output as a source says so" "no source besides the output" "$actual"
+assert_eq "pwsh/archive zip with only the output keeps it" "$(sha256sum < "$WORK/self.before")" "$(sha256sum < "$WORK/self/all.zip")"
+rm -rf "$WORK/upd" "$WORK/rel.7z" "$WORK/self" "$WORK/self.before"
 
 # extract ran `& 7z` / `& unrar` by bare name: a missing tool raised only a
 # non-terminating CommandNotFound, $LASTEXITCODE stayed 0, and the archive

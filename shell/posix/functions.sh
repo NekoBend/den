@@ -485,7 +485,7 @@ archive() {
         return 1
     fi
     local out="$1"; shift
-    local _ar_tool _ar_tmp _ar_rc _ar_tmpd _ar_outdir _ar_fmt
+    local _ar_tool _ar_tmp _ar_rc _ar_tmpd _ar_outdir _ar_fmt _ar_s _ar_keep
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
     # The format ignores the extension's case (see _ar_format); the tools get
@@ -594,7 +594,31 @@ archive() {
         # leave the file they are writing out of the archive, and the staging
         # directory, which holds the previous archive, is excluded by its
         # unique name (zip's '*' also matches '/').
+        #
+        # A source that IS the output, as in `pk all.7z *` run again in the
+        # folder it archives, is dropped. Moved aside, the old archive is a
+        # name that no longer exists, so 7z failed on it (and zip warned); left
+        # in place it would be stored inside the new archive. The names are
+        # compared first, because '-ef' stats both files and a glob of
+        # thousands would pay that for each; '-ef' then settles './all.7z', an
+        # absolute path, a symlink and a hard link alike. eval: array syntax
+        # would stop a POSIX parser reading this file, and an array keeps the
+        # rebuild linear (see the 7z case below for why `set -- "$@" x` is not).
         zip|7z)
+            if [ -e "$out" ] || [ -L "$out" ]; then
+                eval '_ar_keep=()
+                    for _ar_s in "$@"; do
+                        if [ "${_ar_s##*/}" = "${out##*/}" ] && [ "$_ar_s" -ef "$out" ]; then
+                            continue
+                        fi
+                        _ar_keep+=("$_ar_s")
+                    done
+                    set -- "${_ar_keep[@]}"'
+                if [ $# -eq 0 ]; then
+                    echo "archive: no source besides the output '$out'" >&2
+                    return 1
+                fi
+            fi
             _ar_stage "$out" || return 1
             _ar_tmp=
             if [ -e "$out" ] || [ -L "$out" ]; then

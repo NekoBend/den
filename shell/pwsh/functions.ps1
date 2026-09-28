@@ -456,6 +456,24 @@ function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
   return $code
 }
 
+# _ArDropOutput → $Sources without the ones that name $Output itself, for the
+# zip and 7z branches of archive; throws when none is left. `pk all.7z a c
+# all.7z` (a rerun over a list, or a glob, that includes the old archive) made
+# 7z fail on the old archive once it was moved aside, and the zip writer stored
+# the previous archive inside the new one. Only a source with the output's
+# leaf name reaches _ArSameFile, which forks on Linux/macOS; it then settles
+# './all.7z', a full path, case on a case-insensitive volume and links, as the
+# POSIX twin's '-ef' does.
+function _ArDropOutput([string[]]$Sources = @(), [string]$Output = '') {
+  $leaf = ($Output -split '[\\/]')[-1]
+  $kept = @(foreach ($s in $Sources) {
+    if ($Output -and ($s -split '[\\/]')[-1] -eq $leaf -and (_ArSameFile $s $Output)) { continue }
+    $s
+  })
+  if ($kept.Count -eq 0) { throw "no source besides the output '$Output'" }
+  return $kept
+}
+
 # _ArZipTo → write a zip of $Sources into $Dest, a file that must not exist
 # yet, for archive. A directory is stored under its own name with everything
 # beneath it, hidden entries included (Get-ChildItem -Force), and a directory
@@ -716,10 +734,12 @@ function archive {
     # temporary sibling and renames that over the output only once it is
     # complete, so a failed run keeps an existing archive and terminates.
     '\.zip$'                {
+      try { $srcs = @(_ArDropOutput $Sources $Output) }
+      catch { Write-Error $_.Exception.Message -ErrorAction Stop }
       $tmp = "$Output.tmp." + [System.IO.Path]::GetRandomFileName()
       $moved = $false
       try {
-        try { _ArZipTo $Sources $Output $tmp }
+        try { _ArZipTo $srcs $Output $tmp }
         catch { Write-Error $_.Exception.Message -ErrorAction Stop }
         Move-Item -LiteralPath $tmp -Destination $Output -Force -ErrorAction Stop
         $moved = $true
@@ -741,7 +761,9 @@ function archive {
     # (`archive all.7z .`), 7z leaves the file it is writing out, and the
     # set-aside previous archive is excluded by its unique name (-xr!).
     '\.7z$'                 {
-      $safe = @($Sources | ForEach-Object {
+      try { $srcs = @(_ArDropOutput $Sources $Output) }
+      catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+      $safe = @($srcs | ForEach-Object {
         if ($_.StartsWith('-') -or $_.StartsWith('@')) { Join-Path '.' $_ } else { $_ }
       })
       $sevenZip = _ArTool '7z'
