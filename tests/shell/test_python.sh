@@ -174,6 +174,26 @@ err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_cfg_only' && va" || true
 assert_contains "bash/va reports pyvenv.cfg alone as the tracked file" "tracked by git (pyvenv.cfg)" "$err"
 assert_not_contains "bash/va does not blame the untracked activate script" "bin/activate)" "$err"
 
+echo "[bash] va refuses a committed activate script whose case differs"
+# On a case-insensitive file system (default APFS) the test for bin/activate also
+# finds a committed bin/ACTIVATE, the same file there. Here they are two files,
+# which is enough to show that git reports the committed one.
+mk_venv "$WORK/venv_tracked_case" "3.12.0"
+: > "$WORK/venv_tracked_case/.venv/bin/ACTIVATE"
+(
+    cd "$WORK/venv_tracked_case" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/ACTIVATE
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed ACTIVATE"
+) >/dev/null 2>&1
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_tracked_case' && va" || true)
+assert_contains "bash/va refuses a tracked bin/ACTIVATE" "tracked by git (bin/ACTIVATE)" "$err"
+
+echo "[bash] va still refuses a committed venv with GIT_LITERAL_PATHSPECS=1"
+# That setting turns :(icase) into a plain file name: the exact names must match.
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_tracked' && GIT_LITERAL_PATHSPECS=1 && export GIT_LITERAL_PATHSPECS && va" || true)
+assert_contains "bash/va refuses under literal pathspecs" "tracked by git (bin/activate pyvenv.cfg)" "$err"
+
 echo "[bash] va refuses a world-writable activate script"
 mk_venv "$WORK/venv_ww" "3.12.0"
 chmod 777 "$WORK/venv_ww/.venv/bin/activate"
@@ -470,6 +490,256 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
 " | tr -d '\r')
 assert_eq "pwsh/va accepts a 0644 activate script" "VE=[fakevenv] PY=[3.12.0]" "$actual"
+
+# uv venv and virtualenv write bin/activate.ps1 in lower case; on a case-sensitive
+# file system (Linux, case-sensitive macOS) a lookup for bin/Activate.ps1 misses it.
+echo "[pwsh] va activates a venv whose script is bin/activate.ps1 (uv, virtualenv)"
+mk_venv_ps "$WORK/ps_venv_lc" "3.12.0"
+mv "$WORK/ps_venv_lc/.venv/bin/Activate.ps1" "$WORK/ps_venv_lc/.venv/bin/activate.ps1"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv_lc'
+    \$env:VIRTUAL_ENV = \$null
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va finds bin/activate.ps1" "VE=[fakevenv] PY=[3.12.0]" "$actual"
+
+echo "[pwsh] va prefers bin/Activate.ps1 when both spellings exist"
+mk_venv_ps "$WORK/ps_venv_both" "3.12.0"
+printf '%s\n' '$env:VIRTUAL_ENV = "lowercase"' > "$WORK/ps_venv_both/.venv/bin/activate.ps1"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_both'; \$env:VIRTUAL_ENV = \$null; va *>\$null; \$env:VIRTUAL_ENV" | tr -d '\r')
+assert_eq "pwsh/va prefers bin/Activate.ps1" "fakevenv" "$actual"
+
+echo "[pwsh] va refuses a venv whose bin/activate.ps1 is committed"
+# Only the lower-case script is tracked, so the refusal must come from that file
+# being in the git ls-files list, not from pyvenv.cfg.
+mk_venv_ps "$WORK/ps_venv_lc_tracked" "3.12.0"
+mv "$WORK/ps_venv_lc_tracked/.venv/bin/Activate.ps1" "$WORK/ps_venv_lc_tracked/.venv/bin/activate.ps1"
+(
+    cd "$WORK/ps_venv_lc_tracked" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/activate.ps1
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed activate.ps1"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses git-tracked bin/activate.ps1" "tracked by git (bin/activate.ps1)" "$err"
+
+echo "[pwsh] va activates, or refuses when committed, a Scripts/activate.ps1"
+mk_venv_ps "$WORK/ps_venv_scripts_lc" "3.12.0"
+mkdir -p "$WORK/ps_venv_scripts_lc/.venv/Scripts"
+mv "$WORK/ps_venv_scripts_lc/.venv/bin/Activate.ps1" "$WORK/ps_venv_scripts_lc/.venv/Scripts/activate.ps1"
+rmdir "$WORK/ps_venv_scripts_lc/.venv/bin"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_scripts_lc'; \$env:VIRTUAL_ENV = \$null; va *>\$null; \$env:VIRTUAL_ENV" | tr -d '\r')
+assert_eq "pwsh/va finds Scripts/activate.ps1" "fakevenv" "$actual"
+(
+    cd "$WORK/ps_venv_scripts_lc" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/Scripts/activate.ps1
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed activate.ps1"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_scripts_lc'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses git-tracked Scripts/activate.ps1" "tracked by git (Scripts/activate.ps1)" "$err"
+
+echo "[pwsh] va refuses a committed activate script whose case differs"
+# On NTFS and default APFS, Test-Path for bin/Activate.ps1 also finds a committed
+# bin/ACTIVATE.PS1, the same file there. Here they are two files, which is enough
+# to show that git reports the committed one.
+mk_venv_ps "$WORK/ps_venv_tracked_case" "3.12.0"
+printf '%s\n' '$env:VIRTUAL_ENV = "committed"' > "$WORK/ps_venv_tracked_case/.venv/bin/ACTIVATE.PS1"
+(
+    cd "$WORK/ps_venv_tracked_case" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/ACTIVATE.PS1
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed ACTIVATE.PS1"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked_case'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses a tracked bin/ACTIVATE.PS1" "tracked by git (bin/ACTIVATE.PS1)" "$err"
+
+echo "[pwsh] va still refuses a committed venv with GIT_LITERAL_PATHSPECS=1"
+# That setting turns :(icase) into a plain file name: the exact names must match.
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:GIT_LITERAL_PATHSPECS = '1'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses under literal pathspecs" "tracked by git (bin/activate.ps1)" "$err"
+
+echo "[pwsh] va deactivates the active venv first, and only when it activates"
+# python's Activate.ps1 and uv's activate.ps1 each undo only their own kind of
+# venv, so va hands the switch to the active venv's own deactivate. A refused va
+# must leave the active venv alone.
+mk_venv_ps "$WORK/ps_venv_first" "3.12.0"
+printf '%s\n' \
+    'function global:deactivate { $global:DeactivatedBy = "first"; Remove-Item Env:VIRTUAL_ENV; Remove-Item function:deactivate }' \
+    '$env:VIRTUAL_ENV = "first"' > "$WORK/ps_venv_first/.venv/bin/Activate.ps1"
+mk_venv_ps "$WORK/ps_venv_second" "3.13.0"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:VIRTUAL_ENV = \$null
+    va '$WORK/ps_venv_first/.venv' *>\$null
+    va '$WORK/ps_venv_second/.venv' *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] BY=[\$global:DeactivatedBy] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va runs the active venv's deactivate before switching" "VE=[fakevenv] BY=[first] PY=[3.13.0]" "$actual"
+chmod 666 "$WORK/ps_venv_second/.venv/bin/Activate.ps1"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:VIRTUAL_ENV = \$null
+    va '$WORK/ps_venv_first/.venv' *>\$null
+    va '$WORK/ps_venv_second/.venv' *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] BY=[\$global:DeactivatedBy] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va refused keeps the active venv" "VE=[first] BY=[] PY=[3.12.0]" "$actual"
+
+echo "[pwsh] va leaves no version of the previous venv behind"
+# The next venv has no pyvenv.cfg, or its activate script does not parse: either
+# way the version va read for the previous venv must not outlive the switch.
+mk_venv_ps "$WORK/ps_venv_nocfg" "3.13.0"
+rm "$WORK/ps_venv_nocfg/.venv/pyvenv.cfg"
+mk_venv_ps "$WORK/ps_venv_broken" "3.13.0"
+printf '%s\n' 'this is { not valid' > "$WORK/ps_venv_broken/.venv/bin/Activate.ps1"
+for next in nocfg broken; do
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        \$env:VIRTUAL_ENV = \$null
+        va '$WORK/ps_venv_first/.venv' *>\$null
+        try { va '$WORK/ps_venv_$next/.venv' *>\$null } catch { }
+        \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+    " 2>/dev/null | tr -d '\r')
+    case $next in nocfg) want="VE=[fakevenv] PY=[]" ;; *) want="VE=[] PY=[]" ;; esac
+    assert_eq "pwsh/va to a $next venv drops the previous version" "$want" "$actual"
+done
+
+echo "[pwsh] va switches between the two kinds of activate script; vd restores PATH"
+# python's Activate.ps1 keeps the old PATH in $env:_OLD_VIRTUAL_PATH, uv's and
+# virtualenv's activate.ps1 in a global variable, and each one's own
+# deactivate -NonDestructive restores only its own. These stand-ins keep just that
+# part of each, so the switch is tested where uv is not installed (the CI image).
+mkdir -p "$WORK/ps_kinds/std/bin" "$WORK/ps_kinds/uv/bin"
+cat > "$WORK/ps_kinds/std/bin/Activate.ps1" << 'PS1'
+function global:deactivate([switch]$NonDestructive) {
+    if (Test-Path Env:_OLD_VIRTUAL_PATH) {
+        $env:PATH = $env:_OLD_VIRTUAL_PATH
+        Remove-Item Env:_OLD_VIRTUAL_PATH
+    }
+    Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+    if (-not $NonDestructive) { Remove-Item function:deactivate }
+}
+deactivate -NonDestructive
+$env:VIRTUAL_ENV = Split-Path -Parent $PSScriptRoot
+$env:_OLD_VIRTUAL_PATH = $env:PATH
+$env:PATH = $PSScriptRoot + [IO.Path]::PathSeparator + $env:PATH
+PS1
+cat > "$WORK/ps_kinds/uv/bin/activate.ps1" << 'PS1'
+function global:deactivate([switch]$NonDestructive) {
+    if (Test-Path variable:_OLD_VIRTUAL_PATH) {
+        $env:PATH = $variable:_OLD_VIRTUAL_PATH
+        Remove-Variable _OLD_VIRTUAL_PATH -Scope global
+    }
+    Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+    if (-not $NonDestructive) { Remove-Item function:deactivate }
+}
+deactivate -NonDestructive
+$env:VIRTUAL_ENV = Split-Path -Parent $PSScriptRoot
+New-Variable -Scope global -Name _OLD_VIRTUAL_PATH -Value $env:PATH
+$env:PATH = $PSScriptRoot + [IO.Path]::PathSeparator + $env:PATH
+PS1
+for pair in "std uv" "uv std"; do
+    first=${pair% *} second=${pair#* }
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        \$env:VIRTUAL_ENV = \$null
+        \$p0 = \$env:PATH
+        va '$WORK/ps_kinds/$first' *>\$null
+        va '$WORK/ps_kinds/$second' *>\$null
+        \$leaf = if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV } else { '' }
+        \$venvDirs = @(\$env:PATH -split [IO.Path]::PathSeparator | Where-Object { \$_ -like '*ps_kinds*' }).Count
+        \"VE=[\$leaf] VENV_DIRS_ON_PATH=[\$venvDirs]\"
+        vd
+        \"PATH=[\$(\$env:PATH -eq \$p0)]\"
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/va $first-kind then $second-kind stand-in, then vd" "VE=[$second] VENV_DIRS_ON_PATH=[1]
+PATH=[True]" "$actual"
+done
+
+# =============================================================================
+# uv-created venvs (the real uv, when it is installed and has a Python to use)
+# =============================================================================
+
+REAL_UV="$(command -v uv 2>/dev/null || true)"
+# No network and no user uv.toml: a venv from an interpreter uv already has, or a skip.
+export UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never UV_NO_CONFIG=1
+if [ -n "$REAL_UV" ] && "$REAL_UV" venv -q "$WORK/uv_probe" >/dev/null 2>&1; then
+    # python.ps1 against the real uv: no mock uv on PATH in front of it.
+    PYTHON_PS1_REAL_UV="$WORK/python_real_uv.ps1"
+    {
+        echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
+        cat "$PYTHON_PS1"
+    } > "$PYTHON_PS1_REAL_UV"
+
+    for sh in bash zsh; do
+        echo "[$sh] va and vd on a venv made by uv venv"
+        rm -rf "$WORK/uv_posix"
+        mkdir -p "$WORK/uv_posix"
+        "$REAL_UV" venv -q "$WORK/uv_posix/.venv" >/dev/null 2>&1
+        actual=$("$sh" -c "
+            source '$PYTHON_SH_SOURCE'
+            cd '$WORK/uv_posix' || exit 1
+            p0=\$PATH
+            va || exit 1
+            case \$PATH in \"\$VIRTUAL_ENV/bin:\"*) head=venv ;; *) head=other ;; esac
+            echo \"VE=[\${VIRTUAL_ENV##*/}] HEAD=[\$head] PY=[\${_DEN_VENV_PYTHON:+set}]\"
+            vd
+            [ \"\$PATH\" = \"\$p0\" ] && restored=yes || restored=no
+            echo \"VE=[\$VIRTUAL_ENV] PATH=[\$restored] PY=[\$_DEN_VENV_PYTHON]\"
+        " 2>&1 | tr -d '\r')
+        assert_eq "$sh/va and vd round-trip a uv venv" "VE=[.venv] HEAD=[venv] PY=[set]
+VE=[] PATH=[yes] PY=[]" "$actual"
+    done
+
+    echo "[pwsh] vva creates and activates a uv venv; vd undoes it"
+    # uv's activate.ps1 is virtualenv's: it wraps prompt by returning a string and
+    # keeps the old PATH in a global variable, where python's Activate.ps1 keeps it
+    # in the environment. Both must come back on vd.
+    rm -rf "$WORK/uv_pwsh"
+    mkdir -p "$WORK/uv_pwsh"
+    actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+        Set-Location '$WORK/uv_pwsh'
+        function global:prompt { 'PS> ' }
+        \$env:VIRTUAL_ENV = \$null
+        \$p0 = \$env:PATH
+        vva .venv *>\$null
+        \$head = (\$env:PATH -split [IO.Path]::PathSeparator)[0]
+        \$onPath = \$env:VIRTUAL_ENV -and \$head -eq (Join-Path \$env:VIRTUAL_ENV 'bin')
+        \$leaf = if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV } else { '' }
+        \"VE=[\$leaf] HEAD=[\$onPath] PY=[\$([bool]\$env:_DEN_VENV_PYTHON)] PROMPT=[\$(prompt)]\"
+        vd
+        \$deact = [bool](Get-Command deactivate -ErrorAction SilentlyContinue)
+        \"VE=[\$env:VIRTUAL_ENV] PATH=[\$(\$env:PATH -eq \$p0)] PY=[\$env:_DEN_VENV_PYTHON] PROMPT=[\$(prompt)] DEACTIVATE=[\$deact]\"
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/vva and vd round-trip a uv venv" "VE=[.venv] HEAD=[True] PY=[True] PROMPT=[(.venv) PS> ]
+VE=[] PATH=[True] PY=[] PROMPT=[PS> ] DEACTIVATE=[False]" "$actual"
+
+    # python -m venv from the interpreter uv found: the other kind of activate.ps1.
+    if "$WORK/uv_probe/bin/python" -m venv --without-pip "$WORK/uv_mixed/std" >/dev/null 2>&1 &&
+        "$REAL_UV" venv -q "$WORK/uv_mixed/uv" >/dev/null 2>&1; then
+        echo "[pwsh] va switches between python -m venv and uv venv; vd restores PATH"
+        for pair in "std uv" "uv std"; do
+            first=${pair% *} second=${pair#* }
+            actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+                function global:prompt { 'PS> ' }
+                \$env:VIRTUAL_ENV = \$null
+                \$p0 = \$env:PATH
+                va '$WORK/uv_mixed/$first' *>\$null
+                va '$WORK/uv_mixed/$second' *>\$null
+                \$leaf = if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV } else { '' }
+                \$venvDirs = @(\$env:PATH -split [IO.Path]::PathSeparator | Where-Object { \$_ -like '*uv_mixed*' }).Count
+                # python's prompt writes its prefix with Write-Host: 6>&1 collects it.
+                \"VE=[\$leaf] VENV_DIRS_ON_PATH=[\$venvDirs] PROMPT=[\$(@(prompt 6>&1) -join '')]\"
+                vd
+                \"PATH=[\$(\$env:PATH -eq \$p0)] PROMPT=[\$(@(prompt 6>&1) -join '')]\"
+            " 2>&1 | tr -d '\r')
+            assert_eq "pwsh/va $first then $second, then vd" "VE=[$second] VENV_DIRS_ON_PATH=[1] PROMPT=[($second) PS> ]
+PATH=[True] PROMPT=[PS> ]" "$actual"
+        done
+    else
+        echo "  SKIP: pwsh/va between python -m venv and uv venv (python -m venv failed)"
+    fi
+else
+    echo "  SKIP: uv-created venv tests (uv not installed, or no Python it can use offline)"
+fi
 
 # =============================================================================
 # Summary

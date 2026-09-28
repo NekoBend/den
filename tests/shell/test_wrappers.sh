@@ -38,7 +38,12 @@ COMBINED_PS1="/tmp/wrappers_combined_$$.ps1"
     grep -v '_DenInteractive' "$COREUTILS_PS1"
 } > "$COMBINED_PS1"
 
-_cleanup_wrappers() { rm -f "$WRAPPERS_PS1_STRIPPED" "$COMBINED_PS1"; }
+# The same wrappers with the edition check reading "Desktop", standing in for
+# Windows PowerShell 5.1 (no 5.1 host runs here).
+WRAPPERS_PS1_DESKTOP="/tmp/wrappers_desktop_$$.ps1"
+sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$WRAPPERS_PS1_STRIPPED" > "$WRAPPERS_PS1_DESKTOP"
+
+_cleanup_wrappers() { rm -f "$WRAPPERS_PS1_STRIPPED" "$COMBINED_PS1" "$WRAPPERS_PS1_DESKTOP"; }
 trap '_cleanup_wrappers' EXIT
 
 # =============================================================================
@@ -430,6 +435,49 @@ echo "[pwsh] cat fallback reads stdin (not only file args)"
 # stdin through.
 actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; 'piped-line' | cat" | tr -d '\r')
 assert_eq "pwsh/cat fallback stdin" "piped-line" "$actual"
+
+# Get-ChildItem -Name emits the names as strings, and the ls fallback read .Name
+# off them: `ls -Name` printed nothing (a single $null) instead of the names.
+# Wrappers OFF and an empty PATH force the fallback, as in the cat case above.
+# Objects that do have a .Name (files, another provider's items) still print it.
+echo "[pwsh] ls fallback prints the names for -Name"
+setup_fixtures
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; ls -Name '$WORK/src'" | tr -d '\r' | sort)
+assert_eq "pwsh/ls fallback -Name" "file1.txt
+file2.txt
+subdir" "$actual"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; ls '$WORK/src'" | tr -d '\r' | sort)
+assert_eq "pwsh/ls fallback without -Name" "file1.txt
+file2.txt
+subdir" "$actual"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; ls Function: | Where-Object { \$_ -eq 'lt' }" | tr -d '\r')
+assert_eq "pwsh/ls fallback on another provider" "lt" "$actual"
+
+# The lt/llt fallback makes each path relative with [IO.Path]::GetRelativePath,
+# which the .NET Framework under Windows PowerShell 5.1 does not have: there it
+# stops with one terminating error and lists nothing. The copy of wrappers.ps1
+# whose edition check reads "Desktop" stands in for 5.1. With lsd the wrapper
+# never reaches the fallback, so lsd (a stub here) still runs there, and on
+# pwsh 7 the fallback lists as before.
+echo "[pwsh] lt / llt fallback on Windows PowerShell 5.1"
+setup_fixtures
+for _f in lt llt; do
+    err=$(run_pwsh_stderr_oneline "$WRAPPERS_PS1_DESKTOP" "\$env:_DEN_WRAPPERS='0'; Set-Location '$WORK'; $_f 'src'")
+    assert_contains "pwsh/$_f on 5.1 says it requires pwsh 7" \
+        "$_f: without lsd this requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" "$err"
+    actual=$(run_pwsh "$WRAPPERS_PS1_DESKTOP" "\$env:_DEN_WRAPPERS='0'; Set-Location '$WORK'; $_f 'src'; 'after'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/$_f on 5.1 lists nothing and stops" "" "$actual"
+    run_pwsh "$WRAPPERS_PS1_DESKTOP" "\$env:_DEN_WRAPPERS='0'; Set-Location '$WORK'; $_f 'src'" >/dev/null 2>&1
+    assert_eq "pwsh/$_f on 5.1 exits 1" "1" "$?"
+    actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; Set-Location '$WORK'; $_f 'src' | Out-String" 2>&1 | tr -d '\r')
+    assert_contains "pwsh/$_f fallback on pwsh 7 still lists relative paths" "src/file1.txt" "$actual"
+    assert_not_contains "pwsh/$_f fallback on pwsh 7 raises no error" "requires PowerShell 7+" "$actual"
+done
+mkdir -p "$WORK/lsdstub"
+printf '#!/bin/sh\necho "stub lsd $*"\n' > "$WORK/lsdstub/lsd"
+chmod +x "$WORK/lsdstub/lsd"
+actual=$(PATH="$WORK/lsdstub:$PATH" run_pwsh "$WRAPPERS_PS1_DESKTOP" "\$env:_DEN_WRAPPERS='1'; \$env:_DEN_WRAPPER_LOG='0'; lt 'src'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/lt on 5.1 with lsd still runs lsd" "stub lsd --tree src" "$actual"
 
 # =============================================================================
 # Wrapper notice of the real wrappers (stub modern tools)

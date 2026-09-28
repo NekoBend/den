@@ -39,7 +39,8 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 | `cdi` | interactive zoxide jump (fzf picker) | ✓ | ✓ | `zi` |
 | `zd` / `zdi` | always jump via zoxide, ignoring the wrapper toggle | ✓ | ✓ | ✓ |
 | `up [N]` | go up N directories (default 1) | ✓ | ✓ | ✓ |
-| `..`, `.1`–`.9` | go up 1..9 levels (`..` = one) | ✓ | ✓ | ✓ |
+| `..` | go up one level | ✓ | ✓ | ✓ |
+| `.1`-`.9` | go up 1..9 levels (on pwsh use `up N`: PowerShell reads `.1` as the number 0.1) | ✓ | — | ✓ |
 | `mkcd <dir>` | `mkdir -p` then cd into it | ✓ | ✓ | ✓ |
 | `cdf` | fuzzy-find a subdirectory (fd + fzf) and cd into it | ✓ | ✓ | — |
 | `back [N]` | go N entries back in the directory history (default 1) | ✓ | ✓ | ✓ |
@@ -83,16 +84,18 @@ $ back -l
 - `cd -` is unchanged, and counts as an ordinary move.
 - How moves are seen: zsh `chpwd`; bash `PROMPT_COMMAND` (den's `cd` records at
   once, other moves at the next prompt); PowerShell the prompt (den's navigation
-  commands, `cd`, `cdi`, `zd`, `zdi`, `up`, `..`, `.1`-`.9`, `mkcd`, `cdf`, `y`,
+  commands, `cd`, `cdi`, `zd`, `zdi`, `up`, `..`, `mkcd`, `cdf`, `y`,
   record at once when typed, not when a script or a function runs them, so a
   script counts only by where it ends up); cmd the Clink prompt filter in
   `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`
   (`_OLDPWD` is still set too).
 - On PowerShell the prompt recorder wraps the `prompt` function when den's line
-  in `$PROFILE` runs, after the starship prompt den sets up there. A prompt set
-  up after that line (oh-my-posh, posh-git, your own `function prompt`) replaces
-  the wrapper, and then only den's navigation commands and `back` / `fwd`
-  themselves notice a move: put any other prompt setup before den's line.
+  in `$PROFILE` runs, after the starship prompt den sets up there. The wrapper
+  also runs zoxide's prompt hook, which starship's prompt setup drops; that is
+  how zoxide learns the directories you visit. A prompt set up after that
+  line (oh-my-posh, posh-git, your own `function prompt`) replaces the wrapper,
+  and then only den's navigation commands and `back` / `fwd` themselves notice a
+  move, and zoxide learns nothing: put any other prompt setup before den's line.
 
 ## Git shortcuts
 
@@ -160,6 +163,9 @@ line without changing what runs; `_DEN_WRAPPERS=0` turns the wrappers off, as
 | `catw` / `findw` / `grepw` / `lsw` | always bat / fd / rg / lsd | ✓ | ✓ | — |
 | `toggle-wrapper` / `tgl-wr` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
 
+On Windows PowerShell 5.1, `lt` / `llt` need `lsd`: without it (or with the
+wrappers off) they stop with an error that they require PowerShell 7+ (pwsh).
+
 On Windows, `cp` / `mv` / `rm` / `mkdir` / `rmdir` gain Unix-flag behavior via
 microsoft/coreutils when it is installed (pwsh only); otherwise they keep the stock
 PowerShell cmdlet behavior.
@@ -193,6 +199,11 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
+
+On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
+`.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
+So does a bare `.zst` whose output already exists when it or the source is a
+symlink: 5.1 cannot tell whether the link names the other file.
 
 `dg` treats its first operand as the algo only when it is one of those tokens,
 and reads two operands as `<file> <hash>` only when the second is no existing
@@ -291,12 +302,32 @@ live under `$XDG_CONFIG_HOME`.
 |---|---|:---:|:---:|:---:|
 | `again [N]` | re-run the Nth previous command after a confirm | ✓ | ✓ | ✓ (N=1) |
 | `sagain [N]` | `again` with sudo | ✓ | ✓ | — |
-| `reload` | clear den's shell caches and reload the config (re-exec on bash/zsh, re-source in place on pwsh) | ✓ | ✓ | — |
+| `reload` | clear den's shell caches and restart the shell to load the config (`exec` on bash/zsh; a new pwsh on pwsh, see below) | ✓ | ✓ | — |
 | `code` | launch VS Code (prefers code-insiders) | ✓ | ✓ | ✓ |
 | `open <path>` | open a file/dir with the default app | — | ✓ | — |
 
 On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 `code`); posix/pwsh fall back.
+
+On pwsh, `reload` cannot replace the running process, so it starts the same
+pwsh with the arguments this session was launched with, in the current
+directory and environment, waits for it, and exits with its exit code; leaving
+the new shell closes the terminal. A `-WorkingDirectory` is left out, so the
+new shell starts in the current directory too; the other arguments take effect
+again, and a `-NoExit` launch runs its `-Command` or `-File` again there:
+relative paths in them, and those given to `-File`, `-SettingsFile` or
+`-ConfigurationFile`, are read from the current directory. In a VS Code
+terminal that loads the shell integration again, and `reload` passes on
+the values the first load took out of the environment (the nonce and the
+accessibility mode). Each reload nests one more pwsh process, and variables set
+in the session do not carry over (environment variables do). `reload` clears
+the caches and prints a warning instead of restarting in a `-File` or
+`-Command` run without `-NoExit`, a `-NonInteractive` launch, a non-console
+host (the ISE), a nested prompt (the debugger), a shell that 8 reloads in a row
+led to, or when the launch arguments hold `--%` or name a file (`-File`, a
+script path, `-SettingsFile`, `-ConfigurationFile`) that the new pwsh would not
+find from the current directory (it would exit at once, and the session with
+it).
 
 ## Standalone helper
 

@@ -18,7 +18,9 @@ FUNCTIONS_PS1_COMBINED="/tmp/functions_combined_$$.ps1"
     echo ". '$HELPERS_PS1'"
     cat "$FUNCTIONS_PS1"
 } > "$FUNCTIONS_PS1_COMBINED"
-_cleanup_functions() { rm -f "$FUNCTIONS_PS1_COMBINED" "$FUNCTIONS_SH"; }
+# Written by the Windows PowerShell 5.1 archive case; here so the trap removes it.
+FUNCTIONS_PS1_DESKTOP="/tmp/functions_desktop_$$.ps1"
+_cleanup_functions() { rm -f "$FUNCTIONS_PS1_COMBINED" "$FUNCTIONS_PS1_DESKTOP" "$FUNCTIONS_SH"; }
 trap '_cleanup_functions' EXIT
 
 # =============================================================================
@@ -915,6 +917,32 @@ assert_eq "bash/back OLDPWD" "/tmp" "$actual"
 # HOME=$DH, so `back -l` shows ~ forms. The fzf stub prints the input line
 # whose label is $FZF_PICK, the way a user's pick would come back from fzf.
 DH="$WORK/dh"
+# path_without <command>... - $PATH with none of <command> on it, for the
+# cases that load init.bash or init.ps1 with no starship or no zoxide. A
+# directory that holds one is replaced by a directory of links to its other
+# entries, not dropped: a distro's starship sits in /usr/bin beside sh and cat.
+# Call it where the PATH is used: the setup_* helpers empty $WORK, links too.
+path_without() {
+    local d c hit out='' n=0 base="$WORK/without"
+    for c in "$@"; do base="$base-$c"; done
+    rm -rf "$base"
+    while IFS= read -r d; do
+        hit=
+        for c in "$@"; do [ -n "$d" ] && [ -x "$d/$c" ] && hit=1; done
+        if [ -n "$hit" ]; then
+            n=$((n + 1))
+            mkdir -p "$base/$n"
+            ln -s "$d"/* "$base/$n/"
+            for c in "$@"; do rm -f "$base/$n/$c"; done
+            d="$base/$n"
+        fi
+        out="$out${out:+:}$d"
+    done <<EOF
+$(printf '%s\n' "$PATH" | tr ':' '\n')
+EOF
+    printf '%s\n' "$out"
+}
+
 setup_dirhist() {
     rm -rf "$DH"
     mkdir -p "$DH/start" "$DH/a" "$DH/b" "$DH/c" "$DH/fzfbin" "$DH/nobin"
@@ -1044,6 +1072,110 @@ assert_eq "bash/builtin cd, pushd, mkcd recorded" "  3  ~/start
   *  ~/c" "$out"
 out=$(dh_run bash "cd '$DH/a' && cd '$DH/b' && back >/dev/null && eval \"\$PROMPT_COMMAND\" && fwd")
 assert_eq "bash/prompt does not record back as a new move" "$DH/b" "$out"
+
+# init.bash loads zoxide, then starship, whose init moves a PROMPT_COMMAND
+# string (den's recorder and zoxide's hook) into STARSHIP_PROMPT_COMMAND and
+# runs it from starship_precmd. zoxide's doctor looks only in PROMPT_COMMAND, so
+# init.bash turns it off then, and only then. `bash -i -c` passes init.bash's
+# interactive guard without a terminal. The stubs print the parts of zoxide
+# 0.10's `init bash --no-cmd` (the hook, its PROMPT_COMMAND entry, the doctor
+# with its message cut to the first line) and starship 1.26's
+# `init bash --print-full-init` (the PROMPT_COMMAND move) that decide this;
+# `zoxide add` is logged.
+echo "[bash] init.bash: zoxide's doctor behind starship's PROMPT_COMMAND"
+ZI="$WORK/zinit"
+rm -rf "$ZI"
+mkdir -p "$ZI/home/.config/shell" "$ZI/zobin" "$ZI/stbin" "$ZI/d"
+cp "$DOTFILES"/shell/posix/*.sh "$DOTFILES/shell/bash/init.bash" "$ZI/home/.config/shell/"
+cat > "$ZI/zobin/zoxide" <<'STUB'
+#!/bin/sh
+if [ "$1" = add ]; then printf '%s\n' "$*" >> "$ZO_ADDS"; exit 0; fi
+[ "$1" = init ] || exit 0
+cat <<'INIT'
+function __zoxide_pwd() {
+    \builtin pwd -L
+}
+function __zoxide_cd() {
+    \builtin cd -- "$@"
+}
+__zoxide_oldpwd="$(__zoxide_pwd)"
+function __zoxide_hook() {
+    \builtin local -r retval="$?"
+    \builtin local pwd_tmp
+    pwd_tmp="$(__zoxide_pwd)"
+    if [[ ${__zoxide_oldpwd} != "${pwd_tmp}" ]]; then
+        __zoxide_oldpwd="${pwd_tmp}"
+        if [[ -o history ]]; then
+            \command zoxide add -- "${__zoxide_oldpwd}"
+        fi
+    fi
+    return "${retval}"
+}
+if [[ ${PROMPT_COMMAND:=} != *'__zoxide_hook'* ]]; then
+    if [[ "$(declare -p PROMPT_COMMAND 2>&1)" == "declare -a"* ]]; then
+        PROMPT_COMMAND=("${PROMPT_COMMAND[@]}" __zoxide_hook)
+    else
+        PROMPT_COMMAND="${PROMPT_COMMAND%"${PROMPT_COMMAND##*[![:space:];]}"}"
+        PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND};}__zoxide_hook"
+    fi
+fi
+function __zoxide_doctor() {
+    [[ ${_ZO_DOCTOR:-1} -eq 0 ]] && return 0
+    [[ ${PROMPT_COMMAND[@]:-} == *'__zoxide_hook'* ]] && return 0
+    [[ ${__vsc_original_prompt_command[@]:-} == *'__zoxide_hook'* ]] && return 0
+    _ZO_DOCTOR=0
+    \builtin printf '%s\n' 'zoxide: detected a possible configuration issue.' >&2
+}
+function __zoxide_z() {
+    __zoxide_doctor
+    __zoxide_cd "$@"
+}
+INIT
+STUB
+cat > "$ZI/stbin/starship" <<'STUB'
+#!/bin/sh
+cat <<'INIT'
+starship_precmd() {
+    if [[ -n "${STARSHIP_PROMPT_COMMAND-}" ]]; then
+        eval "$STARSHIP_PROMPT_COMMAND"
+    fi
+}
+if [[ -z "${PROMPT_COMMAND-}" ]]; then
+    PROMPT_COMMAND="starship_precmd"
+elif [[ "$PROMPT_COMMAND" != *"starship_precmd"* ]]; then
+    STARSHIP_PROMPT_COMMAND="$PROMPT_COMMAND"
+    PROMPT_COMMAND="starship_precmd"
+fi
+INIT
+STUB
+chmod +x "$ZI/zobin/zoxide" "$ZI/stbin/starship"
+# zi_run <PATH> <commands> - init.bash in an interactive bash with HOME and a
+# fresh init cache in the fixture (never the user's XDG_CACHE_HOME, where the
+# stub inits would outlive the test); stdout, then stderr's zoxide lines, then
+# each `zoxide add`
+zi_run() {
+    local bash_bin
+    bash_bin=$(command -v bash)
+    rm -rf "$ZI/home/.cache" "$ZI/adds" "$ZI/err"
+    (cd "$ZI/home" && HOME="$ZI/home" XDG_CACHE_HOME="$ZI/home/.cache" ZO_ADDS="$ZI/adds" PATH="$1" \
+        "$bash_bin" --norc -i -c ". ~/.config/shell/init.bash; $2" 2>"$ZI/err" </dev/null)
+    grep '^zoxide:' "$ZI/err"
+    if [ -f "$ZI/adds" ]; then sed "s|$ZI|@|" "$ZI/adds"; fi
+}
+out=$(zi_run "$ZI/zobin:$ZI/stbin:$PATH" "echo \"PC=\$PROMPT_COMMAND\"; cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"")
+assert_eq "bash/init.bash: no doctor warning behind starship, and zoxide still adds" "PC=starship_precmd
+add -- @/d" "$out"
+out=$(zi_run "$ZI/zobin:$(path_without starship)" "echo \"PC=\$PROMPT_COMMAND doctor=\${_ZO_DOCTOR-unset}\"; cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"")
+assert_eq "bash/init.bash: without starship the doctor stays on, zoxide adds" "PC=_den_dh_record;__zoxide_hook doctor=unset
+add -- @/d" "$out"
+# The real zoxide and starship, where installed
+if command -v zoxide >/dev/null 2>&1 && command -v starship >/dev/null 2>&1; then
+    out=$(ZO_REAL="$ZI/zoreal"; rm -rf "$ZO_REAL"; mkdir -p "$ZO_REAL"
+        _ZO_DATA_DIR="$ZO_REAL" zi_run "$PATH" "cd '$ZI/d'; eval \"\$PROMPT_COMMAND\"; zoxide query -l")
+    assert_eq "bash/init.bash: real zoxide behind real starship, no doctor warning" "$ZI/d" "$out"
+else
+    echo "  SKIP: bash/init.bash real zoxide and starship (not both installed)"
+fi
 
 # =============================================================================
 # Zsh tests
@@ -1979,6 +2111,74 @@ for _ext in $SINGLE_FMTS; do
     assert_eq "pwsh/extract single-file .$_ext round-trips the bytes" "$PAYLOAD_SHA" "$actual"
 done
 
+# gzip/bzip2/xz go through ProcessStartInfo.ArgumentList, which the .NET
+# Framework under Windows PowerShell 5.1 does not have, so there archive
+# refuses these outputs before it reads or writes anything. No 5.1 host runs
+# here: a copy of functions.ps1 whose edition check reads "Desktop" stands in
+# for one. The refusal is asserted with its exit status, no new output, an
+# existing output left alone and no temporary; zstd, which writes its own
+# output, and the tar formats still run in the same copy, and the unmodified
+# file still writes the formats it refuses there.
+echo "[pwsh] archive refuses .gz/.bz2/.xz on Windows PowerShell 5.1"
+{
+    echo ". '$HELPERS_PS1'"
+    sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$FUNCTIONS_PS1"
+} > "$FUNCTIONS_PS1_DESKTOP"
+for _ext in gz bz2 xz; do
+    setup_single_file
+    printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_DESKTOP" "Set-Location '$WORK/one'; archive 'payload.bin.$_ext' 'payload.bin'")
+    assert_contains "pwsh/archive .$_ext on 5.1 says it requires pwsh 7" \
+        "archive: a .$_ext output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" "$err"
+    run_pwsh "$FUNCTIONS_PS1_DESKTOP" "Set-Location '$WORK/one'; archive 'payload.bin.$_ext' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext on 5.1 exits 1" "1" "$?"
+    assert_not_exists "pwsh/archive .$_ext on 5.1 wrote nothing" "$WORK/one/payload.bin.$_ext"
+    run_pwsh "$FUNCTIONS_PS1_DESKTOP" "Set-Location '$WORK/one'; archive 'keep.$_ext' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext on 5.1 left an existing output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
+    assert_eq "pwsh/archive .$_ext on 5.1 left no temporary" "" "$(ls -A "$WORK/one" | grep '\.tmp\.' | tr -d '\n')"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'payload.bin.$_ext' 'payload.bin'" >/dev/null 2>&1
+    assert_success "pwsh/archive .$_ext on pwsh 7 still exits 0" "$?"
+    assert_exists "pwsh/archive .$_ext on pwsh 7 still writes it" "$WORK/one/payload.bin.$_ext"
+done
+setup_fixtures
+mkdir -p "$WORK/one"
+run_pwsh "$FUNCTIONS_PS1_DESKTOP" "Set-Location '$WORK'; archive 'one/f.zst' 'src/file1.txt'; archive 'one/t.tar.gz' 'src'" >/dev/null 2>&1
+assert_success "pwsh/archive .zst and .tar.gz on 5.1 exit 0" "$?"
+assert_exists "pwsh/archive .zst on 5.1 still writes it" "$WORK/one/f.zst"
+assert_exists "pwsh/archive .tar.gz on 5.1 still writes it" "$WORK/one/t.tar.gz"
+
+# The same-file check resolves a symlink with APIs the .NET Framework lacks
+# (ResolveLinkTarget, GetFullPath(path, basePath)), so on 5.1 a link on either
+# side of an existing .zst output is refused instead of being compared as its
+# own path. That check is on the Windows branch, which $env:OS='Windows_NT'
+# selects here. Asserted: the message, exit 1, output, source and link left as
+# they were and no temporary; a symlinked source with no output yet and two
+# plain files still run on 5.1; pwsh 7 still resolves both links to the source.
+echo "[pwsh] archive refuses a symlink it cannot resolve on Windows PowerShell 5.1"
+setup_single_file
+printf 'PRECIOUS' > "$WORK/one/target.zst"
+ln -s target.zst "$WORK/one/src-link"
+ln -s payload.bin "$WORK/one/out-link.zst"
+for _pair in "target.zst:src-link" "out-link.zst:payload.bin"; do
+    _out=${_pair%%:*} _src=${_pair#*:}
+    _cmd="\$env:OS='Windows_NT'; Set-Location '$WORK/one'; archive '$_out' '$_src'"
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_DESKTOP" "$_cmd")
+    assert_contains "pwsh/archive $_out from $_src on 5.1 says it requires pwsh 7" \
+        "archive: a symlinked source or output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" "$err"
+    run_pwsh "$FUNCTIONS_PS1_DESKTOP" "$_cmd" >/dev/null 2>&1
+    assert_eq "pwsh/archive $_out from $_src on 5.1 exits 1" "1" "$?"
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "$_cmd")
+    assert_contains "pwsh/archive $_out from $_src on pwsh 7 is refused as the source" "is the source file" "$err"
+done
+assert_eq "pwsh/archive symlink on 5.1 left the output untouched" "PRECIOUS" "$(cat "$WORK/one/target.zst")"
+assert_eq "pwsh/archive symlink on 5.1 left the source intact" "$PAYLOAD_SHA" "$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)"
+assert_eq "pwsh/archive symlink on 5.1 left the output link a link" "payload.bin" "$(readlink "$WORK/one/out-link.zst")"
+assert_eq "pwsh/archive symlink on 5.1 left no temporary" "" "$(ls -A "$WORK/one" | grep '\.tmp\.' | tr -d '\n')"
+run_pwsh "$FUNCTIONS_PS1_DESKTOP" "\$env:OS='Windows_NT'; Set-Location '$WORK/one'; archive 'new.zst' 'src-link'; archive 'target.zst' 'payload.bin'" >/dev/null 2>&1
+assert_success "pwsh/archive .zst on 5.1 with no link to resolve exits 0" "$?"
+assert_exists "pwsh/archive .zst on 5.1 from a symlinked source, no output yet, writes it" "$WORK/one/new.zst"
+assert_eq "pwsh/archive .zst on 5.1 over a plain output replaces it" "$PAYLOAD_SHA" "$(zstd -dc "$WORK/one/target.zst" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+
 # pwsh reports these through the error stream, as every other failure in
 # archive/extract does, and terminates so the refusal reaches the process
 # status: the message, exit 1 and the absence of an output are all asserted,
@@ -2321,6 +2521,77 @@ actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
 ")
 assert_eq "pwsh/up 2" "$WORK/a" "$actual"
 
+# A bare .1 is the number 0.1 to PowerShell, not a call of den's .1 function
+# (only `& '.1'` reaches that), so the docs mark .1-.9 as not on pwsh and point
+# at up N there.
+echo "[pwsh] .1 is a number to PowerShell; the docs point at up N"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    New-Item -ItemType Directory -Force -Path '$WORK/a/b/c' | Out-Null
+    Set-Location '$WORK/a/b/c'
+    .1
+    (Get-Location).Path
+")
+assert_eq "pwsh/bare .1 prints 0.1 and stays put" "0.1
+$WORK/a/b/c" "$actual"
+# The shell test image copies only shell/ and tests/shell/, not COMMANDS.md.
+if [ -f "$DOTFILES/COMMANDS.md" ]; then
+    # The pwsh cell holds the legend's own "not provided" symbol.
+    none=$(sed -n 's/.*`\([^`]*\)` not provided.*/\1/p' "$DOTFILES/COMMANDS.md" | head -n 1)
+    row=$(grep -F '| `.1`-`.9` |' "$DOTFILES/COMMANDS.md" | head -n 1)
+    assert_eq "docs/COMMANDS .1-.9 not provided on pwsh" "$none" \
+        "$(printf '%s\n' "$row" | awk -F '|' '{ gsub(/ /, "", $5); print $5 }')"
+    assert_contains "docs/COMMANDS .1-.9 row points at up N" '`up N`' "$row"
+else
+    echo "  SKIP: docs/COMMANDS .1-.9 row (no COMMANDS.md in $DOTFILES)"
+fi
+assert_eq "docs/README no .1-.9 on pwsh" 'no `.1`..`.9` on pwsh' \
+    "$(grep -oF -- 'no `.1`..`.9` on pwsh' "$DOTFILES/shell/README.md" | head -n 1)"
+
+# Given no arguments, cd and zd go to $HOME themselves and cdi and zdi call
+# zoxide with none: splatting the $null an empty $Rest holds would hand zoxide
+# one $null argument, and zoxide's own jump with no arguments is a bare
+# Set-Location, which goes home only from PowerShell 6 on (on 5.1 it stays put,
+# as the stub __zoxide_z here does). $HOME, unlike ~, works from Env:\ too.
+echo "[pwsh] cd, zd alone go home; cdi, zdi alone pass zoxide none"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    \$env:_DEN_WRAPPERS = '1'
+    function global:__zoxide_z { 'z:' + \$args.Count }
+    function global:__zoxide_zi { 'zi:' + \$args.Count }
+    \$h = (Resolve-Path ~).Path
+    Set-Location '$WORK'; cd; 'cd home:' + ((Get-Location).Path -eq \$h)
+    Set-Location '$WORK'; zd; 'zd home:' + ((Get-Location).Path -eq \$h)
+    Set-Location Env:\\; cd; 'cd home from Env:' + ((Get-Location).Path -eq \$h)
+    cdi; zdi; cd a; zd a b; cdi a; zdi a b
+")
+assert_eq "pwsh/cd, zd alone go home; the rest reach zoxide as given" "cd home:True
+zd home:True
+cd home from Env:True
+zi:0
+zi:0
+z:1
+z:2
+zi:1
+zi:2" "$actual"
+# The same with the real zoxide loaded, when it is installed: cd and zd alone
+# go home, as zoxide's own jump with no arguments and den's bash/zsh cd do.
+# HOME, the init cache and zoxide's database all live in $WORK (.NET reports no
+# LocalApplicationData, where the cache goes, until the directory exists).
+if command -v zoxide >/dev/null 2>&1; then
+    mkdir -p "$WORK/zo/home/sub" "$WORK/zo/home/.local/share" "$WORK/zo/data"
+    actual=$(cd "$WORK/zo/home/sub" && HOME="$WORK/zo/home" XDG_DATA_HOME="$WORK/zo/home/.local/share" \
+        _ZO_DATA_DIR="$WORK/zo/data" pwsh -NoProfile -NonInteractive -Command "
+        . '$FUNCTIONS_PS1_COMBINED'
+        \$env:_DEN_WRAPPERS = '1'
+        cd; (Get-Location).Path
+        Set-Location '$WORK/zo/home/sub'; zd; (Get-Location).Path
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/cd and zd alone go home with zoxide loaded" "$WORK/zo/home
+$WORK/zo/home" "$actual"
+    rm -rf "$WORK/zo"
+else
+    echo "  SKIP: pwsh/cd and zd alone with zoxide loaded (zoxide not installed)"
+fi
+
 echo "[pwsh] mkcd"
 actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkcd '$WORK/newdir'; (Get-Location).Path")
 assert_eq "pwsh/mkcd" "$WORK/newdir" "$actual"
@@ -2537,8 +2808,9 @@ rm -rf "$DH/c/d"
 
 # init.ps1 installs the recorder: it wraps the prompt after starship's init has
 # replaced it. A stub starship stands in for the real one, and HOME /
-# XDG_DATA_HOME point into the fixture, so the init cache is written there and
-# never over the user's own.
+# XDG_DATA_HOME / _ZO_DATA_DIR point into the fixture, so the init cache and
+# the database that a real zoxide adds to (den's wrapper runs its hook) stay
+# there, never over the user's own.
 echo "[pwsh] init.ps1 wraps starship's prompt with the recorder"
 mkdir -p "$DH/stbin" "$DH/.local/share"
 cat > "$DH/stbin/starship" <<'STUB'
@@ -2547,7 +2819,8 @@ printf '%s\n' 'function global:prompt { "stub:$($global:?)>" }'
 STUB
 chmod +x "$DH/stbin/starship"
 dh_pwsh_init() {
-    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" _ZO_DATA_DIR="$DH/.local/share/zoxide" \
+        PATH="$DH/stbin:$PATH" \
         pwsh -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; $1" 2>/dev/null | tr -d '\r')
 }
 out=$(dh_pwsh_init "\$function:prompt -eq \$global:_DenDirPrompt; \"\$global:_DenDirPromptOld\".Trim(); Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt")
@@ -2559,6 +2832,113 @@ assert_eq "pwsh/init.ps1 prompt records moves, not a script's Push-/Pop-Location
   *  ~/a
  +1  ~/b
 $DH/b" "$out"
+
+# On PowerShell zoxide learns a directory only from its prompt hook: its init
+# (functions.ps1, before starship) wraps the prompt to call __zoxide_hook, and
+# starship's init replaces the prompt without calling that wrapper, so den's
+# wrapper calls the hook itself. The stub zoxide prints the part of zoxide
+# 0.10's `init powershell --no-cmd` that learns (the hook and the prompt wrapper
+# that calls it, verbatim) and logs each `zoxide add`.
+echo "[pwsh] zoxide learns moves behind starship's prompt"
+mkdir -p "$DH/zobin" "$DH/stexit"
+cat > "$DH/zobin/zoxide" <<'STUB'
+#!/bin/sh
+if [ "$1" = add ]; then printf '%s\n' "$*" >> "$ZO_ADDS"; exit 0; fi
+[ "$1" = init ] || exit 0
+cat <<'INIT'
+function global:__zoxide_pwd {
+    $cwd = Microsoft.PowerShell.Management\Get-Location
+    if ($cwd.Provider.Name -eq "FileSystem") {
+        $cwd.ProviderPath
+    }
+}
+$global:__zoxide_oldpwd = __zoxide_pwd
+function global:__zoxide_hook {
+    $result = __zoxide_pwd
+    if ($result -ne $global:__zoxide_oldpwd) {
+        if ($null -ne $result) {
+            zoxide add "--" $result
+        }
+        $global:__zoxide_oldpwd = $result
+    }
+}
+$global:__zoxide_hooked = (Microsoft.PowerShell.Utility\Get-Variable __zoxide_hooked -ErrorAction Ignore -ValueOnly)
+if ($global:__zoxide_hooked -ne 1) {
+    $global:__zoxide_hooked = 1
+    $global:__zoxide_prompt_old = $function:prompt
+
+    function global:prompt {
+        if ($null -ne $__zoxide_prompt_old) {
+            & $__zoxide_prompt_old
+        }
+        $null = __zoxide_hook
+    }
+}
+INIT
+STUB
+chmod +x "$DH/zobin/zoxide"
+# A starship whose prompt shows the $LASTEXITCODE it was handed, too
+cat > "$DH/stexit/starship" <<'STUB'
+#!/bin/sh
+printf '%s\n' 'function global:prompt { "stub:$($global:?):$($global:LASTEXITCODE)>" }'
+STUB
+chmod +x "$DH/stexit/starship"
+# dh_pwsh_zo <PATH> <commands> - dh_pwsh_init with the stub zoxide first on
+# <PATH> and a fresh init cache; each `zoxide add` follows the output, with $DH
+# shown as ~.
+dh_pwsh_zo() {
+    local pwsh_bin
+    pwsh_bin=$(command -v pwsh)
+    rm -rf "$DH/zodata" "$DH/zo.log"
+    mkdir -p "$DH/zodata"
+    (cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/zodata" ZO_ADDS="$DH/zo.log" PATH="$DH/zobin:$1" \
+        "$pwsh_bin" -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; $2" 2>/dev/null | tr -d '\r')
+    if [ -f "$DH/zo.log" ]; then sed "s|$DH|~|" "$DH/zo.log"; fi
+}
+# A move is added once, however many prompts follow it, and still once after a
+# reload (init.ps1 sourced again: starship's init replaces den's wrapper, which
+# then wraps the new prompt).
+out=$(dh_pwsh_zo "$DH/stbin:$PATH" "\"hooked=\$global:__zoxide_hooked\"; Set-Location '$DH/a'; \$null = prompt; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; . '$DOTFILES/shell/pwsh/init.ps1'; \$null = prompt; Set-Location '$DH/c'; \$null = prompt; \$null = prompt")
+assert_eq "pwsh/zoxide adds each move once behind starship's prompt, and after a reload" "hooked=1
+add -- ~/a
+add -- ~/b
+add -- ~/c" "$out"
+out=$(dh_pwsh_zo "$DH/stexit:$PATH" "Set-Location '$DH/a'; sh -c 'exit 3'; prompt; \"after=\$LASTEXITCODE\"")
+assert_eq "pwsh/zoxide's add keeps the \$? and \$LASTEXITCODE starship sees" "stub:False:3>
+after=3
+add -- ~/a" "$out"
+# Without starship zoxide's own wrapper survives inside den's: its hook call
+# after den's adds nothing, and a reload leaves one den wrapper (two would call
+# each other without end).
+out=$(dh_pwsh_zo "$(path_without starship)" "\"zoxide's wrapper kept: \$(\"\$global:_DenDirPromptOld\" -match '__zoxide_hook')\"; Set-Location '$DH/a'; \$null = prompt; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; . '$DOTFILES/shell/pwsh/init.ps1'; _DenDirHookPrompt; Set-Location '$DH/c'; (prompt).Trim(); back -l")
+assert_eq "pwsh/zoxide adds each move once without starship, and one wrapper after a reload" "zoxide's wrapper kept: True
+PS $DH/c>
+  3  ~/start
+  2  ~/a
+  1  ~/b
+  *  ~/c
+add -- ~/a
+add -- ~/b
+add -- ~/c" "$out"
+# The real zoxide, where installed, against the stub starship
+if command -v zoxide >/dev/null 2>&1; then
+    rm -rf "$DH/zodata" "$DH/zoreal"
+    mkdir -p "$DH/zodata" "$DH/zoreal"
+    out=$(cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/zodata" _ZO_DATA_DIR="$DH/zoreal" PATH="$DH/stbin:$PATH" \
+        pwsh -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; Set-Location '$DH/a'; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; zoxide query -l | Sort-Object" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/real zoxide learns moves behind starship's prompt" "$DH/a
+$DH/b" "$out"
+else
+    echo "  SKIP: pwsh/real zoxide behind starship's prompt (zoxide not installed)"
+fi
+# Without zoxide there is no hook to run: a prompt after a move shows the
+# prompt, with nothing on stderr and nothing new in $Error.
+out=$(pwsh_bin=$(command -v pwsh); nozo_path=$(path_without zoxide)
+    cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$nozo_path" \
+    "$pwsh_bin" -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; \"zoxide: \$([bool](Get-Command zoxide -ErrorAction Ignore))\"; Set-Location '$DH/a'; \$n = \$Error.Count; prompt; \"new errors: \$(\$Error.Count - \$n)\"" 2>&1 | tr -d '\r')
+assert_eq "pwsh/init.ps1 prompt without zoxide shows no error" "zoxide: False
+stub:True>
+new errors: 0" "$out"
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention

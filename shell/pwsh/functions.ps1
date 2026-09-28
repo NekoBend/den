@@ -377,6 +377,15 @@ function _ArSameFile([string]$A, [string]$B) {
   $ia = Get-Item -LiteralPath $fa -Force -ErrorAction SilentlyContinue
   $ib = Get-Item -LiteralPath $fb -Force -ErrorAction SilentlyContinue
   if (-not $ia -or -not $ib) { return $false }
+  # _ArLinkTarget needs ResolveLinkTarget or GetFullPath(path, basePath), and
+  # the .NET Framework under Windows PowerShell 5.1 has neither: a symlink would
+  # be compared as its own path, and a source linked to the output would pass
+  # as another file and be overwritten. Thrown there rather than guessed;
+  # archive re-raises it as its own error.
+  if ($PSVersionTable.PSEdition -eq 'Desktop' -and
+      ($ia.LinkType -eq 'SymbolicLink' -or $ib.LinkType -eq 'SymbolicLink')) {
+    throw 'a symlinked source or output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1'
+  }
   # A symlink names another path: compare what each one actually points at.
   $ra = _ArLinkTarget $ia
   $rb = _ArLinkTarget $ib
@@ -405,6 +414,8 @@ function _ArSameFile([string]$A, [string]$B) {
 # any version. Letting the tool write its own '<source>.<ext>' next to the
 # source and moving that onto $Dest would also avoid the redirect, but it
 # destroys a pre-existing file of that name. Returns the tool's exit code.
+# ProcessStartInfo.ArgumentList does not exist on Windows PowerShell 5.1, so
+# archive refuses these formats there before calling this.
 function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
   # .NET resolves relative paths against the process directory, which
   # Set-Location never updates; resolve against the PowerShell location first
@@ -563,6 +574,16 @@ function archive {
               elseif ($Output -match '\.bz2$') { 'bzip2' }
               elseif ($Output -match '\.xz$')  { 'xz'    }
               else                             { 'zstd'  }
+      # gzip/bzip2/xz run through _ArCompressTo, which needs
+      # ProcessStartInfo.ArgumentList: .NET (PowerShell 7) has it, the .NET
+      # Framework under Windows PowerShell 5.1 does not. Refused there before
+      # anything is read or written; zstd writes its own output (-o) instead.
+      # The extension is cut out as text: the .NET Framework's
+      # Path.GetExtension throws on a name holding " < > | or a control
+      # character, and this message must not fail on its way out.
+      if ($tool -ne 'zstd' -and $PSVersionTable.PSEdition -eq 'Desktop') {
+        Write-Error "a $($Output.Substring($Output.LastIndexOf('.'))) output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" -ErrorAction Stop
+      }
       # Exactly one source, and it must already be a REGULAR file -- see
       # _ArRegularFile for why "not a container" was not enough.
       if ($Sources.Count -ne 1 -or -not (_ArRegularFile $Sources[0])) {
@@ -574,8 +595,12 @@ function archive {
       # ON the output, so where the output and the source are one directory
       # entry -- a case-insensitive volume, most obviously -- the source would
       # be replaced by its own compressed form despite the promise to keep it.
-      # _ArSameFile settles that by device and inode, not by path text.
-      if (_ArSameFile $src $Output) {
+      # _ArSameFile settles that by device and inode, not by path text. Where
+      # it cannot (a symlink on Windows PowerShell 5.1) it throws; re-raised
+      # here so it reads "archive: ..." and ends the call like the refusals.
+      try { $same = _ArSameFile $src $Output }
+      catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+      if ($same) {
         Write-Error "output '$Output' is the source file" -ErrorAction Stop
       }
       $toolPath = _ArTool $tool
@@ -687,10 +712,15 @@ Remove-Variable _z -ErrorAction SilentlyContinue
 Remove-Item alias:cd -Force -ErrorAction SilentlyContinue
 
 # cd → wrapper ON: __zoxide_z, OFF: Set-Location
+# Given no arguments, cd and zd go to $HOME themselves and cdi and zdi pass
+# zoxide none. $Rest is $null then, and @Rest would pass that $null on as one
+# argument (__zoxide_z tests it as a path, fails, and stays put); zoxide's own
+# jump with no arguments is a bare Set-Location, which goes home only from
+# PowerShell 6 on. $HOME, unlike ~, is reachable from any drive (Env:, HKLM:).
 function cd {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
-    __zoxide_z @Rest
+    if ($null -eq $Rest) { Set-Location -LiteralPath $HOME } else { __zoxide_z @Rest }
   } else {
     # No arguments leave $Rest $null, not empty: a caller's Set-StrictMode makes
     # .Count on it an error.
@@ -703,7 +733,7 @@ function cd {
 function cdi {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_zi -ErrorAction SilentlyContinue)) {
-    __zoxide_zi @Rest
+    if ($null -eq $Rest) { __zoxide_zi } else { __zoxide_zi @Rest }
     _DenDirMoved $MyInvocation
   } else {
     Write-Warning 'cdi: wrappers are OFF or zoxide is not available'
@@ -716,7 +746,7 @@ function zd {
   if (-not (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
     Write-Warning 'zoxide is not installed.'; return
   }
-  __zoxide_z @Rest
+  if ($null -eq $Rest) { Set-Location -LiteralPath $HOME } else { __zoxide_z @Rest }
   _DenDirMoved $MyInvocation
 }
 
@@ -726,7 +756,7 @@ function zdi {
   if (-not (Get-Command __zoxide_zi -ErrorAction SilentlyContinue)) {
     Write-Warning 'zoxide is not installed.'; return
   }
-  __zoxide_zi @Rest
+  if ($null -eq $Rest) { __zoxide_zi } else { __zoxide_zi @Rest }
   _DenDirMoved $MyInvocation
 }
 
@@ -737,7 +767,8 @@ function up {
   _DenDirMoved $MyInvocation
 }
 
-# .. / .1–.9 → shorthand for up
+# .. / .1-.9 → shorthand for up. PowerShell reads a bare .1 as the number 0.1,
+# so .1-.9 run only as & '.1' (COMMANDS.md points pwsh users at up N instead).
 # (.N records the move itself: up, called from it, is not typed at the prompt)
 function .. { Set-Location ..; _DenDirMoved $MyInvocation }
 1..9 | ForEach-Object {
@@ -983,6 +1014,12 @@ function fwd {
 # change of location made since the last one. init.ps1 calls it after starship,
 # whose init replaces the prompt function; called again (on reload) it wraps the
 # new prompt, never its own wrapper.
+# The wrapper also runs zoxide's hook, the one place zoxide learns a directory
+# on PowerShell. zoxide's init (functions.ps1, loaded before starship) wraps the
+# prompt to call it, and starship's init drops that wrapper, as it drops any
+# prompt defined before it. The hook adds only when the location differs from
+# the one it saw last, so where zoxide's wrapper survives (no starship) its own
+# call after this one adds nothing.
 function _DenDirHookPrompt {
   # Test-Path first: on the first load it is not set, and strict mode set before
   # den loads makes reading it an error.
@@ -994,6 +1031,13 @@ function _DenDirHookPrompt {
     # it still shows the last command's status (starship reads $?).
     $ok = $global:?
     _DenDirRecord
+    if (Test-Path Function:\__zoxide_hook) {
+      # `zoxide add` is a native command: keep the $LASTEXITCODE the last
+      # command left, which starship shows when $? is false.
+      $code = $global:LASTEXITCODE
+      $null = __zoxide_hook
+      $global:LASTEXITCODE = $code
+    }
     if (-not $ok) { Write-Error '' -ErrorAction Ignore }
     if ($global:_DenDirPromptOld) { & $global:_DenDirPromptOld }
   }

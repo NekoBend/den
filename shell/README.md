@@ -131,7 +131,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `zd` / `zdi` | always zoxide (ignore the toggle) |
 | `back [N]` / `fwd [N]` | go N entries back / forward in this session's directory history, browser-style (default 1) |
 | `back -l` / `back -i` | list the history / pick an entry with fzf (no `-i` on cmd); see COMMANDS.md |
-| `up [N]`, `.1`..`.9` | go up N directories (`..` = up 1) |
+| `up [N]`, `.1`..`.9` | go up N directories (`..` = up 1; no `.1`..`.9` on pwsh, which reads `.1` as the number 0.1) |
 | `mkcd DIR` | `mkdir -p` then `cd` |
 | `cdf` | fuzzy-find a subdirectory and cd into it (needs `fd` + `fzf`) |
 | `c` | clear the screen |
@@ -315,7 +315,11 @@ of zoxide and starship. zsh and PowerShell mirror this.
 - `~/.cache/shell/` holds the zoxide/starship init caches. They regenerate when
   the tool binary is newer than the cache, and are sourced only if they are a
   regular file owned by you (symlink and owner guarded).
-- `reload` rebuilds the caches and re-execs the shell.
+- `reload` clears the caches and restarts the shell, which rebuilds them.
+  bash/zsh `exec` a new shell. pwsh cannot, so it starts the same pwsh with
+  the same launch arguments (less `-WorkingDirectory`: it stays in the current
+  directory), waits for it, and exits with its exit code; each reload nests one
+  more pwsh process, up to 8 in a row (see `COMMANDS.md`).
 
 ## Toggles and environment
 

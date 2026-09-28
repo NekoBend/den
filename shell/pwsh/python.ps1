@@ -109,14 +109,18 @@ function py {
 # "va: va: ...".
 function va {
   param([string]$Name = '.venv')
-  # Scripts/ on Windows, bin/ on Linux/macOS (uv/venv place Activate.ps1 there).
-  # -LiteralPath keeps wildcard chars in $Name (*, ?, []) from glob-expanding to an
-  # unintended script that would then be dot-sourced; -PathType Leaf requires a file.
-  $activatePath = Join-Path $Name 'Scripts/Activate.ps1'
-  if (-not (Test-Path -LiteralPath $activatePath -PathType Leaf)) {
-    $activatePath = Join-Path $Name 'bin/Activate.ps1'
+  # Scripts/ on Windows, bin/ on Linux/macOS. python -m venv writes Activate.ps1,
+  # uv and virtualenv write activate.ps1: a case-sensitive file system (Linux,
+  # case-sensitive macOS) needs both spellings, and the standard one wins when
+  # both exist. -LiteralPath keeps wildcard chars in $Name (*, ?, []) from
+  # glob-expanding to an unintended script that would then be dot-sourced;
+  # -PathType Leaf requires a file.
+  $activatePath = $null
+  foreach ($rel in 'Scripts/Activate.ps1', 'Scripts/activate.ps1', 'bin/Activate.ps1', 'bin/activate.ps1') {
+    $candidate = Join-Path $Name $rel
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { $activatePath = $candidate; break }
   }
-  if (-not (Test-Path -LiteralPath $activatePath -PathType Leaf)) {
+  if (-not $activatePath) {
     Write-Error "activate script not found under '$Name' (Scripts/ or bin/)"
     return
   }
@@ -127,7 +131,12 @@ function va {
   # means nothing to check: pass. Parity with posix python.sh.
   $gitExe = _ResolveCmd 'git' 'App'
   if ($gitExe) {
-    $tracked = & $gitExe -C $Name ls-files -- Scripts/Activate.ps1 bin/Activate.ps1 bin/activate pyvenv.cfg 2>$null
+    # Test-Path above ignores case on NTFS and default APFS and git pathspecs do not,
+    # so :(icase) also catches a committed scripts/ACTIVATE.ps1. The exact names
+    # still match when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
+    $venvFiles = 'Scripts/Activate.ps1', 'Scripts/activate.ps1', 'bin/Activate.ps1', 'bin/activate.ps1', 'bin/activate', 'pyvenv.cfg'
+    $pathspecs = $venvFiles + ($venvFiles | ForEach-Object { ":(icase)$_" })
+    $tracked = & $gitExe -C $Name ls-files -- $pathspecs 2>$null
     if ($tracked) {
       # Name what git actually reports: the match may be pyvenv.cfg alone, so a
       # message about the activate script would be wrong.
@@ -145,6 +154,17 @@ function va {
     Write-Error "'$activatePath' is world-writable - dot-source it yourself if you trust it: . $activatePath"
     return
   }
+  # Each activate script undoes only its own kind of venv before it activates:
+  # python's keeps the old PATH in $env:_OLD_VIRTUAL_PATH, uv's and virtualenv's in
+  # a global variable, so switching between the two kinds without vd kept the
+  # first venv's bin/ on PATH for good. The active venv's own deactivate knows.
+  if ($env:VIRTUAL_ENV -and (Get-Command deactivate -CommandType Function -ErrorAction SilentlyContinue)) {
+    deactivate
+  }
+  # The version is read below for the venv being activated. Without a pyvenv.cfg
+  # there (posix va unsets it too), or when its activate script fails, the previous
+  # venv's version must not stay behind.
+  Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
   . $activatePath
   $cfg = Join-Path $Name 'pyvenv.cfg'
   if (Test-Path -LiteralPath $cfg) {

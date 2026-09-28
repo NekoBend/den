@@ -58,7 +58,7 @@ Override any of these with `--build-arg NAME=value`.
 | `RUSTUP_USE_CURL` | `0` | `1` selects rustup's deprecated curl backend as a TLS workaround. |
 | `NVM_VERSION` | `v0.40.7` | Exact nvm release, including the `v` prefix. |
 | `NODE_MAJOR` | `22` | Node major version; nvm installs it and makes it the default. |
-| `ACPX_VERSION` | `0.16` | acpx version series for `npm install -g`. |
+| `ACPX_VERSION` | `0.19` | acpx version series for `npm install -g`. |
 | `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. |
 | `RSYNC_VERSION` | `3.5.1` | Exact rsync release, built from source into `~/.local`. |
 | `RCLONE_VERSION` | `current` | `current`, or an exact rclone release including the `v` prefix. |
