@@ -341,6 +341,7 @@ function _ArVolumeRelative([string]$Path) {
 # _ArLinkTarget → what a symlink points at, else the item's own path.
 # ResolveLinkTarget is 7.2+; .Target is the one-hop stand-in on 7.0/7.1.
 function _ArLinkTarget($Item) {
+  if ($null -eq $Item) { return $null }  # .LinkType on $null: an error under strict mode
   try {
     if ($Item.LinkType -eq 'SymbolicLink') {
       if ($Item | Get-Member -Name ResolveLinkTarget) {
@@ -879,7 +880,7 @@ function _DenDirRecord {
 # a script or another function (Internal), it is left to the prompt, so that
 # script's moves stay net.
 function _DenDirMoved([System.Management.Automation.InvocationInfo]$Invocation) {
-  if ($Invocation.CommandOrigin -eq 'Runspace') { _DenDirRecord }
+  if ($null -ne $Invocation -and $Invocation.CommandOrigin -eq 'Runspace') { _DenDirRecord }
 }
 
 # _DenDirGo <back|fwd> <N> - move N entries along that list (N already
@@ -894,7 +895,10 @@ function _DenDirGo([string]$List, [string]$N) {
   } else {
     $from = $global:_DenDirFwd; $to = $global:_DenDirBack; $word = 'forward'
   }
-  if ($N.Length -gt 9 -or [int]$N -gt $from.Count) {
+  # back and fwd pass N >= 1. A bare call (N '', read as 0) would read
+  # $from[-1], past the end of an empty list: an error under a caller's
+  # Set-StrictMode.
+  if ($N.Length -gt 9 -or [int]$N -lt 1 -or [int]$N -gt $from.Count) {
     $noun = if ($from.Count -eq 1) { 'entry' } else { 'entries' }
     return "history has $($from.Count) $word $noun, cannot go $word $N"
   }

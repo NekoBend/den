@@ -19,7 +19,9 @@ function _SnippetLines {
     @(($text -replace "`r", '') -split "`n" | Where-Object { $_ -ne '' })
 }
 
-function _SnippetWrite([string[]]$Lines) {
+# Lines defaults to @() rather than $null, whose .Count is an error under a
+# caller's Set-StrictMode.
+function _SnippetWrite([string[]]$Lines = @()) {
     $f = _SnippetFile
     $dir = Split-Path -Parent $f
     if (-not (Test-Path -LiteralPath $dir)) {

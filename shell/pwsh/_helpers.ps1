@@ -63,7 +63,9 @@ function _DenInteractive {
 # `pwsh -noexit -command ". <shellIntegration.ps1>"`, which IS followed by a REPL.
 # -NonInteractive always wins, even with -NoExit; -Version and -Help print and exit.
 # Windows PowerShell 5.1 differs in -Version, which takes a value there.
-function _DenLaunchIsRepl([string[]]$Arguments) {
+# Arguments defaults to @(): left $null, its .Count below is an error under a
+# caller's Set-StrictMode.
+function _DenLaunchIsRepl([string[]]$Arguments = @()) {
     $versionKind = 'exit'
     if ($PSVersionTable.PSEdition -eq 'Desktop') { $versionKind = 'value' }
     # Kind: rest = the rest of the line is the payload; encoded = a payload in one
@@ -324,6 +326,7 @@ function _DenTrustedCacheOwner([string]$OwnerSid, [string]$UserSid, [string[]]$U
 # session. Takes the identity as a parameter so a stand-in object tests it off
 # Windows.
 function _DenTokenGroupSids($Identity) {
+    if ($null -eq $Identity) { return }  # .Groups on $null: an error under strict mode
     $denyOnly = [System.Security.Claims.ClaimTypes]::DenyOnlySid
     foreach ($g in $Identity.Groups) { $g.Value }
     foreach ($c in $Identity.Claims) {

@@ -23,7 +23,9 @@ function _ProxyLines {
     @(([IO.File]::ReadAllText($f) -replace "`r", '') -split "`n" | Where-Object { $_ -ne '' })
 }
 
-function _ProxyWrite([string[]]$Lines) {
+# Lines defaults to @() rather than $null, whose .Count is an error under a
+# caller's Set-StrictMode.
+function _ProxyWrite([string[]]$Lines = @()) {
     $f = _ProxyFile
     $dir = Split-Path -Parent $f
     if (-not (Test-Path -LiteralPath $dir)) {

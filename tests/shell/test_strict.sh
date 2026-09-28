@@ -9,16 +9,17 @@
 # a function called like a method. The harness loads den the way a profile does
 # (init.ps1, with stub tools on a PATH of its own and HOME/XDG dirs under WORK),
 # lists every function and alias den defined, then runs a strict-mode script
-# that calls each one in its usage, no-argument, typical and error forms. It
-# fails on every strict-mode error that shows up, a den function's own catch
-# block notwithstanding, and on every den function the calls never reached that
-# is not in the script's skip list, so a new function needs a case here. Two
-# more runs take the platform branches: pwsh 7 on Windows ($IsWindows set, and a
-# stub coreutils for the coreutils tier), and Windows PowerShell 5.1 (a copy of
-# shell/pwsh that reads its edition as Desktop, in a session without $IsWindows
-# and the other platform variables). A last run per platform loads den after
-# strict mode is set, as a profile that sets it first does, and checks the load,
-# the prompt and the directory history.
+# that calls each one in its usage, typical and error forms, and ends by calling
+# every one of them with no argument at all. It fails on every strict-mode error
+# that shows up, a den function's own catch block notwithstanding, and on every
+# den function the calls never reached that is not in the script's skip list,
+# so a new function needs a case here. Two more runs take the platform
+# branches: pwsh 7 on Windows ($IsWindows set, and a stub coreutils for the
+# coreutils tier), and Windows PowerShell 5.1 (a copy of shell/pwsh that reads
+# its edition as Desktop, in a session without $IsWindows and the other platform
+# variables). A last run per platform loads den after strict mode is set, as a
+# profile that sets it first does, and checks the load, the prompt and the
+# directory history.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -865,6 +866,16 @@ Case 'snippet rm' { snippet rm piped }
 Case 'snippet remove, no such snippet' { snippet remove nope }
 Case 'snippet rm, no name' { snippet rm }
 Case 'snippet, unknown command' { snippet bogus }
+
+# ===== every den function and alias again, with no argument =====
+# Not reload (its case is last), nor the toggles: a toggle has no other form, and
+# the cases above run each one twice, so its switch ends where it began.
+$StrictNoArgSkip = 'reload', 'toggle-wrapper', 'tgl-wr', 'toggle-uv', 'tgl-uv', 'toggle-hwinfo', 'tgl-hw'
+foreach ($StrictFn in $global:_StrictFunctions + $global:_StrictAliases) {
+    if ($StrictNoArgSkip -contains $StrictFn -or $global:_StrictSkip.ContainsKey($StrictFn)) { continue }
+    Case "$StrictFn, no argument" ([scriptblock]::Create("& '$StrictFn'"))
+}
+Case 'vd, the .venv that vva made' { vd }
 
 # ===== init.ps1 (last: it loads den again) =====
 Case 'reload' { reload }

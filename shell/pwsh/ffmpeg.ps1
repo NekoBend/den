@@ -38,8 +38,9 @@ function _AssertOutExt([string]$Fn, [string]$Out, [string]$Ext) {
     return $true
 }
 # After <in> [out], a further positional is a stray argument (a third file, a
-# typo); refuse rather than hand it to ffmpeg.
-function _AssertNoExtraPos([string]$Fn, $Pos, [int]$Max) {
+# typo); refuse rather than hand it to ffmpeg. Pos defaults to @() rather than
+# $null, whose .Count is an error under a caller's Set-StrictMode.
+function _AssertNoExtraPos([string]$Fn, $Pos = @(), [int]$Max) {
     if ($Pos.Count -gt $Max) {
         Write-Error "${Fn}: unexpected argument '$($Pos[$Max])' (usage: $Fn <in> [out] [ffmpeg args])"
         return $false
