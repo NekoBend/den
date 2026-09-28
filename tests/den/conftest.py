@@ -1,5 +1,6 @@
-"""Put the repo root on sys.path so tests can import the `den` package, and skip
-the POSIX-deployment tests on a native Windows runner.
+"""Put the repo root on sys.path so tests can import the `den` package, keep
+every test out of the real home (see isolate_user_dirs), and skip the
+POSIX-deployment tests on a native Windows runner.
 
 The Windows CI job runs this suite to exercise den's real Windows code paths.
 Some tests, though, exercise POSIX behavior specifically: they mock
@@ -15,6 +16,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+# After the sys.path entry above, which it needs.
+from den import _install, _shell
 
 # POSIX-only tests (see the module docstring). Fixed via PYTHONUTF8 (encoding) and
 # den's newline="" writes (CRLF), the memory/imprint tests are NOT here -- they run
@@ -41,6 +45,61 @@ _WINDOWS_SKIP = {
     "test_install_cline_cli_parent_stays_in_agents",
     "test_uninstall_cline_removes_rules_parent",
 }
+
+
+# Every variable den (or a PowerShell it starts) reads to find the user's home
+# and config, and where each one points during a test, relative to tmp_path.
+# Path.home() reads USERPROFILE on Windows and HOME elsewhere; LOCALAPPDATA holds
+# the Clink shims; pwsh on Linux builds $PROFILE from XDG_CONFIG_HOME.
+_USER_DIRS = {
+    "HOME": (),
+    "USERPROFILE": (),
+    "LOCALAPPDATA": ("AppData", "Local"),
+    "APPDATA": ("AppData", "Roaming"),
+    "XDG_CONFIG_HOME": (".config",),
+    "XDG_DATA_HOME": (".local", "share"),
+    "XDG_CACHE_HOME": (".cache",),
+    "XDG_STATE_HOME": (".local", "state"),
+}
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_path_probes: run den's own PowerShell and xdg-user-dir path "
+        "queries instead of the isolate_user_dirs stand-ins",
+    )
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_dirs(request, tmp_path, monkeypatch):
+    """Point every user directory at tmp_path, for every test.
+
+    A test that set only HOME still wrote the real profile. On Windows
+    Path.home() reads USERPROFILE and Clink's dir is LOCALAPPDATA. And den asks
+    the real PowerShell for $PROFILE (on Windows once _windows() says so, which
+    tests mock on Linux too): on Windows that is the Documents folder whatever
+    HOME or USERPROFILE say, on Linux it follows XDG_CONFIG_HOME. So
+    `pytest tests/den` put the branch's shell files into the developer's live
+    PowerShell startup. The variables above now point under tmp_path, and the
+    two probes that start a program to find a directory (_query_pwsh_profile,
+    _cline_rules_dir) answer with their no-probe fallback under the home
+    instead. A test that sets one of these itself still wins, and a test of a
+    probe itself takes the real one with @pytest.mark.real_path_probes.
+    """
+    for var, parts in _USER_DIRS.items():
+        monkeypatch.setenv(var, str(tmp_path.joinpath(*parts)))
+    if request.node.get_closest_marker("real_path_probes") is None:
+        monkeypatch.setattr(
+            _shell,
+            "_query_pwsh_profile",
+            lambda: Path.home() / "Documents" / "PowerShell" / _shell._PWSH_PROFILE,
+        )
+        monkeypatch.setattr(
+            _install,
+            "_cline_rules_dir",
+            lambda: Path.home() / "Documents" / "Cline" / "Rules",
+        )
 
 
 @pytest.fixture
