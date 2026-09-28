@@ -451,6 +451,23 @@ err=$(cd "$WORK/fb" && run_pwsh_stderr "$WRAPPERS_PS1_STRIPPED" "_find_ps_fallba
 assert_contains "pwsh/find fallback reports a start directory that is not there" "nodir" "$err"
 rm -rf "$WORK/fb"
 
+# A pattern that stands for two files makes grep name each file, as grep does
+# when the shell expands the pattern into both. Counting operands instead, the
+# fallback printed the lines of both with no file names, and -c one total.
+echo "[pwsh] grep PS fallback names each file a pattern stands for"
+rm -rf "$WORK/fm" && mkdir -p "$WORK/fm"
+echo 'hit one' > "$WORK/fm/a.txt"
+echo 'hit two' > "$WORK/fm/b.txt"
+actual=$(cd "$WORK/fm" && run_pwsh "$WRAPPERS_PS1_STRIPPED" "_grep_ps_fallback hit '*.txt'; _grep_ps_fallback -c hit '*.txt'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/grep fallback, a pattern for two files: each line and count names its file" "$WORK/fm/a.txt:hit one
+$WORK/fm/b.txt:hit two
+$WORK/fm/a.txt:1
+$WORK/fm/b.txt:1" "$actual"
+actual=$(cd "$WORK/fm" && run_pwsh "$WRAPPERS_PS1_STRIPPED" "_grep_ps_fallback hit 'a*.txt'; _grep_ps_fallback -c hit 'a*.txt'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/grep fallback, a pattern for one file: no file name" "hit one
+1" "$actual"
+rm -rf "$WORK/fm"
+
 echo "[pwsh] cat fallback reads stdin (not only file args)"
 # Force the PS fallback branch: wrappers OFF skips bat, and an empty PATH means
 # no native 'cat' resolves either, so the wrapper falls through to the inline
