@@ -1,7 +1,10 @@
 """Tests for den verify (den/_verify.py)."""
 
 import os
+import shutil
 from pathlib import Path
+
+import pytest
 
 from den import _exe, _verify
 from den._verify import main as verify_main
@@ -35,27 +38,55 @@ def _fake_which(name, path=None):
     return _tool(name)
 
 
-def _capture_cmds(monkeypatch, rc: int = 0, out: str = ""):
-    cmds: list[list[str]] = []
+def _show_settings(settings_path: str | None) -> str:
+    """What `ruff check --show-settings FILE` prints first; ruff Debug-quotes
+    the path (a Windows one has its backslashes doubled)."""
+    head = 'Resolved settings for: "/w/f.py"\n'
+    if settings_path is not None:
+        quoted = settings_path.replace("\\", "\\\\").replace('"', '\\"')
+        head += f'Settings path: "{quoted}"\n'
+    return head + '\n# General Settings\ncache_dir = "/w/.ruff_cache"\n'
+
+
+class _Runs:
+    """What the fake subprocess.run saw: each stage call as its kwargs plus
+    "cmd" (calls), the same as bare argv (cmds), and every `ruff check
+    --show-settings` query (queries), which is config discovery for a file
+    with no config above it rather than a stage."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.cmds: list[list[str]] = []
+        self.queries: list[list[str]] = []
+
+
+def _capture(
+    monkeypatch, rc: int = 0, out: str = "", settings_path: str | None = None
+) -> _Runs:
+    """Fake which() and run(); the settings query is answered with
+    `settings_path` (None: ruff names no config file)."""
+    runs = _Runs()
     monkeypatch.setattr(_exe.shutil, "which", _fake_which)
-    monkeypatch.setattr(
-        _verify.subprocess,
-        "run",
-        lambda cmd, **k: cmds.append(cmd) or _Proc(rc, out),
-    )
-    return cmds
+
+    def _run(cmd, **k):
+        if "--show-settings" in cmd:
+            runs.queries.append(cmd)
+            return _Proc(0, _show_settings(settings_path))
+        runs.calls.append({"cmd": cmd, **k})
+        runs.cmds.append(cmd)
+        return _Proc(rc, out)
+
+    monkeypatch.setattr(_verify.subprocess, "run", _run)
+    return runs
+
+
+def _capture_cmds(monkeypatch, rc: int = 0, out: str = ""):
+    return _capture(monkeypatch, rc, out).cmds
 
 
 def _capture_calls(monkeypatch, rc: int = 0, out: str = ""):
-    """Every subprocess.run call as a dict: its kwargs plus "cmd"."""
-    calls: list[dict] = []
-    monkeypatch.setattr(_exe.shutil, "which", _fake_which)
-    monkeypatch.setattr(
-        _verify.subprocess,
-        "run",
-        lambda cmd, **k: calls.append({"cmd": cmd, **k}) or _Proc(rc, out),
-    )
-    return calls
+    """Every stage's subprocess.run call as a dict: its kwargs plus "cmd"."""
+    return _capture(monkeypatch, rc, out).calls
 
 
 # ---- config discovery (real filesystem, mirrors ruff's nearest-wins) ----
@@ -88,6 +119,80 @@ def test_ruff_config_none(tmp_path, monkeypatch):
     # tmp_path trees have no ruff config; the walk may only find one if the
     # host has one at / - treat both "None" and "outside tmp_path" as pass.
     assert cfg is None or tmp_path not in cfg[0].parents
+
+
+# ---- no config above the file: ruff falls back (cwd project, user config) ----
+
+
+def test_ruff_fallback_config_is_reported_and_no_defaults_added(
+    tmp_path, monkeypatch, capsys
+):
+    """With nothing above the file, ruff uses the cwd's project config (or
+    the user-level one). den used to print 'ruff <- none' and add D101-D103
+    on top of whatever ruff really used."""
+    f = _py(tmp_path)
+    monkeypatch.setattr(_verify, "_ruff_config", lambda _f: None)
+    cfg = Path(Path.cwd().anchor) / "proj" / "pyproject.toml"
+    runs = _capture(monkeypatch, settings_path=str(cfg))
+    assert verify_main([str(f)]) == 0
+    cmds, queries = runs.cmds, runs.queries
+    lint = next(c for c in cmds if Path(c[0]).name == "ruff" and c[1] == "check")
+    assert "--extend-select" not in lint
+    out = capsys.readouterr().out
+    assert f"config: ruff <- pyproject.toml [tool.ruff] ({cfg.parent}" in out
+    assert "den defaults" not in out
+    assert len(queries) == 1
+    assert Path(queries[0][0]).is_absolute(), "asked by absolute path too"
+
+
+def test_den_defaults_when_ruff_names_no_settings_file(tmp_path, monkeypatch, capsys):
+    f = _py(tmp_path)
+    monkeypatch.setattr(_verify, "_ruff_config", lambda _f: None)
+    cmds = _capture_cmds(monkeypatch)
+    assert verify_main([str(f)]) == 0
+    lint = next(c for c in cmds if Path(c[0]).name == "ruff" and c[1] == "check")
+    assert "D101,D102,D103" in lint
+    assert "config: ruff <- none -> den defaults" in capsys.readouterr().out
+
+
+def test_fallback_is_asked_once_per_run(tmp_path, monkeypatch):
+    a = _py(tmp_path, "a.py")
+    b = _py(tmp_path, "b.py")
+    monkeypatch.setattr(_verify, "_ruff_config", lambda _f: None)
+    runs = _capture(monkeypatch)
+    verify_main([str(a), str(b)])
+    assert len(runs.queries) == 1, "the fallback depends on the cwd, not the file"
+
+
+def test_settings_path_parses_ruffs_debug_quoting():
+    """ruff prints the path Debug-quoted: backslashes doubled on Windows."""
+    win = 'Settings path: "C:\\\\Users\\\\u\\\\ruff.toml"'
+    assert _verify._settings_path(win) == "C:\\Users\\u\\ruff.toml"
+    assert _verify._settings_path('Settings path: "/h/.config/ruff/ruff.toml"') == (
+        "/h/.config/ruff/ruff.toml"
+    )
+    assert _verify._settings_path("Resolved settings for: x\n") is None
+
+
+@pytest.mark.skipif(shutil.which("ruff") is None, reason="needs a real ruff")
+def test_real_ruff_cwd_project_config_is_named(tmp_path, monkeypatch, capsys):
+    """The finding's probe with the real ruff: cwd proj/ has a config, the
+    file lives outside it with none above."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text('[tool.ruff.lint]\nselect = ["E", "F"]\n')
+    other = tmp_path / "o"
+    other.mkdir()
+    f = other / "f.py"
+    f.write_text("def f():\n    return 1\n")
+    for var in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA"):
+        monkeypatch.setenv(var, str(tmp_path / "home"))  # no user-level config
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(_verify, "_ruff_config", lambda _f: None)  # none above
+    verify_main([str(f)])
+    out = capsys.readouterr().out
+    assert f"config: ruff <- pyproject.toml [tool.ruff] ({proj.resolve()}" in out
+    assert "D103" not in out
 
 
 def test_project_root_prefers_pyproject_ancestor(tmp_path):

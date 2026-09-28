@@ -4,12 +4,16 @@ Hidden runtime command (like hook/memory): agents call it after writing code.
 The design rule is "discover like the tools do, make the discovery visible,
 never override":
 
-- The anchor is the FILE's directory (cwd-independent), exactly like ruff.
+- The anchor is the FILE's directory, exactly like ruff: a config above the
+  file wins whatever the cwd.
 - ruff: the nearest-wins discovery (.ruff.toml > ruff.toml > pyproject.toml
   with [tool.ruff]; no merging) is re-walked here ONLY to report which config
   will win; ruff itself runs with no config flags, so its real resolution is
-  never overridden. Only when NO config exists anywhere up the tree do den's
-  defaults apply (missing public docstrings: D101, D102, D103).
+  never overridden. With no config above the file, ruff falls back to the
+  project config found from the working directory, then to the user-level
+  one (~/.config/ruff/ruff.toml); that is asked of ruff itself
+  (`--show-settings`) and reported. Only when ruff names no config at all do
+  den's defaults apply (missing public docstrings: D101, D102, D103).
 - ty: import resolution needs a real environment, so the project root is
   passed explicitly (--project <root>, root = nearest pyproject.toml/ty.toml
   ancestor) and the venv line reports what ty will see.
@@ -31,6 +35,7 @@ the locale codec.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from contextlib import suppress
@@ -66,6 +71,76 @@ def _ruff_config(file: Path) -> tuple[Path, str] | None:
         if d.parent == d:
             return None
         d = d.parent
+
+
+def _settings_path(show_settings: str) -> str | None:
+    """The file named by the `Settings path:` line of `ruff check
+    --show-settings` output (absent when ruff uses no config file), unquoted:
+    ruff prints it Debug-formatted, so a Windows path has its backslashes
+    doubled."""
+    for line in show_settings.splitlines():
+        if line.startswith("Settings path:"):
+            raw = line.removeprefix("Settings path:").strip()
+            if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+                raw = re.sub(r"\\(.)", r"\1", raw[1:-1])
+            return raw or None
+    return None
+
+
+def _ruff_fallback_config(file: Path) -> Path | None:
+    """The config ruff itself uses for `file` when none is above it, or None.
+
+    ruff then takes the project config found from the working directory, and
+    failing that the user-level one. That depends on the cwd and the
+    environment rather than on the file, so it is asked of ruff (run exactly
+    as the lint stage will run it) instead of re-derived. None when ruff
+    names no config, or is missing or refused (its stages report that)."""
+    exe, _refusal = resolve_tool("ruff")
+    if exe is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [exe, "check", "--show-settings", str(file)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = _settings_path(proc.stdout) if proc.returncode == 0 else None
+    return Path(found) if found else None
+
+
+def _ruff_config_line(file: Path, fallback: dict[str, Path | None]) -> tuple[str, bool]:
+    """(the `config: ruff` line, whether den's defaults apply) for `file`.
+
+    `fallback` memoizes ruff's answer for files with no config above them:
+    it is the same for all of them in one run."""
+    cfg = _ruff_config(file)
+    if cfg:
+        path, kind = cfg
+        return f"config: ruff <- {kind} ({path.parent})", False
+    if "ruff" not in fallback:
+        fallback["ruff"] = _ruff_fallback_config(file)
+    found = fallback["ruff"]
+    if found is not None:
+        kind = (
+            "pyproject.toml [tool.ruff]"
+            if found.name == "pyproject.toml"
+            else found.name
+        )
+        return (
+            f"config: ruff <- {kind} ({found.parent}; ruff's fallback,"
+            " no config above the file)",
+            False,
+        )
+    return (
+        "config: ruff <- none -> den defaults "
+        f"(+{_DEN_DEFAULT_LINT[1]} missing-docstring checks)",
+        True,
+    )
 
 
 def _project_root(file: Path) -> Path:
@@ -135,9 +210,10 @@ def _usage() -> None:
         "\n"
         "Run format (ruff format --check), lint (ruff check), and typecheck\n"
         "(ty check) on each Python file given. Project config always wins:\n"
-        "den only adds its defaults (missing-docstring checks) when no ruff\n"
-        "config exists anywhere above a file. The `config:` lines show\n"
-        "exactly which config file and environment each tool will use.\n"
+        "den only adds its defaults (missing-docstring checks) when ruff\n"
+        "finds no config for a file (none above it, none from the working\n"
+        "directory, no user-level one). The `config:` lines show exactly\n"
+        "which config file and environment each tool will use.\n"
         "Exit 0 = no failures, 1 = a failure or an unusable file, 2 = usage."
     )
 
@@ -156,18 +232,12 @@ def _reject(file: Path) -> str | None:
     return None
 
 
-def _verify_file(file: Path, counts: dict[str, int]) -> None:
-    cfg = _ruff_config(file)
-    if cfg:
-        path, kind = cfg
-        print(f"config: ruff <- {kind} ({path.parent})")
-        lint_cmd = ["ruff", "check", str(file)]
-    else:
-        print(
-            "config: ruff <- none -> den defaults "
-            f"(+{_DEN_DEFAULT_LINT[1]} missing-docstring checks)"
-        )
-        lint_cmd = ["ruff", "check", *_DEN_DEFAULT_LINT, str(file)]
+def _verify_file(
+    file: Path, counts: dict[str, int], fallback: dict[str, Path | None]
+) -> None:
+    line, defaults = _ruff_config_line(file, fallback)
+    print(line)
+    lint_cmd = ["ruff", "check", *(_DEN_DEFAULT_LINT if defaults else ()), str(file)]
 
     root = _project_root(file)
     print(f"config: ty   <- project root {root} (--project); {_venv_line(root)}")
@@ -200,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     counts = {"pass": 0, "fail": 0, "skip": 0}
+    fallback: dict[str, Path | None] = {}
     for file in files:
         if len(files) > 1:
             print(f"== {file}")
@@ -208,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"den verify: {why}", file=sys.stderr)
             counts["fail"] += 1
             continue
-        _verify_file(file, counts)
+        _verify_file(file, counts, fallback)
 
     scope = f" across {len(files)} files" if len(files) > 1 else ""
     print(
