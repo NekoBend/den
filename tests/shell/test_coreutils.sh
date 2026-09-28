@@ -324,6 +324,30 @@ assert_eq "touch, tab-completed forms reach [ab].md and a new file in [slug]" \
     "$(tb_years 'pages/[ab].md' 'pages/a.md' 'src/routes/[slug]/+page.svelte' 'pages/`[ab`].md')"
 rm -rf "$WORK/tb"
 
+# A name with * or ? is a pattern: a function receives `touch *.md` unexpanded,
+# and touch updates each file it matches, as the shell's expansion would. Taken
+# literally, it created a file named '*.md' and left the .md files as they
+# were. One that matches nothing is created as it is, as bash passes it on, and
+# a pattern in a tab-completed app/`[slug`] reads that directory. Same fixture
+# and output as above.
+echo "[pwsh] touch expands * and ? in a name"
+rm -rf "$WORK/tb" && mkdir -p "$WORK/tb/src/routes/[slug]" "$WORK/tb/src/routes/s"
+for f in 'one.md' 'a.txt' 'b.txt' 'src/routes/[slug]/x.svelte' 'src/routes/s/y.svelte'; do
+    : > "$WORK/tb/$f"
+    touch -t 200001011200 "$WORK/tb/$f"
+done
+err=$(cd "$WORK/tb" && run_pwsh "$COREUTILS_PS1_STRIPPED" "$TB_HELPERS; touch '*.md' '?.txt' './src/routes/\`[slug\`]/*.svelte' 'none*.log'" 2>&1 >/dev/null | tr -d '\r')
+assert_eq "touch *.md ?.txt: no error" "" "$err"
+assert_eq "touch *.md ?.txt: the files they match, and no file named after the pattern" \
+    "one.md=$now a.txt=$now b.txt=$now *.md=0 ?.txt=0" \
+    "$(tb_years 'one.md' 'a.txt' 'b.txt' '*.md' '?.txt')"
+assert_eq "touch, a pattern in a tab-completed [slug] directory: its files only" \
+    "src/routes/[slug]/x.svelte=$now src/routes/s/y.svelte=2000 src/routes/[slug]/*.svelte=0" \
+    "$(tb_years 'src/routes/[slug]/x.svelte' 'src/routes/s/y.svelte' 'src/routes/[slug]/*.svelte')"
+assert_eq "touch, a pattern that matches nothing: created as it is" \
+    "none*.log=$now" "$(tb_years 'none*.log')"
+rm -rf "$WORK/tb"
+
 # =============================================================================
 # which
 # =============================================================================

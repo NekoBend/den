@@ -486,6 +486,9 @@ Case 'tail, piped' { 'x', 'y' | tail -n 1 }
 Case 'tail -n +N, piped' { 'x', 'y' | tail -n +2 }
 Case 'touch, new file' { touch touched.txt }
 Case 'touch, existing file' { touch a.txt }
+Case 'touch, a pattern and one that matches nothing' {
+    try { touch '*.txt' 'none*.log' } finally { Remove-Item -LiteralPath 'none*.log' -Force -ErrorAction SilentlyContinue }
+}
 Case 'touch, no argument' { touch }
 Case 'touch, [ ] escaped as tab completion writes them' {
     $null = New-Item -ItemType Directory -Path 'br/[d]'
