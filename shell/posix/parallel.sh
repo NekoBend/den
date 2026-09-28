@@ -254,6 +254,8 @@ prm() {
 # truncated archive and an existing one exactly as it was. The directory is
 # mktemp -d's 0700 one for the reason archive() gives: a predictable name in a
 # shared directory could be swapped for a symlink before the shell opens it.
+# tar leaves that directory out by its unique name: with <out> inside a source
+# (`ptar out.tgz .`), it would otherwise store the half-written archive.
 _ptar_pipe() {
     local out="$1" comp="$2" copt="$3" dir tmpd rc
     shift 3
@@ -266,7 +268,7 @@ _ptar_pipe() {
         echo "ptar: cannot create a temporary directory in '$dir'" >&2
         return 1
     fi
-    ( set -o pipefail; tar -cf - -- "$@" | command "$comp" "$copt" > "$tmpd/archive" )
+    ( set -o pipefail; tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive" )
     rc=$?
     if [ "$rc" -eq 0 ]; then
         mv -f -- "$tmpd/archive" "$out"

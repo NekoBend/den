@@ -451,6 +451,20 @@ for sh in bash zsh; do
     assert_eq "$sh/ptar put nothing inside the directory output" "" "$(ls -A "$WORK/adir.tgz")"
     rm -rf "$WORK"/out.* "$WORK/keep.tgz" "$WORK/adir.tgz"
 
+    echo "[$sh] ptar: an output inside its source leaves the staging directory out"
+    # The threaded forms build the archive in a private .ptar.XXXXXX beside
+    # <out>; with <out> inside a source, tar stored that directory and the
+    # half-written archive in it.
+    setup_fixtures
+    for _out in out.tar.xz out.tgz out.tbz2; do
+        $runner "$PARALLEL_SH" "cd '$WORK/src' && ptar $_out ." >/dev/null 2>&1
+        assert_success "$sh/ptar $_out inside its source exit code" "$?"
+        actual=$(tar tf "$WORK/src/$_out" 2>/dev/null)
+        assert_contains "$sh/ptar $_out inside its source stored the files" "subdir/file3.txt" "$actual"
+        assert_not_contains "$sh/ptar $_out inside its source left staging out" ".ptar." "$actual"
+    done
+    rm -f "$WORK"/src/out.*
+
     echo "[$sh] pcp/pmv/prm hand each job a batch of operands, not one each"
     # One cp/mv/rm per operand made `pcp * dest` over a few thousand small
     # files 10-70x slower than a plain cp. cp, mv and rm stubs on PATH log one
