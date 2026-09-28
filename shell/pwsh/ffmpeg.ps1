@@ -8,6 +8,9 @@
 
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { return }
 
+# _SplitPosExtra: the positional arguments, then the ffmpeg options from the first
+# dash on. The callers read $pos[N] only below $pos.Count: a caller's Set-StrictMode
+# makes an index past the end an error, where it otherwise reads as $null.
 function _SplitPosExtra {
     $pos   = [System.Collections.Generic.List[string]]::new()
     $extra = [System.Collections.Generic.List[string]]::new()
@@ -35,8 +38,9 @@ function _AssertOutExt([string]$Fn, [string]$Out, [string]$Ext) {
     return $true
 }
 # After <in> [out], a further positional is a stray argument (a third file, a
-# typo); refuse rather than hand it to ffmpeg.
-function _AssertNoExtraPos([string]$Fn, $Pos, [int]$Max) {
+# typo); refuse rather than hand it to ffmpeg. Pos defaults to @() rather than
+# $null, whose .Count is an error under a caller's Set-StrictMode.
+function _AssertNoExtraPos([string]$Fn, $Pos = @(), [int]$Max) {
     if ($Pos.Count -gt $Max) {
         Write-Error "${Fn}: unexpected argument '$($Pos[$Max])' (usage: $Fn <in> [out] [ffmpeg args])"
         return $false
@@ -46,7 +50,7 @@ function _AssertNoExtraPos([string]$Fn, $Pos, [int]$Max) {
 
 function tomp4 {
     $pos, $extra = _SplitPosExtra @args
-    $In  = $pos[0]
+    $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.mp4') }
     if (-not (_AssertOutExt 'tomp4' $Out 'mp4')) { return }
     if (-not (_AssertNoExtraPos 'tomp4' $pos 2)) { return }
@@ -61,7 +65,7 @@ function tomp4 {
 #   towebm input.mp4 -c:v libsvtav1 -crf 30  → override with AV1
 function towebm {
     $pos, $extra = _SplitPosExtra @args
-    $In  = $pos[0]
+    $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.webm') }
     if (-not (_AssertOutExt 'towebm' $Out 'webm')) { return }
     if (-not (_AssertNoExtraPos 'towebm' $pos 2)) { return }
@@ -76,7 +80,7 @@ function towebm {
 #   tomp3 input.wav -b:a 320k  → override bitrate
 function tomp3 {
     $pos, $extra = _SplitPosExtra @args
-    $In  = $pos[0]
+    $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.mp3') }
     if (-not (_AssertOutExt 'tomp3' $Out 'mp3')) { return }
     if (-not (_AssertNoExtraPos 'tomp3' $pos 2)) { return }
@@ -91,7 +95,7 @@ function tomp3 {
 #   towav input.flac -c:a pcm_s24le  → override to 24-bit
 function towav {
     $pos, $extra = _SplitPosExtra @args
-    $In  = $pos[0]
+    $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.wav') }
     if (-not (_AssertOutExt 'towav' $Out 'wav')) { return }
     if (-not (_AssertNoExtraPos 'towav' $pos 2)) { return }
@@ -106,7 +110,7 @@ function towav {
 #   toflac input.wav -compression_level 12  → override compression
 function toflac {
     $pos, $extra = _SplitPosExtra @args
-    $In  = $pos[0]
+    $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.flac') }
     if (-not (_AssertOutExt 'toflac' $Out 'flac')) { return }
     if (-not (_AssertNoExtraPos 'toflac' $pos 2)) { return }
@@ -123,7 +127,7 @@ function toflac {
 #   togif input.mp4 -vf "fps=5,scale=320:-1"  → single-pass override
 function togif {
     $pos, $extra = _SplitPosExtra @args
-    $In  = $pos[0]
+    $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.gif') }
     if (-not (_AssertOutExt 'togif' $Out 'gif')) { return }
     $Fps   = if ($pos.Count -gt 2) { $pos[2] } else { '10' }
@@ -162,9 +166,9 @@ function minfo {
 #   clip input.mp4 00:01:00 00:02:00 out.mp4 -c:v h264 → custom output + override
 function clip {
     $pos, $extra = _SplitPosExtra @args
-    $In    = $pos[0]
-    $Start = $pos[1]
-    $End   = $pos[2]
+    $In    = if ($pos.Count -gt 0) { $pos[0] } else { $null }
+    $Start = if ($pos.Count -gt 1) { $pos[1] } else { $null }
+    $End   = if ($pos.Count -gt 2) { $pos[2] } else { $null }
     if ($pos.Count -gt 3) {
         $Out = $pos[3]
     } else {
@@ -185,7 +189,7 @@ function clip {
 #   strip-audio input.mp4 -c:v libx265    → re-encode video, drop audio
 function strip-audio {
     $pos, $extra = _SplitPosExtra @args
-    $In = $pos[0]
+    $In = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     if ($pos.Count -gt 1) {
         $Out = $pos[1]
     } else {
@@ -209,7 +213,7 @@ function strip-audio {
 #   thumbnail input.mp4 00:00:30 out.png -q:v 2    → custom output + override
 function thumbnail {
     $pos, $extra = _SplitPosExtra @args
-    $In   = $pos[0]
+    $In   = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Time = if ($pos.Count -gt 1) { $pos[1] } else { '00:00:01' }
     $Out  = if ($pos.Count -gt 2) { $pos[2] } else { [IO.Path]::ChangeExtension($In, '.jpg') }
     if (-not (_AssertNoExtraPos 'thumbnail' $pos 3)) { return }

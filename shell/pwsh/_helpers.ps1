@@ -22,9 +22,11 @@ function _WrapLog([string]$Name, [string]$Tool) {
 # _OnWindows — true on ANY Windows PowerShell, including Windows PowerShell 5.1
 # (Desktop edition) where the $IsWindows automatic variable does not exist (it is
 # $null there). Used to skip the DOS-colliding native commands (see $winNativeSkip
-# in New-Wrapper) on every Windows host, 5.1 included.
+# in New-Wrapper) on every Windows host, 5.1 included. The edition is tested first,
+# so 5.1 never reads $IsWindows: a user's script that runs Set-StrictMode and then
+# calls den's commands would make that read an error inside them.
 function _OnWindows {
-    [bool]($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop')
+    [bool]($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)
 }
 
 # _DenInteractive - true only for an interactive REPL. den's wrappers/aliases/
@@ -67,7 +69,9 @@ function _DenInteractive {
 # Windows PowerShell 5.1 differs in -Version, which takes a value there.
 # -RemoveWorkingDirectoryTrailingCharacter exists on Windows only; elsewhere pwsh
 # refuses to start with it.
-function _DenLaunchSwitches([string[]]$Arguments) {
+# Arguments defaults to @(): left $null, its .Count below is an error under a
+# caller's Set-StrictMode (the same holds for _DenLaunchIsRepl and _DenRelaunchArgs).
+function _DenLaunchSwitches([string[]]$Arguments = @()) {
     $versionKind = 'exit'
     if ($PSVersionTable.PSEdition -eq 'Desktop') { $versionKind = 'value' }
     $switches = @(
@@ -131,7 +135,7 @@ function _DenLaunchSwitches([string[]]$Arguments) {
 # integration starts every terminal as `pwsh -noexit -command ". <shellIntegration.ps1>"`,
 # which IS followed by a REPL. -NonInteractive always wins, even with -NoExit;
 # -Version and -Help print and exit.
-function _DenLaunchIsRepl([string[]]$Arguments) {
+function _DenLaunchIsRepl([string[]]$Arguments = @()) {
     $payload = $false
     $noExit = $false
     foreach ($s in @(_DenLaunchSwitches -Arguments $Arguments)) {
@@ -170,7 +174,7 @@ function _DenLaunchIsRepl([string[]]$Arguments) {
 # argument goes as "". One case still breaks on 5.1: an argument whose every
 # whitespace follows an odd number of quotes (such as "C:\a b", quotes included),
 # which 5.1 leaves unquoted, so the new shell gets it split at its spaces.
-function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) {
+function _DenRelaunchArgs([string[]]$CommandLineArgs = @(), [switch]$Legacy) {
     $count = @($CommandLineArgs).Count
     $launch = @()
     if ($count -gt 1) { $launch = @($CommandLineArgs[1..($count - 1)]) }
@@ -204,7 +208,7 @@ function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) {
 # it (CommandLineParameterParser.NormalizeFilePath: the other slash turned into
 # this system's, then made full), from <dir>. -File - (commands from stdin) names
 # no file.
-function _DenLaunchMissingFile([string[]]$Arguments, [string]$Directory) {
+function _DenLaunchMissingFile([string[]]$Arguments = @(), [string]$Directory) {
     $unix = [System.IO.Path]::DirectorySeparatorChar -eq [char]'/'
     foreach ($s in @(_DenLaunchSwitches -Arguments $Arguments)) {
         $at = -1
@@ -278,7 +282,10 @@ function _DenVSCodeEnv {
 # mid-session is picked up after `reload` (which starts a new session, and so an
 # empty cache). Value is the resolved path/name, or '' = absent. App-lookup keys also
 # carry $VIRTUAL_ENV (see _ResolveCmd) so a venv switch re-resolves pip/python.
-$script:_DenCmdCache = @{}
+# This cache and _CoreutilsBin's live in $global:, not in $script:, because den's
+# commands also run inside a user's scripts, where $script: names the running
+# script's scope and the cache does not exist.
+$global:_DenCmdCache = @{}
 
 # _ResolveCmd <name> [type] — cached Get-Command. Type 'App' resolves to the real
 # executable PATH (CommandType Application), which skips a same-named function or
@@ -293,44 +300,46 @@ function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
     # venv's pip/python path and install into the wrong environment. 'Any' returns
     # the bare name (an existence check), which is venv-insensitive.
     $key = if ($Type -eq 'App') { "App|$Name|$env:VIRTUAL_ENV" } else { "Any|$Name" }
-    if (-not $script:_DenCmdCache.ContainsKey($key)) {
+    if (-not $global:_DenCmdCache.ContainsKey($key)) {
         $val = ''
         if ($Type -eq 'App') {
-            $src = (Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-            if ($src) { $val = $src }
+            # No .Source on an empty result: a caller's Set-StrictMode makes that an error.
+            $app = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($app) { $val = $app.Source }
         }
         elseif (Get-Command $Name -ErrorAction SilentlyContinue) {
             $val = $Name
         }
-        $script:_DenCmdCache[$key] = $val
+        $global:_DenCmdCache[$key] = $val
     }
-    $v = $script:_DenCmdCache[$key]
+    $v = $global:_DenCmdCache[$key]
     if ($v -eq '') { return $null } else { return $v }
 }
 
-$script:_DenCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
+$global:_DenCoreutils = $null   # $null = unresolved, '' = resolved-absent, else path
 function _CoreutilsBin {
     if ($env:_DEN_COREUTILS -eq '0') { return $null }
-    if ($IsWindows -ne $true) { return $null }
-    if ($null -eq $script:_DenCoreutils) {
+    # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
+    if ($PSVersionTable.PSEdition -ne 'Core' -or $IsWindows -ne $true) { return $null }
+    if ($null -eq $global:_DenCoreutils) {
         $found = ''
         if ($env:_DEN_COREUTILS) {
-            $g = (Get-Command $env:_DEN_COREUTILS -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-            if ($g) { $found = $g }
+            $g = Get-Command $env:_DEN_COREUTILS -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($g) { $found = $g.Source }
             elseif (Test-Path -LiteralPath $env:_DEN_COREUTILS -PathType Leaf) { $found = $env:_DEN_COREUTILS }
         }
         if (-not $found) {
-            $g = (Get-Command 'coreutils' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-            if ($g) { $found = $g }
+            $g = Get-Command 'coreutils' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($g) { $found = $g.Source }
         }
         if (-not $found) {
             foreach ($p in @("$env:ProgramFiles\coreutils\coreutils.exe", "${env:ProgramFiles(x86)}\coreutils\coreutils.exe")) {
                 if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { $found = $p; break }
             }
         }
-        $script:_DenCoreutils = $found
+        $global:_DenCoreutils = $found
     }
-    if ($script:_DenCoreutils) { return $script:_DenCoreutils } else { return $null }
+    if ($global:_DenCoreutils) { return $global:_DenCoreutils } else { return $null }
 }
 
 # ========== wrapper generator ==========
@@ -455,6 +464,7 @@ function _DenTrustedCacheOwner([string]$OwnerSid, [string]$UserSid, [string[]]$U
 # session. Takes the identity as a parameter so a stand-in object tests it off
 # Windows.
 function _DenTokenGroupSids($Identity) {
+    if ($null -eq $Identity) { return }  # .Groups on $null: an error under strict mode
     $denyOnly = [System.Security.Claims.ClaimTypes]::DenyOnlySid
     foreach ($g in $Identity.Groups) { $g.Value }
     foreach ($c in $Identity.Claims) {

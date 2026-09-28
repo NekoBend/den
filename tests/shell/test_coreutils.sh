@@ -250,6 +250,15 @@ assert_exists "split reads a file named 0" "$WORK/zero/xaa"
 assert_eq "split read the file named 0, not stdin" "$(cat "$WORK/zero/0")" "$(cat "$WORK/zero/xaa")"
 rm -rf "$WORK/zero"
 
+# Get-Content returns a one-line file as a bare string, and split sliced that
+# string: the chunk held one CHARACTER per line ("solo" became s, o, l, o).
+echo "[pwsh] split keeps a one-line file's line whole"
+rm -rf "$WORK/one" && mkdir -p "$WORK/one"
+echo solo > "$WORK/one/f.txt"
+run_pwsh "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK/one'; split -l 10 f.txt" >/dev/null 2>&1
+assert_eq "split of a one-line file" "solo" "$(tr -d '\r' < "$WORK/one/xaa" 2>/dev/null)"
+rm -rf "$WORK/one"
+
 # =============================================================================
 # touch
 # =============================================================================

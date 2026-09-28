@@ -91,6 +91,19 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " | tr -d '\r')
 assert_contains "pwsh/code prefers code-insiders" "STUB-INSIDERS ." "$actual"
 
+# code resolves the editor through _ResolveCmd, whose cache was once kept in
+# $script:, which inside a user's .ps1 is that script's scope: there the cache
+# was $null and code reported "not installed".
+echo "[pwsh] code works from a user script"
+printf '%s\n' 'code --version' > "$WORK/usecode.ps1"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    \$env:PATH = '$CODE_BIN'
+    . '$P/aliases.ps1'
+    & '$WORK/usecode.ps1'
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/code from a script" "STUB-INSIDERS --version" "$actual"
+
 echo "[pwsh] code warns when no editor is installed"
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:_DEN_FORCE_INTERACTIVE = '1'

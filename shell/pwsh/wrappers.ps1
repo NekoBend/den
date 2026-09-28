@@ -62,7 +62,9 @@ function _find_ps_fallback {
     if($nm){$p.Filter=$nm}
     if($ty -eq "f"){$p.File=$true}
     elseif($ty -eq "d"){$p.Directory=$true}
-    (Get-ChildItem @p).FullName
+    # Not (Get-ChildItem @p).FullName: with no match that reads .FullName on $null,
+    # an error under a caller's Set-StrictMode.
+    Get-ChildItem @p|ForEach-Object{$_.FullName}
 }
 
 # ls: Get-ChildItem -Name already emits each name as a string, which has no .Name
@@ -80,6 +82,9 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
 
 # ===== Toggle-aware wrappers: modern → native → PS fallback =====
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
+# A fallback pipes Get-ChildItem on rather than reading a member off its result:
+# with nothing listed, that reads it off $null, an error under a caller's
+# Set-StrictMode.
 
 New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'if ($Args.Count) { Get-Content @Args } else { $input }'
 New-Wrapper 'find'    'fd'  ''                              'find' ''                '_find_ps_fallback @Args'
@@ -105,7 +110,7 @@ New-WrapperSuffix 'lsw'   'lsd' ''
 # PowerShell-alias behavior (the builtin cmdlets). With microsoft/coreutils installed
 # these gain real Unix flags (`rm -rf`, `cp -r`, ...); without it they fall back to
 # the same builtin cmdlet, so this never changes the no-coreutils Windows baseline.
-if ($IsWindows) {
+if ($PSVersionTable.PSEdition -eq 'Core' -and $IsWindows) {
     # cp/mv/rm/rmdir are built-in PowerShell ALIASES on Windows (-> Copy-Item /
     # Move-Item / Remove-Item), and an alias outranks a function in command
     # resolution, so the alias must be removed first or the wrapper below never

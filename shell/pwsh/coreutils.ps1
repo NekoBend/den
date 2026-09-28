@@ -160,7 +160,10 @@ function split {
     return
   }
 
-  if ($path -ne '') { $content = Get-Content -LiteralPath $path }
+  # @(): Get-Content returns a one-line file as a bare string and an empty one as
+  # $null, and the slice below stops at the last line. Under a caller's
+  # Set-StrictMode, .Count on those and an index past the end are errors.
+  if ($path -ne '') { $content = @(Get-Content -LiteralPath $path) }
   if ($chunks -ne '') {
     $n = [int]($chunks -replace '^l/', '')
     if ($n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
@@ -171,7 +174,7 @@ function split {
   for ($idx = 0; $idx -lt $total; $idx++) {
     $start = $idx * $lines
     $outFile = "${prefix}$(_suffix $idx $suffixLen)"
-    $content[$start..($start + $lines - 1)] | Set-Content -LiteralPath $outFile
+    $content[$start..([math]::Min($start + $lines, $content.Count) - 1)] | Set-Content -LiteralPath $outFile
   }
   Write-Host "Split into $total files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($total-1) $suffixLen))"
 }
@@ -236,7 +239,9 @@ function _wcOne {
   $raw = Get-Content -Raw -LiteralPath $Path -ErrorAction SilentlyContinue
   if ($null -eq $raw) { $raw = '' }
 
-  $lines = if ($raw.Length -eq 0) { @() } else { $raw -split "`n" }
+  # @(): the if-block's output reaches $lines as $null for an empty file, and a
+  # caller's Set-StrictMode makes the .Length read below an error.
+  $lines = @(if ($raw.Length -gt 0) { $raw -split "`n" })
   if ($lines.Length -gt 0 -and $lines[-1] -eq '') {
     $lines = if ($lines.Length -eq 1) { @() } else { $lines[0..($lines.Length - 2)] }
   }

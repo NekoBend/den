@@ -304,7 +304,7 @@ function _ArRegularFile([string]$Path) {
   $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
   # Rules out a directory and a path that is not there at all, on every OS.
   if (-not [System.IO.File]::Exists($full)) { return $false }
-  if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+  if ($env:OS -eq 'Windows_NT' -or $IsWindows) {
     $attrs = [System.IO.File]::GetAttributes($full)
     return -not ($attrs.HasFlag([System.IO.FileAttributes]::Device) -or
                  $attrs.HasFlag([System.IO.FileAttributes]::Directory))
@@ -341,6 +341,7 @@ function _ArVolumeRelative([string]$Path) {
 # _ArLinkTarget → what a symlink points at, else the item's own path.
 # ResolveLinkTarget is 7.2+; .Target is the one-hop stand-in on 7.0/7.1.
 function _ArLinkTarget($Item) {
+  if ($null -eq $Item) { return $null }  # .LinkType on $null: an error under strict mode
   try {
     if ($Item.LinkType -eq 'SymbolicLink') {
       if ($Item | Get-Member -Name ResolveLinkTarget) {
@@ -359,7 +360,7 @@ function _ArLinkTarget($Item) {
 function _ArSameFile([string]$A, [string]$B) {
   $fa = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($A)
   $fb = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($B)
-  if (-not ($IsWindows -or $env:OS -eq 'Windows_NT')) {
+  if (-not ($env:OS -eq 'Windows_NT' -or $IsWindows)) {
     if ($fa -ceq $fb) { return $true }
     # -ef needs both to exist; an output that is not there yet collides with
     # nothing, and skipping the fork is the common case.
@@ -677,13 +678,13 @@ Set-Alias pk archive
 
 # display $env:PATH entries one per line
 function path {
-  $sep = if ($IsWindows -or $env:OS -eq 'Windows_NT') { ';' } else { ':' }
+  $sep = if ($env:OS -eq 'Windows_NT' -or $IsWindows) { ';' } else { ':' }
   $env:PATH -split [regex]::Escape($sep) | Where-Object { $_ -ne '' }
 }
 
 # show listening TCP ports with process info
 function ports {
-  if ($IsLinux -or $IsMacOS) {
+  if ($PSVersionTable.PSEdition -eq 'Core' -and ($IsLinux -or $IsMacOS)) {
     if (Get-Command ss -ErrorAction SilentlyContinue) { ss -tlnp }
     elseif (Get-Command netstat -ErrorAction SilentlyContinue) { netstat -tlnp }
     else { Write-Warning "ports: ss/netstat not found" }
@@ -721,7 +722,9 @@ function cd {
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
     if ($null -eq $Rest) { Set-Location -LiteralPath $HOME } else { __zoxide_z @Rest }
   } else {
-    if ($Rest.Count -eq 0) { Set-Location ~ } else { Set-Location @Rest }
+    # No arguments leave $Rest $null, not empty: a caller's Set-StrictMode makes
+    # .Count on it an error.
+    if ($null -eq $Rest) { Set-Location ~ } else { Set-Location @Rest }
   }
   _DenDirMoved $MyInvocation
 }
@@ -867,10 +870,13 @@ function sagain {
 # not by the moves it makes on the way (LocationChangedAction, PowerShell 6.1+,
 # is not used: it fires for each of those). den's navigation commands typed at
 # the prompt also record at once (_DenDirMoved), so several on one line are each
-# kept. back/fwd walk the lists themselves. The state is $global:, not $script:
-# like _helpers.ps1's caches: den's commands also run inside scripts, and there
-# $script: names the running script's scope.
-if ($null -eq $global:_DenDirBack) {
+# kept. back/fwd walk the lists themselves. The state is $global: (as are
+# _helpers.ps1's caches) rather than $script:, because den's commands also run
+# inside scripts, where $script: names the running script's scope. Test-Path
+# rather than a read: when a profile sets strict mode before it loads den,
+# reading a variable that was never set is an error, and none of the three
+# would be created.
+if (-not (Test-Path Variable:global:_DenDirBack)) {
   $global:_DenDirBack = [System.Collections.Generic.List[string]]::new()
   $global:_DenDirFwd = [System.Collections.Generic.List[string]]::new()
   $global:_DenDirLast = $PWD.Path
@@ -905,7 +911,7 @@ function _DenDirRecord {
 # a script or another function (Internal), it is left to the prompt, so that
 # script's moves stay net.
 function _DenDirMoved([System.Management.Automation.InvocationInfo]$Invocation) {
-  if ($Invocation.CommandOrigin -eq 'Runspace') { _DenDirRecord }
+  if ($null -ne $Invocation -and $Invocation.CommandOrigin -eq 'Runspace') { _DenDirRecord }
 }
 
 # _DenDirGo <back|fwd> <N> - move N entries along that list (N already
@@ -920,7 +926,10 @@ function _DenDirGo([string]$List, [string]$N) {
   } else {
     $from = $global:_DenDirFwd; $to = $global:_DenDirBack; $word = 'forward'
   }
-  if ($N.Length -gt 9 -or [int]$N -gt $from.Count) {
+  # back and fwd pass N >= 1. A bare call (N '', read as 0) would read
+  # $from[-1], past the end of an empty list: an error under a caller's
+  # Set-StrictMode.
+  if ($N.Length -gt 9 -or [int]$N -lt 1 -or [int]$N -gt $from.Count) {
     $noun = if ($from.Count -eq 1) { 'entry' } else { 'entries' }
     return "history has $($from.Count) $word $noun, cannot go $word $N"
   }
@@ -1012,7 +1021,10 @@ function fwd {
 # the one it saw last, so where zoxide's wrapper survives (no starship) its own
 # call after this one adds nothing.
 function _DenDirHookPrompt {
-  if ($null -ne $global:_DenDirPrompt -and $function:prompt -eq $global:_DenDirPrompt) { return }
+  # Test-Path first: on the first load it is not set, and strict mode set before
+  # den loads makes reading it an error.
+  if ((Test-Path Variable:global:_DenDirPrompt) -and $null -ne $global:_DenDirPrompt -and
+      $function:prompt -eq $global:_DenDirPrompt) { return }
   $global:_DenDirPromptOld = $function:prompt
   function global:prompt {
     # Record first, then hand the wrapped prompt the $? it would have seen, so
