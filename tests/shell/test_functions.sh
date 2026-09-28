@@ -43,7 +43,7 @@ CRAFTED_SRC='--checkpoint-action=exec=touch pwned'
 CRAFTED_TRIGGER='--checkpoint=1'
 
 setup_crafted() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/crafted"
     # Both names are needed for the exec to fire: --checkpoint=1 turns
     # checkpointing on, --checkpoint-action says what to run at each one. They
@@ -57,7 +57,7 @@ setup_crafted() {
 # A file whose name contains PowerShell wildcard characters, next to the file
 # that name would match if it were read as a wildcard instead of literally.
 setup_wildcard() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/wild"
     printf 'real'  > "$WORK/wild/f[1].txt"
     printf 'decoy' > "$WORK/wild/f1.txt"
@@ -76,7 +76,7 @@ setup_wildcard() {
 STUB_ARGV="$WORK/stub-argv.txt"
 
 setup_archiver_stubs() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/stubbin" "$WORK/stubsrc"
     # sources for archive(), and archives for extract(), one per branch shape
     # a stub can observe (the .zip branch is a cmdlet on pwsh, so it is not
@@ -107,7 +107,7 @@ STUB
 # round trip is checked against the exact source that went in.
 PAYLOAD_SHA=""
 setup_single_file() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/one" "$WORK/nobin"
     head -c 65536 /dev/urandom > "$WORK/one/payload.bin"
     PAYLOAD_SHA=$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)

@@ -171,11 +171,23 @@ run_zsh_stderr() {
 
 # ===== Temp workspace =====
 
-WORK="$(mktemp -d)"
+# abort_suite <message>: stop the whole suite, for a setup step (the temp
+# workspace, a generated script) that no test can run without. Call it at the
+# top level of a suite: inside $( ) it would only end that subshell.
+abort_suite() {
+    echo "helpers.sh: $*; stopping the suite" >&2
+    exit 1
+}
+
+# The suites run without `set -e`, and each fixture reset is `rm -rf` under
+# WORK: were mktemp to fail (TMPDIR missing, /tmp full or read-only) and leave
+# WORK empty, `rm -rf "$WORK"/*` would be `rm -rf /*`. So a failed mktemp stops
+# the suite here, before any test runs, and the resets spell "${WORK:?}".
+WORK="$(mktemp -d)" && [ -d "$WORK" ] || abort_suite "mktemp -d failed"
 trap '[ "${BASH_SUBSHELL:-0}" -eq 0 ] && rm -rf "$WORK"' EXIT
 
 setup_fixtures() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/src/subdir" "$WORK/dest"
     echo "hello" > "$WORK/src/file1.txt"
     echo "world" > "$WORK/src/file2.txt"
