@@ -85,10 +85,12 @@ $ back -l
   `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`
   (`_OLDPWD` is still set too).
 - On PowerShell the prompt recorder wraps the `prompt` function when den's line
-  in `$PROFILE` runs, after the starship prompt den sets up there. A prompt set
-  up after that line (oh-my-posh, posh-git, your own `function prompt`) replaces
-  the wrapper, and then only den's navigation commands and `back` / `fwd`
-  themselves notice a move: put any other prompt setup before den's line.
+  in `$PROFILE` runs, after the starship prompt den sets up there. The wrapper
+  also runs zoxide's prompt hook, which starship's prompt setup drops; that is
+  how zoxide learns the directories you visit. A prompt set up after that
+  line (oh-my-posh, posh-git, your own `function prompt`) replaces the wrapper,
+  and then only den's navigation commands and `back` / `fwd` themselves notice a
+  move, and zoxide learns nothing: put any other prompt setup before den's line.
 
 ## Git shortcuts
 

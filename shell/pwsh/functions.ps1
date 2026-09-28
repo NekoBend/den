@@ -974,6 +974,12 @@ function fwd {
 # change of location made since the last one. init.ps1 calls it after starship,
 # whose init replaces the prompt function; called again (on reload) it wraps the
 # new prompt, never its own wrapper.
+# The wrapper also runs zoxide's hook, the one place zoxide learns a directory
+# on PowerShell. zoxide's init (functions.ps1, loaded before starship) wraps the
+# prompt to call it, and starship's init drops that wrapper, as it drops any
+# prompt defined before it. The hook adds only when the location differs from
+# the one it saw last, so where zoxide's wrapper survives (no starship) its own
+# call after this one adds nothing.
 function _DenDirHookPrompt {
   if ($null -ne $global:_DenDirPrompt -and $function:prompt -eq $global:_DenDirPrompt) { return }
   $global:_DenDirPromptOld = $function:prompt
@@ -982,6 +988,13 @@ function _DenDirHookPrompt {
     # it still shows the last command's status (starship reads $?).
     $ok = $global:?
     _DenDirRecord
+    if (Test-Path Function:\__zoxide_hook) {
+      # `zoxide add` is a native command: keep the $LASTEXITCODE the last
+      # command left, which starship shows when $? is false.
+      $code = $global:LASTEXITCODE
+      $null = __zoxide_hook
+      $global:LASTEXITCODE = $code
+    }
     if (-not $ok) { Write-Error '' -ErrorAction Ignore }
     if ($global:_DenDirPromptOld) { & $global:_DenDirPromptOld }
   }
