@@ -101,7 +101,7 @@ RUN curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/inst
     bash /tmp/nvm.sh && rm /tmp/nvm.sh
 # Build settings: project-selected version series, not exact patch versions.
 ARG NODE_MAJOR=22
-ARG ACPX_VERSION=0.16
+ARG ACPX_VERSION=0.19
 RUN source "$NVM_DIR/nvm.sh" && \
     nvm install "$NODE_MAJOR" && \
     nvm alias default "$NODE_MAJOR" && \
