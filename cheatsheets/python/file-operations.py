@@ -23,7 +23,7 @@ Quick-Reference Decision Table
 | write_csv            | Dump rows to CSV                  | csv            | DictWriter with header row     |
 | read_json            | Load a JSON file                  | json           | Returns dict or list           |
 | write_json           | Dump data to JSON                 | json           | Pretty-printed, UTF-8 safe     |
-| atomic_write         | Crash-safe file replacement       | tempfile+os    | Write to temp, then rename     |
+| atomic_write         | Crash-safe file replacement       | os             | Write to temp, then rename     |
 | file_metadata        | Size, mtime, exists checks        | pathlib        | No extra imports needed        |
 
 Usage:
@@ -242,27 +242,35 @@ def merge_files(paths: list[Path], output: Path, chunk_size: int = 1024 * 1024) 
            on the second run): reading the file being appended to never
            reaches EOF and fills the disk. The merge goes to a temp file that
            replaces ``output`` only once complete, so a failed merge leaves
-           the previous ``output`` untouched.
+           the previous ``output`` untouched. Over an existing ``output`` the
+           temp file is 0o600 until the copy is done and then takes the old
+           file's mode, so a private file's data never sits in a wider one.
     """
     import os
     import shutil
+    import stat
     import uuid
 
     out = Path(os.path.realpath(output))  # write through a symlink, like open()
     out.parent.mkdir(parents=True, exist_ok=True)
+    mode: int | None = None
     if out.exists():
+        mode = stat.S_IMODE(out.stat().st_mode)
         for p in paths:
             if Path(p).samefile(out):
                 raise shutil.SameFileError(f"{p} is the output file {output}")
 
     tmp = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tmp")
+    create_mode = 0o666 if mode is None else 0o600  # the umask applies to both
     try:
-        with open(tmp, "xb") as out_fh:
+        with open(
+            tmp, "xb", opener=lambda f, flags: os.open(f, flags, create_mode)
+        ) as out_fh:
             for p in paths:
                 with open(p, "rb") as in_fh:
                     shutil.copyfileobj(in_fh, out_fh, chunk_size)
-        if out.exists():
-            shutil.copymode(out, tmp)
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, out)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -353,27 +361,36 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
            as the OS allows. The temp file is created in the same directory to
            ensure it resides on the same filesystem. Symlinks are resolved
            first, so a dotfiles-managed link stays a link and the file it
-           points to is the one updated. The temp file takes over the old
-           file's permission bits (a new file gets 0o666 minus the umask, as
-           with ``open``; ``tempfile.mkstemp`` would leave it 0o600). It is
+           points to is the one updated. Over an existing file the temp file
+           is 0o600 while the content is written and takes the old file's
+           permission bits just before the rename, so a 0o600 secret never
+           sits in a wider file; a new file gets 0o666 minus the umask, as
+           with ``open`` (``tempfile.mkstemp`` would leave it 0o600). It is
            fsynced before the rename and the directory after it, so a crash
            leaves the old content or the new one, never an empty file.
     """
     import os
-    import shutil
+    import stat
     import uuid
 
     p = Path(os.path.realpath(path))
     p.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(p.stat().st_mode) if p.exists() else None
 
     tmp = p.with_name(f".{p.name}.{uuid.uuid4().hex}.tmp")
+    create_mode = 0o666 if mode is None else 0o600  # the umask applies to both
     try:
-        with open(tmp, "x", encoding=encoding) as fh:
+        with open(
+            tmp,
+            "x",
+            encoding=encoding,
+            opener=lambda f, flags: os.open(f, flags, create_mode),
+        ) as fh:
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
-        if p.exists():
-            shutil.copymode(p, tmp)
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, p)
     except BaseException:
         tmp.unlink(missing_ok=True)

@@ -6,6 +6,7 @@ The sheet's name has a hyphen, so it is loaded from its path, not imported.
 import importlib.util
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -107,6 +108,54 @@ def test_merge_files_leaves_the_old_output_alone_when_it_fails(fileops, tmp_path
     ]
 
 
+@pytest.fixture
+def umask_022():
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+def _mode_of(fd: int) -> int:
+    return stat.S_IMODE(os.fstat(fd).st_mode)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_merge_files_never_copies_a_private_file_into_a_wider_one(
+    fileops, tmp_path, monkeypatch, umask_022
+):
+    # The temp file was created 0o666 minus the umask (0o644) and got the
+    # output's 0o600 only after the copy: every local user could read the
+    # merged data meanwhile, and an fd opened then keeps reading after chmod.
+    part = tmp_path / "part"
+    part.write_bytes(b"secret\n")
+    out = tmp_path / "merged"
+    out.write_bytes(b"old\n")
+    out.chmod(0o600)
+    modes: list[int] = []
+    real_copy = shutil.copyfileobj
+
+    def copyfileobj(src, dst, length=0):
+        modes.append(_mode_of(dst.fileno()))
+        real_copy(src, dst, length)
+
+    monkeypatch.setattr(shutil, "copyfileobj", copyfileobj)
+    fileops.merge_files([part], out)
+    assert modes == [0o600]
+    assert out.read_bytes() == b"secret\n"
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_merge_files_keeps_a_wider_output_mode(fileops, tmp_path, umask_022):
+    part = tmp_path / "part"
+    part.write_bytes(b"x")
+    out = tmp_path / "merged"
+    out.write_bytes(b"old")
+    out.chmod(0o664)
+    fileops.merge_files([part], out)
+    assert stat.S_IMODE(out.stat().st_mode) == 0o664
+
+
 # --- atomic_write --------------------------------------------------------------
 
 
@@ -162,3 +211,26 @@ def test_atomic_write_fsyncs_before_it_replaces(fileops, tmp_path, monkeypatch):
     monkeypatch.setattr(os, "replace", replace)
     fileops.atomic_write(tmp_path / "state.json", "{}")
     assert calls[:2] == ["fsync", "replace"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_atomic_write_never_writes_a_private_file_into_a_wider_one(
+    fileops, tmp_path, monkeypatch, umask_022
+):
+    # The temp file was created 0o644 (umask 022) and only narrowed to the
+    # target's 0o600 after the secret was written and fsynced.
+    secret = tmp_path / "credentials.json"
+    secret.write_text("old", encoding="utf-8")
+    secret.chmod(0o600)
+    modes: list[int] = []
+    real_fsync = os.fsync
+
+    def fsync(fd: int) -> None:
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            modes.append(_mode_of(fd))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    fileops.atomic_write(secret, '{"token": "s3cret"}')
+    assert modes == [0o600]
+    assert stat.S_IMODE(secret.stat().st_mode) == 0o600
