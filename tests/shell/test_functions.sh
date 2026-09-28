@@ -2321,6 +2321,43 @@ actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
 ")
 assert_eq "pwsh/up 2" "$WORK/a" "$actual"
 
+# Given no arguments, cd, zd, cdi and zdi call zoxide with none: splatting the
+# $null an empty $Rest holds would hand it one $null argument.
+echo "[pwsh] cd, zd, cdi, zdi with no arguments pass zoxide none"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    \$env:_DEN_WRAPPERS = '1'
+    function global:__zoxide_z { 'z:' + \$args.Count }
+    function global:__zoxide_zi { 'zi:' + \$args.Count }
+    cd; zd; cdi; zdi; cd a; zd a b; cdi a; zdi a b
+")
+assert_eq "pwsh/no arguments reach zoxide as none, others as given" "z:0
+z:0
+zi:0
+zi:0
+z:1
+z:2
+zi:1
+zi:2" "$actual"
+# The same through the real zoxide, when it is installed: cd and zd alone go
+# home, as zoxide's own jump with no arguments and den's bash/zsh cd do. HOME,
+# the init cache and zoxide's database all live in $WORK (.NET reports no
+# LocalApplicationData, where the cache goes, until the directory exists).
+if command -v zoxide >/dev/null 2>&1; then
+    mkdir -p "$WORK/zo/home/sub" "$WORK/zo/home/.local/share" "$WORK/zo/data"
+    actual=$(cd "$WORK/zo/home/sub" && HOME="$WORK/zo/home" XDG_DATA_HOME="$WORK/zo/home/.local/share" \
+        _ZO_DATA_DIR="$WORK/zo/data" pwsh -NoProfile -NonInteractive -Command "
+        . '$FUNCTIONS_PS1_COMBINED'
+        \$env:_DEN_WRAPPERS = '1'
+        cd; (Get-Location).Path
+        Set-Location '$WORK/zo/home/sub'; zd; (Get-Location).Path
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/cd and zd alone go home through zoxide" "$WORK/zo/home
+$WORK/zo/home" "$actual"
+    rm -rf "$WORK/zo"
+else
+    echo "  SKIP: pwsh/cd and zd alone through zoxide (zoxide not installed)"
+fi
+
 echo "[pwsh] mkcd"
 actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkcd '$WORK/newdir'; (Get-Location).Path")
 assert_eq "pwsh/mkcd" "$WORK/newdir" "$actual"

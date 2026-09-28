@@ -686,10 +686,13 @@ Remove-Variable _z -ErrorAction SilentlyContinue
 Remove-Item alias:cd -Force -ErrorAction SilentlyContinue
 
 # cd → wrapper ON: __zoxide_z, OFF: Set-Location
+# cd, cdi, zd and zdi pass zoxide no arguments when given none. $Rest is $null
+# then, and @Rest would pass that $null on as one argument: __zoxide_z tests it
+# as a path, fails, and stays put instead of going home.
 function cd {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
-    __zoxide_z @Rest
+    if ($null -eq $Rest) { __zoxide_z } else { __zoxide_z @Rest }
   } else {
     if ($Rest.Count -eq 0) { Set-Location ~ } else { Set-Location @Rest }
   }
@@ -700,7 +703,7 @@ function cd {
 function cdi {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_zi -ErrorAction SilentlyContinue)) {
-    __zoxide_zi @Rest
+    if ($null -eq $Rest) { __zoxide_zi } else { __zoxide_zi @Rest }
     _DenDirMoved $MyInvocation
   } else {
     Write-Warning 'cdi: wrappers are OFF or zoxide is not available'
@@ -713,7 +716,7 @@ function zd {
   if (-not (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
     Write-Warning 'zoxide is not installed.'; return
   }
-  __zoxide_z @Rest
+  if ($null -eq $Rest) { __zoxide_z } else { __zoxide_z @Rest }
   _DenDirMoved $MyInvocation
 }
 
@@ -723,7 +726,7 @@ function zdi {
   if (-not (Get-Command __zoxide_zi -ErrorAction SilentlyContinue)) {
     Write-Warning 'zoxide is not installed.'; return
   }
-  __zoxide_zi @Rest
+  if ($null -eq $Rest) { __zoxide_zi } else { __zoxide_zi @Rest }
   _DenDirMoved $MyInvocation
 }
 
