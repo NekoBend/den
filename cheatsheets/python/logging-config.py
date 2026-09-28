@@ -84,12 +84,18 @@ def setup_basic_file(log_path: str = "app.log") -> None:
 # =============================================================================
 
 
-def setup_dictconfig(log_path: str = "app.log") -> None:
+def setup_dictconfig(log_path: str = "app.log", level: int = logging.INFO) -> None:
     """Configure logging via dictConfig — formatters, handlers, loggers.
 
     [Best for] Production apps that only use stdlib (no external deps).
     [Note] RotatingFileHandler prevents unbounded log growth.
            Adjust maxBytes/backupCount to your disk budget.
+           The root logger stays at ``level`` (INFO): at DEBUG every library
+           logs its DEBUG records, multiplying the volume, and HTTP clients
+           put whole request URLs (query-string API keys, presigned
+           signatures) in them, so urllib3/httpx/httpcore/botocore are pinned
+           to WARNING. The console handler has no level of its own: debug
+           YOUR code with ``logging.getLogger("myapp").setLevel(logging.DEBUG)``.
     """
     import logging.config
 
@@ -105,7 +111,6 @@ def setup_dictconfig(log_path: str = "app.log") -> None:
         "handlers": {
             "console": {
                 "class": "logging.StreamHandler",
-                "level": "DEBUG",
                 "formatter": "standard",
                 "stream": "ext://sys.stderr",
             },
@@ -119,20 +124,27 @@ def setup_dictconfig(log_path: str = "app.log") -> None:
                 "encoding": "utf-8",
             },
         },
+        "loggers": {
+            name: {"level": "WARNING"}
+            for name in ("urllib3", "httpx", "httpcore", "botocore")
+        },
         "root": {
-            "level": "DEBUG",
+            "level": level,
             "handlers": ["console", "file"],
         },
     }
     logging.config.dictConfig(config)
 
 
-def setup_json_format() -> None:
+def setup_json_format(level: int = logging.INFO) -> None:
     """Configure JSON-line log output — zero external dependencies.
 
     [Best for] Feeding logs into aggregators (ELK, Loki, CloudWatch).
     [Note] Override Formatter.format to emit one JSON object per line.
            Add extra fields (service, version) as needed.
+           Root stays at ``level`` (INFO) and the chatty HTTP clients at
+           WARNING, for the reasons in ``setup_dictconfig``; lower only your
+           own package logger to DEBUG.
     """
     import json
     import logging
@@ -159,8 +171,10 @@ def setup_json_format() -> None:
     handler.setFormatter(JSONFormatter())
 
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(level)
     root.addHandler(handler)
+    for name in ("urllib3", "httpx", "httpcore", "botocore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 # =============================================================================
@@ -274,11 +288,19 @@ def setup_structlog_with_stdlib(log_level: int = 20) -> None:
 
 
 def setup_rich_logging(log_level: int = 10) -> None:
-    """Configure stdlib logging with Rich — pretty tracebacks and markup.
+    """Configure stdlib logging with Rich - pretty tracebacks, colored levels.
 
     [Best for] CLI tools, dev servers, anything user-facing in the terminal.
-    [Note] RichHandler renders tracebacks in color and supports [markup].
+    [Note] RichHandler renders tracebacks in color.
            Set rich_tracebacks=False if you parse logs downstream.
+           ``markup=False`` (rich's default) prints every message as-is: with
+           markup on, a bracketed value ("[/admin]" in a user-supplied
+           string) raises MarkupError out of the logging call, and tag-like
+           text (SQLAlchemy's "[generated in 0.0001s]") silently vanishes.
+           Opt in for one call with ``extra={"markup": True}``.
+           ``tracebacks_show_locals=False`` (rich's default): locals print
+           every frame's variables, passwords and tokens included; turn it on
+           only while debugging locally, never where output is captured.
     """
     import logging
 
@@ -289,8 +311,8 @@ def setup_rich_logging(log_level: int = 10) -> None:
         show_time=True,
         show_path=True,
         rich_tracebacks=True,
-        tracebacks_show_locals=True,
-        markup=True,
+        tracebacks_show_locals=False,
+        markup=False,
     )
 
     root = logging.getLogger()
