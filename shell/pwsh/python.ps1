@@ -109,14 +109,18 @@ function py {
 # "va: va: ...".
 function va {
   param([string]$Name = '.venv')
-  # Scripts/ on Windows, bin/ on Linux/macOS (uv/venv place Activate.ps1 there).
-  # -LiteralPath keeps wildcard chars in $Name (*, ?, []) from glob-expanding to an
-  # unintended script that would then be dot-sourced; -PathType Leaf requires a file.
-  $activatePath = Join-Path $Name 'Scripts/Activate.ps1'
-  if (-not (Test-Path -LiteralPath $activatePath -PathType Leaf)) {
-    $activatePath = Join-Path $Name 'bin/Activate.ps1'
+  # Scripts/ on Windows, bin/ on Linux/macOS. python -m venv writes Activate.ps1,
+  # uv and virtualenv write activate.ps1: a case-sensitive file system (Linux,
+  # case-sensitive macOS) needs both spellings, and the standard one wins when
+  # both exist. -LiteralPath keeps wildcard chars in $Name (*, ?, []) from
+  # glob-expanding to an unintended script that would then be dot-sourced;
+  # -PathType Leaf requires a file.
+  $activatePath = $null
+  foreach ($rel in 'Scripts/Activate.ps1', 'Scripts/activate.ps1', 'bin/Activate.ps1', 'bin/activate.ps1') {
+    $candidate = Join-Path $Name $rel
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { $activatePath = $candidate; break }
   }
-  if (-not (Test-Path -LiteralPath $activatePath -PathType Leaf)) {
+  if (-not $activatePath) {
     Write-Error "activate script not found under '$Name' (Scripts/ or bin/)"
     return
   }
@@ -127,7 +131,8 @@ function va {
   # means nothing to check: pass. Parity with posix python.sh.
   $gitExe = _ResolveCmd 'git' 'App'
   if ($gitExe) {
-    $tracked = & $gitExe -C $Name ls-files -- Scripts/Activate.ps1 bin/Activate.ps1 bin/activate pyvenv.cfg 2>$null
+    # git pathspecs are case-sensitive, core.ignorecase or not: list both spellings.
+    $tracked = & $gitExe -C $Name ls-files -- Scripts/Activate.ps1 Scripts/activate.ps1 bin/Activate.ps1 bin/activate.ps1 bin/activate pyvenv.cfg 2>$null
     if ($tracked) {
       # Name what git actually reports: the match may be pyvenv.cfg alone, so a
       # message about the activate script would be wrong.

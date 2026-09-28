@@ -453,6 +453,100 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
 " | tr -d '\r')
 assert_eq "pwsh/va accepts a 0644 activate script" "VE=[fakevenv] PY=[3.12.0]" "$actual"
 
+# uv venv and virtualenv write bin/activate.ps1 in lower case; on a case-sensitive
+# file system (Linux, case-sensitive macOS) a lookup for bin/Activate.ps1 misses it.
+echo "[pwsh] va activates a venv whose script is bin/activate.ps1 (uv, virtualenv)"
+mk_venv_ps "$WORK/ps_venv_lc" "3.12.0"
+mv "$WORK/ps_venv_lc/.venv/bin/Activate.ps1" "$WORK/ps_venv_lc/.venv/bin/activate.ps1"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv_lc'
+    \$env:VIRTUAL_ENV = \$null
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va finds bin/activate.ps1" "VE=[fakevenv] PY=[3.12.0]" "$actual"
+
+echo "[pwsh] va prefers bin/Activate.ps1 when both spellings exist"
+mk_venv_ps "$WORK/ps_venv_both" "3.12.0"
+printf '%s\n' '$env:VIRTUAL_ENV = "lowercase"' > "$WORK/ps_venv_both/.venv/bin/activate.ps1"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_both'; \$env:VIRTUAL_ENV = \$null; va *>\$null; \$env:VIRTUAL_ENV" | tr -d '\r')
+assert_eq "pwsh/va prefers bin/Activate.ps1" "fakevenv" "$actual"
+
+echo "[pwsh] va refuses a venv whose bin/activate.ps1 is committed"
+# Only the lower-case script is tracked, so the refusal must come from that file
+# being in the git ls-files list, not from pyvenv.cfg.
+mk_venv_ps "$WORK/ps_venv_lc_tracked" "3.12.0"
+mv "$WORK/ps_venv_lc_tracked/.venv/bin/Activate.ps1" "$WORK/ps_venv_lc_tracked/.venv/bin/activate.ps1"
+(
+    cd "$WORK/ps_venv_lc_tracked" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/activate.ps1
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed activate.ps1"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses git-tracked bin/activate.ps1" "tracked by git (bin/activate.ps1)" "$err"
+
+# =============================================================================
+# uv-created venvs (the real uv, when it is installed and has a Python to use)
+# =============================================================================
+
+REAL_UV="$(command -v uv 2>/dev/null || true)"
+# No network and no user uv.toml: a venv from an interpreter uv already has, or a skip.
+export UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never UV_NO_CONFIG=1
+if [ -n "$REAL_UV" ] && "$REAL_UV" venv -q "$WORK/uv_probe" >/dev/null 2>&1; then
+    # python.ps1 against the real uv: no mock uv on PATH in front of it.
+    PYTHON_PS1_REAL_UV="$WORK/python_real_uv.ps1"
+    {
+        echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
+        cat "$PYTHON_PS1"
+    } > "$PYTHON_PS1_REAL_UV"
+
+    for sh in bash zsh; do
+        echo "[$sh] va and vd on a venv made by uv venv"
+        rm -rf "$WORK/uv_posix"
+        mkdir -p "$WORK/uv_posix"
+        "$REAL_UV" venv -q "$WORK/uv_posix/.venv" >/dev/null 2>&1
+        actual=$("$sh" -c "
+            source '$PYTHON_SH_SOURCE'
+            cd '$WORK/uv_posix' || exit 1
+            p0=\$PATH
+            va || exit 1
+            case \$PATH in \"\$VIRTUAL_ENV/bin:\"*) head=venv ;; *) head=other ;; esac
+            echo \"VE=[\${VIRTUAL_ENV##*/}] HEAD=[\$head] PY=[\${_DEN_VENV_PYTHON:+set}]\"
+            vd
+            [ \"\$PATH\" = \"\$p0\" ] && restored=yes || restored=no
+            echo \"VE=[\$VIRTUAL_ENV] PATH=[\$restored] PY=[\$_DEN_VENV_PYTHON]\"
+        " 2>&1 | tr -d '\r')
+        assert_eq "$sh/va and vd round-trip a uv venv" "VE=[.venv] HEAD=[venv] PY=[set]
+VE=[] PATH=[yes] PY=[]" "$actual"
+    done
+
+    echo "[pwsh] vva creates and activates a uv venv; vd undoes it"
+    # uv's activate.ps1 is virtualenv's: it wraps prompt by returning a string and
+    # keeps the old PATH in a global variable, where python's Activate.ps1 keeps it
+    # in the environment. Both must come back on vd.
+    rm -rf "$WORK/uv_pwsh"
+    mkdir -p "$WORK/uv_pwsh"
+    actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+        Set-Location '$WORK/uv_pwsh'
+        function global:prompt { 'PS> ' }
+        \$env:VIRTUAL_ENV = \$null
+        \$p0 = \$env:PATH
+        vva .venv *>\$null
+        \$head = (\$env:PATH -split [IO.Path]::PathSeparator)[0]
+        \$onPath = \$env:VIRTUAL_ENV -and \$head -eq (Join-Path \$env:VIRTUAL_ENV 'bin')
+        \$leaf = if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV } else { '' }
+        \"VE=[\$leaf] HEAD=[\$onPath] PY=[\$([bool]\$env:_DEN_VENV_PYTHON)] PROMPT=[\$(prompt)]\"
+        vd
+        \$deact = [bool](Get-Command deactivate -ErrorAction SilentlyContinue)
+        \"VE=[\$env:VIRTUAL_ENV] PATH=[\$(\$env:PATH -eq \$p0)] PY=[\$env:_DEN_VENV_PYTHON] PROMPT=[\$(prompt)] DEACTIVATE=[\$deact]\"
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/vva and vd round-trip a uv venv" "VE=[.venv] HEAD=[True] PY=[True] PROMPT=[(.venv) PS> ]
+VE=[] PATH=[True] PY=[] PROMPT=[PS> ] DEACTIVATE=[False]" "$actual"
+else
+    echo "  SKIP: uv-created venv tests (uv not installed, or no Python it can use offline)"
+fi
+
 # =============================================================================
 # Summary
 # =============================================================================
