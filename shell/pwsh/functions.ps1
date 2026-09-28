@@ -691,7 +691,9 @@ function cd {
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
     __zoxide_z @Rest
   } else {
-    if ($Rest.Count -eq 0) { Set-Location ~ } else { Set-Location @Rest }
+    # No arguments leave $Rest $null, not empty: a caller's Set-StrictMode makes
+    # .Count on it an error.
+    if ($null -eq $Rest) { Set-Location ~ } else { Set-Location @Rest }
   }
   _DenDirMoved $MyInvocation
 }

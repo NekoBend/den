@@ -3,8 +3,14 @@
 # ($XDG_CONFIG_HOME/den/proxy.conf; "name<TAB>url<TAB>no_proxy" per line; LF + UTF-8).
 # `proxy on <name>` sets the standard proxy env vars (lower + upper case) in the
 # CURRENT session; `proxy off` clears them. The active profile is tracked per-session
-# in $global:_DEN_PROXY_ACTIVE (not exported), never in global tool config. Defining
-# these functions has no side effects, so (like cheat.ps1) it is not gated.
+# in $global:_DEN_PROXY_ACTIVE (not exported), never in global tool config. Loading
+# it only defines these functions and that variable, so (like cheat.ps1) it is not
+# gated.
+
+# The variable exists from load on, empty until `proxy on`: a caller's Set-StrictMode
+# makes reading one that was never set an error. Tested rather than assigned, so a
+# reload keeps the profile that is on.
+if (-not (Test-Path Variable:global:_DEN_PROXY_ACTIVE)) { $global:_DEN_PROXY_ACTIVE = $null }
 
 function _ProxyFile {
     $base = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }

@@ -62,11 +62,16 @@ function _find_ps_fallback {
     if($nm){$p.Filter=$nm}
     if($ty -eq "f"){$p.File=$true}
     elseif($ty -eq "d"){$p.Directory=$true}
-    (Get-ChildItem @p).FullName
+    # Not (Get-ChildItem @p).FullName: with no match that reads .FullName on $null,
+    # an error under a caller's Set-StrictMode.
+    Get-ChildItem @p|ForEach-Object{$_.FullName}
 }
 
 # ===== Toggle-aware wrappers: modern → native → PS fallback =====
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
+# A fallback pipes Get-ChildItem on rather than reading a member off its result:
+# with nothing listed, that reads it off $null, an error under a caller's
+# Set-StrictMode.
 
 New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'if ($Args.Count) { Get-Content @Args } else { $input }'
 New-Wrapper 'find'    'fd'  ''                              'find' ''                '_find_ps_fallback @Args'
@@ -75,7 +80,7 @@ New-Wrapper 'la'      'lsd' '-a'                            'ls'   '-A --color=a
 New-Wrapper 'll'      'lsd' '-l'                            'ls'   '-lF --color=auto' 'Get-ChildItem @Args | Format-Table Mode, LastWriteTime, Length, Name'
 New-Wrapper 'lla'     'lsd' '-la'                           'ls'   '-laF --color=auto' 'Get-ChildItem -Force @Args | Format-Table Mode, LastWriteTime, Length, Name'
 New-Wrapper 'llt'     'lsd' '-l --tree'                     ''     ''                'Get-ChildItem -Recurse @Args | Select-Object Mode, LastWriteTime, Length, @{N="Name";E={[IO.Path]::GetRelativePath($PWD.Path, $_.FullName)}}'
-New-Wrapper 'ls'      'lsd' ''                              'ls'   '--color=auto'    '(Get-ChildItem @Args).Name'
+New-Wrapper 'ls'      'lsd' ''                              'ls'   '--color=auto'    'Get-ChildItem @Args | ForEach-Object { $_.Name }'
 New-Wrapper 'lt'      'lsd' '--tree'                        ''     ''                'Get-ChildItem -Recurse @Args | ForEach-Object { [IO.Path]::GetRelativePath($PWD.Path, $_.FullName) }'
 New-Wrapper 'ripgrep' 'rg'  ''                              ''     ''                ''
 
