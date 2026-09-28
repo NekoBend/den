@@ -25,17 +25,17 @@ MOCK
 chmod +x "$WORK/ffprobe"
 
 # POSIX: prepend mock PATH before sourcing ffmpeg.sh
-FFMPEG_SH_SOURCE="$WORK/ffmpeg_source.sh"
+FFMPEG_SH_SOURCE="$TESTTMP/ffmpeg_source.sh"
 make_noninteractive_source_copy "$FFMPEG_SH_GUARDED" "$FFMPEG_SH_SOURCE"
 
-FFMPEG_SH_TEST="$WORK/ffmpeg_test.sh"
+FFMPEG_SH_TEST="$TESTTMP/ffmpeg_test.sh"
 {
     echo "export PATH=\"$WORK:\$PATH\""
     cat "$FFMPEG_SH_SOURCE"
 } > "$FFMPEG_SH_TEST"
 
 # pwsh: prepend mock PATH + strip guard line
-FFMPEG_PS1_TEST="$WORK/ffmpeg_test.ps1"
+FFMPEG_PS1_TEST="$TESTTMP/ffmpeg_test.ps1"
 {
     echo "\$env:PATH = '$WORK' + [IO.Path]::PathSeparator + \$env:PATH"
     grep -v 'Get-Command ffmpeg.*SilentlyContinue.*return' "$FFMPEG_PS1"

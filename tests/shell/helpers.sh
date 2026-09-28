@@ -180,8 +180,9 @@ abort_suite() {
 }
 
 # WORK holds the fixtures, and the resets below wipe it. TESTTMP holds the
-# scripts a suite generates from shell/ before its tests (non-interactive
-# copies, combined .ps1 files), out of reach of those wipes. Both sit in one
+# scripts a suite generates and keeps for its tests (non-interactive copies of
+# shell/ files, combined .ps1 files, scans), out of reach of those wipes
+# (test_harness.sh checks that no suite keeps one in WORK). Both sit in one
 # directory from mktemp, which another user can neither predict nor create
 # first, as they could a fixed /tmp/<name>_$$ path (the suite would then
 # source what they put there). The one EXIT trap below removes it, so a suite

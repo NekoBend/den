@@ -91,6 +91,13 @@ assert_eq "harness/unwritable copy exits 1" "1" "$rc"
 assert_contains "harness/unwritable copy says why" "cannot write" "$actual"
 assert_not_contains "harness/unwritable copy stops the suite" "SUITE CONTINUED" "$actual"
 
+# A script a suite generates and keeps for its later tests (a non-interactive
+# copy, a combined .ps1, a scan it runs) goes in TESTTMP. In WORK the next
+# fixture reset would delete it from under the tests that still use it.
+echo "[harness] no suite keeps a generated script in WORK"
+actual=$(cd "$SCRIPT_DIR" && grep -nE '^[[:space:]]*[A-Z][A-Z0-9_]*="\$WORK/[^"]*\.(sh|ps1)"' -- test_*.sh)
+assert_eq "harness/generated scripts are in TESTTMP" "" "$actual"
+
 echo "[harness] no suite writes a script to a predictable /tmp path"
 actual=$(cd "$SCRIPT_DIR" && grep -nE '/tmp/[A-Za-z0-9_.-]*\$\$' -- *.sh)
 assert_eq "harness/no /tmp/<name>_\$\$ paths" "" "$actual"

@@ -22,22 +22,22 @@ MOCK
 chmod +x "$WORK/uv"
 
 # POSIX: prepend mock PATH + source python.sh
-PYTHON_SH_SOURCE="$WORK/python_source.sh"
+PYTHON_SH_SOURCE="$TESTTMP/python_source.sh"
 make_noninteractive_source_copy "$PYTHON_SH_GUARDED" "$PYTHON_SH_SOURCE"
 
-PYTHON_SH_TEST="$WORK/python_test.sh"
+PYTHON_SH_TEST="$TESTTMP/python_test.sh"
 {
     echo "export PATH=\"$WORK:\$PATH\""
     cat "$PYTHON_SH_SOURCE"
 } > "$PYTHON_SH_TEST"
 
 # pwsh: strip uv availability guard
-PYTHON_PS1_TEST="$WORK/python_test.ps1"
+PYTHON_PS1_TEST="$TESTTMP/python_test.ps1"
 grep -v 'Get-Command uv.*SilentlyContinue.*return' "$PYTHON_PS1" > "$PYTHON_PS1_TEST"
 
 # pwsh with the mock uv resolvable: _helpers.ps1 (provides _ResolveCmd) + the mock
 # PATH prepended, so `uv`/`va` exercise the real code path against the mock binary.
-PYTHON_PS1_COMBINED="$WORK/python_combined.ps1"
+PYTHON_PS1_COMBINED="$TESTTMP/python_combined.ps1"
 {
     echo "\$env:PATH = '$WORK' + [IO.Path]::PathSeparator + \$env:PATH"
     echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
@@ -53,11 +53,11 @@ mk_venv_ps() {
 }
 
 # toggle-uv ON re-reads python.ps1 from its own directory, which for the combined
-# file is $WORK: put a copy of the file under test there. PS_SET_PROFILE points
+# file is $TESTTMP: put a copy of the file under test there. PS_SET_PROFILE points
 # $PROFILE at a directory whose python.ps1 is a decoy (a pip that says so), so ON
 # cannot pass by reading the copy next to $PROFILE. The mock system pip keeps a
 # missing redirect from reaching a real `pip install`.
-cp "$PYTHON_PS1" "$WORK/python.ps1"
+cp "$PYTHON_PS1" "$TESTTMP/python.ps1"
 PS_PROFILE_DIR="$WORK/ps_profile"
 mkdir -p "$PS_PROFILE_DIR"
 printf '%s\n' "function pip { 'decoy-pip' }" > "$PS_PROFILE_DIR/python.ps1"
@@ -661,7 +661,7 @@ REAL_UV="$(command -v uv 2>/dev/null || true)"
 export UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never UV_NO_CONFIG=1
 if [ -n "$REAL_UV" ] && "$REAL_UV" venv -q "$WORK/uv_probe" >/dev/null 2>&1; then
     # python.ps1 against the real uv: no mock uv on PATH in front of it.
-    PYTHON_PS1_REAL_UV="$WORK/python_real_uv.ps1"
+    PYTHON_PS1_REAL_UV="$TESTTMP/python_real_uv.ps1"
     {
         echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
         cat "$PYTHON_PS1"

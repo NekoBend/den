@@ -14,11 +14,11 @@ DOTFILES="${DOTFILES:-/root/.dotfiles}"
 HWINFO_SH_GUARDED="$DOTFILES/shell/posix/hwinfo.sh"
 HWINFO_PS1="$DOTFILES/shell/pwsh/hwinfo.ps1"
 
-HWINFO_SH="$WORK/hwinfo_test.sh"
+HWINFO_SH="$TESTTMP/hwinfo_test.sh"
 make_noninteractive_source_copy "$HWINFO_SH_GUARDED" "$HWINFO_SH"
 
 # Extract only the toggle-hwinfo function from pwsh (detection uses Windows-only APIs)
-HWINFO_PS1_TOGGLE="$WORK/hwinfo_toggle.ps1"
+HWINFO_PS1_TOGGLE="$TESTTMP/hwinfo_toggle.ps1"
 awk '/^function toggle-hwinfo/,0' "$HWINFO_PS1" > "$HWINFO_PS1_TOGGLE"
 
 # =============================================================================
@@ -260,7 +260,7 @@ hwinfo: ON (visible in prompt)|CPU=i9-13900K|HIDDEN=0" "$actual"
 # constructs it lists (PowerShell 6.0 to 7.3), nothing newer. 5.1 also reads a
 # file without a BOM in the ANSI code page, so the scan parses it that way too.
 
-PWSH_SYNTAX_SCAN="$WORK/pwsh_syntax_scan.ps1"
+PWSH_SYNTAX_SCAN="$TESTTMP/pwsh_syntax_scan.ps1"
 cat > "$PWSH_SYNTAX_SCAN" << 'PS1'
 param([string]$Dir)
 # A wrong directory must fail the scan, not pass it with no findings.
@@ -395,7 +395,7 @@ fi
 # side settles the answer on 5.1 first: the edition ('Desktop' or 'Core') or
 # $env:OS (Windows_NT). The scan prints each read that does not.
 
-PWSH_PLATFORM_SCAN="$WORK/pwsh_platform_scan.ps1"
+PWSH_PLATFORM_SCAN="$TESTTMP/pwsh_platform_scan.ps1"
 cat > "$PWSH_PLATFORM_SCAN" << 'PS1'
 param([string]$Dir)
 $ErrorActionPreference = 'Stop'
