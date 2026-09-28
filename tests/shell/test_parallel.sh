@@ -631,7 +631,38 @@ assert_eq "pwsh/pmv batched moved every file" "$_n" "$(ls "$WORK/moved" | wc -l 
 assert_eq "pwsh/pmv batched emptied the source" "0" "$(ls "$WORK/many" | wc -l | tr -d ' ')"
 run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/moved'; prm -Force *" >/dev/null 2>&1
 assert_eq "pwsh/prm batched removed every file" "0" "$(ls "$WORK/moved" | wc -l | tr -d ' ')"
-rm -rf "$WORK/many" "$WORK/copied" "$WORK/moved"
+# The call sites: copying, moving and removing every file says nothing about
+# how the paths were dispatched, so _Batches is wrapped to log each call (its
+# list count and path count). pcp, pmv and prm must each go through it once,
+# with min(ProcessorCount, files) lists that hold every path.
+_spy=$(cat <<'PS1'
+$global:batchLog = [System.Collections.Generic.List[string]]::new()
+$global:realBatches = ${function:_Batches}
+function _Batches {
+    $lists = @(& $global:realBatches @args)
+    $sum = 0
+    foreach ($l in $lists) { $sum += $l.Count }
+    $global:batchLog.Add("$($lists.Count) $sum")
+    foreach ($l in $lists) { , $l }
+}
+PS1
+)
+mkdir -p "$WORK/many" "$WORK/copied2" "$WORK/moved"
+_i=1
+while [ "$_i" -le "$_n" ]; do echo x > "$WORK/many/f$_i"; _i=$((_i + 1)); done
+actual=$(run_pwsh "$PARALLEL_PS1" "$_spy
+Set-Location '$WORK/many'; pcp * '$WORK/copied2' *>\$null; pmv * '$WORK/moved' *>\$null
+Set-Location '$WORK/moved'; prm -Force * *>\$null
+[Environment]::ProcessorCount; \$global:batchLog" 2>/dev/null | tr -d '\r')
+_p=$(printf '%s\n' "$actual" | head -1)
+_k=$_n
+[ -n "$_p" ] && [ "$_p" -lt "$_n" ] && _k=$_p
+assert_eq "pwsh/pcp pmv prm each dispatched their paths through _Batches" "$_k $_n
+$_k $_n
+$_k $_n" "$(printf '%s\n' "$actual" | tail -n +2)"
+assert_eq "pwsh/pcp through _Batches copied every file" "$_n" "$(ls "$WORK/copied2" | wc -l | tr -d ' ')"
+assert_eq "pwsh/prm through _Batches removed every file" "0" "$(ls "$WORK/moved" | wc -l | tr -d ' ')"
+rm -rf "$WORK/many" "$WORK/copied" "$WORK/copied2" "$WORK/moved"
 
 # =============================================================================
 # Summary
