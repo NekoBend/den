@@ -412,6 +412,8 @@ Case 'grep, fallback, -n' { grep -n beta a.txt }
 Case 'grep, fallback, -n two files' { grep -n beta a.txt b.txt }
 Case 'grep, fallback, -r' { grep -r gamma }
 Case 'grep, fallback, piped' { 'alpha' | grep alph }
+Case 'grep, fallback, a pattern and a missing file' { grep beta '*.txt' missing.txt }
+Case 'find, fallback, a missing directory' { find nodir }
 Case 'la, fallback' { la }
 Case 'll, fallback' { ll }
 Case 'lla, fallback' { lla }

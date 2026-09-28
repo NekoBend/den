@@ -18,6 +18,22 @@ if (-not (Get-Command New-Wrapper -ErrorAction SilentlyContinue)) {
 
 # ===== PowerShell-only fallback helpers (Windows / no-native-command environments) =====
 
+# _FallbackPaths <operand...> - the paths the grep and find fallbacks read, as
+# parallel.ps1's _ResolvePaths finds them: an operand that exists is that path,
+# taken literally ([ ] in app/[slug] are not wildcards); otherwise it is a
+# wildcard pattern (*.md, which a function receives unexpanded) and stands for
+# what it matches. One that matches nothing is passed on as it is, so that the
+# cmdlet reading it reports it missing, as grep and find do.
+function _FallbackPaths([string[]]$Operands) {
+    $out = @()
+    foreach ($p in $Operands) {
+        if (Test-Path -LiteralPath $p) { $out += $p; continue }
+        $hits = @(Convert-Path -Path $p -ErrorAction SilentlyContinue)
+        if ($hits.Count -eq 0) { $out += $p } else { $out += $hits }
+    }
+    return ,$out
+}
+
 # _grep_ps_fallback — Unix-compatible grep via Select-String (text output)
 function _grep_ps_fallback {
     $fl=@{};$pa="";$fp=@()
@@ -29,7 +45,7 @@ function _grep_ps_fallback {
     $ss=@{Pattern=$pa}
     if(-not $fl.ContainsKey("i")){$ss.CaseSensitive=$true}
     if($fl.ContainsKey("v")){$ss.NotMatch=$true}
-    if($fp.Count -gt 0){$r=Select-String @ss -Path $fp}
+    if($fp.Count -gt 0){$r=Select-String @ss -LiteralPath (_FallbackPaths $fp)}
     elseif($fl.ContainsKey("r")){$r=Get-ChildItem -Recurse -File|Select-String @ss}
     else{$r=$input|Select-String @ss}
     $mf=$fp.Count -gt 1 -or $fl.ContainsKey("r")
@@ -58,7 +74,7 @@ function _find_ps_fallback {
         elseif($a -notmatch "^-"){$fp=$a;$i++}
         else{$i++}
     }
-    $p=@{Path=$fp;Recurse=$true}
+    $p=@{LiteralPath=(_FallbackPaths $fp);Recurse=$true}
     if($nm){$p.Filter=$nm}
     if($ty -eq "f"){$p.File=$true}
     elseif($ty -eq "d"){$p.Directory=$true}
