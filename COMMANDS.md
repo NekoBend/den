@@ -20,6 +20,9 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   the profile is sourced. Many commands also load only when their tool is present
   (uv, ffmpeg, zoxide, fzf, lsd/bat/fd/rg). The one exception is the standalone
   `fixids` executable (below), which lives on `PATH` and runs from any context.
+- In **pwsh**, a script run in a session that loaded them can call these commands,
+  including a script that runs `Set-StrictMode -Version Latest` (strict mode then
+  applies inside den's functions too, and they are written for it).
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
