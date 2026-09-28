@@ -55,8 +55,10 @@ _parallel_gnu() {
 # operands and "x;rm -rf y" executed the rm. -q shell-quotes every template
 # word (and -X every operand) before that join, so each word reaches the
 # command as one argument and metacharacters stay literal. The job still runs
-# through a shell (xargs, by contrast, exec()s the command directly); -q makes
-# the template safe, it does not remove the shell.
+# through a shell; -q makes the template safe, it does not remove the shell.
+# xargs, by contrast, execs the command without a shell of its own. pcp and
+# pmv hand either one a fixed `sh -c` script with the operands as positional
+# arguments, so no operand is ever read as shell code.
 _parallel_exec() {
     local jobs="$1" count="$2" gnu="$3" per
     shift 3

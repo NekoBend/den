@@ -200,12 +200,17 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
 
-`extract` and `archive` read the extension without regard to case
-(`PHOTOS.ZIP`, `DATA.TAR.GZ`). `archive` always writes a fresh archive: over an
-existing `.zip` or `.7z` it replaces the file instead of updating it, so files
-deleted from the sources do not linger, and a run whose archiver fails keeps
-the existing output as it was and exits non-zero. On pwsh the `.zip` holds
-hidden files and folders (`.env`, `.git`) too, as `zip -r` does.
+`extract` and `archive` pick the format from the extension without regard to
+case (`PHOTOS.ZIP`, `DATA.TAR.GZ`). A single compressed file is still named by
+its tool, though: `xz` and `zstd` refuse to decompress an upper-case `.XZ` or
+`.ZST`, and `bzip2` writes `NAME.BZ2.out`. `archive` always writes a fresh
+archive: over an existing `.zip` or `.7z` it replaces the file instead of
+updating it, so files deleted from the sources do not linger, and a source that
+is the output itself (a rerun of `pk all.7z *`) is left out. Every format exits
+non-zero when its archiver fails. A failed or interrupted `.zip`, `.7z` or
+single-file run keeps the existing output as it was; the tar formats replace it
+with whatever tar wrote. On pwsh the `.zip` holds hidden files and folders
+(`.env`, `.git`) too, as `zip -r` does.
 
 On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
 `.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
@@ -273,10 +278,12 @@ Loads only when ffmpeg is installed. pwsh has the same set; cmd has none.
 pwsh runs `pcp`/`pmv`/`prm` via PowerShell 7's `-Parallel`; bash/zsh use GNU
 parallel when it is installed, else `xargs -P` (both paths pass every argument
 through as one argv element, so a destination with spaces is safe). Each job
-takes a batch of paths, not one path each, so a glob of many small files is
-not slower than a plain `cp`. `pcp` and `pmv` overwrite an existing destination
-file on both shells, read-only or not. Once confirmed, `prm` removes hidden
-entries too on both shells.
+takes a batch of paths, not one path each, so a glob of many small files no
+longer starts one `cp` (or one parallel item) per file. Each call still pays
+the parallel tool's own startup, GNU parallel's most of all, so for a quick
+copy of small files a plain `cp` stays faster. `pcp` and `pmv` overwrite an
+existing destination file on both shells, read-only or not. Once confirmed,
+`prm` removes hidden entries too on both shells.
 `ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a plain `tar`
 wrapper on pwsh; both accept `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
 `.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). The

@@ -628,10 +628,9 @@ function archive {
   # refuse it outright (zstd's -o rejects a value starting with '-').
   if ($Output.StartsWith('-')) { $Output = Join-Path '.' $Output }
   # A directory already sitting at the output path is not an output. Checked
-  # for every format, before any of them starts: the single-file branch's
-  # Move-Item would otherwise put the temporary INSIDE that directory and
-  # report success with no archive written at all, and Compress-Archive -Force
-  # deletes the directory before failing on it.
+  # for every format, before any of them starts: the Move-Item of the
+  # single-file and zip branches would otherwise put the temporary INSIDE that
+  # directory and report success with no archive written at all.
   if (Test-Path -LiteralPath $Output -PathType Container) {
     Write-Error "output '$Output' is a directory" -ErrorAction Stop
   }
