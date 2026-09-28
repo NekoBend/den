@@ -686,10 +686,15 @@ Remove-Variable _z -ErrorAction SilentlyContinue
 Remove-Item alias:cd -Force -ErrorAction SilentlyContinue
 
 # cd → wrapper ON: __zoxide_z, OFF: Set-Location
+# Given no arguments, cd and zd go to $HOME themselves and cdi and zdi pass
+# zoxide none. $Rest is $null then, and @Rest would pass that $null on as one
+# argument (__zoxide_z tests it as a path, fails, and stays put); zoxide's own
+# jump with no arguments is a bare Set-Location, which goes home only from
+# PowerShell 6 on. $HOME, unlike ~, is reachable from any drive (Env:, HKLM:).
 function cd {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
-    __zoxide_z @Rest
+    if ($null -eq $Rest) { Set-Location -LiteralPath $HOME } else { __zoxide_z @Rest }
   } else {
     if ($Rest.Count -eq 0) { Set-Location ~ } else { Set-Location @Rest }
   }
@@ -700,7 +705,7 @@ function cd {
 function cdi {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_zi -ErrorAction SilentlyContinue)) {
-    __zoxide_zi @Rest
+    if ($null -eq $Rest) { __zoxide_zi } else { __zoxide_zi @Rest }
     _DenDirMoved $MyInvocation
   } else {
     Write-Warning 'cdi: wrappers are OFF or zoxide is not available'
@@ -713,7 +718,7 @@ function zd {
   if (-not (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
     Write-Warning 'zoxide is not installed.'; return
   }
-  __zoxide_z @Rest
+  if ($null -eq $Rest) { Set-Location -LiteralPath $HOME } else { __zoxide_z @Rest }
   _DenDirMoved $MyInvocation
 }
 
@@ -723,7 +728,7 @@ function zdi {
   if (-not (Get-Command __zoxide_zi -ErrorAction SilentlyContinue)) {
     Write-Warning 'zoxide is not installed.'; return
   }
-  __zoxide_zi @Rest
+  if ($null -eq $Rest) { __zoxide_zi } else { __zoxide_zi @Rest }
   _DenDirMoved $MyInvocation
 }
 
@@ -734,7 +739,8 @@ function up {
   _DenDirMoved $MyInvocation
 }
 
-# .. / .1–.9 → shorthand for up
+# .. / .1-.9 → shorthand for up. PowerShell reads a bare .1 as the number 0.1,
+# so .1-.9 run only as & '.1' (COMMANDS.md points pwsh users at up N instead).
 # (.N records the move itself: up, called from it, is not typed at the prompt)
 function .. { Set-Location ..; _DenDirMoved $MyInvocation }
 1..9 | ForEach-Object {
