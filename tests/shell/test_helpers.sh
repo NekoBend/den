@@ -677,6 +677,7 @@ True|-o|text
 True|-of|text
 True|-settings|/dev/null
 True|-custompipename|x
+True|-cus|x
 True|-l
 True|-noprofileloadtime
 True|-noexit|script.ps1
@@ -723,6 +724,506 @@ while IFS= read -r case_line; do
     assert_eq "pwsh/_DenLaunchIsRepl ${case_line#*|}" "$case_line => $expected" \
         "$(printf '%s\n' "$LAUNCH_OUT" | grep -F -x -- "$case_line => True" || printf '%s\n' "$LAUNCH_OUT" | grep -F -x -- "$case_line => False")"
 done <<<"$LAUNCH_CASES"
+
+# --- _DenRelaunchArgs: the arguments reload starts pwsh with ---
+# argv[0] names the program (pwsh.dll, an .exe path, a bare name) and is dropped;
+# the rest pass through one element each, spaces, quotes and empty ones included.
+# -Legacy pre-quotes them by the Windows command-line rules for a host whose
+# native argument passing is legacy. show prints n=<count>: then <each element>.
+cat > "$WORK/relaunch_cases.ps1" <<'EOF'
+function show([object[]]$a) { "n=$($a.Count):" + (($a | ForEach-Object { "<$_>" }) -join '') }
+$payload = 'try { . "C:\Program Files\Microsoft VS Code\si.ps1" } catch {}'
+'none ' + (show @(_DenRelaunchArgs -CommandLineArgs @('/opt/microsoft/powershell/7/pwsh.dll')))
+'null ' + (show @(_DenRelaunchArgs -CommandLineArgs $null))
+'winexe ' + (show @(_DenRelaunchArgs -CommandLineArgs @('C:\Program Files\PowerShell\7\pwsh.exe', '-NoLogo')))
+'bare ' + (show @(_DenRelaunchArgs -CommandLineArgs @('powershell', '-NoLogo')))
+'vscode ' + (show @(_DenRelaunchArgs -CommandLineArgs @('pwsh.dll', '-noexit', '-command', $payload)))
+'odd ' + (show @(_DenRelaunchArgs -CommandLineArgs @('pwsh.dll', '', 'a b', 'x"y', 'end\')))
+'legacy ' + (show @(_DenRelaunchArgs -Legacy -CommandLineArgs @('pwsh.dll', '-noexit', '-command', $payload, '', 'plain\', 'dir with space\', 'a\"b')))
+EOF
+RELAUNCH_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/relaunch_cases.ps1'" | tr -d '\r')
+relaunch_case() { printf '%s\n' "$RELAUNCH_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenRelaunchArgs with no arguments"
+assert_eq "pwsh/_DenRelaunchArgs no arguments" "none n=0:" "$(relaunch_case none)"
+assert_eq "pwsh/_DenRelaunchArgs null argv" "null n=0:" "$(relaunch_case null)"
+
+echo "[pwsh] _DenRelaunchArgs drops argv[0] in any form"
+assert_eq "pwsh/_DenRelaunchArgs Windows exe path" "winexe n=1:<-NoLogo>" "$(relaunch_case winexe)"
+assert_eq "pwsh/_DenRelaunchArgs bare program name" "bare n=1:<-NoLogo>" "$(relaunch_case bare)"
+
+echo "[pwsh] _DenRelaunchArgs keeps a -noexit -command payload whole"
+assert_eq "pwsh/_DenRelaunchArgs -noexit -command payload" \
+    'vscode n=3:<-noexit><-command><try { . "C:\Program Files\Microsoft VS Code\si.ps1" } catch {}>' \
+    "$(relaunch_case vscode)"
+
+echo "[pwsh] _DenRelaunchArgs keeps empty, spaced, quoted and backslash arguments"
+assert_eq "pwsh/_DenRelaunchArgs odd arguments" 'odd n=4:<><a b><x"y><end\>' "$(relaunch_case odd)"
+
+echo "[pwsh] _DenRelaunchArgs -Legacy escapes by the Windows rules and leaves the quoting to the host"
+assert_eq "pwsh/_DenRelaunchArgs -Legacy" \
+    'legacy n=7:<-noexit><-command><try { . \"C:\Program Files\Microsoft VS Code\si.ps1\" } catch {}><""><plain\><dir with space"\\"><a\\\"b>' \
+    "$(relaunch_case legacy)"
+
+# The same arguments through a real native command, under each argument passing
+# style: every element must arrive intact. Without -Legacy, legacy passing splits
+# or mangles them, which shows these runs do exercise it.
+cat > "$WORK/relaunch_roundtrip.ps1" <<'EOF'
+$argv = @('pwsh.dll', '-noexit', '-command', 'try { . "/p/Microsoft VS Code/si.ps1" } catch {}', '', 'a b', 'x"y', 'dir with space\', 'a\"b', 'plain\',
+    'say "hi there" now', 'q"\', 'sp q" \\', 'two  spaces', "tab`there")
+$want = ($argv | Select-Object -Skip 1 | ForEach-Object { "[$_]" }) -join ''
+function roundtrip([string[]]$pass) { (@(& printf '[%s]' @pass) -join '') }
+function verdict([string]$got) { if ($got -eq $want) { 'same' } else { "differs: $got" } }
+$PSNativeCommandArgumentPassing = 'Standard'
+'standard-detected ' + (_DenLegacyArgPassing)
+'standard ' + (verdict (roundtrip @(_DenRelaunchArgs -CommandLineArgs $argv)))
+$PSNativeCommandArgumentPassing = 'Windows'
+'windows-detected ' + (_DenLegacyArgPassing)
+$PSNativeCommandArgumentPassing = 'Legacy'
+'legacy-detected ' + (_DenLegacyArgPassing)
+'legacy ' + (verdict (roundtrip @(_DenRelaunchArgs -CommandLineArgs $argv -Legacy)))
+'legacy-unquoted ' + ((verdict (roundtrip @(_DenRelaunchArgs -CommandLineArgs $argv))) -ne 'same')
+EOF
+ROUNDTRIP_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/relaunch_roundtrip.ps1'" | tr -d '\r')
+roundtrip_case() { printf '%s\n' "$ROUNDTRIP_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenLegacyArgPassing reads \$PSNativeCommandArgumentPassing"
+assert_eq "pwsh/_DenLegacyArgPassing Standard" "standard-detected False" "$(roundtrip_case standard-detected)"
+assert_eq "pwsh/_DenLegacyArgPassing Windows" "windows-detected False" "$(roundtrip_case windows-detected)"
+assert_eq "pwsh/_DenLegacyArgPassing Legacy" "legacy-detected True" "$(roundtrip_case legacy-detected)"
+
+echo "[pwsh] _DenRelaunchArgs round-trips through a native command"
+assert_eq "pwsh/_DenRelaunchArgs round trip, Standard passing" "standard same" "$(roundtrip_case standard)"
+assert_eq "pwsh/_DenRelaunchArgs -Legacy round trip, Legacy passing" "legacy same" "$(roundtrip_case legacy)"
+assert_eq "pwsh/_DenRelaunchArgs unquoted breaks under Legacy passing" "legacy-unquoted True" "$(roundtrip_case legacy-unquoted)"
+
+# Windows PowerShell 5.1 cannot run here, so its legacy passing is modelled from
+# the binder it shares with PowerShell before PowerShell/PowerShell 8bca1f50c5
+# (NativeCommandParameterBinder.appendOneNativeArgument): the arguments joined
+# with a space, an empty one dropped, and one put in double quotes, as it is,
+# when a whitespace character in it follows an even number of double quotes,
+# escaped ones included. .NET splits ProcessStartInfo.Arguments by the Windows
+# command-line rules on Linux too, which stands in for the new shell. The Windows
+# CI job runs the real 5.1 (tests/shell/relaunch_argv.ps1).
+cat > "$WORK/relaunch_ps51.ps1" <<'EOF'
+function bind51([string[]]$tokens) {
+    $parts = foreach ($t in $tokens) {
+        $quotes = 0
+        $wrap = $false
+        foreach ($ch in $t.ToCharArray()) {
+            if ($ch -eq '"') { $quotes++ } elseif ([char]::IsWhiteSpace($ch) -and $quotes % 2 -eq 0) { $wrap = $true }
+        }
+        if ($wrap) { '"' + $t + '"' } else { $t }
+    }
+    $parts -join ' '
+}
+function split51([string[]]$argv) {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new('printf', '[%s] ' + (bind51 @(_DenRelaunchArgs -Legacy -CommandLineArgs $argv)))
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEnd()
+    $p.WaitForExit()
+    $want = ($argv | Select-Object -Skip 1 | ForEach-Object { "[$_]" }) -join ''
+    if ($out -eq $want) { 'same' } else { "differs: $out" }
+}
+'vscode ' + (split51 @('powershell.exe', '-noexit', '-command', 'try { . "C:\Program Files\Microsoft VS Code\si.ps1" } catch {}'))
+'dot ' + (split51 @('powershell.exe', '-noexit', '-command', '. "C:\Program Files\x\shellIntegration.ps1"'))
+'spaces ' + (split51 @('powershell.exe', 'a b', 'two  spaces', "tab`there", 'dir with space\', 'C:\dir\', 'x\\'))
+'quotes ' + (split51 @('powershell.exe', 'x"y', '"quoted"', 'say "hi there" now', 'a\"b', 'q"\', 'sp q" \\', 'end \"'))
+'empty ' + (split51 @('powershell.exe', '', '-NoLogo', ''))
+'odd-quotes ' + (split51 @('powershell.exe', '"C:\a b"'))
+EOF
+PS51_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/relaunch_ps51.ps1'" | tr -d '\r')
+ps51_case() { printf '%s\n' "$PS51_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenRelaunchArgs -Legacy survives Windows PowerShell 5.1's quoting (modelled)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 VS Code payload" "vscode same" "$(ps51_case vscode)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 dot-source payload" "dot same" "$(ps51_case dot)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 spaces and trailing backslashes" "spaces same" "$(ps51_case spaces)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 embedded quotes" "quotes same" "$(ps51_case quotes)"
+assert_eq "pwsh/_DenRelaunchArgs 5.1 empty arguments" "empty same" "$(ps51_case empty)"
+# The one shape 5.1 still splits, as the comment on _DenRelaunchArgs says.
+assert_eq "pwsh/_DenRelaunchArgs 5.1 splits a quoted path with a space" \
+    'odd-quotes differs: ["C:\a][b"]' "$(ps51_case odd-quotes)"
+
+# relaunch_argv.ps1 is the check the Windows CI job runs under Windows PowerShell
+# 5.1 and pwsh 7: it starts pwsh again with @(_DenRelaunchArgs ...) for a set of
+# launch arguments and compares the arguments the new process reports. Here it
+# runs under this pwsh, then against a _DenRelaunchArgs that ignores -Legacy,
+# which Legacy passing must catch.
+relaunch_argv() { { pwsh -NoProfile -NonInteractive -File "$SCRIPT_DIR/relaunch_argv.ps1" "$@" 2>&1; echo "RC=$?"; } | tr -d '\r'; }
+
+echo "[pwsh] relaunch_argv.ps1 passes with den's _helpers.ps1"
+actual=$(relaunch_argv -Helpers "$HELPERS_PS1")
+assert_match "pwsh/relaunch_argv.ps1 all checks pass" 'relaunch_argv: all [0-9]+ checks passed' "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 exits 0" "RC=0" "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 prints this host's argv[0]" "relaunch_argv: this host: argv[0] = " "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 tries Legacy passing" "ok   [Legacy passing, pre-quoted (-Legacy)] vscode payload" "$actual"
+assert_not_contains "pwsh/relaunch_argv.ps1 no errors" "::error::" "$actual"
+
+echo "[pwsh] relaunch_argv.ps1 fails loudly when the arguments do not arrive whole"
+printf '%s\n' ". '$HELPERS_PS1'" \
+    'function _DenRelaunchArgs([string[]]$CommandLineArgs, [switch]$Legacy) { $CommandLineArgs | Select-Object -Skip 1 }' \
+    >"$WORK/relaunch_noquote.ps1"
+actual=$(relaunch_argv -Helpers "$WORK/relaunch_noquote.ps1")
+assert_contains "pwsh/relaunch_argv.ps1 catches unquoted Legacy passing" \
+    "::error::relaunch_argv: [Legacy passing, pre-quoted (-Legacy)] vscode payload: the new process got other arguments" "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 shows the difference" "! [4] want <-noexit>" "$actual"
+assert_not_contains "pwsh/relaunch_argv.ps1 Standard passing still passes" "::error::relaunch_argv: [Standard passing, not pre-quoted] vscode payload" "$actual"
+assert_match "pwsh/relaunch_argv.ps1 counts the failures" 'relaunch_argv: [1-9][0-9]* of [0-9]+ checks failed' "$actual"
+assert_contains "pwsh/relaunch_argv.ps1 exits 1" "RC=1" "$actual"
+
+echo "[pwsh] _DenRelaunchArgs on a real launch drops only the program"
+actual=$(pwsh -NoProfile -NonInteractive -Command ". '$HELPERS_PS1'; \$r = @(_DenRelaunchArgs -CommandLineArgs ([Environment]::GetCommandLineArgs())); '{0}|{1}|{2}' -f \$r.Count, \$r[0], \$r[1]" | tr -d '\r')
+assert_eq "pwsh/_DenRelaunchArgs real launch" "4|-NoProfile|-NonInteractive" "$actual"
+
+# reload resumes in the current directory: -WorkingDirectory, in every spelling
+# pwsh reads, goes with its value, and so does -RemoveWorkingDirectoryTrailingCharacter.
+# The same words after -Command, -File or a script path are payload and stay.
+# Each line is `<label> <expected>`, run as `<label>|<arguments>` below.
+cat > "$WORK/relaunch_wd_cases.ps1" <<'EOF'
+function show([object[]]$a) { "n=$($a.Count):" + (($a | ForEach-Object { "<$_>" }) -join '') }
+function rl([string[]]$rest) { show @(_DenRelaunchArgs -CommandLineArgs (@('pwsh.dll') + $rest)) }
+$en = [string][char]0x2013; $em = [string][char]0x2014; $bar = [string][char]0x2015
+foreach ($sw in '-WorkingDirectory', '-workingdirectory', '-WORKINGDIR', '-wor', '-wo', '-wd', '-WD',
+    '--wd', '--workingdirectory', '/wd', '/WorkingDirectory', "${en}wd", "${em}wo", "${bar}workingdirectory", ' -wd ') {
+    "spelling[$sw] " + (rl @('-NoLogo', $sw, '/a b', '-NoExit'))
+}
+'first ' + (rl @('-wd', '/a', '-NoLogo'))
+'last ' + (rl @('-NoLogo', '-wd', '/a'))
+'twice ' + (rl @('-wd', '/a', '-NoLogo', '--wd', '/b'))
+'switch-like-value ' + (rl @('-wd', '-NoExit', '-NoLogo'))
+'missing-value ' + (rl @('-NoLogo', '-wd'))
+'trailing-char ' + (rl @('-NoExit', '-RemoveWorkingDirectoryTrailingCharacter', '-WorkingDirectory', 'C:\x!', '-Command', 'x'))
+'trailing-char-abbrev ' + (rl @('-removeworkingdirectory', '-wd', '/a'))
+'w-is-windowstyle ' + (rl @('-w', 'Hidden', '-NoExit'))
+'after-command ' + (rl @('-noexit', '-command', 'Set-Location', '-wd', '/a'))
+'after-command-whole ' + (rl @('-noexit', '-c', 'pwsh -wd /a'))
+'after-file ' + (rl @('-NoExit', '-File', 's.ps1', '-wd', '/a'))
+'after-script ' + (rl @('s.ps1', '-WorkingDirectory', '/a'))
+'after-cwa ' + (rl @('-noexit', '-cwa', '$args', '-wd', '/a'))
+'after-encoded ' + (rl @('-enc', 'Zm9v', '-wd', '/a', '-noexit'))
+'wd-value-of-value ' + (rl @('-ep', '-wd', '-NoExit'))
+'legacy ' + (show @(_DenRelaunchArgs -Legacy -CommandLineArgs @('pwsh.dll', '-wd', '/a b', '-noexit', '-c', 'x')))
+EOF
+RELAUNCH_WD_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/relaunch_wd_cases.ps1'" | tr -d '\r')
+relaunch_wd_case() { printf '%s\n' "$RELAUNCH_WD_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenRelaunchArgs drops -WorkingDirectory in every spelling"
+# One line per spelling (the dashes come from PowerShell, so the locale does not matter).
+assert_eq "pwsh/_DenRelaunchArgs spellings tried" "15" "$(printf '%s\n' "$RELAUNCH_WD_OUT" | grep -c '^spelling\[')"
+while IFS= read -r line; do
+    assert_eq "pwsh/_DenRelaunchArgs drops ${line%% n=*} and its value" "${line%% n=*} n=2:<-NoLogo><-NoExit>" "$line"
+done < <(printf '%s\n' "$RELAUNCH_WD_OUT" | grep '^spelling\[')
+assert_eq "pwsh/_DenRelaunchArgs drops -wd first" "first n=1:<-NoLogo>" "$(relaunch_wd_case first)"
+assert_eq "pwsh/_DenRelaunchArgs drops -wd last" "last n=1:<-NoLogo>" "$(relaunch_wd_case last)"
+assert_eq "pwsh/_DenRelaunchArgs drops every -wd" "twice n=1:<-NoLogo>" "$(relaunch_wd_case twice)"
+assert_eq "pwsh/_DenRelaunchArgs drops a -wd value that looks like a switch" \
+    "switch-like-value n=1:<-NoLogo>" "$(relaunch_wd_case switch-like-value)"
+assert_eq "pwsh/_DenRelaunchArgs drops a -wd without a value" "missing-value n=1:<-NoLogo>" "$(relaunch_wd_case missing-value)"
+
+echo "[pwsh] _DenRelaunchArgs drops -RemoveWorkingDirectoryTrailingCharacter"
+assert_eq "pwsh/_DenRelaunchArgs Explorer's Open here launch" \
+    "trailing-char n=3:<-NoExit><-Command><x>" "$(relaunch_wd_case trailing-char)"
+assert_eq "pwsh/_DenRelaunchArgs keeps an abbreviated trailing-character switch (a script path to pwsh)" \
+    "trailing-char-abbrev n=3:<-removeworkingdirectory><-wd></a>" "$(relaunch_wd_case trailing-char-abbrev)"
+assert_eq "pwsh/_DenRelaunchArgs keeps -w (WindowStyle)" "w-is-windowstyle n=3:<-w><Hidden><-NoExit>" "$(relaunch_wd_case w-is-windowstyle)"
+
+echo "[pwsh] _DenRelaunchArgs keeps -wd inside a payload"
+assert_eq "pwsh/_DenRelaunchArgs -wd after -command" \
+    "after-command n=5:<-noexit><-command><Set-Location><-wd></a>" "$(relaunch_wd_case after-command)"
+assert_eq "pwsh/_DenRelaunchArgs -wd in the -c text" "after-command-whole n=3:<-noexit><-c><pwsh -wd /a>" "$(relaunch_wd_case after-command-whole)"
+assert_eq "pwsh/_DenRelaunchArgs -wd after -File" \
+    "after-file n=5:<-NoExit><-File><s.ps1><-wd></a>" "$(relaunch_wd_case after-file)"
+assert_eq "pwsh/_DenRelaunchArgs -wd after a script path" \
+    "after-script n=3:<s.ps1><-WorkingDirectory></a>" "$(relaunch_wd_case after-script)"
+assert_eq "pwsh/_DenRelaunchArgs -wd after -cwa" \
+    'after-cwa n=5:<-noexit><-cwa><$args><-wd></a>' "$(relaunch_wd_case after-cwa)"
+assert_eq "pwsh/_DenRelaunchArgs -wd after -enc's value is a switch" \
+    "after-encoded n=3:<-enc><Zm9v><-noexit>" "$(relaunch_wd_case after-encoded)"
+assert_eq "pwsh/_DenRelaunchArgs -wd as another switch's value stays" \
+    "wd-value-of-value n=3:<-ep><-wd><-NoExit>" "$(relaunch_wd_case wd-value-of-value)"
+assert_eq "pwsh/_DenRelaunchArgs -Legacy drops -wd before quoting" \
+    'legacy n=3:<-noexit><-c><x>' "$(relaunch_wd_case legacy)"
+
+# --- _DenLaunchMissingFile: a launch file the new shell would not find ---
+# The new shell starts in the current directory, and pwsh exits (64, or 70) when
+# the file given to -File, as a script path, to -SettingsFile or to
+# -ConfigurationFile is not there, which would end the session reload runs in.
+# "here" holds the files, "elsewhere" none. Each line is `<label> <result>`, the
+# result <path> or (none).
+LF_DIR="$WORK/launch files"
+mkdir -p "$LF_DIR/here" "$LF_DIR/elsewhere"
+: >"$LF_DIR/here/s.ps1"
+: >"$LF_DIR/here/settings.json"
+: >"$LF_DIR/here/c.pssc"
+cat > "$WORK/launch_missing_cases.ps1" <<EOF
+function lm([string]\$dir, [string[]]\$launch) {
+    \$r = _DenLaunchMissingFile -Arguments \$launch -Directory "$LF_DIR/\$dir"
+    if (\$null -eq \$r) { '(none)' } else { "<\$r>" }
+}
+'none ' + (lm elsewhere @())
+'file-here ' + (lm here @('-NoExit', '-File', './s.ps1'))
+'file-elsewhere ' + (lm elsewhere @('-NoExit', '-File', './s.ps1'))
+'file-bare-elsewhere ' + (lm elsewhere @('-noe', '--f', 's.ps1'))
+'script-here ' + (lm here @('-nol', '-NoExit', 's.ps1', 'a', 'b'))
+'script-elsewhere ' + (lm elsewhere @('-NoExit', 's.ps1'))
+'backslash-here ' + (lm here @('-NoExit', '-File', '.\s.ps1'))
+'backslash-elsewhere ' + (lm elsewhere @('-NoExit', '-File', '.\s.ps1'))
+'absolute-elsewhere ' + (lm elsewhere @('-NoExit', '-File', '$LF_DIR/here/s.ps1'))
+'absolute-gone ' + (lm here @('-NoExit', '-File', '$LF_DIR/here/gone.ps1'))
+'stdin ' + (lm elsewhere @('-File', '-'))
+'settings-here ' + (lm here @('-settings', './settings.json', '-NoExit'))
+'settings-elsewhere ' + (lm elsewhere @('-SettingsFile', './settings.json', '-NoExit'))
+'config-here ' + (lm here @('-ConfigurationFile', 'c.pssc'))
+'config-elsewhere ' + (lm elsewhere @('-ConfigurationFile', 'c.pssc'))
+'command-payload ' + (lm elsewhere @('-NoExit', '-Command', '. ./s.ps1', './s.ps1'))
+'script-arguments ' + (lm here @('-NoExit', '-File', './s.ps1', './gone.ps1', '-SettingsFile', 'x'))
+'value-not-script ' + (lm elsewhere @('-ep', 'Bypass', '-NoExit'))
+'empty-script ' + (lm here @('-NoExit', ''))
+EOF
+LM_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/launch_missing_cases.ps1'" | tr -d '\r')
+launch_missing_case() { printf '%s\n' "$LM_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenLaunchMissingFile finds the launch files from the given directory"
+assert_eq "pwsh/_DenLaunchMissingFile no arguments" "none (none)" "$(launch_missing_case none)"
+assert_eq "pwsh/_DenLaunchMissingFile -File found" "file-here (none)" "$(launch_missing_case file-here)"
+assert_eq "pwsh/_DenLaunchMissingFile -File not found" "file-elsewhere <./s.ps1>" "$(launch_missing_case file-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile --f bare name not found" "file-bare-elsewhere <s.ps1>" "$(launch_missing_case file-bare-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile script path found" "script-here (none)" "$(launch_missing_case script-here)"
+assert_eq "pwsh/_DenLaunchMissingFile script path not found" "script-elsewhere <s.ps1>" "$(launch_missing_case script-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile reads the other slash as pwsh does" "backslash-here (none)" "$(launch_missing_case backslash-here)"
+assert_eq "pwsh/_DenLaunchMissingFile other slash not found" 'backslash-elsewhere <.\s.ps1>' "$(launch_missing_case backslash-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile absolute path found anywhere" "absolute-elsewhere (none)" "$(launch_missing_case absolute-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile absolute path gone" "absolute-gone <$LF_DIR/here/gone.ps1>" "$(launch_missing_case absolute-gone)"
+assert_eq "pwsh/_DenLaunchMissingFile -File - names no file" "stdin (none)" "$(launch_missing_case stdin)"
+assert_eq "pwsh/_DenLaunchMissingFile -settings found" "settings-here (none)" "$(launch_missing_case settings-here)"
+assert_eq "pwsh/_DenLaunchMissingFile -SettingsFile not found" "settings-elsewhere <./settings.json>" "$(launch_missing_case settings-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile -ConfigurationFile found" "config-here (none)" "$(launch_missing_case config-here)"
+assert_eq "pwsh/_DenLaunchMissingFile -ConfigurationFile not found" "config-elsewhere <c.pssc>" "$(launch_missing_case config-elsewhere)"
+assert_eq "pwsh/_DenLaunchMissingFile -Command payload names no file" "command-payload (none)" "$(launch_missing_case command-payload)"
+assert_eq "pwsh/_DenLaunchMissingFile reads no script arguments" "script-arguments (none)" "$(launch_missing_case script-arguments)"
+assert_eq "pwsh/_DenLaunchMissingFile skips a switch's value" "value-not-script (none)" "$(launch_missing_case value-not-script)"
+assert_eq "pwsh/_DenLaunchMissingFile empty script path" "empty-script <>" "$(launch_missing_case empty-script)"
+
+# --- _DenVSCodeEnv: what VS Code's shell integration took out of the environment ---
+# The integration script moves VSCODE_NONCE, _STABLE, _A11Y_MODE and
+# _SHELL_ENV_REPORTING into $Global:__VSCodeState; reload hands them back.
+cat > "$WORK/vscode_env.ps1" <<'EOF'
+function envs([hashtable]$h) { "n=$($h.Count):" + (($h.Keys | Sort-Object | ForEach-Object { "$_=$($h[$_])" }) -join ';') }
+'outside ' + (envs (_DenVSCodeEnv))
+$Global:__VSCodeState = @{ Nonce = 'n0'; IsStable = '1'; IsA11yMode = $null; EnvVarsToReport = @('PATH', 'VIRTUAL_ENV') }
+'full ' + (envs (_DenVSCodeEnv))
+$Global:__VSCodeState = @{ Nonce = ''; IsA11yMode = '1'; EnvVarsToReport = @() }
+'a11y ' + (envs (_DenVSCodeEnv))
+EOF
+VSENV_OUT=$(run_pwsh "$HELPERS_PS1" ". '$WORK/vscode_env.ps1'" | tr -d '\r')
+vsenv_case() { printf '%s\n' "$VSENV_OUT" | grep -F -- "$1 " | head -n 1; }
+
+echo "[pwsh] _DenVSCodeEnv outside VS Code"
+assert_eq "pwsh/_DenVSCodeEnv outside VS Code" "outside n=0:" "$(vsenv_case outside)"
+echo "[pwsh] _DenVSCodeEnv restores what the integration script took"
+assert_eq "pwsh/_DenVSCodeEnv full state" \
+    "full n=3:VSCODE_NONCE=n0;VSCODE_SHELL_ENV_REPORTING=PATH,VIRTUAL_ENV;VSCODE_STABLE=1" "$(vsenv_case full)"
+assert_eq "pwsh/_DenVSCodeEnv skips empty values" "a11y n=1:VSCODE_A11Y_MODE=1" "$(vsenv_case a11y)"
+
+# --- reload (init.ps1) starts pwsh again ---
+# reload used to dot-source $PROFILE inside its own function scope, so a function
+# added to the config was gone again when reload returned. It now starts the same
+# pwsh with the same arguments, waits, and exits with its exit code. These tests
+# run den's config from a copy (so a test can add to functions.ps1) under a
+# scratch HOME whose profile prints the PID of every shell that loads it.
+RL_HOME="$WORK/reload_home"
+RL_CFG="$WORK/reload_cfg"
+mkdir -p "$RL_HOME/.config/powershell" "$RL_CFG" "$WORK/reload dir"
+cp "$DOTFILES"/shell/pwsh/*.ps1 "$RL_CFG/"
+# The profile also ends a runaway chain of reloads: the fifth nested shell exits 99.
+printf '%s\n' '$env:_RL_LOADS = 1 + [int]$env:_RL_LOADS' \
+    'if ([int]$env:_RL_LOADS -gt 4) { "RUNAWAY"; [Environment]::Exit(99) }' \
+    '"PROFILE-LOADED PID=$PID"' ". '$RL_CFG/init.ps1'" >"$RL_HOME/.config/powershell/Microsoft.PowerShell_profile.ps1"
+# si.ps1 stands in for VS Code's shellIntegration.ps1, which moves VSCODE_NONCE
+# out of the environment into $Global:__VSCodeState.
+printf '%s\n' \
+    'if (-not (Test-Path variable:global:__VSCodeState)) { $Global:__VSCodeState = @{ Nonce = $env:VSCODE_NONCE }; $env:VSCODE_NONCE = $null }' \
+    '"SI-LOADED ARGS=$(([Environment]::GetCommandLineArgs() | Select-Object -Skip 1) -join "|")"' \
+    '"SI-NONCE=[$($Global:__VSCodeState.Nonce)] ENV=[$env:VSCODE_NONCE]"' >"$WORK/reload dir/si.ps1"
+
+# run_reload_session <pwsh args...> - start pwsh as a REPL on pipes, add a function
+# to a fresh copy of functions.ps1 and run reload; once a second shell has loaded
+# the profile, call that function (it prints its PID and directory) and exit 7.
+# RL_PRE, when set, is a line run just before reload. VSCODE_NONCE is set, as
+# VS Code sets it. Prints the output, then RC=<exit code>. The second half of the
+# input goes out only then, so the relaunched shell reads it.
+run_reload_session() {
+    local line out='' loaded=0 rc pid rfd wfd
+    cp "$DOTFILES/shell/pwsh/functions.ps1" "$RL_CFG/functions.ps1"
+    coproc RLS { env -u _DEN_FORCE_INTERACTIVE VSCODE_NONCE=rl-nonce HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 90 pwsh -NoLogo "$@" 2>&1; }
+    pid=$RLS_PID
+    exec {rfd}<&"${RLS[0]}" {wfd}>&"${RLS[1]}"
+    printf '%s\n' "Add-Content -LiteralPath '$RL_CFG/functions.ps1' -Value 'function reload-probe { \"PROBE-OK PID=\$PID PWD=[\$(\$PWD.Path)]\" }'" \
+        ${RL_PRE:+"$RL_PRE"} 'reload' >&"$wfd"
+    while IFS= read -r -t 60 line <&"$rfd"; do
+        out+="$line"$'\n'
+        case "$line" in *PROFILE-LOADED*) loaded=$((loaded + 1)) ;; esac
+        [ "$loaded" -ge 2 ] && break
+    done
+    printf '%s\n' 'reload-probe' 'exit 7' >&"$wfd"
+    exec {wfd}>&-
+    while IFS= read -r -t 60 line <&"$rfd"; do out+="$line"$'\n'; done
+    exec {rfd}<&-
+    wait "$pid"
+    rc=$?
+    printf '%sRC=%s\n' "$out" "$rc"
+}
+
+echo "[pwsh] reload starts a new pwsh that sees a function added to the config"
+# reload_pid <n> - the PID of the nth shell that loaded the profile in RL_OUT.
+reload_pid() { printf '%s\n' "$RL_OUT" | grep -oE 'PROFILE-LOADED PID=[0-9]+' | sed -n "$1s/.*=//p"; }
+RL_OUT=$(run_reload_session | tr -d '\r')
+RL_PID1=$(reload_pid 1)
+RL_PID2=$(reload_pid 2)
+assert_match "pwsh/reload loads the profile in a second shell" '^[0-9]+$' "$RL_PID2"
+if [ -n "$RL_PID2" ] && [ "$RL_PID1" != "$RL_PID2" ]; then actual=new; else actual=same; fi
+assert_eq "pwsh/reload runs a new process" "new" "$actual"
+assert_contains "pwsh/reload makes the added function visible" "PROBE-OK PID=$RL_PID2" "$RL_OUT"
+assert_contains "pwsh/reload exits with the new shell's exit code" "RC=7" "$RL_OUT"
+
+echo "[pwsh] reload keeps the launch arguments (VS Code's -noexit -command)"
+RL_PAYLOAD="try { . \"$WORK/reload dir/si.ps1\" } catch {}"
+RL_OUT=$(run_reload_session -noexit -command "$RL_PAYLOAD" | tr -d '\r')
+RL_SI=$(printf '%s\n' "$RL_OUT" | grep -oE 'SI-LOADED ARGS=.*')
+assert_eq "pwsh/reload runs the -command payload again" "2" "$(printf '%s\n' "$RL_SI" | grep -c 'SI-LOADED')"
+assert_eq "pwsh/reload passes the same arguments" "SI-LOADED ARGS=-NoLogo|-noexit|-command|$RL_PAYLOAD" "$(printf '%s\n' "$RL_SI" | sed -n 2p)"
+assert_contains "pwsh/reload under -noexit -command sees the added function" "PROBE-OK PID=$(reload_pid 2)" "$RL_OUT"
+assert_contains "pwsh/reload under -noexit -command exits with the new shell's code" "RC=7" "$RL_OUT"
+assert_eq "pwsh/reload hands VS Code's nonce back to the new shell" \
+    "SI-NONCE=[rl-nonce] ENV=[]"$'\n'"SI-NONCE=[rl-nonce] ENV=[]" "$(printf '%s\n' "$RL_OUT" | grep -oE 'SI-NONCE=.*')"
+
+# reload starts the new shell where the old one is now: a -WorkingDirectory from
+# the launch is left out, not applied again. The first shell starts in "wd start",
+# moves to "wd moved" and reloads.
+RL_WD="$WORK/reload wd"
+mkdir -p "$RL_WD/start" "$RL_WD/moved"
+RL_MOVE="\"START-PWD=[\$(\$PWD.Path)]\"; Set-Location -LiteralPath '$RL_WD/moved'"
+
+echo "[pwsh] reload resumes in the current directory, not at -wd"
+RL_OUT=$(RL_PRE="$RL_MOVE" run_reload_session -wd "$RL_WD/start" | tr -d '\r')
+assert_contains "pwsh/reload -wd: the first shell started at -wd" "START-PWD=[$RL_WD/start]" "$RL_OUT"
+assert_contains "pwsh/reload -wd: the new shell is in the current directory" \
+    "PROBE-OK PID=$(reload_pid 2) PWD=[$RL_WD/moved]" "$RL_OUT"
+assert_contains "pwsh/reload -wd exits with the new shell's code" "RC=7" "$RL_OUT"
+
+echo "[pwsh] reload resumes in the current directory with -WorkingDirectory and a -noexit -command payload"
+RL_OUT=$(RL_PRE="$RL_MOVE" run_reload_session -WorkingDirectory "$RL_WD/start" -noexit -command "$RL_PAYLOAD" | tr -d '\r')
+RL_SI=$(printf '%s\n' "$RL_OUT" | grep -oE 'SI-LOADED ARGS=.*')
+assert_eq "pwsh/reload -WorkingDirectory: the first shell has it" \
+    "SI-LOADED ARGS=-NoLogo|-WorkingDirectory|$RL_WD/start|-noexit|-command|$RL_PAYLOAD" "$(printf '%s\n' "$RL_SI" | sed -n 1p)"
+assert_eq "pwsh/reload -WorkingDirectory: the new shell gets the rest" \
+    "SI-LOADED ARGS=-NoLogo|-noexit|-command|$RL_PAYLOAD" "$(printf '%s\n' "$RL_SI" | sed -n 2p)"
+assert_contains "pwsh/reload -WorkingDirectory: the new shell is in the current directory" \
+    "PROBE-OK PID=$(reload_pid 2) PWD=[$RL_WD/moved]" "$RL_OUT"
+
+# The payload runs again in the current directory too, so a relative path in it
+# names the file there: pwsh applied -wd before the first run of the payload.
+printf '%s\n' '"RL-WHERE=start"' >"$RL_WD/start/rl-where.ps1"
+printf '%s\n' '"RL-WHERE=moved"' >"$RL_WD/moved/rl-where.ps1"
+echo "[pwsh] reload runs a -noexit -command payload again in the current directory"
+RL_OUT=$(RL_PRE="$RL_MOVE" run_reload_session -wd "$RL_WD/start" -noexit -command '. ./rl-where.ps1' | tr -d '\r')
+assert_eq "pwsh/reload -wd: a relative payload path is read from the current directory" \
+    "RL-WHERE=start"$'\n'"RL-WHERE=moved" "$(printf '%s\n' "$RL_OUT" | grep -oE '^RL-WHERE=[a-z]+')"
+assert_contains "pwsh/reload -wd relative payload exits with the new shell's code" "RC=7" "$RL_OUT"
+
+# pwsh reads a relative -File path from its working directory as it starts, and
+# exits 64 when the file is not there. The new shell starts in the current
+# directory, so after a move reload warns instead of ending the session; where the
+# file is found, it restarts.
+printf '%s\n' '"RL-FILE-RAN PWD=[$($PWD.Path)]"' >"$RL_WD/start/rl-file.ps1"
+echo "[pwsh] reload does not restart when its -File is not found from the current directory"
+actual=$(cd "$RL_WD/start" && printf '%s\n' "Set-Location -LiteralPath '$RL_WD/moved'" 'reload' '"STILL-HERE PWD=[$($PWD.Path)]"' 'exit 3' |
+    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -File ./rl-file.ps1 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+assert_contains "pwsh/reload missing -File warns" \
+    "not restarting: its launch arguments name the file './rl-file.ps1', which the new shell would not find from the current directory" "$actual"
+assert_contains "pwsh/reload missing -File stays in the session" "STILL-HERE PWD=[$RL_WD/moved]" "$actual"
+assert_eq "pwsh/reload missing -File starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
+assert_contains "pwsh/reload missing -File exit code is the session's" "RC=3" "$actual"
+
+echo "[pwsh] reload restarts a -NoExit -File launch whose file is found"
+RL_OUT=$(cd "$RL_WD/start" && run_reload_session -NoExit -File ./rl-file.ps1 | tr -d '\r')
+assert_eq "pwsh/reload -File found: the file runs again" "2" "$(printf '%s\n' "$RL_OUT" | grep -cxF "RL-FILE-RAN PWD=[$RL_WD/start]")"
+assert_contains "pwsh/reload -File found: the new shell sees the added function" "PROBE-OK PID=$(reload_pid 2)" "$RL_OUT"
+assert_contains "pwsh/reload -File found exits with the new shell's code" "RC=7" "$RL_OUT"
+
+# A -Command or -File run is no REPL, so reload only clears the caches and warns.
+# _DEN_FORCE_INTERACTIVE=1 must not change that. The script calls reload only on
+# its first run, so a guard that failed shows up as a second run, not a loop.
+cat >"$WORK/reload_guard.ps1" <<EOF
+\$runs = @(Get-Content -LiteralPath '$WORK/reload_runs.txt').Count
+Add-Content -LiteralPath '$WORK/reload_runs.txt' -Value \$PID
+. '$RL_CFG/init.ps1'
+if (\$runs -eq 0) { reload }
+'AFTER-RELOAD'
+EOF
+
+echo "[pwsh] reload does not restart a -Command run"
+: >"$WORK/reload_runs.txt"
+actual=$(env HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" _DEN_FORCE_INTERACTIVE=1 timeout 60 pwsh -NoProfile -Command ". '$WORK/reload_guard.ps1'" 2>&1 | tr -d '\r')
+assert_contains "pwsh/reload -Command warns" "reload: caches cleared, but not restarting" "$actual"
+assert_contains "pwsh/reload -Command continues" "AFTER-RELOAD" "$actual"
+assert_eq "pwsh/reload -Command runs once" "1" "$(grep -c . "$WORK/reload_runs.txt")"
+
+echo "[pwsh] reload does not restart a -File run"
+: >"$WORK/reload_runs.txt"
+actual=$(env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoProfile -File "$WORK/reload_guard.ps1" 2>&1 | tr -d '\r')
+assert_contains "pwsh/reload -File warns" "reload: caches cleared, but not restarting" "$actual"
+assert_contains "pwsh/reload -File continues" "AFTER-RELOAD" "$actual"
+assert_eq "pwsh/reload -File runs once" "1" "$(grep -c . "$WORK/reload_runs.txt")"
+
+# When the executable cannot be started, reload warns and the session goes on
+# (it must not exit). Get-Process is shadowed to report a missing executable.
+echo "[pwsh] reload stays in the session when pwsh cannot be started"
+actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" 'reload' '"STILL-HERE DEPTH-ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 3' |
+    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+assert_contains "pwsh/reload start failure warns" "reload: could not start" "$actual"
+assert_contains "pwsh/reload start failure keeps the session" "STILL-HERE DEPTH-ENV=[]" "$actual"
+assert_contains "pwsh/reload start failure exit code is the session's" "RC=3" "$actual"
+
+# exit in a nested prompt (the debugger's, $Host.EnterNestedPrompt()) only leaves
+# that prompt, so a shell started from there would, once it ended, drop the user
+# back into this stale session. reload warns instead.
+echo "[pwsh] reload does not restart from a nested prompt"
+actual=$(printf '%s\n' '$Host.EnterNestedPrompt()' 'reload' '"NESTED-AFTER LEVEL=$NestedPromptLevel PID=$PID"' 'exit' 'exit 3' |
+    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+RL_PID1=$(printf '%s\n' "$actual" | grep -oE 'PROFILE-LOADED PID=[0-9]+' | sed -n '1s/.*=//p')
+assert_contains "pwsh/reload nested prompt warns" "not restarting: reload was called from a nested prompt" "$actual"
+assert_contains "pwsh/reload nested prompt stays in the session" "NESTED-AFTER LEVEL=1 PID=$RL_PID1" "$actual"
+assert_eq "pwsh/reload nested prompt starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
+assert_contains "pwsh/reload nested prompt exit code" "RC=3" "$actual"
+
+# A reload in the startup payload runs again in every shell it starts. The count of
+# reloads in a row travels in _DEN_RELOAD_DEPTH; starting at 7, the first reload
+# starts the eighth shell, whose own startup reload must refuse.
+echo "[pwsh] reload stops after 8 reloads in a row"
+actual=$(printf '%s\n' '"DEEPEST DEPTH=$_DenReloadDepth ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 5' |
+    env -u _DEN_FORCE_INTERACTIVE _DEN_RELOAD_DEPTH=7 HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -Command reload 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+assert_eq "pwsh/reload limit starts one more shell" "2" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
+assert_contains "pwsh/reload limit warns" "not restarting: 8 reloads in a row led to this shell" "$actual"
+assert_contains "pwsh/reload limit passes the count on, out of the environment" "DEEPEST DEPTH=8 ENV=[]" "$actual"
+assert_contains "pwsh/reload limit exit code" "RC=5" "$actual"
+
+# The call operator takes a '--%' element as its own stop-parsing token, so such
+# launch arguments cannot be passed on.
+echo "[pwsh] reload does not restart a launch whose arguments hold --%"
+actual=$(printf '%s\n' 'reload' 'exit 6' |
+    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -Command echo --% x 2>&1 | tr -d '\r'
+    echo "RC=${PIPESTATUS[1]}")
+assert_contains "pwsh/reload --% warns" "not restarting: its launch arguments hold '--%'" "$actual"
+assert_eq "pwsh/reload --% starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
+assert_contains "pwsh/reload --% exit code" "RC=6" "$actual"
 
 # =============================================================================
 # Summary
