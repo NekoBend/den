@@ -99,16 +99,40 @@ va() {
     # COMMITTED to a repo (git tracks .venv happily, even force-added past a
     # .gitignore) is code that arrived with the clone, and `va` in a fresh checkout
     # would run it. Not a git repo, or no git, means nothing to check: pass.
-    local tracked
-    # Name what git actually reports: the match may be pyvenv.cfg alone, so a
-    # message about the activate script would be wrong.
-    # The -f test above ignores case on default APFS and git pathspecs do not, so
-    # :(icase) also catches a committed bin/ACTIVATE. The exact names still match
-    # when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
-    tracked="$(command git -C "$name" ls-files -- bin/activate pyvenv.cfg ':(icase)bin/activate' ':(icase)pyvenv.cfg' 2>/dev/null | tr '\n' ' ')"
-    if [ -n "$tracked" ]; then
-        echo "va: $name: venv content is tracked by git (${tracked% }) — a venv committed to the repo; source it yourself if you trust it: source $activate" >&2
+    # A venv tool makes bin/ and bin/activate a real directory and file. A symlink
+    # there reads the script from elsewhere, and git reports only the link itself,
+    # not a tracked file behind it: refuse it. A symlinked venv directory (.venv ->
+    # ~/venvs/proj) is fine; git -C follows it into the venv's own repository.
+    if [ -L "$name/bin" ] || [ -L "$activate" ]; then
+        echo "va: $name: bin/ or bin/activate is a symlink, which no venv tool makes; source it yourself if you trust it: source $activate" >&2
         return 1
+    fi
+    local tracked why
+    if command -v git >/dev/null 2>&1; then
+        # Ask about all of bin/: a committed symlink bin -> ../scripts is listed as
+        # "bin" and the files behind it not at all.
+        # The -f test above ignores case on default APFS and git pathspecs do not, so
+        # :(icase) also catches a committed BIN/activate. The exact names still match
+        # when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
+        if ! tracked="$(command git -C "$name" ls-files -- bin pyvenv.cfg ':(icase)bin' ':(icase)pyvenv.cfg' 2>/dev/null)"; then
+            # Fail closed: only "not a git repository" means nothing to check. Any
+            # other failure, such as a checkout git will not open for dubious
+            # ownership, leaves a committed venv possible.
+            why="$(LC_ALL=C command git -C "$name" ls-files -- bin 2>&1 >/dev/null | head -n 1)"
+            case "$why" in
+                *[Nn]"ot a git repository"*) tracked="" ;;
+                *)
+                    echo "va: $name: git could not tell whether the venv is committed (${why:-git failed}); source it yourself if you trust it: source $activate" >&2
+                    return 1
+                    ;;
+            esac
+        fi
+        if [ -n "$tracked" ]; then
+            # Name what git actually reports: the match may be pyvenv.cfg alone, so
+            # a message about the activate script would be wrong.
+            echo "va: $name: venv content is tracked by git ($(printf '%s' "$tracked" | tr '\n' ' ')) - a venv committed to the repo; source it yourself if you trust it: source $activate" >&2
+            return 1
+        fi
     fi
     # Anyone-can-rewrite is the other way this file stops being ours. World-writable
     # check without stat(1), whose output differs across platforms: position 9 of

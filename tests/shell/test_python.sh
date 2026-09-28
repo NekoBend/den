@@ -74,6 +74,31 @@ mkdir -p "$MOCK_PIP_BIN"
 printf '#!/bin/sh\necho "system-pip $*"\n' > "$MOCK_PIP_BIN/pip"
 chmod +x "$MOCK_PIP_BIN/pip"
 
+# A repo that commits .venv/bin as a symlink to its own tools/, which holds the
+# activate scripts. git reports the link as "bin" and nothing beneath it, so a
+# check that asks about bin/activate alone saw no tracked file. Each script
+# leaves a marker when it runs; nothing is tracked but the link and tools/.
+SYMBIN="$WORK/venv_symbin"
+mkdir -p "$SYMBIN/.venv" "$SYMBIN/tools"
+printf 'echo sourced > "%s"\n' "$WORK/symbin_ran" > "$SYMBIN/tools/activate"
+printf '"sourced" | Set-Content -LiteralPath "%s"\n' "$WORK/symbin_ran" > "$SYMBIN/tools/Activate.ps1"
+ln -s ../tools "$SYMBIN/.venv/bin"
+(
+    cd "$SYMBIN" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -A
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed bin symlink"
+) >/dev/null 2>&1
+
+# git reads a repo owned by another user only when safe.directory allows it;
+# this makes it take every repo as one, whatever the tester's own config says.
+GIT_AS_OTHER_OWNER="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1"
+
+# The tools va itself runs, without git.
+NO_GIT_BIN="$WORK/no-git-bin"
+mkdir -p "$NO_GIT_BIN"
+for t in sed cut ls head tr; do ln -s "$(command -v "$t")" "$NO_GIT_BIN/$t"; done
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -219,6 +244,28 @@ mkdir -p "$WORK/venv_symlink"
 ln -sfn "$WORK/venv_symlink_target/.venv" "$WORK/venv_symlink/.venv"
 actual=$(run_bash "$PYTHON_SH_TEST" "cd '$WORK/venv_symlink' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
 assert_eq "bash/va accepts a symlinked venv" "PY=3.12.0" "$actual"
+
+for sh in bash zsh; do
+    echo "[$sh] va refuses a committed symlinked bin/ and runs nothing behind it"
+    rm -f "$WORK/symbin_ran"
+    err=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$SYMBIN' && va; echo \"rc=\$?\"" 2>&1 | tr -d '\r')
+    assert_contains "$sh/va refuses a symlinked bin/" "bin/ or bin/activate is a symlink" "$err"
+    assert_contains "$sh/va symlinked bin/ fails" "rc=1" "$err"
+    assert_not_exists "$sh/va sources no script behind a symlinked bin/" "$WORK/symbin_ran"
+
+    echo "[$sh] va refuses when git cannot read the repo (dubious ownership)"
+    # git exits 128 with no output there; taking that as "not a repo" sourced the
+    # committed activate script.
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_tracked' && export $GIT_AS_OTHER_OWNER && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+    assert_contains "$sh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
+    assert_contains "$sh/va activates nothing when git fails" "rc=1 PY=[]" "$actual"
+
+    echo "[$sh] va still activates a venv outside any repo, and with no git at all"
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+    assert_eq "$sh/va outside a repo" "rc=0 PY=[3.13.13]" "$actual"
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && PATH='$NO_GIT_BIN' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+    assert_eq "$sh/va with no git" "rc=0 PY=[3.13.13]" "$actual"
+done
 
 echo "[bash] vd no active venv"
 err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV; vd" || true)
@@ -559,6 +606,32 @@ echo "[pwsh] va still refuses a committed venv with GIT_LITERAL_PATHSPECS=1"
 # That setting turns :(icase) into a plain file name: the exact names must match.
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:GIT_LITERAL_PATHSPECS = '1'; \$env:VIRTUAL_ENV = \$null; va")
 assert_contains "pwsh/va refuses under literal pathspecs" "tracked by git (bin/activate.ps1)" "$err"
+
+echo "[pwsh] va refuses a committed symlinked bin/ and runs nothing behind it"
+rm -f "$WORK/symbin_ran"
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMBIN'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses a symlinked bin/" "is a symlink or junction" "$err"
+assert_not_exists "pwsh/va dot-sources no script behind a symlinked bin/" "$WORK/symbin_ran"
+
+echo "[pwsh] va accepts a symlinked venv"
+# `ln -s ~/venvs/proj .venv` is a legitimate layout, not an attack.
+mk_venv_ps "$WORK/ps_venv_symlink_target" "3.12.0"
+mkdir -p "$WORK/ps_venv_symlink"
+ln -sfn "$WORK/ps_venv_symlink_target/.venv" "$WORK/ps_venv_symlink/.venv"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_symlink'; \$env:VIRTUAL_ENV = \$null; va *>\$null; \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"" | tr -d '\r')
+assert_eq "pwsh/va accepts a symlinked venv" "VE=[fakevenv] PY=[3.12.0]" "$actual"
+
+echo "[pwsh] va refuses when git cannot read the repo (dubious ownership)"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv_tracked'
+    \$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'
+    \$env:VIRTUAL_ENV = \$null
+    \$lcAll = [string]\$env:LC_ALL
+    va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] LC_ALL_KEPT=[\$([string]\$env:LC_ALL -eq \$lcAll)]\"
+" | tr -d '\r')
+assert_contains "pwsh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
+assert_contains "pwsh/va activates nothing when git fails" "VE=[] PY=[] LC_ALL_KEPT=[True]" "$actual"
 
 echo "[pwsh] va deactivates the active venv first, and only when it activates"
 # python's Activate.ps1 and uv's activate.ps1 each undo only their own kind of

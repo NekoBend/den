@@ -129,14 +129,44 @@ function va {
   # a venv COMMITTED to a repo (git tracks .venv happily, even force-added past a
   # .gitignore) is code that arrived with the clone. Not a git repo, or no git,
   # means nothing to check: pass. Parity with posix python.sh.
+  # A venv tool makes Scripts/ or bin/ and the activate script a real directory
+  # and file. A symlink or junction there reads the script from elsewhere, and git
+  # reports only the link itself, not a tracked file behind it: refuse it. A
+  # symlinked venv directory (.venv -> ~/venvs/proj) is fine; git -C follows it
+  # into the venv's own repository. LinkType, not the ReparsePoint attribute,
+  # which OneDrive also sets on its files.
+  foreach ($p in (Split-Path -Parent $activatePath), $activatePath) {
+    $linkItem = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    if ($linkItem -and $linkItem.PSObject.Properties['LinkType'] -and $linkItem.LinkType -in 'SymbolicLink', 'Junction') {
+      Write-Error "'$Name': $p is a symlink or junction, which no venv tool makes; dot-source it yourself if you trust it: . $activatePath"
+      return
+    }
+  }
   $gitExe = _ResolveCmd 'git' 'App'
   if ($gitExe) {
+    # Ask about all of Scripts/ and bin/: a committed symlink bin -> ../tools is
+    # listed as "bin" and the files behind it not at all.
     # Test-Path above ignores case on NTFS and default APFS and git pathspecs do not,
-    # so :(icase) also catches a committed scripts/ACTIVATE.ps1. The exact names
+    # so :(icase) also catches a committed SCRIPTS/Activate.ps1. The exact names
     # still match when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
-    $venvFiles = 'Scripts/Activate.ps1', 'Scripts/activate.ps1', 'bin/Activate.ps1', 'bin/activate.ps1', 'bin/activate', 'pyvenv.cfg'
-    $pathspecs = $venvFiles + ($venvFiles | ForEach-Object { ":(icase)$_" })
+    $venvPaths = 'Scripts', 'bin', 'pyvenv.cfg'
+    $pathspecs = $venvPaths + ($venvPaths | ForEach-Object { ":(icase)$_" })
     $tracked = & $gitExe -C $Name ls-files -- $pathspecs 2>$null
+    if ($LASTEXITCODE -ne 0) {
+      # Fail closed: only "not a git repository" means nothing to check. Any other
+      # failure, such as a checkout git will not open for dubious ownership, leaves
+      # a committed venv possible. LC_ALL=C keeps git's message in English.
+      $lcAll = $env:LC_ALL
+      $env:LC_ALL = 'C'
+      try { $why = @(& $gitExe -C $Name ls-files -- bin 2>&1 | ForEach-Object { "$_" }) | Select-Object -First 1 }
+      catch { $why = "$_" }
+      finally { $env:LC_ALL = $lcAll }
+      if ("$why" -notmatch 'not a git repository') {
+        Write-Error "'$Name': git could not tell whether the venv is committed ($why); dot-source it yourself if you trust it: . $activatePath"
+        return
+      }
+      $tracked = $null
+    }
     if ($tracked) {
       # Name what git actually reports: the match may be pyvenv.cfg alone, so a
       # message about the activate script would be wrong.
