@@ -16,7 +16,9 @@
 # more runs take the platform branches: pwsh 7 on Windows ($IsWindows set, and a
 # stub coreutils for the coreutils tier), and Windows PowerShell 5.1 (a copy of
 # shell/pwsh that reads its edition as Desktop, in a session without $IsWindows
-# and the other platform variables).
+# and the other platform variables). A last run per platform loads den after
+# strict mode is set, as a profile that sets it first does, and checks the load,
+# the prompt and the directory history.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -121,6 +123,26 @@ fresh_run() {
 DRIVER="$S/driver.ps1"
 cat > "$DRIVER" <<'PS1'
 $_StrictOut = [System.Collections.Generic.List[string]]::new()
+$global:_StrictViolations = [System.Collections.Generic.List[string]]::new()
+$global:_StrictIds = '^(VariableIsUndefined|PropertyNotFoundStrict|StrictModeFunctionCallWithParens|' +
+    'System\.IndexOutOfRangeException|System\.ArgumentOutOfRangeException)(,|$)'
+
+# _StrictRecord <label> - note each strict-mode error in $Error under label,
+# including one that a function caught itself ($Error keeps those too).
+function global:_StrictRecord([string]$StrictLabel) {
+    foreach ($StrictErr in @($Error)) {
+        $StrictRec = $null
+        if ($StrictErr -is [System.Management.Automation.ErrorRecord]) { $StrictRec = $StrictErr }
+        elseif ($StrictErr -is [System.Management.Automation.IContainsErrorRecord]) { $StrictRec = $StrictErr.ErrorRecord }
+        if ($null -eq $StrictRec -or $StrictRec.FullyQualifiedErrorId -notmatch $global:_StrictIds) { continue }
+        $StrictAt = $StrictRec.InvocationInfo
+        $StrictWhere = if ($StrictAt -and $StrictAt.ScriptName) {
+            '{0}:{1}' -f (Split-Path -Leaf $StrictAt.ScriptName), $StrictAt.ScriptLineNumber
+        } else { ("$($StrictRec.ScriptStackTrace)" -split "`n")[0] }
+        $StrictMsg = $StrictRec.Exception.Message -replace '\s+', ' '
+        $global:_StrictViolations.Add("$StrictLabel | $($StrictRec.FullyQualifiedErrorId) | $StrictMsg | $StrictWhere")
+    }
+}
 
 # Stand-ins, defined before the snapshot below so they do not count as den's:
 # zoxide's functions (its init needs the real binary), and Read-Host, which
@@ -154,7 +176,14 @@ foreach ($_StrictN in Get-ChildItem function:) { $_StrictFnBefore[$_StrictN.Name
 $_StrictAliasBefore = @{}
 foreach ($_StrictN in Get-ChildItem alias:) { $_StrictAliasBefore[$_StrictN.Name] = $_StrictN.Definition }
 
+if ($env:STRICT_AT_LOAD -eq '1') {
+    # A profile that sets strict mode before it loads den: den's load code, and
+    # the prompt afterwards, run under it too.
+    Set-StrictMode -Version Latest
+}
+$Error.Clear()
 . (Join-Path $env:STRICT_DEN 'init.ps1')
+_StrictRecord 'loading den'
 if ($env:STRICT_EXTRA) { . $env:STRICT_EXTRA }
 
 # Den's functions: the new ones, and the ones it redefined (prompt).
@@ -170,7 +199,6 @@ foreach ($_StrictN in $_StrictFunctions + $_StrictAliases) {
     $null = Set-PSBreakpoint -Command $_StrictN -Action ([scriptblock]::Create("`$global:_StrictHit['$_StrictN'] = `$true"))
 }
 $global:_StrictSkip = @{}
-$global:_StrictViolations = [System.Collections.Generic.List[string]]::new()
 $global:_StrictDone = $false
 try { & $env:STRICT_CASES } catch { $_StrictOut.Add("CRASH $($_.Exception.Message)") }
 Get-PSBreakpoint | Remove-PSBreakpoint
@@ -209,27 +237,12 @@ $global:_StrictSkip = @{
     '_DenCacheOwnerFacts' = 'Windows only: the file owner from Get-Acl and the user from WindowsIdentity'
 }
 
-$StrictIds = '^(VariableIsUndefined|PropertyNotFoundStrict|StrictModeFunctionCallWithParens|' +
-    'System\.IndexOutOfRangeException|System\.ArgumentOutOfRangeException)(,|$)'
-
-# Case <label> <body> - run body and record each strict-mode error it raised,
-# including one that a function caught itself ($Error keeps those too).
+# Case <label> <body> - run body and record each strict-mode error it raised.
 function Case([string]$StrictLabel, [scriptblock]$StrictBody) {
     $Error.Clear()
     Push-Location -LiteralPath $env:STRICT_PLAY
     try { $null = & $StrictBody *>&1 } catch { $null = $_ } finally { Pop-Location }
-    foreach ($StrictErr in @($Error)) {
-        $StrictRec = $null
-        if ($StrictErr -is [System.Management.Automation.ErrorRecord]) { $StrictRec = $StrictErr }
-        elseif ($StrictErr -is [System.Management.Automation.IContainsErrorRecord]) { $StrictRec = $StrictErr.ErrorRecord }
-        if ($null -eq $StrictRec -or $StrictRec.FullyQualifiedErrorId -notmatch $StrictIds) { continue }
-        $StrictAt = $StrictRec.InvocationInfo
-        $StrictWhere = if ($StrictAt -and $StrictAt.ScriptName) {
-            '{0}:{1}' -f (Split-Path -Leaf $StrictAt.ScriptName), $StrictAt.ScriptLineNumber
-        } else { ("$($StrictRec.ScriptStackTrace)" -split "`n")[0] }
-        $StrictMsg = $StrictRec.Exception.Message -replace '\s+', ' '
-        $global:_StrictViolations.Add("$StrictLabel | $($StrictRec.FullyQualifiedErrorId) | $StrictMsg | $StrictWhere")
-    }
+    _StrictRecord $StrictLabel
 }
 
 # Use-StrictPath [dir...] - PATH made of these stub directories (none: the
@@ -268,6 +281,21 @@ if ($env:STRICT_SELFTEST -eq '1') {
     Case 'fx method-style call' { strict-fx-parens }
     Case 'fx caught by the function' { strict-fx-caught }
     Case 'fx clean' { strict-fx-clean }
+    $global:_StrictDone = $true
+    return
+}
+
+if ($env:STRICT_AT_LOAD -eq '1') {
+    # Den loaded under strict mode (the driver has checked the load itself): the
+    # prompt and the directory history, which run on what the load set up, and a
+    # second load.
+    Case 'prompt' { prompt }
+    Case 'prompt, after a move' { Set-Location -LiteralPath sub; prompt }
+    Case 'back -l' { back -l }
+    Case 'back, then fwd' { back; fwd }
+    Case 'proxy status' { proxy status }
+    Case 'reload' { reload }
+    Case 'prompt, after reload' { Set-Location -LiteralPath sub; prompt; back -l }
     $global:_StrictDone = $true
     return
 }
@@ -947,6 +975,25 @@ run_strict "$DESKTOP_DEN" "$DESKTOP_REPORT" STRICT_AS_DESKTOP=1
 assert_eq "pwsh/strict run as 5.1 reached its end" "" "$(report_lines "$DESKTOP_REPORT" CRASH)"
 assert_eq "pwsh/strict no strict-mode error in den, as 5.1" "" "$(report_lines "$DESKTOP_REPORT" VIOLATION)"
 assert_eq "pwsh/strict every den function is called, as 5.1" "" "$(report_lines "$DESKTOP_REPORT" UNCOVERED)"
+
+# =============================================================================
+# Den loaded after Set-StrictMode, as by a profile that sets it first
+# =============================================================================
+for platform in 'pwsh 7' 'pwsh 7 on Windows' '5.1'; do
+    echo "[pwsh] den loaded under Set-StrictMode, as $platform"
+    LOAD_DEN="$DOTFILES/shell/pwsh"
+    LOAD_AS=()
+    case "$platform" in
+        '5.1') LOAD_DEN="$DESKTOP_DEN"; LOAD_AS=(STRICT_AS_DESKTOP=1) ;;
+        *Windows) LOAD_AS=(STRICT_AS_WINDOWS=1) ;;
+    esac
+    LOAD_REPORT="$S/report-load-${platform// /-}.txt"
+    run_strict "$LOAD_DEN" "$LOAD_REPORT" STRICT_AT_LOAD=1 "${LOAD_AS[@]}"
+    assert_eq "pwsh/strict run loading den under strict mode reached its end, as $platform" "" \
+        "$(report_lines "$LOAD_REPORT" CRASH)"
+    assert_eq "pwsh/strict no strict-mode error loading den or at its prompt, as $platform" "" \
+        "$(report_lines "$LOAD_REPORT" VIOLATION)"
+done
 
 print_summary "test_strict"
 [ "$FAIL" -eq 0 ]

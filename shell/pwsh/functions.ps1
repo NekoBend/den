@@ -840,8 +840,11 @@ function sagain {
 # the prompt also record at once (_DenDirMoved), so several on one line are each
 # kept. back/fwd walk the lists themselves. The state is $global: (as are
 # _helpers.ps1's caches) rather than $script:, because den's commands also run
-# inside scripts, where $script: names the running script's scope.
-if ($null -eq $global:_DenDirBack) {
+# inside scripts, where $script: names the running script's scope. Test-Path
+# rather than a read: when a profile sets strict mode before it loads den,
+# reading a variable that was never set is an error, and none of the three
+# would be created.
+if (-not (Test-Path Variable:global:_DenDirBack)) {
   $global:_DenDirBack = [System.Collections.Generic.List[string]]::new()
   $global:_DenDirFwd = [System.Collections.Generic.List[string]]::new()
   $global:_DenDirLast = $PWD.Path
@@ -977,7 +980,10 @@ function fwd {
 # whose init replaces the prompt function; called again (on reload) it wraps the
 # new prompt, never its own wrapper.
 function _DenDirHookPrompt {
-  if ($null -ne $global:_DenDirPrompt -and $function:prompt -eq $global:_DenDirPrompt) { return }
+  # Test-Path first: on the first load it is not set, and strict mode set before
+  # den loads makes reading it an error.
+  if ((Test-Path Variable:global:_DenDirPrompt) -and $null -ne $global:_DenDirPrompt -and
+      $function:prompt -eq $global:_DenDirPrompt) { return }
   $global:_DenDirPromptOld = $function:prompt
   function global:prompt {
     # Record first, then hand the wrapped prompt the $? it would have seen, so
