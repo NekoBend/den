@@ -116,14 +116,16 @@ def _query_pwsh_profile() -> Path | None:
 
 def _pwsh_profile_dir() -> Path:
     # Only query on Windows -- that is where the OneDrive-redirected Documents
-    # and PS5/PS7 profile-dir differences bite. POSIX keeps the fixed path (and
-    # avoids spawning a subprocess on every install).
+    # and PS5/PS7 profile-dir differences bite. POSIX derives the path the way
+    # pwsh does ($XDG_CONFIG_HOME/powershell when set and non-empty, else
+    # ~/.config/powershell), without spawning a subprocess on every install.
     if _windows():
         queried = _query_pwsh_profile()
         if queried is not None:
             return queried.parent
         return Path("~/Documents/PowerShell").expanduser()
-    return Path("~/.config/powershell").expanduser()
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base) if base else Path.home() / ".config") / "powershell"
 
 
 def _localappdata() -> Path:

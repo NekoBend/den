@@ -135,9 +135,39 @@ def test_pwsh_dir_windows_fallback_without_pwsh(tmp_path, monkeypatch):
     assert _shell._pwsh_profile_dir().as_posix().endswith("Documents/PowerShell")
 
 
-def test_pwsh_dir_posix_uses_config(monkeypatch):
+def test_pwsh_dir_posix_uses_config(tmp_path, monkeypatch):
     monkeypatch.setattr(_shell, "_windows", lambda: False)
-    assert _shell._pwsh_profile_dir().as_posix().endswith(".config/powershell")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert _shell._pwsh_profile_dir() == tmp_path / ".config" / "powershell"
+
+
+def test_pwsh_dir_posix_honors_xdg_config_home(tmp_path, monkeypatch):
+    """pwsh on Linux/macOS reads $XDG_CONFIG_HOME/powershell when it is set;
+    a profile under ~/.config then never loads and den stays off in pwsh."""
+    monkeypatch.setattr(_shell, "_windows", lambda: False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert _shell._pwsh_profile_dir() == tmp_path / "xdg" / "powershell"
+    monkeypatch.setenv("XDG_CONFIG_HOME", "")  # set but empty: the default
+    assert _shell._pwsh_profile_dir() == tmp_path / "home" / ".config" / "powershell"
+
+
+def test_install_shell_wires_the_profile_pwsh_reads_under_xdg(tmp_path, monkeypatch):
+    monkeypatch.setattr(_shell, "_windows", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(
+        _shell.shutil,
+        "which",
+        lambda e, path=None: _on_path(e) if e == "pwsh" else None,
+    )
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 0
+    prof = tmp_path / "xdg" / "powershell" / _shell._PWSH_PROFILE
+    assert _shell._PWSH_LINE in prof.read_text(encoding="utf-8")
+    assert (prof.parent / "init.ps1").is_file()
+    assert not (tmp_path / "home" / ".config" / "powershell").exists()
 
 
 def test_query_pwsh_profile_takes_last_ps1_line(monkeypatch):
