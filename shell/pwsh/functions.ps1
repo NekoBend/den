@@ -686,13 +686,15 @@ Remove-Variable _z -ErrorAction SilentlyContinue
 Remove-Item alias:cd -Force -ErrorAction SilentlyContinue
 
 # cd → wrapper ON: __zoxide_z, OFF: Set-Location
-# cd, cdi, zd and zdi pass zoxide no arguments when given none. $Rest is $null
-# then, and @Rest would pass that $null on as one argument: __zoxide_z tests it
-# as a path, fails, and stays put instead of going home.
+# Given no arguments, cd and zd go to $HOME themselves and cdi and zdi pass
+# zoxide none. $Rest is $null then, and @Rest would pass that $null on as one
+# argument (__zoxide_z tests it as a path, fails, and stays put); zoxide's own
+# jump with no arguments is a bare Set-Location, which goes home only from
+# PowerShell 6 on. $HOME, unlike ~, is reachable from any drive (Env:, HKLM:).
 function cd {
   param([Parameter(ValueFromRemainingArguments)]$Rest)
   if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
-    if ($null -eq $Rest) { __zoxide_z } else { __zoxide_z @Rest }
+    if ($null -eq $Rest) { Set-Location -LiteralPath $HOME } else { __zoxide_z @Rest }
   } else {
     if ($Rest.Count -eq 0) { Set-Location ~ } else { Set-Location @Rest }
   }
@@ -716,7 +718,7 @@ function zd {
   if (-not (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
     Write-Warning 'zoxide is not installed.'; return
   }
-  if ($null -eq $Rest) { __zoxide_z } else { __zoxide_z @Rest }
+  if ($null -eq $Rest) { Set-Location -LiteralPath $HOME } else { __zoxide_z @Rest }
   _DenDirMoved $MyInvocation
 }
 

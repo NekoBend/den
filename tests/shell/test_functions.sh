@@ -2347,26 +2347,34 @@ fi
 assert_eq "docs/README no .1-.9 on pwsh" 'no `.1`..`.9` on pwsh' \
     "$(grep -oF -- 'no `.1`..`.9` on pwsh' "$DOTFILES/shell/README.md" | head -n 1)"
 
-# Given no arguments, cd, zd, cdi and zdi call zoxide with none: splatting the
-# $null an empty $Rest holds would hand it one $null argument.
-echo "[pwsh] cd, zd, cdi, zdi with no arguments pass zoxide none"
+# Given no arguments, cd and zd go to $HOME themselves and cdi and zdi call
+# zoxide with none: splatting the $null an empty $Rest holds would hand zoxide
+# one $null argument, and zoxide's own jump with no arguments is a bare
+# Set-Location, which goes home only from PowerShell 6 on (on 5.1 it stays put,
+# as the stub __zoxide_z here does). $HOME, unlike ~, works from Env:\ too.
+echo "[pwsh] cd, zd alone go home; cdi, zdi alone pass zoxide none"
 actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
     \$env:_DEN_WRAPPERS = '1'
     function global:__zoxide_z { 'z:' + \$args.Count }
     function global:__zoxide_zi { 'zi:' + \$args.Count }
-    cd; zd; cdi; zdi; cd a; zd a b; cdi a; zdi a b
+    \$h = (Resolve-Path ~).Path
+    Set-Location '$WORK'; cd; 'cd home:' + ((Get-Location).Path -eq \$h)
+    Set-Location '$WORK'; zd; 'zd home:' + ((Get-Location).Path -eq \$h)
+    Set-Location Env:\\; cd; 'cd home from Env:' + ((Get-Location).Path -eq \$h)
+    cdi; zdi; cd a; zd a b; cdi a; zdi a b
 ")
-assert_eq "pwsh/no arguments reach zoxide as none, others as given" "z:0
-z:0
+assert_eq "pwsh/cd, zd alone go home; the rest reach zoxide as given" "cd home:True
+zd home:True
+cd home from Env:True
 zi:0
 zi:0
 z:1
 z:2
 zi:1
 zi:2" "$actual"
-# The same through the real zoxide, when it is installed: cd and zd alone go
-# home, as zoxide's own jump with no arguments and den's bash/zsh cd do. HOME,
-# the init cache and zoxide's database all live in $WORK (.NET reports no
+# The same with the real zoxide loaded, when it is installed: cd and zd alone
+# go home, as zoxide's own jump with no arguments and den's bash/zsh cd do.
+# HOME, the init cache and zoxide's database all live in $WORK (.NET reports no
 # LocalApplicationData, where the cache goes, until the directory exists).
 if command -v zoxide >/dev/null 2>&1; then
     mkdir -p "$WORK/zo/home/sub" "$WORK/zo/home/.local/share" "$WORK/zo/data"
@@ -2377,11 +2385,11 @@ if command -v zoxide >/dev/null 2>&1; then
         cd; (Get-Location).Path
         Set-Location '$WORK/zo/home/sub'; zd; (Get-Location).Path
     " 2>/dev/null | tr -d '\r')
-    assert_eq "pwsh/cd and zd alone go home through zoxide" "$WORK/zo/home
+    assert_eq "pwsh/cd and zd alone go home with zoxide loaded" "$WORK/zo/home
 $WORK/zo/home" "$actual"
     rm -rf "$WORK/zo"
 else
-    echo "  SKIP: pwsh/cd and zd alone through zoxide (zoxide not installed)"
+    echo "  SKIP: pwsh/cd and zd alone with zoxide loaded (zoxide not installed)"
 fi
 
 echo "[pwsh] mkcd"
