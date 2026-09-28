@@ -16,10 +16,15 @@
 # so a new function needs a case here. Two more runs take the platform
 # branches: pwsh 7 on Windows ($IsWindows set, and a stub coreutils for the
 # coreutils tier), and Windows PowerShell 5.1 (a copy of shell/pwsh that reads
-# its edition as Desktop, in a session without $IsWindows and the other platform
-# variables). A last run per platform loads den after strict mode is set, as a
-# profile that sets it first does, and checks the load, the prompt and the
-# directory history.
+# its edition as Desktop and its version as 5, in a session without $IsWindows
+# and the other platform variables). That copy still runs on pwsh 7's .NET, so a
+# .NET API that Windows PowerShell lacks is out of its reach. A last run per
+# platform loads den after strict mode is set, as a profile that sets it first
+# does, and checks the load, the prompt and the directory history.
+#
+# Each case runs inside a try, so an error that would only end the statement in
+# a den function (a .NET method throwing) ends the whole case there instead, and
+# what the function would have run next goes unchecked.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -247,7 +252,7 @@ function Case([string]$StrictLabel, [scriptblock]$StrictBody) {
 }
 
 # Use-StrictPath [dir...] - PATH made of these stub directories (none: the
-# default one), and an empty den command cache so it resolves again.
+# default one), and empty den command caches so it resolves again.
 function Use-StrictPath([string[]]$StrictDirs) {
     if ($StrictDirs) {
         $env:PATH = @($StrictDirs | ForEach-Object { Join-Path $env:STRICT_ROOT $_ }) -join [IO.Path]::PathSeparator
@@ -255,6 +260,7 @@ function Use-StrictPath([string[]]$StrictDirs) {
         $env:PATH = $env:STRICT_PATH
     }
     $global:_DenCmdCache = @{}
+    $global:_DenCoreutils = $null
 }
 
 function Invoke-InVenv([scriptblock]$StrictBody) {
@@ -383,9 +389,12 @@ Case 'lt, fallback' { lt }
 Case 'ripgrep, none' { ripgrep alpha }
 Remove-Item Env:\_DEN_WRAPPERS
 # No modern tool, no native command, and no microsoft/coreutils either (the stub
-# that the pwsh-7-on-Windows run finds).
-Use-StrictPath 'fzf', 'uv', 'bin'
-$env:_DEN_COREUTILS = '0'
+# that the pwsh-7-on-Windows run finds), with _DEN_COREUTILS unset: stock
+# Windows, where _CoreutilsBin also looks under Program Files.
+Use-StrictPath 'fzf', 'uv'
+Case '_CoreutilsBin, none installed' { _CoreutilsBin }
+Case 'head, no coreutils installed' { head -n 1 a.txt }
+Case 'wc -l, no coreutils installed' { wc -l a.txt }
 Case 'cat, fallback' { cat a.txt }
 Case 'cat, fallback, no argument' { cat }
 Case 'cat, fallback, piped' { 'x' | cat }
@@ -414,7 +423,6 @@ Case 'catw, not installed' { catw a.txt }
 Case 'findw, not installed' { findw }
 Case 'grepw, not installed' { grepw x }
 Case 'lsw, not installed' { lsw }
-Remove-Item Env:\_DEN_COREUTILS
 Use-StrictPath
 
 # ===== wrappers.ps1: pwsh 7 on Windows only =====
@@ -470,6 +478,8 @@ Case 'tail, two files' { tail a.txt b.txt }
 Case 'tail -q' { tail -q a.txt b.txt }
 Case 'tail -v' { tail -v a.txt }
 Case 'tail -f, no file' { tail -f }
+# Select-Object -First stops the pipeline, and so the follow, once it has both lines.
+Case 'tail -f <file>' { tail -f -n 2 a.txt | Select-Object -First 2 }
 Case 'tail, piped' { 'x', 'y' | tail -n 1 }
 Case 'tail -n +N, piped' { 'x', 'y' | tail -n +2 }
 Case 'touch, new file' { touch touched.txt }
@@ -979,7 +989,8 @@ echo "[pwsh] den's functions under Set-StrictMode, as Windows PowerShell 5.1"
 DESKTOP_DEN="$S/pwsh-desktop"
 mkdir -p "$DESKTOP_DEN"
 for f in "$DOTFILES"/shell/pwsh/*.ps1; do
-    sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$f" > "$DESKTOP_DEN/$(basename "$f")"
+    sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g; s/[\$]PSVersionTable[.]PSVersion[.]Major/5/g" "$f" \
+        > "$DESKTOP_DEN/$(basename "$f")"
 done
 DESKTOP_REPORT="$S/report-desktop.txt"
 run_strict "$DESKTOP_DEN" "$DESKTOP_REPORT" STRICT_AS_DESKTOP=1
