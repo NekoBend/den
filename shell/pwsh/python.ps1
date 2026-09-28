@@ -150,6 +150,13 @@ function va {
     Write-Error "'$activatePath' is world-writable - dot-source it yourself if you trust it: . $activatePath"
     return
   }
+  # Each activate script undoes only its own kind of venv before it activates:
+  # python's keeps the old PATH in $env:_OLD_VIRTUAL_PATH, uv's and virtualenv's in
+  # a global variable, so switching between the two kinds without vd kept the
+  # first venv's bin/ on PATH for good. The active venv's own deactivate knows.
+  if ($env:VIRTUAL_ENV -and (Get-Command deactivate -CommandType Function -ErrorAction SilentlyContinue)) {
+    deactivate
+  }
   . $activatePath
   $cfg = Join-Path $Name 'pyvenv.cfg'
   if (Test-Path -LiteralPath $cfg) {

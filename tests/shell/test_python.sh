@@ -486,6 +486,31 @@ mv "$WORK/ps_venv_lc_tracked/.venv/bin/Activate.ps1" "$WORK/ps_venv_lc_tracked/.
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:VIRTUAL_ENV = \$null; va")
 assert_contains "pwsh/va refuses git-tracked bin/activate.ps1" "tracked by git (bin/activate.ps1)" "$err"
 
+echo "[pwsh] va deactivates the active venv first, and only when it activates"
+# python's Activate.ps1 and uv's activate.ps1 each undo only their own kind of
+# venv, so va hands the switch to the active venv's own deactivate. A refused va
+# must leave the active venv alone.
+mk_venv_ps "$WORK/ps_venv_first" "3.12.0"
+printf '%s\n' \
+    'function global:deactivate { $global:DeactivatedBy = "first"; Remove-Item Env:VIRTUAL_ENV; Remove-Item function:deactivate }' \
+    '$env:VIRTUAL_ENV = "first"' > "$WORK/ps_venv_first/.venv/bin/Activate.ps1"
+mk_venv_ps "$WORK/ps_venv_second" "3.13.0"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:VIRTUAL_ENV = \$null
+    va '$WORK/ps_venv_first/.venv' *>\$null
+    va '$WORK/ps_venv_second/.venv' *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] BY=[\$global:DeactivatedBy] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va runs the active venv's deactivate before switching" "VE=[fakevenv] BY=[first] PY=[3.13.0]" "$actual"
+chmod 666 "$WORK/ps_venv_second/.venv/bin/Activate.ps1"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:VIRTUAL_ENV = \$null
+    va '$WORK/ps_venv_first/.venv' *>\$null
+    va '$WORK/ps_venv_second/.venv' *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] BY=[\$global:DeactivatedBy]\"
+" | tr -d '\r')
+assert_eq "pwsh/va refused keeps the active venv" "VE=[first] BY=[]" "$actual"
+
 # =============================================================================
 # uv-created venvs (the real uv, when it is installed and has a Python to use)
 # =============================================================================
@@ -543,6 +568,32 @@ VE=[] PATH=[yes] PY=[]" "$actual"
     " 2>&1 | tr -d '\r')
     assert_eq "pwsh/vva and vd round-trip a uv venv" "VE=[.venv] HEAD=[True] PY=[True] PROMPT=[(.venv) PS> ]
 VE=[] PATH=[True] PY=[] PROMPT=[PS> ] DEACTIVATE=[False]" "$actual"
+
+    # python -m venv from the interpreter uv found: the other kind of activate.ps1.
+    if "$WORK/uv_probe/bin/python" -m venv --without-pip "$WORK/uv_mixed/std" >/dev/null 2>&1 &&
+        "$REAL_UV" venv -q "$WORK/uv_mixed/uv" >/dev/null 2>&1; then
+        echo "[pwsh] va switches between python -m venv and uv venv; vd restores PATH"
+        for pair in "std uv" "uv std"; do
+            first=${pair% *} second=${pair#* }
+            actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+                function global:prompt { 'PS> ' }
+                \$env:VIRTUAL_ENV = \$null
+                \$p0 = \$env:PATH
+                va '$WORK/uv_mixed/$first' *>\$null
+                va '$WORK/uv_mixed/$second' *>\$null
+                \$leaf = if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV } else { '' }
+                \$venvDirs = @(\$env:PATH -split [IO.Path]::PathSeparator | Where-Object { \$_ -like '*uv_mixed*' }).Count
+                # python's prompt writes its prefix with Write-Host: 6>&1 collects it.
+                \"VE=[\$leaf] VENV_DIRS_ON_PATH=[\$venvDirs] PROMPT=[\$(@(prompt 6>&1) -join '')]\"
+                vd
+                \"PATH=[\$(\$env:PATH -eq \$p0)] PROMPT=[\$(@(prompt 6>&1) -join '')]\"
+            " 2>&1 | tr -d '\r')
+            assert_eq "pwsh/va $first then $second, then vd" "VE=[$second] VENV_DIRS_ON_PATH=[1] PROMPT=[($second) PS> ]
+PATH=[True] PROMPT=[PS> ]" "$actual"
+        done
+    else
+        echo "  SKIP: pwsh/va between python -m venv and uv venv (python -m venv failed)"
+    fi
 else
     echo "  SKIP: uv-created venv tests (uv not installed, or no Python it can use offline)"
 fi
