@@ -230,7 +230,8 @@ check at all (a missing file, or an algo that disagrees with the hash's length);
 ## Python and uv
 
 The `python` / `pip` family transparently routes through `uv` (unless uv is absent
-or `_DEN_UV_OVERRIDE=0`). Inside an active venv on bash/zsh/pwsh, `pip` / `pip3` use the venv's own
+or `_DEN_UV_OVERRIDE=0`, which a reload or a child shell started after `toggle-uv`
+keeps). Inside an active venv on bash/zsh/pwsh, `pip` / `pip3` use the venv's own
 pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they run
 `uv pip`, which installs into that venv. The cmd `pip` shim runs the first
 `pip.exe` on `PATH` inside a venv. `python` / `python3` / `py` still run through

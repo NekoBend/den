@@ -160,6 +160,22 @@ if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
     fi
     unset _hwc_v _hwc_val _hwc_esc _hwc_tmp
 fi
+
+# toggle-hwinfo exports _DEN_HWINFO_HIDDEN, so a reload (a new shell) or a child
+# shell inherits its OFF, and the cache or the detection above brings the values
+# back. Hide them again the way toggle-hwinfo does, or its next call would take
+# the ON branch and change nothing. An empty value keeps an inherited saved one.
+if [ "${_DEN_HWINFO_HIDDEN:-0}" = 1 ]; then
+    for _hwc_v in CPU_INTEL CPU_AMD GPU_NVIDIA GPU_AMD GPU_INTEL; do
+        eval "_hwc_val=\$STARSHIP_$_hwc_v"
+        if [ -n "$_hwc_val" ]; then
+            eval "_DEN_SAVED_$_hwc_v=\$_hwc_val"
+            export "_DEN_SAVED_$_hwc_v"
+        fi
+        unset "STARSHIP_$_hwc_v"
+    done
+    unset _hwc_v _hwc_val
+fi
 unset _hwc_dir _hwc_mid _hwc_f
 
 # refresh-hwinfo → clear the hardware info cache (re-detect on next shell)

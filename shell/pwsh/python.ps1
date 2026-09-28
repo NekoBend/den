@@ -109,6 +109,17 @@ function py {
   }
 }
 
+# toggle-uv leaves _DEN_UV_OVERRIDE in the environment, so a reload (a new pwsh)
+# or a child pwsh inherits its OFF: drop the overrides again, as toggle-uv left
+# them, or its next call would take the OFF branch again and change nothing.
+# toggle-uv's ON sets it to 1 before it reads this file. Parity with python.sh.
+if ($env:_DEN_UV_OVERRIDE -eq '0') {
+  foreach ($_uvOverride in 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage') {
+    Remove-Item "Function:\$_uvOverride" -ErrorAction SilentlyContinue
+  }
+  Remove-Variable _uvOverride -ErrorAction SilentlyContinue
+}
+
 # ===== venv management =====
 
 # va → activate Python venv (default: .venv)
@@ -269,6 +280,8 @@ function toggle-uv {
     # init.ps1 loaded it), not the one next to $PROFILE: that is another copy,
     # or none, when init.ps1 runs from a checkout.
     $src = Join-Path $PSScriptRoot 'python.ps1'
+    # Set before the file is read: it drops the overrides again while this is 0.
+    $env:_DEN_UV_OVERRIDE = '1'
     if (Test-Path -LiteralPath $src) { . $src }
     # Dot-sourcing from inside a function defines everything in THIS function's
     # scope, gone once toggle-uv returns; copy the overrides to global scope so
@@ -285,10 +298,10 @@ function toggle-uv {
     # python.ps1 defines nothing once uv stops resolving (its first line), so
     # claiming ON here would leave plain python/pip behind an ON message.
     if ($restored -eq 0) {
+      $env:_DEN_UV_OVERRIDE = '0'
       Write-Warning "toggle-uv: could not load the uv overrides from $src (is uv on PATH?); still OFF"
       return
     }
-    $env:_DEN_UV_OVERRIDE = '1'
     Write-Host 'uv override: ' -NoNewline
     Write-Host 'ON' -ForegroundColor Green -NoNewline
     # Double quotes: Windows PowerShell 5.1 reads this BOM-less file in the ANSI

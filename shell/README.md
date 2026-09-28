@@ -329,5 +329,5 @@ of zoxide and starship. zsh and PowerShell mirror this.
 | `_DEN_WRAPPER_LOG=0` | silence the wrapper notice (printed on every wrapped call) |
 | `_DEN_COREUTILS=<path>` | use a specific microsoft/coreutils binary, e.g. `C:\Program Files\coreutils\coreutils.exe` (Windows) |
 | `_DEN_COREUTILS=0` | disable the microsoft/coreutils tier (Windows) |
-| `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv` / `tgl-uv`) |
-| `_DEN_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo` / `tgl-hw`) |
+| `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv` / `tgl-uv`); a shell started with `0` loads no override |
+| `_DEN_HWINFO_HIDDEN` | hardware info hidden in the prompt (via `toggle-hwinfo` / `tgl-hw`); a shell started with `1` keeps it hidden |

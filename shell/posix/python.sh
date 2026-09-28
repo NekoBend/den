@@ -8,7 +8,10 @@ case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 
 # ===== uv overrides =====
 
-if command -v uv >/dev/null 2>&1; then
+# toggle-uv exports _DEN_UV_OVERRIDE, so a reload (a new shell) or a child shell
+# inherits its OFF: define the overrides only when it is not 0, as toggle-uv left
+# them, or its next call would take the OFF branch again and change nothing.
+if [ "${_DEN_UV_OVERRIDE:-1}" != 0 ] && command -v uv >/dev/null 2>&1; then
 
 # uv → auto-inject --python for 'uv run' when venv is active
 uv() {
@@ -199,8 +202,9 @@ toggle-uv() {
         export _DEN_UV_OVERRIDE=0
         echo "uv override: OFF (using system python/pip)"
     else
-        . "${HOME}/.config/shell/python.sh"
+        # Set before the file is read: it defines the overrides only when not 0.
         export _DEN_UV_OVERRIDE=1
+        . "${HOME}/.config/shell/python.sh"
         echo "uv override: ON (python/pip → uv)"
     fi
 }

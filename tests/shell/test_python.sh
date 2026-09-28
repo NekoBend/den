@@ -107,6 +107,12 @@ NO_GIT_BIN="$WORK/no-git-bin"
 mkdir -p "$NO_GIT_BIN"
 for t in sed cut ls head tr; do ln -s "$(command -v "$t")" "$NO_GIT_BIN/$t"; done
 
+# toggle-uv ON re-reads ~/.config/shell/python.sh: a HOME with the file under test
+# there (the copy with the mock uv on PATH).
+UV_HOME="$WORK/uv_home"
+mkdir -p "$UV_HOME/.config/shell"
+cp "$PYTHON_SH_TEST" "$UV_HOME/.config/shell/python.sh"
+
 # =============================================================================
 # Bash tests
 # =============================================================================
@@ -311,6 +317,30 @@ mock-uv pip install rich" "$actual"
     actual=$("$sh" -c "source '$PYTHON_SH_TEST'; export PATH='$MOCK_PIP_BIN':\$PATH VIRTUAL_ENV='$WORK/venv_ownpip'; pip install requests; pip3 install rich" 2>&1 | tr -d '\r')
     assert_eq "$sh/pip in a venv with its own pip runs it" "venv-pip install requests
 venv-pip3 install rich" "$actual"
+
+    echo "[$sh] _DEN_UV_OVERRIDE=0 at load: no overrides, and one toggle-uv turns them on"
+    # toggle-uv exports it, so a reload or a child shell starts with it; loading
+    # the overrides anyway left them ON under an OFF, and the next toggle did nothing.
+    actual=$(HOME="$UV_HOME" _DEN_UV_OVERRIDE=0 "$sh" -c "
+        source '$PYTHON_SH_TEST'
+        left=''
+        for f in uv python python3 py pip pip3 _show_uv_only_message; do
+            case \$(type \$f 2>/dev/null) in *function*) left=\"\$left \$f\" ;; esac
+        done
+        kept=''
+        for f in va vd vv vva toggle-uv tgl-uv; do
+            case \$(type \$f 2>/dev/null) in *function*) kept=\"\$kept \$f\" ;; esac
+        done
+        echo \"LOAD: LEFT=[\$left] KEPT=[\$kept]\"
+        toggle-uv
+        echo \"ENV=\$_DEN_UV_OVERRIDE\"
+        unset VIRTUAL_ENV
+        pip install rich
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "$sh/_DEN_UV_OVERRIDE=0 at load" "LOAD: LEFT=[] KEPT=[ va vd vv vva toggle-uv tgl-uv]
+uv override: ON (python/pip → uv)
+ENV=1
+mock-uv pip install rich" "$actual"
 done
 
 # =============================================================================
@@ -440,6 +470,27 @@ actual=$(run_pwsh "$WORK/no-python-ps1/python_combined.ps1" "
 " | tr -d '\r')
 assert_contains "pwsh/toggle-uv failed ON warns" "could not load the uv overrides" "$actual"
 assert_contains "pwsh/toggle-uv failed ON stays OFF" "ENV=[0] PIP=[none]" "$actual"
+
+echo "[pwsh] _DEN_UV_OVERRIDE=0 at load: no overrides, and one toggle-uv turns them on"
+# toggle-uv leaves it in the environment, so a reload (a new pwsh) or a child pwsh
+# starts with it; loading the overrides anyway left them ON under an OFF, and the
+# next toggle took the OFF branch again.
+actual=$(_DEN_UV_OVERRIDE=0 pwsh -NoProfile -NonInteractive -Command "
+    . '$PYTHON_PS1_COMBINED'
+    $PS_SET_PROFILE
+    \$left = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage' |
+        Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
+    \$missing = 'va', 'vd', 'vv', 'vva', 'toggle-uv', 'tgl-uv' |
+        Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
+    \"LOAD: ENV=[\$env:_DEN_UV_OVERRIDE] LEFT=[\$(\$left -join ',')] MISSING=[\$(\$missing -join ',')]\"
+    \$msg = @(toggle-uv 6>&1) -join ''
+    \"\$msg|ENV=[\$env:_DEN_UV_OVERRIDE]\"
+    \$env:VIRTUAL_ENV = \$null
+    pip install rich 6>\$null
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/_DEN_UV_OVERRIDE=0 at load" "LOAD: ENV=[0] LEFT=[] MISSING=[]
+uv override: ON (python/pip → uv)|ENV=[1]
+mock-uv pip install rich" "$actual"
 
 echo "[pwsh] va activates a Linux/macOS venv (bin/Activate.ps1)"
 mkdir -p "$WORK/venvtest/.venv/bin"
