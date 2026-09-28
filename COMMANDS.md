@@ -252,8 +252,10 @@ The uv redirects load only when uv is installed.
 
 `va` refuses a venv it cannot trust and prints the command to source it yourself:
 one whose `bin/` (`Scripts/`) or activate script git tracks, or is a symlink, one
-whose `pyvenv.cfg` git tracks, one whose activate script is world-writable, and one
-in a repository git will not read (dubious ownership).
+whose `pyvenv.cfg` git tracks, one whose activate script is world-writable, one
+in a repository git will not read (dubious ownership), and one that is itself a git
+repository (a committed `HEAD`, `objects/` and `refs/`). That last check needs git
+2.38 or later; older git reads such a repository and finds nothing tracked.
 
 ## Media (ffmpeg)
 

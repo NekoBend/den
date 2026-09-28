@@ -108,6 +108,33 @@ printf '"sourced" | Set-Content -LiteralPath "%s"\n' "$WORK/symact_ran" > "$SYMA
 ln -s ../../tools/activate "$SYMACT/.venv/bin/activate"
 ln -s ../../tools/Activate.ps1 "$SYMACT/.venv/bin/Activate.ps1"
 
+# A repo that commits its .venv as a repository of its own: HEAD, objects/, refs/
+# and a config whose core.worktree is the venv itself. git asked from inside the
+# venv took that repository, whose index is empty, so nothing looked tracked, and
+# ran its core.fsmonitor command. Each script and that command leave a marker.
+EMBED="$WORK/venv_embedded_repo"
+mkdir -p "$EMBED/.venv/bin" "$EMBED/.venv/objects" "$EMBED/.venv/refs"
+printf 'ref: refs/heads/main\n' > "$EMBED/.venv/HEAD"
+: > "$EMBED/.venv/objects/.keep"
+: > "$EMBED/.venv/refs/.keep"
+printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = "echo ran > %s; false"\n' \
+    "$WORK/embed_fsmonitor_ran" > "$EMBED/.venv/config"
+printf 'echo sourced > "%s"\n' "$WORK/embed_ran" > "$EMBED/.venv/bin/activate"
+printf '"sourced" | Set-Content -LiteralPath "%s"\n' "$WORK/embed_ran" > "$EMBED/.venv/bin/Activate.ps1"
+printf 'version_info = 3.12.0\n' > "$EMBED/.venv/pyvenv.cfg"
+(
+    cd "$EMBED" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv repository"
+) >/dev/null 2>&1
+# git before 2.38 has no safe.bareRepository and still reads that repository.
+if git -c safe.bareRepository=explicit -C "$EMBED/.venv" rev-parse --git-dir >/dev/null 2>&1; then
+    GIT_HAS_SAFE_BARE=0
+else
+    GIT_HAS_SAFE_BARE=1
+fi
+
 # git reads a repo owned by another user only when safe.directory allows it;
 # this makes it take every repo as one, whatever the tester's own config says.
 GIT_AS_OTHER_OWNER="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1"
@@ -283,6 +310,18 @@ for sh in bash zsh; do
     assert_contains "$sh/va refuses a symlinked activate" "bin/ or bin/activate is a symlink" "$err"
     assert_contains "$sh/va symlinked activate fails" "rc=1" "$err"
     assert_not_exists "$sh/va sources no script behind a symlinked activate" "$WORK/symact_ran"
+
+    if [ "$GIT_HAS_SAFE_BARE" -eq 1 ]; then
+        echo "[$sh] va refuses a venv committed as a repository of its own"
+        rm -f "$WORK/embed_ran" "$WORK/embed_fsmonitor_ran"
+        actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$EMBED' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+        assert_contains "$sh/va names git's refusal of the venv repository" "git could not tell whether the venv is committed (fatal: cannot use bare repository" "$actual"
+        assert_contains "$sh/va activates nothing from a venv repository" "rc=1 PY=[]" "$actual"
+        assert_not_exists "$sh/va sources no script from a venv repository" "$WORK/embed_ran"
+        assert_not_exists "$sh/va runs no fsmonitor of a venv repository" "$WORK/embed_fsmonitor_ran"
+    else
+        echo "  SKIP: $sh/va venv repository (git before 2.38 has no safe.bareRepository)"
+    fi
 
     echo "[$sh] va refuses when git cannot read the repo (dubious ownership)"
     # git exits 128 with no output there; taking that as "not a repo" sourced the
@@ -731,6 +770,23 @@ rm -f "$WORK/symact_ran"
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMACT'; \$env:VIRTUAL_ENV = \$null; va")
 assert_contains "pwsh/va refuses a symlinked Activate.ps1" "Activate.ps1 is a symlink or junction" "$err"
 assert_not_exists "pwsh/va dot-sources no script behind a symlinked Activate.ps1" "$WORK/symact_ran"
+
+if [ "$GIT_HAS_SAFE_BARE" -eq 1 ]; then
+    echo "[pwsh] va refuses a venv committed as a repository of its own"
+    rm -f "$WORK/embed_ran" "$WORK/embed_fsmonitor_ran"
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        Set-Location '$EMBED'
+        \$env:VIRTUAL_ENV = \$null
+        va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+        \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+    " | tr -d '\r')
+    assert_contains "pwsh/va names git's refusal of the venv repository" "git could not tell whether the venv is committed (fatal: cannot use bare repository" "$actual"
+    assert_contains "pwsh/va activates nothing from a venv repository" "VE=[] PY=[]" "$actual"
+    assert_not_exists "pwsh/va dot-sources no script from a venv repository" "$WORK/embed_ran"
+    assert_not_exists "pwsh/va runs no fsmonitor of a venv repository" "$WORK/embed_fsmonitor_ran"
+else
+    echo "  SKIP: pwsh/va venv repository (git before 2.38 has no safe.bareRepository)"
+fi
 
 echo "[pwsh] va accepts a symlinked venv"
 # `ln -s ~/venvs/proj .venv` is a legitimate layout, not an attack.

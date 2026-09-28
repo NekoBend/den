@@ -119,11 +119,16 @@ va() {
         # The -f test above ignores case on default APFS and git pathspecs do not, so
         # :(icase) also catches a committed BIN/activate. The exact names still match
         # when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
-        if ! tracked="$(command git -C "$name" ls-files -- bin pyvenv.cfg ':(icase)bin' ':(icase)pyvenv.cfg' 2>/dev/null)"; then
+        # safe.bareRepository=explicit: a venv committed with a HEAD, objects/,
+        # refs/ and a config of its own is a repository git would read instead,
+        # with an empty index (nothing tracked) and a core.fsmonitor it runs. Git
+        # then refuses, and the refusal below fails closed. Git before 2.38 ignores
+        # the key and cannot be kept out of such a repository.
+        if ! tracked="$(command git -c safe.bareRepository=explicit -C "$name" ls-files -- bin pyvenv.cfg ':(icase)bin' ':(icase)pyvenv.cfg' 2>/dev/null)"; then
             # Fail closed: only "not a git repository" means nothing to check. Any
             # other failure, such as a checkout git will not open for dubious
             # ownership, leaves a committed venv possible.
-            why="$(LC_ALL=C command git -C "$name" ls-files -- bin 2>&1 >/dev/null | head -n 1)"
+            why="$(LC_ALL=C command git -c safe.bareRepository=explicit -C "$name" ls-files -- bin 2>&1 >/dev/null | head -n 1)"
             case "$why" in
                 *[Nn]"ot a git repository"*) tracked="" ;;
                 *)

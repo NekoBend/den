@@ -168,16 +168,21 @@ function va {
     # Test-Path above ignores case on NTFS and default APFS and git pathspecs do not,
     # so :(icase) also catches a committed SCRIPTS/Activate.ps1. The exact names
     # still match when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
+    # safe.bareRepository=explicit: a venv committed with a HEAD, objects/, refs/
+    # and a config of its own is a repository git would read instead, with an
+    # empty index (nothing tracked) and a core.fsmonitor it runs. Git then refuses,
+    # and the refusal below fails closed. Git before 2.38 ignores the key and
+    # cannot be kept out of such a repository.
     $venvPaths = 'Scripts', 'bin', 'pyvenv.cfg'
     $pathspecs = $venvPaths + ($venvPaths | ForEach-Object { ":(icase)$_" })
-    $tracked = & $gitExe -C $Name ls-files -- $pathspecs 2>$null
+    $tracked = & $gitExe -c safe.bareRepository=explicit -C $Name ls-files -- $pathspecs 2>$null
     if ($LASTEXITCODE -ne 0) {
       # Fail closed: only "not a git repository" means nothing to check. Any other
       # failure, such as a checkout git will not open for dubious ownership, leaves
       # a committed venv possible. LC_ALL=C keeps git's message in English.
       $lcAll = $env:LC_ALL
       $env:LC_ALL = 'C'
-      try { $why = @(& $gitExe -C $Name ls-files -- bin 2>&1 | ForEach-Object { "$_" }) | Select-Object -First 1 }
+      try { $why = @(& $gitExe -c safe.bareRepository=explicit -C $Name ls-files -- bin 2>&1 | ForEach-Object { "$_" }) | Select-Object -First 1 }
       catch { $why = "$_" }
       finally { $env:LC_ALL = $lcAll }
       if ("$why" -notmatch 'not a git repository') {
