@@ -28,11 +28,11 @@ fd PATTERN DIR              # search in specific directory
 ### Find and execute
 
 ```sh
-fd -I -t f -e log -X rm         # delete all .log files (-I: gitignored ones too)
+fd -I -t f -e log -X rm         # delete all .log files (-I: gitignored ones too; -H adds hidden ones)
 fd -e jpg -x mv {} dest/        # move all .jpg to dest/
 fd -e py -x wc -l               # line count per Python file
 fd -e rs -X rustfmt             # format all Rust files (all at once with -X)
-fd -I -t f -e bak -X rm         # remove all .bak files (-I: gitignored ones too)
+fd -I -t f -e bak -X rm         # remove all .bak files (-I: gitignored ones too; -H adds hidden ones)
 ```
 
 ### Exclude and filter
@@ -401,7 +401,7 @@ rg -c PATTERN | sort -t: -k2 -n -r | bat -l csv
 rg 'TODO|FIXME|HACK|XXX' -C 1 --heading | bat -l diff
 
 # Find files changed today and search within them
-fd --changed-within 1d -t f -X rg PATTERN
+fd --changed-within 1d -t f -X rg -H PATTERN
 
 # Benchmark fd vs find
 hyperfine 'fd -e py' 'find . -name "*.py"'

@@ -101,6 +101,15 @@ def test_delete_recipes_include_gitignored_files():
     assert " -I " in f" {_command('remove all .bak files')} "
 
 
+def test_delete_recipes_say_that_hidden_files_need_h():
+    # fd skips hidden files and directories without -H, so "delete all .log
+    # files" left .hidden/app.log in place without saying so.
+    for comment in ("delete all .log files", "remove all .bak files"):
+        line = next(ln for ln in _sh_lines() if _split(ln)[1].startswith(comment))
+        command, note = _split(line)
+        assert " -H " in f" {command} " or "-H" in note, line
+
+
 # --- behavior: the sheet's own lines, run in a scratch tree -------------------
 
 
@@ -189,16 +198,17 @@ def test_bulk_rename_touches_only_the_files_that_match(repo):
 
 
 @needs_tools
-def test_search_in_files_changed_today_names_the_files(repo):
+@pytest.mark.parametrize("changed", [2, 1], ids=["two-files", "one-file"])
+def test_search_in_files_changed_today_names_the_files(repo, changed):
     # `-x rg PATTERN {}` ran one rg per file, and rg given one path prints no
-    # file name: the matches could not be told apart.
-    (repo / "f1.txt").write_text("needle one\n", encoding="utf-8")
-    (repo / "f2.txt").write_text("needle two\n", encoding="utf-8")
-    (repo / "f3.txt").write_text("hay\n", encoding="utf-8")
+    # file name: the matches could not be told apart. With -X the same holds
+    # when exactly one file changed, so the line needs rg -H as well.
+    names = [f"f{index}.txt" for index in range(1, changed + 1)]
+    for index, name in enumerate(names, start=1):
+        (repo / name).write_text(f"needle {index}\n", encoding="utf-8")
     command = _command_after("Find files changed today and search within them")
     result = _run(command.replace("PATTERN", "needle"), repo)
     assert result.returncode == 0, result.stderr
     assert sorted(result.stdout.splitlines()) == [
-        "./f1.txt:needle one",
-        "./f2.txt:needle two",
+        f"./{name}:needle {index}" for index, name in enumerate(names, start=1)
     ]
