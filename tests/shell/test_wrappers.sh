@@ -413,6 +413,23 @@ echo "[pwsh] cat fallback reads stdin (not only file args)"
 actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; 'piped-line' | cat" | tr -d '\r')
 assert_eq "pwsh/cat fallback stdin" "piped-line" "$actual"
 
+# Get-ChildItem -Name emits the names as strings, and the ls fallback read .Name
+# off them: `ls -Name` printed nothing (a single $null) instead of the names.
+# Wrappers OFF and an empty PATH force the fallback, as in the cat case above.
+# Objects that do have a .Name (files, another provider's items) still print it.
+echo "[pwsh] ls fallback prints the names for -Name"
+setup_fixtures
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; ls -Name '$WORK/src'" | tr -d '\r' | sort)
+assert_eq "pwsh/ls fallback -Name" "file1.txt
+file2.txt
+subdir" "$actual"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; ls '$WORK/src'" | tr -d '\r' | sort)
+assert_eq "pwsh/ls fallback without -Name" "file1.txt
+file2.txt
+subdir" "$actual"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPERS='0'; \$env:PATH=''; ls Function: | Where-Object { \$_ -eq 'lt' }" | tr -d '\r')
+assert_eq "pwsh/ls fallback on another provider" "lt" "$actual"
+
 # The lt/llt fallback makes each path relative with [IO.Path]::GetRelativePath,
 # which the .NET Framework under Windows PowerShell 5.1 does not have: there it
 # stops with one terminating error and lists nothing. The copy of wrappers.ps1
