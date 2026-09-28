@@ -1034,6 +1034,13 @@ function fwd {
 # change of location made since the last one. init.ps1 calls it after starship,
 # whose init replaces the prompt function; called again (on reload) it wraps the
 # new prompt, never its own wrapper.
+# Each wrapper holds the prompt it wraps in its own closure ($wrapped), not in a
+# variable that all of them read when they run. A wrapper that another program
+# wrapped in turn (VS Code's shell integration saves the prompt it finds once,
+# after the profile) must still call the prompt it wrapped when den hooks again
+# (`. $PROFILE`): read from a shared variable, it would call that program's
+# wrapper, which calls it again, until the call depth overflows. The older
+# wrapper records and runs zoxide's hook once more, which changes nothing.
 # The wrapper also runs zoxide's hook, the one place zoxide learns a directory
 # on PowerShell. zoxide's init (functions.ps1, loaded before starship) wraps the
 # prompt to call it, and starship's init drops that wrapper, as it drops any
@@ -1045,8 +1052,8 @@ function _DenDirHookPrompt {
   # den loads makes reading it an error.
   if ((Test-Path Variable:global:_DenDirPrompt) -and $null -ne $global:_DenDirPrompt -and
       $function:prompt -eq $global:_DenDirPrompt) { return }
-  $global:_DenDirPromptOld = $function:prompt
-  function global:prompt {
+  $wrapped = $function:prompt
+  $wrapper = {
     # Record first, then hand the wrapped prompt the $? it would have seen, so
     # it still shows the last command's status (starship reads $?).
     $ok = $global:?
@@ -1059,7 +1066,8 @@ function _DenDirHookPrompt {
       $global:LASTEXITCODE = $code
     }
     if (-not $ok) { Write-Error '' -ErrorAction Ignore }
-    if ($global:_DenDirPromptOld) { & $global:_DenDirPromptOld }
-  }
+    if ($wrapped) { & $wrapped }
+  }.GetNewClosure()
+  Set-Item -Path Function:\global:prompt -Value $wrapper
   $global:_DenDirPrompt = $function:prompt
 }

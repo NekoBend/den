@@ -665,12 +665,23 @@ Case 'prompt' { prompt }
 Case '_DenDirHookPrompt' { _DenDirHookPrompt }
 Case '_DenDirHookPrompt, a prompt defined after it' {
     $StrictPrompt = ${function:prompt}
-    $StrictOld = $global:_DenDirPromptOld
     $StrictHook = $global:_DenDirPrompt
     try { Set-Item Function:global:prompt { 'other> ' }; _DenDirHookPrompt; prompt } finally {
         Set-Item Function:global:prompt $StrictPrompt
-        $global:_DenDirPromptOld = $StrictOld
         $global:_DenDirPrompt = $StrictHook
+    }
+}
+Case '_DenDirHookPrompt, again around a wrapper of its wrapper' {
+    $StrictPrompt = ${function:prompt}
+    $StrictHook = $global:_DenDirPrompt
+    $global:_StrictWrapped = $StrictPrompt
+    try {
+        Set-Item Function:global:prompt { 'vs:' + $global:_StrictWrapped.Invoke() }
+        _DenDirHookPrompt; prompt
+    } finally {
+        Set-Item Function:global:prompt $StrictPrompt
+        $global:_DenDirPrompt = $StrictHook
+        Remove-Variable -Name _StrictWrapped -Scope Global
     }
 }
 

@@ -2747,6 +2747,21 @@ st=True
   *  ~/b" "$out"
 out=$(dh_pwsh "_DenDirHookPrompt; cd '$DH/a'; cd '$DH/b'; back; \$null = prompt; fwd; (Get-Location).Path")
 assert_eq "pwsh/prompt does not record back as a new move" "$DH/b" "$out"
+# VS Code's shell integration wraps the prompt once, after the profile, and
+# calls the prompt it found there (den's wrapper); `. $PROFILE` then hooks den
+# again, around VS Code's wrapper. Each den wrapper calls the prompt it wrapped
+# itself: when both read the prompt to call from one shared variable, the older
+# one called VS Code's wrapper again, which called it again, until the call
+# depth overflowed after half a minute. The stand-in for VS Code's wrapper fails
+# at once when it is entered a second time within one prompt.
+echo "[pwsh] prompt hook again around another program's wrapper"
+out=$(dh_pwsh "function global:prompt { 'base>' }; _DenDirHookPrompt
+    \$global:vsOld = \$function:prompt; \$global:vsIn = \$false
+    function global:prompt { if (\$global:vsIn) { throw 'entered twice' }; \$global:vsIn = \$true; try { 'vs:' + \$global:vsOld.Invoke() } finally { \$global:vsIn = \$false } }
+    _DenDirHookPrompt; Set-Location '$DH/a'; try { prompt } catch { 'failed: ' + \$_.Exception.Message }; back -l")
+assert_eq "pwsh/prompt hooked again around VS Code's wrapper runs each once" "vs:base>
+  1  ~/start
+  *  ~/a" "$out"
 
 # Only where the session is at each prompt counts, as with bash's
 # PROMPT_COMMAND: moves on the way there (several Set-Location on one line, the
@@ -2868,7 +2883,9 @@ dh_pwsh_init() {
         PATH="$DH/stbin:$PATH" \
         pwsh -NoProfile -NonInteractive -Command ". '$DOTFILES/shell/pwsh/init.ps1'; $1" 2>/dev/null | tr -d '\r')
 }
-out=$(dh_pwsh_init "\$function:prompt -eq \$global:_DenDirPrompt; \"\$global:_DenDirPromptOld\".Trim(); Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt")
+# The prompt den's wrapper calls is the $wrapped that its closure holds.
+DH_WRAPPED="\$global:_DenDirPrompt.Module.SessionState.PSVariable.GetValue('wrapped')"
+out=$(dh_pwsh_init "\$function:prompt -eq \$global:_DenDirPrompt; \"\$($DH_WRAPPED)\".Trim(); Get-Item '$DH/missing' -ErrorAction SilentlyContinue; prompt")
 assert_eq "pwsh/init.ps1 prompt is den's wrapper around starship's, which still gets \$?" 'True
 "stub:$($global:?)>"
 stub:False>' "$out"
@@ -2953,9 +2970,8 @@ assert_eq "pwsh/zoxide's add keeps the \$? and \$LASTEXITCODE starship sees" "st
 after=3
 add -- ~/a" "$out"
 # Without starship zoxide's own wrapper survives inside den's: its hook call
-# after den's adds nothing, and a reload leaves one den wrapper (two would call
-# each other without end).
-out=$(dh_pwsh_zo "$(path_without starship)" "\"zoxide's wrapper kept: \$(\"\$global:_DenDirPromptOld\" -match '__zoxide_hook')\"; Set-Location '$DH/a'; \$null = prompt; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; . '$DOTFILES/shell/pwsh/init.ps1'; _DenDirHookPrompt; Set-Location '$DH/c'; (prompt).Trim(); back -l")
+# after den's adds nothing, and a reload leaves one den wrapper.
+out=$(dh_pwsh_zo "$(path_without starship)" "\"zoxide's wrapper kept: \$(\"\$($DH_WRAPPED)\" -match '__zoxide_hook')\"; Set-Location '$DH/a'; \$null = prompt; \$null = prompt; Set-Location '$DH/b'; \$null = prompt; . '$DOTFILES/shell/pwsh/init.ps1'; _DenDirHookPrompt; Set-Location '$DH/c'; (prompt).Trim(); back -l")
 assert_eq "pwsh/zoxide adds each move once without starship, and one wrapper after a reload" "zoxide's wrapper kept: True
 PS $DH/c>
   3  ~/start
