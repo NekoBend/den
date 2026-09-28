@@ -41,7 +41,7 @@ COMBINED_PS1="/tmp/wrappers_combined_$$.ps1"
 # The same wrappers with the edition check reading "Desktop", standing in for
 # Windows PowerShell 5.1 (no 5.1 host runs here).
 WRAPPERS_PS1_DESKTOP="/tmp/wrappers_desktop_$$.ps1"
-sed 's/\$PSVersionTable\.PSEdition/"Desktop"/g' "$WRAPPERS_PS1_STRIPPED" > "$WRAPPERS_PS1_DESKTOP"
+sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$WRAPPERS_PS1_STRIPPED" > "$WRAPPERS_PS1_DESKTOP"
 
 _cleanup_wrappers() { rm -f "$WRAPPERS_PS1_STRIPPED" "$COMBINED_PS1" "$WRAPPERS_PS1_DESKTOP"; }
 trap '_cleanup_wrappers' EXIT

@@ -1992,7 +1992,7 @@ done
 echo "[pwsh] archive refuses .gz/.bz2/.xz on Windows PowerShell 5.1"
 {
     echo ". '$HELPERS_PS1'"
-    sed 's/\$PSVersionTable\.PSEdition/"Desktop"/g' "$FUNCTIONS_PS1"
+    sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$FUNCTIONS_PS1"
 } > "$FUNCTIONS_PS1_DESKTOP"
 for _ext in gz bz2 xz; do
     setup_single_file
