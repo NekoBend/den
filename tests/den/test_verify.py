@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from den import _verify
+from den import _exe, _verify
 from den._verify import main as verify_main
 from den.cli import main as cli_main
 
@@ -37,7 +37,7 @@ def _fake_which(name, path=None):
 
 def _capture_cmds(monkeypatch, rc: int = 0, out: str = ""):
     cmds: list[list[str]] = []
-    monkeypatch.setattr(_verify.shutil, "which", _fake_which)
+    monkeypatch.setattr(_exe.shutil, "which", _fake_which)
     monkeypatch.setattr(
         _verify.subprocess,
         "run",
@@ -49,7 +49,7 @@ def _capture_cmds(monkeypatch, rc: int = 0, out: str = ""):
 def _capture_calls(monkeypatch, rc: int = 0, out: str = ""):
     """Every subprocess.run call as a dict: its kwargs plus "cmd"."""
     calls: list[dict] = []
-    monkeypatch.setattr(_verify.shutil, "which", _fake_which)
+    monkeypatch.setattr(_exe.shutil, "which", _fake_which)
     monkeypatch.setattr(
         _verify.subprocess,
         "run",
@@ -163,7 +163,7 @@ def test_fail_detail_is_capped(tmp_path, monkeypatch, capsys):
 
 def test_skip_names_next_action(tmp_path, monkeypatch, capsys):
     f = _py(tmp_path)
-    monkeypatch.setattr(_verify.shutil, "which", lambda name, path=None: None)
+    monkeypatch.setattr(_exe.shutil, "which", lambda name, path=None: None)
     assert verify_main([str(f)]) == 0  # skips are not failures
     out = capsys.readouterr().out
     assert "SKIP format (ruff not installed: uv tool install ruff)" in out
@@ -188,7 +188,7 @@ def test_search_path_drops_current_directory_entries(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "PATH", os.pathsep.join([str(tmp_path), "", os.curdir, "rel/bin"])
     )
-    assert _verify._search_path() == str(tmp_path)
+    assert _exe.search_path() == str(tmp_path)
 
 
 def test_tool_in_the_working_directory_is_refused(tmp_path, monkeypatch, capsys):
@@ -198,7 +198,7 @@ def test_tool_in_the_working_directory_is_refused(tmp_path, monkeypatch, capsys)
     monkeypatch.chdir(tmp_path)  # the workspace `den verify` is invoked from
     cmds = _capture_cmds(monkeypatch)
     monkeypatch.setattr(  # a repo shipping ./ruff, next to the checked file
-        _verify.shutil, "which", lambda name, path=None: str(tmp_path / name)
+        _exe.shutil, "which", lambda name, path=None: str(tmp_path / name)
     )
     assert verify_main([str(f)]) == 0  # a refusal is a skip, not a failure
     out = capsys.readouterr().out
@@ -219,7 +219,7 @@ def test_tool_in_a_project_venv_is_allowed(tmp_path, monkeypatch, capsys):
     venv_bin = tmp_path / ".venv" / "bin"
     cmds = _capture_cmds(monkeypatch)
     monkeypatch.setattr(
-        _verify.shutil, "which", lambda name, path=None: str(venv_bin / name)
+        _exe.shutil, "which", lambda name, path=None: str(venv_bin / name)
     )
     assert verify_main([str(f)]) == 0
     assert [c[0] for c in cmds] == [
@@ -287,7 +287,7 @@ def test_all_files_unusable_is_a_usage_error(tmp_path, capsys):
 
 def test_cli_dispatches_verify(tmp_path, monkeypatch, capsys):
     f = _py(tmp_path)
-    monkeypatch.setattr(_verify.shutil, "which", lambda name, path=None: None)
+    monkeypatch.setattr(_exe.shutil, "which", lambda name, path=None: None)
     assert cli_main(["verify", str(f)]) == 0
     assert "config: ruff" in capsys.readouterr().out
 

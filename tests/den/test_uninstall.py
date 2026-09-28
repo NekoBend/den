@@ -329,7 +329,7 @@ def test_uninstall_shell_keeps_user_file_in_local_bin(tmp_path, monkeypatch):
 def test_uninstall_cline_removes_rules_parent(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    monkeypatch.setattr("den._install.shutil.which", lambda e: None)
+    monkeypatch.setattr("den._install.shutil.which", lambda e, path=None: None)
     assert install_main(["skills", "--tool", "cline", "--with-parent"]) == 0
     rules_parent = tmp_path / "Documents" / "Cline" / "Rules" / "AGENTS.md"
     assert rules_parent.is_file()

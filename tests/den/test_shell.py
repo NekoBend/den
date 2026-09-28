@@ -149,7 +149,7 @@ def test_query_pwsh_profile_takes_last_ps1_line(monkeypatch):
         )
 
     monkeypatch.setattr(
-        _shell.shutil, "which", lambda e: "/x/pwsh" if e == "pwsh" else None
+        _shell.shutil, "which", lambda e, path=None: "/x/pwsh" if e == "pwsh" else None
     )
     monkeypatch.setattr(_shell.subprocess, "run", lambda *a, **k: _Result())
     p = _shell._query_pwsh_profile()
@@ -158,13 +158,48 @@ def test_query_pwsh_profile_takes_last_ps1_line(monkeypatch):
     assert "WARNING" not in str(p)
 
 
+def test_query_pwsh_profile_runs_pwsh_by_absolute_path(monkeypatch):
+    class _Result:
+        returncode = 0
+        stdout = "C:\\Users\\x\\Documents\\PowerShell\\x.ps1\n"
+
+    monkeypatch.setattr(
+        _shell.shutil,
+        "which",
+        lambda e, path=None: _on_path(e) if e == "pwsh" else None,
+    )
+    ran = []
+    monkeypatch.setattr(
+        _shell.subprocess, "run", lambda cmd, **k: ran.append(cmd) or _Result()
+    )
+    assert _shell._query_pwsh_profile() is not None
+    assert [c[0] for c in ran] == [_on_path("pwsh")]
+
+
+def test_query_pwsh_profile_refuses_powershell_in_the_working_directory(
+    tmp_path, monkeypatch, capsys
+):
+    """A checkout shipping pwsh.exe/powershell.exe at its root: what Windows'
+    which() and CreateProcess find first. Neither is run; the caller falls
+    back to the default profile dir."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_shell.shutil, "which", lambda e, path=None: str(tmp_path / e))
+    ran = []
+    monkeypatch.setattr(_shell.subprocess, "run", lambda cmd, **k: ran.append(cmd))
+    assert _shell._query_pwsh_profile() is None
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "refusing pwsh resolved inside the workspace" in err
+    assert "refusing powershell resolved inside the workspace" in err
+
+
 def test_query_pwsh_profile_rejects_nonzero_returncode(monkeypatch):
     class _Result:
         returncode = 1
         stdout = "garbage that is not a path\n"
 
     monkeypatch.setattr(
-        _shell.shutil, "which", lambda e: "/x/pwsh" if e == "pwsh" else None
+        _shell.shutil, "which", lambda e, path=None: "/x/pwsh" if e == "pwsh" else None
     )
     monkeypatch.setattr(_shell.subprocess, "run", lambda *a, **k: _Result())
     assert _shell._query_pwsh_profile() is None
@@ -288,7 +323,9 @@ def test_coreutils_flag_off_windows_is_ignored(monkeypatch, capsys):
 def test_coreutils_flag_installs_on_windows(monkeypatch):
     seen = _calls(monkeypatch)
     monkeypatch.setattr(_shell, "_windows", lambda: True)
-    monkeypatch.setattr(_shell.shutil, "which", lambda _: None)  # not already present
+    monkeypatch.setattr(
+        _shell.shutil, "which", lambda _, path=None: None
+    )  # not already present
     _shell._maybe_install_coreutils(want=True, skip=False, dry_run=False)
     assert seen == [False]
 
@@ -296,7 +333,9 @@ def test_coreutils_flag_installs_on_windows(monkeypatch):
 def test_coreutils_already_installed_skips(monkeypatch, capsys):
     seen = _calls(monkeypatch)
     monkeypatch.setattr(_shell, "_windows", lambda: True)
-    monkeypatch.setattr(_shell.shutil, "which", lambda _: "C:/x/coreutils.exe")
+    monkeypatch.setattr(
+        _shell.shutil, "which", lambda _, path=None: "C:/x/coreutils.exe"
+    )
     _shell._maybe_install_coreutils(want=True, skip=False, dry_run=False)
     assert seen == []
     assert "already installed" in capsys.readouterr().out
@@ -305,14 +344,14 @@ def test_coreutils_already_installed_skips(monkeypatch, capsys):
 def test_coreutils_non_tty_without_flag_skips(monkeypatch):
     seen = _calls(monkeypatch)
     monkeypatch.setattr(_shell, "_windows", lambda: True)
-    monkeypatch.setattr(_shell.shutil, "which", lambda _: None)
+    monkeypatch.setattr(_shell.shutil, "which", lambda _, path=None: None)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _shell._maybe_install_coreutils(want=False, skip=False, dry_run=False)
     assert seen == []
 
 
 def test_install_coreutils_dry_run_builds_winget_cmd(monkeypatch, capsys):
-    monkeypatch.setattr(_shell.shutil, "which", lambda _: "/x/winget")
+    monkeypatch.setattr(_shell.shutil, "which", lambda _, path=None: "/x/winget")
     ran = []
     monkeypatch.setattr(_shell.subprocess, "run", lambda *a, **k: ran.append(a) or None)
     assert _shell._install_coreutils(dry_run=True) == 0
@@ -321,8 +360,35 @@ def test_install_coreutils_dry_run_builds_winget_cmd(monkeypatch, capsys):
     assert ran == []  # dry-run does not execute
 
 
+def test_install_coreutils_runs_winget_by_absolute_path(monkeypatch):
+    monkeypatch.setattr(_shell.shutil, "which", lambda e, path=None: _on_path(e))
+
+    class _R:
+        returncode = 0
+
+    ran = []
+    monkeypatch.setattr(
+        _shell.subprocess, "run", lambda cmd, **k: ran.append(cmd) or _R()
+    )
+    assert _shell._install_coreutils(dry_run=False) == 0
+    assert len(ran) == 1
+    assert ran[0][:4] == [_on_path("winget"), "install", "-e", "--id"]
+
+
+def test_install_coreutils_refuses_winget_in_the_working_directory(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_shell.shutil, "which", lambda e, path=None: str(tmp_path / e))
+    ran = []
+    monkeypatch.setattr(_shell.subprocess, "run", lambda cmd, **k: ran.append(cmd))
+    assert _shell._install_coreutils(dry_run=False) == 1
+    assert ran == []
+    assert "refusing winget resolved inside the workspace" in capsys.readouterr().err
+
+
 def test_install_coreutils_without_winget_returns_1(monkeypatch, capsys):
-    monkeypatch.setattr(_shell.shutil, "which", lambda _: None)
+    monkeypatch.setattr(_shell.shutil, "which", lambda _, path=None: None)
     assert _shell._install_coreutils(dry_run=False) == 1
     assert "winget not found" in capsys.readouterr().err
 
@@ -383,7 +449,7 @@ def test_install_shell_coreutils_dry_run_end_to_end(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(_shell, "_windows", lambda: True)
     monkeypatch.setattr(_shell, "_coreutils_present", lambda: False)
     monkeypatch.setattr(_shell, "_query_pwsh_profile", lambda: None)
-    monkeypatch.setattr(_shell.shutil, "which", lambda _: None)
+    monkeypatch.setattr(_shell.shutil, "which", lambda _, path=None: None)
     ran = []
     monkeypatch.setattr(_shell.subprocess, "run", lambda *a, **k: ran.append(a) or None)
     # --coreutils --dry-run reaches _install_coreutils, prints the plan, runs nothing
@@ -393,7 +459,7 @@ def test_install_shell_coreutils_dry_run_end_to_end(tmp_path, monkeypatch, capsy
 
 
 def test_coreutils_present_probes_program_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(_shell.shutil, "which", lambda _: None)
+    monkeypatch.setattr(_shell.shutil, "which", lambda _, path=None: None)
     monkeypatch.setenv("ProgramFiles", str(tmp_path))
     assert _shell._coreutils_present() is False
     exe = tmp_path / "coreutils" / "coreutils.exe"
@@ -602,8 +668,14 @@ def test_install_shell_bin_keeps_modified_file_content_and_mode(tmp_path, monkey
         assert mine.stat().st_mode & 0o777 == 0o600
 
 
+def _on_path(name):
+    """Where a fake which() finds a tool: absolute and outside any cwd, on POSIX
+    and Windows alike (a "/usr/bin/x" literal is drive-relative on Windows)."""
+    return str(Path(Path.cwd().anchor) / "den-tools" / name)
+
+
 def _stub_which(present):
-    return lambda name: f"/usr/bin/{name}" if name in present else None
+    return lambda name, path=None: _on_path(name) if name in present else None
 
 
 def _fake_git(calls, sha_for=None):
@@ -636,13 +708,35 @@ def test_clone_zsh_plugins_clones_both_pinned(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr("den._shell.subprocess.run", _fake_git(calls))
     _shell._maybe_clone_zsh_plugins(want=True, dry_run=False)
-    clones = [c for c in calls if c[:2] == ["git", "clone"]]
+    # git runs by its resolved absolute path, never by bare name
+    clones = [c for c in calls if c[:2] == [_on_path("git"), "clone"]]
     assert len(clones) == 2
     for (name, _url, tag, _sha), cmd in zip(_shell._ZSH_PLUGINS, clones, strict=True):
         assert "--branch" in cmd and tag in cmd  # pinned tag, not HEAD
         assert name in cmd[-1]
     # every clone is followed by a rev-parse verification
     assert sum(1 for c in calls if "rev-parse" in c) == 2
+    assert all(c[0] == _on_path("git") for c in calls)
+
+
+def test_clone_zsh_plugins_refuses_git_in_the_working_directory(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    monkeypatch.setattr(
+        "den._shell.shutil.which",
+        lambda name, path=None: (
+            _on_path(name) if name == "zsh" else str(tmp_path / name)
+        ),
+    )
+    calls = []
+    monkeypatch.setattr("den._shell.subprocess.run", _fake_git(calls))
+    _shell._maybe_clone_zsh_plugins(want=True, dry_run=False)
+    assert calls == []
+    assert "refusing git resolved inside the workspace" in capsys.readouterr().err
 
 
 def test_clone_zsh_plugins_default_off(tmp_path, monkeypatch):
@@ -700,7 +794,7 @@ def test_clone_zsh_plugins_skips_existing(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr("den._shell.subprocess.run", _fake_git(calls))
     _shell._maybe_clone_zsh_plugins(want=True, dry_run=False)
-    clones = [c[-1] for c in calls if c[:2] == ["git", "clone"]]
+    clones = [c[-1] for c in calls if c[:2] == [_on_path("git"), "clone"]]
     assert not any("zsh-autosuggestions" in t for t in clones)  # already present
     assert any("zsh-syntax-highlighting" in t for t in clones)  # still cloned
 

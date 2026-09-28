@@ -14,8 +14,9 @@ never override":
   passed explicitly (--project <root>, root = nearest pyproject.toml/ty.toml
   ancestor) and the venv line reports what ty will see.
 - the tools themselves are resolved through PATH only and run by absolute
-  path; one that resolves to the working directory itself is refused, never
-  executed. On Windows shutil.which prepends the current directory (unless
+  path (den._exe, shared with every other command that starts a tool); one
+  that resolves to the working directory itself is refused, never executed.
+  On Windows shutil.which prepends the current directory (unless
   NoDefaultCurrentDirectoryInExePath is set) and CreateProcess searches it
   too for a path-less name, so a cloned repo shipping `ruff.exe` at its root
   would otherwise run when `den verify` is invoked there.
@@ -30,11 +31,12 @@ the locale codec.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 from contextlib import suppress
 from pathlib import Path
+
+from ._exe import resolve_tool
 
 _MAX_DETAIL_LINES = 30
 _DEN_DEFAULT_LINT = ("--extend-select", "D101,D102,D103")
@@ -90,46 +92,9 @@ def _venv_line(root: Path) -> str:
     )
 
 
-def _search_path() -> str:
-    """PATH with every current-directory entry dropped.
-
-    An empty entry and any relative entry (including a Windows drive-relative
-    one) are resolved against the cwd - the very workspace being verified -
-    so only absolute directories are allowed to supply a tool.
-    """
-    entries = os.environ.get("PATH", "").split(os.pathsep)
-    return os.pathsep.join(e for e in entries if e and Path(e).is_absolute())
-
-
-def _resolve_tool(name: str) -> tuple[str | None, str | None]:
-    """(absolute path to run, refusal reason) for the tool `name`.
-
-    Both None means "not installed". A hit in the working directory itself is
-    refused rather than run: shutil.which re-inserts the current directory
-    ahead of PATH on Windows (unless NoDefaultCurrentDirectoryInExePath is
-    set) and CreateProcess searches it too for a path-less name, so a cloned
-    repo that ships `ruff.exe` at its root would otherwise be executed by a
-    `den verify` run there. Handing subprocess an absolute path also stops
-    CreateProcess from searching at all.
-
-    Only the directory itself is refused, because that is all those two
-    searches can reach; a tool under it - a project's own .venv/bin/ruff,
-    the normal case - is the one the project wants and still runs.
-    """
-    hit = shutil.which(name, path=_search_path())
-    if hit is None:
-        return None, None
-    exe = Path(hit)
-    if not exe.is_absolute():  # only reachable via the Windows curdir entry
-        exe = Path.cwd() / exe
-    if exe.resolve().parent == Path.cwd().resolve():
-        return None, f"refusing {name} resolved inside the workspace ({exe})"
-    return str(exe), None
-
-
 def _stage(label: str, cmd: list[str], counts: dict[str, int]) -> None:
     tool = cmd[0]
-    exe, refusal = _resolve_tool(tool)
+    exe, refusal = resolve_tool(tool)
     if refusal:
         print(f"den verify: {refusal}")
         print(

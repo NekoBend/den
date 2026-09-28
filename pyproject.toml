@@ -58,12 +58,13 @@ ignore = [
     "PLR0917",
     "PLR2004",
     "T",
-    # den's job is invoking other programs (git, uv, ruff, winget, pwsh) by
-    # name from PATH, so these fire on every import and call site by design
-    # rather than marking anything exceptional.
+    # den's job is invoking other programs (git, uv, ruff, winget, pwsh), so
+    # these fire on every import and call site by design rather than marking
+    # anything exceptional. S607 (a bare program name) stays on: den resolves
+    # every tool it starts to an absolute path first (den/_exe.py), because a
+    # bare name lets Windows run a same-named executable from the cwd.
     "S404",
     "S603",
-    "S607",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -73,6 +74,10 @@ ignore = [
 # _ui.py IS the optional-dependency fallback layer: questionary and rich are
 # probed and any failure degrades to plain stdin prompts on purpose.
 "den/_ui.py" = ["BLE001", "S110"]
+# The deployed skill scripts are standalone (no den import) and still start
+# git by bare name; they get their own resolver in a separate change, which
+# drops this entry.
+"agents/src/shared/scripts/*.py" = ["S607"]
 
 [build-system]
 requires = ["hatchling"]

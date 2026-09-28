@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 
 from ._content import shell_dir
+from ._exe import find_tool, resolve_tool
 from ._install import _chmod_no_follow, _Stager, _Writer
 
 _COMMENT = "# ===== den ====="
@@ -88,9 +89,11 @@ def _windows() -> bool:
 def _query_pwsh_profile() -> Path | None:
     """Ask the real PowerShell for $PROFILE so we honor OneDrive-redirected
     Documents and the PS5 (powershell) vs PS7 (pwsh) profile dirs. Returns the
-    profile FILE path, or None when no PowerShell is available."""
-    for exe in ("pwsh", "powershell"):
-        if not shutil.which(exe):
+    profile FILE path, or None when no PowerShell is available. Each one is
+    resolved by absolute path, never from the working directory (den._exe)."""
+    for name in ("pwsh", "powershell"):
+        exe = find_tool(name, "den")
+        if exe is None:
             continue
         try:
             out = subprocess.run(
@@ -422,7 +425,11 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
     replace the oh-my-zsh framework den used to depend on."""
     if not want or _windows() or not shutil.which("zsh"):
         return
-    if not shutil.which("git"):
+    git, refusal = resolve_tool("git")
+    if refusal:
+        print(f"zsh plugins: {refusal}; skipping", file=sys.stderr)
+        return
+    if git is None:
         print(
             "zsh plugins: git not found; skipping (install git for autosuggestions)",
             file=sys.stderr,
@@ -444,7 +451,7 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
         try:
             subprocess.run(
                 [
-                    "git",
+                    git,
                     "clone",
                     "--depth",
                     "1",
@@ -457,7 +464,7 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
                 check=True,
             )
             head = subprocess.run(
-                ["git", "-C", str(target), "rev-parse", "HEAD"],
+                [git, "-C", str(target), "rev-parse", "HEAD"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -541,14 +548,18 @@ def _install_coreutils(*, dry_run: bool) -> int:
     print("coreutils -> " + " ".join(cmd))
     if dry_run:
         return 0
-    if not shutil.which("winget"):
+    winget, refusal = resolve_tool("winget")
+    if refusal:
+        print(f"coreutils: {refusal}; run it from another directory", file=sys.stderr)
+        return 1
+    if winget is None:
         print(
             "coreutils: winget not found; install winget or get coreutils manually",
             file=sys.stderr,
         )
         return 1
     try:
-        return subprocess.run(cmd).returncode
+        return subprocess.run([winget, *cmd[1:]]).returncode
     except OSError as exc:
         print(f"coreutils: winget failed: {exc}", file=sys.stderr)
         return 1

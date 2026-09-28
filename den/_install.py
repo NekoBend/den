@@ -29,6 +29,7 @@ from typing import Protocol
 
 from . import _ui
 from ._content import cheatsheets_dir, dist_dir, shared_dir, skills_dir
+from ._exe import find_tool
 
 # tool -> (skills_dir, parent_dir, parent_file). The cline (VS Code extension)
 # parent_dir is dynamic -- see _tool_paths/_cline_rules_dir; the value here is
@@ -62,10 +63,12 @@ def _cline_rules_dir() -> Path:
     Windows asks PowerShell for MyDocuments (OneDrive-redirect aware), Linux
     asks xdg-user-dir, anything else uses ~/Documents. The cline CLI does not
     read this dir (it reads ~/.agents/AGENTS.md), so cline + cline-cli
-    together never double-deliver."""
+    together never double-deliver. Every helper runs by absolute path and
+    never from the working directory (den._exe)."""
     if _windows():
-        for exe in ("pwsh", "powershell"):
-            if not shutil.which(exe):
+        for name in ("pwsh", "powershell"):
+            exe = find_tool(name, "den")
+            if exe is None:
                 continue
             try:
                 out = subprocess.run(
@@ -85,10 +88,11 @@ def _cline_rules_dir() -> Path:
             if out.returncode == 0 and lines:
                 return Path(lines[-1]) / "Cline" / "Rules"
         return Path.home() / "Documents" / "Cline" / "Rules"
-    if sys.platform == "linux" and shutil.which("xdg-user-dir"):
+    xdg = find_tool("xdg-user-dir", "den") if sys.platform == "linux" else None
+    if xdg is not None:
         try:
             out = subprocess.run(
-                ["xdg-user-dir", "DOCUMENTS"],
+                [xdg, "DOCUMENTS"],
                 capture_output=True,
                 text=True,
                 timeout=5,

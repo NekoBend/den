@@ -1,6 +1,7 @@
 """Tests for den install (den/_install.py)."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -348,7 +349,7 @@ def test_install_cline_parent_goes_to_cline_rules_dir(tmp_path, monkeypatch):
     # the VS Code extension reads global rules from <Documents>/Cline/Rules and
     # does NOT read ~/.agents/AGENTS.md; no xdg-user-dir -> ~/Documents fallback
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr("den._install.shutil.which", lambda e: None)
+    monkeypatch.setattr("den._install.shutil.which", lambda e, path=None: None)
     assert install_main(["skills", "--tool", "cline", "--with-parent"]) == 0
     assert (tmp_path / "Documents" / "Cline" / "Rules" / "AGENTS.md").is_file()
     assert not (tmp_path / ".agents" / "AGENTS.md").exists()
@@ -365,7 +366,9 @@ def test_install_cline_cli_parent_stays_in_agents(tmp_path, monkeypatch):
 def test_cline_rules_dir_uses_xdg_documents(tmp_path, monkeypatch):
     from den import _install
 
-    monkeypatch.setattr(_install.shutil, "which", lambda e: "/usr/bin/xdg-user-dir")
+    monkeypatch.setattr(
+        _install.shutil, "which", lambda e, path=None: "/usr/bin/xdg-user-dir"
+    )
 
     class _R:
         returncode = 0
@@ -375,12 +378,55 @@ def test_cline_rules_dir_uses_xdg_documents(tmp_path, monkeypatch):
     assert _install._cline_rules_dir() == tmp_path / "MyDocs" / "Cline" / "Rules"
 
 
+def test_cline_rules_dir_runs_xdg_user_dir_by_absolute_path(tmp_path, monkeypatch):
+    from den import _install
+
+    tool = str(Path(Path.cwd().anchor) / "den-tools" / "xdg-user-dir")
+    monkeypatch.setattr(_install, "_windows", lambda: False)
+    monkeypatch.setattr(_install.sys, "platform", "linux")
+    monkeypatch.setattr(_install.shutil, "which", lambda e, path=None: tool)
+
+    class _R:
+        returncode = 0
+        stdout = str(tmp_path / "MyDocs") + "\n"
+
+    ran = []
+    monkeypatch.setattr(
+        _install.subprocess, "run", lambda cmd, **k: ran.append(cmd) or _R()
+    )
+    assert _install._cline_rules_dir() == tmp_path / "MyDocs" / "Cline" / "Rules"
+    assert ran == [[tool, "DOCUMENTS"]]
+
+
+def test_cline_rules_dir_refuses_powershell_in_the_working_directory(
+    tmp_path, monkeypatch, capsys
+):
+    """Windows: a pwsh.exe/powershell.exe in the directory `den install skills
+    --tool cline` runs from is refused, never run; ~/Documents is the fallback."""
+    from den import _install
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_install, "_windows", lambda: True)
+    monkeypatch.setattr(
+        _install.shutil, "which", lambda e, path=None: str(tmp_path / e)
+    )
+    ran = []
+    monkeypatch.setattr(_install.subprocess, "run", lambda cmd, **k: ran.append(cmd))
+    assert _install._cline_rules_dir() == Path.home() / "Documents" / "Cline" / "Rules"
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "refusing pwsh resolved inside the workspace" in err
+    assert "refusing powershell resolved inside the workspace" in err
+
+
 def test_cline_rules_dir_windows_queries_powershell(tmp_path, monkeypatch):
     from den import _install
 
     monkeypatch.setattr(_install, "_windows", lambda: True)
     monkeypatch.setattr(
-        _install.shutil, "which", lambda e: "/x/pwsh" if e == "pwsh" else None
+        _install.shutil,
+        "which",
+        lambda e, path=None: "/x/pwsh" if e == "pwsh" else None,
     )
     onedrive = "C:\\Users\\x\\OneDrive\\Documents"
 
