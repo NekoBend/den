@@ -174,6 +174,26 @@ err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_cfg_only' && va" || true
 assert_contains "bash/va reports pyvenv.cfg alone as the tracked file" "tracked by git (pyvenv.cfg)" "$err"
 assert_not_contains "bash/va does not blame the untracked activate script" "bin/activate)" "$err"
 
+echo "[bash] va refuses a committed activate script whose case differs"
+# On a case-insensitive file system (default APFS) the test for bin/activate also
+# finds a committed bin/ACTIVATE, the same file there. Here they are two files,
+# which is enough to show that git reports the committed one.
+mk_venv "$WORK/venv_tracked_case" "3.12.0"
+: > "$WORK/venv_tracked_case/.venv/bin/ACTIVATE"
+(
+    cd "$WORK/venv_tracked_case" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/ACTIVATE
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed ACTIVATE"
+) >/dev/null 2>&1
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_tracked_case' && va" || true)
+assert_contains "bash/va refuses a tracked bin/ACTIVATE" "tracked by git (bin/ACTIVATE)" "$err"
+
+echo "[bash] va still refuses a committed venv with GIT_LITERAL_PATHSPECS=1"
+# That setting turns :(icase) into a plain file name: the exact names must match.
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_tracked' && GIT_LITERAL_PATHSPECS=1 && export GIT_LITERAL_PATHSPECS && va" || true)
+assert_contains "bash/va refuses under literal pathspecs" "tracked by git (bin/activate pyvenv.cfg)" "$err"
+
 echo "[bash] va refuses a world-writable activate script"
 mk_venv "$WORK/venv_ww" "3.12.0"
 chmod 777 "$WORK/venv_ww/.venv/bin/activate"
@@ -485,6 +505,26 @@ mv "$WORK/ps_venv_lc_tracked/.venv/bin/Activate.ps1" "$WORK/ps_venv_lc_tracked/.
 ) >/dev/null 2>&1
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:VIRTUAL_ENV = \$null; va")
 assert_contains "pwsh/va refuses git-tracked bin/activate.ps1" "tracked by git (bin/activate.ps1)" "$err"
+
+echo "[pwsh] va refuses a committed activate script whose case differs"
+# On NTFS and default APFS, Test-Path for bin/Activate.ps1 also finds a committed
+# bin/ACTIVATE.PS1, the same file there. Here they are two files, which is enough
+# to show that git reports the committed one.
+mk_venv_ps "$WORK/ps_venv_tracked_case" "3.12.0"
+printf '%s\n' '$env:VIRTUAL_ENV = "committed"' > "$WORK/ps_venv_tracked_case/.venv/bin/ACTIVATE.PS1"
+(
+    cd "$WORK/ps_venv_tracked_case" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/ACTIVATE.PS1
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed ACTIVATE.PS1"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked_case'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses a tracked bin/ACTIVATE.PS1" "tracked by git (bin/ACTIVATE.PS1)" "$err"
+
+echo "[pwsh] va still refuses a committed venv with GIT_LITERAL_PATHSPECS=1"
+# That setting turns :(icase) into a plain file name: the exact names must match.
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:GIT_LITERAL_PATHSPECS = '1'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses under literal pathspecs" "tracked by git (bin/activate.ps1)" "$err"
 
 echo "[pwsh] va deactivates the active venv first, and only when it activates"
 # python's Activate.ps1 and uv's activate.ps1 each undo only their own kind of

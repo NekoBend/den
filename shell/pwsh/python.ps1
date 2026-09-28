@@ -131,8 +131,12 @@ function va {
   # means nothing to check: pass. Parity with posix python.sh.
   $gitExe = _ResolveCmd 'git' 'App'
   if ($gitExe) {
-    # git pathspecs are case-sensitive, core.ignorecase or not: list both spellings.
-    $tracked = & $gitExe -C $Name ls-files -- Scripts/Activate.ps1 Scripts/activate.ps1 bin/Activate.ps1 bin/activate.ps1 bin/activate pyvenv.cfg 2>$null
+    # Test-Path above ignores case on NTFS and default APFS and git pathspecs do not,
+    # so :(icase) also catches a committed scripts/ACTIVATE.ps1. The exact names
+    # still match when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
+    $venvFiles = 'Scripts/Activate.ps1', 'Scripts/activate.ps1', 'bin/Activate.ps1', 'bin/activate.ps1', 'bin/activate', 'pyvenv.cfg'
+    $pathspecs = $venvFiles + ($venvFiles | ForEach-Object { ":(icase)$_" })
+    $tracked = & $gitExe -C $Name ls-files -- $pathspecs 2>$null
     if ($tracked) {
       # Name what git actually reports: the match may be pyvenv.cfg alone, so a
       # message about the activate script would be wrong.
