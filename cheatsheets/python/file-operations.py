@@ -215,15 +215,13 @@ def split_by_lines(
             batch.append(line)
             if len(batch) >= lines_per_chunk:
                 part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-                with open(part_path, "w", encoding=encoding, newline="") as out:
-                    out.write("".join(batch))
+                part_path.write_text("".join(batch), encoding=encoding, newline="")
                 parts.append(part_path)
                 batch = []
                 idx += 1
         if batch:
             part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-            with open(part_path, "w", encoding=encoding, newline="") as out:
-                out.write("".join(batch))
+            part_path.write_text("".join(batch), encoding=encoding, newline="")
             parts.append(part_path)
 
     return parts
@@ -254,7 +252,7 @@ def merge_files(paths: list[Path], output: Path, chunk_size: int = 1024 * 1024) 
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
         for p in paths:
-            if os.path.samefile(p, out):
+            if Path(p).samefile(out):
                 raise shutil.SameFileError(f"{p} is the output file {output}")
 
     tmp = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tmp")
@@ -262,11 +260,7 @@ def merge_files(paths: list[Path], output: Path, chunk_size: int = 1024 * 1024) 
         with open(tmp, "xb") as out_fh:
             for p in paths:
                 with open(p, "rb") as in_fh:
-                    while True:
-                        chunk = in_fh.read(chunk_size)
-                        if not chunk:
-                            break
-                        out_fh.write(chunk)
+                    shutil.copyfileobj(in_fh, out_fh, chunk_size)
         if out.exists():
             shutil.copymode(out, tmp)
         os.replace(tmp, out)
