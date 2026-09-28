@@ -48,6 +48,10 @@ Dependencies:
 """
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 # =============================================================================
 # 1. Basic — Console Text
@@ -455,7 +459,7 @@ def setup_middleware_logging(app: object) -> None:
 # =============================================================================
 
 
-def create_app() -> object:
+def create_app() -> "FastAPI":
     """Build the demo app, setting up logging in the process that serves it.
 
     [Note] With ``log_config=None`` (Options B-E) the setup call belongs here:
