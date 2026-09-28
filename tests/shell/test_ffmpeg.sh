@@ -11,8 +11,6 @@ DOTFILES="${DOTFILES:-/root/.dotfiles}"
 FFMPEG_SH_GUARDED="$DOTFILES/shell/posix/ffmpeg.sh"
 FFMPEG_PS1="$DOTFILES/shell/pwsh/ffmpeg.ps1"
 
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
 
 # --- Mock ffmpeg/ffprobe: just echo args ---
 cat > "$WORK/ffmpeg" << 'MOCK'

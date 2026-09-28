@@ -113,7 +113,7 @@ make_noninteractive_source_copy() {
             next
         }
         { print }
-    ' "$src" > "$dest"
+    ' "$src" > "$dest" || abort_suite "cannot write $dest"
 }
 
 run_pwsh() {
@@ -179,12 +179,23 @@ abort_suite() {
     exit 1
 }
 
+# WORK holds the fixtures, and the resets below wipe it. TESTTMP holds the
+# scripts a suite generates from shell/ before its tests (non-interactive
+# copies, combined .ps1 files), out of reach of those wipes. Both sit in one
+# directory from mktemp, which another user can neither predict nor create
+# first, as they could a fixed /tmp/<name>_$$ path (the suite would then
+# source what they put there). The one EXIT trap below removes it, so a suite
+# must not set an EXIT trap of its own: that would replace this one.
+#
 # The suites run without `set -e`, and each fixture reset is `rm -rf` under
 # WORK: were mktemp to fail (TMPDIR missing, /tmp full or read-only) and leave
 # WORK empty, `rm -rf "$WORK"/*` would be `rm -rf /*`. So a failed mktemp stops
 # the suite here, before any test runs, and the resets spell "${WORK:?}".
-WORK="$(mktemp -d)" && [ -d "$WORK" ] || abort_suite "mktemp -d failed"
-trap '[ "${BASH_SUBSHELL:-0}" -eq 0 ] && rm -rf "$WORK"' EXIT
+TEST_ROOT="$(mktemp -d)" && [ -d "$TEST_ROOT" ] || abort_suite "mktemp -d failed"
+trap '[ "${BASH_SUBSHELL:-0}" -eq 0 ] && rm -rf "${TEST_ROOT:?}"' EXIT
+WORK="$TEST_ROOT/work"
+TESTTMP="$TEST_ROOT/gen"
+mkdir "$WORK" "$TESTTMP" || abort_suite "cannot create $WORK and $TESTTMP"
 
 setup_fixtures() {
     rm -rf "${WORK:?}"/*

@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
 PARALLEL_SH_GUARDED="$DOTFILES/shell/posix/parallel.sh"
-PARALLEL_SH="/tmp/parallel_test_$$.sh"
+PARALLEL_SH="$TESTTMP/parallel_test.sh"
 PARALLEL_PS1="$DOTFILES/shell/pwsh/parallel.ps1"
 
 make_noninteractive_source_copy "$PARALLEL_SH_GUARDED" "$PARALLEL_SH"

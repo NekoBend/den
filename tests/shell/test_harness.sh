@@ -58,5 +58,55 @@ echo "[harness] every wipe of WORK in the suites stops on an empty WORK"
 actual=$(cd "$SCRIPT_DIR" && grep -nE '^[^#]*rm -rf "\$WORK"/\*' -- *.sh)
 assert_eq "harness/no unguarded wipe of WORK" "" "$actual"
 
+# The scripts a suite generates from shell/ and then sources live in TESTTMP:
+# inside the mktemp directory, where another user cannot put a file first, and
+# beside WORK, so a fixture reset does not delete them.
+echo "[harness] TESTTMP is private, survives a fixture reset, and goes at exit"
+actual=$(TMPDIR="$CHILD_TMP" bash -c '
+    source "$1"
+    echo "root=$TEST_ROOT"
+    echo "mode=$(stat -c %a "$TEST_ROOT")"
+    case "$TESTTMP" in "$TEST_ROOT"/*) echo "gen in root" ;; esac
+    case "$TESTTMP" in "$WORK"|"$WORK"/*) echo "gen in WORK" ;; esac
+    echo generated > "$TESTTMP/gen.sh"
+    setup_fixtures
+    echo "after reset: $(cat "$TESTTMP/gen.sh" 2>&1)"
+' _ "$HARNESS_HELPERS" 2>&1)
+child_root=$(printf '%s\n' "$actual" | sed -n 's/^root=//p')
+assert_eq "harness/root is a private directory" "mode=700" "$(printf '%s\n' "$actual" | grep '^mode=')"
+assert_contains "harness/TESTTMP is in the root" "gen in root" "$actual"
+assert_not_contains "harness/TESTTMP is not in WORK" "gen in WORK" "$actual"
+assert_contains "harness/TESTTMP survives a fixture reset" "after reset: generated" "$actual"
+assert_match "harness/root came from mktemp" "^$CHILD_TMP/tmp\..+" "$child_root"
+assert_not_exists "harness/root removed at exit" "${child_root:-$CHILD_TMP/no-root-reported}"
+
+echo "[harness] a generated script that cannot be written stops the suite"
+actual=$(TMPDIR="$CHILD_TMP" bash -c '
+    source "$1"
+    make_noninteractive_source_copy "$1" "$WORK/no-such-dir/copy.sh"
+    echo "SUITE CONTINUED"
+' _ "$HARNESS_HELPERS" 2>&1)
+rc=$?
+assert_eq "harness/unwritable copy exits 1" "1" "$rc"
+assert_contains "harness/unwritable copy says why" "cannot write" "$actual"
+assert_not_contains "harness/unwritable copy stops the suite" "SUITE CONTINUED" "$actual"
+
+echo "[harness] no suite writes a script to a predictable /tmp path"
+actual=$(cd "$SCRIPT_DIR" && grep -nE '/tmp/[A-Za-z0-9_.-]*\$\$' -- *.sh)
+assert_eq "harness/no /tmp/<name>_\$\$ paths" "" "$actual"
+
+echo "[harness] no suite replaces the EXIT trap that removes the workspace"
+actual=$(cd "$SCRIPT_DIR" && grep -nE '^[[:space:]]*trap .*EXIT' -- test_*.sh)
+assert_eq "harness/no suite EXIT trap" "" "$actual"
+
+# A real suite, run with a TMPDIR of its own: whatever it made there, and
+# whatever its own EXIT trap would have left, shows up as a leftover entry.
+echo "[harness] a suite leaves nothing behind in TMPDIR"
+LEAK_TMP="$WORK/leak-tmp"
+mkdir -p "$LEAK_TMP"
+DOTFILES="$DOTFILES" TMPDIR="$LEAK_TMP" bash "$SCRIPT_DIR/test_cheat.sh" >/dev/null 2>&1
+assert_success "harness/test_cheat passes" "$?"
+assert_eq "harness/test_cheat leaves TMPDIR empty" "" "$(ls -A "$LEAK_TMP")"
+
 print_summary "test_harness"
 [ "$FAIL" -eq 0 ]

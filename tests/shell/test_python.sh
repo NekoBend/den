@@ -11,8 +11,6 @@ DOTFILES="${DOTFILES:-/root/.dotfiles}"
 PYTHON_SH_GUARDED="$DOTFILES/shell/posix/python.sh"
 PYTHON_PS1="$DOTFILES/shell/pwsh/python.ps1"
 
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
 NO_UV_BIN="$WORK/no-uv-bin"
 mkdir -p "$NO_UV_BIN"
 

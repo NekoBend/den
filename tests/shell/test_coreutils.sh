@@ -5,12 +5,11 @@ source "$SCRIPT_DIR/helpers.sh"
 
 COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
 
-# Strip the `_DenInteractive` guard for non-interactive testing.
-# Place outside $WORK to avoid deletion by $() subshell EXIT trap.
-COREUTILS_PS1_STRIPPED="/tmp/coreutils_stripped_$$.ps1"
-grep -v '_DenInteractive' "$COREUTILS_PS1" > "$COREUTILS_PS1_STRIPPED"
-_cleanup_coreutils() { rm -f "$COREUTILS_PS1_STRIPPED"; }
-trap '_cleanup_coreutils' EXIT
+# Strip the `_DenInteractive` guard for non-interactive testing. In TESTTMP,
+# out of reach of the fixture resets that wipe WORK.
+COREUTILS_PS1_STRIPPED="$TESTTMP/coreutils_stripped.ps1"
+grep -v '_DenInteractive' "$COREUTILS_PS1" > "$COREUTILS_PS1_STRIPPED" ||
+    abort_suite "cannot write $COREUTILS_PS1_STRIPPED"
 
 # =============================================================================
 # PowerShell tests

@@ -24,27 +24,25 @@ run_zsh_i() {
 # wrappers.ps1 has a `_DenInteractive` guard (returns early under pwsh -Command).
 # Strip the guard line before dot-sourcing so the wrappers load in the test host.
 # Prepend _helpers.ps1 so New-Wrapper/New-WrapperSuffix are available.
-# Place outside $WORK to avoid deletion by $() subshell EXIT trap.
-WRAPPERS_PS1_STRIPPED="/tmp/wrappers_stripped_$$.ps1"
+# In TESTTMP, out of reach of the fixture resets that wipe WORK.
+WRAPPERS_PS1_STRIPPED="$TESTTMP/wrappers_stripped.ps1"
 {
     echo ". '$HELPERS_PS1'"
     grep -v '_DenInteractive' "$WRAPPERS_PS1" | sed '/Remove-Item alias:ls/d'
-} > "$WRAPPERS_PS1_STRIPPED"
+} > "$WRAPPERS_PS1_STRIPPED" || abort_suite "cannot write $WRAPPERS_PS1_STRIPPED"
 # Combined wrappers + coreutils for pipe chain tests
 COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
-COMBINED_PS1="/tmp/wrappers_combined_$$.ps1"
+COMBINED_PS1="$TESTTMP/wrappers_combined.ps1"
 {
     cat "$WRAPPERS_PS1_STRIPPED"
     grep -v '_DenInteractive' "$COREUTILS_PS1"
-} > "$COMBINED_PS1"
+} > "$COMBINED_PS1" || abort_suite "cannot write $COMBINED_PS1"
 
 # The same wrappers with the edition check reading "Desktop", standing in for
 # Windows PowerShell 5.1 (no 5.1 host runs here).
-WRAPPERS_PS1_DESKTOP="/tmp/wrappers_desktop_$$.ps1"
-sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$WRAPPERS_PS1_STRIPPED" > "$WRAPPERS_PS1_DESKTOP"
-
-_cleanup_wrappers() { rm -f "$WRAPPERS_PS1_STRIPPED" "$COMBINED_PS1" "$WRAPPERS_PS1_DESKTOP"; }
-trap '_cleanup_wrappers' EXIT
+WRAPPERS_PS1_DESKTOP="$TESTTMP/wrappers_desktop.ps1"
+sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$WRAPPERS_PS1_STRIPPED" > "$WRAPPERS_PS1_DESKTOP" ||
+    abort_suite "cannot write $WRAPPERS_PS1_DESKTOP"
 
 # =============================================================================
 # Bash tests (fallback paths — no bat/fd/rg/lsd installed)

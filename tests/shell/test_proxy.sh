@@ -4,15 +4,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
 PROXY_SH_GUARDED="$DOTFILES/shell/posix/proxy.sh"
-PROXY_SH="/tmp/proxy_test_$$.sh"
+PROXY_SH="$TESTTMP/proxy_test.sh"
 make_noninteractive_source_copy "$PROXY_SH_GUARDED" "$PROXY_SH"
 
 # Isolate profile storage under WORK so tests never touch the real ~/.config.
 export XDG_CONFIG_HOME="$WORK/xdg"
 PROXY_CONF="$XDG_CONFIG_HOME/den/proxy.conf"
-
-_cleanup_proxy() { rm -f "$PROXY_SH"; }
-trap '_cleanup_proxy' EXIT
 
 reset_conf() { rm -f "$PROXY_CONF"; }
 

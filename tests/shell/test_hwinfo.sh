@@ -14,8 +14,6 @@ DOTFILES="${DOTFILES:-/root/.dotfiles}"
 HWINFO_SH_GUARDED="$DOTFILES/shell/posix/hwinfo.sh"
 HWINFO_PS1="$DOTFILES/shell/pwsh/hwinfo.ps1"
 
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
 
 HWINFO_SH="$WORK/hwinfo_test.sh"
 make_noninteractive_source_copy "$HWINFO_SH_GUARDED" "$HWINFO_SH"

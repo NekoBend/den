@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
 CHEAT_SH_GUARDED="$DOTFILES/shell/posix/cheat.sh"
-CHEAT_SH="/tmp/cheat_test_$$.sh"
+CHEAT_SH="$TESTTMP/cheat_test.sh"
 make_noninteractive_source_copy "$CHEAT_SH_GUARDED" "$CHEAT_SH"
 
 # Isolate the cheatsheet store under WORK so tests never touch the real data dir.
@@ -19,9 +19,6 @@ setup_store() {
     printf 'regex syntax\n' > "$CHEAT_ROOT/python/regex/syntax.md"
     printf 'regex basics\n' > "$CHEAT_ROOT/python/regex/basics.py"
 }
-
-_cleanup_cheat() { rm -f "$CHEAT_SH"; }
-trap '_cleanup_cheat' EXIT
 
 # cheat_suite <shell> — same checks under bash and zsh.
 cheat_suite() {
