@@ -220,7 +220,8 @@ jobs:
   shell-tests:
     name: shell functional tests (bash/zsh/pwsh)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The sum of the step budgets below plus a few minutes for the rest.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -232,8 +233,13 @@ jobs:
       # packages.microsoft.com. Uncached, that step took 39m8s, 29m36s, and
       # 11m52s on three of the last twelve runs (it succeeded every time; the
       # cost was waiting, not failing). The layers only change when the
-      # Dockerfile does, so cache them across runs.
+      # Dockerfile does (its base image is pinned by digest), so cache them
+      # across runs. The cache still goes cold when the Dockerfile changes
+      # or GitHub evicts it, so the step's budget covers the slowest uncached
+      # build: a build cut off before it ends exports no cache, and the next
+      # run would start cold again.
       - name: Build the shell test image
+        timeout-minutes: 50
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -243,6 +249,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Run the shell tests
+        timeout-minutes: 20
         run: docker run --rm den-shell-test
 
   windows:
