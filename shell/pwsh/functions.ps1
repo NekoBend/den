@@ -568,8 +568,11 @@ function archive {
       # ProcessStartInfo.ArgumentList: .NET (PowerShell 7) has it, the .NET
       # Framework under Windows PowerShell 5.1 does not. Refused there before
       # anything is read or written; zstd writes its own output (-o) instead.
+      # The extension is cut out as text: the .NET Framework's
+      # Path.GetExtension throws on a name holding " < > | or a control
+      # character, and this message must not fail on its way out.
       if ($tool -ne 'zstd' -and $PSVersionTable.PSEdition -eq 'Desktop') {
-        Write-Error "a $([System.IO.Path]::GetExtension($Output)) output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" -ErrorAction Stop
+        Write-Error "a $($Output.Substring($Output.LastIndexOf('.'))) output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" -ErrorAction Stop
       }
       # Exactly one source, and it must already be a REGULAR file -- see
       # _ArRegularFile for why "not a container" was not enough.
