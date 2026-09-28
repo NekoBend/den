@@ -449,12 +449,16 @@ def test_leaf_help_prints_usage(capsys):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows has no execute bit")
-def test_install_does_not_chmod_through_a_symlinked_destination(tmp_path, symlink):
+def test_install_does_not_chmod_through_a_symlinked_destination(
+    tmp_path, monkeypatch, symlink
+):
     """chmod follows a symlink, so the mode repair used to hand a symlinked
     destination's OUTSIDE target 0o755 -- on the byte-identical path, with
-    nothing deployed at all."""
-    install_main(["skills", "--target", str(tmp_path)])
-    scripts = tmp_path / "skills" / "coding" / "shared" / "scripts"
+    nothing deployed at all. A tool dir (not a --target, which refuses any
+    link outright) is where den still meets such a link."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    install_main(["skills", "--tool", "claude"])
+    scripts = tmp_path / ".claude" / "skills" / "coding" / "shared" / "scripts"
     script = scripts / "find-references.py"
     outside = tmp_path / "outside.py"
     outside.write_bytes(script.read_bytes())  # byte-identical, so nothing deploys
@@ -462,6 +466,107 @@ def test_install_does_not_chmod_through_a_symlinked_destination(tmp_path, symlin
     script.unlink()
     symlink(outside, script)
 
-    assert install_main(["skills", "--target", str(tmp_path)]) == 0
+    assert install_main(["skills", "--tool", "claude"]) == 0
     assert outside.stat().st_mode & 0o777 == 0o600, "the link's target is untouched"
     assert script.is_symlink(), "and the link itself is left as the user made it"
+
+
+# ---- --target workspaces never write through a symlink (a cloned repo's layout) ----
+
+
+def _workspace(tmp_path):
+    ws = tmp_path / "src" / "repo"
+    ws.mkdir(parents=True)
+    return ws
+
+
+def test_install_target_never_creates_through_a_dangling_symlink(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """A repo shipping CLAUDE.md -> ../../.bash_profile, which does not exist
+    yet: den used to create that outside file, with no prompt at all."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    ws = _workspace(tmp_path)
+    outside = tmp_path / ".bash_profile"
+    symlink(outside, ws / "CLAUDE.md")
+    rc = install_main(
+        ["skills", "--target", str(ws), "--with-parent", "--profile", "weak"]
+    )
+    assert rc == 1, "a refused destination is a failed deploy"
+    assert not outside.exists()
+    assert (ws / "CLAUDE.md").is_symlink(), "the link is left alone"
+    assert (ws / "AGENTS.md").is_file(), "everything else still deploys"
+    assert (ws / "skills" / "coding" / "SKILL.md").is_file()
+    err = capsys.readouterr().err
+    assert "refusing to write" in err and "CLAUDE.md is a symlink" in err
+
+
+def test_install_target_force_never_overwrites_through_a_symlink(
+    tmp_path, monkeypatch, symlink
+):
+    """AGENTS.md -> ~/.bashrc: with --force (or a 'yes' at the overwrite
+    prompt) den used to replace the user's .bashrc with the parent prompt."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    ws = _workspace(tmp_path)
+    outside = tmp_path / ".bashrc"
+    outside.write_text("MY BASHRC\n")
+    symlink(outside, ws / "AGENTS.md")
+    rc = install_main(["skills", "--target", str(ws), "--with-parent", "--force"])
+    assert rc == 1
+    assert outside.read_text() == "MY BASHRC\n"
+    assert (ws / "CLAUDE.md").is_file()
+
+
+def test_install_target_never_lists_a_symlink_for_the_overwrite_prompt(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """The 'exist and differ' list named the link ('AGENTS.md') with no hint
+    of where the write would land; a user who answered yes lost the file."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("den._ui.confirm", lambda *a, **k: True)
+    ws = _workspace(tmp_path)
+    outside = tmp_path / ".bashrc"
+    outside.write_text("MY BASHRC\n")
+    symlink(outside, ws / "AGENTS.md")
+    assert install_main(["skills", "--target", str(ws), "--with-parent"]) == 1
+    assert outside.read_text() == "MY BASHRC\n"
+    assert "exist and differ" not in capsys.readouterr().out
+
+
+def test_install_target_refuses_a_symlinked_skills_dir(tmp_path, monkeypatch, symlink):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    ws = _workspace(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    symlink(elsewhere, ws / "skills")
+    assert install_main(["skills", "--target", str(ws)]) == 1
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_install_target_through_a_symlinked_root_is_the_users_choice(
+    tmp_path, monkeypatch, symlink
+):
+    """Only links BELOW the target are the repo's; the target path itself (a
+    ~/work -> /data/work arrangement) is the user's own and still works."""
+    real = tmp_path / "data" / "repo"
+    real.mkdir(parents=True)
+    symlink(real, tmp_path / "repo")
+    assert install_main(["skills", "--target", str(tmp_path / "repo")]) == 0
+    assert (real / "skills" / "coding" / "SKILL.md").is_file()
+
+
+def test_install_tool_dir_still_follows_a_dotfiles_symlink(
+    tmp_path, monkeypatch, symlink
+):
+    """~/.claude symlinked into a dotfiles repo is the user's own arrangement:
+    the default tool dirs keep writing through it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    dotfiles = tmp_path / "dotfiles" / "claude"
+    dotfiles.mkdir(parents=True)
+    symlink(dotfiles, home / ".claude")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    assert install_main(["skills", "--tool", "claude", "--with-parent"]) == 0
+    assert (dotfiles / "CLAUDE.md").is_file()
+    assert (dotfiles / "skills" / "coding" / "SKILL.md").is_file()

@@ -30,6 +30,7 @@ from typing import Protocol
 from . import _ui
 from ._content import cheatsheets_dir, dist_dir, shared_dir, skills_dir
 from ._exe import find_tool
+from ._memory import _refuse_symlink, _write_guarded
 
 # tool -> (skills_dir, parent_dir, parent_file). The cline (VS Code extension)
 # parent_dir is dynamic -- see _tool_paths/_cline_rules_dir; the value here is
@@ -166,18 +167,48 @@ def _chmod_no_follow(path: Path, mode: int) -> None:
     path.chmod(mode)
 
 
+_ERR = "den install"
+
+
 class _Writer:
     """Collect (dest, content) writes, then commit them. New and byte-identical
     files are written silently; files that already exist and DIFFER are listed
     and, unless --force, the user is asked once before overwriting (default no,
-    so local edits are kept). Non-interactive: differing files are skipped."""
+    so local edits are kept). Non-interactive: differing files are skipped.
+
+    A root passed to confine() is a workspace den does not control (--target,
+    typically a cloned repo), so a symlink anywhere below it - CLAUDE.md ->
+    ~/.bashrc, a dangling one included - is refused and reported instead of
+    written through, and the write itself does not follow a link (O_NOFOLLOW).
+    The default tool dirs are not confined: a ~/.claude symlinked into a
+    dotfiles repo is the user's own arrangement and keeps working."""
 
     def __init__(self, *, force: bool) -> None:
         self.force = force
         self._items: list[tuple[Path, bytes]] = []
+        self._roots: list[Path] = []
 
     def stage(self, dest: Path, content: bytes) -> None:
         self._items.append((dest, content))
+
+    def confine(self, root: Path) -> None:
+        """Refuse every staged path below `root` that reaches a symlink."""
+        self._roots.append(root)
+
+    def _confined(self, dest: Path) -> tuple[Path, Path] | None:
+        """(resolved root, dest under it) when `dest` lies in a confined root.
+
+        The root is resolved first: a symlink in the root's OWN path is the
+        user's choice of where the workspace lives, only links below it are
+        the workspace's."""
+        for root in self._roots:
+            try:
+                rel = dest.relative_to(root)
+            except ValueError:
+                continue
+            real = root.resolve()
+            return real, real / rel
+        return None
 
     @staticmethod
     def _ensure_mode(dest: Path) -> None:
@@ -196,28 +227,39 @@ class _Writer:
         if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
             _chmod_no_follow(dest, 0o755)
 
+    def _ask(self, changed: list[Path]) -> tuple[bool, bool]:
+        """(overwrite, silently_skipped) for the files that exist and differ."""
+        if not changed or self.force:
+            return True, False
+        _ui.say(
+            "These files exist and differ from the bundled version:", style="yellow"
+        )
+        for d in changed:
+            _ui.say(f"  {d}", style="yellow")
+        if sys.stdin.isatty():
+            return _ui.confirm("Overwrite them?", default=False), False
+        print("  skipped (re-run with --force to overwrite)", file=sys.stderr)
+        return False, True
+
     def commit(self) -> int:
-        """Write the staged files. Returns the number of differing files that
-        were kept WITHOUT asking (the non-interactive skip), so a scripted
-        caller can exit non-zero instead of reporting a deploy that never
-        happened; an interactive "no" is the user's own choice and returns 0."""
-        changed = [d for d, c in self._items if d.is_file() and d.read_bytes() != c]
-        overwrite = True
-        silently_skipped = False
-        if changed and not self.force:
-            _ui.say(
-                "These files exist and differ from the bundled version:", style="yellow"
-            )
-            for d in changed:
-                _ui.say(f"  {d}", style="yellow")
-            if sys.stdin.isatty():
-                overwrite = _ui.confirm("Overwrite them?", default=False)
-            else:
-                print("  skipped (re-run with --force to overwrite)", file=sys.stderr)
-                overwrite = False
-                silently_skipped = True
-        kept = 0
+        """Write the staged files. Returns the number of files that were NOT
+        deployed without the user choosing so: differing files kept by the
+        non-interactive skip plus destinations refused under a confined root,
+        so a scripted caller can exit non-zero instead of reporting a deploy
+        that never happened; an interactive "no" is the user's own choice and
+        counts 0."""
+        refused = 0
+        items: list[tuple[Path, bytes, tuple[Path, Path] | None]] = []
         for dest, content in self._items:
+            guard = self._confined(dest)
+            if guard is not None and _refuse_symlink(*guard, "write", _ERR):
+                refused += 1
+                continue
+            items.append((dest, content, guard))
+        changed = [d for d, c, _g in items if d.is_file() and d.read_bytes() != c]
+        overwrite, silently_skipped = self._ask(changed)
+        kept = 0
+        for dest, content, guard in items:
             if dest.is_file():
                 if dest.read_bytes() == content:
                     self._ensure_mode(dest)
@@ -225,12 +267,21 @@ class _Writer:
                 if not overwrite:
                     kept += 1
                     continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(content)
+            if guard is None:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(content)
+            elif not _write_guarded(*guard, content, _ERR):
+                refused += 1
+                continue
             self._ensure_mode(dest)
         if kept:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
-        return kept if silently_skipped else 0
+        if refused:
+            print(
+                f"  refused {refused} path(s) listed above; nothing was written there",
+                file=sys.stderr,
+            )
+        return refused + (kept if silently_skipped else 0)
 
 
 def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
@@ -440,7 +491,11 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
         processed.append(skt)
 
     for t in targets:
-        root = Path(t).expanduser()
+        # absolute (not resolved): the staged paths must sit under the root
+        # confine() compares them with, and the rewritten references resolve
+        # on their own (_install_skill)
+        root = Path(t).expanduser().absolute()
+        writer.confine(root)
         _deploy(
             root / "skills",
             root,
