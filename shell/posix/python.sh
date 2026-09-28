@@ -102,7 +102,10 @@ va() {
     local tracked
     # Name what git actually reports: the match may be pyvenv.cfg alone, so a
     # message about the activate script would be wrong.
-    tracked="$(command git -C "$name" ls-files -- bin/activate pyvenv.cfg 2>/dev/null | tr '\n' ' ')"
+    # The -f test above ignores case on default APFS and git pathspecs do not, so
+    # :(icase) also catches a committed bin/ACTIVATE. The exact names still match
+    # when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
+    tracked="$(command git -C "$name" ls-files -- bin/activate pyvenv.cfg ':(icase)bin/activate' ':(icase)pyvenv.cfg' 2>/dev/null | tr '\n' ' ')"
     if [ -n "$tracked" ]; then
         echo "va: $name: venv content is tracked by git (${tracked% }) — a venv committed to the repo; source it yourself if you trust it: source $activate" >&2
         return 1
