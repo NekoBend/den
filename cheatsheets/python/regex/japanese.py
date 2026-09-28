@@ -27,14 +27,12 @@ import re
 # Constants (inline for copy-paste convenience)
 # =============================================================================
 
-CJK_CHARS: str = (
-    r"[\u4e00-\u9fff\u3400-\u4dbf]+"  # CJK Unified Ideographs (common + ext-A)
-)
+CJK_CHARS: str = r"[\u4e00-\u9fff\u3400-\u4dbf\u3005-\u3007]+"  # CJK Unified Ideographs (common + ext-A) + 々〆〇 (U+3005-U+3007)
 HIRAGANA: str = r"[\u3040-\u309f]+"  # Hiragana block
 KATAKANA: str = r"[\u30a0-\u30ff]+"  # Katakana block
 KATAKANA_HW: str = r"[\uff65-\uff9f]+"  # Half-width Katakana
 FULL_WIDTH_ASCII: str = r"[\uff01-\uff5e]+"  # Full-width ASCII variants (！-～)
-JP_POSTAL: str = r"\d{3}-\d{4}"  # Japanese postal code (NNN-NNNN)
+JP_POSTAL: str = r"(?<![\d-])\d{3}-\d{4}(?![\d-])"  # Japanese postal code (NNN-NNNN), not a piece of a phone number
 
 # =============================================================================
 # Extraction
@@ -72,7 +70,9 @@ def extract_postal_codes(text: str) -> list[str]:
     """Extract all Japanese postal codes (NNN-NNNN) from *text*.
 
     [Best for] Parsing address fields, form data.
-    [Note] Does not validate against actual postal code ranges.
+    [Note] Does not validate against actual postal code ranges. The
+           lookarounds in ``JP_POSTAL`` skip NNN-NNNN inside phone numbers
+           (03-3213-1111, 090-1234-5678).
     """
     return re.findall(JP_POSTAL, text)
 
@@ -88,7 +88,9 @@ def contains_japanese(text: str) -> bool:
     [Best for] Language detection heuristics, input validation.
     [Note] Does not detect Japanese punctuation or half-width katakana.
     """
-    return bool(re.search(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]", text))
+    return bool(
+        re.search(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff\u3005-\u3007]", text)
+    )
 
 
 def split_japanese_english(text: str) -> list[str]:
@@ -100,7 +102,8 @@ def split_japanese_english(text: str) -> list[str]:
     return [
         part
         for part in re.split(
-            r"([\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff\u3400-\u4dbf]+)", text
+            r"([\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff\u3400-\u4dbf\u3005-\u3007]+)",
+            text,
         )
         if part
     ]
@@ -158,16 +161,17 @@ def count_char_types(text: str) -> dict[str, int]:
     """Count characters by type: kanji, hiragana, katakana, ascii, other.
 
     [Best for] Text statistics, input analysis dashboards.
-    [Note] Half-width katakana is counted under ``katakana``.
+    [Note] Half-width katakana is counted under ``katakana``; 々〆〇
+           (U+3005-U+3007) under ``kanji``.
     """
     return {
-        "kanji": len(re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf]", text)),
+        "kanji": len(re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf\u3005-\u3007]", text)),
         "hiragana": len(re.findall(r"[\u3040-\u309f]", text)),
         "katakana": len(re.findall(r"[\u30a0-\u30ff\uff65-\uff9f]", text)),
         "ascii": len(re.findall(r"[a-zA-Z0-9]", text)),
         "other": len(
             re.findall(
-                r"[^\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\uff65-\uff9fa-zA-Z0-9]",
+                r"[^\u4e00-\u9fff\u3400-\u4dbf\u3005-\u3007\u3040-\u309f\u30a0-\u30ff\uff65-\uff9fa-zA-Z0-9]",
                 text,
             )
         ),
@@ -179,7 +183,7 @@ def count_char_types(text: str) -> dict[str, int]:
 # =============================================================================
 
 if __name__ == "__main__":
-    jp = "東京タワーはTokyo Towerの日本語名です。〒100-0001"
+    jp = "東京タワーはTokyo Towerの日本語名です。〒100-0001 佐々木 TEL 03-3213-1111"
 
     print(f"extract_kanji     : {extract_kanji(jp)}")
     print(f"extract_hiragana  : {extract_hiragana(jp)}")

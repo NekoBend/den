@@ -14,13 +14,14 @@ Dependencies:
 # 1. Network & Web
 # =============================================================================
 
-EMAIL: str = r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"  # RFC-ish email
+EMAIL: str = r"(?<![a-zA-Z0-9._%+\-])[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"  # RFC-ish email; (?<!...) tries each run once (linear, no ReDoS)
 URL: str = r"https?://[^\s<>\"')\]]+"  # HTTP/HTTPS URLs
 DOMAIN: str = (
     r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}"  # FQDN
 )
-IPV4: str = r"(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)"  # 0.0.0.0–255.255.255.255
+IPV4: str = r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?!\.?\d)"  # 0.0.0.0 to 255.255.255.255, never a piece of a longer number (a trailing "." is fine)
 IPV6: str = (
+    r"(?<![0-9a-fA-F])(?<![0-9a-fA-F]:)(?:"  # not the tail of a longer address...
     r"(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}"  # full 8-group
     r"|(?:[0-9a-fA-F]{1,4}:){1,7}:"  # trailing ::
     r"|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}"  # 1 group after ::
@@ -31,7 +32,8 @@ IPV6: str = (
     r"|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}"  # 6 groups after ::
     r"|::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}"  # leading ::
     r"|::"  # :: alone
-)  # common IPv6 forms (no embedded IPv4)
+    r")(?![0-9a-fA-F]|:[0-9a-fA-F:])"  # ...nor cut short: "2001:db8::1", not "2001:db8::"
+)  # common IPv6 forms (no embedded IPv4); a ":" next to it as punctuation is fine
 MAC_ADDR: str = (
     r"(?:[0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}"  # MAC address (colon or dash)
 )
@@ -72,16 +74,16 @@ COMMA_NUMBER: str = r"\d{1,3}(?:,\d{3})+"  # 1,000 or 1,000,000
 # 4. Identifiers & Code
 # =============================================================================
 
-UUID: str = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # UUID v1-v5
-SEMVER: str = (
-    r"\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?(?:\+[a-zA-Z0-9.]+)?"  # Semantic versioning
-)
+UUID: str = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # UUID, any version (8-4-4-4-12 hex)
+SEMVER: str = r"(?<!\d)\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?(?:\+[a-zA-Z0-9.]+)?"  # Semantic versioning; (?<!\d) keeps long digit runs linear
 SNAKE_CASE: str = r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+"  # snake_case identifier
 CAMEL_CASE: str = r"[a-z][a-zA-Z0-9]*(?:[A-Z][a-z0-9]+)+"  # camelCase identifier
 BASE64: str = r"[A-Za-z0-9+/]{4,}(?:={0,2})"  # Base64 encoded string (broad match — false positives expected)
 JWT: str = r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"  # JSON Web Token
-SHA256_HEX: str = r"[0-9a-fA-F]{64}"  # SHA-256 hex digest
-MD5_HEX: str = r"[0-9a-fA-F]{32}"  # MD5 hex digest
+SHA256_HEX: str = (
+    r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])"  # SHA-256 hex digest
+)
+MD5_HEX: str = r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])"  # MD5 hex digest (not a slice of a SHA-256)
 
 # =============================================================================
 # 5. Files & Paths
@@ -114,15 +116,13 @@ MARKDOWN_IMAGE: str = r"!\[([^\]]*)\]\(([^)]+)\)"  # ![alt](url)
 # 7. Japanese
 # =============================================================================
 
-CJK_CHARS: str = (
-    r"[\u4e00-\u9fff\u3400-\u4dbf]+"  # CJK Unified Ideographs (common + ext-A)
-)
+CJK_CHARS: str = r"[\u4e00-\u9fff\u3400-\u4dbf\u3005-\u3007]+"  # CJK Unified Ideographs (common + ext-A) + 々〆〇 (U+3005-U+3007)
 HIRAGANA: str = r"[\u3040-\u309f]+"  # Hiragana block
 KATAKANA: str = r"[\u30a0-\u30ff]+"  # Katakana block
 KATAKANA_HW: str = r"[\uff65-\uff9f]+"  # Half-width Katakana
 FULL_WIDTH_ASCII: str = r"[\uff01-\uff5e]+"  # Full-width ASCII variants (！-～)
 PHONE_JP: str = r"0\d{1,4}-\d{1,4}-\d{3,4}"  # Japanese phone (0X-XXXX-XXXX variants)
-JP_POSTAL: str = r"\d{3}-\d{4}"  # Japanese postal code (NNN-NNNN)
+JP_POSTAL: str = r"(?<![\d-])\d{3}-\d{4}(?![\d-])"  # Japanese postal code (NNN-NNNN), not a piece of a phone number
 JP_YEAR_ERA: str = (
     r"(?:令和|平成|昭和|大正|明治)[元\d]{1,2}年"  # Japanese era year (令和5年 etc.)
 )
@@ -130,14 +130,17 @@ JP_YEAR_ERA: str = (
 # =============================================================================
 # 8. Validation (anchored — use for full-string matching)
 # =============================================================================
+# \A...\Z, not ^...$: in Python, $ also matches just before a final "\n", so
+# re.match(r"^...$", "alice@example.com\n") succeeds. (re.fullmatch with the
+# unanchored pattern is the other safe spelling.)
 
 EMAIL_STRICT: str = (
-    r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$"  # full-string email
+    r"\A[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\Z"  # full-string email
 )
-IPV4_STRICT: str = r"^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$"  # full-string IPv4
-UUID_STRICT: str = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"  # RFC 4122 UUID
+IPV4_STRICT: str = r"\A(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\Z"  # full-string IPv4
+UUID_STRICT: str = r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\Z"  # RFC 9562 UUID, versions 1-8
 ISO_DATE_STRICT: str = (
-    r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$"  # full-string YYYY-MM-DD
+    r"\A\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\Z"  # full-string YYYY-MM-DD
 )
-PHONE_JP_STRICT: str = r"^0\d{1,4}-\d{1,4}-\d{3,4}$"  # full-string JP phone
-JP_POSTAL_STRICT: str = r"^\d{3}-\d{4}$"  # full-string JP postal code
+PHONE_JP_STRICT: str = r"\A0\d{1,4}-\d{1,4}-\d{3,4}\Z"  # full-string JP phone
+JP_POSTAL_STRICT: str = r"\A\d{3}-\d{4}\Z"  # full-string JP postal code
