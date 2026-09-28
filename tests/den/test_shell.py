@@ -138,6 +138,7 @@ def test_pwsh_dir_windows_fallback_without_pwsh(tmp_path, monkeypatch):
 def test_pwsh_dir_posix_uses_config(tmp_path, monkeypatch):
     monkeypatch.setattr(_shell, "_windows", lambda: False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     assert _shell._pwsh_profile_dir() == tmp_path / ".config" / "powershell"
 
@@ -147,6 +148,7 @@ def test_pwsh_dir_posix_honors_xdg_config_home(tmp_path, monkeypatch):
     a profile under ~/.config then never loads and den stays off in pwsh."""
     monkeypatch.setattr(_shell, "_windows", lambda: False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # Path.home() on Windows
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert _shell._pwsh_profile_dir() == tmp_path / "xdg" / "powershell"
     monkeypatch.setenv("XDG_CONFIG_HOME", "")  # set but empty: the default
