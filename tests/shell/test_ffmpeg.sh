@@ -11,7 +11,6 @@ DOTFILES="${DOTFILES:-/root/.dotfiles}"
 FFMPEG_SH_GUARDED="$DOTFILES/shell/posix/ffmpeg.sh"
 FFMPEG_PS1="$DOTFILES/shell/pwsh/ffmpeg.ps1"
 
-
 # --- Mock ffmpeg/ffprobe: just echo args ---
 cat > "$WORK/ffmpeg" << 'MOCK'
 #!/bin/sh
