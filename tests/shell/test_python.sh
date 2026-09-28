@@ -135,6 +135,10 @@ else
     GIT_HAS_SAFE_BARE=1
 fi
 
+# A committed venv in a checkout whose path holds the words git uses for "no
+# repository here": the refusal git prints for another reason quotes that path.
+NAGR="$WORK/not a git repository"
+
 # git reads a repo owned by another user only when safe.directory allows it;
 # this makes it take every repo as one, whatever the tester's own config says.
 GIT_AS_OTHER_OWNER="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1"
@@ -296,6 +300,14 @@ ln -sfn "$WORK/venv_symlink_target/.venv" "$WORK/venv_symlink/.venv"
 actual=$(run_bash "$PYTHON_SH_TEST" "cd '$WORK/venv_symlink' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
 assert_eq "bash/va accepts a symlinked venv" "PY=3.12.0" "$actual"
 
+mk_venv "$NAGR/r" "3.12.0"
+(
+    cd "$NAGR/r" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/activate .venv/pyvenv.cfg
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+) >/dev/null 2>&1
+
 for sh in bash zsh; do
     echo "[$sh] va refuses a committed symlinked bin/ and runs nothing behind it"
     rm -f "$WORK/symbin_ran"
@@ -322,6 +334,14 @@ for sh in bash zsh; do
     else
         echo "  SKIP: $sh/va venv repository (git before 2.38 has no safe.bareRepository)"
     fi
+
+    echo "[$sh] va takes only git's own fatal line as 'not a git repository'"
+    # The dubious-ownership refusal quotes the checkout path, which here holds
+    # those words; git's trace lines come before its fatal line.
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$NAGR/r' && export $GIT_AS_OTHER_OWNER && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+    assert_contains "$sh/va refuses when only the quoted path says not a git repository" "rc=1 PY=[]" "$actual"
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && GIT_TRACE2=1 && export GIT_TRACE2 && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>/dev/null | tr -d '\r')
+    assert_eq "$sh/va outside a repo with git trace lines first" "rc=0 PY=[3.13.13]" "$actual"
 
     echo "[$sh] va refuses when git cannot read the repo (dubious ownership)"
     # git exits 128 with no output there; taking that as "not a repo" sourced the
@@ -807,6 +827,31 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
 " | tr -d '\r')
 assert_contains "pwsh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
 assert_contains "pwsh/va activates nothing when git fails" "VE=[] PY=[] LC_ALL_KEPT=[True]" "$actual"
+
+echo "[pwsh] va takes only git's own fatal line as 'not a git repository'"
+mk_venv_ps "$NAGR/ps" "3.12.0"
+(
+    cd "$NAGR/ps" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/Activate.ps1 .venv/pyvenv.cfg
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+) >/dev/null 2>&1
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$NAGR/ps'
+    \$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'
+    \$env:VIRTUAL_ENV = \$null
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va refuses when only the quoted path says not a git repository" "VE=[] PY=[]" "$actual"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv5'
+    \$env:GIT_TRACE2 = '1'
+    \$env:VIRTUAL_ENV = \$null
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va outside a repo with git trace lines first" "VE=[fakevenv] PY=[3.11.4]" "$actual"
 
 echo "[pwsh] va deactivates the active venv first, and only when it activates"
 # python's Activate.ps1 and uv's activate.ps1 each undo only their own kind of

@@ -112,7 +112,8 @@ va() {
         echo "va: $name: bin/ or bin/activate is a symlink, which no venv tool makes; source it yourself if you trust it: source $activate" >&2
         return 1
     fi
-    local tracked why
+    local tracked why nl='
+'
     if command -v git >/dev/null 2>&1; then
         # Ask about all of bin/: a committed symlink bin -> ../scripts is listed as
         # "bin" and the files behind it not at all.
@@ -127,11 +128,17 @@ va() {
         if ! tracked="$(command git -c safe.bareRepository=explicit -C "$name" ls-files -- bin pyvenv.cfg ':(icase)bin' ':(icase)pyvenv.cfg' 2>/dev/null)"; then
             # Fail closed: only "not a git repository" means nothing to check. Any
             # other failure, such as a checkout git will not open for dubious
-            # ownership, leaves a committed venv possible.
-            why="$(LC_ALL=C command git -c safe.bareRepository=explicit -C "$name" ls-files -- bin 2>&1 >/dev/null | head -n 1)"
+            # ownership, leaves a committed venv possible. Any line of git's, as
+            # trace lines may come first, and only from its start, as other
+            # messages quote a path that may hold the same words.
+            why="$nl$(LC_ALL=C command git -c safe.bareRepository=explicit -C "$name" ls-files -- bin 2>&1 >/dev/null)"
             case "$why" in
-                *[Nn]"ot a git repository"*) tracked="" ;;
+                *"${nl}fatal: "[Nn]"ot a git repository"*) tracked="" ;;
                 *)
+                    # Show git's fatal line, else its first.
+                    case "$why" in *"${nl}fatal:"*) why="${nl}fatal:${why#*"${nl}fatal:"}" ;; esac
+                    why="${why#"$nl"}"
+                    why="${why%%"$nl"*}"
                     echo "va: $name: git could not tell whether the venv is committed (${why:-git failed}); source it yourself if you trust it: source $activate" >&2
                     return 1
                     ;;

@@ -179,14 +179,18 @@ function va {
     if ($LASTEXITCODE -ne 0) {
       # Fail closed: only "not a git repository" means nothing to check. Any other
       # failure, such as a checkout git will not open for dubious ownership, leaves
-      # a committed venv possible. LC_ALL=C keeps git's message in English.
+      # a committed venv possible. LC_ALL=C keeps git's message in English. Any
+      # line of git's, as trace lines may come first, and only from its start, as
+      # other messages quote a path that may hold the same words.
       $lcAll = $env:LC_ALL
       $env:LC_ALL = 'C'
-      try { $why = @(& $gitExe -c safe.bareRepository=explicit -C $Name ls-files -- bin 2>&1 | ForEach-Object { "$_" }) | Select-Object -First 1 }
-      catch { $why = "$_" }
+      try { $why = @(& $gitExe -c safe.bareRepository=explicit -C $Name ls-files -- bin 2>&1 | ForEach-Object { "$_" }) }
+      catch { $why = @("$_") }
       finally { $env:LC_ALL = $lcAll }
-      if ("$why" -notmatch 'not a git repository') {
-        Write-Error "'$Name': git could not tell whether the venv is committed ($why); dot-source it yourself if you trust it: . $activatePath"
+      if (-not ($why -match '^fatal: not a git repository')) {
+        # Show git's fatal line, else its first.
+        $reason = @(@($why -match '^fatal:') + $why) | Select-Object -First 1
+        Write-Error "'$Name': git could not tell whether the venv is committed ($reason); dot-source it yourself if you trust it: . $activatePath"
         return
       }
       $tracked = $null
