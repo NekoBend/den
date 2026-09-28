@@ -14,7 +14,7 @@ Dependencies:
 # 1. Network & Web
 # =============================================================================
 
-EMAIL: str = r"(?<![a-zA-Z0-9._%+\-])[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"  # RFC-ish email; (?<!...) tries each run once (linear, no ReDoS)
+EMAIL: str = r"(?<![a-zA-Z0-9._%+\-])[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"  # RFC-ish email; (?<!...) tries each run once (linear, no ReDoS) but misses an address glued to the previous one ("x@a.com-y@b.com")
 URL: str = r"https?://[^\s<>\"')\]]+"  # HTTP/HTTPS URLs
 DOMAIN: str = (
     r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}"  # FQDN
