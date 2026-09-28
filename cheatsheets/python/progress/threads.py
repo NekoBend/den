@@ -131,7 +131,9 @@ def run_thread_rich[T, R](
                 index = index_of[future]
                 error = future.exception()
                 if error is not None:
-                    progress.log(f"item {index} failed: {error!r}")
+                    # markup=False: a "[/..." in the error text would raise
+                    # MarkupError and throw every collected outcome away.
+                    progress.log(f"item {index} failed: {error!r}", markup=False)
                 outcomes[index] = error if error is not None else future.result()
                 progress.advance(task)
         finally:
@@ -158,16 +160,18 @@ def run_thread_rich_per_task[T, R](
            (``steps_per_item`` is the per-item total). Threads share memory,
            so the callback updates the live display directly; for processes
            see ``processes.run_process_rich_per_worker``.
-           Finished item bars are hidden to keep the display bounded, and the
+           An item's bar is created when the item starts and removed when it
+           ends, so neither the display nor memory (every rich task keeps up
+           to 1000 speed samples) grows with the number of items. The
            ``finally`` drops the queued items on Ctrl-C.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    from rich.markup import escape
     from rich.progress import (
         BarColumn,
         MofNCompleteColumn,
         Progress,
-        TaskID,
         TextColumn,
         TimeRemainingColumn,
     )
@@ -184,20 +188,16 @@ def run_thread_rich_per_task[T, R](
     ):
         overall = progress.add_task("Overall", total=len(items))
 
-        def tracked(item: T, bar: TaskID) -> R:
-            progress.update(bar, visible=True)
+        def tracked(item: T) -> R:
+            # TextColumn parses the description as markup: escape the repr.
+            bar = progress.add_task(escape(repr(item)), total=steps_per_item)
             try:
                 return func(item, lambda amount: progress.advance(bar, amount))
             finally:
-                progress.update(bar, visible=False)
+                progress.remove_task(bar)
 
         index_of = {
-            executor.submit(
-                tracked,
-                item,
-                progress.add_task(repr(item), total=steps_per_item, visible=False),
-            ): index
-            for index, item in enumerate(items)
+            executor.submit(tracked, item): index for index, item in enumerate(items)
         }
         try:
             for future in as_completed(index_of):

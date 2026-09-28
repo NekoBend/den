@@ -37,7 +37,7 @@ progress/
 | run_process_tqdm_manual        | processes     | CPU-bound, per-item failures kept         | yes      | yes   | as outcomes     |
 | run_process_rich               | processes     | CPU-bound, pretty UI, failures kept       | yes      | yes   | as outcomes     |
 | run_process_rich_ordered       | processes     | stream results in input order             | yes      | yes   | raise (first)   |
-| run_process_rich_bounded       | processes     | huge / lazy iterables, bounded memory     | yes      | yes   | as outcomes     |
+| run_process_rich_bounded       | processes     | huge / lazy iterables (batch_size ~1000)  | yes      | yes   | as outcomes     |
 | run_process_rich_chunked       | processes     | millions of tiny items (less IPC)         | yes      | yes   | as outcomes     |
 | run_process_rich_sharded       | processes     | N records -> shard per CPU -> blocks      | yes      | yes   | as outcomes     |
 | run_process_thread_rich_nested | processes     | shard per CPU, threads inside for IO      | yes      | yes   | as outcomes     |
@@ -99,6 +99,14 @@ import, which a worker and its parent both have to see. Copy those alongside
 - **Submitting a million futures up front** holds a million pickled arguments
   in memory. Use `run_process_rich_bounded` (a fixed in-flight window) or
   `run_process_rich_chunked` (batches) instead.
+- **One future per tiny item** caps a process pool at a few thousand items
+  per second: every future is a pickle round trip. For file lines or cursor
+  rows give `run_process_rich_bounded` a `batch_size` of about 1000; per-item
+  mode only pays off for items that each take milliseconds or more.
+- **Rich parses markup in `progress.log` text and task descriptions.** An
+  error message or item repr holding `[/...]` raises `MarkupError` (and
+  tag-like brackets vanish), so the sheets log such text with `markup=False`
+  and pass descriptions through `rich.markup.escape`.
 - **Rich lives in the parent only.** A worker process cannot touch the
   parent's `Progress`: its lock is a `threading.RLock` and a `Console` does
   not pickle, so "using the same console" is not possible across processes
