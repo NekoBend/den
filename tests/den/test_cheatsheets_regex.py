@@ -5,7 +5,7 @@ import importlib.util
 import ipaddress
 import itertools
 import re
-import time
+import timeit
 from pathlib import Path
 from types import ModuleType
 
@@ -47,29 +47,52 @@ def japanese() -> ModuleType:
 # --- EMAIL: linear time on long tokens (ReDoS) ----------------------------------
 
 
-def _elapsed(func, *args) -> float:
-    start = time.perf_counter()
-    func(*args)
-    return time.perf_counter() - start
+def _best(func, *args) -> float:
+    return min(timeit.repeat(lambda: func(*args), number=1, repeat=5))
+
+
+def _linear_limit(text: str) -> float:
+    """100x a scan that tests one character class at every position of text.
+
+    Relative to this machine's own regex speed, so a faster machine cannot
+    let a quadratic pattern pass: on 50k chars the linear patterns take
+    about 5-7x this scan, the quadratic ones about 20000x.
+    """
+    return 100 * _best(re.findall, r"[@#]", text)
 
 
 def test_email_scan_is_linear_on_a_long_token(recipes, patterns):
     # Each start inside a run of local-part characters with no "@" rescanned
     # the whole run: 20k chars took ~0.3 s, 50k ~2 s (mask_emails ~4x that).
-    # With the start-of-run lookbehind it is one pass: milliseconds.
+    # With the start-of-run lookbehind it is one pass: under a millisecond.
     token = "a" * 50_000
     text = "user=alice@example.com token=" + token + " contact bob@corp.co.jp"
-    assert _elapsed(recipes.extract_emails, text) < 1.0
-    assert _elapsed(recipes.mask_emails, text) < 1.0
-    assert _elapsed(re.findall, patterns.EMAIL, text) < 1.0
+    limit = _linear_limit(text)
+    assert _best(recipes.extract_emails, text) < limit
+    assert _best(recipes.mask_emails, text) < limit
+    assert _best(re.findall, patterns.EMAIL, text) < limit
     assert recipes.extract_emails(text) == ["alice@example.com", "bob@corp.co.jp"]
     assert recipes.mask_emails(text) == (
         "user=***@example.com token=" + token + " contact ***@corp.co.jp"
     )
 
 
+def test_email_misses_an_address_glued_to_the_previous_one_as_documented(recipes):
+    # The lookbehind's price: "-y" continues the run that "x@a.com" ended, so
+    # "-y@b.com" (found before the ReDoS fix) is skipped. Keep the comment
+    # that says so next to the code that does it.
+    glued = "x@a.com-y@b.com"
+    assert recipes.extract_emails(glued) == ["x@a.com"]
+    assert recipes.mask_emails(glued) == "***@a.com-y@b.com"
+    source = (REGEX_DIR / "recipes.py").read_text(encoding="utf-8")
+    assert source.count(glued) >= 2  # the EMAIL comment and mask_emails
+    patterns_source = (REGEX_DIR / "patterns.py").read_text(encoding="utf-8")
+    assert glued in patterns_source
+
+
 def test_semver_scan_is_linear_on_a_long_digit_run(patterns):
-    assert _elapsed(re.findall, patterns.SEMVER, "1" * 50_000) < 1.0
+    digits = "1" * 50_000
+    assert _best(re.findall, patterns.SEMVER, digits) < _linear_limit(digits)
     assert re.findall(patterns.SEMVER, "v1.2.3 and 10.20.30-rc.1+build.5") == [
         "1.2.3",
         "10.20.30-rc.1+build.5",
