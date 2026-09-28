@@ -31,12 +31,17 @@ function Show-UvOnlyMessage {
   Write-Host "$($Original.TrimEnd()) → $($RedirectedTo.TrimEnd())" -ForegroundColor DarkYellow
 }
 
-# pip → uv pip (falls back to system pip; bypassed in active venv)
+# pip → uv pip (falls back to system pip; an active venv's own pip when it has one)
+# A venv made by uv (vv, vva) has no pip: a PATH lookup then found another
+# Python's pip, which installed there. uv pip installs into the active venv.
 function pip {
   if ($env:VIRTUAL_ENV) {
-    & (_ResolveCmd 'pip' 'App') @Args
+    $venvPip = @('Scripts/pip.exe', 'bin/pip') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
+      Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if ($venvPip) { & $venvPip @Args; return }
+    if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
   }
-  elseif (_ResolveCmd 'uv' 'App') {
+  if (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "pip $($Args -join ' ')" "uv pip $($Args -join ' ')"
     & uv pip @Args
   }
@@ -45,12 +50,15 @@ function pip {
   }
 }
 
-# pip3 → uv pip (falls back to system pip3; bypassed in active venv)
+# pip3 → uv pip (falls back to system pip3; an active venv's own pip3 when it has one)
 function pip3 {
   if ($env:VIRTUAL_ENV) {
-    & (_ResolveCmd 'pip3' 'App') @Args
+    $venvPip = @('Scripts/pip3.exe', 'bin/pip3') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
+      Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if ($venvPip) { & $venvPip @Args; return }
+    if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
   }
-  elseif (_ResolveCmd 'uv' 'App') {
+  if (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "pip3 $($Args -join ' ')" "uv pip $($Args -join ' ')"
     & uv pip @Args
   }

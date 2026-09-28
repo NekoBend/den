@@ -72,7 +72,15 @@ PS_SET_EMPTY_PROFILE="\$PROFILE = '$WORK/empty-profile/Microsoft.PowerShell_prof
 MOCK_PIP_BIN="$WORK/mock-pip-bin"
 mkdir -p "$MOCK_PIP_BIN"
 printf '#!/bin/sh\necho "system-pip $*"\n' > "$MOCK_PIP_BIN/pip"
-chmod +x "$MOCK_PIP_BIN/pip"
+printf '#!/bin/sh\necho "system-pip3 $*"\n' > "$MOCK_PIP_BIN/pip3"
+chmod +x "$MOCK_PIP_BIN/pip" "$MOCK_PIP_BIN/pip3"
+
+# Two active-venv fixtures for pip/pip3: one made by uv, which has no pip of its
+# own, and one with its own pip and pip3 (python -m venv).
+mkdir -p "$WORK/venv_nopip/bin" "$WORK/venv_ownpip/bin"
+printf '#!/bin/sh\necho "venv-pip $*"\n' > "$WORK/venv_ownpip/bin/pip"
+printf '#!/bin/sh\necho "venv-pip3 $*"\n' > "$WORK/venv_ownpip/bin/pip3"
+chmod +x "$WORK/venv_ownpip/bin/pip" "$WORK/venv_ownpip/bin/pip3"
 
 # A repo that commits .venv/bin as a symlink to its own tools/, which holds the
 # activate scripts. git reports the link as "bin" and nothing beneath it, so a
@@ -292,6 +300,19 @@ assert_eq "bash/tgl-uv OFF" "TYPE=function
 uv override: OFF (using system python/pip)
 ENV=0 PIP=gone" "$actual"
 
+for sh in bash zsh; do
+    echo "[$sh] pip/pip3 in a venv use its own pip, else uv pip, never another pip on PATH"
+    # A uv venv has no pip: the PATH lookup found the system pip ahead of it.
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; export PATH='$MOCK_PIP_BIN':\$PATH VIRTUAL_ENV='$WORK/venv_nopip'; pip install requests; pip3 install rich" 2>/dev/null | tr -d '\r')
+    assert_eq "$sh/pip in a venv without pip goes to uv pip" "mock-uv pip install requests
+mock-uv pip install rich" "$actual"
+    err=$("$sh" -c "source '$PYTHON_SH_TEST'; export PATH='$MOCK_PIP_BIN':\$PATH VIRTUAL_ENV='$WORK/venv_nopip'; pip install requests" 2>&1 >/dev/null | tr -d '\r')
+    assert_eq "$sh/pip in a venv without pip says so" "pip install requests → uv pip install requests" "$err"
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; export PATH='$MOCK_PIP_BIN':\$PATH VIRTUAL_ENV='$WORK/venv_ownpip'; pip install requests; pip3 install rich" 2>&1 | tr -d '\r')
+    assert_eq "$sh/pip in a venv with its own pip runs it" "venv-pip install requests
+venv-pip3 install rich" "$actual"
+done
+
 # =============================================================================
 # Zsh tests
 # =============================================================================
@@ -465,6 +486,30 @@ assert_contains "pwsh/pip from a script" "mock-uv pip install rich" "$actual"
 assert_contains "pwsh/python3 from a script" "mock-uv run -- python app.py" "$actual"
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "& '$WORK/usepy.ps1'")
 assert_eq "pwsh/python overrides from a script: no errors" "" "$err"
+
+echo "[pwsh] pip/pip3 in a venv use its own pip, else uv pip, never another pip on PATH"
+# A uv venv has no pip: the PATH lookup found the system pip ahead of it.
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:PATH = '$MOCK_PIP_BIN' + [IO.Path]::PathSeparator + \$env:PATH
+    \$env:VIRTUAL_ENV = '$WORK/venv_nopip'
+    pip install requests 6>\$null
+    pip3 install rich 6>\$null
+    \$env:VIRTUAL_ENV = '$WORK/venv_ownpip'
+    pip install requests
+    pip3 install rich
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/pip in a venv: uv pip without its own pip, else its own" "mock-uv pip install requests
+mock-uv pip install rich
+venv-pip install requests
+venv-pip3 install rich" "$actual"
+# Neither its own pip nor uv: an error, not the system pip.
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:PATH = '$MOCK_PIP_BIN'
+    \$env:VIRTUAL_ENV = '$WORK/venv_nopip'
+    pip install requests 2>&1 | ForEach-Object { \"\$_\" }
+" | tr -d '\r')
+assert_contains "pwsh/pip in a venv without pip or uv fails" "the active venv has no pip and uv is not on PATH" "$actual"
+assert_not_contains "pwsh/pip in a venv without pip or uv runs no system pip" "system-pip" "$actual"
 
 echo "[pwsh] va normalizes pyvenv.cfg version_info"
 mk_venv_ps "$WORK/ps_venv5" "3.11.4.final.0"

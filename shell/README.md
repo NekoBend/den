@@ -154,7 +154,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 | Command | What it does |
 |---------|--------------|
 | `py` `python` `python3` | `uv run python` (uses the active venv's version) |
-| `pip` `pip3` | `uv pip` (bypassed inside an active venv) |
+| `pip` `pip3` | `uv pip` (an active venv's own pip when it has one) |
 | `uv` | injects `--python` for `uv run` when a venv is active |
 | `va [DIR]` | activate a venv (default `.venv`) |
 | `vd` | deactivate |

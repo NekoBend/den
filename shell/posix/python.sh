@@ -32,20 +32,22 @@ _show_uv_only_message() {
     printf '%s → %s\n' "$1" "$2" >&2
 }
 
-# pip → uv pip (falls back to system pip; bypassed in active venv)
+# pip → uv pip (an active venv's own pip when it has one)
+# A venv made by uv (vv, vva) has no pip: a PATH lookup then found another
+# Python's pip, which installed there. uv pip installs into the active venv.
 pip() {
-    if [ -n "$VIRTUAL_ENV" ]; then
-        command pip "$@"
+    if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/pip" ]; then
+        "$VIRTUAL_ENV/bin/pip" "$@"
     else
         _show_uv_only_message "pip${*:+ $*}" "uv pip${*:+ $*}"
         uv pip "$@"
     fi
 }
 
-# pip3 → uv pip (falls back to system pip3; bypassed in active venv)
+# pip3 → uv pip (an active venv's own pip3 when it has one)
 pip3() {
-    if [ -n "$VIRTUAL_ENV" ]; then
-        command pip3 "$@"
+    if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/pip3" ]; then
+        "$VIRTUAL_ENV/bin/pip3" "$@"
     else
         _show_uv_only_message "pip3${*:+ $*}" "uv pip${*:+ $*}"
         uv pip "$@"
