@@ -140,17 +140,63 @@ def _copy(src: Path, dst: Path, writer: _Stager, *, dry_run: bool) -> None:
     writer.stage(dst, src.read_bytes())
 
 
+def _bom_codec(raw: bytes) -> tuple[bytes, str]:
+    """(BOM, codec of the text after it) for an rc file or a PowerShell profile.
+
+    Windows PowerShell 5.1 writes UTF-16LE with a BOM for `'...' > $PROFILE`
+    and Out-File, and editors may add a UTF-8 BOM; with no BOM the file is
+    taken as UTF-8, like every other rc file. Shared with _uninstall, so the
+    block den appends is found and stripped in the same encoding."""
+    for bom, codec in (
+        (b"\xff\xfe", "utf-16-le"),
+        (b"\xfe\xff", "utf-16-be"),
+        (b"\xef\xbb\xbf", "utf-8"),
+    ):
+        if raw.startswith(bom):
+            return bom, codec
+    return b"", "utf-8"
+
+
+def _decode_rc(raw: bytes) -> tuple[str, str]:
+    """(text after the BOM, codec) of an existing rc file.
+
+    UTF-16 decodes strictly and raises UnicodeDecodeError when it cannot: a
+    line appended to such a file would land garbled. UTF-8 decodes losslessly
+    (surrogateescape), since den's own lines are ASCII and fit any
+    ASCII-compatible rc file as they are."""
+    bom, codec = _bom_codec(raw)
+    errors = "strict" if codec != "utf-8" else "surrogateescape"
+    return raw[len(bom) :].decode(codec, errors), codec
+
+
 def _wire(rc: Path, line: str, *, dry_run: bool) -> None:
-    if rc.is_file() and line in rc.read_text(encoding="utf-8", errors="ignore"):
-        print(f"  [skip] {rc} already configured")
-        return
+    """Add den's block to `rc`, creating it when absent. An existing file
+    gets the block in its own encoding, and with CRLF only when every line
+    of it already ends that way (a stray CRLF in a bash rc file must not put
+    a CR on den's line)."""
+    text = codec = None
+    if rc.is_file():
+        try:
+            text, codec = _decode_rc(rc.read_bytes())
+        except UnicodeDecodeError:
+            print(
+                f"  [skip] {rc} does not decode as its BOM says; add this line"
+                f" to it yourself: {line}",
+                file=sys.stderr,
+            )
+            return
+        if line in text:
+            print(f"  [skip] {rc} already configured")
+            return
     if dry_run:
-        print(f"  [dry] {'append to' if rc.is_file() else 'create'} {rc}")
+        print(f"  [dry] {'append to' if text is not None else 'create'} {rc}")
         return
     rc.parent.mkdir(parents=True, exist_ok=True)
-    if rc.is_file():
-        with rc.open("a", encoding="utf-8") as fh:
-            fh.write(f"\n{_COMMENT}\n{line}\n")
+    if text is not None and codec is not None:
+        crlf = "\r\n" in text and "\n" not in text.replace("\r\n", "")
+        eol = "\r\n" if crlf else "\n"
+        with rc.open("ab") as fh:
+            fh.write(f"{eol}{_COMMENT}{eol}{line}{eol}".encode(codec))
         print(f"  [ok] appended to {rc}")
     else:
         rc.write_text(f"{_COMMENT}\n{line}\n", encoding="utf-8")

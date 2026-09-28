@@ -234,6 +234,77 @@ def test_install_shell_wiring_is_idempotent(tmp_path, monkeypatch):
     assert bashrc.count("# ===== den =====") == 1  # den block added once
 
 
+# ---- _wire keeps the rc file's own encoding and line ending ----
+
+
+def _den_block(eol):
+    return f"{eol}{_shell._COMMENT}{eol}{_shell._PWSH_LINE}{eol}"
+
+
+def test_wire_appends_to_a_utf16le_profile_in_utf16le(tmp_path):
+    """Windows PowerShell 5.1 writes $PROFILE as UTF-16LE with a BOM. UTF-8
+    bytes appended to it decode as CJK garbage, every session errors, and the
+    errors='ignore' check then called the file 'already configured'."""
+    prof = tmp_path / _shell._PWSH_PROFILE
+    prof.write_bytes("\ufeffSet-Alias g git\r\n".encode("utf-16-le"))
+    _shell._wire(prof, _shell._PWSH_LINE, dry_run=False)
+    raw = prof.read_bytes()
+    assert raw[:2] == b"\xff\xfe"
+    assert raw[2:].decode("utf-16-le") == "Set-Alias g git\r\n" + _den_block("\r\n")
+    _shell._wire(prof, _shell._PWSH_LINE, dry_run=False)  # really configured now
+    assert prof.read_bytes() == raw
+
+
+def test_wire_appends_to_a_utf16be_profile_in_utf16be(tmp_path):
+    prof = tmp_path / _shell._PWSH_PROFILE
+    prof.write_bytes("\ufeffSet-Alias g git\r\n".encode("utf-16-be"))
+    _shell._wire(prof, _shell._PWSH_LINE, dry_run=False)
+    raw = prof.read_bytes()
+    assert raw[:2] == b"\xfe\xff"
+    assert raw[2:].decode("utf-16-be") == "Set-Alias g git\r\n" + _den_block("\r\n")
+
+
+def test_wire_keeps_a_utf8_bom_and_crlf(tmp_path):
+    prof = tmp_path / _shell._PWSH_PROFILE
+    prof.write_bytes(b"\xef\xbb\xbfSet-Alias g git\r\n")
+    _shell._wire(prof, _shell._PWSH_LINE, dry_run=False)
+    assert prof.read_bytes() == (
+        b"\xef\xbb\xbfSet-Alias g git\r\n" + _den_block("\r\n").encode("utf-8")
+    )
+
+
+def test_wire_refuses_a_utf16_profile_that_does_not_decode(tmp_path, capsys):
+    prof = tmp_path / _shell._PWSH_PROFILE
+    broken = b"\xff\xfe" + "Set-Alias g git".encode("utf-16-le") + b"\x00"  # odd
+    prof.write_bytes(broken)
+    _shell._wire(prof, _shell._PWSH_LINE, dry_run=False)
+    assert prof.read_bytes() == broken, "nothing appended to a file den cannot read"
+    err = capsys.readouterr().err
+    assert "does not decode" in err and _shell._PWSH_LINE in err
+
+
+def test_wire_lf_and_mixed_rc_files_get_lf(tmp_path):
+    """Only a file that uses CRLF throughout gets CRLF: a bash rc file with a
+    stray CRLF line must not get a den line bash would read with a CR."""
+    for mine in (b"export A=1\n", b"export A=1\r\nexport B=2\n"):
+        rc = tmp_path / ".bashrc"
+        rc.write_bytes(mine)
+        _shell._wire(rc, _shell._BASH_LINE, dry_run=False)
+        block = f"\n{_shell._COMMENT}\n{_shell._BASH_LINE}\n".encode()
+        assert rc.read_bytes() == mine + block
+
+
+def test_wire_appends_to_a_non_utf8_rc_file_unchanged(tmp_path):
+    """No BOM means UTF-8, decoded losslessly: a latin-1 byte in the user's
+    own rc file is neither a reason to refuse nor rewritten."""
+    rc = tmp_path / ".bashrc"
+    rc.write_bytes(b"# caf\xe9\n")
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=False)
+    assert rc.read_bytes() == (
+        b"# caf\xe9\n" + f"\n{_shell._COMMENT}\n{_shell._BASH_LINE}\n".encode()
+    )
+
+
 def test_install_shell_no_extras_skips_optional(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     install_main(["shell", "--no-extras"])

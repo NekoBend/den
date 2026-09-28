@@ -255,6 +255,32 @@ def test_strip_block_keeps_a_missing_final_newline(tmp_path):
     assert rc.read_bytes() == b"alias x=y", "no newline invented at EOF"
 
 
+def test_utf16_profile_block_is_found_and_stripped(tmp_path):
+    """The block den appends to a UTF-16 profile (in UTF-16, see _wire) is
+    den's own; uninstall must see it and remove it byte-exactly."""
+    from den._shell import _COMMENT, _PWSH_LINE
+
+    for codec, bom in (("utf-16-le", b"\xff\xfe"), ("utf-16-be", b"\xfe\xff")):
+        rc = tmp_path / "Microsoft.PowerShell_profile.ps1"
+        mine = bom + "Set-Alias g git\r\n".encode(codec)
+        rc.write_bytes(mine + f"\r\n{_COMMENT}\r\n{_PWSH_LINE}\r\n".encode(codec))
+        assert _has_block(rc, _PWSH_LINE)
+        _strip_block(rc, _PWSH_LINE)
+        assert rc.read_bytes() == mine
+        assert not _has_block(rc, _PWSH_LINE)
+
+
+def test_undecodable_utf16_profile_is_left_alone(tmp_path):
+    from den._shell import _PWSH_LINE
+
+    rc = tmp_path / "Microsoft.PowerShell_profile.ps1"
+    broken = b"\xff\xfe" + "x".encode("utf-16-le") + b"\x00"
+    rc.write_bytes(broken)
+    assert not _has_block(rc, _PWSH_LINE)
+    _strip_block(rc, _PWSH_LINE)
+    assert rc.read_bytes() == broken
+
+
 def test_strip_block_removes_den_created_empty_file(tmp_path):
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
     rc = tmp_path / "profile.ps1"  # created form: only den's block
