@@ -65,6 +65,19 @@ function _find_ps_fallback {
     (Get-ChildItem @p).FullName
 }
 
+# ls: Get-ChildItem -Name already emits each name as a string, which has no .Name
+# of its own, so a string passes through as it is.
+# lt / llt: each path is made relative to the current directory with
+# [IO.Path]::GetRelativePath, which is .NET (PowerShell 7) only; the .NET Framework
+# under Windows PowerShell 5.1 lacks it. There the fallback starts with one
+# terminating error, written by the wrapper itself so it reads "lt: ...", instead
+# of failing on every entry. The edition is read here, in code rather than inside
+# the fallback's string, so PowerShell 7 gets the fallback unchanged.
+$_treeGuard = ''
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $_treeGuard = 'Write-Error "without lsd this requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" -ErrorAction Stop; return; '
+}
+
 # ===== Toggle-aware wrappers: modern → native → PS fallback =====
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
 
@@ -74,10 +87,11 @@ New-Wrapper 'grep'    'rg'  ''                              'grep' '--color=auto
 New-Wrapper 'la'      'lsd' '-a'                            'ls'   '-A --color=auto' 'Get-ChildItem -Force @Args'
 New-Wrapper 'll'      'lsd' '-l'                            'ls'   '-lF --color=auto' 'Get-ChildItem @Args | Format-Table Mode, LastWriteTime, Length, Name'
 New-Wrapper 'lla'     'lsd' '-la'                           'ls'   '-laF --color=auto' 'Get-ChildItem -Force @Args | Format-Table Mode, LastWriteTime, Length, Name'
-New-Wrapper 'llt'     'lsd' '-l --tree'                     ''     ''                'Get-ChildItem -Recurse @Args | Select-Object Mode, LastWriteTime, Length, @{N="Name";E={[IO.Path]::GetRelativePath($PWD.Path, $_.FullName)}}'
-New-Wrapper 'ls'      'lsd' ''                              'ls'   '--color=auto'    '(Get-ChildItem @Args).Name'
-New-Wrapper 'lt'      'lsd' '--tree'                        ''     ''                'Get-ChildItem -Recurse @Args | ForEach-Object { [IO.Path]::GetRelativePath($PWD.Path, $_.FullName) }'
+New-Wrapper 'llt'     'lsd' '-l --tree'                     ''     ''                ($_treeGuard + 'Get-ChildItem -Recurse @Args | Select-Object Mode, LastWriteTime, Length, @{N="Name";E={[IO.Path]::GetRelativePath($PWD.Path, $_.FullName)}}')
+New-Wrapper 'ls'      'lsd' ''                              'ls'   '--color=auto'    'Get-ChildItem @Args | ForEach-Object { if ($_ -is [string]) { $_ } else { $_.Name } }'
+New-Wrapper 'lt'      'lsd' '--tree'                        ''     ''                ($_treeGuard + 'Get-ChildItem -Recurse @Args | ForEach-Object { [IO.Path]::GetRelativePath($PWD.Path, $_.FullName) }')
 New-Wrapper 'ripgrep' 'rg'  ''                              ''     ''                ''
+Remove-Variable _treeGuard
 
 # ===== Always-modern w-suffix bypasses (New-WrapperSuffix) =====
 

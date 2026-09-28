@@ -376,6 +376,15 @@ function _ArSameFile([string]$A, [string]$B) {
   $ia = Get-Item -LiteralPath $fa -Force -ErrorAction SilentlyContinue
   $ib = Get-Item -LiteralPath $fb -Force -ErrorAction SilentlyContinue
   if (-not $ia -or -not $ib) { return $false }
+  # _ArLinkTarget needs ResolveLinkTarget or GetFullPath(path, basePath), and
+  # the .NET Framework under Windows PowerShell 5.1 has neither: a symlink would
+  # be compared as its own path, and a source linked to the output would pass
+  # as another file and be overwritten. Thrown there rather than guessed;
+  # archive re-raises it as its own error.
+  if ($PSVersionTable.PSEdition -eq 'Desktop' -and
+      ($ia.LinkType -eq 'SymbolicLink' -or $ib.LinkType -eq 'SymbolicLink')) {
+    throw 'a symlinked source or output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1'
+  }
   # A symlink names another path: compare what each one actually points at.
   $ra = _ArLinkTarget $ia
   $rb = _ArLinkTarget $ib
@@ -404,6 +413,8 @@ function _ArSameFile([string]$A, [string]$B) {
 # any version. Letting the tool write its own '<source>.<ext>' next to the
 # source and moving that onto $Dest would also avoid the redirect, but it
 # destroys a pre-existing file of that name. Returns the tool's exit code.
+# ProcessStartInfo.ArgumentList does not exist on Windows PowerShell 5.1, so
+# archive refuses these formats there before calling this.
 function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
   # .NET resolves relative paths against the process directory, which
   # Set-Location never updates; resolve against the PowerShell location first
@@ -562,6 +573,16 @@ function archive {
               elseif ($Output -match '\.bz2$') { 'bzip2' }
               elseif ($Output -match '\.xz$')  { 'xz'    }
               else                             { 'zstd'  }
+      # gzip/bzip2/xz run through _ArCompressTo, which needs
+      # ProcessStartInfo.ArgumentList: .NET (PowerShell 7) has it, the .NET
+      # Framework under Windows PowerShell 5.1 does not. Refused there before
+      # anything is read or written; zstd writes its own output (-o) instead.
+      # The extension is cut out as text: the .NET Framework's
+      # Path.GetExtension throws on a name holding " < > | or a control
+      # character, and this message must not fail on its way out.
+      if ($tool -ne 'zstd' -and $PSVersionTable.PSEdition -eq 'Desktop') {
+        Write-Error "a $($Output.Substring($Output.LastIndexOf('.'))) output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" -ErrorAction Stop
+      }
       # Exactly one source, and it must already be a REGULAR file -- see
       # _ArRegularFile for why "not a container" was not enough.
       if ($Sources.Count -ne 1 -or -not (_ArRegularFile $Sources[0])) {
@@ -573,8 +594,12 @@ function archive {
       # ON the output, so where the output and the source are one directory
       # entry -- a case-insensitive volume, most obviously -- the source would
       # be replaced by its own compressed form despite the promise to keep it.
-      # _ArSameFile settles that by device and inode, not by path text.
-      if (_ArSameFile $src $Output) {
+      # _ArSameFile settles that by device and inode, not by path text. Where
+      # it cannot (a symlink on Windows PowerShell 5.1) it throws; re-raised
+      # here so it reads "archive: ..." and ends the call like the refusals.
+      try { $same = _ArSameFile $src $Output }
+      catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+      if ($same) {
         Write-Error "output '$Output' is the source file" -ErrorAction Stop
       }
       $toolPath = _ArTool $tool

@@ -159,6 +159,9 @@ line without changing what runs; `_DEN_WRAPPERS=0` turns the wrappers off, as
 | `catw` / `findw` / `grepw` / `lsw` | always bat / fd / rg / lsd | ✓ | ✓ | — |
 | `toggle-wrapper` / `tgl-wr` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
 
+On Windows PowerShell 5.1, `lt` / `llt` need `lsd`: without it (or with the
+wrappers off) they stop with an error that they require PowerShell 7+ (pwsh).
+
 On Windows, `cp` / `mv` / `rm` / `mkdir` / `rmdir` gain Unix-flag behavior via
 microsoft/coreutils when it is installed (pwsh only); otherwise they keep the stock
 PowerShell cmdlet behavior.
@@ -192,6 +195,11 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
+
+On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
+`.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
+So does a bare `.zst` whose output already exists when it or the source is a
+symlink: 5.1 cannot tell whether the link names the other file.
 
 `dg` treats its first operand as the algo only when it is one of those tokens,
 and reads two operands as `<file> <hash>` only when the second is no existing
