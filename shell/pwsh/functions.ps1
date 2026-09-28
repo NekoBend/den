@@ -404,6 +404,8 @@ function _ArSameFile([string]$A, [string]$B) {
 # any version. Letting the tool write its own '<source>.<ext>' next to the
 # source and moving that onto $Dest would also avoid the redirect, but it
 # destroys a pre-existing file of that name. Returns the tool's exit code.
+# ProcessStartInfo.ArgumentList does not exist on Windows PowerShell 5.1, so
+# archive refuses these formats there before calling this.
 function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
   # .NET resolves relative paths against the process directory, which
   # Set-Location never updates; resolve against the PowerShell location first
@@ -562,6 +564,13 @@ function archive {
               elseif ($Output -match '\.bz2$') { 'bzip2' }
               elseif ($Output -match '\.xz$')  { 'xz'    }
               else                             { 'zstd'  }
+      # gzip/bzip2/xz run through _ArCompressTo, which needs
+      # ProcessStartInfo.ArgumentList: .NET (PowerShell 7) has it, the .NET
+      # Framework under Windows PowerShell 5.1 does not. Refused there before
+      # anything is read or written; zstd writes its own output (-o) instead.
+      if ($tool -ne 'zstd' -and $PSVersionTable.PSEdition -eq 'Desktop') {
+        Write-Error "a $([System.IO.Path]::GetExtension($Output)) output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" -ErrorAction Stop
+      }
       # Exactly one source, and it must already be a REGULAR file -- see
       # _ArRegularFile for why "not a container" was not enough.
       if ($Sources.Count -ne 1 -or -not (_ArRegularFile $Sources[0])) {

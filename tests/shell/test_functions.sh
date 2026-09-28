@@ -18,7 +18,9 @@ FUNCTIONS_PS1_COMBINED="/tmp/functions_combined_$$.ps1"
     echo ". '$HELPERS_PS1'"
     cat "$FUNCTIONS_PS1"
 } > "$FUNCTIONS_PS1_COMBINED"
-_cleanup_functions() { rm -f "$FUNCTIONS_PS1_COMBINED" "$FUNCTIONS_SH"; }
+# Written by the Windows PowerShell 5.1 archive case; here so the trap removes it.
+FUNCTIONS_PS1_DESKTOP="/tmp/functions_desktop_$$.ps1"
+_cleanup_functions() { rm -f "$FUNCTIONS_PS1_COMBINED" "$FUNCTIONS_PS1_DESKTOP" "$FUNCTIONS_SH"; }
 trap '_cleanup_functions' EXIT
 
 # =============================================================================
@@ -1978,6 +1980,42 @@ for _ext in $SINGLE_FMTS; do
     actual=$(sha256sum "$WORK/back/payload.bin" 2>/dev/null | cut -d' ' -f1)
     assert_eq "pwsh/extract single-file .$_ext round-trips the bytes" "$PAYLOAD_SHA" "$actual"
 done
+
+# gzip/bzip2/xz go through ProcessStartInfo.ArgumentList, which the .NET
+# Framework under Windows PowerShell 5.1 does not have, so there archive
+# refuses these outputs before it reads or writes anything. No 5.1 host runs
+# here: a copy of functions.ps1 whose edition check reads "Desktop" stands in
+# for one. The refusal is asserted with its exit status, no new output, an
+# existing output left alone and no temporary; zstd, which writes its own
+# output, and the tar formats still run in the same copy, and the unmodified
+# file still writes the formats it refuses there.
+echo "[pwsh] archive refuses .gz/.bz2/.xz on Windows PowerShell 5.1"
+{
+    echo ". '$HELPERS_PS1'"
+    sed 's/\$PSVersionTable\.PSEdition/"Desktop"/g' "$FUNCTIONS_PS1"
+} > "$FUNCTIONS_PS1_DESKTOP"
+for _ext in gz bz2 xz; do
+    setup_single_file
+    printf 'PRECIOUS' > "$WORK/one/keep.$_ext"
+    err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_DESKTOP" "Set-Location '$WORK/one'; archive 'payload.bin.$_ext' 'payload.bin'")
+    assert_contains "pwsh/archive .$_ext on 5.1 says it requires pwsh 7" \
+        "archive: a .$_ext output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1" "$err"
+    run_pwsh "$FUNCTIONS_PS1_DESKTOP" "Set-Location '$WORK/one'; archive 'payload.bin.$_ext' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext on 5.1 exits 1" "1" "$?"
+    assert_not_exists "pwsh/archive .$_ext on 5.1 wrote nothing" "$WORK/one/payload.bin.$_ext"
+    run_pwsh "$FUNCTIONS_PS1_DESKTOP" "Set-Location '$WORK/one'; archive 'keep.$_ext' 'payload.bin'" >/dev/null 2>&1
+    assert_eq "pwsh/archive .$_ext on 5.1 left an existing output untouched" "PRECIOUS" "$(cat "$WORK/one/keep.$_ext" 2>/dev/null)"
+    assert_eq "pwsh/archive .$_ext on 5.1 left no temporary" "" "$(ls -A "$WORK/one" | grep '\.tmp\.' | tr -d '\n')"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/one'; archive 'payload.bin.$_ext' 'payload.bin'" >/dev/null 2>&1
+    assert_success "pwsh/archive .$_ext on pwsh 7 still exits 0" "$?"
+    assert_exists "pwsh/archive .$_ext on pwsh 7 still writes it" "$WORK/one/payload.bin.$_ext"
+done
+setup_fixtures
+mkdir -p "$WORK/one"
+run_pwsh "$FUNCTIONS_PS1_DESKTOP" "Set-Location '$WORK'; archive 'one/f.zst' 'src/file1.txt'; archive 'one/t.tar.gz' 'src'" >/dev/null 2>&1
+assert_success "pwsh/archive .zst and .tar.gz on 5.1 exit 0" "$?"
+assert_exists "pwsh/archive .zst on 5.1 still writes it" "$WORK/one/f.zst"
+assert_exists "pwsh/archive .tar.gz on 5.1 still writes it" "$WORK/one/t.tar.gz"
 
 # pwsh reports these through the error stream, as every other failure in
 # archive/extract does, and terminates so the refusal reaches the process

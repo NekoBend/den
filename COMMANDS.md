@@ -212,6 +212,9 @@ check at all (a missing file, or an algo that disagrees with the hash's length);
   a GNU-escaped name (a Windows name cannot hold a newline). An unknown `-x` is
   a file name here; bash/zsh refuse it as an unknown option.
 
+On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
+`.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
+
 ## Python and uv
 
 The `python` / `pip` family transparently routes through `uv` (unless uv is absent
