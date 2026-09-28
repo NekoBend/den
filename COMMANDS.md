@@ -265,11 +265,16 @@ Loads only when ffmpeg is installed. pwsh has the same set; cmd has none.
 
 pwsh runs `pcp`/`pmv`/`prm` via PowerShell 7's `-Parallel`; bash/zsh use GNU
 parallel when it is installed, else `xargs -P` (both paths pass every argument
-through as one argv element, so a destination with spaces is safe). `pcp` and
-`pmv` overwrite an existing destination file on both shells, read-only or not.
+through as one argv element, so a destination with spaces is safe). Each job
+takes a batch of paths, not one path each, so a glob of many small files is
+not slower than a plain `cp`. `pcp` and `pmv` overwrite an existing destination
+file on both shells, read-only or not. Once confirmed, `prm` removes hidden
+entries too on both shells.
 `ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a plain `tar`
 wrapper on pwsh; both accept `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
-`.tar.xz`/`.txz`.
+`.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). The
+threaded forms write the archive only once tar and the compressor have both
+succeeded, so a failed run leaves no truncated archive.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

@@ -428,6 +428,83 @@ for sh in bash zsh; do
     assert_failure "$sh/ptar unsupported format rc" "$?"
     rm -f "$WORK"/out.*
 
+    echo "[$sh] ptar: a tar failure fails the compressed pipeline forms too"
+    # tar | compressor reported the compressor's status, so a source tar could
+    # not read still exited 0, and the redirection had already truncated the
+    # output: `ptar backup.tgz dir && prm -f dir` deleted unarchived data.
+    setup_fixtures
+    echo "PRECIOUS" > "$WORK/keep.tgz"
+    for _out in out.tar.xz out.tgz out.tbz2 keep.tgz; do
+        $runner "$PARALLEL_SH" "cd '$WORK' && ptar '$WORK/$_out' src missing-src" >/dev/null 2>&1
+        assert_failure "$sh/ptar $_out with a missing source fails" "$?"
+    done
+    assert_not_exists "$sh/ptar failed .tar.xz leaves no archive" "$WORK/out.tar.xz"
+    assert_not_exists "$sh/ptar failed .tgz leaves no archive" "$WORK/out.tgz"
+    assert_eq "$sh/ptar failed run keeps an existing output" "PRECIOUS" "$(cat "$WORK/keep.tgz")"
+    assert_eq "$sh/ptar failed run leaves no staging directory" "" "$(ls -A "$WORK" | grep '^\.ptar\.' | tr -d '\n')"
+    $runner "$PARALLEL_SH" "cd '$WORK' && ptar '$WORK/keep.tgz' src" >/dev/null 2>&1
+    assert_success "$sh/ptar .tgz over an existing output exit code" "$?"
+    assert_contains "$sh/ptar .tgz replaced the existing output" "src/file1.txt" "$(tar tzf "$WORK/keep.tgz" 2>/dev/null)"
+    mkdir -p "$WORK/adir.tgz"
+    $runner "$PARALLEL_SH" "cd '$WORK' && ptar '$WORK/adir.tgz' src" >/dev/null 2>&1
+    assert_failure "$sh/ptar refuses a directory as the output" "$?"
+    assert_eq "$sh/ptar put nothing inside the directory output" "" "$(ls -A "$WORK/adir.tgz")"
+    rm -rf "$WORK"/out.* "$WORK/keep.tgz" "$WORK/adir.tgz"
+
+    echo "[$sh] pcp/pmv/prm hand each job a batch of operands, not one each"
+    # One cp/mv/rm per operand made `pcp * dest` over a few thousand small
+    # files 10-70x slower than a plain cp. cp, mv and rm stubs on PATH log one
+    # line per run, on both the GNU parallel and the xargs branch.
+    setup_fixtures
+    mkdir -p "$WORK/logbin" "$WORK/fakebin"
+    printf '#!/bin/sh\necho "not gnu parallel"\n' > "$WORK/fakebin/parallel"
+    chmod +x "$WORK/fakebin/parallel"
+    for _t in cp mv rm; do
+        printf '#!/bin/sh\necho run >> "%s/%s.log"\nexec %s "$@"\n' "$WORK" "$_t" "$(command -v "$_t")" > "$WORK/logbin/$_t"
+        chmod +x "$WORK/logbin/$_t"
+    done
+    _n=$(( $(nproc 2>/dev/null || echo 4) * 4 ))
+    for _branch in gnu xargs; do
+        _path="$WORK/logbin:$PATH"
+        [ "$_branch" = xargs ] && _path="$WORK/logbin:$WORK/fakebin:$PATH"
+        rm -rf "$WORK/many" "$WORK/copied" "$WORK/moved" "$WORK"/*.log
+        mkdir -p "$WORK/many" "$WORK/copied" "$WORK/moved"
+        _i=1
+        while [ "$_i" -le "$_n" ]; do echo x > "$WORK/many/f$_i"; _i=$((_i + 1)); done
+        $runner "$PARALLEL_SH" "cd '$WORK/many' && PATH='$_path' pcp * '$WORK/copied'" >/dev/null 2>&1
+        assert_success "$sh/$_branch pcp batch exit code" "$?"
+        assert_eq "$sh/$_branch pcp copied every file" "$_n" "$(ls "$WORK/copied" | wc -l | tr -d ' ')"
+        _runs=$(cat "$WORK/cp.log" 2>/dev/null | wc -l | tr -d ' ')
+        assert_eq "$sh/$_branch pcp ran cp fewer times than files ($_runs of $_n)" "yes" "$([ "$_runs" -ge 1 ] && [ "$_runs" -lt "$_n" ] && echo yes)"
+        $runner "$PARALLEL_SH" "cd '$WORK/many' && PATH='$_path' pmv * '$WORK/moved'" >/dev/null 2>&1
+        assert_success "$sh/$_branch pmv batch exit code" "$?"
+        assert_eq "$sh/$_branch pmv moved every file" "$_n" "$(ls "$WORK/moved" | wc -l | tr -d ' ')"
+        _runs=$(cat "$WORK/mv.log" 2>/dev/null | wc -l | tr -d ' ')
+        assert_eq "$sh/$_branch pmv ran mv fewer times than files ($_runs of $_n)" "yes" "$([ "$_runs" -ge 1 ] && [ "$_runs" -lt "$_n" ] && echo yes)"
+        $runner "$PARALLEL_SH" "cd '$WORK/moved' && PATH='$_path' prm -f -- *" >/dev/null 2>&1
+        assert_success "$sh/$_branch prm batch exit code" "$?"
+        assert_eq "$sh/$_branch prm removed every file" "0" "$(ls "$WORK/moved" | wc -l | tr -d ' ')"
+        _runs=$(cat "$WORK/rm.log" 2>/dev/null | wc -l | tr -d ' ')
+        assert_eq "$sh/$_branch prm ran rm fewer times than files ($_runs of $_n)" "yes" "$([ "$_runs" -ge 1 ] && [ "$_runs" -lt "$_n" ] && echo yes)"
+    done
+
+    echo "[$sh] the GNU parallel probe runs once per shell, and again after PATH moves"
+    # `parallel --version` costs about 60 ms and ran on every call.
+    if _real_parallel=$(command -v parallel) && "$_real_parallel" --version 2>/dev/null | grep -q 'GNU parallel'; then
+        mkdir -p "$WORK/probebin" "$WORK/d1" "$WORK/d2" "$WORK/d3"
+        printf '#!/bin/sh\n[ "$1" = --version ] && echo probe >> "%s/probe.log"\nexec %s "$@"\n' "$WORK" "$_real_parallel" > "$WORK/probebin/parallel"
+        chmod +x "$WORK/probebin/parallel"
+        rm -f "$WORK/probe.log"
+        $runner "$PARALLEL_SH" "export PATH='$WORK/probebin:$PATH'; pcp '$WORK/src/file1.txt' '$WORK/d1' && pcp '$WORK/src/file2.txt' '$WORK/d2' && PATH='$WORK/fakebin:$PATH' pcp '$WORK/src/file1.txt' '$WORK/d3'" >/dev/null 2>&1
+        assert_success "$sh/cached probe exit code" "$?"
+        assert_eq "$sh/GNU parallel probed once for two calls" "1" "$(wc -l < "$WORK/probe.log" | tr -d ' ')"
+        assert_exists "$sh/cached probe second call copied" "$WORK/d2/file2.txt"
+        assert_exists "$sh/a non-GNU parallel later on PATH falls back to xargs" "$WORK/d3/file1.txt"
+    else
+        echo "  SKIP: GNU parallel is not installed"
+    fi
+    rm -rf "$WORK/logbin" "$WORK/fakebin" "$WORK/probebin"
+
     echo "[$sh] pxargs"
     actual=$(printf 'a\nb\n' | $runner "$PARALLEL_SH" "pxargs -n1 echo" | sort | tr '\n' ' ')
     assert_eq "$sh/pxargs runs one job per line" "a b " "$actual"
@@ -484,6 +561,63 @@ assert_contains "pwsh/ptar dash source archived" "-dash.txt" "$(tar tzf "$WORK/o
 run_pwsh "$PARALLEL_PS1" "ptar '$WORK/out.tar' '$WORK/src/file1.txt'" >/dev/null
 assert_exists "pwsh/ptar .tar" "$WORK/out.tar"
 rm -f "$WORK"/out.*
+
+echo "[pwsh] ptar: a tar failure is a failure"
+# tar's exit code was never checked: a source tar could not read left a
+# partial archive while ptar, and `pwsh -Command`, reported success.
+setup_fixtures
+for _out in out.tgz out.tar.xz out.tar; do
+    run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; ptar '$_out' src missing-src" >/dev/null 2>&1
+    assert_failure "pwsh/ptar $_out with a missing source exits nonzero" "$?"
+done
+err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK'; ptar out.tgz src missing-src")
+assert_contains "pwsh/ptar names tar's exit code" "tar exited 2" "$err"
+actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { ptar out.tgz src missing-src 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
+assert_eq "pwsh/ptar failure is a terminating error" "caught" "$actual"
+rm -f "$WORK"/out.*
+
+echo "[pwsh] prm: a confirmed removal takes hidden entries too"
+# Remove-Item without -Force refuses hidden items, so a confirmed prm removed
+# every visible file in the tree and left the dotfiles and .git behind.
+# Read-Host is stubbed to answer y and echo the prompt it was asked.
+setup_fixtures
+mkdir -p "$WORK/src/.git"
+echo cfg > "$WORK/src/.git/config"
+echo env > "$WORK/src/.env"
+actual=$(cd / && run_pwsh "$PARALLEL_PS1" "function Read-Host { param([string]\$Prompt) Write-Host \$Prompt; 'y' }; Set-Location '$WORK'; prm src" 2>&1 | tr -d '\r')
+assert_not_exists "pwsh/prm confirmed removed the whole tree" "$WORK/src"
+assert_not_contains "pwsh/prm confirmed raised no hidden-item error" "hidden" "$actual"
+# The count in that prompt came from .NET, which resolved 'src' against the
+# directory pwsh started in (/ here), not the PowerShell location: 1 entry.
+assert_contains "pwsh/prm prompt counts the relative directory" "remove 1 paths (8 entries)?" "$actual"
+
+echo "[pwsh] _CountEntries resolves a relative path against the PowerShell location"
+setup_fixtures
+actual=$(cd / && run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; _CountEntries 'src'" | tr -d '\r')
+assert_eq "pwsh/_CountEntries relative dir" "5" "$actual"
+
+echo "[pwsh] pcp/pmv/prm hand each parallel item a batch of paths"
+# One ForEach-Object -Parallel item per path made pcp 4x slower than a plain
+# Copy-Item over many small files; each item now takes one round-robin list.
+actual=$(run_pwsh "$PARALLEL_PS1" "_Batches @('a','b','c','d','e') 2 | ForEach-Object { \$_ -join ',' }" | tr -d '\r')
+assert_eq "pwsh/_Batches round-robin" "a,c,e
+b,d" "$actual"
+actual=$(run_pwsh "$PARALLEL_PS1" "@(_Batches @('a','b') 8).Count; @(_Batches @() 8).Count" | tr -d '\r')
+assert_eq "pwsh/_Batches never makes an empty list" "2
+0" "$actual"
+setup_fixtures
+rm -rf "$WORK/many" && mkdir -p "$WORK/many" "$WORK/copied" "$WORK/moved"
+_n=$(( $(nproc 2>/dev/null || echo 4) * 4 ))
+_i=1
+while [ "$_i" -le "$_n" ]; do echo x > "$WORK/many/f$_i"; _i=$((_i + 1)); done
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/many'; pcp * '$WORK/copied'" >/dev/null 2>&1
+assert_eq "pwsh/pcp batched copied every file" "$_n" "$(ls "$WORK/copied" | wc -l | tr -d ' ')"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/many'; pmv * '$WORK/moved'" >/dev/null 2>&1
+assert_eq "pwsh/pmv batched moved every file" "$_n" "$(ls "$WORK/moved" | wc -l | tr -d ' ')"
+assert_eq "pwsh/pmv batched emptied the source" "0" "$(ls "$WORK/many" | wc -l | tr -d ' ')"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/moved'; prm -Force *" >/dev/null 2>&1
+assert_eq "pwsh/prm batched removed every file" "0" "$(ls "$WORK/moved" | wc -l | tr -d ' ')"
+rm -rf "$WORK/many" "$WORK/copied" "$WORK/moved"
 
 # =============================================================================
 # Summary

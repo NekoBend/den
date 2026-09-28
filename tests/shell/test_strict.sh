@@ -780,6 +780,7 @@ Case 'thumbnail <in> <time> <out> <options>' { thumbnail media.avi 1 out.png -q:
 Case 'thumbnail, a stray argument' { thumbnail media.avi 1 out.png stray.png }
 
 # ===== parallel.ps1 =====
+Case '_Batches' { _Batches @('a', 'b', 'c') 2; _Batches @('a') 8; _Batches @() 4 }
 Case 'pcp' { pcp }
 Case 'pcp <src>' { pcp a.txt }
 Case 'pcp <src> <dest>' { pcp a.txt dest }
