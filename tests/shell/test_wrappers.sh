@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test_wrappers.sh — Tests for wrappers.sh (bash/zsh) and wrappers.ps1 (pwsh).
-# Tests fallback paths (bat/fd/rg/lsd are NOT installed in test image), then the
-# wrapper notice with stub lsd/bat on PATH.
+# Tests fallback paths (bat/fd/rg/lsd hidden from PATH), then the wrapper notice
+# with stub lsd/bat on PATH.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -47,7 +47,61 @@ sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$WRAPPERS_PS1_STRIPPED" > "$
     abort_suite "cannot write $WRAPPERS_PS1_DESKTOP"
 
 # =============================================================================
-# Bash tests (fallback paths — no bat/fd/rg/lsd installed)
+# A PATH without the modern tools
+# =============================================================================
+# The fallback cases need the modern tools the wrappers prefer to be absent.
+# The CI image lacks them, but a developer machine or den's own dev image
+# (docker/ubuntu, with ~/.cargo/bin on PATH) has them, and there the wrappers
+# took the modern branch: 16 fallback assertions failed on a correct tree. So
+# the rest of this suite runs on a PATH of one directory, FALLBACK_BIN, which
+# links every command on the real PATH (the first of each name, as a lookup
+# finds it) except MODERN_TOOLS. A stand-in for each of those tools goes on the
+# PATH the links are made from, so the checks below prove the tools are hidden
+# on a machine that does not have them too.
+MODERN_TOOLS="bat fd rg lsd"
+FALLBACK_BIN="$TESTTMP/fallback-bin"
+MODERN_STANDINS="$TESTTMP/modern-standins"
+mkdir "$FALLBACK_BIN" "$MODERN_STANDINS" || abort_suite "cannot create $FALLBACK_BIN"
+for _t in $MODERN_TOOLS; do
+    { printf '#!/bin/sh\necho "modern %s $*"\n' "$_t" > "$MODERN_STANDINS/$_t" &&
+        chmod +x "$MODERN_STANDINS/$_t"; } || abort_suite "cannot write $MODERN_STANDINS/$_t"
+done
+IFS=: read -r -a _path_dirs <<< "$MODERN_STANDINS:$PATH"
+for _d in "${_path_dirs[@]}"; do
+    case "$_d" in /*) ;; *) continue ;; esac
+    _links=()
+    for _f in "$_d"/*; do
+        case " $MODERN_TOOLS " in *" ${_f##*/} "*) continue ;; esac
+        [ -f "$_f" ] && [ -x "$_f" ] && [ ! -e "$FALLBACK_BIN/${_f##*/}" ] && _links+=("$_f")
+    done
+    [ "${#_links[@]}" -eq 0 ] || ln -s -- "${_links[@]}" "$FALLBACK_BIN/" ||
+        abort_suite "cannot link the commands of $_d into $FALLBACK_BIN"
+done
+unset _t _d _f _links _path_dirs
+export PATH="$FALLBACK_BIN"
+
+# A modern tool added to the wrappers must be added to MODERN_TOOLS too.
+echo "[setup] MODERN_TOOLS names the modern tools the wrappers prefer"
+actual=$(
+    {
+        awk '$1 == "_wrap" || $1 == "_wsfx" { print $3 }' "$WRAPPERS_SH"
+        sed -n "s/^New-Wrapper[A-Za-z]* *'[^']*' *'\([^']*\)'.*/\1/p" "$WRAPPERS_PS1"
+    } | sort -u | tr '\n' ' '
+)
+assert_eq "setup/MODERN_TOOLS matches the wrappers" "$(tr ' ' '\n' <<< "$MODERN_TOOLS" | sort -u | tr '\n' ' ')" "$actual"
+
+echo "[setup] no modern tool resolves on the fallback PATH"
+actual=$(bash --norc -c "for t in $MODERN_TOOLS; do command -v \$t; done")
+assert_eq "setup/bash finds none" "" "$actual"
+actual=$(zsh -f -c "for t in $MODERN_TOOLS; do command -v \$t; done")
+assert_eq "setup/zsh finds none" "" "$actual"
+actual=$(pwsh -NoProfile -NonInteractive -Command "@(Get-Command ${MODERN_TOOLS// /,} -CommandType Application -ErrorAction SilentlyContinue).Count" | tr -d '\r')
+assert_eq "setup/pwsh finds none" "0" "$actual"
+actual=$(for _t in bash zsh pwsh sort grep find ls cat; do command -v "$_t" >/dev/null || echo "$_t"; done)
+assert_eq "setup/the rest still resolves" "" "$actual"
+
+# =============================================================================
+# Bash tests (fallback paths: bat/fd/rg/lsd hidden from PATH)
 # =============================================================================
 echo "================================================"
 echo "  Testing wrappers.sh with BASH (fallback)"
@@ -391,8 +445,10 @@ actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "lt '$WORK/src' | Out-String")
 actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
 assert_contains "pwsh/lt fallback file1" "file1.txt" "$actual"
 
-# llt fallback
-actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "llt '$WORK/src' | Out-String")
+# llt fallback. Its Name column holds the path relative to the current
+# directory, which for $WORK can be longer than the table's default width, and
+# the table would then cut the name off: -Width keeps it whole.
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "llt '$WORK/src' | Out-String -Width 4096")
 actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
 assert_contains "pwsh/llt fallback file1" "file1.txt" "$actual"
 
