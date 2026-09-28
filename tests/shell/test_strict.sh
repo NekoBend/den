@@ -485,6 +485,10 @@ Case 'tail -n +N, piped' { 'x', 'y' | tail -n +2 }
 Case 'touch, new file' { touch touched.txt }
 Case 'touch, existing file' { touch a.txt }
 Case 'touch, no argument' { touch }
+Case 'touch, [ ] escaped as tab completion writes them' {
+    $null = New-Item -ItemType Directory -Path 'br/[d]'
+    try { touch 'br/`[d`]/x.txt' 'br/`[d`]/x.txt' 'br/`[e`].txt' } finally { Remove-Item -LiteralPath br -Recurse -Force }
+}
 Case 'wc' { wc a.txt }
 Case 'wc -l' { wc -l a.txt }
 Case 'wc -w -c' { wc -w -c a.txt }

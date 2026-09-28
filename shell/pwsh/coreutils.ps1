@@ -225,8 +225,25 @@ function touch {
   $__cu = _CoreutilsBin
   if ($__cu) { & $__cu touch @Args; return }
   if ($Args.Count -eq 0) { Write-Error "usage: <file...>"; return }
-  foreach ($f in $Args) {
-    if (Test-Path $f) { (Get-Item $f).LastWriteTime = Get-Date }
+  foreach ($a in $Args) {
+    # A name is taken literally: [ ] in pages/[id].tsx are not wildcards (New-Item
+    # never read them as such). Tab completion writes them escaped, though
+    # ('./pages/`[id`].tsx'), so where the name as given does not exist, the
+    # unescaped name is taken instead when that exists, or when only its parent
+    # directory does.
+    $f = "$a"
+    if (-not (Test-Path -LiteralPath $f)) {
+      $u = [System.Management.Automation.WildcardPattern]::Unescape($f)
+      if ($u -ne $f) {
+        $fParent = Split-Path -Path $f -Parent
+        $uParent = Split-Path -Path $u -Parent
+        if ((Test-Path -LiteralPath $u) -or
+            ($fParent -and $uParent -and -not (Test-Path -LiteralPath $fParent) -and (Test-Path -LiteralPath $uParent))) {
+          $f = $u
+        }
+      }
+    }
+    if (Test-Path -LiteralPath $f) { (Get-Item -LiteralPath $f).LastWriteTime = Get-Date }
     else { New-Item -ItemType File -Path $f | Out-Null }
   }
 }

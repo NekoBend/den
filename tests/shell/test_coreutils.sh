@@ -286,6 +286,44 @@ else
 fi
 rm -f "$WORK/touchfile.txt" "$WORK/touchfile2.txt"
 
+# touch takes a name literally: [ ] in pages/[id].tsx are not wildcards. Read
+# as wildcards, an existing [id].tsx went unmatched and touch failed with
+# "already exists" and left it as it was, and a new [slug].tsx matched s.tsx,
+# which touch updated instead. Tab completion writes the brackets escaped
+# ('./pages/`[id`].tsx'), and that form still reaches the file, or the
+# directory, it names. Each file starts at 2000-01-01; the output is the year
+# of each afterwards (0 for a file that is not there) and the errors, with
+# _helpers.ps1 loaded (touch asks its _CoreutilsBin first) so that the errors
+# are touch's own.
+echo "[pwsh] touch takes [ ] in a name literally"
+TB_HELPERS=". '$DOTFILES/shell/pwsh/_helpers.ps1'"
+rm -rf "$WORK/tb" && mkdir -p "$WORK/tb/pages" "$WORK/tb/src/routes/[slug]"
+for f in '[id].tsx' 's.tsx' '[ab].md' 'a.md'; do
+    : > "$WORK/tb/pages/$f"
+    touch -t 200001011200 "$WORK/tb/pages/$f"
+done
+tb_years() {
+    local f y out=''
+    for f in "$@"; do
+        y=0
+        [ -e "$WORK/tb/$f" ] && y=$(date -r "$WORK/tb/$f" +%Y)
+        out="$out$f=$y "
+    done
+    printf '%s\n' "${out% }"
+}
+err=$(cd "$WORK/tb" && run_pwsh "$COREUTILS_PS1_STRIPPED" "$TB_HELPERS; touch 'pages/[id].tsx' 'pages/[slug].tsx'" 2>&1 >/dev/null | tr -d '\r')
+assert_eq "touch pages/[id].tsx pages/[slug].tsx: no error" "" "$err"
+now=$(date +%Y)
+assert_eq "touch pages/[id].tsx pages/[slug].tsx: those two, not s.tsx" \
+    "pages/[id].tsx=$now pages/[slug].tsx=$now pages/s.tsx=2000" \
+    "$(tb_years 'pages/[id].tsx' 'pages/[slug].tsx' 'pages/s.tsx')"
+err=$(cd "$WORK/tb" && run_pwsh "$COREUTILS_PS1_STRIPPED" "$TB_HELPERS; touch './pages/\`[ab\`].md' './src/routes/\`[slug\`]/+page.svelte'" 2>&1 >/dev/null | tr -d '\r')
+assert_eq "touch, tab-completed forms: no error" "" "$err"
+assert_eq "touch, tab-completed forms reach [ab].md and a new file in [slug]" \
+    "pages/[ab].md=$now pages/a.md=2000 src/routes/[slug]/+page.svelte=$now pages/\`[ab\`].md=0" \
+    "$(tb_years 'pages/[ab].md' 'pages/a.md' 'src/routes/[slug]/+page.svelte' 'pages/`[ab`].md')"
+rm -rf "$WORK/tb"
+
 # =============================================================================
 # which
 # =============================================================================
