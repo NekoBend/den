@@ -6,6 +6,7 @@ references relative to the skill. These tests keep the committed copy honest."""
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -151,12 +152,73 @@ def test_out_replaces_a_previous_build_and_fills_an_empty_dir(tmp_path):
     out = tmp_path / "skills"
     out.mkdir()
     assert _portable.main(["--out", str(out)]) == 0  # empty: used
-    stale = out / "retired-skill" / "SKILL.md"
-    stale.parent.mkdir()
+    stale = out / "coding" / "stale.md"
     stale.write_text("from an older build")
-    assert _portable.main(["--out", str(out)]) == 0  # a previous build: replaced
-    assert not stale.exists()
+    (out / "README.md").write_text(_portable._DIST_README + "edited\n")
+    assert _portable.main(["--out", str(out)]) == 0  # a previous build: rebuilt
+    assert not stale.exists()  # each generated skill dir is replaced whole
     assert (out / "coding" / "SKILL.md").is_file()
+    assert (out / "README.md").read_text() == _portable._DIST_README
+
+
+def test_out_keeps_the_users_skills_next_to_a_bulk_copied_build(tmp_path):
+    """`cp -r dist/skills/* ~/.claude/skills/` puts the generated README.md
+    next to the user's own skills; a later --out build there took it for a
+    previous build and rmtree'd the whole directory, their skills included."""
+    dist = tmp_path / "dist"
+    _portable.build_tree(dist)
+    out = tmp_path / "skills"
+    mine = out / "my-own-skill" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("mine")
+    (out / "notes.txt").write_text("keep")
+    for entry in dist.iterdir():  # the bulk copy
+        if entry.is_dir():
+            shutil.copytree(entry, out / entry.name)
+        else:
+            shutil.copy2(entry, out / entry.name)
+    assert _portable.main(["--out", str(out)]) == 0
+    assert mine.read_text() == "mine"
+    assert (out / "notes.txt").read_text() == "keep"
+    assert _portable._differences(dist, out) == [
+        "only in committed: my-own-skill/SKILL.md",
+        "only in committed: notes.txt",
+    ]
+
+
+def test_out_unlinks_a_symlinked_skill_dir_without_touching_its_target(tmp_path):
+    out = tmp_path / "skills"
+    _portable.build_tree(out)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "SKILL.md").write_text("theirs")
+    shutil.rmtree(out / "coding")
+    try:
+        (out / "coding").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("this platform/session cannot create symlinks")
+    assert _portable.main(["--out", str(out)]) == 0
+    assert (elsewhere / "SKILL.md").read_text() == "theirs"
+    assert not (out / "coding").is_symlink()
+    assert (out / "coding" / "SKILL.md").is_file()
+
+
+def test_the_default_build_drops_a_retired_skill(monkeypatch, tmp_path):
+    """agents/dist/skills is den's own, so a skill removed from agents/src
+    must leave it too, or --check reports it stale after every rebuild."""
+    out = tmp_path / "skills"
+    _portable.build_tree(out)
+    retired = out / "retired-skill" / "SKILL.md"
+    retired.parent.mkdir()
+    retired.write_text("from an older build")
+    _portable.build_tree(out, whole=True)
+    assert not retired.parent.exists()
+    assert (out / "coding" / "SKILL.md").is_file()
+    calls = []
+    monkeypatch.setattr(_portable, "build_tree", lambda o, **kw: calls.append(kw))
+    assert _portable.main([]) == 0
+    assert _portable.main(["--out", str(out)]) == 0
+    assert calls == [{"whole": True}, {"whole": False}]
 
 
 def test_a_build_that_failed_midway_can_be_rebuilt(monkeypatch, tmp_path):
