@@ -620,45 +620,72 @@ archive() {
                 fi
             fi
             _ar_stage "$out" || return 1
-            _ar_tmp=
-            if [ -e "$out" ] || [ -L "$out" ]; then
-                _ar_tmp="$_ar_tmpd/previous"
-                if ! mv -f -- "$out" "$_ar_tmp"; then
-                    rm -rf -- "$_ar_tmpd"
-                    return 1
+            # Between the move-aside and the restore there is no <out>. A
+            # Ctrl-C (or a TERM or HUP) while the archiver ran ended the
+            # function right there, and the old archive stayed hidden in the
+            # staging directory. The steps run in a subshell whose traps only
+            # note the signal, so they always go on to the restore and the
+            # cleanup; the signal is then raised again on the subshell itself,
+            # so the caller (a loop at the prompt, a script) still sees an
+            # interrupted command. The subshell keeps these traps away from
+            # the user's own.
+            (
+                _ar_sig=
+                trap '_ar_sig=INT' INT
+                trap '_ar_sig=TERM' TERM
+                trap '_ar_sig=HUP' HUP
+                _ar_prev="$_ar_tmpd/previous"
+                _ar_rc=1
+                if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$_ar_prev"; then
+                    if [ -z "$_ar_sig" ]; then
+                        case "$_ar_fmt" in
+                            zip)
+                                zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@"
+                                ;;
+                            *)
+                                # 7z is not in the test image
+                                # (tests/shell/Dockerfile), so a '--' marker
+                                # here cannot be exercised; give the two
+                                # source names 7z reads as something other
+                                # than a path the './' prefix instead, which
+                                # neutralises them without depending on any
+                                # marker support. '-x' is a switch; '@list' is
+                                # a listfile, i.e. 7z archives the paths named
+                                # INSIDE the file rather than the file itself.
+                                #
+                                # Each source is rewritten in one expansion
+                                # over "$@". Rebuilding the list with
+                                # `set -- "$@" x` per source copied the whole
+                                # list on every append: quadratic, so
+                                # `pk a.7z *` over a few thousand files spent
+                                # seconds before 7z started. eval:
+                                # ${@/#pat/rep} is bash/zsh syntax (this file
+                                # is sourced by those two only), which a POSIX
+                                # parser reading the file would reject.
+                                eval 'set -- "${@/#-/./-}"; set -- "${@/#@/./@}"'
+                                7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@"
+                                ;;
+                        esac
+                        _ar_rc=$?
+                        # What a failed archiver left at $out is not the old
+                        # archive, and must not stay in its place.
+                        [ "$_ar_rc" -ne 0 ] && rm -f -- "$out"
+                    fi
                 fi
-            fi
-            case "$_ar_fmt" in
-                zip)
-                    zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@"
-                    ;;
-                *)
-                    # 7z is not in the test image (tests/shell/Dockerfile), so
-                    # a '--' marker here cannot be exercised; give the two
-                    # source names 7z reads as something other than a path the
-                    # './' prefix instead, which neutralises them without
-                    # depending on any marker support. '-x' is a switch;
-                    # '@list' is a listfile, i.e. 7z archives the paths named
-                    # INSIDE the file rather than the file itself.
-                    #
-                    # Each source is rewritten in one expansion over "$@".
-                    # Rebuilding the list with `set -- "$@" x` per source
-                    # copied the whole list on every append: quadratic, so
-                    # `pk a.7z *` over a few thousand files spent seconds
-                    # before 7z started. eval: ${@/#pat/rep} is bash/zsh
-                    # syntax (this file is sourced by those two only), which a
-                    # POSIX parser reading the file would reject.
-                    eval 'set -- "${@/#-/./-}"; set -- "${@/#@/./@}"'
-                    7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@"
-                    ;;
-            esac
-            _ar_rc=$?
-            if [ "$_ar_rc" -ne 0 ]; then
-                rm -f -- "$out"
-                [ -n "$_ar_tmp" ] && mv -f -- "$_ar_tmp" "$out"
-            fi
-            rm -rf -- "$_ar_tmpd"
-            return "$_ar_rc"
+                # Tested by what is in the staging directory rather than by a
+                # flag: a move-aside cut short may still have moved the file.
+                if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
+                    mv -f -- "$_ar_prev" "$out"
+                fi
+                rm -rf -- "$_ar_tmpd"
+                if [ -n "$_ar_sig" ]; then
+                    trap - "$_ar_sig"
+                    # $$ is the parent shell's pid, even in a subshell; the sh
+                    # started here is a child of this subshell.
+                    kill -s "$_ar_sig" "$(exec sh -c 'echo "$PPID"')"
+                fi
+                exit "$_ar_rc"
+            )
             ;;
         *) echo "archive: unsupported format '$out'" >&2; return 1 ;;
     esac

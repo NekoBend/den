@@ -489,6 +489,45 @@ STUB
     fi
     rm -rf "$WORK/self" "$WORK/self.before"
 
+    # Ctrl-C while the archiver ran ended the function between the move-aside
+    # and the restore: <out> was gone, and the old archive sat hidden in the
+    # staging directory. A zip stub that waits stands in for a slow zip. The
+    # run gets a process group of its own (set -m), and the whole group gets
+    # the signal, as Ctrl-C at a terminal does. A shell started with SIGINT
+    # ignored (a background job of a non-interactive shell) cannot trap it, so
+    # the run starts with SIGINT at its default (env --default-signal,
+    # coreutils 8.31+).
+    for _sig in INT TERM; do
+        echo "[$sh] archive .zip interrupted by SIG$_sig puts the previous archive back"
+        if ! env --default-signal=INT true 2>/dev/null; then
+            echo "  SKIP: env has no --default-signal"
+            continue
+        fi
+        rm -rf "$WORK/slow"
+        mkdir -p "$WORK/slow/bin" "$WORK/slow/src"
+        echo x > "$WORK/slow/src/x"
+        echo PRECIOUS > "$WORK/slow/keep.zip"
+        printf '#!/bin/sh\n: > "%s/started"\nsleep 10\n' "$WORK/slow" > "$WORK/slow/bin/zip"
+        chmod +x "$WORK/slow/bin/zip"
+        (
+            set -m
+            env --default-signal=INT "$sh" -c "source '$FUNCTIONS_SH' && PATH='$WORK/slow/bin:$PATH' && cd '$WORK/slow' && archive keep.zip src; echo after" > "$WORK/slow.out" 2>&1 &
+            _pid=$!
+            _i=0
+            while [ ! -e "$WORK/slow/started" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+            kill -"$_sig" -- "-$_pid"
+            wait "$_pid"
+            echo "status=$?" >> "$WORK/slow.out"
+        )
+        actual=$(cat "$WORK/slow.out")
+        assert_eq "$sh/archive .zip after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/slow/keep.zip" 2>/dev/null)"
+        assert_eq "$sh/archive .zip after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/slow" | grep '^\.archive\.' | tr -d '\n')"
+        # The signal is raised again, so the caller stops as it would have.
+        assert_not_contains "$sh/archive .zip after SIG$_sig stops its caller" "after" "$actual"
+        assert_not_contains "$sh/archive .zip after SIG$_sig does not report success" "status=0" "$actual"
+    done
+    rm -rf "$WORK/slow" "$WORK/slow.out"
+
     # `set -- "$@" x` per source made the 7z branch quadratic: 20000 sources
     # took minutes in bash before 7z even started. Linear, it is well under a
     # second; the timeout only catches the quadratic form.
