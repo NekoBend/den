@@ -29,21 +29,9 @@ function _CountEntries {
     return $total
 }
 
-# _ResolvePaths → expand wildcard arguments. Functions do not glob-expand
-# their arguments and every downstream call uses -LiteralPath, so `pcp *.md d`
-# would look for a file literally named '*.md'. An existing literal path is
-# kept as is; a pattern with no match passes through so the downstream error
-# names it.
-function _ResolvePaths {
-    param([string[]]$Patterns)
-    $out = @()
-    foreach ($p in $Patterns) {
-        if (Test-Path -LiteralPath $p) { $out += $p; continue }
-        $hits = @(Convert-Path -Path $p -ErrorAction SilentlyContinue)
-        if ($hits.Count -eq 0) { $out += $p } else { $out += $hits }
-    }
-    return ,$out
-}
+# Each command below expands its wildcard operands with _ResolvePaths
+# (_helpers.ps1, which init.ps1 loads first): a function receives `pcp *.md d`
+# unexpanded, and every call below uses -LiteralPath.
 
 # ===== Parallel File Operations =====
 
