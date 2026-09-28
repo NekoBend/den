@@ -585,6 +585,57 @@ for next in nocfg broken; do
     assert_eq "pwsh/va to a $next venv drops the previous version" "$want" "$actual"
 done
 
+echo "[pwsh] va switches between the two kinds of activate script; vd restores PATH"
+# python's Activate.ps1 keeps the old PATH in $env:_OLD_VIRTUAL_PATH, uv's and
+# virtualenv's activate.ps1 in a global variable, and each one's own
+# deactivate -NonDestructive restores only its own. These stand-ins keep just that
+# part of each, so the switch is tested where uv is not installed (the CI image).
+mkdir -p "$WORK/ps_kinds/std/bin" "$WORK/ps_kinds/uv/bin"
+cat > "$WORK/ps_kinds/std/bin/Activate.ps1" << 'PS1'
+function global:deactivate([switch]$NonDestructive) {
+    if (Test-Path Env:_OLD_VIRTUAL_PATH) {
+        $env:PATH = $env:_OLD_VIRTUAL_PATH
+        Remove-Item Env:_OLD_VIRTUAL_PATH
+    }
+    Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+    if (-not $NonDestructive) { Remove-Item function:deactivate }
+}
+deactivate -NonDestructive
+$env:VIRTUAL_ENV = Split-Path -Parent $PSScriptRoot
+$env:_OLD_VIRTUAL_PATH = $env:PATH
+$env:PATH = $PSScriptRoot + [IO.Path]::PathSeparator + $env:PATH
+PS1
+cat > "$WORK/ps_kinds/uv/bin/activate.ps1" << 'PS1'
+function global:deactivate([switch]$NonDestructive) {
+    if (Test-Path variable:_OLD_VIRTUAL_PATH) {
+        $env:PATH = $variable:_OLD_VIRTUAL_PATH
+        Remove-Variable _OLD_VIRTUAL_PATH -Scope global
+    }
+    Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+    if (-not $NonDestructive) { Remove-Item function:deactivate }
+}
+deactivate -NonDestructive
+$env:VIRTUAL_ENV = Split-Path -Parent $PSScriptRoot
+New-Variable -Scope global -Name _OLD_VIRTUAL_PATH -Value $env:PATH
+$env:PATH = $PSScriptRoot + [IO.Path]::PathSeparator + $env:PATH
+PS1
+for pair in "std uv" "uv std"; do
+    first=${pair% *} second=${pair#* }
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        \$env:VIRTUAL_ENV = \$null
+        \$p0 = \$env:PATH
+        va '$WORK/ps_kinds/$first' *>\$null
+        va '$WORK/ps_kinds/$second' *>\$null
+        \$leaf = if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV } else { '' }
+        \$venvDirs = @(\$env:PATH -split [IO.Path]::PathSeparator | Where-Object { \$_ -like '*ps_kinds*' }).Count
+        \"VE=[\$leaf] VENV_DIRS_ON_PATH=[\$venvDirs]\"
+        vd
+        \"PATH=[\$(\$env:PATH -eq \$p0)]\"
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/va $first-kind then $second-kind stand-in, then vd" "VE=[$second] VENV_DIRS_ON_PATH=[1]
+PATH=[True]" "$actual"
+done
+
 # =============================================================================
 # uv-created venvs (the real uv, when it is installed and has a Python to use)
 # =============================================================================
