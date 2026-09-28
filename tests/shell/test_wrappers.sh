@@ -11,14 +11,16 @@ HELPERS_PS1="$DOTFILES/shell/pwsh/_helpers.ps1"
 WRAPPERS_PS1="$DOTFILES/shell/pwsh/wrappers.ps1"
 
 # wrappers.sh has an interactive guard (case $- in *i*).
-# Use bash --norc -ic / zsh -ic to bypass it (--norc avoids .bashrc alias conflicts).
+# Use bash --norc -ic / zsh -f -ic to bypass it. --norc and -f skip the rc
+# files, whose aliases (oh-my-zsh's ll, say) would replace the wrapper under
+# test; -f also skips the global zshrc, whose compinit writes ~/.zcompdump.
 # _helpers.sh must be sourced first (provides _wrap/_wsfx).
 run_bash_i() {
     bash --norc -ic "source '$HELPERS_SH' && source '$1' && $2" 2>/dev/null
 }
 
 run_zsh_i() {
-    zsh -ic "source '$HELPERS_SH' && source '$1' && $2" 2>/dev/null
+    zsh -f -ic "source '$HELPERS_SH' && source '$1' && $2" 2>/dev/null
 }
 
 # wrappers.ps1 has a `_DenInteractive` guard (returns early under pwsh -Command).
@@ -104,6 +106,15 @@ echo "[zsh] cat fallback"
 echo "hello wrapper" > "$WORK/wrap_test.txt"
 actual=$(run_zsh_i "$WRAPPERS_SH" "cat '$WORK/wrap_test.txt'")
 assert_eq "zsh/cat fallback" "hello wrapper" "$actual"
+
+echo "[zsh] the runner reads no ~/.zshrc"
+ZSHRC_HOME="$WORK/zshrc_home"
+mkdir -p "$ZSHRC_HOME"
+echo "alias cat='echo HIJACKED-BY-ZSHRC'" > "$ZSHRC_HOME/.zshrc"
+actual=$(HOME="$ZSHRC_HOME" run_zsh_i "$WRAPPERS_SH" "cat '$WORK/wrap_test.txt'")
+assert_eq "zsh/runner ignores ~/.zshrc aliases" "hello wrapper" "$actual"
+assert_not_exists "zsh/runner writes no ~/.zcompdump" "$ZSHRC_HOME/.zcompdump"
+rm -rf "$ZSHRC_HOME"
 
 echo "[zsh] find fallback"
 setup_fixtures
