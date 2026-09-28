@@ -737,7 +737,8 @@ function up {
   _DenDirMoved $MyInvocation
 }
 
-# .. / .1–.9 → shorthand for up
+# .. / .1-.9 → shorthand for up. PowerShell reads a bare .1 as the number 0.1,
+# so .1-.9 run only as & '.1' (COMMANDS.md points pwsh users at up N instead).
 # (.N records the move itself: up, called from it, is not typed at the prompt)
 function .. { Set-Location ..; _DenDirMoved $MyInvocation }
 1..9 | ForEach-Object {

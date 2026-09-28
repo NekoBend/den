@@ -35,7 +35,8 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 | `cdi` | interactive zoxide jump (fzf picker) | ✓ | ✓ | `zi` |
 | `zd` / `zdi` | always jump via zoxide, ignoring the wrapper toggle | ✓ | ✓ | ✓ |
 | `up [N]` | go up N directories (default 1) | ✓ | ✓ | ✓ |
-| `..`, `.1`–`.9` | go up 1..9 levels (`..` = one) | ✓ | ✓ | ✓ |
+| `..` | go up one level | ✓ | ✓ | ✓ |
+| `.1`-`.9` | go up 1..9 levels (on pwsh use `up N`: PowerShell reads `.1` as the number 0.1) | ✓ | — | ✓ |
 | `mkcd <dir>` | `mkdir -p` then cd into it | ✓ | ✓ | ✓ |
 | `cdf` | fuzzy-find a subdirectory (fd + fzf) and cd into it | ✓ | ✓ | — |
 | `back [N]` | go N entries back in the directory history (default 1) | ✓ | ✓ | ✓ |
@@ -79,7 +80,7 @@ $ back -l
 - `cd -` is unchanged, and counts as an ordinary move.
 - How moves are seen: zsh `chpwd`; bash `PROMPT_COMMAND` (den's `cd` records at
   once, other moves at the next prompt); PowerShell the prompt (den's navigation
-  commands, `cd`, `cdi`, `zd`, `zdi`, `up`, `..`, `.1`-`.9`, `mkcd`, `cdf`, `y`,
+  commands, `cd`, `cdi`, `zd`, `zdi`, `up`, `..`, `mkcd`, `cdf`, `y`,
   record at once when typed, not when a script or a function runs them, so a
   script counts only by where it ends up); cmd the Clink prompt filter in
   `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`

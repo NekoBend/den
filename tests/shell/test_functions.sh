@@ -2321,6 +2321,32 @@ actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
 ")
 assert_eq "pwsh/up 2" "$WORK/a" "$actual"
 
+# A bare .1 is the number 0.1 to PowerShell, not a call of den's .1 function
+# (only `& '.1'` reaches that), so the docs mark .1-.9 as not on pwsh and point
+# at up N there.
+echo "[pwsh] .1 is a number to PowerShell; the docs point at up N"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    New-Item -ItemType Directory -Force -Path '$WORK/a/b/c' | Out-Null
+    Set-Location '$WORK/a/b/c'
+    .1
+    (Get-Location).Path
+")
+assert_eq "pwsh/bare .1 prints 0.1 and stays put" "0.1
+$WORK/a/b/c" "$actual"
+# The shell test image copies only shell/ and tests/shell/, not COMMANDS.md.
+if [ -f "$DOTFILES/COMMANDS.md" ]; then
+    # The pwsh cell holds the legend's own "not provided" symbol.
+    none=$(sed -n 's/.*`\([^`]*\)` not provided.*/\1/p' "$DOTFILES/COMMANDS.md" | head -n 1)
+    row=$(grep -F '| `.1`-`.9` |' "$DOTFILES/COMMANDS.md" | head -n 1)
+    assert_eq "docs/COMMANDS .1-.9 not provided on pwsh" "$none" \
+        "$(printf '%s\n' "$row" | awk -F '|' '{ gsub(/ /, "", $5); print $5 }')"
+    assert_contains "docs/COMMANDS .1-.9 row points at up N" '`up N`' "$row"
+else
+    echo "  SKIP: docs/COMMANDS .1-.9 row (no COMMANDS.md in $DOTFILES)"
+fi
+assert_eq "docs/README no .1-.9 on pwsh" 'no `.1`..`.9` on pwsh' \
+    "$(grep -oF -- 'no `.1`..`.9` on pwsh' "$DOTFILES/shell/README.md" | head -n 1)"
+
 # Given no arguments, cd, zd, cdi and zdi call zoxide with none: splatting the
 # $null an empty $Rest holds would hand it one $null argument.
 echo "[pwsh] cd, zd, cdi, zdi with no arguments pass zoxide none"
