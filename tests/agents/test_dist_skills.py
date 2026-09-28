@@ -121,3 +121,54 @@ def test_copies_never_mention_den_in_any_file(tmp_path):
         text = path.read_text(encoding="utf-8", errors="ignore")
         hit = DEN_WORD.search(text)
         assert hit is None, f"{path.relative_to(tmp_path)}: {hit.group(0)!r}"
+
+
+# ---- --out only ever replaces what a build made ----
+
+
+def test_out_never_deletes_a_directory_it_did_not_build(tmp_path, capsys):
+    """Building straight into a tool's skill dir (--out ~/.claude/skills) is
+    the natural thing to try; build_tree rmtree'd it, the user's own skills
+    included, without a word."""
+    out = tmp_path / "skills"
+    mine = out / "my-own-skill" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("mine")
+    assert _portable.main(["--out", str(out)]) == 2
+    assert mine.read_text() == "mine"
+    assert sorted(p.name for p in out.iterdir()) == ["my-own-skill"]
+    assert "not a previous den-free build" in capsys.readouterr().err
+
+
+def test_out_never_deletes_a_file(tmp_path):
+    out = tmp_path / "notes.txt"
+    out.write_text("keep")
+    assert _portable.main(["--out", str(out)]) == 2
+    assert out.read_text() == "keep"
+
+
+def test_out_replaces_a_previous_build_and_fills_an_empty_dir(tmp_path):
+    out = tmp_path / "skills"
+    out.mkdir()
+    assert _portable.main(["--out", str(out)]) == 0  # empty: used
+    stale = out / "retired-skill" / "SKILL.md"
+    stale.parent.mkdir()
+    stale.write_text("from an older build")
+    assert _portable.main(["--out", str(out)]) == 0  # a previous build: replaced
+    assert not stale.exists()
+    assert (out / "coding" / "SKILL.md").is_file()
+
+
+def test_a_build_that_failed_midway_can_be_rebuilt(monkeypatch, tmp_path):
+    """The README marker is written first, so a build that stopped on a
+    stale anchor still reads as den's own and the next run may replace it."""
+    out = tmp_path / "skills"
+    with monkeypatch.context() as m:
+        m.setattr(
+            _portable,
+            "table",
+            lambda: {"shared/reference/python.md": [{"from": "NOT THERE", "to": ""}]},
+        )
+        with pytest.raises(ValueError, match="occurs 0 times"):
+            _portable.build_tree(out)
+    assert _portable.main(["--out", str(out)]) == 0

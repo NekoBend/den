@@ -11,7 +11,9 @@ shared/ reference becomes a path relative to the skill's own directory.
 
   python3 -m den._portable            regenerate agents/dist/skills/
   python3 -m den._portable --check    exit 1 if the committed copy is stale
-  python3 -m den._portable --out DIR  build somewhere else
+  python3 -m den._portable --out DIR  build into DIR instead; DIR is replaced,
+                                      so it must be absent, empty, or a
+                                      previous build (anything else: exit 2)
 """
 
 from __future__ import annotations
@@ -79,17 +81,45 @@ def _add_preamble(skill_md: Path) -> None:
     skill_md.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _replaceable(out: Path) -> bool:
+    """True when build_tree may delete `out`: absent, an empty directory, or a
+    previous den-free build (the generated README.md's first line)."""
+    if not out.exists() and not out.is_symlink():
+        return True
+    if out.is_symlink() or not out.is_dir():
+        return False
+    if not any(out.iterdir()):
+        return True
+    try:
+        first = (out / "README.md").read_text(encoding="utf-8").split("\n", 1)[0]
+    except (OSError, UnicodeDecodeError):
+        return False
+    return first == _DIST_README.split("\n", 1)[0]
+
+
 def build_tree(out: Path) -> None:
-    """Build every skill's den-free copy under `out` (replacing it)."""
+    """Build every skill's den-free copy under `out` (replacing it).
+
+    Raises FileExistsError, deleting nothing, when `out` holds anything but a
+    previous build: `--out ~/.claude/skills` must not take the user's own
+    skills with it."""
+    if not _replaceable(out):
+        msg = (
+            f"{out} is not empty and not a previous den-free build; refusing to"
+            " replace it (build into a new directory and copy the skills over)"
+        )
+        raise FileExistsError(msg)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
+    # First, so a build that stops midway (a stale anchor) is still recognized
+    # as den's own and the next run may replace it.
+    (out / "README.md").write_text(_DIST_README, encoding="utf-8")
     for name in _skill_names():
         work = out / name
         _materialize(name, work, "shared/", no_den_cli=True)
         if (work / "shared").is_dir():  # the note is only true when shared/ ships
             _add_preamble(work / "SKILL.md")
-    (out / "README.md").write_text(_DIST_README, encoding="utf-8")
 
 
 def _differences(a: Path, b: Path) -> list[str]:
@@ -126,7 +156,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         i += 1
     if not check:
-        build_tree(out)
+        try:
+            build_tree(out)
+        except FileExistsError as exc:
+            print(f"den._portable: {exc}", file=sys.stderr)
+            return 2
         print(f"built den-free skills -> {out}")
         return 0
     with tempfile.TemporaryDirectory() as td:
