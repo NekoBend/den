@@ -8,6 +8,7 @@ without it these tests are skipped.
 
 import asyncio
 import importlib
+import multiprocessing
 import os
 import queue
 import sys
@@ -36,6 +37,17 @@ threads = importlib.import_module("threads")
 def wide_console(monkeypatch):
     # rich reads COLUMNS on every size query: keep log lines unwrapped.
     monkeypatch.setenv("COLUMNS", "300")
+
+
+@pytest.fixture(autouse=True)
+def spawn_workers() -> Iterator[None]:
+    # The sheets' own sanity check runs under spawn, and so do these tests:
+    # forking while rich's refresh thread runs (the 3.12/3.13 Linux default)
+    # can deadlock the child. Restored afterwards for the rest of the session.
+    before = multiprocessing.get_start_method(allow_none=True)
+    multiprocessing.set_start_method("spawn", force=True)
+    yield
+    multiprocessing.set_start_method(before, force=True)
 
 
 # --- worker functions: top level, so a process pool can pickle them ----------
