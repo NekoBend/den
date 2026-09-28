@@ -659,14 +659,13 @@ def run_process_rich_per_worker[T, R](
     [Note] ``func`` calls ``report(done, total)`` as it makes progress (as
            often as it likes: ``_report_to_queue`` forwards at most ~10
            updates a second) and ``log(text)`` for anything it would
-           otherwise print; the parent
-           keeps a bar per worker pid, retitled for each new item, and prints
-           log lines above the bars. Messages travel over a
-           ``Manager().Queue()`` and a pump thread applies them to the display
-           (rich's ``Progress`` is thread-safe). The ``finally`` drops the
-           queued items on Ctrl-C, then stops the pump thread - in that order,
-           so the workers that are still finishing keep a live queue to report
-           on. Pair with ``_report_to_queue``.
+           otherwise print; the parent keeps a bar per worker pid, retitled
+           for each new item, and prints log lines above the bars. Messages
+           travel over a ``Manager().Queue()`` and a pump thread applies them
+           to the display (rich's ``Progress`` is thread-safe). The
+           ``finally`` drops the queued items on Ctrl-C, then stops the pump
+           thread - in that order, so the workers that are still finishing
+           keep a live queue to report on. Pair with ``_report_to_queue``.
     """
     import multiprocessing
     import threading
