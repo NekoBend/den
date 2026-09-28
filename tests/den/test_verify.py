@@ -367,10 +367,101 @@ def test_several_files_each_verified(tmp_path, monkeypatch, capsys):
     formats = [
         c for c in cmds if Path(c[0]).name == "ruff" and c[1:3] == ["format", "--check"]
     ]
-    assert [c[-1] for c in formats] == [str(a), str(b)]
+    assert [c[3:] for c in formats] == [[str(a), str(b)]]  # one run for both
     out = capsys.readouterr().out
     assert f"== {a}" in out and f"== {b}" in out
-    assert "across 2 files" in out
+    assert out.count("PASS format") == out.count("PASS typecheck") == 2
+    assert "6 passed, 0 failed, 0 skipped across 2 files" in out
+
+
+# ---- one process per stage per (config, project), per-file results kept ----
+
+
+def _respond(monkeypatch, answer):
+    """Fake run(): `answer(argv)` -> (rc, output) per stage call; the settings
+    query says ruff uses no config file. Returns the stage argvs."""
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(_exe.shutil, "which", _fake_which)
+
+    def _run(cmd, **k):
+        if "--show-settings" in cmd:
+            return _Proc(0, _show_settings(None))
+        cmds.append(cmd)
+        rc, out = answer(cmd)
+        return _Proc(rc, out)
+
+    monkeypatch.setattr(_verify.subprocess, "run", _run)
+    return cmds
+
+
+def test_files_of_one_project_share_one_process_per_stage(tmp_path, monkeypatch):
+    """den verify started 3 processes per file, and ty re-resolved the same
+    project in every one of them."""
+    files = [_py(tmp_path, f"m{i}.py") for i in range(4)]
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    cmds = _respond(monkeypatch, lambda cmd: (0, ""))
+    assert verify_main([str(f) for f in files]) == 0
+    assert len(cmds) == 3
+    for cmd in cmds:
+        assert cmd[-4:] == [str(f) for f in files]
+    assert cmds[2][1:4] == ["check", "--project", str(tmp_path)]
+
+
+def test_a_failing_batch_reports_each_file_as_a_solo_run_would(
+    tmp_path, monkeypatch, capsys
+):
+    """Only the file the batch output names is re-run alone, for its exact
+    PASS/FAIL and FAIL detail; the others pass without another process."""
+    a, b, c = (_py(tmp_path, f"{n}.py") for n in "abc")
+
+    def answer(cmd):
+        if cmd[1:3] == ["format", "--check"] and str(b) in cmd:
+            return 1, f"Would reformat: {b}\n1 file would be reformatted"
+        return 0, ""
+
+    cmds = _respond(monkeypatch, answer)
+    assert verify_main([str(a), str(b), str(c)]) == 1
+    formats = [x[3:] for x in cmds if x[1:3] == ["format", "--check"]]
+    assert formats == [[str(a), str(b), str(c)], [str(b)]]
+    out = capsys.readouterr().out
+    per_file = out.split("== ")[1:]
+    assert "PASS format" in per_file[0]
+    assert f"FAIL format\n  Would reformat: {b}" in per_file[1]
+    assert "PASS format" in per_file[2]
+    assert "8 passed, 1 failed, 0 skipped across 3 files" in out
+
+
+def test_a_batch_that_errors_reruns_every_file_alone(tmp_path, monkeypatch, capsys):
+    """Exit 2 is ruff's (and ty's) own error, not a diagnostic: nothing ties it
+    to one file, so each file gets its own run."""
+    a, b = _py(tmp_path, "a.py"), _py(tmp_path, "b.py")
+
+    def answer(cmd):
+        if Path(cmd[0]).name == "ty" and len(cmd) > 5:
+            return 2, "error: something about the batch"
+        if Path(cmd[0]).name == "ty" and str(b) in cmd:
+            return 1, f"error[x] {b}:1:1 broken"
+        return 0, ""
+
+    cmds = _respond(monkeypatch, answer)
+    assert verify_main([str(a), str(b)]) == 1
+    tys = [x[4:] for x in cmds if Path(x[0]).name == "ty"]
+    assert tys == [[str(a), str(b)], [str(a)], [str(b)]]
+    out = capsys.readouterr().out
+    assert "PASS typecheck" in out.split("== ")[1]
+    assert "FAIL typecheck" in out.split("== ")[2]
+
+
+def test_files_in_different_projects_are_grouped_apart(tmp_path, monkeypatch):
+    one = _py(tmp_path / "one", "x.py")
+    two = _py(tmp_path / "two", "y.py")
+    for root in ("one", "two"):
+        (tmp_path / root / "pyproject.toml").write_text("[project]\nname='x'\n")
+    cmds = _respond(monkeypatch, lambda cmd: (0, ""))
+    assert verify_main([str(one), str(two)]) == 0
+    tys = [x for x in cmds if Path(x[0]).name == "ty"]
+    assert [x[3] for x in tys] == [str(tmp_path / "one"), str(tmp_path / "two")]
+    assert [x[4:] for x in tys] == [[str(one)], [str(two)]]
 
 
 def test_several_files_one_unusable_still_runs_the_rest(tmp_path, monkeypatch, capsys):

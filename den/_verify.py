@@ -1,4 +1,4 @@
-"""den verify - format / lint / typecheck one Python file, config-faithfully.
+"""den verify - format / lint / typecheck Python files, config-faithfully.
 
 Hidden runtime command (like hook/memory): agents call it after writing code.
 The design rule is "discover like the tools do, make the discovery visible,
@@ -29,7 +29,9 @@ Output is line-oriented for model consumption: one `config:` line per tool,
 then PASS / FAIL / SKIP per stage. FAIL detail is capped; SKIP always names
 the next action. Exit 0 = no failures, 1 = failures, 2 = usage. Tool output
 is decoded as UTF-8 (what ruff and ty emit, source snippets included), never
-the locale codec.
+the locale codec. Each stage runs once for all the files that share a
+project and den's lint settings, not once per file; a file the batch flags
+is re-run alone, so every result and FAIL detail is still per file.
 """
 
 from __future__ import annotations
@@ -167,23 +169,13 @@ def _venv_line(root: Path) -> str:
     )
 
 
-def _stage(label: str, cmd: list[str], counts: dict[str, int]) -> None:
-    tool = cmd[0]
-    exe, refusal = resolve_tool(tool)
-    if refusal:
-        print(f"den verify: {refusal}")
-        print(
-            f"SKIP {label} ({tool} not run:"
-            " remove the workspace copy or run den verify elsewhere)"
-        )
-        counts["skip"] += 1
-        return
-    if exe is None:
-        print(f"SKIP {label} ({tool} not installed: uv tool install {tool})")
-        counts["skip"] += 1
-        return
+# One stage's result for one file: ("pass" | "fail" | "skip", report lines).
+_Outcome = tuple[str, list[str]]
+
+
+def _run(exe: str, args: list[str]) -> tuple[int, list[str]]:
     proc = subprocess.run(
-        [exe, *cmd[1:]],
+        [exe, *args],
         capture_output=True,
         text=True,
         # ruff and ty emit UTF-8 (source snippets included); the locale codec
@@ -191,17 +183,49 @@ def _stage(label: str, cmd: list[str], counts: dict[str, int]) -> None:
         encoding="utf-8",
         errors="replace",
     )
-    if proc.returncode == 0:
-        print(f"PASS {label}")
-        counts["pass"] += 1
-        return
-    counts["fail"] += 1
-    print(f"FAIL {label}")
-    lines = (proc.stdout + proc.stderr).splitlines()
-    for line in lines[:_MAX_DETAIL_LINES]:
-        print(f"  {line}")
+    return proc.returncode, (proc.stdout + proc.stderr).splitlines()
+
+
+def _failed(label: str, lines: list[str]) -> _Outcome:
+    report = [f"FAIL {label}", *(f"  {line}" for line in lines[:_MAX_DETAIL_LINES])]
     if len(lines) > _MAX_DETAIL_LINES:
-        print(f"  ... (+{len(lines) - _MAX_DETAIL_LINES} more lines)")
+        report.append(f"  ... (+{len(lines) - _MAX_DETAIL_LINES} more lines)")
+    return "fail", report
+
+
+def _stage(
+    label: str, tool: str, args: list[str], files: list[Path]
+) -> dict[Path, _Outcome]:
+    """Run `tool *args <files>` for a group of files; each file's outcome.
+
+    One process for the whole group, instead of one per file. When it passes,
+    every file passes. On exit 1 (diagnostics found, for ruff and ty alike) a
+    file whose name the output never mentions had no diagnostic and passes;
+    each file it does mention is re-run alone, so its PASS/FAIL and FAIL
+    detail are exactly what a per-file run reports. Any other failure (exit
+    2: a config or usage error nothing ties to one file) re-runs every file
+    alone."""
+    exe, refusal = resolve_tool(tool)
+    if refusal:
+        skip = f"SKIP {label} ({tool} not run:"
+        skip += " remove the workspace copy or run den verify elsewhere)"
+        return {f: ("skip", [f"den verify: {refusal}", skip]) for f in files}
+    if exe is None:
+        skip = f"SKIP {label} ({tool} not installed: uv tool install {tool})"
+        return {f: ("skip", [skip]) for f in files}
+    rc, lines = _run(exe, [*args, *map(str, files)])
+    if rc == 0:
+        return {f: ("pass", [f"PASS {label}"]) for f in files}
+    if len(files) == 1:
+        return {files[0]: _failed(label, lines)}
+    output = "\n".join(lines).lower()
+    suspects = [f for f in files if rc != 1 or f.name.lower() in output]
+    outcomes: dict[Path, _Outcome] = {f: ("pass", [f"PASS {label}"]) for f in files}
+    for f in suspects or files:
+        rc, lines = _run(exe, [*args, str(f)])
+        if rc != 0:
+            outcomes[f] = _failed(label, lines)
+    return outcomes
 
 
 def _usage() -> None:
@@ -232,19 +256,36 @@ def _reject(file: Path) -> str | None:
     return None
 
 
-def _verify_file(
-    file: Path, counts: dict[str, int], fallback: dict[str, Path | None]
-) -> None:
-    line, defaults = _ruff_config_line(file, fallback)
-    print(line)
-    lint_cmd = ["ruff", "check", *(_DEN_DEFAULT_LINT if defaults else ()), str(file)]
+def _verify_all(
+    files: list[Path],
+) -> tuple[dict[Path, list[str]], dict[Path, list[_Outcome]]]:
+    """(the config lines, the stage outcomes) of each usable file.
 
-    root = _project_root(file)
-    print(f"config: ty   <- project root {root} (--project); {_venv_line(root)}")
-
-    _stage("format", ["ruff", "format", "--check", str(file)], counts)
-    _stage("lint", lint_cmd, counts)
-    _stage("typecheck", ["ty", "check", "--project", str(root), str(file)], counts)
+    Files are grouped by whether den's lint defaults apply and by ty's
+    project root, and each stage runs once per group (see _stage): ruff
+    resolves each file's own config itself, and ty checks one project."""
+    fallback: dict[str, Path | None] = {}
+    configs: dict[Path, list[str]] = {}
+    groups: dict[tuple[bool, Path], list[Path]] = {}
+    for file in dict.fromkeys(files):
+        ruff_line, defaults = _ruff_config_line(file, fallback)
+        root = _project_root(file)
+        configs[file] = [
+            ruff_line,
+            f"config: ty   <- project root {root} (--project); {_venv_line(root)}",
+        ]
+        groups.setdefault((defaults, root), []).append(file)
+    outcomes: dict[Path, list[_Outcome]] = {f: [] for f in configs}
+    for (defaults, root), group in groups.items():
+        lint = ["check", *(_DEN_DEFAULT_LINT if defaults else ())]
+        for label, tool, args in (
+            ("format", "ruff", ["format", "--check"]),
+            ("lint", "ruff", lint),
+            ("typecheck", "ty", ["check", "--project", str(root)]),
+        ):
+            for file, outcome in _stage(label, tool, args, group).items():
+                outcomes[file].append(outcome)
+    return configs, outcomes
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -269,8 +310,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"den verify: {why}", file=sys.stderr)
         return 2
 
+    configs, outcomes = _verify_all([f for f in files if not rejected[f]])
     counts = {"pass": 0, "fail": 0, "skip": 0}
-    fallback: dict[str, Path | None] = {}
     for file in files:
         if len(files) > 1:
             print(f"== {file}")
@@ -279,7 +320,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"den verify: {why}", file=sys.stderr)
             counts["fail"] += 1
             continue
-        _verify_file(file, counts, fallback)
+        for line in configs[file]:
+            print(line)
+        for status, report in outcomes[file]:
+            for line in report:
+                print(line)
+            counts[status] += 1
 
     scope = f" across {len(files)} files" if len(files) > 1 else ""
     print(
