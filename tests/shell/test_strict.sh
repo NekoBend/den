@@ -614,6 +614,8 @@ Case 'cdf' { cdf }
 Case 'cdf, no fd' { Use-StrictPath 'fzf', 'uv', 'bin', 'sys'; try { cdf } finally { Use-StrictPath } }
 Case 'cdf, no fzf' { Use-StrictPath 'modern', 'uv', 'bin', 'sys'; try { cdf } finally { Use-StrictPath } }
 Case 'mkcd' { mkcd made-dir }
+Case 'mkcd, [ ] in the name' { mkcd 'made-[x]' }
+Case 'mkcd -Name' { mkcd -Name made-named }
 Case 'mkcd, no argument' { mkcd }
 Case 'y' { y }
 Case 'y, no yazi' { Use-StrictPath 'sys'; try { y } finally { Use-StrictPath } }

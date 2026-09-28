@@ -786,27 +786,43 @@ function cdf {
     Write-Warning "fzf is not installed. Install: winget install junegunn.fzf"
     return
   }
-  $dir = if (Get-Command fd -ErrorAction SilentlyContinue) {
-    & fd --type d --hidden --exclude .git . | & fzf
-  } else {
-    [System.IO.Directory]::EnumerateDirectories($PWD.Path, '*', [System.IO.SearchOption]::AllDirectories) | & fzf
+  # fzf prints its pick as UTF-8. PowerShell decodes what a native program
+  # prints with [Console]::OutputEncoding (on Windows the console's OEM code
+  # page, such as 932 or 437) and encodes what it pipes into one with
+  # $OutputEncoding (ASCII on Windows PowerShell 5.1), so both are UTF-8 for the
+  # call, as zoxide's own PowerShell init does, and the console's is put back.
+  $consoleEncoding = [Console]::OutputEncoding
+  $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  try {
+    [Console]::OutputEncoding = $OutputEncoding
+    $dir = if (Get-Command fd -ErrorAction SilentlyContinue) {
+      & fd --type d --hidden --exclude .git . | & fzf
+    } else {
+      [System.IO.Directory]::EnumerateDirectories($PWD.Path, '*', [System.IO.SearchOption]::AllDirectories) | & fzf
+    }
+  } finally {
+    [Console]::OutputEncoding = $consoleEncoding
   }
 
+  # -LiteralPath: [ ] in a directory name (app/[slug]) are not wildcards.
   if (-not [string]::IsNullOrWhiteSpace($dir)) {
-    Set-Location $dir
+    Set-Location -LiteralPath $dir
     _DenDirMoved $MyInvocation
   }
 }
 
-# mkdir + cd in one step
+# mkdir + cd in one step. The parameter is named LiteralPath because tab
+# completion then leaves [ ] in a completed path as they are; for a parameter
+# named otherwise it escapes them (`[slug`]), and New-Item would take the
+# backticks as part of the name. -Name still works.
 function mkcd {
-  param([string]$Name)
-  if ([string]::IsNullOrWhiteSpace($Name)) {
+  param([Alias('Name')][string]$LiteralPath)
+  if ([string]::IsNullOrWhiteSpace($LiteralPath)) {
     Write-Error "usage: <dir>"
     return
   }
-  New-Item -ItemType Directory -Force -Path $Name | Out-Null
-  Set-Location $Name
+  New-Item -ItemType Directory -Force -Path $LiteralPath | Out-Null
+  Set-Location -LiteralPath $LiteralPath
   _DenDirMoved $MyInvocation
 }
 
@@ -818,12 +834,16 @@ function y {
   }
   $tmp = [System.IO.Path]::GetTempFileName()
   & yazi @Args --cwd-file="$tmp"
-  $cwd = Get-Content $tmp -ErrorAction SilentlyContinue
-  if (-not [string]::IsNullOrWhiteSpace($cwd) -and $cwd -ne $PWD.Path) {
-    Set-Location $cwd
+  # yazi writes the directory as UTF-8, which Windows PowerShell 5.1 would
+  # otherwise read in the ANSI code page, and [ ] in it are not wildcards: read
+  # and move as upstream yazi's own PowerShell wrapper does.
+  $cwd = Get-Content -LiteralPath $tmp -Encoding UTF8 -ErrorAction SilentlyContinue
+  if (-not [string]::IsNullOrWhiteSpace($cwd) -and $cwd -ne $PWD.Path -and
+      (Test-Path -LiteralPath $cwd -PathType Container)) {
+    Set-Location -LiteralPath $cwd
     _DenDirMoved $MyInvocation
   }
-  Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
 }
 
 # ===== History / Replay =====
