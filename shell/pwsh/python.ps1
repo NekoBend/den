@@ -161,6 +161,10 @@ function va {
   if ($env:VIRTUAL_ENV -and (Get-Command deactivate -CommandType Function -ErrorAction SilentlyContinue)) {
     deactivate
   }
+  # The version is read below for the venv being activated. Without a pyvenv.cfg
+  # there (posix va unsets it too), or when its activate script fails, the previous
+  # venv's version must not stay behind.
+  Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
   . $activatePath
   $cfg = Join-Path $Name 'pyvenv.cfg'
   if (Test-Path -LiteralPath $cfg) {

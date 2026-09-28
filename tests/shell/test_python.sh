@@ -547,9 +547,27 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     \$env:VIRTUAL_ENV = \$null
     va '$WORK/ps_venv_first/.venv' *>\$null
     va '$WORK/ps_venv_second/.venv' *>\$null
-    \"VE=[\$env:VIRTUAL_ENV] BY=[\$global:DeactivatedBy]\"
+    \"VE=[\$env:VIRTUAL_ENV] BY=[\$global:DeactivatedBy] PY=[\$env:_DEN_VENV_PYTHON]\"
 " | tr -d '\r')
-assert_eq "pwsh/va refused keeps the active venv" "VE=[first] BY=[]" "$actual"
+assert_eq "pwsh/va refused keeps the active venv" "VE=[first] BY=[] PY=[3.12.0]" "$actual"
+
+echo "[pwsh] va leaves no version of the previous venv behind"
+# The next venv has no pyvenv.cfg, or its activate script does not parse: either
+# way the version va read for the previous venv must not outlive the switch.
+mk_venv_ps "$WORK/ps_venv_nocfg" "3.13.0"
+rm "$WORK/ps_venv_nocfg/.venv/pyvenv.cfg"
+mk_venv_ps "$WORK/ps_venv_broken" "3.13.0"
+printf '%s\n' 'this is { not valid' > "$WORK/ps_venv_broken/.venv/bin/Activate.ps1"
+for next in nocfg broken; do
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        \$env:VIRTUAL_ENV = \$null
+        va '$WORK/ps_venv_first/.venv' *>\$null
+        try { va '$WORK/ps_venv_$next/.venv' *>\$null } catch { }
+        \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+    " 2>/dev/null | tr -d '\r')
+    case $next in nocfg) want="VE=[fakevenv] PY=[]" ;; *) want="VE=[] PY=[]" ;; esac
+    assert_eq "pwsh/va to a $next venv drops the previous version" "$want" "$actual"
+done
 
 # =============================================================================
 # uv-created venvs (the real uv, when it is installed and has a Python to use)
