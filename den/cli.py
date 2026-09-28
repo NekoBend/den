@@ -42,8 +42,18 @@ def _usage() -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-statements]  # command dispatch
+def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
+    try:
+        return _dispatch(args)
+    except KeyboardInterrupt:
+        # Ctrl-C at a prompt (den._ui) or anywhere else: stop here, quietly,
+        # with the shell's 128 + SIGINT, instead of a traceback.
+        print("\nden: cancelled", file=sys.stderr)
+        return 130
+
+
+def _dispatch(args: list[str]) -> int:  # ruff: ignore[too-many-return-statements]  # command dispatch
 
     if not args or args[0] in {"-h", "--help", "help"}:
         _usage()
