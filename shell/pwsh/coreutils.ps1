@@ -298,8 +298,41 @@ function touch {
   $__cu = _CoreutilsBin
   if ($__cu) { & $__cu touch @Args; return }
   if ($Args.Count -eq 0) { Write-Error "usage: <file...>"; return }
-  foreach ($f in $Args) {
-    if (Test-Path $f) { (Get-Item $f).LastWriteTime = Get-Date }
+  foreach ($a in $Args) {
+    # A name is taken literally: [ ] in pages/[id].tsx are not wildcards (New-Item
+    # never read them as such). Tab completion writes them escaped, though
+    # ('./pages/`[id`].tsx'), so where the name as given does not exist, the
+    # unescaped name is taken instead when that exists.
+    # Otherwise a name with an unescaped * or ? is a pattern, which a function
+    # receives unexpanded (`touch *.md`), and touch updates each file it matches,
+    # as a shell expands it; one that matches nothing is created as it is, as
+    # bash passes it on. [ ] stay literal in a name without * or ?, so a new
+    # pages/[slug].tsx does not stand for pages/s.tsx.
+    # Else, where only the unescaped name's parent directory exists (a new file
+    # in a tab-completed app/`[slug`]), the file is created there.
+    $f = "$a"
+    if (-not (Test-Path -LiteralPath $f)) {
+      $u = [System.Management.Automation.WildcardPattern]::Unescape($f)
+      if ($u -ne $f -and (Test-Path -LiteralPath $u)) {
+        $f = $u
+      } else {
+        if (($f -replace '`.', '') -match '[*?]') {
+          $hits = @(Convert-Path -Path $f -ErrorAction SilentlyContinue)
+          if ($hits.Count -gt 0) {
+            foreach ($h in $hits) { (Get-Item -LiteralPath $h).LastWriteTime = Get-Date }
+            continue
+          }
+        }
+        if ($u -ne $f) {
+          $fParent = Split-Path -Path $f -Parent
+          $uParent = Split-Path -Path $u -Parent
+          if ($fParent -and $uParent -and -not (Test-Path -LiteralPath $fParent) -and (Test-Path -LiteralPath $uParent)) {
+            $f = $u
+          }
+        }
+      }
+    }
+    if (Test-Path -LiteralPath $f) { (Get-Item -LiteralPath $f).LastWriteTime = Get-Date }
     else { New-Item -ItemType File -Path $f | Out-Null }
   }
 }

@@ -921,27 +921,43 @@ function cdf {
     Write-Warning "fzf is not installed. Install: winget install junegunn.fzf"
     return
   }
-  $dir = if (Get-Command fd -ErrorAction SilentlyContinue) {
-    & fd --type d --hidden --exclude .git . | & fzf
-  } else {
-    [System.IO.Directory]::EnumerateDirectories($PWD.Path, '*', [System.IO.SearchOption]::AllDirectories) | & fzf
+  # fzf prints its pick as UTF-8. PowerShell decodes what a native program
+  # prints with [Console]::OutputEncoding (on Windows the console's OEM code
+  # page, such as 932 or 437) and encodes what it pipes into one with
+  # $OutputEncoding (ASCII on Windows PowerShell 5.1), so both are UTF-8 for the
+  # call, as zoxide's own PowerShell init does, and the console's is put back.
+  $consoleEncoding = [Console]::OutputEncoding
+  $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  try {
+    [Console]::OutputEncoding = $OutputEncoding
+    $dir = if (Get-Command fd -ErrorAction SilentlyContinue) {
+      & fd --type d --hidden --exclude .git . | & fzf
+    } else {
+      [System.IO.Directory]::EnumerateDirectories($PWD.Path, '*', [System.IO.SearchOption]::AllDirectories) | & fzf
+    }
+  } finally {
+    [Console]::OutputEncoding = $consoleEncoding
   }
 
+  # -LiteralPath: [ ] in a directory name (app/[slug]) are not wildcards.
   if (-not [string]::IsNullOrWhiteSpace($dir)) {
-    Set-Location $dir
+    Set-Location -LiteralPath $dir
     _DenDirMoved $MyInvocation
   }
 }
 
-# mkdir + cd in one step
+# mkdir + cd in one step. The parameter is named LiteralPath because tab
+# completion then leaves [ ] in a completed path as they are; for a parameter
+# named otherwise it escapes them (`[slug`]), and New-Item would take the
+# backticks as part of the name. -Name still works.
 function mkcd {
-  param([string]$Name)
-  if ([string]::IsNullOrWhiteSpace($Name)) {
+  param([Alias('Name')][string]$LiteralPath)
+  if ([string]::IsNullOrWhiteSpace($LiteralPath)) {
     Write-Error "usage: <dir>"
     return
   }
-  New-Item -ItemType Directory -Force -Path $Name | Out-Null
-  Set-Location $Name
+  New-Item -ItemType Directory -Force -Path $LiteralPath | Out-Null
+  Set-Location -LiteralPath $LiteralPath
   _DenDirMoved $MyInvocation
 }
 
@@ -953,12 +969,16 @@ function y {
   }
   $tmp = [System.IO.Path]::GetTempFileName()
   & yazi @Args --cwd-file="$tmp"
-  $cwd = Get-Content $tmp -ErrorAction SilentlyContinue
-  if (-not [string]::IsNullOrWhiteSpace($cwd) -and $cwd -ne $PWD.Path) {
-    Set-Location $cwd
+  # yazi writes the directory as UTF-8, which Windows PowerShell 5.1 would
+  # otherwise read in the ANSI code page, and [ ] in it are not wildcards: read
+  # and move as upstream yazi's own PowerShell wrapper does.
+  $cwd = Get-Content -LiteralPath $tmp -Encoding UTF8 -ErrorAction SilentlyContinue
+  if (-not [string]::IsNullOrWhiteSpace($cwd) -and $cwd -ne $PWD.Path -and
+      (Test-Path -LiteralPath $cwd -PathType Container)) {
+    Set-Location -LiteralPath $cwd
     _DenDirMoved $MyInvocation
   }
-  Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
 }
 
 # ===== History / Replay =====
@@ -1149,6 +1169,13 @@ function fwd {
 # change of location made since the last one. init.ps1 calls it after starship,
 # whose init replaces the prompt function; called again (on reload) it wraps the
 # new prompt, never its own wrapper.
+# Each wrapper holds the prompt it wraps in its own closure ($wrapped), not in a
+# variable that all of them read when they run. A wrapper that another program
+# wrapped in turn (VS Code's shell integration saves the prompt it finds once,
+# after the profile) must still call the prompt it wrapped when den hooks again
+# (`. $PROFILE`): read from a shared variable, it would call that program's
+# wrapper, which calls it again, until the call depth overflows. The older
+# wrapper records and runs zoxide's hook once more, which changes nothing.
 # The wrapper also runs zoxide's hook, the one place zoxide learns a directory
 # on PowerShell. zoxide's init (functions.ps1, loaded before starship) wraps the
 # prompt to call it, and starship's init drops that wrapper, as it drops any
@@ -1160,8 +1187,8 @@ function _DenDirHookPrompt {
   # den loads makes reading it an error.
   if ((Test-Path Variable:global:_DenDirPrompt) -and $null -ne $global:_DenDirPrompt -and
       $function:prompt -eq $global:_DenDirPrompt) { return }
-  $global:_DenDirPromptOld = $function:prompt
-  function global:prompt {
+  $wrapped = $function:prompt
+  $wrapper = {
     # Record first, then hand the wrapped prompt the $? it would have seen, so
     # it still shows the last command's status (starship reads $?).
     $ok = $global:?
@@ -1174,7 +1201,8 @@ function _DenDirHookPrompt {
       $global:LASTEXITCODE = $code
     }
     if (-not $ok) { Write-Error '' -ErrorAction Ignore }
-    if ($global:_DenDirPromptOld) { & $global:_DenDirPromptOld }
-  }
+    if ($wrapped) { & $wrapped }
+  }.GetNewClosure()
+  Set-Item -Path Function:\global:prompt -Value $wrapper
   $global:_DenDirPrompt = $function:prompt
 }

@@ -342,6 +342,25 @@ function _CoreutilsBin {
     if ($global:_DenCoreutils) { return $global:_DenCoreutils } else { return $null }
 }
 
+# ========== path operands ==========
+
+# _ResolvePaths <operand...> - the paths a function's file operands stand for,
+# for the grep and find fallbacks (wrappers.ps1) and pcp/pmv/prm/ptar
+# (parallel.ps1), which pass them on with -LiteralPath. A function receives
+# `pcp *.md d` unexpanded, so an operand that exists is that path, taken
+# literally ([ ] in app/[slug] are not wildcards); any other is a wildcard
+# pattern and stands for what it matches. One that matches nothing is passed on
+# as it is, so that the command reading it reports it missing.
+function _ResolvePaths([string[]]$Patterns) {
+    $out = @()
+    foreach ($p in $Patterns) {
+        if (Test-Path -LiteralPath $p) { $out += $p; continue }
+        $hits = @(Convert-Path -Path $p -ErrorAction SilentlyContinue)
+        if ($hits.Count -eq 0) { $out += $p } else { $out += $hits }
+    }
+    return ,$out
+}
+
 # ========== wrapper generator ==========
 
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>

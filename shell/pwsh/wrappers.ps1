@@ -29,7 +29,9 @@ function _grep_ps_fallback {
     $ss=@{Pattern=$pa}
     if(-not $fl.ContainsKey("i")){$ss.CaseSensitive=$true}
     if($fl.ContainsKey("v")){$ss.NotMatch=$true}
-    if($fp.Count -gt 0){$r=Select-String @ss -Path $fp}
+    # $fp becomes the files the operands stand for, so that $mf counts files: '*.txt'
+    # matching two of them names each file in the output, as grep given both does.
+    if($fp.Count -gt 0){$fp=_ResolvePaths $fp;$r=Select-String @ss -LiteralPath $fp}
     elseif($fl.ContainsKey("r")){$r=Get-ChildItem -Recurse -File|Select-String @ss}
     else{$r=$input|Select-String @ss}
     $mf=$fp.Count -gt 1 -or $fl.ContainsKey("r")
@@ -58,7 +60,7 @@ function _find_ps_fallback {
         elseif($a -notmatch "^-"){$fp=$a;$i++}
         else{$i++}
     }
-    $p=@{Path=$fp;Recurse=$true}
+    $p=@{LiteralPath=(_ResolvePaths $fp);Recurse=$true}
     if($nm){$p.Filter=$nm}
     if($ty -eq "f"){$p.File=$true}
     elseif($ty -eq "d"){$p.Directory=$true}
