@@ -255,6 +255,32 @@ def test_strip_block_keeps_a_missing_final_newline(tmp_path):
     assert rc.read_bytes() == b"alias x=y", "no newline invented at EOF"
 
 
+def test_utf16_profile_block_is_found_and_stripped(tmp_path):
+    """The block den appends to a UTF-16 profile (in UTF-16, see _wire) is
+    den's own; uninstall must see it and remove it byte-exactly."""
+    from den._shell import _COMMENT, _PWSH_LINE
+
+    for codec, bom in (("utf-16-le", b"\xff\xfe"), ("utf-16-be", b"\xfe\xff")):
+        rc = tmp_path / "Microsoft.PowerShell_profile.ps1"
+        mine = bom + "Set-Alias g git\r\n".encode(codec)
+        rc.write_bytes(mine + f"\r\n{_COMMENT}\r\n{_PWSH_LINE}\r\n".encode(codec))
+        assert _has_block(rc, _PWSH_LINE)
+        _strip_block(rc, _PWSH_LINE)
+        assert rc.read_bytes() == mine
+        assert not _has_block(rc, _PWSH_LINE)
+
+
+def test_undecodable_utf16_profile_is_left_alone(tmp_path):
+    from den._shell import _PWSH_LINE
+
+    rc = tmp_path / "Microsoft.PowerShell_profile.ps1"
+    broken = b"\xff\xfe" + "x".encode("utf-16-le") + b"\x00"
+    rc.write_bytes(broken)
+    assert not _has_block(rc, _PWSH_LINE)
+    _strip_block(rc, _PWSH_LINE)
+    assert rc.read_bytes() == broken
+
+
 def test_strip_block_removes_den_created_empty_file(tmp_path):
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
     rc = tmp_path / "profile.ps1"  # created form: only den's block
@@ -329,7 +355,7 @@ def test_uninstall_shell_keeps_user_file_in_local_bin(tmp_path, monkeypatch):
 def test_uninstall_cline_removes_rules_parent(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    monkeypatch.setattr("den._install.shutil.which", lambda e: None)
+    monkeypatch.setattr("den._install.shutil.which", lambda e, path=None: None)
     assert install_main(["skills", "--tool", "cline", "--with-parent"]) == 0
     rules_parent = tmp_path / "Documents" / "Cline" / "Rules" / "AGENTS.md"
     assert rules_parent.is_file()
@@ -355,6 +381,57 @@ def test_interactive_uninstalls_cheatsheets(monkeypatch):
     assert _uninstall._interactive() == 0
     assert ("shell", []) in calls
     assert ("cheatsheets", []) in calls  # was never dispatched before the fix
+
+
+def _interactive_skills_flags(monkeypatch, *, parent: bool):
+    """The flags interactive `den uninstall` hands _uninstall_skills."""
+    from den import _ui, _uninstall
+
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: ["claude"])
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: parent)
+    monkeypatch.setattr(_uninstall, "_uninstall_shell", lambda argv: 0)
+    monkeypatch.setattr(_uninstall, "_uninstall_cheatsheets", lambda argv: 0)
+    seen = []
+    monkeypatch.setattr(
+        _uninstall, "_uninstall_skills", lambda argv: seen.append(argv) or 0
+    )
+    assert _uninstall._interactive() == 0
+    return seen
+
+
+def test_interactive_uninstall_offers_the_parent_prompt(monkeypatch):
+    """Interactive install deploys the parent by default; interactive
+    uninstall never passed --with-parent, so CLAUDE.md/AGENTS.md stayed
+    loaded, pointing at skills that were gone."""
+    assert _interactive_skills_flags(monkeypatch, parent=True) == [
+        ["--tool", "claude", "--with-parent"]
+    ]
+
+
+def test_interactive_uninstall_keeps_the_parent_when_declined(monkeypatch):
+    assert _interactive_skills_flags(monkeypatch, parent=False) == [
+        ["--tool", "claude"]
+    ]
+
+
+def test_interactive_uninstall_removes_the_parent_install_deployed(
+    tmp_path, monkeypatch
+):
+    from den import _ui, _uninstall
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert install_main(["skills", "--tool", "claude", "--with-parent"]) == 0
+    parent = tmp_path / ".claude" / "CLAUDE.md"
+    assert parent.is_file()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: ["claude"])
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(_uninstall, "_uninstall_shell", lambda argv: 0)
+    monkeypatch.setattr(_uninstall, "_uninstall_cheatsheets", lambda argv: 0)
+    assert _uninstall._interactive() == 0
+    assert not parent.exists()
+    assert not (tmp_path / ".claude" / "skills").exists()
 
 
 def test_uninstall_usage_common_flags_scoped(capsys):

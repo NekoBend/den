@@ -21,22 +21,17 @@ from pathlib import Path
 from . import _ui
 
 
-def _decode(raw: bytes) -> str:
-    """Decode an rc file losslessly. `errors="ignore"` would DROP every byte
-    that is not valid UTF-8 (a cp1252/latin-1 rc file loses its accented
-    characters); surrogateescape round-trips them so re-encoding reproduces
-    the original bytes exactly."""
-    return raw.decode("utf-8", errors="surrogateescape")
-
-
 def _has_block(rc: Path, line: str) -> bool:
-    from ._shell import _COMMENT
+    from ._shell import _COMMENT, _decode_rc
 
     if not rc.is_file():
         return False
     try:
-        text = _decode(rc.read_bytes())
-    except OSError:
+        # In the file's own encoding (a UTF-16 PowerShell profile gets den's
+        # block in UTF-16, see _shell._wire); UTF-8 is lossless, and
+        # `errors="ignore"` would DROP every byte that is not valid UTF-8.
+        text, _codec = _decode_rc(rc.read_bytes())
+    except (OSError, UnicodeDecodeError):
         return False
     # den-managed only when the marker line is immediately followed by den's
     # exact wire line (what _wire writes, and what _strip_block removes). A
@@ -60,12 +55,39 @@ def _strip_block(rc: Path, line: str) -> None:
     every LF line converted -- the opposite of the byte-exact promise. Lines den
     did not write are now copied through verbatim, endings and non-UTF-8 bytes
     alike, and no decode happens at all.
+
+    A UTF-16 file (a PowerShell 5.1 profile) is the one exception: it is
+    transcoded to UTF-8, stripped the same way, and written back in its own
+    encoding behind its own BOM. Strict decoding makes that exact; a file
+    that does not decode is left alone (_has_block never reports one).
     """
+    from ._shell import _bom_codec
+
+    raw = rc.read_bytes()
+    bom, codec = _bom_codec(raw)
+    if codec == "utf-8":
+        kept, stripped = _strip_lines(raw, line)
+    else:
+        try:
+            text = raw[len(bom) :].decode(codec)
+        except UnicodeDecodeError:
+            return
+        kept, stripped = _strip_lines(text.encode("utf-8"), line)
+        kept = bom + kept.decode("utf-8").encode(codec)
+    if stripped and not kept.removeprefix(bom):  # only den's block was there
+        with contextlib.suppress(OSError):
+            rc.unlink()
+        return
+    rc.write_bytes(kept)
+
+
+def _strip_lines(data: bytes, line: str) -> tuple[bytes, bool]:
+    """(data without den's block, whether a block was removed); see _strip_block."""
     from ._shell import _COMMENT
 
     marker = _COMMENT.encode("utf-8")
     wire = line.encode("utf-8")
-    lines = rc.read_bytes().splitlines(keepends=True)
+    lines = data.splitlines(keepends=True)
 
     def content(raw: bytes) -> bytes:
         """The line without its terminator (\n, \r\n or a bare \r)."""
@@ -89,11 +111,7 @@ def _strip_block(rc: Path, line: str) -> None:
             continue
         kept.append(lines[i])
         i += 1
-    if stripped and not kept:  # the file was den's block and nothing else
-        with contextlib.suppress(OSError):
-            rc.unlink()
-        return
-    rc.write_bytes(b"".join(kept))
+    return b"".join(kept), stripped
 
 
 class _Remover:
@@ -449,6 +467,12 @@ def _interactive() -> int:
         flags: list[str] = []
         for tool in chosen:
             flags += ["--tool", tool]
+        # Mirror `den install`, which deploys the parent by default; only a
+        # den-identical parent is removed, so an edited one is kept.
+        if _ui.confirm(
+            "Remove the parent prompt (AGENTS.md/CLAUDE.md) too?", default=True
+        ):
+            flags.append("--with-parent")
         rc |= _uninstall_skills(flags)
     else:
         _ui.say("  (no tools selected)")

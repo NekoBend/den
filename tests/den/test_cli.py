@@ -1,5 +1,7 @@
 """Tests for the den top-level CLI dispatcher (den/cli.py)."""
 
+import pytest
+
 from den.cli import main as den_main
 
 
@@ -40,3 +42,20 @@ def test_hook_memory_and_memory_alias_both_dispatch(tmp_path, monkeypatch, capsy
     assert den_main(["hook", "memory", "show"]) == 0
     out = capsys.readouterr().out
     assert "fact via hook" in out and "fact via alias" in out
+
+
+def test_ctrl_c_exits_130_without_a_traceback(monkeypatch, capsys):
+    """A cancelled prompt raises KeyboardInterrupt (den._ui uses unsafe_ask);
+    den ends there with the conventional 130, not a traceback."""
+    from den import _install
+
+    def _interrupted(_argv):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_install, "main", _interrupted)
+    try:
+        rc = den_main(["install"])
+    except KeyboardInterrupt:
+        pytest.fail("KeyboardInterrupt escaped den.cli.main: a traceback")
+    assert rc == 130
+    assert "cancelled" in capsys.readouterr().err
