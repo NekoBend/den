@@ -364,6 +364,31 @@ _ar_have() {
     return 1
 }
 
+# _ar_format <name> → set _ar_fmt to the archive format the extension of
+# <name> names (tar.gz, tar.bz2, tar.xz, tar.zst, tar, gz, bz2, xz, zst, zip,
+# 7z, rar), or to '' for none. The match ignores case, as the pwsh twin's
+# switch -Regex does: PHOTOS.ZIP from a camera or a Windows tool is a zip.
+# Bracket patterns, not a copy of the name lowercased with `tr`: the format
+# is known without running any program, so extract/archive still depend only
+# on the archiver of the branch they take (and report just that one missing).
+_ar_format() {
+    case "$1" in
+        *.[Tt][Aa][Rr].[Gg][Zz]|*.[Tt][Gg][Zz])         _ar_fmt=tar.gz ;;
+        *.[Tt][Aa][Rr].[Bb][Zz]2|*.[Tt][Bb][Zz]2)       _ar_fmt=tar.bz2 ;;
+        *.[Tt][Aa][Rr].[Xx][Zz]|*.[Tt][Xx][Zz])         _ar_fmt=tar.xz ;;
+        *.[Tt][Aa][Rr].[Zz][Ss][Tt]|*.[Tt][Zz][Ss][Tt]) _ar_fmt=tar.zst ;;
+        *.[Tt][Aa][Rr])  _ar_fmt=tar ;;
+        *.[Gg][Zz])      _ar_fmt=gz ;;
+        *.[Bb][Zz]2)     _ar_fmt=bz2 ;;
+        *.[Xx][Zz])      _ar_fmt=xz ;;
+        *.[Zz][Ss][Tt])  _ar_fmt=zst ;;
+        *.[Zz][Ii][Pp])  _ar_fmt=zip ;;
+        *.7[Zz])         _ar_fmt=7z ;;
+        *.[Rr][Aa][Rr])  _ar_fmt=rar ;;
+        *)               _ar_fmt= ;;
+    esac
+}
+
 # extract → auto-detect and extract archives
 # NOTE: leading-dash './' prefix is required — do not remove. The 7z branch
 # neutralises a leading '@' on top of that; see the comment there.
@@ -383,24 +408,27 @@ extract() {
         fi
         # Neutralise leading dash so downstream tools cannot parse filename as option
         case "$_ex_f" in -*) _ex_f="./$_ex_f" ;; esac
-        case "$_ex_f" in
-            *.tar.gz|*.tgz)     tar xzf "$_ex_f"   ;;
-            *.tar.bz2|*.tbz2)   tar xjf "$_ex_f"   ;;
-            *.tar.xz|*.txz)     tar xJf "$_ex_f"   ;;
+        # The format ignores the extension's case (see _ar_format); the tools
+        # still get the name exactly as given.
+        _ar_format "$_ex_f"
+        case "$_ar_fmt" in
+            tar.gz)             tar xzf "$_ex_f"   ;;
+            tar.bz2)            tar xjf "$_ex_f"   ;;
+            tar.xz)             tar xJf "$_ex_f"   ;;
             # tar shells zstd out for these, so the guard is on zstd, not tar.
-            *.tar.zst|*.tzst)   _ar_have extract zstd && tar --zstd -xf "$_ex_f" ;;
-            *.tar)              tar xf  "$_ex_f"    ;;
+            tar.zst)            _ar_have extract zstd && tar --zstd -xf "$_ex_f" ;;
+            tar)                tar xf  "$_ex_f"    ;;
             # Single file: each tool writes the decompressed file next to the
             # archive. gunzip/bunzip2/unxz consume the archive and unzstd keeps
             # it — that is each tool's own default, and the pwsh twin matches.
             # 'command' runs the program, never a shell function of that name
             # (parity with the pwsh twin, which invokes the resolved path).
-            *.gz)               _ar_have extract gunzip  && command gunzip  -- "$_ex_f" ;;
-            *.bz2)              _ar_have extract bunzip2 && command bunzip2 -- "$_ex_f" ;;
-            *.xz)               _ar_have extract unxz    && command unxz    -- "$_ex_f" ;;
-            *.zst)              _ar_have extract unzstd  && command unzstd  -- "$_ex_f" ;;
-            *.zip)              unzip -- "$_ex_f"     ;;
-            *.7z)
+            gz)                 _ar_have extract gunzip  && command gunzip  -- "$_ex_f" ;;
+            bz2)                _ar_have extract bunzip2 && command bunzip2 -- "$_ex_f" ;;
+            xz)                 _ar_have extract unxz    && command unxz    -- "$_ex_f" ;;
+            zst)                _ar_have extract unzstd  && command unzstd  -- "$_ex_f" ;;
+            zip)                unzip -- "$_ex_f"     ;;
+            7z)
                 # 7z reads a leading '-' as a switch (already neutralised
                 # above) and a leading '@' as a listfile — it would extract
                 # the archives named INSIDE that file rather than the file
@@ -410,14 +438,39 @@ extract() {
                 case "$_ex_f" in @*) _ex_f="./$_ex_f" ;; esac
                 7z x "$_ex_f"
                 ;;
-            *.rar)              unrar x -- "$_ex_f"   ;;
+            rar)                unrar x -- "$_ex_f"   ;;
             *) echo "extract: unsupported format '$_ex_f'" >&2; false ;;
         esac || _ex_fail=1
     done
-    unset _ex_f
+    unset _ex_f _ar_fmt
     if [ "$_ex_fail" -ne 0 ]; then unset _ex_fail; return 1; fi
     unset _ex_fail
     return 0
+}
+
+# _ar_stage → create archive()'s private staging directory beside the output
+# $1 and put its path in _ar_tmpd (archive's local). Staging beside the output
+# keeps the final publish a rename within one directory.
+#
+# Stage inside a private DIRECTORY, not a temporary file. mktemp creates a
+# file exclusively, but the archiver then reopens it by pathname, and in a
+# directory anyone else can write to that file can be unlinked and replaced
+# with a symlink in between -- the exclusive creation does not survive being
+# reopened. A 0700 directory (mktemp -d's default) nobody else can traverse
+# means the name inside it cannot be swapped at all, so there is no window to
+# race. A predictable-name fallback would give the window straight back, so a
+# missing mktemp is a missing tool like any other, and archive fails closed.
+_ar_stage() {
+    case "$1" in
+        */*) _ar_outdir="${1%/*}" ;;
+        *)   _ar_outdir="." ;;
+    esac
+    _ar_have archive mktemp || return 1
+    _ar_tmpd=$(command mktemp -d "$_ar_outdir/.archive.XXXXXX" 2>/dev/null)
+    if [ -z "$_ar_tmpd" ]; then
+        echo "archive: cannot create a temporary directory in '$_ar_outdir'" >&2
+        return 1
+    fi
 }
 
 # archive → create archive (format auto-detected from output filename)
@@ -432,9 +485,12 @@ archive() {
         return 1
     fi
     local out="$1"; shift
-    local _ar_arg _ar_n _ar_tool _ar_tmp _ar_rc _ar_tmpd _ar_outdir
+    local _ar_tool _ar_tmp _ar_rc _ar_tmpd _ar_outdir _ar_fmt _ar_s _ar_keep
     # Neutralise leading dash on output path
     case "$out" in -*) out="./$out" ;; esac
+    # The format ignores the extension's case (see _ar_format); the tools get
+    # the name as given.
+    _ar_format "$out"
     # A directory already sitting at the output path is not an output. Checked
     # for every format, before any of them starts: the single-file branch's
     # rename would otherwise put the temporary INSIDE that directory and report
@@ -444,23 +500,23 @@ archive() {
         echo "archive: output '$out' is a directory" >&2
         return 1
     fi
-    case "$out" in
-        *.tar.gz|*.tgz)     tar czf "$out" -- "$@"   ;;
-        *.tar.bz2|*.tbz2)   tar cjf "$out" -- "$@"   ;;
-        *.tar.xz|*.txz)     tar cJf "$out" -- "$@"   ;;
+    case "$_ar_fmt" in
+        tar.gz)             tar czf "$out" -- "$@"   ;;
+        tar.bz2)            tar cjf "$out" -- "$@"   ;;
+        tar.xz)             tar cJf "$out" -- "$@"   ;;
         # tar shells zstd out for these, so the guard is on zstd, not tar.
-        *.tar.zst|*.tzst)   _ar_have archive zstd && tar --zstd -cf "$out" -- "$@" ;;
-        *.tar)              tar cf "$out" -- "$@"    ;;
+        tar.zst)            _ar_have archive zstd && tar --zstd -cf "$out" -- "$@" ;;
+        tar)                tar cf "$out" -- "$@"    ;;
         # Single-file compression. Every '.tar.*' form and its 't*' alias is
         # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and
         # these four tools compress exactly ONE file: several sources or a
         # directory is a usage error, not something to silently tar up first.
-        *.gz|*.bz2|*.xz|*.zst)
-            case "$out" in
-                *.gz)  _ar_tool=gzip  ;;
-                *.bz2) _ar_tool=bzip2 ;;
-                *.xz)  _ar_tool=xz    ;;
-                *)     _ar_tool=zstd  ;;
+        gz|bz2|xz|zst)
+            case "$_ar_fmt" in
+                gz)  _ar_tool=gzip  ;;
+                bz2) _ar_tool=bzip2 ;;
+                xz)  _ar_tool=xz    ;;
+                *)   _ar_tool=zstd  ;;
             esac
             # Exactly one source, and it must already be a regular file.
             # '-d' alone was false for a path that does not exist, so a typo'd
@@ -491,29 +547,10 @@ archive() {
             # because the temporary is in the output's own directory.
             # '--' stops each tool's option parsing (all four support it), so a
             # source named like a switch reaches it as a path — the same rule
-            # the tar branches above follow.
-            # Stage inside a private DIRECTORY, not a temporary file. mktemp
-            # creates a file exclusively, but the compressor then reopens it by
-            # pathname, and in a directory anyone else can write to that file
-            # can be unlinked and replaced with a symlink in between -- the
-            # exclusive creation does not survive being reopened. A 0700
-            # directory (mktemp -d's default) nobody else can traverse means
-            # the name inside it cannot be swapped at all, so there is no
-            # window to race. A predictable-name fallback would give the window
-            # straight back, so a missing mktemp is a missing tool like any
-            # other, and the branch fails closed.
-            case "$out" in
-                */*) _ar_outdir="${out%/*}" ;;
-                *)   _ar_outdir="." ;;
-            esac
-            _ar_have archive mktemp || return 1
-            _ar_tmpd=$(command mktemp -d "$_ar_outdir/.archive.XXXXXX" 2>/dev/null)
-            if [ -z "$_ar_tmpd" ]; then
-                echo "archive: cannot create a temporary directory in '$_ar_outdir'" >&2
-                return 1
-            fi
-            # The name inside is fixed: the directory is what makes it private,
-            # and staging beside the output keeps the publish below a rename.
+            # the tar branches above follow. _ar_stage says why the temporary
+            # lives in a private directory.
+            _ar_stage "$out" || return 1
+            # The name inside is fixed: the directory is what makes it private.
             _ar_tmp="$_ar_tmpd/archive"
             if [ "$_ar_tool" = zstd ]; then
                 # zstd is the only one of the four with -o; the others have
@@ -544,21 +581,111 @@ archive() {
             rm -rf -- "$_ar_tmpd"
             return "$_ar_rc"
             ;;
-        *.zip)              zip -r "$out" -- "$@"    ;;
-        *.7z)
-            # 7z is not in the test image (tests/shell/Dockerfile), so a '--'
-            # marker here cannot be exercised; give the two source names 7z
-            # reads as something other than a path the './' prefix instead,
-            # which neutralises them without depending on any marker support.
-            # '-x' is a switch; '@list' is a listfile, i.e. 7z archives the
-            # paths named INSIDE the file rather than the file itself.
-            _ar_n=$#
-            for _ar_arg in "$@"; do
-                case "$_ar_arg" in -*|@*) _ar_arg="./$_ar_arg" ;; esac
-                set -- "$@" "$_ar_arg"
-            done
-            shift "$_ar_n"
-            7z a "$out" "$@"
+        # zip and 7z UPDATE an archive that already exists: entries for files
+        # since deleted from the source stayed in the "new" archive (a removed
+        # secret shipped again), where the tar branches and the pwsh twin
+        # write a fresh one. An existing output is moved aside into a private
+        # staging directory beside it (see _ar_stage), so the archiver always
+        # creates a new file; on success the old one is dropped, on failure
+        # whatever the archiver left is removed and the old one is put back.
+        #
+        # The archiver still writes $out itself, not a staged name: when $out
+        # lies inside a source directory (`archive all.zip .`), zip and 7z
+        # leave the file they are writing out of the archive, and the staging
+        # directory, which holds the previous archive, is excluded by its
+        # unique name (zip's '*' also matches '/').
+        #
+        # A source that IS the output, as in `pk all.7z *` run again in the
+        # folder it archives, is dropped. Moved aside, the old archive is a
+        # name that no longer exists, so 7z failed on it (and zip warned); left
+        # in place it would be stored inside the new archive. The names are
+        # compared first, because '-ef' stats both files and a glob of
+        # thousands would pay that for each; '-ef' then settles './all.7z', an
+        # absolute path, a symlink and a hard link alike. eval: array syntax
+        # would stop a POSIX parser reading this file, and an array keeps the
+        # rebuild linear (see the 7z case below for why `set -- "$@" x` is not).
+        zip|7z)
+            if [ -e "$out" ] || [ -L "$out" ]; then
+                eval '_ar_keep=()
+                    for _ar_s in "$@"; do
+                        if [ "${_ar_s##*/}" = "${out##*/}" ] && [ "$_ar_s" -ef "$out" ]; then
+                            continue
+                        fi
+                        _ar_keep+=("$_ar_s")
+                    done
+                    set -- "${_ar_keep[@]}"'
+                if [ $# -eq 0 ]; then
+                    echo "archive: no source besides the output '$out'" >&2
+                    return 1
+                fi
+            fi
+            _ar_stage "$out" || return 1
+            # Between the move-aside and the restore there is no <out>. A
+            # Ctrl-C (or a TERM or HUP) while the archiver ran ended the
+            # function right there, and the old archive stayed hidden in the
+            # staging directory. The steps run in a subshell whose traps only
+            # note the signal, so they always go on to the restore and the
+            # cleanup; the signal is then raised again on the subshell itself,
+            # so the caller (a loop at the prompt, a script) still sees an
+            # interrupted command. The subshell keeps these traps away from
+            # the user's own.
+            (
+                _ar_sig=
+                trap '_ar_sig=INT' INT
+                trap '_ar_sig=TERM' TERM
+                trap '_ar_sig=HUP' HUP
+                _ar_prev="$_ar_tmpd/previous"
+                _ar_rc=1
+                if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$_ar_prev"; then
+                    if [ -z "$_ar_sig" ]; then
+                        case "$_ar_fmt" in
+                            zip)
+                                zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@"
+                                ;;
+                            *)
+                                # 7z is not in the test image
+                                # (tests/shell/Dockerfile), so a '--' marker
+                                # here cannot be exercised; give the two
+                                # source names 7z reads as something other
+                                # than a path the './' prefix instead, which
+                                # neutralises them without depending on any
+                                # marker support. '-x' is a switch; '@list' is
+                                # a listfile, i.e. 7z archives the paths named
+                                # INSIDE the file rather than the file itself.
+                                #
+                                # Each source is rewritten in one expansion
+                                # over "$@". Rebuilding the list with
+                                # `set -- "$@" x` per source copied the whole
+                                # list on every append: quadratic, so
+                                # `pk a.7z *` over a few thousand files spent
+                                # seconds before 7z started. eval:
+                                # ${@/#pat/rep} is bash/zsh syntax (this file
+                                # is sourced by those two only), which a POSIX
+                                # parser reading the file would reject.
+                                eval 'set -- "${@/#-/./-}"; set -- "${@/#@/./@}"'
+                                7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@"
+                                ;;
+                        esac
+                        _ar_rc=$?
+                        # What a failed archiver left at $out is not the old
+                        # archive, and must not stay in its place.
+                        [ "$_ar_rc" -ne 0 ] && rm -f -- "$out"
+                    fi
+                fi
+                # Tested by what is in the staging directory rather than by a
+                # flag: a move-aside cut short may still have moved the file.
+                if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
+                    mv -f -- "$_ar_prev" "$out"
+                fi
+                rm -rf -- "$_ar_tmpd"
+                if [ -n "$_ar_sig" ]; then
+                    trap - "$_ar_sig"
+                    # $$ is the parent shell's pid, even in a subshell; the sh
+                    # started here is a child of this subshell.
+                    kill -s "$_ar_sig" "$(exec sh -c 'echo "$PPID"')"
+                fi
+                exit "$_ar_rc"
+            )
             ;;
         *) echo "archive: unsupported format '$out'" >&2; return 1 ;;
     esac

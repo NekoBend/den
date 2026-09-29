@@ -93,8 +93,10 @@ def run_bytes(
 
 def git(repo: Path, *args: str) -> None:
     """Run a git command inside `repo`, raising on failure."""
+    exe = shutil.which("git")
+    assert exe is not None, "these tests build git repositories: install git"
     subprocess.run(
-        ["git", *args],
+        [exe, *args],
         cwd=repo,
         check=True,
         capture_output=True,

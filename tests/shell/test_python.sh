@@ -70,7 +70,87 @@ PS_SET_EMPTY_PROFILE="\$PROFILE = '$WORK/empty-profile/Microsoft.PowerShell_prof
 MOCK_PIP_BIN="$WORK/mock-pip-bin"
 mkdir -p "$MOCK_PIP_BIN"
 printf '#!/bin/sh\necho "system-pip $*"\n' > "$MOCK_PIP_BIN/pip"
-chmod +x "$MOCK_PIP_BIN/pip"
+printf '#!/bin/sh\necho "system-pip3 $*"\n' > "$MOCK_PIP_BIN/pip3"
+chmod +x "$MOCK_PIP_BIN/pip" "$MOCK_PIP_BIN/pip3"
+
+# Two active-venv fixtures for pip/pip3: one made by uv, which has no pip of its
+# own, and one with its own pip and pip3 (python -m venv).
+mkdir -p "$WORK/venv_nopip/bin" "$WORK/venv_ownpip/bin"
+printf '#!/bin/sh\necho "venv-pip $*"\n' > "$WORK/venv_ownpip/bin/pip"
+printf '#!/bin/sh\necho "venv-pip3 $*"\n' > "$WORK/venv_ownpip/bin/pip3"
+chmod +x "$WORK/venv_ownpip/bin/pip" "$WORK/venv_ownpip/bin/pip3"
+
+# A repo that commits .venv/bin as a symlink to its own tools/, which holds the
+# activate scripts. git reports the link as "bin" and nothing beneath it, so a
+# check that asks about bin/activate alone saw no tracked file. Each script
+# leaves a marker when it runs; nothing is tracked but the link and tools/.
+SYMBIN="$WORK/venv_symbin"
+mkdir -p "$SYMBIN/.venv" "$SYMBIN/tools"
+printf 'echo sourced > "%s"\n' "$WORK/symbin_ran" > "$SYMBIN/tools/activate"
+printf '"sourced" | Set-Content -LiteralPath "%s"\n' "$WORK/symbin_ran" > "$SYMBIN/tools/Activate.ps1"
+ln -s ../tools "$SYMBIN/.venv/bin"
+(
+    cd "$SYMBIN" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -A
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed bin symlink"
+) >/dev/null 2>&1
+
+# A real bin/ whose activate scripts are symlinks to scripts elsewhere, outside any
+# repo, so git has nothing to report. A symlink's own mode reads as world-writable
+# on Linux (not on macOS), so the message is what shows the symlink test refused.
+SYMACT="$WORK/venv_symact"
+mkdir -p "$SYMACT/.venv/bin" "$SYMACT/tools"
+printf 'echo sourced > "%s"\n' "$WORK/symact_ran" > "$SYMACT/tools/activate"
+printf '"sourced" | Set-Content -LiteralPath "%s"\n' "$WORK/symact_ran" > "$SYMACT/tools/Activate.ps1"
+ln -s ../../tools/activate "$SYMACT/.venv/bin/activate"
+ln -s ../../tools/Activate.ps1 "$SYMACT/.venv/bin/Activate.ps1"
+
+# A repo that commits its .venv as a repository of its own: HEAD, objects/, refs/
+# and a config whose core.worktree is the venv itself. git asked from inside the
+# venv took that repository, whose index is empty, so nothing looked tracked, and
+# ran its core.fsmonitor command. Each script and that command leave a marker.
+EMBED="$WORK/venv_embedded_repo"
+mkdir -p "$EMBED/.venv/bin" "$EMBED/.venv/objects" "$EMBED/.venv/refs"
+printf 'ref: refs/heads/main\n' > "$EMBED/.venv/HEAD"
+: > "$EMBED/.venv/objects/.keep"
+: > "$EMBED/.venv/refs/.keep"
+printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = "echo ran > %s; false"\n' \
+    "$WORK/embed_fsmonitor_ran" > "$EMBED/.venv/config"
+printf 'echo sourced > "%s"\n' "$WORK/embed_ran" > "$EMBED/.venv/bin/activate"
+printf '"sourced" | Set-Content -LiteralPath "%s"\n' "$WORK/embed_ran" > "$EMBED/.venv/bin/Activate.ps1"
+printf 'version_info = 3.12.0\n' > "$EMBED/.venv/pyvenv.cfg"
+(
+    cd "$EMBED" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv repository"
+) >/dev/null 2>&1
+# git before 2.38 has no safe.bareRepository and still reads that repository.
+if git -c safe.bareRepository=explicit -C "$EMBED/.venv" rev-parse --git-dir >/dev/null 2>&1; then
+    GIT_HAS_SAFE_BARE=0
+else
+    GIT_HAS_SAFE_BARE=1
+fi
+
+# A committed venv in a checkout whose path holds the words git uses for "no
+# repository here": the refusal git prints for another reason quotes that path.
+NAGR="$WORK/not a git repository"
+
+# git reads a repo owned by another user only when safe.directory allows it;
+# this makes it take every repo as one, whatever the tester's own config says.
+GIT_AS_OTHER_OWNER="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1"
+
+# The tools va itself runs, without git.
+NO_GIT_BIN="$WORK/no-git-bin"
+mkdir -p "$NO_GIT_BIN"
+for t in sed cut ls head tr; do ln -s "$(command -v "$t")" "$NO_GIT_BIN/$t"; done
+
+# toggle-uv ON re-reads ~/.config/shell/python.sh: a HOME with the file under test
+# there (the copy with the mock uv on PATH).
+UV_HOME="$WORK/uv_home"
+mkdir -p "$UV_HOME/.config/shell"
+cp "$PYTHON_SH_TEST" "$UV_HOME/.config/shell/python.sh"
 
 # =============================================================================
 # Bash tests
@@ -218,6 +298,79 @@ ln -sfn "$WORK/venv_symlink_target/.venv" "$WORK/venv_symlink/.venv"
 actual=$(run_bash "$PYTHON_SH_TEST" "cd '$WORK/venv_symlink' && va && echo \"PY=\$_DEN_VENV_PYTHON\"")
 assert_eq "bash/va accepts a symlinked venv" "PY=3.12.0" "$actual"
 
+echo "[bash] va refuses a committed bin/ whose case differs"
+# On a case-insensitive file system the test for bin/activate also finds a
+# committed BIN/activate. Here BIN/ is a second directory, which is enough to show
+# that git reports it.
+mk_venv "$WORK/venv_tracked_dircase" "3.12.0"
+mkdir -p "$WORK/venv_tracked_dircase/.venv/BIN"
+: > "$WORK/venv_tracked_dircase/.venv/BIN/activate"
+(
+    cd "$WORK/venv_tracked_dircase" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/BIN/activate
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed BIN/activate"
+) >/dev/null 2>&1
+err=$(run_bash_stderr "$PYTHON_SH_TEST" "cd '$WORK/venv_tracked_dircase' && va" || true)
+assert_contains "bash/va refuses a tracked BIN/activate" "tracked by git (BIN/activate)" "$err"
+
+mk_venv "$NAGR/r" "3.12.0"
+(
+    cd "$NAGR/r" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/activate .venv/pyvenv.cfg
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+) >/dev/null 2>&1
+
+for sh in bash zsh; do
+    echo "[$sh] va refuses a committed symlinked bin/ and runs nothing behind it"
+    rm -f "$WORK/symbin_ran"
+    err=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$SYMBIN' && va; echo \"rc=\$?\"" 2>&1 | tr -d '\r')
+    assert_contains "$sh/va refuses a symlinked bin/" "bin/ or bin/activate is a symlink" "$err"
+    assert_contains "$sh/va symlinked bin/ fails" "rc=1" "$err"
+    assert_not_exists "$sh/va sources no script behind a symlinked bin/" "$WORK/symbin_ran"
+
+    echo "[$sh] va refuses a symlinked activate script in a real bin/"
+    rm -f "$WORK/symact_ran"
+    err=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$SYMACT' && va; echo \"rc=\$?\"" 2>&1 | tr -d '\r')
+    assert_contains "$sh/va refuses a symlinked activate" "bin/ or bin/activate is a symlink" "$err"
+    assert_contains "$sh/va symlinked activate fails" "rc=1" "$err"
+    assert_not_exists "$sh/va sources no script behind a symlinked activate" "$WORK/symact_ran"
+
+    if [ "$GIT_HAS_SAFE_BARE" -eq 1 ]; then
+        echo "[$sh] va refuses a venv committed as a repository of its own"
+        rm -f "$WORK/embed_ran" "$WORK/embed_fsmonitor_ran"
+        actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$EMBED' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+        assert_contains "$sh/va names git's refusal of the venv repository" "git could not tell whether the venv is committed (fatal: cannot use bare repository" "$actual"
+        assert_contains "$sh/va activates nothing from a venv repository" "rc=1 PY=[]" "$actual"
+        assert_not_exists "$sh/va sources no script from a venv repository" "$WORK/embed_ran"
+        assert_not_exists "$sh/va runs no fsmonitor of a venv repository" "$WORK/embed_fsmonitor_ran"
+    else
+        echo "  SKIP: $sh/va venv repository (git before 2.38 has no safe.bareRepository)"
+    fi
+
+    echo "[$sh] va takes only git's own fatal line as 'not a git repository'"
+    # The dubious-ownership refusal quotes the checkout path, which here holds
+    # those words; git's trace lines come before its fatal line.
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$NAGR/r' && export $GIT_AS_OTHER_OWNER && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+    assert_contains "$sh/va refuses when only the quoted path says not a git repository" "rc=1 PY=[]" "$actual"
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && GIT_TRACE2=1 && export GIT_TRACE2 && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>/dev/null | tr -d '\r')
+    assert_eq "$sh/va outside a repo with git trace lines first" "rc=0 PY=[3.13.13]" "$actual"
+
+    echo "[$sh] va refuses when git cannot read the repo (dubious ownership)"
+    # git exits 128 with no output there; taking that as "not a repo" sourced the
+    # committed activate script.
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_tracked' && export $GIT_AS_OTHER_OWNER && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+    assert_contains "$sh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
+    assert_contains "$sh/va activates nothing when git fails" "rc=1 PY=[]" "$actual"
+
+    echo "[$sh] va still activates a venv outside any repo, and with no git at all"
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+    assert_eq "$sh/va outside a repo" "rc=0 PY=[3.13.13]" "$actual"
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && PATH='$NO_GIT_BIN' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+    assert_eq "$sh/va with no git" "rc=0 PY=[3.13.13]" "$actual"
+done
+
 echo "[bash] vd no active venv"
 err=$(run_bash_stderr "$PYTHON_SH_TEST" "unset VIRTUAL_ENV; vd" || true)
 assert_contains "bash/vd no venv" "No active venv" "$err"
@@ -242,6 +395,43 @@ actual=$(run_bash "$PYTHON_SH_TEST" "
 assert_eq "bash/tgl-uv OFF" "TYPE=function
 uv override: OFF (using system python/pip)
 ENV=0 PIP=gone" "$actual"
+
+for sh in bash zsh; do
+    echo "[$sh] pip/pip3 in a venv use its own pip, else uv pip, never another pip on PATH"
+    # A uv venv has no pip: the PATH lookup found the system pip ahead of it.
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; export PATH='$MOCK_PIP_BIN':\$PATH VIRTUAL_ENV='$WORK/venv_nopip'; pip install requests; pip3 install rich" 2>/dev/null | tr -d '\r')
+    assert_eq "$sh/pip in a venv without pip goes to uv pip" "mock-uv pip install requests
+mock-uv pip install rich" "$actual"
+    err=$("$sh" -c "source '$PYTHON_SH_TEST'; export PATH='$MOCK_PIP_BIN':\$PATH VIRTUAL_ENV='$WORK/venv_nopip'; pip install requests" 2>&1 >/dev/null | tr -d '\r')
+    assert_eq "$sh/pip in a venv without pip says so" "pip install requests → uv pip install requests" "$err"
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; export PATH='$MOCK_PIP_BIN':\$PATH VIRTUAL_ENV='$WORK/venv_ownpip'; pip install requests; pip3 install rich" 2>&1 | tr -d '\r')
+    assert_eq "$sh/pip in a venv with its own pip runs it" "venv-pip install requests
+venv-pip3 install rich" "$actual"
+
+    echo "[$sh] _DEN_UV_OVERRIDE=0 at load: no overrides, and one toggle-uv turns them on"
+    # toggle-uv exports it, so a reload or a child shell starts with it; loading
+    # the overrides anyway left them ON under an OFF, and the next toggle did nothing.
+    actual=$(HOME="$UV_HOME" _DEN_UV_OVERRIDE=0 "$sh" -c "
+        source '$PYTHON_SH_TEST'
+        left=''
+        for f in uv python python3 py pip pip3 _show_uv_only_message; do
+            case \$(type \$f 2>/dev/null) in *function*) left=\"\$left \$f\" ;; esac
+        done
+        kept=''
+        for f in va vd vv vva toggle-uv tgl-uv; do
+            case \$(type \$f 2>/dev/null) in *function*) kept=\"\$kept \$f\" ;; esac
+        done
+        echo \"LOAD: LEFT=[\$left] KEPT=[\$kept]\"
+        toggle-uv
+        echo \"ENV=\$_DEN_UV_OVERRIDE\"
+        unset VIRTUAL_ENV
+        pip install rich
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "$sh/_DEN_UV_OVERRIDE=0 at load" "LOAD: LEFT=[] KEPT=[ va vd vv vva toggle-uv tgl-uv]
+uv override: ON (python/pip → uv)
+ENV=1
+mock-uv pip install rich" "$actual"
+done
 
 # =============================================================================
 # Zsh tests
@@ -371,6 +561,27 @@ actual=$(run_pwsh "$WORK/no-python-ps1/python_combined.ps1" "
 assert_contains "pwsh/toggle-uv failed ON warns" "could not load the uv overrides" "$actual"
 assert_contains "pwsh/toggle-uv failed ON stays OFF" "ENV=[0] PIP=[none]" "$actual"
 
+echo "[pwsh] _DEN_UV_OVERRIDE=0 at load: no overrides, and one toggle-uv turns them on"
+# toggle-uv leaves it in the environment, so a reload (a new pwsh) or a child pwsh
+# starts with it; loading the overrides anyway left them ON under an OFF, and the
+# next toggle took the OFF branch again.
+actual=$(_DEN_UV_OVERRIDE=0 pwsh -NoProfile -NonInteractive -Command "
+    . '$PYTHON_PS1_COMBINED'
+    $PS_SET_PROFILE
+    \$left = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage' |
+        Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
+    \$missing = 'va', 'vd', 'vv', 'vva', 'toggle-uv', 'tgl-uv' |
+        Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
+    \"LOAD: ENV=[\$env:_DEN_UV_OVERRIDE] LEFT=[\$(\$left -join ',')] MISSING=[\$(\$missing -join ',')]\"
+    \$msg = @(toggle-uv 6>&1) -join ''
+    \"\$msg|ENV=[\$env:_DEN_UV_OVERRIDE]\"
+    \$env:VIRTUAL_ENV = \$null
+    pip install rich 6>\$null
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/_DEN_UV_OVERRIDE=0 at load" "LOAD: ENV=[0] LEFT=[] MISSING=[]
+uv override: ON (python/pip → uv)|ENV=[1]
+mock-uv pip install rich" "$actual"
+
 echo "[pwsh] va activates a Linux/macOS venv (bin/Activate.ps1)"
 mkdir -p "$WORK/venvtest/.venv/bin"
 printf '%s\n' '$env:VIRTUAL_ENV = "fakevenv"' > "$WORK/venvtest/.venv/bin/Activate.ps1"
@@ -416,6 +627,30 @@ assert_contains "pwsh/pip from a script" "mock-uv pip install rich" "$actual"
 assert_contains "pwsh/python3 from a script" "mock-uv run -- python app.py" "$actual"
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "& '$WORK/usepy.ps1'")
 assert_eq "pwsh/python overrides from a script: no errors" "" "$err"
+
+echo "[pwsh] pip/pip3 in a venv use its own pip, else uv pip, never another pip on PATH"
+# A uv venv has no pip: the PATH lookup found the system pip ahead of it.
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:PATH = '$MOCK_PIP_BIN' + [IO.Path]::PathSeparator + \$env:PATH
+    \$env:VIRTUAL_ENV = '$WORK/venv_nopip'
+    pip install requests 6>\$null
+    pip3 install rich 6>\$null
+    \$env:VIRTUAL_ENV = '$WORK/venv_ownpip'
+    pip install requests
+    pip3 install rich
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/pip in a venv: uv pip without its own pip, else its own" "mock-uv pip install requests
+mock-uv pip install rich
+venv-pip install requests
+venv-pip3 install rich" "$actual"
+# Neither its own pip nor uv: an error, not the system pip.
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    \$env:PATH = '$MOCK_PIP_BIN'
+    \$env:VIRTUAL_ENV = '$WORK/venv_nopip'
+    pip install requests 2>&1 | ForEach-Object { \"\$_\" }
+" | tr -d '\r')
+assert_contains "pwsh/pip in a venv without pip or uv fails" "the active venv has no pip and uv is not on PATH" "$actual"
+assert_not_contains "pwsh/pip in a venv without pip or uv runs no system pip" "system-pip" "$actual"
 
 echo "[pwsh] va normalizes pyvenv.cfg version_info"
 mk_venv_ps "$WORK/ps_venv5" "3.11.4.final.0"
@@ -557,6 +792,93 @@ echo "[pwsh] va still refuses a committed venv with GIT_LITERAL_PATHSPECS=1"
 # That setting turns :(icase) into a plain file name: the exact names must match.
 err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:GIT_LITERAL_PATHSPECS = '1'; \$env:VIRTUAL_ENV = \$null; va")
 assert_contains "pwsh/va refuses under literal pathspecs" "tracked by git (bin/activate.ps1)" "$err"
+
+echo "[pwsh] va refuses a committed symlinked bin/ and runs nothing behind it"
+rm -f "$WORK/symbin_ran"
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMBIN'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses a symlinked bin/" "is a symlink or junction" "$err"
+assert_not_exists "pwsh/va dot-sources no script behind a symlinked bin/" "$WORK/symbin_ran"
+
+echo "[pwsh] va refuses a symlinked Activate.ps1 in a real bin/"
+rm -f "$WORK/symact_ran"
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMACT'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses a symlinked Activate.ps1" "Activate.ps1 is a symlink or junction" "$err"
+assert_not_exists "pwsh/va dot-sources no script behind a symlinked Activate.ps1" "$WORK/symact_ran"
+
+if [ "$GIT_HAS_SAFE_BARE" -eq 1 ]; then
+    echo "[pwsh] va refuses a venv committed as a repository of its own"
+    rm -f "$WORK/embed_ran" "$WORK/embed_fsmonitor_ran"
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        Set-Location '$EMBED'
+        \$env:VIRTUAL_ENV = \$null
+        va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+        \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+    " | tr -d '\r')
+    assert_contains "pwsh/va names git's refusal of the venv repository" "git could not tell whether the venv is committed (fatal: cannot use bare repository" "$actual"
+    assert_contains "pwsh/va activates nothing from a venv repository" "VE=[] PY=[]" "$actual"
+    assert_not_exists "pwsh/va dot-sources no script from a venv repository" "$WORK/embed_ran"
+    assert_not_exists "pwsh/va runs no fsmonitor of a venv repository" "$WORK/embed_fsmonitor_ran"
+else
+    echo "  SKIP: pwsh/va venv repository (git before 2.38 has no safe.bareRepository)"
+fi
+
+echo "[pwsh] va still refuses a committed bin/ next to the Scripts/ it activates"
+mk_venv_ps "$WORK/ps_venv_other_dir" "3.12.0"
+mkdir -p "$WORK/ps_venv_other_dir/.venv/Scripts"
+printf '%s\n' '$env:VIRTUAL_ENV = "scripts"' > "$WORK/ps_venv_other_dir/.venv/Scripts/Activate.ps1"
+(
+    cd "$WORK/ps_venv_other_dir" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/Activate.ps1
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed bin/"
+) >/dev/null 2>&1
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_other_dir'; \$env:VIRTUAL_ENV = \$null; va")
+assert_contains "pwsh/va refuses a tracked bin/ beside Scripts/" "tracked by git (bin/Activate.ps1)" "$err"
+
+echo "[pwsh] va accepts a symlinked venv"
+# `ln -s ~/venvs/proj .venv` is a legitimate layout, not an attack.
+mk_venv_ps "$WORK/ps_venv_symlink_target" "3.12.0"
+mkdir -p "$WORK/ps_venv_symlink"
+ln -sfn "$WORK/ps_venv_symlink_target/.venv" "$WORK/ps_venv_symlink/.venv"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_symlink'; \$env:VIRTUAL_ENV = \$null; va *>\$null; \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"" | tr -d '\r')
+assert_eq "pwsh/va accepts a symlinked venv" "VE=[fakevenv] PY=[3.12.0]" "$actual"
+
+echo "[pwsh] va refuses when git cannot read the repo (dubious ownership)"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv_tracked'
+    \$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'
+    \$env:VIRTUAL_ENV = \$null
+    \$lcAll = [string]\$env:LC_ALL
+    va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] LC_ALL_KEPT=[\$([string]\$env:LC_ALL -eq \$lcAll)]\"
+" | tr -d '\r')
+assert_contains "pwsh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
+assert_contains "pwsh/va activates nothing when git fails" "VE=[] PY=[] LC_ALL_KEPT=[True]" "$actual"
+
+echo "[pwsh] va takes only git's own fatal line as 'not a git repository'"
+mk_venv_ps "$NAGR/ps" "3.12.0"
+(
+    cd "$NAGR/ps" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv/bin/Activate.ps1 .venv/pyvenv.cfg
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+) >/dev/null 2>&1
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$NAGR/ps'
+    \$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'
+    \$env:VIRTUAL_ENV = \$null
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va refuses when only the quoted path says not a git repository" "VE=[] PY=[]" "$actual"
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv5'
+    \$env:GIT_TRACE2 = '1'
+    \$env:VIRTUAL_ENV = \$null
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+" | tr -d '\r')
+assert_eq "pwsh/va outside a repo with git trace lines first" "VE=[fakevenv] PY=[3.11.4]" "$actual"
 
 echo "[pwsh] va deactivates the active venv first, and only when it activates"
 # python's Activate.ps1 and uv's activate.ps1 each undo only their own kind of

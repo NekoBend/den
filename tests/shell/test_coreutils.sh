@@ -258,6 +258,34 @@ run_pwsh "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK/one'; split -l 10 f.txt"
 assert_eq "split of a one-line file" "solo" "$(tr -d '\r' < "$WORK/one/xaa" 2>/dev/null)"
 rm -rf "$WORK/one"
 
+# Line mode read with Get-Content and wrote with Set-Content: a non-UTF-8 byte
+# became U+FFFD (EF BF BD), CRLF and LF were rewritten, and the last line
+# gained a newline it did not have, so `cat x*` was no longer the file.
+echo "[pwsh] split -l / -n cut the file's own bytes"
+rm -rf "$WORK/raw" && mkdir -p "$WORK/raw"
+printf 'caf\xe9;1\r\nna\xefve;2\r\nr\xe9sum\xe9;3\nlast-no-newline' > "$WORK/raw/latin1.csv"
+want=$(sha256sum < "$WORK/raw/latin1.csv")
+run_pwsh "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK/raw'; split -l 2 latin1.csv l_; split -n l/3 latin1.csv n_" >/dev/null 2>&1
+assert_eq "split -l parts reassemble to the file" "$want" "$(cat "$WORK/raw"/l_* | sha256sum)"
+assert_eq "split -l first part is its first two lines, CRLF kept" "$(printf 'caf\xe9;1\r\nna\xefve;2\r\n' | sha256sum)" "$(sha256sum < "$WORK/raw/l_aa")"
+assert_eq "split -l keeps the last line without a newline" "last-no-newline" "$(cat "$WORK/raw/l_ab" | tail -c 15)"
+assert_eq "split -n l/3 parts reassemble to the file" "$want" "$(cat "$WORK/raw"/n_* | sha256sum)"
+assert_eq "split -n l/3 makes 2-line parts of a 4-line file" "n_aa n_ab" "$(cd "$WORK/raw" && ls n_* | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$WORK/raw"
+
+# Byte mode read the whole file with ReadAllBytes and sliced each part as
+# $data[$a..$b], a boxed object[]: about 50x the file size in memory. The
+# process's peak working set shows it; streaming through one buffer keeps the
+# growth near the 5M part size.
+echo "[pwsh] split -b streams the file"
+rm -rf "$WORK/big" && mkdir -p "$WORK/big"
+head -c 20000000 /dev/urandom > "$WORK/big/blob.bin"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "Set-Location '$WORK/big'; \$p = [System.Diagnostics.Process]::GetCurrentProcess(); \$p.Refresh(); \$before = \$p.PeakWorkingSet64; split -b 5M blob.bin part. 6>\$null; \$p.Refresh(); 'grew=' + [int]((\$p.PeakWorkingSet64 - \$before) / 1MB)" 2>/dev/null | tr -d '\r' | grep '^grew=')
+assert_match "split -b 5M of 20 MB grows the peak working set by under 100 MB" '^grew=[0-9]{1,2}$' "$actual"
+assert_eq "split -b parts reassemble to the file" "$(sha256sum < "$WORK/big/blob.bin")" "$(cat "$WORK/big"/part.* | sha256sum)"
+assert_eq "split -b made four parts" "4" "$(ls "$WORK/big"/part.* | wc -l | tr -d ' ')"
+rm -rf "$WORK/big"
+
 # =============================================================================
 # touch
 # =============================================================================

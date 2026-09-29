@@ -65,14 +65,14 @@ Lazy:   r"<.+?>"  → "<b>", "</b>"  (two matches, shortest each)
 
 ## 4. Anchors & Boundaries
 
-| Syntax | Description                                   | Notes                                    |
-|--------|-----------------------------------------------|------------------------------------------|
-| `^`    | Start of string (or line with `re.MULTILINE`) | -                                        |
-| `$`    | End of string (or line with `re.MULTILINE`)   | -                                        |
-| `\A`   | Start of string (always)                      | Ignores `re.MULTILINE`                   |
-| `\Z`   | End of string (always)                        | Ignores `re.MULTILINE`                   |
-| `\b`   | Word boundary                                 | `r"\bword\b"` matches `word` not `sword` |
-| `\B`   | Non-word boundary                             | `r"\Bword"` matches `sword` not `word`   |
+| Syntax | Description                                                             | Notes                                                    |
+|--------|-------------------------------------------------------------------------|----------------------------------------------------------|
+| `^`    | Start of string (or line with `re.MULTILINE`)                           | -                                                        |
+| `$`    | End of string or just before a final `\n` (or line with `re.MULTILINE`) | `re.match(r"^\d+$", "42\n")` matches: validate with `\Z` |
+| `\A`   | Start of string (always)                                                | Ignores `re.MULTILINE`                                   |
+| `\Z`   | End of string (always, no final-`\n` exception)                         | Ignores `re.MULTILINE`                                   |
+| `\b`   | Word boundary                                                           | `r"\bword\b"` matches `word` not `sword`                 |
+| `\B`   | Non-word boundary                                                       | `r"\Bword"` matches `sword` not `word`                   |
 
 ---
 
@@ -121,12 +121,13 @@ Inline at pattern start: `r"(?im)^hello"` — case-insensitive + multiline.
 
 ## 8. Common Pitfalls
 
-| Pitfall                   | Problem                                     | Fix                                                            |
-|---------------------------|---------------------------------------------|----------------------------------------------------------------|
-| Greedy by default         | `r"<.+>"` matches too much                  | Use lazy `r"<.+?>"` or negated class `r"<[^>]+>"`              |
-| Catastrophic backtracking | `r"(a+)+"` on `"aaaaab"` - exponential time | Use atomic patterns or possessive-style rewrites               |
-| `re.match` vs `re.search` | `re.match` only checks start of string      | Use `re.search` for anywhere, `re.fullmatch` for entire string |
-| Missing raw string        | `"\b"` is backspace, not word boundary      | Always use `r"\b"`                                             |
-| `^`/`$` in multiline      | Default: match string start/end only        | Add `re.MULTILINE` or use `\A`/`\Z` explicitly                 |
-| Character class escaping  | `[` inside `[]` needs escaping              | Use `r"[\[\]]"` or place `]` first: `r"[][]"`                  |
-| Empty alternation         | `r"(foo\|)"` matches empty string           | Ensure alternation branches are non-empty, or use `?`          |
+| Pitfall                   | Problem                                                       | Fix                                                            |
+|---------------------------|---------------------------------------------------------------|----------------------------------------------------------------|
+| Greedy by default         | `r"<.+>"` matches too much                                    | Use lazy `r"<.+?>"` or negated class `r"<[^>]+>"`              |
+| Catastrophic backtracking | `r"(a+)+"` on `"aaaaab"` - exponential time                   | Use atomic patterns or possessive-style rewrites               |
+| `re.match` vs `re.search` | `re.match` only checks start of string                        | Use `re.search` for anywhere, `re.fullmatch` for entire string |
+| Missing raw string        | `"\b"` is backspace, not word boundary                        | Always use `r"\b"`                                             |
+| `^`/`$` in multiline      | Default: string start/end only (`$` also before a final `\n`) | Add `re.MULTILINE` for per-line anchors                        |
+| `$` before a final `\n`   | `r"^\d+$"` accepts `"42\n"`, even with `re.match`             | Validate with `\A...\Z` or `re.fullmatch`                      |
+| Character class escaping  | `[` inside `[]` needs escaping                                | Use `r"[\[\]]"` or place `]` first: `r"[][]"`                  |
+| Empty alternation         | `r"(foo\|)"` matches empty string                             | Ensure alternation branches are non-empty, or use `?`          |

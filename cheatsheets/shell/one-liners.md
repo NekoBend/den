@@ -28,11 +28,11 @@ fd PATTERN DIR              # search in specific directory
 ### Find and execute
 
 ```sh
-fd -e log -x rm                 # delete all .log files
+fd -I -t f -e log -X rm         # delete all .log files (-I: gitignored ones too; -H adds hidden ones)
 fd -e jpg -x mv {} dest/        # move all .jpg to dest/
 fd -e py -x wc -l               # line count per Python file
 fd -e rs -X rustfmt             # format all Rust files (all at once with -X)
-fd -t f -e bak -x rm {}         # remove all .bak files
+fd -I -t f -e bak -X rm         # remove all .bak files (-I: gitignored ones too; -H adds hidden ones)
 ```
 
 ### Exclude and filter
@@ -84,7 +84,7 @@ rg --json PATTERN                 # JSON output
 
 ```sh
 rg -e PAT1 -e PAT2                      # multiple patterns (OR)
-rg -U 'fn\s+\w+\(.*\n.*\{' -t rs        # multiline search
+rg -U 'fn\s+\w+\(.*\n.*\{' -t rust      # multiline search
 rg 'TODO|FIXME|HACK'                    # search for TODO comments
 rg --pcre2 '(?<=fn )\w+'                # PCRE2 lookaround
 rg -v PATTERN                           # invert match (lines NOT matching)
@@ -119,8 +119,8 @@ bat -A FILE                          # show non-printable characters
 
 ```sh
 rg PATTERN | bat -l sh            # colorize ripgrep output
-fd -e py | bat --list             # preview file list
-help COMMAND | bat -l help        # colorize help output (fish/zsh)
+fd -e py -X bat                   # page through every Python file
+COMMAND --help | bat -l help      # colorize --help output
 diff FILE1 FILE2 | bat -l diff    # diff with syntax highlighting
 ```
 
@@ -140,20 +140,25 @@ sd '\bfoo\b' 'bar' FILE           # whole word replace
 sd 'old' 'new' FILE1 FILE2        # replace in multiple files
 ```
 
-### Combine with fd for bulk operations
+### Bulk replace: rg picks the files, sd edits them
+
+sd rewrites every file it is handed (new inode, new mtime, hardlinks split),
+even when nothing in it matches, so hand it only the files `rg -l` found.
+`-0` / `xargs -0` keep file names with spaces in one piece; `-r` skips the
+run when nothing matched.
 
 ```sh
-fd -e py -x sd 'old_name' 'new_name' {}        # rename across Python files
-fd -e json -x sd '"v1"' '"v2"' {}              # update version in JSON files
-fd -e md -x sd 'TODO' 'DONE' {}                # mark TODOs as done
+rg -l0 -t py 'old_name' | xargs -0 -r sd 'old_name' 'new_name'     # rename across Python files
+rg -l0 -t json '"v1"' | xargs -0 -r sd '"v1"' '"v2"'               # update version in JSON files
+rg -l0 -t md 'TODO' | xargs -0 -r sd 'TODO' 'DONE'                 # mark TODOs as done
 ```
 
 ### Preview with rg first
 
 ```sh
-rg 'old' -l                          # find which files match
-rg 'old' -r 'new'                    # preview the change
-fd -e py -x sd 'old' 'new' {}        # apply the change
+rg 'old' -l                                  # find which files match
+rg 'old' -r 'new'                            # preview the change
+rg -l0 'old' | xargs -0 -r sd 'old' 'new'    # apply the change
 ```
 
 ---
@@ -167,7 +172,7 @@ eza                          # basic listing (colored)
 eza -l                       # long format
 eza -la                      # long format + hidden files
 eza -l --git                 # long format with git status
-eza -l --git -h              # + human-readable sizes
+eza -l --git -h              # + a header row (sizes are human-readable anyway)
 eza --icons                  # with file type icons
 eza --icons -la --git        # the "full" listing
 ```
@@ -190,7 +195,7 @@ eza -l -s date                      # sort by date modified
 eza -l -s name                      # sort by name
 eza -l -s ext                       # sort by extension
 eza -l -s size -r                   # sort by size, reversed (largest first)
-eza -l -s modified --reverse        # oldest first
+eza -l -s modified                  # oldest first (-r: newest first)
 ```
 
 ---
@@ -204,11 +209,11 @@ dust                        # disk usage, current dir
 dust DIR                    # disk usage for specific dir
 dust -n 10                  # top 10 largest items
 dust -d 2                   # max depth 2
-dust -r                     # reverse order (smallest first)
+dust -r                     # upside down: biggest first
 dust -s                     # use apparent size (not disk usage)
 dust -i                     # ignore hidden files
 dust -X node_modules        # exclude directory
-dust -t 100M                # only show items > 100 MB
+dust -z 100M                # hide items smaller than 100 MB
 ```
 
 ---
@@ -222,10 +227,10 @@ procs                    # list all processes (colored)
 procs PATTERN            # search by name
 procs --tree             # process tree
 procs --watch            # watch mode (auto-refresh)
-procs --watch 1          # watch mode, 1 sec interval
+procs -W 1               # watch mode, 1 sec interval
 procs --sortd cpu        # sort by CPU desc
 procs --sortd mem        # sort by memory desc
-procs -p PID             # show specific PID
+procs PID                # show specific PID (a number matches the PID)
 ```
 
 ---
@@ -301,7 +306,7 @@ xh -b api.example.com/data                       # body only (no headers)
 xh -h api.example.com                            # headers only
 xh -d api.example.com/file.zip                   # download file
 xh -o out.json api.example.com                   # save to file
-xh --json api.example.com '{"key":"val"}'        # explicit JSON body
+xh POST api.example.com --raw '{"key":"val"}'    # raw JSON body
 xh -f POST api.example.com name=test             # form data
 ```
 
@@ -362,17 +367,17 @@ Once configured, `git diff`, `git log -p`, and `git show` automatically use delt
 ### Find and replace across a project
 
 ```sh
-rg 'oldFunc' -l | xargs sd 'oldFunc' 'newFunc'             # replace in all matching files
-fd -e ts -x sd 'OldClass' 'NewClass' {}                    # replace in all .ts files
-fd -e py -x sd 'import old_mod' 'import new_mod' {}        # update imports
+rg -l0 'oldFunc' | xargs -0 -r sd 'oldFunc' 'newFunc'                             # replace in all matching files
+rg -l0 -t ts 'OldClass' | xargs -0 -r sd 'OldClass' 'NewClass'                    # replace in the .ts files
+rg -l0 -t py 'import old_mod' | xargs -0 -r sd 'import old_mod' 'import new_mod'  # update imports
 ```
 
 ### Search and preview with syntax highlighting
 
 ```sh
-rg -l PATTERN | xargs bat                            # open all matching files
-rg PATTERN -l | xargs bat -H 1                       # preview files with highlight
-fd -e rs | xargs rg 'unwrap()' -l | xargs bat        # find risky unwrap() calls
+rg -l0 PATTERN | xargs -0 -r bat                     # open all matching files
+rg -l0 PATTERN | xargs -0 -r bat -H 1                # preview files with highlight
+rg -l0 -F 'unwrap()' -t rust | xargs -0 -r bat       # find risky unwrap() calls
 ```
 
 ### Bulk rename files
@@ -387,7 +392,7 @@ fd 'test_' -t f -x rename 's/test_/spec_/' {}        # rename prefix (with renam
 
 ```sh
 # Find large log files, preview top lines
-fd -e log -S +10m -x bat -r :5 {}
+fd -I -e log -S +10m -x bat -r :5 {}
 
 # Search for a pattern, count per file, sort
 rg -c PATTERN | sort -t: -k2 -n -r | bat -l csv
@@ -396,7 +401,7 @@ rg -c PATTERN | sort -t: -k2 -n -r | bat -l csv
 rg 'TODO|FIXME|HACK|XXX' -C 1 --heading | bat -l diff
 
 # Find files changed today and search within them
-fd --changed-within 1d -t f -x rg PATTERN {}
+fd --changed-within 1d -t f -X rg -H PATTERN
 
 # Benchmark fd vs find
 hyperfine 'fd -e py' 'find . -name "*.py"'
