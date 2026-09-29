@@ -120,6 +120,13 @@ needs_tools = pytest.mark.skipif(
 )
 
 
+def _tool(name: str) -> str:
+    """Absolute path of a tool needs_tools checked for (ruff S607)."""
+    exe = shutil.which(name)
+    assert exe is not None, f"needs_tools skips this test without {name}"
+    return exe
+
+
 def _run(command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     home = cwd.parent / "home"
     home.mkdir(exist_ok=True)
@@ -130,7 +137,7 @@ def _run(command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         "LC_ALL": "C.UTF-8",
     }
     return subprocess.run(
-        ["sh", "-c", command],
+        [_tool("sh"), "-c", command],
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -144,7 +151,7 @@ def _run(command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
 def repo(tmp_path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run([_tool("git"), "init", "-q", str(root)], check=True)
     return root
 
 
