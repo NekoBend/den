@@ -242,8 +242,11 @@ check at all (a missing file, or an algo that disagrees with the hash's length);
 ## Python and uv
 
 The `python` / `pip` family transparently routes through `uv` (unless uv is absent
-or `_DEN_UV_OVERRIDE=0`). Inside an active venv, `pip` / `pip3` use the venv's own
-pip directly, while `python` / `python3` / `py` still run through
+or `_DEN_UV_OVERRIDE=0`, which a reload or a child shell started after `toggle-uv`
+keeps). Inside an active venv on bash/zsh/pwsh, `pip` / `pip3` use the venv's own
+pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they run
+`uv pip`, which installs into that venv. The cmd `pip` shim runs the first
+`pip.exe` on `PATH` inside a venv. `python` / `python3` / `py` still run through
 `uv run --python <venv version>`. Flip the redirect with `toggle-uv`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
@@ -258,6 +261,13 @@ pip directly, while `python` / `python3` / `py` still run through
 | `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.
+
+`va` refuses a venv it cannot trust and prints the command to source it yourself:
+one whose `bin/` (`Scripts/`) or activate script git tracks, or is a symlink, one
+whose `pyvenv.cfg` git tracks, one whose activate script is world-writable, one
+in a repository git will not read (dubious ownership), and one that is itself a git
+repository (a committed `HEAD`, `objects/` and `refs/`). That last check needs git
+2.38 or later; older git reads such a repository and finds nothing tracked.
 
 ## Media (ffmpeg)
 

@@ -31,12 +31,17 @@ function Show-UvOnlyMessage {
   Write-Host "$($Original.TrimEnd()) → $($RedirectedTo.TrimEnd())" -ForegroundColor DarkYellow
 }
 
-# pip → uv pip (falls back to system pip; bypassed in active venv)
+# pip → uv pip (falls back to system pip; an active venv's own pip when it has one)
+# A venv made by uv (vv, vva) has no pip: a PATH lookup then found another
+# Python's pip, which installed there. uv pip installs into the active venv.
 function pip {
   if ($env:VIRTUAL_ENV) {
-    & (_ResolveCmd 'pip' 'App') @Args
+    $venvPip = @('Scripts/pip.exe', 'bin/pip') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
+      Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if ($venvPip) { & $venvPip @Args; return }
+    if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
   }
-  elseif (_ResolveCmd 'uv' 'App') {
+  if (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "pip $($Args -join ' ')" "uv pip $($Args -join ' ')"
     & uv pip @Args
   }
@@ -45,12 +50,15 @@ function pip {
   }
 }
 
-# pip3 → uv pip (falls back to system pip3; bypassed in active venv)
+# pip3 → uv pip (falls back to system pip3; an active venv's own pip3 when it has one)
 function pip3 {
   if ($env:VIRTUAL_ENV) {
-    & (_ResolveCmd 'pip3' 'App') @Args
+    $venvPip = @('Scripts/pip3.exe', 'bin/pip3') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
+      Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if ($venvPip) { & $venvPip @Args; return }
+    if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
   }
-  elseif (_ResolveCmd 'uv' 'App') {
+  if (_ResolveCmd 'uv' 'App') {
     Show-UvOnlyMessage "pip3 $($Args -join ' ')" "uv pip $($Args -join ' ')"
     & uv pip @Args
   }
@@ -101,6 +109,17 @@ function py {
   }
 }
 
+# toggle-uv leaves _DEN_UV_OVERRIDE in the environment, so a reload (a new pwsh)
+# or a child pwsh inherits its OFF: drop the overrides again, as toggle-uv left
+# them, or its next call would take the OFF branch again and change nothing.
+# toggle-uv's ON sets it to 1 before it reads this file. Parity with python.sh.
+if ($env:_DEN_UV_OVERRIDE -eq '0') {
+  foreach ($_uvOverride in 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage') {
+    Remove-Item "Function:\$_uvOverride" -ErrorAction SilentlyContinue
+  }
+  Remove-Variable _uvOverride -ErrorAction SilentlyContinue
+}
+
 # ===== venv management =====
 
 # va → activate Python venv (default: .venv)
@@ -129,18 +148,62 @@ function va {
   # a venv COMMITTED to a repo (git tracks .venv happily, even force-added past a
   # .gitignore) is code that arrived with the clone. Not a git repo, or no git,
   # means nothing to check: pass. Parity with posix python.sh.
+  # A venv tool makes Scripts/ or bin/ and the activate script a real directory
+  # and file. A symlink or junction there reads the script from elsewhere, and git
+  # reports only the link itself, not a tracked file behind it: refuse it. A
+  # symlinked venv directory (.venv -> ~/venvs/proj) is fine; git -C follows it
+  # into the venv's own repository. LinkType, not the ReparsePoint attribute,
+  # which OneDrive also sets on its files.
+  foreach ($p in (Split-Path -Parent $activatePath), $activatePath) {
+    $linkItem = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    if ($linkItem -and $linkItem.PSObject.Properties['LinkType'] -and $linkItem.LinkType -in 'SymbolicLink', 'Junction') {
+      Write-Error "'$Name': $p is a symlink or junction, which no venv tool makes; dot-source it yourself if you trust it: . $activatePath"
+      return
+    }
+  }
   $gitExe = _ResolveCmd 'git' 'App'
   if ($gitExe) {
+    # Ask from inside the activate script's directory, about all of it: git then
+    # learns the directory's name from the file system (Git for Windows asks it for
+    # the stored name), so "." lists what is tracked there under a spelling the
+    # file system folds and :(icase), which folds ASCII only, does not. The ../
+    # pathspecs cover Scripts/, bin/ and pyvenv.cfg as before.
     # Test-Path above ignores case on NTFS and default APFS and git pathspecs do not,
-    # so :(icase) also catches a committed scripts/ACTIVATE.ps1. The exact names
+    # so :(icase) also catches a committed SCRIPTS/Activate.ps1. The exact names
     # still match when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
-    $venvFiles = 'Scripts/Activate.ps1', 'Scripts/activate.ps1', 'bin/Activate.ps1', 'bin/activate.ps1', 'bin/activate', 'pyvenv.cfg'
-    $pathspecs = $venvFiles + ($venvFiles | ForEach-Object { ":(icase)$_" })
-    $tracked = & $gitExe -C $Name ls-files -- $pathspecs 2>$null
+    # safe.bareRepository=explicit: a venv committed with a HEAD, objects/, refs/
+    # and a config of its own is a repository git would read instead, with an
+    # empty index (nothing tracked) and a core.fsmonitor it runs. Git then refuses,
+    # and the refusal below fails closed. Git before 2.38 ignores the key and
+    # cannot be kept out of such a repository.
+    $activateDir = Split-Path -Parent $activatePath
+    $pathspecs = @('.') + ('Scripts', 'bin', 'pyvenv.cfg' | ForEach-Object { "../$_"; ":(icase)../$_" })
+    $tracked = & $gitExe -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
+    if ($LASTEXITCODE -ne 0) {
+      # Fail closed: only "not a git repository" means nothing to check. Any other
+      # failure, such as a checkout git will not open for dubious ownership, leaves
+      # a committed venv possible. LC_ALL=C keeps git's message in English. Any
+      # line of git's, as trace lines may come first, and only from its start, as
+      # other messages quote a path that may hold the same words.
+      $lcAll = $env:LC_ALL
+      $env:LC_ALL = 'C'
+      try { $why = @(& $gitExe -c safe.bareRepository=explicit -C $activateDir ls-files -- . 2>&1 | ForEach-Object { "$_" }) }
+      catch { $why = @("$_") }
+      finally { $env:LC_ALL = $lcAll }
+      if (-not ($why -match '^fatal: not a git repository')) {
+        # Show git's fatal line, else its first.
+        $reason = @(@($why -match '^fatal:') + $why) | Select-Object -First 1
+        Write-Error "'$Name': git could not tell whether the venv is committed ($reason); dot-source it yourself if you trust it: . $activatePath"
+        return
+      }
+      $tracked = $null
+    }
     if ($tracked) {
       # Name what git actually reports: the match may be pyvenv.cfg alone, so a
-      # message about the activate script would be wrong.
-      $trackedList = (@($tracked) -join ', ')
+      # message about the activate script would be wrong. git names paths from the
+      # activate script's directory; name them from the venv, as it always has.
+      $activateDirName = Split-Path -Leaf $activateDir
+      $trackedList = (@($tracked | ForEach-Object { if ($_.StartsWith('../')) { $_.Substring(3) } else { "$activateDirName/$_" } }) -join ', ')
       Write-Error "'$Name': venv content is tracked by git ($trackedList) - a venv committed to the repo; dot-source it yourself if you trust it: . $activatePath"
       return
     }
@@ -231,6 +294,8 @@ function toggle-uv {
     # init.ps1 loaded it), not the one next to $PROFILE: that is another copy,
     # or none, when init.ps1 runs from a checkout.
     $src = Join-Path $PSScriptRoot 'python.ps1'
+    # Set before the file is read: it drops the overrides again while this is 0.
+    $env:_DEN_UV_OVERRIDE = '1'
     if (Test-Path -LiteralPath $src) { . $src }
     # Dot-sourcing from inside a function defines everything in THIS function's
     # scope, gone once toggle-uv returns; copy the overrides to global scope so
@@ -247,10 +312,10 @@ function toggle-uv {
     # python.ps1 defines nothing once uv stops resolving (its first line), so
     # claiming ON here would leave plain python/pip behind an ON message.
     if ($restored -eq 0) {
+      $env:_DEN_UV_OVERRIDE = '0'
       Write-Warning "toggle-uv: could not load the uv overrides from $src (is uv on PATH?); still OFF"
       return
     }
-    $env:_DEN_UV_OVERRIDE = '1'
     Write-Host 'uv override: ' -NoNewline
     Write-Host 'ON' -ForegroundColor Green -NoNewline
     # Double quotes: Windows PowerShell 5.1 reads this BOM-less file in the ANSI

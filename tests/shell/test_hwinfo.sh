@@ -160,6 +160,28 @@ assert_eq "bash/hwinfo does not write through planted symlink" "VICTIM" "$actual
 hwc_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
 assert_exists "bash/hwinfo cache still written" "$WORK/hwinfo-symcache/den-hwinfo.${hwc_mid}.sh"
 
+# toggle-hwinfo exports _DEN_HWINFO_HIDDEN, so a reload or a child shell starts
+# with it while the cache still holds the values: loading them anyway showed them
+# under an OFF, and the next toggle took the ON branch and changed nothing.
+HW_HIDDEN_RT="$WORK/hwinfo-hidden-rt"
+mkdir -p "$HW_HIDDEN_RT"
+printf "export STARSHIP_CPU_INTEL='i9-13900K'\n" > "$HW_HIDDEN_RT/den-hwinfo.${hwc_mid}.sh"
+chmod 600 "$HW_HIDDEN_RT/den-hwinfo.${hwc_mid}.sh"
+for sh in bash zsh; do
+    echo "[$sh] _DEN_HWINFO_HIDDEN=1 at load keeps the cached info hidden; one toggle shows it"
+    actual=$(env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+        -u STARSHIP_GPU_INTEL -u _DEN_SAVED_CPU_INTEL XDG_RUNTIME_DIR="$HW_HIDDEN_RT" _DEN_HWINFO_HIDDEN=1 \
+        "$sh" -c "
+            source '$HWINFO_SH'
+            echo \"LOAD:CPU=\${STARSHIP_CPU_INTEL:-UNSET} SAVED=\$_DEN_SAVED_CPU_INTEL\"
+            toggle-hwinfo
+            echo \"ON:CPU=\$STARSHIP_CPU_INTEL HIDDEN=\$_DEN_HWINFO_HIDDEN\"
+        " 2>&1 | tr -d '\r')
+    assert_eq "$sh/_DEN_HWINFO_HIDDEN=1 at load" "LOAD:CPU=UNSET SAVED=i9-13900K
+hwinfo: ON (visible in prompt)
+ON:CPU=i9-13900K HIDDEN=0" "$actual"
+done
+
 # =============================================================================
 # Zsh tests
 # =============================================================================
@@ -251,6 +273,28 @@ actual=$(run_pwsh "$HWINFO_PS1_TOGGLE" '
 ' 2>/dev/null | tr -d '\r') || true
 assert_eq "pwsh/tgl-hw OFF then ON" "TYPE=Function
 hwinfo: OFF (hidden from prompt)|CPU=|HIDDEN=1
+hwinfo: ON (visible in prompt)|CPU=i9-13900K|HIDDEN=0" "$actual"
+
+echo "[pwsh] _DEN_HWINFO_HIDDEN=1 at load keeps the cached info hidden; one toggle shows it"
+# The whole hwinfo.ps1 this time, with its cache under a data dir of our own
+# (LocalApplicationData is XDG_DATA_HOME on Linux/macOS). .NET returns an empty
+# LocalApplicationData for a directory that does not exist, which would put the
+# cache in the current directory: create it first, and run from WORK anyway.
+mkdir -p "$WORK/hwinfo-ps-data"
+actual=$(cd "$WORK" && env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+    -u STARSHIP_GPU_INTEL -u _DEN_SAVED_CPU_INTEL XDG_DATA_HOME="$WORK/hwinfo-ps-data" _DEN_HWINFO_HIDDEN=1 \
+    pwsh -NoProfile -NonInteractive -Command "
+        . '$DOTFILES/shell/pwsh/_helpers.ps1'
+        \$cache = [IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'shell-cache', \"hwinfo-cache.\$env:COMPUTERNAME.ps1\")
+        if (-not \$cache.StartsWith('$WORK/hwinfo-ps-data/')) { throw \"cache outside the test data dir: \$cache\" }
+        \$null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent \$cache)
+        \"\`\$env:STARSHIP_CPU_INTEL = 'i9-13900K'\" | Set-Content -LiteralPath \$cache
+        . '$HWINFO_PS1'
+        Write-Output \"LOAD:CPU=[\$env:STARSHIP_CPU_INTEL] SAVED=[\$env:_DEN_SAVED_CPU_INTEL]\"
+        \$msg = @(toggle-hwinfo 6>&1) -join ''
+        Write-Output \"\$msg|CPU=\$env:STARSHIP_CPU_INTEL|HIDDEN=\$env:_DEN_HWINFO_HIDDEN\"
+    " 2>&1 | tr -d '\r')
+assert_eq "pwsh/_DEN_HWINFO_HIDDEN=1 at load" "LOAD:CPU=[] SAVED=[i9-13900K]
 hwinfo: ON (visible in prompt)|CPU=i9-13900K|HIDDEN=0" "$actual"
 
 # =============================================================================

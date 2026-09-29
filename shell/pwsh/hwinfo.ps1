@@ -86,6 +86,21 @@ if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
   }
 }
 
+# toggle-hwinfo leaves _DEN_HWINFO_HIDDEN in the environment, so a reload (a new
+# pwsh) or a child pwsh inherits its OFF, and the cache or the detection above
+# brings the values back. Hide them again the way toggle-hwinfo does, or its next
+# call would take the ON branch and change nothing. An empty value keeps an
+# inherited saved one. Parity with hwinfo.sh.
+if ($env:_DEN_HWINFO_HIDDEN -eq '1') {
+  foreach ($v in $_hwVars) {
+    $val = [Environment]::GetEnvironmentVariable($v)
+    if ($val) {
+      [Environment]::SetEnvironmentVariable(($v -replace '^STARSHIP_', '_DEN_SAVED_'), $val)
+      Remove-Item "Env:\$v" -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 # refresh-hwinfo → clear hardware info cache
 function refresh-hwinfo {
   Remove-Item -Path ([IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'shell-cache', "hwinfo-cache.$env:COMPUTERNAME.ps1")) -Force -ErrorAction SilentlyContinue
