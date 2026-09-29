@@ -5,7 +5,10 @@ source "$SCRIPT_DIR/helpers.sh"
 
 PARALLEL_SH_GUARDED="$DOTFILES/shell/posix/parallel.sh"
 PARALLEL_SH="$TESTTMP/parallel_test.sh"
-PARALLEL_PS1="$DOTFILES/shell/pwsh/parallel.ps1"
+# parallel.ps1 takes _ResolvePaths from _helpers.ps1, which init.ps1 loads
+# first; this file loads both in that order.
+PARALLEL_PS1="$TESTTMP/parallel_test.ps1"
+printf ". '%s'\n. '%s'\n" "$DOTFILES/shell/pwsh/_helpers.ps1" "$DOTFILES/shell/pwsh/parallel.ps1" > "$PARALLEL_PS1"
 
 make_noninteractive_source_copy "$PARALLEL_SH_GUARDED" "$PARALLEL_SH"
 

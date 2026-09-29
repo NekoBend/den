@@ -412,6 +412,8 @@ Case 'grep, fallback, -n' { grep -n beta a.txt }
 Case 'grep, fallback, -n two files' { grep -n beta a.txt b.txt }
 Case 'grep, fallback, -r' { grep -r gamma }
 Case 'grep, fallback, piped' { 'alpha' | grep alph }
+Case 'grep, fallback, a pattern and a missing file' { grep beta '*.txt' missing.txt }
+Case 'find, fallback, a missing directory' { find nodir }
 Case 'la, fallback' { la }
 Case 'll, fallback' { ll }
 Case 'lla, fallback' { lla }
@@ -484,7 +486,14 @@ Case 'tail, piped' { 'x', 'y' | tail -n 1 }
 Case 'tail -n +N, piped' { 'x', 'y' | tail -n +2 }
 Case 'touch, new file' { touch touched.txt }
 Case 'touch, existing file' { touch a.txt }
+Case 'touch, a pattern and one that matches nothing' {
+    try { touch '*.txt' 'none*.log' } finally { Remove-Item -LiteralPath 'none*.log' -Force -ErrorAction SilentlyContinue }
+}
 Case 'touch, no argument' { touch }
+Case 'touch, [ ] escaped as tab completion writes them' {
+    $null = New-Item -ItemType Directory -Path 'br/[d]'
+    try { touch 'br/`[d`]/x.txt' 'br/`[d`]/x.txt' 'br/`[e`].txt' } finally { Remove-Item -LiteralPath br -Recurse -Force }
+}
 Case 'wc' { wc a.txt }
 Case 'wc -l' { wc -l a.txt }
 Case 'wc -w -c' { wc -w -c a.txt }
@@ -620,6 +629,8 @@ Case 'cdf' { cdf }
 Case 'cdf, no fd' { Use-StrictPath 'fzf', 'uv', 'bin', 'sys'; try { cdf } finally { Use-StrictPath } }
 Case 'cdf, no fzf' { Use-StrictPath 'modern', 'uv', 'bin', 'sys'; try { cdf } finally { Use-StrictPath } }
 Case 'mkcd' { mkcd made-dir }
+Case 'mkcd, [ ] in the name' { mkcd 'made-[x]' }
+Case 'mkcd -Name' { mkcd -Name made-named }
 Case 'mkcd, no argument' { mkcd }
 Case 'y' { y }
 Case 'y, no yazi' { Use-StrictPath 'sys'; try { y } finally { Use-StrictPath } }
@@ -663,12 +674,23 @@ Case 'prompt' { prompt }
 Case '_DenDirHookPrompt' { _DenDirHookPrompt }
 Case '_DenDirHookPrompt, a prompt defined after it' {
     $StrictPrompt = ${function:prompt}
-    $StrictOld = $global:_DenDirPromptOld
     $StrictHook = $global:_DenDirPrompt
     try { Set-Item Function:global:prompt { 'other> ' }; _DenDirHookPrompt; prompt } finally {
         Set-Item Function:global:prompt $StrictPrompt
-        $global:_DenDirPromptOld = $StrictOld
         $global:_DenDirPrompt = $StrictHook
+    }
+}
+Case '_DenDirHookPrompt, again around a wrapper of its wrapper' {
+    $StrictPrompt = ${function:prompt}
+    $StrictHook = $global:_DenDirPrompt
+    $global:_StrictWrapped = $StrictPrompt
+    try {
+        Set-Item Function:global:prompt { 'vs:' + $global:_StrictWrapped.Invoke() }
+        _DenDirHookPrompt; prompt
+    } finally {
+        Set-Item Function:global:prompt $StrictPrompt
+        $global:_DenDirPrompt = $StrictHook
+        Remove-Variable -Name _StrictWrapped -Scope Global
     }
 }
 

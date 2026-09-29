@@ -313,6 +313,68 @@ else
 fi
 rm -f "$WORK/touchfile.txt" "$WORK/touchfile2.txt"
 
+# touch takes a name literally: [ ] in pages/[id].tsx are not wildcards. Read
+# as wildcards, an existing [id].tsx went unmatched and touch failed with
+# "already exists" and left it as it was, and a new [slug].tsx matched s.tsx,
+# which touch updated instead. Tab completion writes the brackets escaped
+# ('./pages/`[id`].tsx'), and that form still reaches the file, or the
+# directory, it names. Each file starts at 2000-01-01; the output is the year
+# of each afterwards (0 for a file that is not there) and the errors, with
+# _helpers.ps1 loaded (touch asks its _CoreutilsBin first) so that the errors
+# are touch's own.
+echo "[pwsh] touch takes [ ] in a name literally"
+TB_HELPERS=". '$DOTFILES/shell/pwsh/_helpers.ps1'"
+rm -rf "$WORK/tb" && mkdir -p "$WORK/tb/pages" "$WORK/tb/src/routes/[slug]"
+for f in '[id].tsx' 's.tsx' '[ab].md' 'a.md'; do
+    : > "$WORK/tb/pages/$f"
+    touch -t 200001011200 "$WORK/tb/pages/$f"
+done
+tb_years() {
+    local f y out=''
+    for f in "$@"; do
+        y=0
+        [ -e "$WORK/tb/$f" ] && y=$(date -r "$WORK/tb/$f" +%Y)
+        out="$out$f=$y "
+    done
+    printf '%s\n' "${out% }"
+}
+err=$(cd "$WORK/tb" && run_pwsh "$COREUTILS_PS1_STRIPPED" "$TB_HELPERS; touch 'pages/[id].tsx' 'pages/[slug].tsx'" 2>&1 >/dev/null | tr -d '\r')
+assert_eq "touch pages/[id].tsx pages/[slug].tsx: no error" "" "$err"
+now=$(date +%Y)
+assert_eq "touch pages/[id].tsx pages/[slug].tsx: those two, not s.tsx" \
+    "pages/[id].tsx=$now pages/[slug].tsx=$now pages/s.tsx=2000" \
+    "$(tb_years 'pages/[id].tsx' 'pages/[slug].tsx' 'pages/s.tsx')"
+err=$(cd "$WORK/tb" && run_pwsh "$COREUTILS_PS1_STRIPPED" "$TB_HELPERS; touch './pages/\`[ab\`].md' './src/routes/\`[slug\`]/+page.svelte'" 2>&1 >/dev/null | tr -d '\r')
+assert_eq "touch, tab-completed forms: no error" "" "$err"
+assert_eq "touch, tab-completed forms reach [ab].md and a new file in [slug]" \
+    "pages/[ab].md=$now pages/a.md=2000 src/routes/[slug]/+page.svelte=$now pages/\`[ab\`].md=0" \
+    "$(tb_years 'pages/[ab].md' 'pages/a.md' 'src/routes/[slug]/+page.svelte' 'pages/`[ab`].md')"
+rm -rf "$WORK/tb"
+
+# A name with * or ? is a pattern: a function receives `touch *.md` unexpanded,
+# and touch updates each file it matches, as the shell's expansion would. Taken
+# literally, it created a file named '*.md' and left the .md files as they
+# were. One that matches nothing is created as it is, as bash passes it on, and
+# a pattern in a tab-completed app/`[slug`] reads that directory. Same fixture
+# and output as above.
+echo "[pwsh] touch expands * and ? in a name"
+rm -rf "$WORK/tb" && mkdir -p "$WORK/tb/src/routes/[slug]" "$WORK/tb/src/routes/s"
+for f in 'one.md' 'a.txt' 'b.txt' 'src/routes/[slug]/x.svelte' 'src/routes/s/y.svelte'; do
+    : > "$WORK/tb/$f"
+    touch -t 200001011200 "$WORK/tb/$f"
+done
+err=$(cd "$WORK/tb" && run_pwsh "$COREUTILS_PS1_STRIPPED" "$TB_HELPERS; touch '*.md' '?.txt' './src/routes/\`[slug\`]/*.svelte' 'none*.log'" 2>&1 >/dev/null | tr -d '\r')
+assert_eq "touch *.md ?.txt: no error" "" "$err"
+assert_eq "touch *.md ?.txt: the files they match, and no file named after the pattern" \
+    "one.md=$now a.txt=$now b.txt=$now *.md=0 ?.txt=0" \
+    "$(tb_years 'one.md' 'a.txt' 'b.txt' '*.md' '?.txt')"
+assert_eq "touch, a pattern in a tab-completed [slug] directory: its files only" \
+    "src/routes/[slug]/x.svelte=$now src/routes/s/y.svelte=2000 src/routes/[slug]/*.svelte=0" \
+    "$(tb_years 'src/routes/[slug]/x.svelte' 'src/routes/s/y.svelte' 'src/routes/[slug]/*.svelte')"
+assert_eq "touch, a pattern that matches nothing: created as it is" \
+    "none*.log=$now" "$(tb_years 'none*.log')"
+rm -rf "$WORK/tb"
+
 # =============================================================================
 # which
 # =============================================================================
