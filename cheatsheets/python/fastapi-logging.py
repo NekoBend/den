@@ -5,13 +5,25 @@ coexist without duplicates or missing lines.
 
 Key Insight
 ===========
-``uvicorn.run()`` **reconfigures the root logger by default**. If you set up
-logging before calling ``uvicorn.run()``, your config is silently overwritten.
+Unless you pass ``log_config=``, ``uvicorn.run()`` applies its own
+``LOGGING_CONFIG`` with ``dictConfig``. That config has no ``"root"`` key, so
+your root handlers stay; it configures only the ``uvicorn``,
+``uvicorn.error`` and ``uvicorn.access`` loggers, with handlers on
+``uvicorn`` and ``uvicorn.access``, neither of which propagates. uvicorn's
+lines therefore never reach your root handlers, and whatever you attached to
+those three loggers before ``uvicorn.run()`` is replaced.
+
+With ``reload=True`` or ``workers>1`` the server runs in freshly spawned
+processes. Each one applies ``log_config`` again and imports your app module,
+but none runs your ``if __name__ == "__main__":`` block: logging set up only
+there is missing exactly where the requests are served.
 
 Solutions:
-    1. Pass ``log_config=`` to ``uvicorn.run()`` with your own dictConfig.
-    2. Pass ``log_config=None`` to disable uvicorn's reconfiguration,
-       then configure logging yourself.
+    1. Pass ``log_config=`` to ``uvicorn.run()`` with your own dictConfig
+       (Option A); uvicorn applies it in every server process.
+    2. Pass ``log_config=None`` and call a ``setup_*`` function inside the
+       server process: in an app factory (``create_app`` below, run with
+       ``factory=True``) or at import time of the module that defines ``app``.
 
 Quick-Reference Decision Table
 ==============================
@@ -26,7 +38,9 @@ Quick-Reference Decision Table
 
 Usage:
     1. Copy the function you need into your project.
-    2. Call it once **at application startup** (lifespan or before uvicorn.run).
+    2. Option A: pass the returned dict as ``log_config=``. Options B-E: call
+       it once in the server process (app factory or app-module scope, see
+       Key Insight), never only under ``if __name__ == "__main__":``.
     3. Use ``logging.getLogger(__name__)`` in every module for app logs.
 
 Dependencies:
@@ -34,6 +48,10 @@ Dependencies:
 """
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 # =============================================================================
 # 1. Basic — Console Text
@@ -115,11 +133,19 @@ def setup_uvicorn_json(log_level: str = "info") -> None:
     [Note] Both app logs and uvicorn access logs are emitted as JSON.
            Configures loggers directly and returns ``None`` so that
            ``uvicorn.run(log_config=None)`` skips its own reconfiguration.
+           Call it in the server process (see the module Key Insight).
+           The chatty HTTP clients (urllib3, httpx, httpcore, botocore) are
+           pinned to WARNING: httpx logs every request at INFO with the whole
+           URL, query-string secrets included.
 
     Example::
 
+        # app.py: imported by every server process, reload and workers too
         setup_uvicorn_json()
-        uvicorn.run("app:app", log_config=None)
+        app = FastAPI()
+
+        # launcher
+        uvicorn.run("app:app", log_config=None, workers=2)
     """
     import json
     import sys
@@ -175,6 +201,8 @@ def setup_uvicorn_json(log_level: str = "info") -> None:
     root.handlers.clear()
     root.addHandler(json_handler)
     root.setLevel(log_level.upper())
+    for name in ("urllib3", "httpx", "httpcore", "botocore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     uv_logger = logging.getLogger("uvicorn")
     uv_logger.handlers.clear()
@@ -200,20 +228,32 @@ def setup_uvicorn_json(log_level: str = "info") -> None:
 # =============================================================================
 
 
-def setup_uvicorn_structlog(dev_mode: bool = True) -> None:
+def setup_uvicorn_structlog(
+    dev_mode: bool = True, log_level: str | None = None
+) -> None:
     """Wire structlog for both app logs and uvicorn logs.
 
     [Best for] Teams that use structlog and want unified structured logging.
     [Note] Pass ``log_config=None`` to ``uvicorn.run()`` so uvicorn does not
-           overwrite the config set here.
+           overwrite the config set here, and call it in the server process
+           (see the module Key Insight).
 
            Dev mode  → colored, human-readable console output.
            Prod mode → JSON lines for log aggregators.
 
+           ``log_level`` defaults to "debug" in dev mode and "info" in prod
+           mode. In prod mode the chatty HTTP clients (urllib3, httpx,
+           httpcore, botocore) are pinned to WARNING: their DEBUG/INFO
+           records carry whole request URLs, query-string secrets included.
+
     Example::
 
+        # app.py: imported by every server process, reload and workers too
         setup_uvicorn_structlog(dev_mode=False)
-        uvicorn.run("app:app", log_config=None)
+        app = FastAPI()
+
+        # launcher
+        uvicorn.run("app:app", log_config=None, workers=2)
     """
     import sys
 
@@ -262,7 +302,10 @@ def setup_uvicorn_structlog(dev_mode: bool = True) -> None:
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
-    root.setLevel(logging.DEBUG)
+    root.setLevel((log_level or ("debug" if dev_mode else "info")).upper())
+    if not dev_mode:
+        for name in ("urllib3", "httpx", "httpcore", "botocore"):
+            logging.getLogger(name).setLevel(logging.WARNING)
 
     # Wire uvicorn loggers so they flow through structlog's formatter
     for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
@@ -287,10 +330,20 @@ def setup_uvicorn_file(
     [Best for] Deployments that log to disk (VMs, on-prem, Docker volumes).
     [Note] Pass ``log_config=None`` to ``uvicorn.run()`` so uvicorn does not
            overwrite the config set here. Files rotate at 10 MB, keeping 5 backups.
+           Call it in the server process (see the module Key Insight). With
+           ``workers>1`` every worker rotates the same files on its own and
+           they clobber each other: give each worker its own file (e.g. put
+           ``os.getpid()`` in the name) or rotate externally with
+           ``WatchedFileHandler`` + logrotate. urllib3, httpx, httpcore and
+           botocore are pinned to WARNING, as in ``setup_uvicorn_json``.
 
     Example::
 
+        # app.py: imported by every server process, reload and workers too
         setup_uvicorn_file(app_log_path="/var/log/myapp/app.log")
+        app = FastAPI()
+
+        # launcher
         uvicorn.run("app:app", log_config=None)
     """
     import sys
@@ -338,6 +391,8 @@ def setup_uvicorn_file(
     root.setLevel(level)
     root.addHandler(console_handler)
     root.addHandler(app_file_handler)
+    for name in ("urllib3", "httpx", "httpcore", "botocore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     # Uvicorn error logger
     uv_error = logging.getLogger("uvicorn.error")
@@ -408,42 +463,34 @@ def setup_middleware_logging(app: object) -> None:
 
 
 # =============================================================================
-# Example main.py — Wiring It All Together
+# Example app - Wiring It All Together
 # =============================================================================
 
-if __name__ == "__main__":
-    import logging
 
-    import uvicorn
-    from fastapi import FastAPI
+def create_app() -> "FastAPI":
+    """Build the demo app, setting up logging in the process that serves it.
 
-    # ------------------------------------------------------------------
-    # Pick ONE of the setups below. Uncomment the one you want.
-    # ------------------------------------------------------------------
+    [Note] With ``log_config=None`` (Options B-E) the setup call belongs here:
+           uvicorn calls the factory (``factory=True``) in every server
+           process, including the spawned ones behind ``reload=True`` and
+           ``workers>1``. Module scope of your ``app.py`` works the same way.
+           Option A needs no call here: uvicorn applies a ``log_config`` dict
+           in every process itself.
 
-    # --- Option A: Basic text (dev) ---
-    log_config = setup_uvicorn_basic(log_level="debug")
-    # Pass log_config to uvicorn.run() below.
+    Example::
 
-    # --- Option B: JSON (production, no deps) ---
-    # setup_uvicorn_json(log_level="info")
-    # log_config = None  # Tell uvicorn not to reconfigure
-
-    # --- Option C: structlog (dev colored) ---
-    # setup_uvicorn_structlog(dev_mode=True)
-    # log_config = None
-
-    # --- Option D: structlog (prod JSON) ---
-    # setup_uvicorn_structlog(dev_mode=False)
-    # log_config = None
-
-    # --- Option E: File + console ---
-    # setup_uvicorn_file(app_log_path="app.log", access_log_path="access.log")
-    # log_config = None
+        uvicorn.run("app:create_app", factory=True, log_config=None, workers=2)
+    """
+    from fastapi import FastAPI, HTTPException
 
     # ------------------------------------------------------------------
-    # Build app
+    # Options B-E: uncomment ONE, and pass log_config=None to uvicorn.run().
     # ------------------------------------------------------------------
+    # setup_uvicorn_json(log_level="info")  # B: JSON (production, no deps)
+    # setup_uvicorn_structlog(dev_mode=True)  # C: structlog (dev colored)
+    # setup_uvicorn_structlog(dev_mode=False)  # D: structlog (prod JSON)
+    # setup_uvicorn_file(app_log_path="app.log", access_log_path="access.log")  # E
+
     app = FastAPI(title="Logging Demo")
 
     # Add request/response middleware (works with any config above)
@@ -458,19 +505,28 @@ if __name__ == "__main__":
 
     @app.get("/error")
     async def error_demo() -> dict[str, str]:
-        from fastapi import HTTPException
-
         logger.warning("About to raise an error")
         raise HTTPException(status_code=500, detail="demo error")
 
-    # ------------------------------------------------------------------
-    # Run uvicorn
-    # ------------------------------------------------------------------
-    # Key: log_config controls whether uvicorn reconfigures logging.
-    #   - dict   → uvicorn uses YOUR config (Option A)
-    #   - None   → uvicorn skips reconfiguration (Options B–E)
+    return app
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # --- Option A: Basic text (dev) ---
+    # A log_config dict is applied by uvicorn in every server process.
+    log_config = setup_uvicorn_basic(log_level="debug")
+
+    # --- Options B-E: uncomment ONE setup call in create_app(), then ---
+    # log_config = None
+
+    # This file's name has a hyphen, so the demo hands uvicorn the app object
+    # (one process). In your project pass an import string, which reload and
+    # workers need:
+    #   uvicorn.run("app:create_app", factory=True, log_config=log_config, workers=2)
     uvicorn.run(
-        app,
+        create_app(),
         host="0.0.0.0",
         port=8000,
         log_config=log_config,

@@ -23,7 +23,13 @@ import re
 # Constants (inline for copy-paste convenience)
 # =============================================================================
 
-EMAIL: str = r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"
+# The lookbehind starts the local part only where a run of local-part
+# characters starts. Without it, re retries every position of a long token
+# with no "@" (base64, hex, JWTs in logs): O(n^2), seconds per line (ReDoS).
+# The price: an address glued to the end of the previous match by a
+# local-part character ("x@a.com-y@b.com") is not found, and mask_emails
+# leaves it unmasked.
+EMAIL: str = r"(?<![a-zA-Z0-9._%+\-])[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"
 URL: str = r"https?://[^\s<>\"')\]]+"
 WHITESPACE_RUNS: str = r"[\s]+"
 
@@ -59,10 +65,13 @@ def mask_emails(text: str, mask: str = "***") -> str:
     """Replace the local part of every email address with *mask*.
 
     [Best for] Anonymising logs or user-facing text.
-    [Note] ``user@example.com`` → ``***@example.com``.
+    [Note] ``user@example.com`` → ``***@example.com``. Linear time thanks to
+           the lookbehind (see ``EMAIL``), so untrusted log lines are safe;
+           an address glued to the previous one (``x@a.com-y@b.com``) stays
+           unmasked.
     """
     return re.sub(
-        r"([a-zA-Z0-9._%+\-]+)(@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})",
+        r"(?<![a-zA-Z0-9._%+\-])([a-zA-Z0-9._%+\-]+)(@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})",
         mask + r"\2",
         text,
     )

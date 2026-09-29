@@ -23,7 +23,7 @@ Quick-Reference Decision Table
 | write_csv            | Dump rows to CSV                  | csv            | DictWriter with header row     |
 | read_json            | Load a JSON file                  | json           | Returns dict or list           |
 | write_json           | Dump data to JSON                 | json           | Pretty-printed, UTF-8 safe     |
-| atomic_write         | Crash-safe file replacement       | tempfile+os    | Write to temp, then rename     |
+| atomic_write         | Crash-safe file replacement       | os             | Write to temp, then rename     |
 | file_metadata        | Size, mtime, exists checks        | pathlib        | No extra imports needed        |
 
 Usage:
@@ -189,32 +189,39 @@ def split_by_size(
 
 
 def split_by_lines(
-    path: Path, lines_per_chunk: int = 10_000, out_dir: Path | None = None
+    path: Path,
+    lines_per_chunk: int = 10_000,
+    out_dir: Path | None = None,
+    encoding: str = "utf-8",
 ) -> list[Path]:
     """Split a text file into chunks of N lines each.
 
     [Best for] Distributing CSV/log processing across workers.
     [Note] Streams the file — memory usage is constant regardless of file size.
+           ``newline=""`` on the read and on every write keeps each line
+           ending (LF, CRLF) exactly as it was, so ``merge_files`` rebuilds
+           the original byte for byte. Pass ``encoding`` for non-UTF-8 text
+           (e.g. ``"cp932"`` for Shift-JIS logs).
     """
     src = Path(path)
     dest = Path(out_dir) if out_dir else src.parent
     dest.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
 
-    with open(src, encoding="utf-8") as fh:
+    with open(src, encoding=encoding, newline="") as fh:
         idx = 0
         batch: list[str] = []
         for line in fh:
             batch.append(line)
             if len(batch) >= lines_per_chunk:
                 part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-                part_path.write_text("".join(batch), encoding="utf-8")
+                part_path.write_text("".join(batch), encoding=encoding, newline="")
                 parts.append(part_path)
                 batch = []
                 idx += 1
         if batch:
             part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-            part_path.write_text("".join(batch), encoding="utf-8")
+            part_path.write_text("".join(batch), encoding=encoding, newline="")
             parts.append(part_path)
 
     return parts
@@ -230,18 +237,44 @@ def merge_files(paths: list[Path], output: Path, chunk_size: int = 1024 * 1024) 
 
     [Best for] Reassembling split chunks, concatenating logs.
     [Note] Reads in streaming fashion — handles files larger than available RAM.
+           Raises ``shutil.SameFileError`` when ``output`` is also one of
+           ``paths`` (``sorted(logs.glob("app*.log"))`` matches ``app.log``
+           on the second run): reading the file being appended to never
+           reaches EOF and fills the disk. The merge goes to a temp file that
+           replaces ``output`` only once complete, so a failed merge leaves
+           the previous ``output`` untouched. Over an existing ``output`` the
+           temp file is 0o600 until the copy is done and then takes the old
+           file's mode, so a private file's data never sits in a wider one.
     """
-    out = Path(output)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    import os
+    import shutil
+    import stat
+    import uuid
 
-    with open(out, "wb") as out_fh:
+    out = Path(os.path.realpath(output))  # write through a symlink, like open()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    mode: int | None = None
+    if out.exists():
+        mode = stat.S_IMODE(out.stat().st_mode)
         for p in paths:
-            with open(p, "rb") as in_fh:
-                while True:
-                    chunk = in_fh.read(chunk_size)
-                    if not chunk:
-                        break
-                    out_fh.write(chunk)
+            if Path(p).samefile(out):
+                raise shutil.SameFileError(f"{p} is the output file {output}")
+
+    tmp = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tmp")
+    create_mode = 0o666 if mode is None else 0o600  # the umask applies to both
+    try:
+        with open(
+            tmp, "xb", opener=lambda f, flags: os.open(f, flags, create_mode)
+        ) as out_fh:
+            for p in paths:
+                with open(p, "rb") as in_fh:
+                    shutil.copyfileobj(in_fh, out_fh, chunk_size)
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # =============================================================================
@@ -267,12 +300,15 @@ def write_csv(
     """Write a list of dicts to a CSV file with a header row.
 
     [Best for] Exporting tabular results, generating reports.
-    [Note] ``fieldnames`` defaults to the keys of the first row.
+    [Note] ``fieldnames`` defaults to the keys of the first row. With no rows,
+           pass ``fieldnames``: the file is rewritten with the header alone, so
+           an empty report never leaves the previous run's rows in place.
+           No rows and no ``fieldnames`` raises ``ValueError``.
     """
     import csv
 
-    if not rows:
-        return
+    if not rows and not fieldnames:
+        raise ValueError("write_csv: no rows, so pass fieldnames for the header")
     fields = fieldnames or list(rows[0].keys())
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -323,22 +359,48 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     [Best for] Config files, state files — anything that must not be half-written.
     [Note] On POSIX ``os.replace`` is atomic. On Windows it is as close to atomic
            as the OS allows. The temp file is created in the same directory to
-           ensure it resides on the same filesystem.
+           ensure it resides on the same filesystem. Symlinks are resolved
+           first, so a dotfiles-managed link stays a link and the file it
+           points to is the one updated. Over an existing file the temp file
+           is 0o600 while the content is written and takes the old file's
+           permission bits just before the rename, so a 0o600 secret never
+           sits in a wider file; a new file gets 0o666 minus the umask, as
+           with ``open`` (``tempfile.mkstemp`` would leave it 0o600). It is
+           fsynced before the rename and the directory after it, so a crash
+           leaves the old content or the new one, never an empty file.
     """
     import os
-    import tempfile
+    import stat
+    import uuid
 
-    p = Path(path)
+    p = Path(os.path.realpath(path))
     p.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(p.stat().st_mode) if p.exists() else None
 
-    fd, tmp_path = tempfile.mkstemp(dir=p.parent, suffix=".tmp")
+    tmp = p.with_name(f".{p.name}.{uuid.uuid4().hex}.tmp")
+    create_mode = 0o666 if mode is None else 0o600  # the umask applies to both
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as fh:
+        with open(
+            tmp,
+            "x",
+            encoding=encoding,
+            opener=lambda f, flags: os.open(f, flags, create_mode),
+        ) as fh:
             fh.write(content)
-        os.replace(tmp_path, p)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, p)
     except BaseException:
-        os.unlink(tmp_path)
+        tmp.unlink(missing_ok=True)
         raise
+    if os.name == "posix":  # Windows cannot open a directory to fsync it
+        dir_fd = os.open(p.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
 
 # =============================================================================

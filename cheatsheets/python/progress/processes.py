@@ -9,7 +9,7 @@ one-liner to per-worker bars fed from inside the workers.
 | run_process_tqdm_manual        | CPU-bound, per-item failures kept     | as outcomes |
 | run_process_rich               | CPU-bound, pretty UI, failures kept   | as outcomes |
 | run_process_rich_ordered       | Stream results in input order         | raise+cancel|
-| run_process_rich_bounded       | Huge / lazy iterables, bounded memory | as outcomes |
+| run_process_rich_bounded       | Huge / lazy iterables (+ batch_size)  | as outcomes |
 | run_process_rich_chunked       | Millions of tiny items (less IPC)     | as outcomes |
 | run_process_rich_sharded       | N records -> shard per CPU -> blocks  | as outcomes |
 | run_process_thread_rich_nested | Shard per CPU, threads inside for IO  | as outcomes |
@@ -196,7 +196,9 @@ def run_process_rich[T, R](
                 index = index_of[future]
                 error = future.exception()
                 if error is not None:
-                    progress.log(f"item {index} failed: {error!r}")
+                    # markup=False: a "[/..." in the error text would raise
+                    # MarkupError and throw every collected outcome away.
+                    progress.log(f"item {index} failed: {error!r}", markup=False)
                 outcomes[index] = error if error is not None else future.result()
                 progress.advance(task)
         finally:
@@ -241,16 +243,30 @@ def run_process_rich_bounded[T, R](
     max_workers: int = 4,
     total: int | None = None,
     in_flight: int | None = None,
+    batch_size: int = 1,
 ) -> list[R | BaseException]:
-    """Run ``func`` with at most ``in_flight`` items submitted at any time.
+    """Run ``func`` with at most ``in_flight`` batches submitted at any time.
 
     [Best for] Millions of items or a lazy generator (database cursor, file
                lines): only the window is pickled and held in memory.
     [Note] ``in_flight`` defaults to ``2 * max_workers``: enough that no
            worker idles, small enough to bound memory. Pass ``total`` when
            the iterable has no ``len()`` and you still want an ETA.
+           Each batch of ``batch_size`` items is one future: one pickle round
+           trip plus ``wait()`` bookkeeping that grows with the window. That
+           caps the default per-item mode at a few thousand items per second
+           (a bigger ``in_flight`` makes it slower, not faster), so keep
+           ``batch_size=1`` for items that each take milliseconds or more and
+           pass ``batch_size=1000`` or so for tiny ones (file lines, cursor
+           rows). A worker that dies (OOM kill, segfault) breaks the pool:
+           its batch and every item not yet submitted come back holding the
+           ``BrokenProcessPool`` error, instead of that error escaping and
+           taking the outcomes collected so far with it. The ``finally``
+           drops the queued batches on Ctrl-C. Pair with ``_apply_block``.
     """
+    import itertools
     from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+    from concurrent.futures.process import BrokenProcessPool
 
     from rich.progress import (
         BarColumn,
@@ -261,8 +277,8 @@ def run_process_rich_bounded[T, R](
     )
 
     window = in_flight or 2 * max_workers
-    outcomes: dict[int, R | BaseException] = {}
-    index_of: dict[Future[R], int] = {}
+    outcomes_by_batch: dict[int, list[R | BaseException]] = {}
+    batch_of: dict[Future[list[R | BaseException]], tuple[int, int]] = {}
     with (
         Progress(
             TextColumn("[bold blue]{task.description}"),
@@ -274,24 +290,43 @@ def run_process_rich_bounded[T, R](
     ):
         task = progress.add_task("Processes (bounded)", total=total)
 
-        def collect(done: set[Future[R]]) -> None:
+        def collect(done: set[Future[list[R | BaseException]]]) -> None:
             for future in done:
+                index, size = batch_of.pop(future)
                 error = future.exception()
-                outcomes[index_of.pop(future)] = (
-                    error if error is not None else future.result()
+                outcomes_by_batch[index] = (
+                    [error] * size if error is not None else future.result()
                 )
-                progress.advance(task)
+                progress.advance(task, size)
 
-        pending: set[Future[R]] = set()
-        for index, item in enumerate(items):
-            if len(pending) >= window:
-                done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                collect(done)
-            future = executor.submit(func, item)
-            index_of[future] = index
-            pending.add(future)
-        collect(wait(pending).done)
-    return [outcomes[index] for index in range(len(outcomes))]
+        pending: set[Future[list[R | BaseException]]] = set()
+        broken: BrokenProcessPool | None = None
+        try:
+            for index, batch in enumerate(itertools.batched(items, batch_size)):
+                if broken is None:
+                    if len(pending) >= window:
+                        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                        collect(done)
+                    try:
+                        future: Future[list[R | BaseException]] = executor.submit(  # ty: ignore[invalid-assignment] - _apply_block's R is not bound through submit (ty 0.0.55)
+                            _apply_block, func, batch
+                        )
+                    except BrokenProcessPool as exc:
+                        broken = exc  # a worker died; nothing more can be submitted
+                    else:
+                        batch_of[future] = (index, len(batch))
+                        pending.add(future)
+                        continue
+                outcomes_by_batch[index] = [broken] * len(batch)
+                progress.advance(task, len(batch))
+            collect(wait(pending).done)
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+    return [
+        outcome
+        for index in range(len(outcomes_by_batch))
+        for outcome in outcomes_by_batch[index]
+    ]
 
 
 def _apply_block[T, R](
@@ -300,13 +335,19 @@ def _apply_block[T, R](
     """Apply ``func`` to every item of ``block`` inside a worker, failures kept.
 
     Runs in the worker process. The per-item exception is returned as data
-    so one bad item does not fail the whole block.
+    so one bad item does not fail the whole block. Its traceback does not
+    survive the pickle back to the parent, so it rides along as a note
+    (``add_note``): ``traceback.print_exception(outcome)`` still shows where
+    in the worker the item failed, as a future's ``_RemoteTraceback`` would.
     """
+    import traceback
+
     outcomes: list[R | BaseException] = []
     for item in block:
         try:
             outcomes.append(func(item))
         except Exception as exc:  # ruff: ignore[blind-except] - returned to the parent as data
+            exc.add_note(traceback.format_exc())
             outcomes.append(exc)
     return outcomes
 
@@ -478,7 +519,9 @@ def run_process_rich_sharded[T, R](
             done_by_shard = [0] * len(shards)
             while (report := reports.get()) is not None:
                 if isinstance(report, WorkerLog):
-                    progress.log(report.text)
+                    # markup=False: worker text is data; a "[/..." in it would
+                    # raise MarkupError and kill this pump thread.
+                    progress.log(report.text, markup=False)
                     continue
                 progress.update(
                     bars[report.shard_id], completed=report.done, total=report.total
@@ -578,19 +621,36 @@ def _report_to_queue[T, R](
     Runs in the worker process. ``report(done, total)`` puts a
     ``WorkerProgress`` keyed by this worker's pid on ``reports``; ``log(text)``
     puts a ``WorkerLog`` prefixed with the pid and item on the same queue.
+    Every put is a blocking round trip to the Manager process (0.1-0.5 ms),
+    so ``report`` forwards at most one update per 0.1 s and calling it per
+    frame or per chunk stays cheap. The final state always gets through: an
+    update with ``done >= total`` is sent at once, and a held-back one is
+    sent when ``func`` returns.
     """
     import os
+    import time
 
     pid = os.getpid()
     label = repr(item)
+    last_put = float("-inf")
+    unsent: WorkerProgress | None = None
 
     def report(done: int, total: int) -> None:
-        reports.put(WorkerProgress(pid, label, done, total))
+        nonlocal last_put, unsent
+        unsent = WorkerProgress(pid, label, done, total)
+        now = time.monotonic()
+        if done >= total or now - last_put >= 0.1:
+            reports.put(unsent)
+            last_put, unsent = now, None
 
     def log(text: str) -> None:
         reports.put(WorkerLog(f"pid {pid} {label}: {text}"))
 
-    return func(item, report, log)
+    try:
+        return func(item, report, log)
+    finally:
+        if unsent is not None:
+            reports.put(unsent)
 
 
 def run_process_rich_per_worker[T, R](
@@ -602,20 +662,22 @@ def run_process_rich_per_worker[T, R](
 
     [Best for] Long-running items (a video, a big file, a model) where each
                worker should show WHICH item it is on and HOW FAR into it.
-    [Note] ``func`` calls ``report(done, total)`` as it makes progress and
-           ``log(text)`` for anything it would otherwise print; the parent
-           keeps a bar per worker pid, retitled for each new item, and prints
-           log lines above the bars. Messages travel over a
-           ``Manager().Queue()`` and a pump thread applies them to the display
-           (rich's ``Progress`` is thread-safe). The ``finally`` drops the
-           queued items on Ctrl-C, then stops the pump thread - in that order,
-           so the workers that are still finishing keep a live queue to report
-           on. Pair with ``_report_to_queue``.
+    [Note] ``func`` calls ``report(done, total)`` as it makes progress (as
+           often as it likes: ``_report_to_queue`` forwards at most ~10
+           updates a second) and ``log(text)`` for anything it would
+           otherwise print; the parent keeps a bar per worker pid, retitled
+           for each new item, and prints log lines above the bars. Messages
+           travel over a ``Manager().Queue()`` and a pump thread applies them
+           to the display (rich's ``Progress`` is thread-safe). The
+           ``finally`` drops the queued items on Ctrl-C, then stops the pump
+           thread - in that order, so the workers that are still finishing
+           keep a live queue to report on. Pair with ``_report_to_queue``.
     """
     import multiprocessing
     import threading
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
+    from rich.markup import escape
     from rich.progress import (
         BarColumn,
         MofNCompleteColumn,
@@ -643,7 +705,9 @@ def run_process_rich_per_worker[T, R](
         def pump() -> None:
             while (report := reports.get()) is not None:
                 if isinstance(report, WorkerLog):
-                    progress.log(report.text)
+                    # markup=False: worker text is data; a "[/..." in it would
+                    # raise MarkupError and kill this pump thread.
+                    progress.log(report.text, markup=False)
                     continue
                 bar = bars.get(report.pid)
                 if bar is None:
@@ -652,7 +716,8 @@ def run_process_rich_per_worker[T, R](
                     )
                 progress.update(
                     bar,
-                    description=f"pid {report.pid}: {report.label}",
+                    # TextColumn parses the description as markup: escape it.
+                    description=f"pid {report.pid}: {escape(report.label)}",
                     completed=report.done,
                     total=report.total,
                 )
@@ -908,6 +973,14 @@ if __name__ == "__main__":
     _check_outcomes(
         "process rich bounded",
         run_process_rich_bounded(iter(sample), _demo_task, total=len(sample)),
+        expected=len(sample),
+        failing=lambda index: index == 7,
+    )
+    _check_outcomes(
+        "process rich bounded (batch_size=6)",
+        run_process_rich_bounded(
+            iter(sample), _demo_task, total=len(sample), batch_size=6
+        ),
         expected=len(sample),
         failing=lambda index: index == 7,
     )

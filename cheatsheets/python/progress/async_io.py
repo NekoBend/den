@@ -121,6 +121,7 @@ async def run_async_rich_as_completed[T, R](
     """
     import asyncio
 
+    from rich.markup import escape
     from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
     semaphore = asyncio.Semaphore(concurrency)
@@ -142,7 +143,8 @@ async def run_async_rich_as_completed[T, R](
         for next_done in asyncio.as_completed([guarded(item) for item in items]):
             item, outcome = await next_done
             outcomes.append(outcome)
-            progress.update(task, advance=1, description=f"last: {item!r}")
+            # TextColumn parses the description as markup: escape the repr.
+            progress.update(task, advance=1, description=f"last: {escape(repr(item))}")
     return outcomes
 
 
