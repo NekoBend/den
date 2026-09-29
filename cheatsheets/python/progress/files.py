@@ -86,6 +86,7 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
     """
     import shutil
 
+    from rich.markup import escape
     from rich.progress import (
         BarColumn,
         DownloadColumn,
@@ -106,7 +107,9 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
             TransferSpeedColumn(),
             TimeRemainingColumn(),
         ) as progress,
-        progress.open(src, "rb", description=src.name) as reader,
+        # TextColumn parses the description as markup: "[draft] notes.txt" would
+        # lose its brackets.
+        progress.open(src, "rb", description=escape(src.name)) as reader,
         dst.open("wb") as writer,
     ):
         while chunk := reader.read(chunk_size):

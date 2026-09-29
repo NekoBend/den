@@ -29,6 +29,7 @@ _WINDOWS_SKIP = {
     "test_install_shell_keeps_modified_config_non_tty",
     "test_install_shell_no_extras_skips_optional",
     "test_install_shell_wires_bashrc",
+    "test_install_shell_wires_the_profile_pwsh_reads_under_xdg",
     "test_install_shell_wiring_is_idempotent",
     "test_uninstall_shell_keeps_user_file_in_local_bin",
     "test_uninstall_shell_non_tty_refuses_without_yes",
@@ -66,6 +67,15 @@ def symlink(tmp_path):
     probe.unlink()
     target.unlink()
     return _link
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_xdg_config_home(monkeypatch):
+    """den places the pwsh profile and the zsh plugins under $XDG_CONFIG_HOME
+    when it is set, as those shells read them there. Tests fake HOME and expect
+    ~/.config; an XDG_CONFIG_HOME from the runner's environment would send
+    their writes into the real one. A test that wants it sets it itself."""
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
 
 def pytest_collection_modifyitems(config, items):

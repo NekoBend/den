@@ -8,7 +8,10 @@ case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 
 # ===== uv overrides =====
 
-if command -v uv >/dev/null 2>&1; then
+# toggle-uv exports _DEN_UV_OVERRIDE, so a reload (a new shell) or a child shell
+# inherits its OFF: define the overrides only when it is not 0, as toggle-uv left
+# them, or its next call would take the OFF branch again and change nothing.
+if [ "${_DEN_UV_OVERRIDE:-1}" != 0 ] && command -v uv >/dev/null 2>&1; then
 
 # uv → auto-inject --python for 'uv run' when venv is active
 uv() {
@@ -32,20 +35,22 @@ _show_uv_only_message() {
     printf '%s → %s\n' "$1" "$2" >&2
 }
 
-# pip → uv pip (falls back to system pip; bypassed in active venv)
+# pip → uv pip (an active venv's own pip when it has one)
+# A venv made by uv (vv, vva) has no pip: a PATH lookup then found another
+# Python's pip, which installed there. uv pip installs into the active venv.
 pip() {
-    if [ -n "$VIRTUAL_ENV" ]; then
-        command pip "$@"
+    if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/pip" ]; then
+        "$VIRTUAL_ENV/bin/pip" "$@"
     else
         _show_uv_only_message "pip${*:+ $*}" "uv pip${*:+ $*}"
         uv pip "$@"
     fi
 }
 
-# pip3 → uv pip (falls back to system pip3; bypassed in active venv)
+# pip3 → uv pip (an active venv's own pip3 when it has one)
 pip3() {
-    if [ -n "$VIRTUAL_ENV" ]; then
-        command pip3 "$@"
+    if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/pip3" ]; then
+        "$VIRTUAL_ENV/bin/pip3" "$@"
     else
         _show_uv_only_message "pip3${*:+ $*}" "uv pip${*:+ $*}"
         uv pip "$@"
@@ -99,16 +104,57 @@ va() {
     # COMMITTED to a repo (git tracks .venv happily, even force-added past a
     # .gitignore) is code that arrived with the clone, and `va` in a fresh checkout
     # would run it. Not a git repo, or no git, means nothing to check: pass.
-    local tracked
-    # Name what git actually reports: the match may be pyvenv.cfg alone, so a
-    # message about the activate script would be wrong.
-    # The -f test above ignores case on default APFS and git pathspecs do not, so
-    # :(icase) also catches a committed bin/ACTIVATE. The exact names still match
-    # when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
-    tracked="$(command git -C "$name" ls-files -- bin/activate pyvenv.cfg ':(icase)bin/activate' ':(icase)pyvenv.cfg' 2>/dev/null | tr '\n' ' ')"
-    if [ -n "$tracked" ]; then
-        echo "va: $name: venv content is tracked by git (${tracked% }) — a venv committed to the repo; source it yourself if you trust it: source $activate" >&2
+    # A venv tool makes bin/ and bin/activate a real directory and file. A symlink
+    # there reads the script from elsewhere, and git reports only the link itself,
+    # not a tracked file behind it: refuse it. A symlinked venv directory (.venv ->
+    # ~/venvs/proj) is fine; git -C follows it into the venv's own repository.
+    if [ -L "$name/bin" ] || [ -L "$activate" ]; then
+        echo "va: $name: bin/ or bin/activate is a symlink, which no venv tool makes; source it yourself if you trust it: source $activate" >&2
         return 1
+    fi
+    local tracked why nl='
+'
+    if command -v git >/dev/null 2>&1; then
+        # Ask from inside bin/, about all of it: git then learns the directory's
+        # name from the file system (Git for Windows asks it for the stored name),
+        # so "." lists what is tracked there under a spelling the file system folds
+        # and :(icase), which folds ASCII only, does not. The ../ pathspecs keep
+        # :(icase) for bin/ and reach pyvenv.cfg.
+        # The -f test above ignores case on default APFS and git pathspecs do not, so
+        # :(icase) also catches a committed BIN/activate. The exact names still match
+        # when GIT_LITERAL_PATHSPECS=1 makes :(icase) a plain file name.
+        # safe.bareRepository=explicit: a venv committed with a HEAD, objects/,
+        # refs/ and a config of its own is a repository git would read instead,
+        # with an empty index (nothing tracked) and a core.fsmonitor it runs. Git
+        # then refuses, and the refusal below fails closed. Git before 2.38 ignores
+        # the key and cannot be kept out of such a repository.
+        if ! tracked="$(command git -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . ../bin ':(icase)../bin' ../pyvenv.cfg ':(icase)../pyvenv.cfg' 2>/dev/null)"; then
+            # Fail closed: only "not a git repository" means nothing to check. Any
+            # other failure, such as a checkout git will not open for dubious
+            # ownership, leaves a committed venv possible. Any line of git's, as
+            # trace lines may come first, and only from its start, as other
+            # messages quote a path that may hold the same words.
+            why="$nl$(LC_ALL=C command git -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . 2>&1 >/dev/null)"
+            case "$why" in
+                *"${nl}fatal: "[Nn]"ot a git repository"*) tracked="" ;;
+                *)
+                    # Show git's fatal line, else its first.
+                    case "$why" in *"${nl}fatal:"*) why="${nl}fatal:${why#*"${nl}fatal:"}" ;; esac
+                    why="${why#"$nl"}"
+                    why="${why%%"$nl"*}"
+                    echo "va: $name: git could not tell whether the venv is committed (${why:-git failed}); source it yourself if you trust it: source $activate" >&2
+                    return 1
+                    ;;
+            esac
+        fi
+        if [ -n "$tracked" ]; then
+            # Name what git actually reports: the match may be pyvenv.cfg alone, so
+            # a message about the activate script would be wrong. git names paths
+            # from bin/; name them from the venv, as the message always has.
+            tracked="$(printf '%s\n' "$tracked" | sed -e 's|^|bin/|' -e 's|^bin/\.\./||')"
+            echo "va: $name: venv content is tracked by git ($(printf '%s' "$tracked" | tr '\n' ' ')) - a venv committed to the repo; source it yourself if you trust it: source $activate" >&2
+            return 1
+        fi
     fi
     # Anyone-can-rewrite is the other way this file stops being ours. World-writable
     # check without stat(1), whose output differs across platforms: position 9 of
@@ -173,8 +219,9 @@ toggle-uv() {
         export _DEN_UV_OVERRIDE=0
         echo "uv override: OFF (using system python/pip)"
     else
-        . "${HOME}/.config/shell/python.sh"
+        # Set before the file is read: it defines the overrides only when not 0.
         export _DEN_UV_OVERRIDE=1
+        . "${HOME}/.config/shell/python.sh"
         echo "uv override: ON (python/pip → uv)"
     fi
 }

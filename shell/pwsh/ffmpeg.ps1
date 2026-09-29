@@ -177,10 +177,16 @@ function clip {
         $dir  = [IO.Path]::GetDirectoryName($In)
         $Out  = [IO.Path]::Combine($dir, "${base}_clip${ext}")
     }
+    # -ss and -to go BEFORE -i: as input options they make ffmpeg seek in the
+    # input, where after -i it decoded (or, with -c copy, read) everything up
+    # to the start and threw it away, seconds to minutes for a cut late in a
+    # long file. Both move together: an input -ss with an output -to would read
+    # -to as relative to the new start. Re-encoding stays frame-accurate;
+    # -c copy starts at a keyframe either way.
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In -ss $Start -to $End @extra $Out
+        ffmpeg -hide_banner -loglevel error -y -ss $Start -to $End -i $In @extra $Out
     } else {
-        ffmpeg -hide_banner -loglevel error -y -i $In -ss $Start -to $End -c copy $Out
+        ffmpeg -hide_banner -loglevel error -y -ss $Start -to $End -i $In -c copy $Out
     }
 }
 
@@ -217,9 +223,9 @@ function thumbnail {
     $Time = if ($pos.Count -gt 1) { $pos[1] } else { '00:00:01' }
     $Out  = if ($pos.Count -gt 2) { $pos[2] } else { [IO.Path]::ChangeExtension($In, '.jpg') }
     if (-not (_AssertNoExtraPos 'thumbnail' $pos 3)) { return }
-    if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In -ss $Time @extra $Out
-    } else {
-        ffmpeg -hide_banner -loglevel error -y -i $In -ss $Time -frames:v 1 $Out
-    }
+    # -ss before -i seeks the input instead of decoding every frame up to the
+    # time (clip says more). -frames:v 1 comes first in the override form too:
+    # without it ffmpeg writes every remaining frame to the one image file and
+    # exits with an error; an override that sets -frames:v itself still wins.
+    ffmpeg -hide_banner -loglevel error -y -ss $Time -i $In -frames:v 1 @extra $Out
 }

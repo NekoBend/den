@@ -554,6 +554,10 @@ Case '_ArSameFile' { _ArSameFile a.txt a.txt; _ArSameFile a.txt link.txt; _ArSam
 Case '_ArRegularFile' { _ArRegularFile a.txt; _ArRegularFile sub; _ArRegularFile missing.txt }
 Case '_ArTool' { _ArTool 'gzip'; _ArTool 'nonexistent-strict' }
 Case '_ArCompressTo' { _ArCompressTo (_ArTool 'gzip') one.txt direct.gz }
+Case '_ArZipTo' { _ArZipTo @('a.txt', 'sub', 'emptydir') 'out.zip' 'direct.zip' }
+Case '_ArZipTo, a missing source' { _ArZipTo @('missing.txt') 'out.zip' 'direct2.zip' }
+Case '_ArDropOutput' { _ArDropOutput @('a.txt', './b.txt', 'sub') 'b.txt'; _ArDropOutput @('a.txt') '' }
+Case '_ArDropOutput, only the output' { _ArDropOutput @('a.txt', 'link.txt') 'a.txt' }
 Case 'archive .tar.gz' { archive out.tar.gz a.txt b.txt }
 Case 'archive .tgz' { archive out.tgz a.txt }
 Case 'archive .tar.bz2' { archive out.tar.bz2 a.txt }
@@ -565,7 +569,9 @@ Case 'archive .bz2' { archive s2.bz2 one.txt }
 Case 'archive .xz' { archive s3.xz one.txt }
 Case 'archive .zst' { archive s4.zst one.txt }
 Case 'archive .zip' { archive out.zip a.txt b.txt }
+Case 'archive .zip, the output among the sources' { archive out.zip a.txt out.zip }
 Case 'archive .7z' { archive out.7z a.txt '-x' }
+Case 'archive .7z, only the output as a source' { archive out.7z ./out.7z }
 Case 'archive, a dash-leading output' { archive '-dash.tar' a.txt }
 Case 'archive, two sources for .gz' { archive two.gz a.txt b.txt }
 Case 'archive, a directory for .gz' { archive dir.gz sub }
@@ -802,6 +808,7 @@ Case 'thumbnail <in> <time> <out> <options>' { thumbnail media.avi 1 out.png -q:
 Case 'thumbnail, a stray argument' { thumbnail media.avi 1 out.png stray.png }
 
 # ===== parallel.ps1 =====
+Case '_Batches' { _Batches @('a', 'b', 'c') 2; _Batches @('a') 8; _Batches @() 4 }
 Case 'pcp' { pcp }
 Case 'pcp <src>' { pcp a.txt }
 Case 'pcp <src> <dest>' { pcp a.txt dest }

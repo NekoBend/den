@@ -136,6 +136,16 @@ function split {
     }; $s
   }
 
+  # .NET resolves relative paths against the process directory, which
+  # Set-Location never updates, so the input and every output name are
+  # resolved against the PowerShell location first (literally: no wildcards).
+  $sess = $ExecutionContext.SessionState.Path
+  $full = ''
+  if ($path -ne '') {
+    $full = $sess.GetUnresolvedProviderPathFromPSPath($path)
+    if (-not [System.IO.File]::Exists($full)) { Write-Error "cannot open '$path' for reading: No such file"; return }
+  }
+
   if ($bytes -ne '') {
     # Byte splitting
     $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB }
@@ -144,31 +154,94 @@ function split {
     # refused rather than run. It was unreachable while `-b 0` was read as
     # "-b not given"; the [string] cast above is what makes it reachable.
     if ($sz -lt 1) { Write-Error "invalid byte size '$bytes'"; return }
-    if ($path -eq '') {
-      $data = [System.Text.Encoding]::UTF8.GetBytes(($content -join "`n") + "`n")
-    } else {
-      $data = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path))
-    }
-    $idx = 0; $off = 0
-    while ($off -lt $data.Length) {
-      $chunk = [math]::Min($sz, $data.Length - $off)
-      $outFile = Join-Path $PWD.Path "${prefix}$(_suffix $idx $suffixLen)"
-      [System.IO.File]::WriteAllBytes($outFile, $data[$off..($off + $chunk - 1)])
-      $off += $chunk; $idx++
-    }
+    # Streamed through one reusable buffer. ReadAllBytes plus a range slice
+    # per part ($data[$a..$b], an object[] of boxed bytes) took about 50x the
+    # file size in memory and ran some 250x slower than native split, so a
+    # multi-GB file could not be split at all.
+    $in = if ($full) { [System.IO.File]::OpenRead($full) }
+          else { [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes(($content -join "`n") + "`n")) }
+    $buf = New-Object byte[] ([int][math]::Min($sz, 1MB))
+    $idx = 0
+    try {
+      while ($true) {
+        $n = $in.Read($buf, 0, [int][math]::Min([long]$buf.Length, $sz))
+        if ($n -le 0) { break }
+        $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
+        try {
+          $out.Write($buf, 0, $n)
+          $left = $sz - $n
+          while ($left -gt 0) {
+            $n = $in.Read($buf, 0, [int][math]::Min([long]$buf.Length, $left))
+            if ($n -le 0) { break }
+            $out.Write($buf, 0, $n)
+            $left -= $n
+          }
+        } finally { $out.Dispose() }
+        $idx++
+      }
+    } finally { $in.Dispose() }
     Write-Host "Split into $idx files"
     return
   }
 
-  # @(): Get-Content returns a one-line file as a bare string and an empty one as
-  # $null, and the slice below stops at the last line. Under a caller's
-  # Set-StrictMode, .Count on those and an index past the end are errors.
-  if ($path -ne '') { $content = @(Get-Content -LiteralPath $path) }
   if ($chunks -ne '') {
     $n = [int]($chunks -replace '^l/', '')
     if ($n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
-    $lines = [math]::Ceiling($content.Count / $n)
   }
+
+  if ($full) {
+    # A file is split on its raw bytes, cut after each LF, so the parts put
+    # back together (cat x*) are the file again, as with GNU split. Reading
+    # lines with Get-Content and writing them with Set-Content decoded them
+    # (a non-UTF-8 byte became U+FFFD), rewrote the line endings and added a
+    # final newline the file did not have. The chunk sizes are den's own:
+    # -l N lines per part, -n N parts of ceil(lines/N) lines each.
+    $buf = New-Object byte[] 65536
+    if ($chunks -ne '') {
+      # Count the lines first: every LF, plus a last line without one.
+      $count = 0; $last = [byte]10
+      $in = [System.IO.File]::OpenRead($full)
+      try {
+        while (($got = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+          $p = 0
+          while (($p = [Array]::IndexOf($buf, [byte]10, $p, $got - $p)) -ge 0) { $count++; $p++ }
+          $last = $buf[$got - 1]
+        }
+      } finally { $in.Dispose() }
+      if ($last -ne 10) { $count++ }
+      $lines = [math]::Ceiling($count / $n)
+    }
+    if ($lines -lt 1) { $lines = 1000 }
+    $idx = 0; $inChunk = 0; $out = $null
+    $in = [System.IO.File]::OpenRead($full)
+    try {
+      while (($got = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+        $p = 0
+        while ($p -lt $got) {
+          if ($null -eq $out) {
+            $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
+            $idx++
+          }
+          $nl = [Array]::IndexOf($buf, [byte]10, $p, $got - $p)
+          if ($nl -lt 0) { $out.Write($buf, $p, $got - $p); break }
+          $out.Write($buf, $p, $nl + 1 - $p)
+          $p = $nl + 1
+          $inChunk++
+          if ($inChunk -ge $lines) { $out.Dispose(); $out = $null; $inChunk = 0 }
+        }
+      }
+    } finally {
+      if ($null -ne $out) { $out.Dispose() }
+      $in.Dispose()
+    }
+    if ($idx -eq 0) { Write-Host "Split into 0 files"; return }
+    Write-Host "Split into $idx files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($idx-1) $suffixLen))"
+    return
+  }
+
+  # Piped input arrives as strings, already decoded: it is written back as
+  # lines. $content is @() above, so .Count and the slice are strict-safe.
+  if ($chunks -ne '') { $lines = [math]::Ceiling($content.Count / $n) }
   if ($lines -lt 1) { $lines = 1000 }
   $total = [math]::Ceiling($content.Count / $lines)
   for ($idx = 0; $idx -lt $total; $idx++) {

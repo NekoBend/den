@@ -21,8 +21,10 @@ command -v ffmpeg >/dev/null 2>&1 || return 0
 # target extension is almost always a second INPUT mistaken for an output
 # (`tomp4 a.avi b.avi` would overwrite b.avi, since ffmpeg runs with -y).
 # The converters take one input per call; refuse instead of destroying it.
+# The extension is compared without regard to case (OUT.MP4 from a camera or
+# a Windows tool is an mp4), as the pwsh twin's lowercased check does.
 _ff_check_out() {
-  case "$2" in
+  case "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" in
     *."$3") return 0 ;;
   esac
   echo "$1: output '$2' does not end in .$3; one input per call (for several files: for f in *.ext; do $1 \"\$f\"; done)" >&2
@@ -158,38 +160,43 @@ togif() {
 # minfo <input> [extra ffprobe args] — Show media info (ffprobe compact format).
 #   minfo input.mp4 -show_streams -of json  → extra ffprobe args
 minfo() {
-  # Several inputs are fine: each is probed in turn with the same options
-  # (dash-prefixed arguments) applied to every ffprobe call.
+  # Several inputs are fine: each is probed in turn with the same options.
+  # The inputs are the leading non-option words, and everything from the
+  # first dash word on is passed to every ffprobe call verbatim, as the file
+  # header says and the pwsh twin does: counting every non-dash word as an
+  # input made the value of an option (the json of `-of json`) a file to
+  # probe, and dropped it from the options.
   _n=0
-  for _a in "$@"; do case "$_a" in -*) ;; *) _n=$((_n + 1)) ;; esac; done
+  for _a in "$@"; do
+    case "$_a" in -*) break ;; esac
+    _n=$((_n + 1))
+  done
   if [ "$_n" -eq 0 ]; then
     echo "usage: minfo <file...> [ffprobe args]" >&2
     unset _n _a
     return 1
   fi
   _rc=0
+  _i=0
   for _a in "$@"; do
-    case "$_a" in -*) continue ;; esac
-    _minfo_one "$_a" "$@" || _rc=1
+    _i=$((_i + 1))
+    [ "$_i" -gt "$_n" ] && break
+    _minfo_one "$_a" "$_n" "$@" || _rc=1
   done
-  unset _n _a
+  unset _n _a _i
   return "$_rc"
 }
 
-# _minfo_one <input> "$@": ffprobe <input> with only the dash-prefixed
-# arguments of "$@" (POSIX sh has no arrays; the option list is rebuilt).
+# _minfo_one <input> <n> "$@": ffprobe <input> with the arguments of "$@"
+# that follow its first <n> (the inputs), i.e. the options, as given.
 _minfo_one() {
-  _target="$1"; shift
-  _got=0
-  for _o in "$@"; do
-    case "$_o" in
-      -*) if [ "$_got" -eq 0 ]; then set -- "$_o"; _got=1; else set -- "$@" "$_o"; fi ;;
-    esac
-  done
-  [ "$_got" -eq 0 ] && set --
+  _target="$1"
+  _skip="$2"
+  shift 2
+  shift "$_skip"
   ffprobe -hide_banner "$@" -i "$_target"
   _mrc=$?
-  unset _target _got _o
+  unset _target _skip
   return "$_mrc"
 }
 
@@ -204,10 +211,16 @@ clip() {
   _out=""
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}_clip.${_in##*.}"
+  # -ss and -to go BEFORE -i: as input options they make ffmpeg seek in the
+  # input, where after -i it decoded (or, with -c copy, read) everything up to
+  # the start and threw it away, seconds to minutes for a cut late in a long
+  # file. Both move together: an input -ss with an output -to would read -to
+  # as relative to the new start. Re-encoding stays frame-accurate; -c copy
+  # starts at a keyframe either way.
   if [ $# -gt 0 ]; then
-    ffmpeg -hide_banner -loglevel error -y -i "$_in" -ss "$_ss" -to "$_to" "$@" "$_out"
+    ffmpeg -hide_banner -loglevel error -y -ss "$_ss" -to "$_to" -i "$_in" "$@" "$_out"
   else
-    ffmpeg -hide_banner -loglevel error -y -i "$_in" -ss "$_ss" -to "$_to" -c copy "$_out"
+    ffmpeg -hide_banner -loglevel error -y -ss "$_ss" -to "$_to" -i "$_in" -c copy "$_out"
   fi
 }
 
@@ -241,9 +254,9 @@ thumbnail() {
   [ $# -gt 0 ] && [ "${1#-}" = "$1" ] && { _out="$1"; shift; }
   [ -z "$_out" ] && _out="${_in%.*}.jpg"
   _ff_no_extra thumbnail "$@" || return 1
-  if [ $# -gt 0 ]; then
-    ffmpeg -hide_banner -loglevel error -y -i "$_in" -ss "$_t" "$@" "$_out"
-  else
-    ffmpeg -hide_banner -loglevel error -y -i "$_in" -ss "$_t" -frames:v 1 "$_out"
-  fi
+  # -ss before -i seeks the input instead of decoding every frame up to the
+  # time (clip says more). -frames:v 1 comes first in the override form too:
+  # without it ffmpeg writes every remaining frame to the one image file and
+  # exits with an error; an override that sets -frames:v itself still wins.
+  ffmpeg -hide_banner -loglevel error -y -ss "$_t" -i "$_in" -frames:v 1 "$@" "$_out"
 }

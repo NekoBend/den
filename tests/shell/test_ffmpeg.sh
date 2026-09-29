@@ -156,6 +156,53 @@ assert_eq "bash/minfo options applied to each call" "2" "$(printf '%s\n' "$actua
 err=$(run_bash "$FFMPEG_SH_TEST" 'minfo -show_streams' 2>&1 >/dev/null || true)
 assert_contains "bash/minfo no input is a usage error" "usage: minfo" "$err"
 
+# clip and thumbnail put -ss (and -to) AFTER -i, an output option: ffmpeg
+# decoded every frame up to the timestamp (read every packet, with -c copy)
+# and threw it away. Input seeking must come before -i, both together.
+for sh in bash zsh; do
+    echo "[$sh] clip and thumbnail seek on the input"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'clip input.mp4 00:01:00 00:02:00')
+    assert_contains "$sh/clip seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c copy input_clip.mp4" "$actual"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'clip input.mp4 00:01:00 00:02:00 out.mp4 -c:v libx264')
+    assert_contains "$sh/clip override seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c:v libx264 out.mp4" "$actual"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'thumbnail input.mp4 00:00:30')
+    assert_contains "$sh/thumbnail seeks before -i" "-ss 00:00:30 -i input.mp4 -frames:v 1 input.jpg" "$actual"
+    # The documented override example: without -frames:v 1 ffmpeg wrote every
+    # remaining frame to one image file and exited 234.
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'thumbnail input.mp4 00:00:30 -vf "scale=1920:-1"')
+    assert_contains "$sh/thumbnail override keeps one frame" "-ss 00:00:30 -i input.mp4 -frames:v 1 -vf scale=1920:-1 input.jpg" "$actual"
+
+    # minfo counted every non-dash word as an input, so an option's VALUE (the
+    # json of the documented `-of json`) became a file to probe and was
+    # dropped from the options: two broken ffprobe calls.
+    echo "[$sh] minfo passes valued ffprobe options through"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'minfo input.mp4 -show_streams -of json')
+    assert_eq "$sh/minfo documented example is one ffprobe call" "FFPROBE -hide_banner -show_streams -of json -i input.mp4" "$actual"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'minfo a.mp4 b.mp4 -v error -select_streams v:0')
+    assert_eq "$sh/minfo several inputs, valued options" "FFPROBE -hide_banner -v error -select_streams v:0 -i a.mp4
+FFPROBE -hide_banner -v error -select_streams v:0 -i b.mp4" "$actual"
+
+    # The output check compared the extension case-sensitively; the pwsh twin
+    # lowercases, and cameras and Windows tools write OUT.MP4.
+    echo "[$sh] converters accept an upper-case output extension"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'tomp4 in.avi OUT.MP4' 2>&1 || true)
+    assert_contains "$sh/tomp4 OUT.MP4 accepted" "-i in.avi -c:v libx264 -c:a aac OUT.MP4" "$actual"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'tomp3 in.wav SONG.Mp3' 2>&1 || true)
+    assert_contains "$sh/tomp3 SONG.Mp3 accepted" "-b:a 192k SONG.Mp3" "$actual"
+    err=$("run_$sh" "$FFMPEG_SH_TEST" 'tomp4 a.avi B.AVI' 2>&1 >/dev/null || true)
+    assert_contains "$sh/tomp4 still refuses B.AVI" "does not end in .mp4" "$err"
+done
+
+echo "[pwsh] clip and thumbnail seek on the input"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'clip input.mp4 00:01:00 00:02:00' | tr -d '\r')
+assert_contains "pwsh/clip seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c copy" "$actual"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'clip input.mp4 00:01:00 00:02:00 out.mp4 -crf 18' | tr -d '\r')
+assert_contains "pwsh/clip override seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -crf 18 out.mp4" "$actual"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'thumbnail input.mp4 00:00:30' | tr -d '\r')
+assert_contains "pwsh/thumbnail seeks before -i" "-ss 00:00:30 -i input.mp4 -frames:v 1 input.jpg" "$actual"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'thumbnail input.mp4 00:00:30 -vf scale=1920:-1' | tr -d '\r')
+assert_contains "pwsh/thumbnail override keeps one frame" "-ss 00:00:30 -i input.mp4 -frames:v 1 -vf scale=1920:-1 input.jpg" "$actual"
+
 echo "[pwsh] tomp4 auto output"
 actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 input.avi' | tr -d '\r')
 assert_contains "pwsh/tomp4 auto ext" "input.mp4" "$actual"

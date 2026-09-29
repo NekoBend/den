@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 
 from ._content import shell_dir
+from ._exe import find_tool, resolve_tool
 from ._install import _chmod_no_follow, _Stager, _Writer
 
 _COMMENT = "# ===== den ====="
@@ -88,9 +89,11 @@ def _windows() -> bool:
 def _query_pwsh_profile() -> Path | None:
     """Ask the real PowerShell for $PROFILE so we honor OneDrive-redirected
     Documents and the PS5 (powershell) vs PS7 (pwsh) profile dirs. Returns the
-    profile FILE path, or None when no PowerShell is available."""
-    for exe in ("pwsh", "powershell"):
-        if not shutil.which(exe):
+    profile FILE path, or None when no PowerShell is available. Each one is
+    resolved by absolute path, never from the working directory (den._exe)."""
+    for name in ("pwsh", "powershell"):
+        exe = find_tool(name, "den")
+        if exe is None:
             continue
         try:
             out = subprocess.run(
@@ -113,14 +116,16 @@ def _query_pwsh_profile() -> Path | None:
 
 def _pwsh_profile_dir() -> Path:
     # Only query on Windows -- that is where the OneDrive-redirected Documents
-    # and PS5/PS7 profile-dir differences bite. POSIX keeps the fixed path (and
-    # avoids spawning a subprocess on every install).
+    # and PS5/PS7 profile-dir differences bite. POSIX derives the path the way
+    # pwsh does ($XDG_CONFIG_HOME/powershell when set and non-empty, else
+    # ~/.config/powershell), without spawning a subprocess on every install.
     if _windows():
         queried = _query_pwsh_profile()
         if queried is not None:
             return queried.parent
         return Path("~/Documents/PowerShell").expanduser()
-    return Path("~/.config/powershell").expanduser()
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base) if base else Path.home() / ".config") / "powershell"
 
 
 def _localappdata() -> Path:
@@ -137,17 +142,63 @@ def _copy(src: Path, dst: Path, writer: _Stager, *, dry_run: bool) -> None:
     writer.stage(dst, src.read_bytes())
 
 
+def _bom_codec(raw: bytes) -> tuple[bytes, str]:
+    """(BOM, codec of the text after it) for an rc file or a PowerShell profile.
+
+    Windows PowerShell 5.1 writes UTF-16LE with a BOM for `'...' > $PROFILE`
+    and Out-File, and editors may add a UTF-8 BOM; with no BOM the file is
+    taken as UTF-8, like every other rc file. Shared with _uninstall, so the
+    block den appends is found and stripped in the same encoding."""
+    for bom, codec in (
+        (b"\xff\xfe", "utf-16-le"),
+        (b"\xfe\xff", "utf-16-be"),
+        (b"\xef\xbb\xbf", "utf-8"),
+    ):
+        if raw.startswith(bom):
+            return bom, codec
+    return b"", "utf-8"
+
+
+def _decode_rc(raw: bytes) -> tuple[str, str]:
+    """(text after the BOM, codec) of an existing rc file.
+
+    UTF-16 decodes strictly and raises UnicodeDecodeError when it cannot: a
+    line appended to such a file would land garbled. UTF-8 decodes losslessly
+    (surrogateescape), since den's own lines are ASCII and fit any
+    ASCII-compatible rc file as they are."""
+    bom, codec = _bom_codec(raw)
+    errors = "strict" if codec != "utf-8" else "surrogateescape"
+    return raw[len(bom) :].decode(codec, errors), codec
+
+
 def _wire(rc: Path, line: str, *, dry_run: bool) -> None:
-    if rc.is_file() and line in rc.read_text(encoding="utf-8", errors="ignore"):
-        print(f"  [skip] {rc} already configured")
-        return
+    """Add den's block to `rc`, creating it when absent. An existing file
+    gets the block in its own encoding, and with CRLF only when every line
+    of it already ends that way (a stray CRLF in a bash rc file must not put
+    a CR on den's line)."""
+    text = codec = None
+    if rc.is_file():
+        try:
+            text, codec = _decode_rc(rc.read_bytes())
+        except UnicodeDecodeError:
+            print(
+                f"  [skip] {rc} does not decode as its BOM says; add this line"
+                f" to it yourself: {line}",
+                file=sys.stderr,
+            )
+            return
+        if line in text:
+            print(f"  [skip] {rc} already configured")
+            return
     if dry_run:
-        print(f"  [dry] {'append to' if rc.is_file() else 'create'} {rc}")
+        print(f"  [dry] {'append to' if text is not None else 'create'} {rc}")
         return
     rc.parent.mkdir(parents=True, exist_ok=True)
-    if rc.is_file():
-        with rc.open("a", encoding="utf-8") as fh:
-            fh.write(f"\n{_COMMENT}\n{line}\n")
+    if text is not None and codec is not None:
+        crlf = "\r\n" in text and "\n" not in text.replace("\r\n", "")
+        eol = "\r\n" if crlf else "\n"
+        with rc.open("ab") as fh:
+            fh.write(f"{eol}{_COMMENT}{eol}{line}{eol}".encode(codec))
         print(f"  [ok] appended to {rc}")
     else:
         rc.write_text(f"{_COMMENT}\n{line}\n", encoding="utf-8")
@@ -422,7 +473,11 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
     replace the oh-my-zsh framework den used to depend on."""
     if not want or _windows() or not shutil.which("zsh"):
         return
-    if not shutil.which("git"):
+    git, refusal = resolve_tool("git")
+    if refusal:
+        print(f"zsh plugins: {refusal}; skipping", file=sys.stderr)
+        return
+    if git is None:
         print(
             "zsh plugins: git not found; skipping (install git for autosuggestions)",
             file=sys.stderr,
@@ -444,7 +499,7 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
         try:
             subprocess.run(
                 [
-                    "git",
+                    git,
                     "clone",
                     "--depth",
                     "1",
@@ -457,7 +512,7 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
                 check=True,
             )
             head = subprocess.run(
-                ["git", "-C", str(target), "rev-parse", "HEAD"],
+                [git, "-C", str(target), "rev-parse", "HEAD"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -541,14 +596,18 @@ def _install_coreutils(*, dry_run: bool) -> int:
     print("coreutils -> " + " ".join(cmd))
     if dry_run:
         return 0
-    if not shutil.which("winget"):
+    winget, refusal = resolve_tool("winget")
+    if refusal:
+        print(f"coreutils: {refusal}; run it from another directory", file=sys.stderr)
+        return 1
+    if winget is None:
         print(
             "coreutils: winget not found; install winget or get coreutils manually",
             file=sys.stderr,
         )
         return 1
     try:
-        return subprocess.run(cmd).returncode
+        return subprocess.run([winget, *cmd[1:]]).returncode
     except OSError as exc:
         print(f"coreutils: winget failed: {exc}", file=sys.stderr)
         return 1

@@ -168,7 +168,7 @@ def compile_safe(pattern: str, flags: int = 0) -> re.Pattern[str] | None:
 # =============================================================================
 
 if __name__ == "__main__":
-    EMAIL = r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"
+    EMAIL = r"(?<![a-zA-Z0-9._%+\-])[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"
     ISO_DATE = r"\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
     sample = "Contact alice@example.com or bob@corp.co.jp for details."
 

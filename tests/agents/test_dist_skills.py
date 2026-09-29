@@ -6,6 +6,7 @@ references relative to the skill. These tests keep the committed copy honest."""
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -121,3 +122,115 @@ def test_copies_never_mention_den_in_any_file(tmp_path):
         text = path.read_text(encoding="utf-8", errors="ignore")
         hit = DEN_WORD.search(text)
         assert hit is None, f"{path.relative_to(tmp_path)}: {hit.group(0)!r}"
+
+
+# ---- --out only ever replaces what a build made ----
+
+
+def test_out_never_deletes_a_directory_it_did_not_build(tmp_path, capsys):
+    """Building straight into a tool's skill dir (--out ~/.claude/skills) is
+    the natural thing to try; build_tree rmtree'd it, the user's own skills
+    included, without a word."""
+    out = tmp_path / "skills"
+    mine = out / "my-own-skill" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("mine")
+    assert _portable.main(["--out", str(out)]) == 2
+    assert mine.read_text() == "mine"
+    assert sorted(p.name for p in out.iterdir()) == ["my-own-skill"]
+    assert "not a previous den-free build" in capsys.readouterr().err
+
+
+def test_out_never_deletes_a_file(tmp_path):
+    out = tmp_path / "notes.txt"
+    out.write_text("keep")
+    assert _portable.main(["--out", str(out)]) == 2
+    assert out.read_text() == "keep"
+
+
+def test_out_replaces_a_previous_build_and_fills_an_empty_dir(tmp_path):
+    out = tmp_path / "skills"
+    out.mkdir()
+    assert _portable.main(["--out", str(out)]) == 0  # empty: used
+    stale = out / "coding" / "stale.md"
+    stale.write_text("from an older build")
+    (out / "README.md").write_text(_portable._DIST_README + "edited\n")
+    assert _portable.main(["--out", str(out)]) == 0  # a previous build: rebuilt
+    assert not stale.exists()  # each generated skill dir is replaced whole
+    assert (out / "coding" / "SKILL.md").is_file()
+    assert (out / "README.md").read_text() == _portable._DIST_README
+
+
+def test_out_keeps_the_users_skills_next_to_a_bulk_copied_build(tmp_path):
+    """`cp -r dist/skills/* ~/.claude/skills/` puts the generated README.md
+    next to the user's own skills; a later --out build there took it for a
+    previous build and rmtree'd the whole directory, their skills included."""
+    dist = tmp_path / "dist"
+    _portable.build_tree(dist)
+    out = tmp_path / "skills"
+    mine = out / "my-own-skill" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("mine")
+    (out / "notes.txt").write_text("keep")
+    for entry in dist.iterdir():  # the bulk copy
+        if entry.is_dir():
+            shutil.copytree(entry, out / entry.name)
+        else:
+            shutil.copy2(entry, out / entry.name)
+    assert _portable.main(["--out", str(out)]) == 0
+    assert mine.read_text() == "mine"
+    assert (out / "notes.txt").read_text() == "keep"
+    assert _portable._differences(dist, out) == [
+        "only in committed: my-own-skill/SKILL.md",
+        "only in committed: notes.txt",
+    ]
+
+
+def test_out_unlinks_a_symlinked_skill_dir_without_touching_its_target(tmp_path):
+    out = tmp_path / "skills"
+    _portable.build_tree(out)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "SKILL.md").write_text("theirs")
+    shutil.rmtree(out / "coding")
+    try:
+        (out / "coding").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("this platform/session cannot create symlinks")
+    assert _portable.main(["--out", str(out)]) == 0
+    assert (elsewhere / "SKILL.md").read_text() == "theirs"
+    assert not (out / "coding").is_symlink()
+    assert (out / "coding" / "SKILL.md").is_file()
+
+
+def test_the_default_build_drops_a_retired_skill(monkeypatch, tmp_path):
+    """agents/dist/skills is den's own, so a skill removed from agents/src
+    must leave it too, or --check reports it stale after every rebuild."""
+    out = tmp_path / "skills"
+    _portable.build_tree(out)
+    retired = out / "retired-skill" / "SKILL.md"
+    retired.parent.mkdir()
+    retired.write_text("from an older build")
+    _portable.build_tree(out, whole=True)
+    assert not retired.parent.exists()
+    assert (out / "coding" / "SKILL.md").is_file()
+    calls = []
+    monkeypatch.setattr(_portable, "build_tree", lambda o, **kw: calls.append(kw))
+    assert _portable.main([]) == 0
+    assert _portable.main(["--out", str(out)]) == 0
+    assert calls == [{"whole": True}, {"whole": False}]
+
+
+def test_a_build_that_failed_midway_can_be_rebuilt(monkeypatch, tmp_path):
+    """The README marker is written first, so a build that stopped on a
+    stale anchor still reads as den's own and the next run may replace it."""
+    out = tmp_path / "skills"
+    with monkeypatch.context() as m:
+        m.setattr(
+            _portable,
+            "table",
+            lambda: {"shared/reference/python.md": [{"from": "NOT THERE", "to": ""}]},
+        )
+        with pytest.raises(ValueError, match="occurs 0 times"):
+            _portable.build_tree(out)
+    assert _portable.main(["--out", str(out)]) == 0

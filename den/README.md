@@ -60,6 +60,13 @@ its own workspace deploy:
 den install skills --target . --with-parent --profile weak
 ```
 
+A `--target` directory is treated as a checkout den does not control: a
+destination that reaches a symlink below it (a `CLAUDE.md` or `AGENTS.md`
+linked elsewhere, a symlinked `skills/`, a dangling link) is refused and
+reported, never written through, and the run exits non-zero. The default
+tool dirs (`~/.claude`, `~/.agents`, ...) still follow links, so a dotfiles
+setup that symlinks them keeps working.
+
 Double-load caveat: cline (extension) reads its global Rules dir AND a
 workspace `AGENTS.md`; Copilot reads its global instructions AND a repo
 `.github/copilot-instructions.md`. In a weak workspace both parents load;

@@ -200,6 +200,18 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
 
+`extract` and `archive` pick the format from the extension without regard to
+case (`PHOTOS.ZIP`, `DATA.TAR.GZ`). A single compressed file is still named by
+its tool, though: `xz` and `zstd` refuse to decompress an upper-case `.XZ` or
+`.ZST`, and `bzip2` writes `NAME.BZ2.out`. `archive` always writes a fresh
+archive: over an existing `.zip` or `.7z` it replaces the file instead of
+updating it, so files deleted from the sources do not linger, and a source that
+is the output itself (a rerun of `pk all.7z *`) is left out. Every format exits
+non-zero when its archiver fails. A failed or interrupted `.zip`, `.7z` or
+single-file run keeps the existing output as it was; the tar formats replace it
+with whatever tar wrote. On pwsh the `.zip` holds hidden files and folders
+(`.env`, `.git`) too, as `zip -r` does.
+
 On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
 `.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
 So does a bare `.zst` whose output already exists when it or the source is a
@@ -230,8 +242,11 @@ check at all (a missing file, or an algo that disagrees with the hash's length);
 ## Python and uv
 
 The `python` / `pip` family transparently routes through `uv` (unless uv is absent
-or `_DEN_UV_OVERRIDE=0`). Inside an active venv, `pip` / `pip3` use the venv's own
-pip directly, while `python` / `python3` / `py` still run through
+or `_DEN_UV_OVERRIDE=0`, which a reload or a child shell started after `toggle-uv`
+keeps). Inside an active venv on bash/zsh/pwsh, `pip` / `pip3` use the venv's own
+pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they run
+`uv pip`, which installs into that venv. The cmd `pip` shim runs the first
+`pip.exe` on `PATH` inside a venv. `python` / `python3` / `py` still run through
 `uv run --python <venv version>`. Flip the redirect with `toggle-uv`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
@@ -247,29 +262,43 @@ pip directly, while `python` / `python3` / `py` still run through
 
 The uv redirects load only when uv is installed.
 
+`va` refuses a venv it cannot trust and prints the command to source it yourself:
+one whose `bin/` (`Scripts/`) or activate script git tracks, or is a symlink, one
+whose `pyvenv.cfg` git tracks, one whose activate script is world-writable, one
+in a repository git will not read (dubious ownership), and one that is itself a git
+repository (a committed `HEAD`, `objects/` and `refs/`). That last check needs git
+2.38 or later; older git reads such a repository and finds nothing tracked.
+
 ## Media (ffmpeg)
 
 Loads only when ffmpeg is installed. pwsh has the same set; cmd has none.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `tomp4` / `towebm` | convert to H.264/AAC mp4 / VP9/Opus webm; `<in> [out] [ffmpeg args]`, one input per call (an `out` without the target extension is refused) | ✓ | ✓ | — |
+| `tomp4` / `towebm` | convert to H.264/AAC mp4 / VP9/Opus webm; `<in> [out] [ffmpeg args]`, one input per call (an `out` without the target extension is refused; `OUT.MP4` counts as `.mp4`) | ✓ | ✓ | — |
 | `tomp3` / `towav` / `toflac` | convert audio to mp3 / wav / flac; same argument shape and one-input rule as `tomp4` | ✓ | ✓ | — |
 | `togif` | convert to GIF (2-pass palette) | ✓ | ✓ | — |
-| `minfo <file...>` | media info via ffprobe, one report per file | ✓ | ✓ | — |
-| `clip` | cut a video segment (stream copy by default) | ✓ | ✓ | — |
+| `minfo <file...> [ffprobe args]` | media info via ffprobe, one report per file; the options from the first `-` word on go to every ffprobe call as given (`-of json`) | ✓ | ✓ | — |
+| `clip` | cut a video segment (stream copy by default); seeks in the input, so a late cut starts at once | ✓ | ✓ | — |
 | `strip-audio` | remove the audio track | ✓ | ✓ | — |
-| `thumbnail` | extract a single frame as an image | ✓ | ✓ | — |
+| `thumbnail` | extract a single frame as an image; seeks in the input, and ffmpeg args still yield one frame | ✓ | ✓ | — |
 
 ## Parallel operations
 
 pwsh runs `pcp`/`pmv`/`prm` via PowerShell 7's `-Parallel`; bash/zsh use GNU
 parallel when it is installed, else `xargs -P` (both paths pass every argument
-through as one argv element, so a destination with spaces is safe). `pcp` and
-`pmv` overwrite an existing destination file on both shells, read-only or not.
+through as one argv element, so a destination with spaces is safe). Each job
+takes a batch of paths, not one path each, so a glob of many small files no
+longer starts one `cp` (or one parallel item) per file. Each call still pays
+the parallel tool's own startup, GNU parallel's most of all, so for a quick
+copy of small files a plain `cp` stays faster. `pcp` and `pmv` overwrite an
+existing destination file on both shells, read-only or not. Once confirmed,
+`prm` removes hidden entries too on both shells.
 `ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a plain `tar`
 wrapper on pwsh; both accept `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
-`.tar.xz`/`.txz`.
+`.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). The
+threaded forms write the archive only once tar and the compressor have both
+succeeded, so a failed run leaves no truncated archive.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

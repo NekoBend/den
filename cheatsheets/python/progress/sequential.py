@@ -206,7 +206,8 @@ def run_sequential_rich_with_log[T, R](
             result = func(item)
             results.append(result)
             progress.advance(task)
-            progress.log(f"done: {item!r} -> {result!r}")
+            # markup=False: item and result are data; "[/..." would raise.
+            progress.log(f"done: {item!r} -> {result!r}", markup=False)
     return results
 
 

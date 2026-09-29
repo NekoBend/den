@@ -11,7 +11,12 @@ shared/ reference becomes a path relative to the skill's own directory.
 
   python3 -m den._portable            regenerate agents/dist/skills/
   python3 -m den._portable --check    exit 1 if the committed copy is stale
-  python3 -m den._portable --out DIR  build somewhere else
+  python3 -m den._portable --out DIR  build into DIR instead; DIR must be
+                                      absent, empty, or hold a previous build
+                                      (its README.md; anything else: exit 2).
+                                      There only README.md and the skill
+                                      directories are replaced; every other
+                                      entry is left alone.
 """
 
 from __future__ import annotations
@@ -79,17 +84,60 @@ def _add_preamble(skill_md: Path) -> None:
     skill_md.write_text("\n".join(lines), encoding="utf-8")
 
 
-def build_tree(out: Path) -> None:
-    """Build every skill's den-free copy under `out` (replacing it)."""
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+def _replaceable(out: Path) -> bool:
+    """True when build_tree may build into `out`: absent, an empty directory,
+    or a previous den-free build (the generated README.md's first line)."""
+    if not out.exists() and not out.is_symlink():
+        return True
+    if out.is_symlink() or not out.is_dir():
+        return False
+    if not any(out.iterdir()):
+        return True
+    try:
+        first = (out / "README.md").read_text(encoding="utf-8").split("\n", 1)[0]
+    except (OSError, UnicodeDecodeError):
+        return False
+    return first == _DIST_README.split("\n", 1)[0]
+
+
+def _remove(path: Path) -> None:
+    """Delete `path` if present; a symlink is unlinked, never followed."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def build_tree(out: Path, *, whole: bool = False) -> None:
+    """Build every skill's den-free copy under `out`.
+
+    Raises FileExistsError, deleting nothing, when `out` holds anything but a
+    previous build: `--out ~/.claude/skills` must not take the user's own
+    skills with it. In a previous build only README.md and the skill
+    directories this build generates are replaced, and every other entry is
+    left alone: the bulk copy `cp -r dist/skills/* ~/.claude/skills/` puts
+    that README next to the user's own skills. whole=True replaces `out`
+    entirely instead, for den's own agents/dist/skills, where a skill retired
+    from agents/src must disappear too."""
+    if not _replaceable(out):
+        msg = (
+            f"{out} is not empty and not a previous den-free build; refusing to"
+            " replace it (build into a new directory and copy the skills over)"
+        )
+        raise FileExistsError(msg)
+    if whole:
+        _remove(out)
+    out.mkdir(parents=True, exist_ok=True)
+    # First, so a build that stops midway (a stale anchor) is still recognized
+    # as den's own and the next run may replace it.
+    _remove(out / "README.md")
+    (out / "README.md").write_text(_DIST_README, encoding="utf-8")
     for name in _skill_names():
         work = out / name
+        _remove(work)
         _materialize(name, work, "shared/", no_den_cli=True)
         if (work / "shared").is_dir():  # the note is only true when shared/ ships
             _add_preamble(work / "SKILL.md")
-    (out / "README.md").write_text(_DIST_README, encoding="utf-8")
 
 
 def _differences(a: Path, b: Path) -> list[str]:
@@ -113,6 +161,7 @@ def _differences(a: Path, b: Path) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     out = content_root() / "agents" / "dist" / "skills"
+    own = True  # den's own dist dir, rebuilt whole; --out may hold other skills
     check = False
     i = 0
     while i < len(args):
@@ -120,13 +169,18 @@ def main(argv: list[str] | None = None) -> int:
             check = True
         elif args[i] == "--out" and i + 1 < len(args):
             out = Path(args[i + 1]).expanduser()
+            own = False
             i += 1
         else:
             print(__doc__)
             return 2
         i += 1
     if not check:
-        build_tree(out)
+        try:
+            build_tree(out, whole=own)
+        except FileExistsError as exc:
+            print(f"den._portable: {exc}", file=sys.stderr)
+            return 2
         print(f"built den-free skills -> {out}")
         return 0
     with tempfile.TemporaryDirectory() as td:

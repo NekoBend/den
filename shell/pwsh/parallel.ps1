@@ -6,6 +6,11 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     return
 }
 
+# _CountEntries → count files/dirs recursively for display. .NET resolves a
+# relative path against the process directory, which Set-Location never
+# updates, so each path is resolved against the PowerShell location first:
+# prm's confirmation used to say "1 entries" for a relative directory, or
+# count a different directory of the same name.
 function _CountEntries {
     param([string[]]$Paths)
     $limit = 10000
@@ -13,7 +18,8 @@ function _CountEntries {
     foreach ($p in $Paths) {
         if (Test-Path -LiteralPath $p -PathType Container) {
             try {
-                foreach ($e in [IO.Directory]::EnumerateFileSystemEntries($p, '*', [IO.SearchOption]::AllDirectories)) {
+                $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p)
+                foreach ($e in [IO.Directory]::EnumerateFileSystemEntries($full, '*', [IO.SearchOption]::AllDirectories)) {
                     $total++
                     if ($total -gt $limit) { return "${limit}+" }
                 }
@@ -32,6 +38,19 @@ function _CountEntries {
 # Each command below expands its wildcard operands with _ResolvePaths
 # (_helpers.ps1, which init.ps1 loads first): a function receives `pcp *.md d`
 # unexpanded, and every call below uses -LiteralPath.
+
+# _Batches → split $Items round-robin into at most $Count lists, one list per
+# ForEach-Object -Parallel item. One item per path made `pcp *.jpg dest` 4x
+# slower than a plain Copy-Item: dispatching an item costs far more than
+# copying a small file. Each list goes to the pipeline whole (the leading
+# comma), so the parallel block receives the list, not its paths one by one.
+function _Batches {
+    param([string[]]$Items = @(), [int]$Count = 1)
+    $n = [math]::Max(1, [math]::Min($Count, $Items.Count))
+    $lists = @(for ($i = 0; $i -lt $n; $i++) { , [System.Collections.Generic.List[string]]::new() })
+    for ($i = 0; $i -lt $Items.Count; $i++) { $lists[$i % $n].Add($Items[$i]) }
+    foreach ($l in $lists) { if ($l.Count -gt 0) { , $l } }
+}
 
 # ===== Parallel File Operations =====
 
@@ -61,8 +80,8 @@ function pcp {
     $entries = _CountEntries $sources
     Write-Host "+ pcp: $($sources.Count) paths ($entries entries) → $dest ($jobs jobs)"
 
-    $sources | ForEach-Object -Parallel {
-        Copy-Item -LiteralPath $_ -Destination $using:dest -Recurse -Force
+    _Batches $sources $jobs | ForEach-Object -Parallel {
+        foreach ($p in $_) { Copy-Item -LiteralPath $p -Destination $using:dest -Recurse -Force }
     } -ThrottleLimit $jobs
 }
 
@@ -90,8 +109,8 @@ function pmv {
     $entries = _CountEntries $sources
     Write-Host "+ pmv: $($sources.Count) paths ($entries entries) → $dest ($jobs jobs)"
 
-    $sources | ForEach-Object -Parallel {
-        Move-Item -LiteralPath $_ -Destination $using:dest -Force
+    _Batches $sources $jobs | ForEach-Object -Parallel {
+        foreach ($p in $_) { Move-Item -LiteralPath $p -Destination $using:dest -Force }
     } -ThrottleLimit $jobs
 }
 
@@ -128,16 +147,14 @@ function prm {
 
     Write-Host "+ prm: removing $($Paths.Count) paths ($entries entries, $jobs jobs)"
 
-    if ($Force) {
-        $Paths | ForEach-Object -Parallel {
-            Remove-Item -LiteralPath $_ -Recurse -Force
-        } -ThrottleLimit $jobs
-    }
-    else {
-        $Paths | ForEach-Object -Parallel {
-            Remove-Item -LiteralPath $_ -Recurse
-        } -ThrottleLimit $jobs
-    }
+    # -Force in both modes: the [y/N] above IS the safety check, as it is for
+    # the posix twin's `rm -r`. Without it Remove-Item refuses hidden items
+    # (every dotfile on Linux/macOS, Hidden-attribute ones such as .git on
+    # Windows), so a confirmed prm deleted everything else in a tree and then
+    # stopped, leaving the hidden entries and their parent directories behind.
+    _Batches $Paths $jobs | ForEach-Object -Parallel {
+        foreach ($p in $_) { Remove-Item -LiteralPath $p -Recurse -Force }
+    } -ThrottleLimit $jobs
 }
 
 # ptar → compress using tar (available on Windows 10+)
@@ -162,11 +179,16 @@ function ptar {
 
     # `--` before the sources, as the posix twin does: a source that starts
     # with '-' is a file, never a tar option.
+    $global:LASTEXITCODE = 0
     switch -Regex ($Output) {
         '\.tar\.gz$|\.tgz$'   { tar czf $Output -- @Sources; break }
         '\.tar\.bz2$|\.tbz2$' { tar cjf $Output -- @Sources; break }
         '\.tar\.xz$|\.txz$'   { tar cJf $Output -- @Sources; break }
         '\.tar$'               { tar cf  $Output -- @Sources; break }
-        default                { Write-Error "unsupported format '$Output'" }
+        default                { Write-Error "unsupported format '$Output'"; return }
     }
+    # tar's own status: a source it could not read left a partial archive and
+    # ptar still succeeded. Terminating, because a plain Write-Error inside a
+    # function leaves `pwsh -Command` exiting 0 (posix parity: tar's status).
+    if ($LASTEXITCODE -ne 0) { Write-Error "tar exited $LASTEXITCODE" -ErrorAction Stop }
 }
