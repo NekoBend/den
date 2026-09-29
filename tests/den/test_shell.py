@@ -1,8 +1,11 @@
 """Tests for den install shell (den/_shell.py)."""
 
 import re
+import shutil
 import sys
 from pathlib import Path
+
+import pytest
 
 from den import _shell
 from den._install import main as install_main
@@ -172,6 +175,7 @@ def test_install_shell_wires_the_profile_pwsh_reads_under_xdg(tmp_path, monkeypa
     assert not (tmp_path / "home" / ".config" / "powershell").exists()
 
 
+@pytest.mark.real_path_probes
 def test_query_pwsh_profile_takes_last_ps1_line(monkeypatch):
     class _Result:
         returncode = 0
@@ -190,6 +194,7 @@ def test_query_pwsh_profile_takes_last_ps1_line(monkeypatch):
     assert "WARNING" not in str(p)
 
 
+@pytest.mark.real_path_probes
 def test_query_pwsh_profile_runs_pwsh_by_absolute_path(monkeypatch):
     class _Result:
         returncode = 0
@@ -208,6 +213,7 @@ def test_query_pwsh_profile_runs_pwsh_by_absolute_path(monkeypatch):
     assert [c[0] for c in ran] == [_on_path("pwsh")]
 
 
+@pytest.mark.real_path_probes
 def test_query_pwsh_profile_refuses_powershell_in_the_working_directory(
     tmp_path, monkeypatch, capsys
 ):
@@ -227,6 +233,7 @@ def test_query_pwsh_profile_refuses_powershell_in_the_working_directory(
     assert "refusing powershell resolved inside the workspace" in err
 
 
+@pytest.mark.real_path_probes
 def test_query_pwsh_profile_rejects_nonzero_returncode(monkeypatch):
     class _Result:
         returncode = 1
@@ -237,6 +244,32 @@ def test_query_pwsh_profile_rejects_nonzero_returncode(monkeypatch):
     )
     monkeypatch.setattr(_shell.subprocess, "run", lambda *a, **k: _Result())
     assert _shell._query_pwsh_profile() is None
+
+
+@pytest.mark.real_path_probes
+@pytest.mark.skipif(
+    not (shutil.which("pwsh") or shutil.which("powershell")),
+    reason="no PowerShell to ask",
+)
+def test_query_pwsh_profile_asks_the_real_powershell(tmp_path):
+    # The other tests get a stand-in for this query (conftest.isolate_user_dirs),
+    # so this one keeps the real one covered, on the windows job above all. It
+    # only reads $PROFILE; nothing is written there.
+    p = _shell._query_pwsh_profile()
+    assert p is not None
+    assert p.name.lower().endswith(".ps1")
+    if sys.platform != "win32":
+        # pwsh builds it from XDG_CONFIG_HOME, which the fixture put here.
+        assert p.is_relative_to(tmp_path)
+
+
+def _assert_pwsh_profile_in(home: Path) -> None:
+    """den's pwsh files and profile line went to <home>/Documents/PowerShell, the
+    stand-in answer of the $PROFILE query, not to the PowerShell profile the
+    real query would name (the developer's own, outside the test's home)."""
+    pwsh = home / "Documents" / "PowerShell"
+    assert (pwsh / "init.ps1").is_file()
+    assert _shell._PWSH_LINE in (pwsh / _shell._PWSH_PROFILE).read_text()
 
 
 def test_install_shell_deploys_both_families(tmp_path, monkeypatch):
@@ -362,6 +395,7 @@ def test_install_shell_cmd_shims_on_windows(tmp_path, monkeypatch):
     clink = tmp_path / "AppData" / "Local" / "clink"
     assert (clink / "starship.lua").is_file()
     assert (clink / "bin" / "ls.cmd").is_file()
+    _assert_pwsh_profile_in(tmp_path)
 
 
 def test_install_shell_no_cmd_shims_off_windows(tmp_path, monkeypatch):
@@ -548,6 +582,7 @@ def test_install_shell_propagates_coreutils_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(_shell, "_install_coreutils", lambda dry_run: 1)
     # a flag-driven coreutils install that fails surfaces from install_shell
     assert install_main(["shell", "--coreutils"]) == 1
+    _assert_pwsh_profile_in(tmp_path)
 
 
 def test_install_shell_coreutils_dry_run_end_to_end(tmp_path, monkeypatch, capsys):
@@ -744,6 +779,7 @@ def test_install_shell_bin_ignored_on_windows(tmp_path, monkeypatch, capsys):
     assert install_main(["shell", "--bin"]) == 0
     assert not (tmp_path / ".local" / "bin").exists()
     assert "ignoring --bin" in capsys.readouterr().err
+    _assert_pwsh_profile_in(tmp_path)
 
 
 def test_install_shell_bin_dry_run_writes_nothing(tmp_path, monkeypatch):

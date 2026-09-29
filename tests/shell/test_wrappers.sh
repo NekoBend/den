@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test_wrappers.sh — Tests for wrappers.sh (bash/zsh) and wrappers.ps1 (pwsh).
-# Tests fallback paths (bat/fd/rg/lsd are NOT installed in test image), then the
-# wrapper notice with stub lsd/bat on PATH.
+# Tests fallback paths (bat/fd/rg/lsd hidden from PATH), then the wrapper notice
+# with stub lsd/bat on PATH.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -11,43 +11,97 @@ HELPERS_PS1="$DOTFILES/shell/pwsh/_helpers.ps1"
 WRAPPERS_PS1="$DOTFILES/shell/pwsh/wrappers.ps1"
 
 # wrappers.sh has an interactive guard (case $- in *i*).
-# Use bash --norc -ic / zsh -ic to bypass it (--norc avoids .bashrc alias conflicts).
+# Use bash --norc -ic / zsh -f -ic to bypass it. --norc and -f skip the rc
+# files, whose aliases (oh-my-zsh's ll, say) would replace the wrapper under
+# test; -f also skips the global zshrc, whose compinit writes ~/.zcompdump.
 # _helpers.sh must be sourced first (provides _wrap/_wsfx).
 run_bash_i() {
     bash --norc -ic "source '$HELPERS_SH' && source '$1' && $2" 2>/dev/null
 }
 
 run_zsh_i() {
-    zsh -ic "source '$HELPERS_SH' && source '$1' && $2" 2>/dev/null
+    zsh -f -ic "source '$HELPERS_SH' && source '$1' && $2" 2>/dev/null
 }
 
 # wrappers.ps1 has a `_DenInteractive` guard (returns early under pwsh -Command).
 # Strip the guard line before dot-sourcing so the wrappers load in the test host.
 # Prepend _helpers.ps1 so New-Wrapper/New-WrapperSuffix are available.
-# Place outside $WORK to avoid deletion by $() subshell EXIT trap.
-WRAPPERS_PS1_STRIPPED="/tmp/wrappers_stripped_$$.ps1"
+# In TESTTMP, out of reach of the fixture resets that wipe WORK.
+WRAPPERS_PS1_STRIPPED="$TESTTMP/wrappers_stripped.ps1"
 {
     echo ". '$HELPERS_PS1'"
     grep -v '_DenInteractive' "$WRAPPERS_PS1" | sed '/Remove-Item alias:ls/d'
-} > "$WRAPPERS_PS1_STRIPPED"
+} > "$WRAPPERS_PS1_STRIPPED" || abort_suite "cannot write $WRAPPERS_PS1_STRIPPED"
 # Combined wrappers + coreutils for pipe chain tests
 COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
-COMBINED_PS1="/tmp/wrappers_combined_$$.ps1"
+COMBINED_PS1="$TESTTMP/wrappers_combined.ps1"
 {
     cat "$WRAPPERS_PS1_STRIPPED"
     grep -v '_DenInteractive' "$COREUTILS_PS1"
-} > "$COMBINED_PS1"
+} > "$COMBINED_PS1" || abort_suite "cannot write $COMBINED_PS1"
 
 # The same wrappers with the edition check reading "Desktop", standing in for
 # Windows PowerShell 5.1 (no 5.1 host runs here).
-WRAPPERS_PS1_DESKTOP="/tmp/wrappers_desktop_$$.ps1"
-sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$WRAPPERS_PS1_STRIPPED" > "$WRAPPERS_PS1_DESKTOP"
-
-_cleanup_wrappers() { rm -f "$WRAPPERS_PS1_STRIPPED" "$COMBINED_PS1" "$WRAPPERS_PS1_DESKTOP"; }
-trap '_cleanup_wrappers' EXIT
+WRAPPERS_PS1_DESKTOP="$TESTTMP/wrappers_desktop.ps1"
+sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$WRAPPERS_PS1_STRIPPED" > "$WRAPPERS_PS1_DESKTOP" ||
+    abort_suite "cannot write $WRAPPERS_PS1_DESKTOP"
 
 # =============================================================================
-# Bash tests (fallback paths — no bat/fd/rg/lsd installed)
+# A PATH without the modern tools
+# =============================================================================
+# The fallback cases need the modern tools the wrappers prefer to be absent.
+# The CI image lacks them, but a developer machine or den's own dev image
+# (docker/ubuntu, with ~/.cargo/bin on PATH) has them, and there the wrappers
+# took the modern branch: 16 fallback assertions failed on a correct tree. So
+# the rest of this suite runs on a PATH of one directory, FALLBACK_BIN, which
+# links every command on the real PATH (the first of each name, as a lookup
+# finds it) except MODERN_TOOLS. A stand-in for each of those tools goes on the
+# PATH the links are made from, so the checks below prove the tools are hidden
+# on a machine that does not have them too.
+MODERN_TOOLS="bat fd rg lsd"
+FALLBACK_BIN="$TESTTMP/fallback-bin"
+MODERN_STANDINS="$TESTTMP/modern-standins"
+mkdir "$FALLBACK_BIN" "$MODERN_STANDINS" || abort_suite "cannot create $FALLBACK_BIN"
+for _t in $MODERN_TOOLS; do
+    { printf '#!/bin/sh\necho "modern %s $*"\n' "$_t" > "$MODERN_STANDINS/$_t" &&
+        chmod +x "$MODERN_STANDINS/$_t"; } || abort_suite "cannot write $MODERN_STANDINS/$_t"
+done
+IFS=: read -r -a _path_dirs <<< "$MODERN_STANDINS:$PATH"
+for _d in "${_path_dirs[@]}"; do
+    case "$_d" in /*) ;; *) continue ;; esac
+    _links=()
+    for _f in "$_d"/*; do
+        case " $MODERN_TOOLS " in *" ${_f##*/} "*) continue ;; esac
+        [ -f "$_f" ] && [ -x "$_f" ] && [ ! -e "$FALLBACK_BIN/${_f##*/}" ] && _links+=("$_f")
+    done
+    [ "${#_links[@]}" -eq 0 ] || ln -s -- "${_links[@]}" "$FALLBACK_BIN/" ||
+        abort_suite "cannot link the commands of $_d into $FALLBACK_BIN"
+done
+unset _t _d _f _links _path_dirs
+export PATH="$FALLBACK_BIN"
+
+# A modern tool added to the wrappers must be added to MODERN_TOOLS too.
+echo "[setup] MODERN_TOOLS names the modern tools the wrappers prefer"
+actual=$(
+    {
+        awk '$1 == "_wrap" || $1 == "_wsfx" { print $3 }' "$WRAPPERS_SH"
+        sed -n "s/^New-Wrapper[A-Za-z]* *'[^']*' *'\([^']*\)'.*/\1/p" "$WRAPPERS_PS1"
+    } | sort -u | tr '\n' ' '
+)
+assert_eq "setup/MODERN_TOOLS matches the wrappers" "$(tr ' ' '\n' <<< "$MODERN_TOOLS" | sort -u | tr '\n' ' ')" "$actual"
+
+echo "[setup] no modern tool resolves on the fallback PATH"
+actual=$(bash --norc -c "for t in $MODERN_TOOLS; do command -v \$t; done")
+assert_eq "setup/bash finds none" "" "$actual"
+actual=$(zsh -f -c "for t in $MODERN_TOOLS; do command -v \$t; done")
+assert_eq "setup/zsh finds none" "" "$actual"
+actual=$(pwsh -NoProfile -NonInteractive -Command "@(Get-Command ${MODERN_TOOLS// /,} -CommandType Application -ErrorAction SilentlyContinue).Count" | tr -d '\r')
+assert_eq "setup/pwsh finds none" "0" "$actual"
+actual=$(for _t in bash zsh pwsh sort grep find ls cat; do command -v "$_t" >/dev/null || echo "$_t"; done)
+assert_eq "setup/the rest still resolves" "" "$actual"
+
+# =============================================================================
+# Bash tests (fallback paths: bat/fd/rg/lsd hidden from PATH)
 # =============================================================================
 echo "================================================"
 echo "  Testing wrappers.sh with BASH (fallback)"
@@ -106,6 +160,15 @@ echo "[zsh] cat fallback"
 echo "hello wrapper" > "$WORK/wrap_test.txt"
 actual=$(run_zsh_i "$WRAPPERS_SH" "cat '$WORK/wrap_test.txt'")
 assert_eq "zsh/cat fallback" "hello wrapper" "$actual"
+
+echo "[zsh] the runner reads no ~/.zshrc"
+ZSHRC_HOME="$WORK/zshrc_home"
+mkdir -p "$ZSHRC_HOME"
+echo "alias cat='echo HIJACKED-BY-ZSHRC'" > "$ZSHRC_HOME/.zshrc"
+actual=$(HOME="$ZSHRC_HOME" run_zsh_i "$WRAPPERS_SH" "cat '$WORK/wrap_test.txt'")
+assert_eq "zsh/runner ignores ~/.zshrc aliases" "hello wrapper" "$actual"
+assert_not_exists "zsh/runner writes no ~/.zcompdump" "$ZSHRC_HOME/.zcompdump"
+rm -rf "$ZSHRC_HOME"
 
 echo "[zsh] find fallback"
 setup_fixtures
@@ -382,8 +445,10 @@ actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "lt '$WORK/src' | Out-String")
 actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
 assert_contains "pwsh/lt fallback file1" "file1.txt" "$actual"
 
-# llt fallback
-actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "llt '$WORK/src' | Out-String")
+# llt fallback. Its Name column holds the path relative to the current
+# directory, which for $WORK can be longer than the table's default width, and
+# the table would then cut the name off: -Width keeps it whole.
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "llt '$WORK/src' | Out-String -Width 4096")
 actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
 assert_contains "pwsh/llt fallback file1" "file1.txt" "$actual"
 

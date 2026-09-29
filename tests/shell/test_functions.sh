@@ -5,7 +5,7 @@ source "$SCRIPT_DIR/helpers.sh"
 
 HELPERS_SH="$DOTFILES/shell/posix/_helpers.sh"
 FUNCTIONS_SH_GUARDED="$DOTFILES/shell/posix/functions.sh"
-FUNCTIONS_SH="/tmp/functions_test_$$.sh"
+FUNCTIONS_SH="$TESTTMP/functions_test.sh"
 HELPERS_PS1="$DOTFILES/shell/pwsh/_helpers.ps1"
 FUNCTIONS_PS1="$DOTFILES/shell/pwsh/functions.ps1"
 
@@ -13,15 +13,13 @@ make_noninteractive_source_copy "$FUNCTIONS_SH_GUARDED" "$FUNCTIONS_SH"
 
 # PowerShell functions.ps1 now depends on _helpers.ps1 (Initialize-Cache).
 # Create a combined PS1 that loads helpers first.
-FUNCTIONS_PS1_COMBINED="/tmp/functions_combined_$$.ps1"
+FUNCTIONS_PS1_COMBINED="$TESTTMP/functions_combined.ps1"
 {
     echo ". '$HELPERS_PS1'"
     cat "$FUNCTIONS_PS1"
-} > "$FUNCTIONS_PS1_COMBINED"
-# Written by the Windows PowerShell 5.1 archive case; here so the trap removes it.
-FUNCTIONS_PS1_DESKTOP="/tmp/functions_desktop_$$.ps1"
-_cleanup_functions() { rm -f "$FUNCTIONS_PS1_COMBINED" "$FUNCTIONS_PS1_DESKTOP" "$FUNCTIONS_SH"; }
-trap '_cleanup_functions' EXIT
+} > "$FUNCTIONS_PS1_COMBINED" || abort_suite "cannot write $FUNCTIONS_PS1_COMBINED"
+# Written by the Windows PowerShell 5.1 archive case.
+FUNCTIONS_PS1_DESKTOP="$TESTTMP/functions_desktop.ps1"
 
 # =============================================================================
 # Helper: create a known test file for hash tests
@@ -43,7 +41,7 @@ CRAFTED_SRC='--checkpoint-action=exec=touch pwned'
 CRAFTED_TRIGGER='--checkpoint=1'
 
 setup_crafted() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/crafted"
     # Both names are needed for the exec to fire: --checkpoint=1 turns
     # checkpointing on, --checkpoint-action says what to run at each one. They
@@ -57,7 +55,7 @@ setup_crafted() {
 # A file whose name contains PowerShell wildcard characters, next to the file
 # that name would match if it were read as a wildcard instead of literally.
 setup_wildcard() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/wild"
     printf 'real'  > "$WORK/wild/f[1].txt"
     printf 'decoy' > "$WORK/wild/f1.txt"
@@ -76,7 +74,7 @@ setup_wildcard() {
 STUB_ARGV="$WORK/stub-argv.txt"
 
 setup_archiver_stubs() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/stubbin" "$WORK/stubsrc"
     # sources for archive(), and archives for extract(), one per branch shape
     # a stub can observe (the .zip branch is a cmdlet on pwsh, so it is not
@@ -110,7 +108,7 @@ STUB
 # round trip is checked against the exact source that went in.
 PAYLOAD_SHA=""
 setup_single_file() {
-    rm -rf "$WORK"/*
+    rm -rf "${WORK:?}"/*
     mkdir -p "$WORK/one" "$WORK/nobin"
     head -c 65536 /dev/urandom > "$WORK/one/payload.bin"
     PAYLOAD_SHA=$(sha256sum "$WORK/one/payload.bin" | cut -d' ' -f1)
@@ -2418,7 +2416,7 @@ echo "[pwsh] archive refuses .gz/.bz2/.xz on Windows PowerShell 5.1"
 {
     echo ". '$HELPERS_PS1'"
     sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g" "$FUNCTIONS_PS1"
-} > "$FUNCTIONS_PS1_DESKTOP"
+} > "$FUNCTIONS_PS1_DESKTOP" || abort_suite "cannot write $FUNCTIONS_PS1_DESKTOP"
 for _ext in gz bz2 xz; do
     setup_single_file
     printf 'PRECIOUS' > "$WORK/one/keep.$_ext"

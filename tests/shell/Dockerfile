@@ -8,7 +8,12 @@
 #   docker build -t den-shell-test -f tests/shell/Dockerfile .
 #   docker run --rm den-shell-test
 # =============================================================================
-FROM ubuntu:24.04
+# Pinned by digest. CI caches this image's layers, and each time Ubuntu
+# republished the ubuntu:24.04 tag, the new base made every cached layer cold,
+# the PowerShell one (12 to 39 minutes uncached) included. Bump the digest on
+# purpose: `docker buildx imagetools inspect ubuntu:24.04` prints the current
+# one.
+FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
 
 # Avoid interactive prompts during package install
 ENV DEBIAN_FRONTEND=noninteractive

@@ -4,15 +4,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
 SNIPPET_SH_GUARDED="$DOTFILES/shell/posix/snippet.sh"
-SNIPPET_SH="/tmp/snippet_test_$$.sh"
+SNIPPET_SH="$TESTTMP/snippet_test.sh"
 make_noninteractive_source_copy "$SNIPPET_SH_GUARDED" "$SNIPPET_SH"
 
 # Isolate the snippet store under WORK so tests never touch the real ~/.config.
 export XDG_CONFIG_HOME="$WORK/xdg"
 SNIPPET_FILE="$XDG_CONFIG_HOME/den/snippets"
-
-_cleanup_snippet() { rm -f "$SNIPPET_SH"; }
-trap '_cleanup_snippet' EXIT
 
 reset_store() { rm -f "$SNIPPET_FILE"; }
 

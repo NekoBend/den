@@ -14,14 +14,29 @@ import pytest
 
 from den import _board
 
+# serve_forever looks for a shutdown() request once per poll, every 0.5 s by
+# default, so each teardown waited up to half a second for it: about 11 s of a
+# 15 s tests/den run. Poll every 20 ms instead.
+_POLL_INTERVAL = 0.02
+
+
+def _serve_in_thread(server):
+    """Run server.serve_forever in a daemon thread and return the thread."""
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": _POLL_INTERVAL},
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
 
 @pytest.fixture
 def served(tmp_path):
     """A live board server on an OS-picked port, torn down after the test."""
     config = _board.ensure_scaffold(tmp_path)
     server = _board.make_server(tmp_path, config, preferred_port=0)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    thread = _serve_in_thread(server)
     yield tmp_path, server, server.server_address[1]
     server.shutdown()
     server.server_close()
@@ -131,6 +146,18 @@ def test_ping_names_root(served):
     ping = json.loads(body)
     assert ping["root"] == str(root)
     assert ping["den_board"]
+
+
+def test_served_server_shuts_down_promptly(served):
+    # A request restarts the poll, so with the 0.5 s default this shutdown
+    # took the whole half second; with _POLL_INTERVAL it takes about 20 ms.
+    # The bound leaves room for a slow runner. The fixture's own shutdown()
+    # afterwards returns at once.
+    _root, server, port = served
+    assert _request(port, "GET", "/api/ping")[0] == 200
+    start = time.monotonic()
+    server.shutdown()
+    assert time.monotonic() - start < 0.3
 
 
 def test_existing_instance_detects_live_server(served):
@@ -333,8 +360,7 @@ def test_existing_instance_survives_non_dict_ping(tmp_path):
             pass
 
     srv = HTTPServer(("127.0.0.1", 0), NullHandler)
-    thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    thread.start()
+    _serve_in_thread(srv)
     try:
         lock = tmp_path / ".den" / "board" / "server.json"
         lock.parent.mkdir(parents=True)

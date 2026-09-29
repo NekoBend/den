@@ -345,6 +345,7 @@ def test_install_interactive_decline_is_not_a_failure(tmp_path, monkeypatch):
     assert skill.read_text() == "MINE"
 
 
+@pytest.mark.real_path_probes
 def test_install_cline_parent_goes_to_cline_rules_dir(tmp_path, monkeypatch):
     # the VS Code extension reads global rules from <Documents>/Cline/Rules and
     # does NOT read ~/.agents/AGENTS.md; no xdg-user-dir -> ~/Documents fallback
@@ -363,6 +364,7 @@ def test_install_cline_cli_parent_stays_in_agents(tmp_path, monkeypatch):
     assert not (tmp_path / "Documents").exists()
 
 
+@pytest.mark.real_path_probes
 def test_cline_rules_dir_uses_xdg_documents(tmp_path, monkeypatch):
     from den import _install
 
@@ -378,6 +380,7 @@ def test_cline_rules_dir_uses_xdg_documents(tmp_path, monkeypatch):
     assert _install._cline_rules_dir() == tmp_path / "MyDocs" / "Cline" / "Rules"
 
 
+@pytest.mark.real_path_probes
 def test_cline_rules_dir_runs_xdg_user_dir_by_absolute_path(tmp_path, monkeypatch):
     from den import _install
 
@@ -398,6 +401,7 @@ def test_cline_rules_dir_runs_xdg_user_dir_by_absolute_path(tmp_path, monkeypatc
     assert ran == [[tool, "DOCUMENTS"]]
 
 
+@pytest.mark.real_path_probes
 def test_cline_rules_dir_refuses_powershell_in_the_working_directory(
     tmp_path, monkeypatch, capsys
 ):
@@ -421,6 +425,7 @@ def test_cline_rules_dir_refuses_powershell_in_the_working_directory(
     assert "refusing powershell resolved inside the workspace" in err
 
 
+@pytest.mark.real_path_probes
 def test_cline_rules_dir_windows_queries_powershell(tmp_path, monkeypatch):
     from den import _install
 

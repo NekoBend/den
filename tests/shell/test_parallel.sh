@@ -4,11 +4,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
 PARALLEL_SH_GUARDED="$DOTFILES/shell/posix/parallel.sh"
-PARALLEL_SH="/tmp/parallel_test_$$.sh"
+PARALLEL_SH="$TESTTMP/parallel_test.sh"
 # parallel.ps1 takes _ResolvePaths from _helpers.ps1, which init.ps1 loads
-# first; this file loads both in that order. Outside $WORK, which
-# setup_fixtures empties.
-PARALLEL_PS1="/tmp/parallel_test_$$.ps1"
+# first; this file loads both in that order.
+PARALLEL_PS1="$TESTTMP/parallel_test.ps1"
 printf ". '%s'\n. '%s'\n" "$DOTFILES/shell/pwsh/_helpers.ps1" "$DOTFILES/shell/pwsh/parallel.ps1" > "$PARALLEL_PS1"
 
 make_noninteractive_source_copy "$PARALLEL_SH_GUARDED" "$PARALLEL_SH"
@@ -671,6 +670,5 @@ rm -rf "$WORK/many" "$WORK/copied" "$WORK/copied2" "$WORK/moved"
 # =============================================================================
 # Summary
 # =============================================================================
-rm -f "$PARALLEL_PS1"
 print_summary "test_parallel"
 [ "$FAIL" -eq 0 ]
