@@ -20,6 +20,21 @@ setup_store() {
     printf 'regex basics\n' > "$CHEAT_ROOT/python/regex/basics.py"
 }
 
+# Sheets whose names only look like den's <sheet>.den.bak[.N] backups, plus two
+# real backups that must stay hidden; LOOKALIKES is what `cheat ls` lists of them.
+LOOKALIKES='lookalike/UPPER.DEN.BAK
+lookalike/notes.den.bak.1.md
+lookalike/notes.den.bak.1draft.md
+lookalike/notes.den.bak.md
+lookalike/notes.den.bak.x'
+setup_lookalikes() {
+    mkdir -p "$CHEAT_ROOT/lookalike"
+    for f in notes.den.bak.1draft.md notes.den.bak.1.md notes.den.bak.md \
+        notes.den.bak.x UPPER.DEN.BAK notes.md.den.bak notes.md.den.bak.12; do
+        printf 'LOOKALIKE\n' > "$CHEAT_ROOT/lookalike/$f"
+    done
+}
+
 # cheat_suite <shell> — same checks under bash and zsh.
 cheat_suite() {
     local sh="$1"
@@ -63,6 +78,14 @@ cheat_suite() {
     actual=$("$run" "$CHEAT_SH" "fzf() { return 1; }; cheat one-liners 2>&1" | tr -d '\r')
     assert_contains "$sh/backup not ambiguous" "ONELINER_MARKER" "$actual"
     rm -f "$CHEAT_ROOT/shell/one-liners.md.den.bak" "$CHEAT_ROOT/shell/one-liners.md.den.bak.1"
+
+    # Only .den.bak and .den.bak.<digits> are backups: the find glob
+    # '*.den.bak.[0-9]*' also hid sheets like these, which cheat.ps1 lists.
+    echo "[$sh] a sheet merely named like a backup is listed"
+    setup_lookalikes
+    actual=$("$run" "$CHEAT_SH" "cheat ls" | tr -d '\r')
+    assert_eq "$sh/lookalikes listed" "$LOOKALIKES" "$(printf '%s\n' "$actual" | command grep '^lookalike/')"
+    rm -rf "$CHEAT_ROOT/lookalike"
 
     echo "[$sh] a missing name fails with a message"
     actual=$("$run" "$CHEAT_SH" "cheat no-such-sheet-xyz 2>&1; echo rc=\$?" | tr -d '\r')
@@ -131,6 +154,13 @@ if command -v pwsh >/dev/null 2>&1; then
     actual=$(run_pwsh "$CHEAT_PS1" "function fzf { }; cheat one-liners" 2>&1 | tr -d '\r')
     assert_contains "pwsh/backup not ambiguous" "ONELINER_MARKER" "$actual"
     rm -f "$CHEAT_ROOT/shell/one-liners.md.den.bak" "$CHEAT_ROOT/shell/one-liners.md.den.bak.1"
+
+    echo "[pwsh] a sheet merely named like a backup is listed"
+    setup_lookalikes
+    actual=$(run_pwsh "$CHEAT_PS1" "cheat ls" | tr -d '\r')
+    # Sort-Object orders by culture, not bytes: compare as a C-sorted set
+    assert_eq "pwsh/lookalikes listed" "$LOOKALIKES" "$(printf '%s\n' "$actual" | command grep '^lookalike/' | LC_ALL=C sort)"
+    rm -rf "$CHEAT_ROOT/lookalike"
 
     echo "[pwsh] a missing name fails with a message"
     actual=$(run_pwsh "$CHEAT_PS1" "cheat no-such-sheet-xyz" 2>&1 | tr -d '\r')
