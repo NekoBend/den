@@ -205,6 +205,12 @@ PowerShell (a machine's pwsh and bash share the profile store).
 entries (comma-separated, e.g. `.corp.example.com,10.0.0.0/8`) are added on top.
 The one exception is `no_proxy = *`, which stays standalone (bypass everything).
 
+A url may carry a password (`http://user:password@host:port`). `add`, `on`,
+`ls` and `status` print it as `user:***@host:port`; `proxy.conf` and the
+exported variables keep the real value. On Linux and macOS `proxy.conf` is
+`0600` and `$XDG_CONFIG_HOME/den` `0700`, whatever the umask: each write sets
+them, so a store an older den left readable is tightened too.
+
 ### Command snippets
 Save favorite commands by name and run them later, instead of `history | grep`.
 

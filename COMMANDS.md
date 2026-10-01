@@ -313,10 +313,11 @@ succeeded, so a failed run leaves no truncated archive.
 |---|---|:---:|:---:|:---:|
 | `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets | ✓ | ✓ | — |
 | `cheat [name\|ls]` | browse den's bundled cheatsheets (fzf + bat) | ✓ | ✓ | — |
-| `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars) | ✓ | ✓ | — |
+| `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars); a password in a url prints as `user:***@host` | ✓ | ✓ | — |
 
 Cheatsheets are deployed by `den install cheatsheets`; snippets and proxy profiles
-live under `$XDG_CONFIG_HOME`.
+live in `$XDG_CONFIG_HOME/den`, which den keeps `0700` with `proxy.conf` `0600`
+on Linux and macOS (a proxy url may hold a password).
 
 ## Hardware / prompt
 

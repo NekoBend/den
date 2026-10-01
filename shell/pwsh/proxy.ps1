@@ -5,7 +5,9 @@
 # CURRENT session; `proxy off` clears them. The active profile is tracked per-session
 # in $global:_DEN_PROXY_ACTIVE (not exported), never in global tool config. Loading
 # it only defines these functions and that variable, so (like cheat.ps1) it is not
-# gated.
+# gated. A url may carry a password (http://user:password@host:port): the store is
+# written by _DenWritePrivate (_helpers.ps1, which init.ps1 loads first), 0600 in a
+# 0700 directory off Windows, and add/on/ls/status print it as user:***@host.
 
 # The variable exists from load on, empty until `proxy on`: a caller's Set-StrictMode
 # makes reading one that was never set an error. Tested rather than assigned, so a
@@ -26,13 +28,21 @@ function _ProxyLines {
 # Lines defaults to @() rather than $null, whose .Count is an error under a
 # caller's Set-StrictMode.
 function _ProxyWrite([string[]]$Lines = @()) {
-    $f = _ProxyFile
-    $dir = Split-Path -Parent $f
-    if (-not (Test-Path -LiteralPath $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    }
     $text = if ($Lines.Count) { ($Lines -join "`n") + "`n" } else { '' }
-    [IO.File]::WriteAllText($f, $text, [Text.UTF8Encoding]::new($false))
+    _DenWritePrivate (_ProxyFile) $text
+}
+
+# _ProxyShow <url> - the url as add/on/ls/status print it: the password of a
+# user:password@ part shows as ***. The store and the env vars keep it. The
+# userinfo ends at the last @, the user at its first :, as in proxy.sh.
+function _ProxyShow([string]$Url) {
+    $i = $Url.IndexOf('://')
+    $pre = if ($i -ge 0) { $Url.Substring(0, $i + 3) } else { '' }
+    $rest = $Url.Substring($pre.Length)
+    $at = $rest.LastIndexOf('@')
+    $colon = $rest.IndexOf(':')
+    if ($at -lt 0 -or $colon -lt 0 -or $colon -gt $at) { return $Url }
+    $pre + $rest.Substring(0, $colon) + ':***' + $rest.Substring($at)
 }
 
 function _ProxyFields([string]$Line) {
@@ -77,7 +87,7 @@ function proxy {
             $lines = @(_ProxyLines | Where-Object { (_ProxyFields $_).Name -ne $name })
             $lines += "$name`t$url`t$no"
             _ProxyWrite $lines
-            [Console]::Error.WriteLine("proxy: saved '$name' -> $url")
+            [Console]::Error.WriteLine("proxy: saved '$name' -> $(_ProxyShow $url)")
         }
         '^rm$' {
             if (-not $rest.Count) { [Console]::Error.WriteLine('usage: proxy rm <name>'); return }
@@ -101,8 +111,8 @@ function proxy {
             foreach ($line in $lines) {
                 $f = _ProxyFields $line
                 $mark = if ($f.Name -eq $global:_DEN_PROXY_ACTIVE) { '*' } else { ' ' }
-                if ($f.No) { "$mark $($f.Name)`t$($f.Url)`t(no_proxy: $($f.No))" }
-                else { "$mark $($f.Name)`t$($f.Url)" }
+                if ($f.No) { "$mark $($f.Name)`t$(_ProxyShow $f.Url)`t(no_proxy: $($f.No))" }
+                else { "$mark $($f.Name)`t$(_ProxyShow $f.Url)" }
             }
         }
         '^on$' {
@@ -124,7 +134,7 @@ function proxy {
             $env:no_proxy = $no
             $env:NO_PROXY = $no
             $global:_DEN_PROXY_ACTIVE = $name
-            [Console]::Error.WriteLine("proxy: on ($name -> $($prof.Url))")
+            [Console]::Error.WriteLine("proxy: on ($name -> $(_ProxyShow $prof.Url))")
         }
         '^off$' {
             foreach ($v in 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
@@ -141,9 +151,9 @@ function proxy {
         '^status$' {
             $active = if ($global:_DEN_PROXY_ACTIVE) { $global:_DEN_PROXY_ACTIVE } else { '(none)' }
             "active: $active"
-            "http_proxy=$($env:http_proxy)"
-            "https_proxy=$($env:https_proxy)"
-            "all_proxy=$($env:all_proxy)"
+            "http_proxy=$(_ProxyShow $env:http_proxy)"
+            "https_proxy=$(_ProxyShow $env:https_proxy)"
+            "all_proxy=$(_ProxyShow $env:all_proxy)"
             "no_proxy=$($env:no_proxy)"
         }
         '^(-h|--help|help)$' { _ProxyUsage }
