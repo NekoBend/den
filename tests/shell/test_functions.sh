@@ -1306,8 +1306,7 @@ STUB
 echo "[bash] y keeps the caller's EXIT, INT, TERM and HUP traps"
 setup_ystub
 out=$(dh_run bash "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-int' INT; trap 'echo user-hup' HUP; y; pwd; trap -p EXIT INT TERM HUP")
-assert_eq "bash/y moves, keeps the traps, and the EXIT trap still runs" "$DH/a
-trap -- 'echo user-exit' EXIT
+assert_eq "bash/y moves, keeps the traps, and the EXIT trap still runs" "$DH/a"$'\n'"trap -- 'echo user-exit' EXIT
 trap -- 'echo user-int' SIGINT
 trap -- 'echo user-hup' SIGHUP
 user-exit" "$out"
@@ -1978,8 +1977,7 @@ dirhist_posix_cases zsh
 echo "[zsh] y keeps the caller's INT, TERM and HUP traps and TRAP functions"
 setup_ystub
 out=$(dh_run zsh "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-hup' HUP; trap 'echo user-term' TERM; TRAPINT() { echo user-int; }; y; pwd; trap > '$DH/traps'; grep '^trap' '$DH/traps'; if functions TRAPINT >/dev/null; then echo TRAPINT kept; else echo TRAPINT gone; fi")
-assert_eq "zsh/y moves, keeps the traps and TRAPINT, and the EXIT trap still runs" "$DH/a
-trap -- 'echo user-exit' EXIT
+assert_eq "zsh/y moves, keeps the traps and TRAPINT, and the EXIT trap still runs" "$DH/a"$'\n'"trap -- 'echo user-exit' EXIT
 trap -- 'echo user-hup' HUP
 trap -- 'echo user-term' TERM
 TRAPINT kept
