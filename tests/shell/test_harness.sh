@@ -106,6 +106,23 @@ echo "[harness] no suite replaces the EXIT trap that removes the workspace"
 actual=$(cd "$SCRIPT_DIR" && grep -nE '^[[:space:]]*trap .*EXIT' -- test_*.sh)
 assert_eq "harness/no suite EXIT trap" "" "$actual"
 
+# With the actual piped into grep -q, grep left at the first match and the
+# writer died of SIGPIPE once the pipe filled: pipefail made a long actual
+# that matches on its first line fail assert_contains and assert_match, and
+# pass assert_not_contains. About 1 MB of short lines is far past any pipe
+# buffer, and grep needs only the first line to match.
+echo "[harness] the assertions see an early match in a long actual"
+actual=$(
+    PASS=0 FAIL=0
+    big="needle
+$(yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx | head -n 25000)"
+    assert_contains "inner contains" "needle" "$big" >/dev/null
+    assert_match "inner match" "^needle" "$big" >/dev/null
+    assert_not_contains "inner not_contains" "needle" "$big" >/dev/null
+    echo "$PASS passed, $FAIL failed"
+)
+assert_eq "harness/contains and match pass, not_contains fails" "2 passed, 1 failed" "$actual"
+
 # A real suite, run with a TMPDIR of its own: whatever it made there, and
 # whatever its own EXIT trap would have left, shows up as a leftover entry.
 echo "[harness] a suite leaves nothing behind in TMPDIR"
