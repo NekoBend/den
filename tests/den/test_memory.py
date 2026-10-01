@@ -3,7 +3,9 @@
 import io
 import json
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -1004,3 +1006,105 @@ def test_log_and_diff_still_work_on_normal_snapshots(tmp_path, monkeypatch, caps
     assert memory_main(["diff", "1"]) == 0
     out = capsys.readouterr().out
     assert "-- v1 fact" in out and "+- v2 fact" in out
+
+
+# --------------------------------------------------------------------------- #
+# text I/O is UTF-8 whatever the locale. Windows hands a redirected (agent-run)
+# den its ANSI code page (cp1252, cp932) with strict errors unless PYTHONUTF8 is
+# set, so each case starts den in a child process with PYTHONUTF8 dropped: the
+# PYTHONIOENCODING ones pin that code page on every OS, and the default-encoding
+# one meets the real one on the Windows CI runner.
+# --------------------------------------------------------------------------- #
+
+_REPO = Path(__file__).resolve().parents[2]
+_TEXT = "Retry limit 7 \u2014 decided \U0001f680 \u2192 caf\u00e9 \u898f\u7d04\n"
+
+
+def _den(cwd, *args, encoding=None, stdin=b""):
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"PYTHONUTF8", "PYTHONIOENCODING"}
+    }
+    env["PYTHONPATH"] = str(_REPO)
+    if encoding:
+        env["PYTHONIOENCODING"] = encoding
+    return subprocess.run(
+        [sys.executable, "-m", "den.cli", *args],
+        cwd=cwd,
+        input=stdin,
+        capture_output=True,
+        env=env,
+        check=False,
+        timeout=60,
+    )
+
+
+@pytest.mark.parametrize("encoding", ["cp932", "cp1252", None])
+def test_show_log_and_diff_write_utf8(tmp_path, encoding):
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_bytes(b"old\n")
+    assert _den(tmp_path, "memory", "checkpoint").returncode == 0
+    _mem(tmp_path).write_bytes(_TEXT.encode("utf-8"))
+    out = _den(tmp_path, "hook", "memory", "show", encoding=encoding)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.decode("utf-8").replace("\r\n", "\n") == _TEXT
+    out = _den(tmp_path, "memory", "diff", encoding=encoding)
+    assert out.returncode == 0, out.stderr
+    assert "+" + _TEXT in out.stdout.decode("utf-8").replace("\r\n", "\n")
+    assert _den(tmp_path, "memory", "checkpoint").returncode == 0
+    out = _den(tmp_path, "memory", "log", encoding=encoding)
+    assert out.returncode == 0, out.stderr
+    assert "\U0001f680" in out.stdout.decode("utf-8")
+
+
+@pytest.mark.parametrize("encoding", ["cp932", "cp1252", None])
+def test_hook_imprint_writes_the_seeded_imprint_as_utf8(tmp_path, encoding):
+    # The seeded default imprint names its Japanese signal words, which cp1252
+    # cannot encode at all.
+    from den._hook import _DEFAULT_IMPRINT
+
+    den_dir = tmp_path / ".den"
+    den_dir.mkdir()
+    (den_dir / "imprint.md").write_bytes(_DEFAULT_IMPRINT.encode("utf-8"))
+    out = _den(tmp_path, "hook", "imprint", encoding=encoding)
+    assert out.returncode == 0, out.stderr
+    assert "\u898f\u7d04" in out.stdout.decode("utf-8")
+
+
+@pytest.mark.parametrize("encoding", ["cp932", "cp1252", None])
+@pytest.mark.parametrize("command", [["save"], ["add"]])
+def test_stdin_is_read_as_utf8(tmp_path, encoding, command):
+    """cp1252 turned piped UTF-8 into mojibake that was then injected every turn
+    (an accented e came back as two Latin-1 characters); cp932 raised
+    UnicodeDecodeError."""
+    out = _den(tmp_path, "memory", *command, encoding=encoding, stdin=_TEXT.encode())
+    assert out.returncode == 0, out.stderr
+    assert _mem(tmp_path).read_bytes() == _TEXT.encode("utf-8")
+
+
+def test_stdin_with_a_bom_is_read_without_it(tmp_path):
+    # PowerShell pipes can lead with one, depending on $OutputEncoding
+    out = _den(tmp_path, "memory", "save", stdin=b"\xef\xbb\xbf" + _TEXT.encode())
+    assert out.returncode == 0, out.stderr
+    assert _mem(tmp_path).read_bytes() == _TEXT.encode("utf-8")
+
+
+@pytest.mark.parametrize("command", [["save"], ["add"]])
+def test_stdin_that_is_not_utf8_is_refused(tmp_path, command):
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_bytes(b"kept\n")
+    out = _den(tmp_path, "memory", *command, stdin="caf\u00e9\n".encode("cp1252"))
+    assert out.returncode == 2
+    assert b"not UTF-8" in out.stderr
+    assert b"Traceback" not in out.stderr
+    assert _mem(tmp_path).read_bytes() == b"kept\n"
+
+
+def test_save_file_that_is_not_utf8_is_refused(tmp_path, monkeypatch, capsys):
+    src = tmp_path / "notes.md"
+    src.write_bytes("caf\u00e9\n".encode("cp1252"))
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["save", "--file", str(src)]) == 2
+    assert "not UTF-8" in capsys.readouterr().err
+    assert not _mem(tmp_path).exists()

@@ -63,6 +63,7 @@ from ._memory import (
     _symlink_component,
     _write_guarded,
     mirror_to_clinerules,
+    utf8_stdout,
 )
 from ._memory import (
     main as _memory_main,
@@ -1339,6 +1340,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"den hook: unknown subcommand '{cmd}'", file=sys.stderr)
         _usage()
         return 2
+    utf8_stdout()  # imprint, memory and list print UTF-8 text
     return handler(rest)
 
 

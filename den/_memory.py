@@ -23,6 +23,7 @@ Subcommands:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
@@ -454,6 +455,40 @@ def _parse_index(argv: list[str]) -> int | None:
         return None
 
 
+def utf8_stdout() -> None:
+    """Write stdout as UTF-8, whatever the locale. Memory and the imprint are
+    UTF-8 and so is what reads den's output; a Windows den whose stdout is
+    redirected (an agent running it) got the ANSI code page instead, with
+    strict errors, so an em dash or an emoji in memory -- or the seeded
+    imprint's own Japanese -- crashed `show` and `den hook imprint`."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        # a stream that cannot switch keeps its own encoding
+        with contextlib.suppress(OSError, ValueError):
+            reconfigure(encoding="utf-8")
+
+
+def _read_stdin(prefix: str) -> str | None:
+    """stdin as UTF-8 text (a leading BOM dropped), whatever the locale; None
+    (one line on stderr) when it is not UTF-8. The locale codec turned piped
+    UTF-8 into mojibake on cp1252 -- written to memory.md and injected every
+    turn -- and raised on cp932."""
+    stream = sys.stdin
+    if stream is None:
+        return ""
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:  # already text (an embedding host, a test's StringIO)
+        return stream.read()
+    try:
+        return buffer.read().decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        print(
+            f"{prefix}: stdin is not UTF-8 text ({exc}); nothing written",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _cmd_show(den_dir: Path, argv: list[str]) -> int:
     text = _read_guarded_text(den_dir, _memory_path(den_dir))
     if isinstance(text, _Unreadable):
@@ -479,7 +514,8 @@ def _save_content(argv: list[str]) -> str | int:
     """The text `save` will write: stdin, or the file named by --file. An int is
     the exit code to return instead (the message is already out)."""
     if not (argv and argv[0] in {"--file", "-f"}):
-        return sys.stdin.read()
+        text = _read_stdin("den hook memory save")
+        return 2 if text is None else text
     if len(argv) < 2:
         print("den hook memory save: --file needs a path", file=sys.stderr)
         return 2
@@ -487,6 +523,12 @@ def _save_content(argv: list[str]) -> str | int:
         return Path(argv[1]).read_text(encoding="utf-8")
     except OSError as exc:
         print(f"den hook memory save: cannot read {argv[1]}: {exc}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError as exc:
+        print(
+            f"den hook memory save: {argv[1]} is not UTF-8 text ({exc})",
+            file=sys.stderr,
+        )
         return 2
 
 
@@ -507,13 +549,14 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
     """Append one fact to memory.md (from args, or stdin if none). Low-friction
     counterpart to save's wholesale overwrite: a weak agent records a single
     line without rewriting the whole file. Snapshots the prior content first."""
-    content = " ".join(argv) if argv else sys.stdin.read()
-    if not content.strip():
+    content = " ".join(argv) if argv else _read_stdin("den hook memory add")
+    if content is not None and not content.strip():
         print(
             "den hook memory add: nothing to add (give text or pipe it on stdin)",
             file=sys.stderr,
         )
-        return 2
+    if content is None or not content.strip():
+        return 2  # (an undecodable stdin already said why)
     mem = _memory_path(den_dir)
     if _refuse_symlink(den_dir, mem, "write"):
         return 1
@@ -672,6 +715,7 @@ def main(argv: list[str] | None = None) -> int:
         _usage()
         return 2
 
+    utf8_stdout()
     den_dir = _find_den_dir(Path.cwd())
     return handler(den_dir, rest)
 
