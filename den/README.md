@@ -40,7 +40,7 @@ differ from the bundled version are listed and you are asked once before
 overwriting (default no, so your changes are kept). Pass `--force` to overwrite
 without asking; non-interactive runs skip the changed files and exit non-zero,
 so a scripted install cannot mistake a full skip for success. `den install hook`
-into a tool's settings.json merges (it preserves foreign hooks and other keys).
+into a tool's settings file merges (it preserves foreign hooks and other keys).
 
 ### Parent profiles (frontier / weak)
 
@@ -243,10 +243,20 @@ with cline is refused (exit 2), in the interactive picker too, because the
 extension would then load the imprint and memory twice (see below). For
 `list` and `uninstall hook`, `--all-tools` still covers every tool.
 
-The workspace-relative config (`.claude/settings.json` and the other per-tool
-paths below) must stay in the workspace: `den install hook` refuses it when any
-path component is a symlink, so a checked-out repo cannot redirect the install
-into your global settings. An explicit `--config PATH` is taken as given.
+The workspace-relative config (`.claude/settings.local.json` and the other
+per-tool paths below) must stay in the workspace: `den install hook` refuses it
+when any path component is a symlink, so a checked-out repo cannot redirect the
+install into your global settings. An explicit `--config PATH` is taken as given.
+
+Each hook command pins this machine's absolute `.den` path, so claude's hooks go
+to `.claude/settings.local.json`, Claude Code's personal file, not the shared
+`.claude/settings.json` you commit. `den install hook` moves den's entries out
+of `.claude/settings.json` (an earlier den wrote them there; everything else in
+the file is kept, and a file without den entries is not touched), `list` and
+`uninstall hook` read both files, and inside a git work tree install adds
+`settings.local.json` to `.git/info/exclude` unless git already ignores it.
+copilot (`.github/hooks/den.json`) and cline (`.clinerules/hooks/`) have no
+personal counterpart; there, a command from another machine just fails open.
 The install also reports a pre-existing `.den/memory.md` (size, first line,
 snapshot count) next to the imprint, because both are injected every turn.
 
@@ -254,7 +264,7 @@ snapshot count) next to the imprint, because both are injected every turn.
 
 | Tool | Per-turn inject | Mechanism | Workspace config |
 |------|-----------------|-----------|------------------|
-| claude | yes | `hookSpecificOutput.additionalContext` | `.claude/settings.json` |
+| claude | yes | `hookSpecificOutput.additionalContext` | `.claude/settings.local.json` |
 | cline | yes (extension) | `contextModification` (script per event) | `.clinerules/hooks/` |
 | cline-cli | session-start | `.clinerules/*.md` rule files (no hook) | `.clinerules/` |
 | copilot | session-start only | `additionalContext` (`userPromptSubmitted` is notify-only) | `.github/hooks/den.json` |

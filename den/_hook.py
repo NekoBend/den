@@ -13,7 +13,7 @@ both every turn. checkpoint runs first so the previous turn's direct edits to
 memory.md are captured before this turn proceeds.
 
 Hooks install per WORKSPACE: `install` writes each tool's project-level hook
-config (e.g. .claude/settings.json, .clinerules/hooks/) under the current
+config (e.g. .claude/settings.local.json, .clinerules/hooks/) under the current
 directory and seeds <cwd>/.den/imprint.md, so hook + imprint + memory all share
 one .den scope. Run it once inside each workspace you want imprinting in.
 
@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -43,6 +45,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+from ._exe import find_tool
 from ._memory import (
     _CLINERULES_IMPRINT,
     _CLINERULES_MEMORY,
@@ -99,7 +102,15 @@ These directives apply every turn. Do not let them fall out of context.
 # output contract has been checked against the real CLI.
 _TOOLS: dict[str, dict] = {
     "claude": {
-        "config": ".claude/settings.json",
+        # Claude Code's personal, uncommitted settings file: the commands pin
+        # this machine's absolute .den path, which must not travel with the
+        # repo (on the other OS of a WSL/Windows pair it is not even absolute).
+        # install keeps it out of git (_git_exclude).
+        "config": ".claude/settings.local.json",
+        # The shared, committed file earlier dens wrote to. install moves den's
+        # entries out of it; list and remove read it too.
+        "legacy_config": ".claude/settings.json",
+        "git_exclude": True,
         "emit": "claude",
         "format": "settings_json",
         "events": {
@@ -588,7 +599,10 @@ def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
     data = _read_json(config)
     if "hooks" not in data:
         return True
-    data["hooks"] = _strip_den_hooks(data["hooks"])
+    cleaned = _strip_den_hooks(data["hooks"])
+    if cleaned == data["hooks"]:
+        return True  # nothing of den's: leave the file byte-identical
+    data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -861,6 +875,136 @@ def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
     return True
 
 
+# --- a tool's earlier config location, and keeping a local file out of git --- #
+
+
+def _legacy_config(spec: dict, override: str | None) -> Path | None:
+    """The workspace file earlier dens wrote this tool's hooks to, when that has
+    moved since (claude: .claude/settings.json -> settings.local.json), or None.
+    An explicit --config names the one file to use, so it has no legacy file."""
+    name = spec.get("legacy_config")
+    return None if override or not name else Path.cwd() / name
+
+
+def _legacy_lines(tool: str, spec: dict, override: str | None) -> list[str]:
+    """`den hook list` lines for den's entries still in the legacy file."""
+    legacy = _legacy_config(spec, override)
+    if legacy is None or not legacy.is_file() or _leaves_workspace(legacy):
+        return []
+    lines = _FORMATS[spec["format"]][1](tool, spec, legacy.resolve())
+    note = f"(in {spec['legacy_config']}; re-run den install hook to move it)"
+    return [f"{line}  {note}" for line in lines]
+
+
+def _strip_legacy(
+    tool: str, spec: dict, override: str | None, prefix: str, moved_to: Path | None
+) -> bool:
+    """Remove den's entries from the legacy file, leaving everything else in it.
+
+    True when nothing of den's is (left) there, and a file without den entries
+    stays byte-identical. False (one line on stderr) when the path reaches a
+    symlink: a repo can ship `.claude/settings.json` -> ~/.claude/settings.json,
+    and stripping through it would rewrite the user's global settings.
+    """
+    legacy = _legacy_config(spec, override)
+    if legacy is None or not (legacy.is_file() or legacy.is_symlink()):
+        return True
+    if _leaves_workspace(legacy, prefix):
+        return False
+    legacy = legacy.resolve()
+    _install, list_fn, remove_fn = _FORMATS[spec["format"]]
+    if not list_fn(tool, spec, legacy):
+        return True
+    if not remove_fn(tool, spec, legacy):
+        return False
+    done = f"moved them to {moved_to}" if moved_to else "removed them"
+    print(f"{prefix}: {legacy} held den's {tool} hooks; {done}", file=sys.stderr)
+    return True
+
+
+def _git(git: str, cwd: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            [git, "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _git_ignored(git: str, path: Path) -> bool | None:
+    """Whether git ignores `path`; None outside a work tree or when git fails."""
+    out = _git(git, path.parent, "check-ignore", "-q", "--", str(path))
+    if out is None or out.returncode not in {0, 1}:
+        return None
+    return out.returncode == 0
+
+
+def _git_exclude(path: Path) -> None:
+    """Keep a machine-local hook file out of commits: add it to the repository's
+    info/exclude unless git already ignores it. Silent without git or outside a
+    work tree; otherwise one line on stderr saying what happened."""
+    git = find_tool("git", _ERR_INSTALL)
+    if git is None or _git_ignored(git, path) is not False:
+        return
+    top = _git(git, path.parent, "rev-parse", "--show-toplevel")
+    excl = _git(git, path.parent, "rev-parse", "--git-path", "info/exclude")
+    if not top or not excl or top.returncode or excl.returncode:
+        return
+    try:
+        rel = path.resolve().relative_to(Path(top.stdout.strip()).resolve())
+    except ValueError:
+        return
+    exclude = Path(excl.stdout.strip())
+    if not exclude.is_absolute():
+        # git prints it relative to the -C dir; normpath only drops the `..`
+        # (resolve() would also follow a symlinked exclude file, refused below)
+        exclude = Path(os.path.normpath(path.parent / exclude))
+    # Anchored to the repo root, with gitignore's glob characters escaped so a
+    # directory named `[ws]` matches itself.
+    pattern = "/" + re.sub(r"([\\*?\[])", r"\\\1", rel.as_posix())
+    try:
+        if exclude.is_symlink():
+            print(
+                f"{_ERR_INSTALL}: not editing {exclude}: it is a symlink",
+                file=sys.stderr,
+            )
+            return
+        text = (
+            exclude.read_text(encoding="utf-8", errors="replace")
+            if exclude.is_file()
+            else ""
+        )
+        if pattern not in text.splitlines():
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            sep = "" if not text or text.endswith("\n") else "\n"
+            with exclude.open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(f"{sep}{pattern}\n")
+    except OSError as exc:
+        print(
+            f"{_ERR_INSTALL}: cannot add {pattern} to {exclude}: {exc}", file=sys.stderr
+        )
+        return
+    if _git_ignored(git, path):
+        print(
+            f"{_ERR_INSTALL}: added {pattern} to {exclude} (its hook commands "
+            "carry this machine's paths)",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"{_ERR_INSTALL}: {path} is still not ignored by git (tracked, or "
+            "re-included by a .gitignore rule); keep it out of commits, its hook "
+            "commands carry this machine's paths",
+            file=sys.stderr,
+        )
+
+
 # format -> (install, list, remove)
 _FORMATS = {
     "settings_json": (
@@ -1037,6 +1181,11 @@ def _cmd_install(argv: list[str]) -> int:
             f"installed {tool} hooks -> {_display_config(spec, config)}",
             file=sys.stderr,
         )
+        # Written first, so the hooks keep working if the old file is refused.
+        if not _strip_legacy(tool, spec, override, _ERR_INSTALL, config):
+            rc = 1
+        if spec.get("git_exclude") and override is None:
+            _git_exclude(config)
     return rc
 
 
@@ -1053,6 +1202,8 @@ def _cmd_list(argv: list[str]) -> int:
         if config is None:
             continue
         for line in handlers[1](tool, spec, config):
+            print(line)
+        for line in _legacy_lines(tool, spec, override):
             print(line)
     return 0
 
@@ -1078,6 +1229,8 @@ def _cmd_remove(argv: list[str]) -> int:
             f"removed den hooks from {tool} -> {_display_config(spec, config)}",
             file=sys.stderr,
         )
+        if not _strip_legacy(tool, spec, override, _ERR_HOOK, None):
+            rc = 1
     return rc
 
 

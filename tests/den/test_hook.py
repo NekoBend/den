@@ -32,6 +32,12 @@ def _seed(proj, imprint=None, memory=None):
         (d / "memory.md").write_text(memory)
 
 
+def _den_group(tool, event="per-turn", den_dir="/old/proj/.den"):
+    """A hook group as an earlier den wrote it into a settings file."""
+    cmd = f"den hook run --event {event} --tool {tool} --den-dir {den_dir}"
+    return {"hooks": [{"type": "command", "command": cmd}]}
+
+
 # --------------------------------------------------------------------------- #
 # compose
 # --------------------------------------------------------------------------- #
@@ -577,7 +583,7 @@ def test_install_is_workspace_local(tmp_path, monkeypatch):
     """install with no --config writes project-level config under cwd + seeds .den."""
     monkeypatch.chdir(tmp_path)
     assert hook_main(["install", "--tool", "claude"]) == 0
-    assert (tmp_path / ".claude" / "settings.json").is_file()
+    assert (tmp_path / ".claude" / "settings.local.json").is_file()
     assert (tmp_path / ".den" / "imprint.md").is_file()
 
 
@@ -619,7 +625,7 @@ def test_install_interactive_picks_tools(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("den._ui.select", lambda *a, **k: ["claude", "cline"])
     assert hook_main(["install"]) == 0
-    assert (tmp_path / ".claude" / "settings.json").is_file()
+    assert (tmp_path / ".claude" / "settings.local.json").is_file()
     assert (tmp_path / ".clinerules" / "hooks").is_dir()
     assert not (tmp_path / ".gemini").exists()
 
@@ -631,6 +637,160 @@ def test_install_interactive_none_selected_installs_nothing(tmp_path, monkeypatc
     assert hook_main(["install"]) == 0
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".den").exists()  # not even seeded
+
+
+# --------------------------------------------------------------------------- #
+# claude: the personal .claude/settings.local.json, never the committed
+# settings.json (the commands pin this machine's absolute .den path)
+# --------------------------------------------------------------------------- #
+
+
+def _git() -> str:
+    git = shutil.which("git")
+    assert git is not None and Path(git).is_absolute()
+    return git
+
+
+def _git_repo(path):
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run([_git(), "init", "-q", str(path)], check=True)
+    return path
+
+
+def _ignored(repo, rel) -> bool:
+    out = subprocess.run(
+        [_git(), "-C", str(repo), "check-ignore", "-q", "--", rel], check=False
+    )
+    return out.returncode == 0
+
+
+def test_install_claude_writes_settings_local_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    local = tmp_path / ".claude" / "settings.local.json"
+    assert "UserPromptSubmit" in json.loads(local.read_text())["hooks"]
+    assert not (tmp_path / ".claude" / "settings.json").exists()
+
+
+def test_install_moves_den_entries_out_of_settings_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    foreign = {"hooks": [{"type": "command", "command": "echo mine"}]}
+    shared.write_text(
+        json.dumps(
+            {
+                "theme": "dark",
+                "hooks": {
+                    "UserPromptSubmit": [_den_group("claude"), foreign],
+                    "Stop": [_den_group("claude", "stop")],
+                },
+            }
+        )
+    )
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert json.loads(shared.read_text()) == {
+        "theme": "dark",
+        "hooks": {"UserPromptSubmit": [foreign]},
+    }
+    local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    pinned = str(tmp_path.resolve() / ".den")
+    cmds = [h["command"] for g in local["hooks"]["Stop"] for h in g["hooks"]]
+    assert len(cmds) == 1 and cmds[0].endswith(shlex.quote(pinned))
+
+
+def test_install_leaves_a_settings_json_without_den_entries_byte_identical(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    raw = b'{"theme":"dark",  "hooks": {"Stop": []}}'
+    shared.write_bytes(raw)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert shared.read_bytes() == raw
+
+
+def test_install_leaves_an_unmergeable_settings_json_alone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    shared.write_text("not json {{{ den hook run")
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert shared.read_text() == "not json {{{ den hook run"
+    assert not (tmp_path / ".claude" / "settings.json.den.bak").exists()
+
+
+def test_list_and_remove_read_both_claude_files(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.write_text(
+        json.dumps({"hooks": {"SessionStart": [_den_group("claude", "x")]}})
+    )
+    capsys.readouterr()
+    assert hook_main(["list", "--tool", "claude"]) == 0
+    out = capsys.readouterr().out
+    assert "--event x" in out and "settings.json" in out
+    assert "--event per-turn" in out
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    assert json.loads(shared.read_text()) == {}
+    local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    assert "hooks" not in local
+
+
+def test_explicit_config_is_the_only_file_touched(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    raw = json.dumps({"hooks": {"Stop": [_den_group("claude", "stop")]}})
+    shared.write_text(raw)
+    cfg = tmp_path / "elsewhere.json"
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert hook_main(["remove", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert shared.read_text() == raw
+
+
+def test_install_excludes_settings_local_json_from_git(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    assert not _ignored(repo, ".claude/settings.local.json")
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert _ignored(repo, ".claude/settings.local.json")
+    exclude = repo / ".git" / "info" / "exclude"
+    assert "/.claude/settings.local.json" in exclude.read_text().splitlines()
+    # idempotent: a second install adds nothing
+    before = exclude.read_text()
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert exclude.read_text() == before
+
+
+def test_install_excludes_from_a_workspace_below_the_repo_root(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    ws = repo / "sub dir" / "[ws]"
+    ws.mkdir(parents=True)
+    monkeypatch.chdir(ws)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert _ignored(repo, "sub dir/[ws]/.claude/settings.local.json")
+    assert not _ignored(repo, "sub dir/w/.claude/settings.local.json")
+
+
+def test_install_leaves_exclude_alone_when_git_already_ignores_it(
+    tmp_path, monkeypatch
+):
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".gitignore").write_text(".claude/settings.local.json\n")
+    exclude = repo / ".git" / "info" / "exclude"
+    before = exclude.read_bytes() if exclude.is_file() else None
+    monkeypatch.chdir(repo)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert (exclude.read_bytes() if exclude.is_file() else None) == before
+
+
+def test_install_outside_a_git_repo_writes_no_exclude(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert not (tmp_path / ".git").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -744,16 +904,22 @@ def test_install_refuses_symlinked_config_dir(tmp_path, monkeypatch, capsys, sym
     assert "is a symlink" in capsys.readouterr().err
 
 
-def test_install_refuses_symlinked_config_file(tmp_path, monkeypatch, symlink):
+@pytest.mark.parametrize("name", ["settings.local.json", "settings.json"])
+def test_install_refuses_symlinked_config_file(tmp_path, monkeypatch, symlink, name):
+    # settings.local.json is the file den writes; settings.json is the one it
+    # moves its old entries out of, which would write through the link just
+    # the same.
     settings = tmp_path / "home" / "settings.json"
     settings.parent.mkdir(parents=True)
-    settings.write_text('{"theme": "dark"}\n')
+    hooks = {"UserPromptSubmit": [_den_group("claude")]}
+    settings.write_text(json.dumps({"theme": "dark", "hooks": hooks}))
+    before = settings.read_bytes()
     proj = tmp_path / "repo"
     (proj / ".claude").mkdir(parents=True)
-    symlink(settings, proj / ".claude" / "settings.json")
+    symlink(settings, proj / ".claude" / name)
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 1
-    assert json.loads(settings.read_text()) == {"theme": "dark"}
+    assert settings.read_bytes() == before
 
 
 def test_install_explicit_config_override_still_followed(
@@ -840,16 +1006,16 @@ def test_install_quiet_when_no_memory(tmp_path, monkeypatch, capsys):
 
 
 def test_install_refuses_dangling_backup_symlink(tmp_path, monkeypatch, symlink):
-    """A repo can commit `.claude/settings.json.den.bak` as a DANGLING symlink:
+    """A repo can commit `.claude/settings.local.json.den.bak` as a DANGLING symlink:
     exists() is False, so the backup write would have followed it out of the
     workspace and created the target."""
     outside = tmp_path / "home" / "stolen.json"
     outside.parent.mkdir(parents=True)
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text('{ "mySetting": 1,  // not valid json\n')  # unmergeable
-    symlink(outside, proj / ".claude" / "settings.json.den.bak")
+    symlink(outside, proj / ".claude" / "settings.local.json.den.bak")
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 1
     assert not outside.exists(), "nothing may be created outside the workspace"
@@ -865,10 +1031,10 @@ def test_install_refuses_symlinked_backup_over_existing_file(
     outside.parent.mkdir(parents=True)
     outside.write_text("my notes\n")
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("[1, 2, 3]\n")  # valid JSON, not an object -> unmergeable
-    symlink(outside, proj / ".claude" / "settings.json.den.bak")
+    symlink(outside, proj / ".claude" / "settings.local.json.den.bak")
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 1
     assert outside.read_text() == "my notes\n"
@@ -876,7 +1042,7 @@ def test_install_refuses_symlinked_backup_over_existing_file(
 
 def test_backup_still_made_for_a_normal_workspace_config(tmp_path, monkeypatch):
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("not json {{{")
     monkeypatch.chdir(proj)
@@ -911,14 +1077,14 @@ def test_compose_keeps_the_model_copy_byte_exact(tmp_path):
 
 
 def test_install_refuses_a_directory_at_the_backup_path(tmp_path, monkeypatch, capsys):
-    """A repo can ship `.claude/settings.json.den.bak/` as a directory. It
+    """A repo can ship `.claude/settings.local.json.den.bak/` as a directory. It
     preserves nothing, so it must not count as "already backed up" and let the
     unmergeable config be overwritten."""
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("not json {{{")
-    (proj / ".claude" / "settings.json.den.bak").mkdir()
+    (proj / ".claude" / "settings.local.json.den.bak").mkdir()
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 1
     assert cfg.read_text() == "not json {{{", "the config was not overwritten"
@@ -929,10 +1095,10 @@ def test_install_accepts_an_existing_file_backup(tmp_path, monkeypatch):
     # A real backup from an earlier run is still respected: install proceeds and
     # does not clobber it with the (already overwritten) config.
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("not json {{{")
-    bak = proj / ".claude" / "settings.json.den.bak"
+    bak = proj / ".claude" / "settings.local.json.den.bak"
     bak.write_text("the original, from an earlier install\n")
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 0
@@ -1123,7 +1289,7 @@ def test_install_survives_a_directory_at_the_imprint_path(
     (proj / ".den" / "imprint.md").mkdir(parents=True)
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 0, "hooks still install"
-    assert (proj / ".claude" / "settings.json").is_file()
+    assert (proj / ".claude" / "settings.local.json").is_file()
     assert (proj / ".den" / "imprint.md").is_dir(), "left as we found it"
     assert "not a regular file" in capsys.readouterr().err
 
