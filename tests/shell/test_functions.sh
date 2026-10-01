@@ -10,6 +10,9 @@ HELPERS_PS1="$DOTFILES/shell/pwsh/_helpers.ps1"
 FUNCTIONS_PS1="$DOTFILES/shell/pwsh/functions.ps1"
 
 make_noninteractive_source_copy "$FUNCTIONS_SH_GUARDED" "$FUNCTIONS_SH"
+# snippet.sh, for the cd cases a snippet runs.
+SNIPPET_SH="$TESTTMP/snippet_test.sh"
+make_noninteractive_source_copy "$DOTFILES/shell/posix/snippet.sh" "$SNIPPET_SH"
 
 # PowerShell functions.ps1 now depends on _helpers.ps1 (Initialize-Cache).
 # Create a combined PS1 that loads helpers first.
@@ -1330,7 +1333,8 @@ user-exit" "$out"
 # script a cd to a directory that did not exist jumped elsewhere instead of
 # failing. The stub __zoxide_z prints what it gets and, like zoxide's, moves
 # only to a lone existing directory. `bash -c` / `zsh -c` count as typed, and
-# `again` (stubbed here) replays a typed line, so it counts as typed too.
+# `again` (stubbed here) replays a typed line, so it counts as typed too, as
+# does `snippet run` (the real one) at the prompt.
 cd_zoxide_cases() {
     local sh="$1" out
     rm -rf "$WORK/cdz"
@@ -1365,6 +1369,13 @@ f: $WORK/cdz/a
 sourced: $WORK/cdz/a
 HERE=$WORK/cdz/real
 g rc=1" "$out"
+
+    echo "[$sh] cd in a snippet run at the prompt goes to zoxide; in a function it is builtin cd"
+    mkdir -p "$WORK/cdz/cfg/den"
+    printf 'j\tcd proj\n' > "$WORK/cdz/cfg/den/snippets"
+    out=$(XDG_CONFIG_HOME="$WORK/cdz/cfg" cdz_run "source '$SNIPPET_SH'; snippet run j 2>/dev/null; f() { snippet run j; }; f 2>/dev/null; echo \"f rc=\$?\"")
+    assert_eq "$sh/snippet run: typed; in a function: builtin cd" "zoxide proj
+f rc=1" "$out"
 
     echo "[$sh] cd with the wrappers off is builtin cd"
     out=$(cdz_run "_DEN_WRAPPERS=0; cd proj 2>/dev/null; echo rc=\$?; cd a && pwd")

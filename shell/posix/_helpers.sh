@@ -49,7 +49,8 @@ _wrap_log() {
 # _den_typed → status 0 when the den command that called it was typed at the
 # prompt, 1 when a function or a sourced file (~/.bashrc, ~/.zshrc too) ran
 # it. Typed counts through eval and $(...) at the prompt, through `bash -c` /
-# `zsh -c`, and through `again` / `sagain`, which replay a typed line. den's
+# `zsh -c`, through `again` / `sagain`, which replay a typed line, and through
+# `snippet run` / `snippet pick`, which run a saved one (snippet.sh). den's
 # cd hands a directory to zoxide, and a wrapper with a native fallback runs
 # the modern tool, only when typed: code in a function or a script gets
 # builtin cd and the native command it was written for.
@@ -74,7 +75,7 @@ _den_typed() {
     [ $# -gt 0 ] && shift
     for _dt_f in "$@"; do
         case $_dt_f in
-            again|sagain|'(eval)') ;;
+            again|sagain|snippet|_snippet_run|_snippet_pick|_snip_exec|'(eval)') ;;
             *) unset _dt_f; return 1 ;;
         esac
     done

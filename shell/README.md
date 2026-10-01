@@ -117,7 +117,8 @@ tool, ignoring the toggle, and print no notice.
 
 On bash/zsh a wrapper with a native fallback (`ls`, `la`, `ll`, `lla`, `cat`,
 `grep`, `find`) runs the modern tool only when typed at the prompt (`eval` and
-`$(...)` typed there, and a line `again` replays, count as typed). Run by a
+`$(...)` typed there, a line a typed `again` replays, and a snippet a typed
+`snippet run` or `snippet pick` runs count as typed). Run by a
 function, your own included, or by a sourced file, it runs the native command
 that code was written for, and den's `cd` is `builtin cd` there too. A function
 that relied on a wrapper now gets the native tool; call the modern tool by name

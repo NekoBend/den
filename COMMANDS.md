@@ -26,8 +26,9 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   also set strict mode before it loads den.
 - In **bash/zsh**, den's `cd` and the wrappers with a native fallback (`ls`,
   `la`, `ll`, `lla`, `cat`, `grep`, `find`) do den's part only when typed at
-  the prompt (`eval` and `$(...)` typed there count, and so does a line `again`
-  replays). Run by a function, your own included, or by a sourced file such as
+  the prompt (`eval` and `$(...)` typed there count, and so do a line a typed
+  `again` replays and a snippet a typed `snippet run` or `snippet pick` runs).
+  Run by a function, your own included, or by a sourced file such as
   `~/.bashrc`, `cd` is `builtin cd` and each wrapper runs its native command,
   which is what such code was written for. A function of yours that relied on
   a wrapper (`grep` running `rg`, say) now gets the native tool: call `rg` /

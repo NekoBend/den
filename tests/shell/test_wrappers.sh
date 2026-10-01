@@ -591,8 +591,8 @@ assert_eq "pwsh/lt on 5.1 with lsd still runs lsd" "stub lsd --tree src" "$actua
 # Typed at the prompt, a wrapper with a native fallback runs the modern tool;
 # in a function (a user's own included) or a sourced file it runs the native
 # command that code was written for, as builtin cd replaces den's zoxide cd
-# there. eval, $(...) and `again` (stubbed here) at the prompt count as typed;
-# `bash -c` / `zsh -c` count as the prompt. The modern stand-ins print their
+# there. eval, $(...), `again` (stubbed here) and `snippet run` / `snippet
+# pick` at the prompt count as typed; `bash -c` / `zsh -c` count as the prompt. The modern stand-ins print their
 # name and arguments. Wrappers with no native command (lt, llt, ripgrep) and
 # the w names always run the modern tool.
 echo ""
@@ -601,6 +601,14 @@ echo "  Testing where the wrappers run the modern tool"
 echo "================================================"
 printf 'apple\nbanana\n' > "$WORK/typed.txt"
 printf '%s\n' "grep banana typed.txt" "ls -d ." > "$WORK/typed_src.sh"
+# snippet.sh with a store of one snippet, and an fzf stand-in that picks the
+# first line.
+SNIPPET_SH="$DOTFILES/shell/posix/snippet.sh"
+SNIP_BIN="$TESTTMP/snipbin"
+mkdir -p "$SNIP_BIN" "$WORK/snipcfg/den"
+printf '#!/bin/sh\nhead -n 1\n' > "$SNIP_BIN/fzf"
+chmod +x "$SNIP_BIN/fzf"
+printf 'g\tgrep banana typed.txt\n' > "$WORK/snipcfg/den/snippets"
 for _sh in bash zsh; do
     _run="run_${_sh}_i"
     echo "[$_sh] typed at the prompt: the modern tool, also through eval, \$(...) and again"
@@ -620,6 +628,12 @@ typed.txt
 banana
 .
 apple" "$actual"
+
+    echo "[$_sh] snippet run and pick at the prompt count as typed; in a function they do not"
+    actual=$(PATH="$SNIP_BIN:$MODERN_STANDINS:$PATH" XDG_CONFIG_HOME="$WORK/snipcfg" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" ". '$SNIPPET_SH'; cd '$WORK'; snippet run g; snippet pick; f() { snippet run g; }; f")
+    assert_eq "$_sh/snippet run, pick: modern; in a function: native" "modern rg banana typed.txt
+modern rg banana typed.txt
+banana" "$actual"
 
     echo "[$_sh] in a function, wrappers with no native command and the w names stay modern"
     actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "f() { lt x; ripgrep y; grepw z; lsw w; }; f")
