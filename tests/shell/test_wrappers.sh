@@ -456,6 +456,66 @@ assert_streams "pwsh/a coreutils wrapper streams" "$actual"
 actual=$(run_pwsh "$HELPERS_PS1" "$WIN_SETUP; stampc" < /dev/null 2>&1 | tr -d '\r')
 assert_eq "pwsh/no stdin pipe for a coreutils wrapper" "stdin: not a pipe" "$actual"
 
+# At the end of a line typed at the prompt, the tool writes to the console itself.
+# The steppable pipeline used to hand the tool's output back to the function, so
+# its stdout was a pipe there too: rg held its output (block buffering) and
+# dropped its colors, and what it did print showed up only when the next line
+# went in, or at the end; `Get-Content -Wait log | grep x` showed nothing. The
+# stub prints as rg does (see make_tty_stub), and each line is timed when it
+# reaches the terminal. One session runs three lines, one per generator; the
+# PATH has the stub as rg and as microsoft/coreutils.
+TTY_BIN="$TESTTMP/tty-bin"
+mkdir -p "$TTY_BIN"
+make_tty_stub "$TTY_BIN/rg" || abort_suite "cannot write $TTY_BIN/rg"
+echo "[pwsh] grep, a w-suffix wrapper and a coreutils wrapper at the end of a typed line write to the terminal as the tool prints"
+# One line of statements: the pipelines run at the top level of -Command, as
+# typed at the prompt.
+actual=$(run_pty_stamped env PATH="$TTY_BIN:$PATH" pwsh -NoProfile -NonInteractive -Command "\
+. '$WRAPPERS_PS1_STRIPPED'; \$env:_DEN_WRAPPER_LOG = '0'; New-WrapperSuffix 'ttyw' 'rg' ''; \
+$STREAM_PRODUCER | grep x; 'next'; $STREAM_PRODUCER | ttyw; 'next'; \
+Set-Variable -Name IsWindows -Value \$true -Scope Global -Force; \$env:_DEN_COREUTILS = '$TTY_BIN/rg'; \
+New-CoreutilsWrapper 'ttyc' 'tty-sub' 'Copy-Item'; $STREAM_PRODUCER | ttyc" 2>&1)
+for i in 1 2 3; do
+    part=$(printf '%s\n' "$actual" | awk -v want="$i" '/ next$/ { n++; next } n + 1 == want')
+    case $i in 1) what="grep (rg)" ;; 2) what="a w-suffix wrapper" ;; 3) what="a coreutils wrapper" ;; esac
+    assert_streams "pwsh/$what at the end of a typed line writes to the terminal" "$part"
+done
+
+# A line that stops before its end, through Select-Object -First further down
+# or a host stopping it (as for Ctrl+C), left the tool waiting on its stdin, a
+# process that lived until PowerShell exited. See make_pid_stub and
+# make_stub_state_ps1 in helpers.sh. The stopped case needs PowerShell 7.3 or
+# later (a clean block).
+PID_BIN="$TESTTMP/pid-bin"
+mkdir -p "$PID_BIN"
+make_pid_stub "$PID_BIN/rg" || abort_suite "cannot write $PID_BIN/rg"
+STUB_STATE_PS1="$TESTTMP/stub-state.ps1"
+make_stub_state_ps1 "$STUB_STATE_PS1" || abort_suite "cannot write $STUB_STATE_PS1"
+echo "[pwsh] a line that stops early leaves no tool behind"
+actual=$(PATH="$PID_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    . '$STUB_STATE_PS1'
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-WrapperSuffix 'pidw' 'rg' ''
+    \$env:PIDSTUB_FILE = '$TESTTMP/sel-grep.pid'
+    \$null = 1..5000 | ForEach-Object { \"l\$_\" } | grep l | Select-Object -First 1
+    'grep | Select-Object -First 1: ' + (Get-StubState \$env:PIDSTUB_FILE)
+    \$env:PIDSTUB_FILE = '$TESTTMP/sel-w.pid'
+    \$null = 1..5000 | ForEach-Object { \"l\$_\" } | pidw l | Select-Object -First 1
+    'w-suffix | Select-Object -First 1: ' + (Get-StubState \$env:PIDSTUB_FILE)
+    \$env:PIDSTUB_FILE = '$TESTTMP/stop-grep.pid'
+    'grep, stopped: ' + (Test-StubStopped \". '$WRAPPERS_PS1_STRIPPED'; \`\$env:_DEN_WRAPPER_LOG = '0'\" \"& { 'l1'; Start-Sleep 60 } | grep l\")
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    \$env:_DEN_COREUTILS = '$PID_BIN/rg'
+    New-CoreutilsWrapper 'pidc' 'pid-sub' 'Copy-Item'
+    \$env:PIDSTUB_FILE = '$TESTTMP/sel-c.pid'
+    \$null = 1..5000 | ForEach-Object { \"l\$_\" } | pidc | Select-Object -First 1
+    'coreutils wrapper | Select-Object -First 1: ' + (Get-StubState \$env:PIDSTUB_FILE)
+" < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/a stopped line leaves no tool running" "grep | Select-Object -First 1: gone
+w-suffix | Select-Object -First 1: gone
+grep, stopped: gone
+coreutils wrapper | Select-Object -First 1: gone" "$actual"
+
 # =============================================================================
 # PowerShell: rm/cp/mv/mkdir/rmdir on Windows
 # =============================================================================

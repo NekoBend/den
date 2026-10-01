@@ -181,6 +181,92 @@ assert_streams() {
     fi
 }
 
+# make_tty_stub <path> writes a stub program that copies its stdin to stdout
+# the way rg prints: each line as it reads it when stdout is a terminal, and
+# everything at the end of its input when stdout is a pipe (block buffering).
+make_tty_stub() {
+    cat > "$1" <<'STUB' && chmod +x "$1"
+#!/bin/sh
+if [ -t 1 ]; then
+    while IFS= read -r l; do echo "$l"; done
+else
+    all=$(cat)
+    printf '%s\n' "$all"
+fi
+STUB
+}
+
+# run_pty_stamped <command...> - run the command in a terminal of its own
+# (script(1), through /bin/sh: no newline in the arguments), its stdin
+# /dev/null, and print each line it writes there as
+# "<nanoseconds since the epoch> <line>", stamped when the line reaches the
+# terminal, without the terminal's control sequences and carriage returns.
+# With STREAM_PRODUCER's lines, assert_streams then tells whether each one
+# reached the terminal as it came.
+run_pty_stamped() {
+    local script_bin cmd
+    script_bin=$(command -v script) || {
+        echo "script(1) is not installed"
+        return 1
+    }
+    cmd=$(printf '%q ' "$@")
+    SHELL=/bin/sh "$script_bin" -qfec "$cmd" /dev/null < /dev/null | while IFS= read -r l; do
+        printf '%s %s\n' "$(date +%s%N)" "$l"
+    done | sed -e 's/\x1b\][^\x07]*\x07//g' -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' -e 's/\x1b[=>]//g' -e 's/\r//g'
+}
+
+# make_pid_stub <path> writes a stub program that writes its process id to the
+# file named by $PIDSTUB_FILE, then copies its stdin to stdout line by line until
+# its stdin ends.
+make_pid_stub() {
+    cat > "$1" <<'STUB' && chmod +x "$1"
+#!/bin/sh
+echo $$ > "$PIDSTUB_FILE"
+while IFS= read -r l; do echo "$l"; done
+STUB
+}
+
+# make_stub_state_ps1 <path> writes PowerShell functions for the pid stub:
+# Get-StubState <pid file> tells whether the stub that wrote it is still running
+# half a second after a line ended ("running" or "gone");
+# Test-StubStopped <setup> <line> runs the setup and the line in a runspace of
+# its own, stops it (as a host does for Ctrl+C) once the stub has written
+# $env:PIDSTUB_FILE, and tells the same; Test-CleanBlock <function> tells whether
+# the function has a clean block.
+make_stub_state_ps1() {
+    cat > "$1" <<'PS1'
+function Wait-Stub([string]$File) {
+    for ($i = 0; $i -lt 150; $i++) {
+        if (Test-Path -LiteralPath $File) {
+            $t = Get-Content -LiteralPath $File -TotalCount 1
+            if ($t) { return [int]$t }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    return 0
+}
+function Get-PidState([int]$StubPid) {
+    if ($StubPid -eq 0) { return 'never started' }
+    Start-Sleep -Milliseconds 500
+    if (Get-Process -Id $StubPid -ErrorAction SilentlyContinue) { 'running' } else { 'gone' }
+}
+function Get-StubState([string]$File) { Get-PidState (Wait-Stub $File) }
+function Test-StubStopped([string]$Setup, [string]$Line) {
+    $ps = [powershell]::Create()
+    $null = $ps.AddScript("$Setup`n$Line")
+    $null = $ps.BeginInvoke()
+    $p = Wait-Stub $env:PIDSTUB_FILE
+    $ps.Stop()
+    Get-PidState $p
+}
+function Test-CleanBlock([string]$Name) {
+    $ast = (Get-Item -LiteralPath "Function:\$Name").ScriptBlock.Ast
+    if ($ast -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $ast = $ast.Body }
+    $null -ne $ast.CleanBlock
+}
+PS1
+}
+
 # ===== Stderr helpers =====
 
 assert_not_contains() {

@@ -10,10 +10,13 @@ if (-not (_DenInteractive)) { return }
 if (-not (_OnWindows)) { return }
 
 # The functions that can hand a call to microsoft/coreutils pass what is piped in
-# on through a steppable pipeline, as the generated wrappers do (see New-Wrapper in
-# _helpers.ps1): each object reaches the binary as it arrives, and a call with
-# nothing piped in runs the binary directly, its stdin the console's. Their
-# PowerShell versions read piped input in a process block, an object at a time.
+# on through a steppable pipeline, as the generated wrappers do (see the wrapper
+# generator in _helpers.ps1): each object reaches the binary as it arrives, the
+# binary writes to the function's own output, a call with nothing piped in runs
+# the binary directly, its stdin the console's, and on PowerShell 7.3 and later a
+# clean block (added at the end of this file) ends a pipeline that a stopped line
+# left open. Their PowerShell versions read piped input in a process block, an
+# object at a time.
 
 # ===== Unix-like Utilities =====
 
@@ -43,17 +46,17 @@ function df {
 # Usage: env [VAR=val ...] [command [args ...]], no args = print all
 function env {
   begin {
+    $__sp = $null
     $__cu = _CoreutilsBin
     $__a = $args
-    $__sp = $null
     if ($__cu -and $MyInvocation.ExpectingInput) {
       $__sp = { & $__cu env @__a }.GetSteppablePipeline()
-      $__sp.Begin($true)
+      $__sp.Begin($true, $ExecutionContext)
     }
   }
   process { if ($null -ne $__sp) { $__sp.Process($_) } }
   end {
-    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
     if ($__cu) { & $__cu env @__a; return }
     $assigns = @(); $cmd = $null; $cmdArgs = @()
     $i = 0
@@ -93,12 +96,12 @@ function env {
 # (the rest is still read, and dropped), and -n -N holds back only the last N.
 function head {
   begin {
+    $__sp = $null
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
-    $__sp = $null
     if ($__cu) {
-      if ($__in) { $__sp = { & $__cu head @__a }.GetSteppablePipeline(); $__sp.Begin($true) }
+      if ($__in) { $__sp = { & $__cu head @__a }.GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
       return
     }
     $lines = 10; $excludeLast = 0; $files = @(); $quiet = $false; $verbose = $false; $i = 0
@@ -130,7 +133,7 @@ function head {
     }
   }
   end {
-    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
     if ($__cu) { & $__cu head @__a; return }
     $showHeader = ($files.Count -gt 1 -and -not $quiet) -or $verbose
     for ($fi = 0; $fi -lt $files.Count; $fi++) {
@@ -150,19 +153,19 @@ function head {
 # Usage: split [-l N] [-n l/N] [-b SIZE] [-a LEN] [file] [prefix]
 function split {
   begin {
+    $__sp = $null
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
-    $__sp = $null
     $__piped = [System.Collections.Generic.List[object]]::new()
-    if ($__cu -and $__in) { $__sp = { & $__cu split @__a }.GetSteppablePipeline(); $__sp.Begin($true) }
+    if ($__cu -and $__in) { $__sp = { & $__cu split @__a }.GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
   }
   process {
     if ($null -ne $__sp) { $__sp.Process($_) }
     elseif ($__in -and -not $__cu) { $__piped.Add($_) }
   }
   end {
-    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
     if ($__cu) { & $__cu split @__a; return }
     # Every captured operand is cast to [string]. PowerShell binds a bare
     # numeric argument as a NUMBER, and "$x -ne ''" coerces the right side to
@@ -318,12 +321,12 @@ function split {
 # arrives, and -n N holds only the last N.
 function tail {
   begin {
+    $__sp = $null
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
-    $__sp = $null
     if ($__cu) {
-      if ($__in) { $__sp = { & $__cu tail @__a }.GetSteppablePipeline(); $__sp.Begin($true) }
+      if ($__in) { $__sp = { & $__cu tail @__a }.GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
       return
     }
     $lines = 10; $fromLine = 0; $files = @(); $follow = $false; $quiet = $false; $verbose = $false; $i = 0
@@ -356,7 +359,7 @@ function tail {
     }
   }
   end {
-    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
     if ($__cu) { & $__cu tail @__a; return }
     $showHeader = ($files.Count -gt 1 -and -not $quiet) -or $verbose
     if ($follow -and $files.Count -ge 1) {
@@ -452,12 +455,12 @@ function _wcOne {
 # as in a file) are added up alongside.
 function wc {
   begin {
+    $__sp = $null
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
-    $__sp = $null
     if ($__cu) {
-      if ($__in) { $__sp = { & $__cu wc @__a }.GetSteppablePipeline(); $__sp.Begin($true) }
+      if ($__in) { $__sp = { & $__cu wc @__a }.GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
       return
     }
     $flags = @(); $files = @()
@@ -492,7 +495,7 @@ function wc {
     $chars += "$_".Length + 1
   }
   end {
-    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
     if ($__cu) { & $__cu wc @__a; return }
     if ($files.Count -eq 0) {
       $r = $count.End()
@@ -553,3 +556,7 @@ function which {
     }
   }
 }
+
+# The clean block for the functions above that run microsoft/coreutils through a
+# steppable pipeline (see _DenSpClean in _helpers.ps1).
+_DenAddClean 'env', 'head', 'split', 'tail', 'wc'

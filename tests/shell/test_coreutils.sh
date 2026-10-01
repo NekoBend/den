@@ -7,11 +7,13 @@ COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
 
 # Strip the `_DenInteractive` guard for non-interactive testing, and stand in
 # for Windows: coreutils.ps1 defines its commands only where _OnWindows is true,
-# and these tests run on Linux. In TESTTMP, out of reach of the fixture resets
-# that wipe WORK.
+# and these tests run on Linux. They load it without _helpers.ps1, so a no-op
+# stands in for _DenAddClean too (the coreutils cases at the end load both). In
+# TESTTMP, out of reach of the fixture resets that wipe WORK.
 COREUTILS_PS1_STRIPPED="$TESTTMP/coreutils_stripped.ps1"
 {
     echo 'function _OnWindows { $true }'
+    echo 'function _DenAddClean { }'
     grep -v '_DenInteractive' "$COREUTILS_PS1"
 } > "$COREUTILS_PS1_STRIPPED" || abort_suite "cannot write $COREUTILS_PS1_STRIPPED"
 
@@ -627,6 +629,66 @@ for cmd in head tail wc split env; do
     actual=$(run_pwsh "$DOTFILES/shell/pwsh/_helpers.ps1" "$CU_SETUP; $cmd" < /dev/null 2>&1 | clean)
     assert_eq "pwsh/$cmd with coreutils, no stdin pipe" "stdin: not a pipe" "$actual"
 done
+
+# At the end of a line typed at the prompt, coreutils writes to the console
+# itself; through the steppable pipeline its stdout was a pipe there, and what
+# it printed showed up only when the next line went in, or at the end. The stub
+# prints as rg does (see make_tty_stub in helpers.sh); each line is timed when it
+# reaches the terminal. One session, one line of statements (typed, as at the
+# prompt), one pipeline per command.
+CU_TTY="$TESTTMP/coreutils-tty"
+make_tty_stub "$CU_TTY" || abort_suite "cannot write $CU_TTY"
+echo "[pwsh] head, tail, wc, split and env with coreutils at the end of a typed line write to the terminal as it prints"
+actual=$(run_pty_stamped env _DEN_FORCE_INTERACTIVE=1 _DEN_COREUTILS="$CU_TTY" pwsh -NoProfile -NonInteractive -Command "\
+. '$DOTFILES/shell/pwsh/_helpers.ps1'; Set-Variable -Name IsWindows -Value \$true -Scope Global -Force; \
+. '$COREUTILS_PS1'; $STREAM_PRODUCER | head; 'next'; $STREAM_PRODUCER | tail; 'next'; \
+$STREAM_PRODUCER | wc; 'next'; $STREAM_PRODUCER | split; 'next'; $STREAM_PRODUCER | env" 2>&1)
+i=0
+for cmd in head tail wc split env; do
+    i=$((i + 1))
+    part=$(printf '%s\n' "$actual" | awk -v want="$i" '/ next$/ { n++; next } n + 1 == want')
+    assert_streams "pwsh/$cmd with coreutils at the end of a typed line writes to the terminal" "$part"
+done
+
+# A line that stops before its end left coreutils waiting on its stdin until
+# PowerShell exited: through Select-Object -First further down, or a host
+# stopping the line (as for Ctrl+C), which only the clean block that
+# coreutils.ps1 adds on PowerShell 7.3 and later reaches. See make_pid_stub and
+# make_stub_state_ps1 in helpers.sh.
+CU_PID="$TESTTMP/coreutils-pid"
+make_pid_stub "$CU_PID" || abort_suite "cannot write $CU_PID"
+CU_STATE_PS1="$TESTTMP/cu-stub-state.ps1"
+make_stub_state_ps1 "$CU_STATE_PS1" || abort_suite "cannot write $CU_STATE_PS1"
+CU_PID_SETUP="$TESTTMP/cu-pid-setup.ps1"
+cat > "$CU_PID_SETUP" <<PS1 || abort_suite "cannot write $CU_PID_SETUP"
+. '$DOTFILES/shell/pwsh/_helpers.ps1'
+\$env:_DEN_FORCE_INTERACTIVE = '1'; \$env:_DEN_COREUTILS = '$CU_PID'
+Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+. '$COREUTILS_PS1'
+PS1
+echo "[pwsh] head, tail, wc, split and env with coreutils leave nothing behind when a line stops early"
+actual=$(run_pwsh "$CU_PID_SETUP" "
+    . '$CU_STATE_PS1'
+    foreach (\$c in 'head', 'tail', 'wc', 'split', 'env') {
+        \$env:PIDSTUB_FILE = '$TESTTMP/cu-sel-' + \$c + '.pid'
+        \$null = 1..5000 | ForEach-Object { \"l\$_\" } | & \$c | Select-Object -First 1
+        \"\$c | Select-Object -First 1: \" + (Get-StubState \$env:PIDSTUB_FILE)
+    }
+    \$env:PIDSTUB_FILE = '$TESTTMP/cu-stop-head.pid'
+    'head, stopped: ' + (Test-StubStopped \". '$CU_PID_SETUP'\" \"& { 'l1'; Start-Sleep 60 } | head\")
+    foreach (\$c in 'env', 'head', 'split', 'tail', 'wc') { \"\$c has a clean block: \" + (Test-CleanBlock \$c) }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/coreutils left running after a line stopped early" "head | Select-Object -First 1: gone
+tail | Select-Object -First 1: gone
+wc | Select-Object -First 1: gone
+split | Select-Object -First 1: gone
+env | Select-Object -First 1: gone
+head, stopped: gone
+env has a clean block: True
+head has a clean block: True
+split has a clean block: True
+tail has a clean block: True
+wc has a clean block: True" "$actual"
 
 # =============================================================================
 # Summary

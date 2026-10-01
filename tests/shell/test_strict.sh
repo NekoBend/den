@@ -348,6 +348,21 @@ Case 'New-WrapperSuffix, not installed' { New-WrapperSuffix 'strict-s2' 'nonexis
 Case 'New-WrapperSuffix, not installed, piped' { 'x' | strict-s2 }
 Case 'New-CoreutilsWrapper' { New-CoreutilsWrapper 'strict-c1' 'cp' 'Copy-Item'; strict-c1 a.txt a-copy.txt }
 Case 'New-CoreutilsWrapper, piped' { Get-Item -LiteralPath a.txt | strict-c1 -Destination a-copy2.txt }
+# A line stopped further down runs the wrapper's clean block (PowerShell 7.3+).
+Case 'New-Wrapper, piped, stopped early' { 1..50 | ForEach-Object { "l$_" } | strict-w2 | Select-Object -First 1 }
+Case '_DenSpClean' { _DenSpClean }
+Case '_DenSpStop' {
+    $StrictSp = { & cat }.GetSteppablePipeline()
+    $StrictSp.Begin($true)
+    $null = $StrictSp.Process('x')
+    _DenSpStop $StrictSp
+    _DenSpStop $null
+}
+Case '_DenAddClean' {
+    function global:strict-ac { begin { $__sp = $null } end { 'ac' } }
+    _DenAddClean 'strict-ac', 'nonexistent-strict'
+    strict-ac
+}
 Case 'toggle-wrapper' { toggle-wrapper; toggle-wrapper }
 Case 'tgl-wr' { tgl-wr; tgl-wr }
 Case '_DenTrustedCacheOwner' {

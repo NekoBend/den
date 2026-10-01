@@ -90,9 +90,16 @@ pipeline input: on Windows a script's `ls dist | Remove-Item` gets
 adds, such as `ll`, `la`, `lt` and the w-suffix wrappers, work in scripts too
 (COMMANDS.md, "How to read this").
 
-Piped input reaches the tool a wrapper picks as it arrives (`Get-Content -Wait log |
-grep x` prints each match as it comes), and with nothing piped in the tool's
-stdin stays the console's.
+Piped input reaches the tool a wrapper picks as it arrives. At the end of a line
+typed at the prompt the tool writes to the console itself, as when it runs bare:
+`Get-Content -Wait log | grep x` prints each match as rg finds it, in rg's
+colors. Further down a line, PowerShell passes on what the tool printed as it
+does for any program, when the next object goes in and at the end. With nothing
+piped in, the tool's stdin stays the console's. On PowerShell 7.3 and later, a
+line that stops early (`| Select-Object -First 1`, or a host's stop) also ends
+the tool; Windows PowerShell 5.1 and pwsh 7.0 to 7.2 have no clean block, so
+there a line that a host stops while the tool waits for input can leave the tool
+running until PowerShell exits.
 
 Because the modern tools take different flags and produce different output than
 the native commands, a command written for the native tool can misbehave when a

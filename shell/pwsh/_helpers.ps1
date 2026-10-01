@@ -553,14 +553,59 @@ function _ResolvePaths([string[]]$Patterns) {
 
 # ========== wrapper generator ==========
 
-# The functions these generators define pass the call on to the tool they pick
-# through a steppable pipeline: each object piped in reaches the tool as it
-# arrives, and what the tool prints comes back as it prints it, so
-# `tail -f log | grep x` shows each match at once. A call with nothing piped in
-# runs the tool directly, so its stdin stays the console's (rg searches the
-# current directory rather than an empty stdin, and `rm -i` can ask). The
+# The functions these generators define, and the coreutils.ps1 ones that can hand
+# a call to microsoft/coreutils, pass what is piped in on to the tool they pick
+# through a steppable pipeline: each object reaches the tool as it arrives. The
+# pipeline is begun with $ExecutionContext, so the tool writes to the function's
+# own output: when that is the console (the call ends the line typed at the
+# prompt), the tool writes to the console itself, as when it is run bare, so
+# `Get-Content -Wait log | grep x` shows each match the moment rg prints it, in
+# rg's colors. When a command further down the line reads that output, the tool
+# writes to a pipe, and PowerShell passes on what it wrote as it does for any
+# program: when the next object goes in, and at the end. A call with nothing
+# piped in runs the tool directly, so its stdin stays the console's (rg searches
+# the current directory rather than an empty stdin, and `rm -i` can ask). The
 # generated body reads its arguments as $__a, and the scriptblock in $__run is
-# the one command the call runs (a steppable pipeline holds exactly one).
+# the one command the call runs (a steppable pipeline holds exactly one); end
+# sets $__sp back to $null once it has ended the pipeline. When a line stops
+# before the end (Ctrl+C, an error, or Select-Object -First further down), the
+# clean block that _DenSpClean adds on PowerShell 7.3 and later ends it instead,
+# which closes the tool's stdin: else the tool would wait on it, a process left
+# behind until PowerShell exits. Older versions have no clean block.
+
+# _DenSpClean - the clean block for those functions: on PowerShell 7.3 and later,
+# which added clean blocks, one that ends the steppable pipeline in $__sp when end
+# did not; '' before 7.3. The generators add it to the text they build, and
+# _DenAddClean to functions already defined, so Windows PowerShell 5.1 never
+# parses it.
+function _DenSpClean {
+    $major = $PSVersionTable.PSVersion.Major
+    if ($major -gt 7 -or ($major -eq 7 -and $PSVersionTable.PSVersion.Minor -ge 3)) {
+        return 'clean { if ($null -ne $__sp) { _DenSpStop $__sp } }'
+    }
+    return ''
+}
+
+# _DenSpStop <pipeline> - for that clean block: end a steppable pipeline that a
+# stopped line left open, so the tool it runs reads the end of its input and
+# exits, then dispose of it. Neither can fail the clean block.
+function _DenSpStop($Sp) {
+    if ($null -eq $Sp) { return }
+    try { $null = $Sp.End() } catch { $null = $_ }
+    try { $Sp.Dispose() } catch { $null = $_ }
+}
+
+# _DenAddClean <name...> - add _DenSpClean's block to these functions (coreutils.ps1's,
+# whose source has to parse on 5.1). Nothing before PowerShell 7.3.
+function _DenAddClean([string[]]$Names) {
+    $clean = _DenSpClean
+    if (-not $clean) { return }
+    foreach ($n in $Names) {
+        $f = Get-Item -LiteralPath "Function:\$n" -ErrorAction SilentlyContinue
+        if ($null -eq $f) { continue }
+        Set-Item -Path "function:global:$n" -Value ([scriptblock]::Create($f.Definition + "`n" + $clean))
+    }
+}
 
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
 function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr) {
@@ -588,6 +633,7 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     }
     $sb = [scriptblock]::Create(@"
 begin {
+    `$__sp = `$null
     `$__a = `$args
     if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
         _WrapLog '$FuncName' '$Modern'
@@ -606,20 +652,20 @@ begin {
             `$__run = `$null
         }
     }
-    `$__sp = `$null
     if (`$null -ne `$__run -and `$MyInvocation.ExpectingInput) {
         `$__sp = `$__run.GetSteppablePipeline()
-        `$__sp.Begin(`$true)
+        `$__sp.Begin(`$true, `$ExecutionContext)
     }
 }
 process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
 end {
-    if (`$null -ne `$__sp) { `$__sp.End() }
+    if (`$null -ne `$__sp) { `$__s = `$__sp; `$__sp = `$null; `$__s.End() }
     elseif (`$null -ne `$__run) { & `$__run }
     else {
         $fallbackCode
     }
 }
+$(_DenSpClean)
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb
 }
@@ -628,21 +674,25 @@ end {
 function New-WrapperSuffix([string]$FuncName, [string]$Modern, [string]$ModernFlags) {
     $sb = [scriptblock]::Create(@"
 begin {
+    `$__sp = `$null
     `$__a = `$args
     `$__run = `$null
-    `$__sp = `$null
     if (_ResolveCmd '$Modern') {
         `$__run = { & '$Modern' $ModernFlags @__a }
         if (`$MyInvocation.ExpectingInput) {
             `$__sp = `$__run.GetSteppablePipeline()
-            `$__sp.Begin(`$true)
+            `$__sp.Begin(`$true, `$ExecutionContext)
         }
     } else {
         Write-Warning "${FuncName}: $Modern is not installed."
     }
 }
 process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
-end { if (`$null -ne `$__sp) { `$__sp.End() } elseif (`$null -ne `$__run) { & `$__run } }
+end {
+    if (`$null -ne `$__sp) { `$__s = `$__sp; `$__sp = `$null; `$__s.End() }
+    elseif (`$null -ne `$__run) { & `$__run }
+}
+$(_DenSpClean)
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb
 }
@@ -657,6 +707,7 @@ end { if (`$null -ne `$__sp) { `$__sp.End() } elseif (`$null -ne `$__run) { & `$
 function New-CoreutilsWrapper([string]$FuncName, [string]$CmdName, [string]$BuiltinCmd) {
     $sb = [scriptblock]::Create(@"
 begin {
+    `$__sp = `$null
     `$__a = `$args
     `$__cu = _CoreutilsBin
     if (`$__cu) {
@@ -664,14 +715,14 @@ begin {
     } else {
         `$__run = { $BuiltinCmd @__a }
     }
-    `$__sp = `$null
     if (`$MyInvocation.ExpectingInput) {
         `$__sp = `$__run.GetSteppablePipeline()
-        `$__sp.Begin(`$true)
+        `$__sp.Begin(`$true, `$ExecutionContext)
     }
 }
 process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
-end { if (`$null -ne `$__sp) { `$__sp.End() } else { & `$__run } }
+end { if (`$null -ne `$__sp) { `$__s = `$__sp; `$__sp = `$null; `$__s.End() } else { & `$__run } }
+$(_DenSpClean)
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb
 }
