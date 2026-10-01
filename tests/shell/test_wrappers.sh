@@ -586,7 +586,7 @@ actual=$(PATH="$WORK/lsdstub:$PATH" run_pwsh "$WRAPPERS_PS1_DESKTOP" "\$env:_DEN
 assert_eq "pwsh/lt on 5.1 with lsd still runs lsd" "stub lsd --tree src" "$actual"
 
 # =============================================================================
-# Wrapper notice of the real wrappers (stub modern tools)
+# Where the wrappers run the modern tool (stand-in modern tools)
 # =============================================================================
 # Typed at the prompt, a wrapper named after its native command (ls, cat,
 # grep, find) runs the modern tool; in a function (a user's own included) or a
@@ -647,6 +647,8 @@ modern rg z
 modern lsd w" "$actual"
 done
 
+# =============================================================================
+# Wrapper notice of the real wrappers (stub modern tools)
 # =============================================================================
 # The fallback tests above run without the modern tools; here stub lsd/bat on
 # PATH make the real wrappers take the modern branch, so the notice they print
