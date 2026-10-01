@@ -520,7 +520,8 @@ def _save_content(argv: list[str]) -> str | int:
         print("den hook memory save: --file needs a path", file=sys.stderr)
         return 2
     try:
-        return Path(argv[1]).read_text(encoding="utf-8")
+        # utf-8-sig: a leading BOM is dropped, as for stdin (_read_stdin)
+        return Path(argv[1]).read_text(encoding="utf-8-sig")
     except OSError as exc:
         print(f"den hook memory save: cannot read {argv[1]}: {exc}", file=sys.stderr)
         return 2

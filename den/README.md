@@ -213,9 +213,10 @@ so direct edits are captured and any bad overwrite is recoverable.
 | `path` | print the resolved `memory.md` path |
 
 Memory is UTF-8 text whatever the locale: `show`, `log`, `diff` and
-`den hook imprint` write UTF-8, and `save`/`add` read stdin as UTF-8 (a leading
-BOM is dropped), also on a Windows console set to an ANSI code page. Input that
-is not UTF-8 is refused with exit 2 and nothing is written.
+`den hook imprint` write UTF-8, and `save`/`add` read stdin (and `save --file`
+its file) as UTF-8 (a leading BOM is dropped), also on a Windows console set to
+an ANSI code page. Input that is not UTF-8 is refused with exit 2 and nothing is
+written.
 
 The `.den/` directory is resolved by walking up from the current directory to the
 nearest existing `.den/`, falling back to `<cwd>/.den`. History keeps the last 20

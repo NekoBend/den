@@ -1101,6 +1101,15 @@ def test_stdin_that_is_not_utf8_is_refused(tmp_path, command):
     assert _mem(tmp_path).read_bytes() == b"kept\n"
 
 
+def test_save_file_drops_a_utf8_bom_like_stdin_does(tmp_path, monkeypatch):
+    """Notepad-style UTF-8 with a BOM: the BOM would be injected every turn."""
+    src = tmp_path / "notes.md"
+    src.write_bytes(b"\xef\xbb\xbf# Memory\n- caf\xc3\xa9\n")
+    monkeypatch.chdir(tmp_path)
+    assert memory_main(["save", "--file", str(src)]) == 0
+    assert _mem(tmp_path).read_bytes() == b"# Memory\n- caf\xc3\xa9\n"
+
+
 def test_save_file_that_is_not_utf8_is_refused(tmp_path, monkeypatch, capsys):
     src = tmp_path / "notes.md"
     src.write_bytes("caf\u00e9\n".encode("cp1252"))
