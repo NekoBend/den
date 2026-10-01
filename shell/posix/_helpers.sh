@@ -158,16 +158,19 @@ _init_cache() {
 # _DenWritePrivate does, so the link stays and its target (created if missing)
 # gets the change and mode 0600; any other store is replaced by the temporary
 # file, which the caller made 0600, renamed over it. >| writes even when the
-# user set noclobber. On failure the temporary file is removed, unless the
-# write through the link failed part way: the target may then be cut short and
-# the temporary file is the only whole copy, so it stays for the caller to name.
+# user set noclobber. The copy is `command cat`: wrappers.sh, loaded first, makes
+# cat a function that runs bat, which prints a notice and follows the user's bat
+# config (--color=always would write escape codes into the store). On failure
+# the temporary file is removed, unless the write through the link failed part
+# way: the target may then be cut short and the temporary file is the only
+# whole copy, so it stays for the caller to name.
 _den_put() {
     if [ -L "$2" ]; then
         if ! { [ -e "$2" ] || (umask 077 && : >| "$2"); } || ! chmod 600 "$2"; then
             rm -f "$1"
             return 1
         fi
-        cat "$1" >| "$2" && rm -f "$1"
+        command cat "$1" >| "$2" && rm -f "$1"
     else
         mv "$1" "$2" || { rm -f "$1"; return 1; }
     fi

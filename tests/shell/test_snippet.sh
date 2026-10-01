@@ -34,6 +34,13 @@ link_store() {
 
 TAB=$(printf '\t')
 
+# _den_put copies a store through a symlink with `command cat`, the program
+# on PATH. FAILCAT is a directory whose cat writes 5 bytes and fails, as on a
+# full disk; put it first on PATH to make that copy fail part way.
+FAILCAT="$TESTTMP/failcat"
+mkdir -p "$FAILCAT" && printf '#!/bin/sh\nhead -c 5 "$1"\nexit 1\n' > "$FAILCAT/cat" &&
+    chmod 755 "$FAILCAT/cat" || abort_suite "cannot write $FAILCAT/cat"
+
 # The several-words form of save: the shell takes the quotes off each word
 # before snippet sees it, and run evals the saved line, so the words that need
 # quotes must get them back. sq_fixture makes a directory holding "My File.txt"
@@ -243,11 +250,21 @@ snippet: removed 'a'" "$actual"
     assert_eq "$sh/noclobber: dangling target created" "n${TAB}echo n" "$(cat "$DOTS/new-snippets" 2>&1)"
     assert_eq "$sh/noclobber: symlink kept" "link" "$([ -L "$SNIPPET_FILE" ] && echo link || echo replaced)"
 
+    # An interactive shell has den's cat wrapper (wrappers.sh), a function
+    # that runs bat with the user's bat config and prints a notice. The copy
+    # through the symlink must not go through it.
+    echo "[$sh] save and rm write through a symlinked store with the native cat, not a cat function"
+    link_store snippets
+    printf 'a\techo a\n' > "$DOTS/snippets"
+    actual=$("$run" "$SNIPPET_SH" "cat() { echo '[den] cat -> bat' >&2; echo WRAPPED; }; snippet save b 'echo b' 2>&1; snippet rm a 2>&1" | tr -d '\r')
+    assert_eq "$sh/cat function: messages" "snippet: saved 'b'
+snippet: removed 'a'" "$actual"
+    assert_eq "$sh/cat function: target updated" "b${TAB}echo b" "$(cat "$DOTS/snippets")"
+
     echo "[$sh] a write through the symlink that fails part way keeps the whole new store"
     link_store snippets
     printf 'a\techo a\nb\techo b\n' > "$DOTS/snippets"
-    # A cat that writes 5 bytes and fails, as on a full disk.
-    actual=$("$run" "$SNIPPET_SH" "cat() { command head -c 5 \"\$1\"; return 1; }; snippet save c 'echo c' 2>&1; echo rc=\$?" | tr -d '\r')
+    actual=$("$run" "$SNIPPET_SH" "PATH='$FAILCAT':\$PATH; snippet save c 'echo c' 2>&1; echo rc=\$?" | tr -d '\r')
     left=$(cd "$SNIPPET_DIR" && ls -A | grep -v '^snippets$')
     assert_eq "$sh/failed write: messages" "snippet save: cannot write $SNIPPET_FILE
 snippet save: the whole new store is in $SNIPPET_DIR/$left

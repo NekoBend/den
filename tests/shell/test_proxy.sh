@@ -173,6 +173,18 @@ env=$SECRET_URL" "$actual"
     "$run" "$PROXY_SH" "umask 022; proxy add n http://n:1 2>/dev/null"
     assert_eq "$sh/dangling symlink target created" "link n${TAB}http://n:1${TAB} 600" \
         "$([ -L "$PROXY_CONF" ] && echo link || echo replaced) $(cat "$DOTS/new-proxy.conf" 2>&1) $(stat -c '%a' "$DOTS/new-proxy.conf" 2>&1)"
+
+    # An interactive shell has den's cat wrapper (wrappers.sh), a function
+    # that runs bat with the user's bat config and prints a notice. The copy
+    # through the symlink must not go through it.
+    echo "[$sh] add writes through a symlinked proxy.conf with the native cat, not a cat function"
+    printf 'a\thttp://a:1\t\n' > "$DOTS/proxy.conf"
+    rm -f "$PROXY_CONF"
+    ln -s "$DOTS/proxy.conf" "$PROXY_CONF"
+    actual=$("$run" "$PROXY_SH" "cat() { echo '[den] cat -> bat' >&2; echo WRAPPED; }; proxy add b http://b:2 2>&1" | tr -d '\r')
+    assert_eq "$sh/cat function: message" "proxy: saved 'b' -> http://b:2" "$actual"
+    assert_eq "$sh/cat function: target updated" "a${TAB}http://a:1${TAB}
+b${TAB}http://b:2${TAB}" "$(cat "$DOTS/proxy.conf")"
     rm -f "$PROXY_CONF"
 }
 
