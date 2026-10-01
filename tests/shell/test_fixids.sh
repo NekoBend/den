@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_fixids.sh — Tests for shell/posix/bin/fixids (the standalone parallel chown).
+# test_fixids.sh: tests for shell/posix/bin/fixids (the standalone parallel chown).
 # Most cases are dry runs (-n), which change nothing and need no root; stub
 # `id` commands make fixids see root or another invoker. The case that really
 # chowns runs only as root (the CI image runs the suites as root).
