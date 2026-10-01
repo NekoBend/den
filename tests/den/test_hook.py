@@ -326,7 +326,8 @@ def test_install_all_tools_installs_every_verified_tool_and_exits_0(
     assert hook_main(["install", "--all-tools"]) == 0
     err = capsys.readouterr().err
     assert "not verified" not in err
-    assert (tmp_path / ".clinerules" / "hooks" / "UserPromptSubmit").is_file()
+    hooks = tmp_path / ".clinerules" / "hooks"
+    assert (hooks / _hook._cline_script_name("UserPromptSubmit")).is_file()
     assert (tmp_path / ".github" / "hooks" / "den.json").is_file()
     assert not (tmp_path / ".clinerules" / "den-imprint.md").exists(), "no cline-cli"
 
@@ -531,8 +532,9 @@ def test_powershell_quoting_doubles_every_single_quote_character():
     den_dir = Path(f"C:/w/a{_PS_QUOTES}b/.den")
     cmd = _hook._run_command("cline", "per-turn", den_dir, powershell=True)
     quoted = cmd.split(" --den-dir ", 1)[1]
-    doubled = "".join(q + q for q in _PS_QUOTES)
-    assert quoted == f"'C:/w/a{doubled}b/.den'"
+    # str(den_dir) has backslashes on Windows and slashes elsewhere.
+    doubled = "".join(ch * 2 if ch in _PS_QUOTES else ch for ch in str(den_dir))
+    assert quoted == f"'{doubled}'"
 
 
 def _powershell() -> str | None:
