@@ -205,12 +205,20 @@ PowerShell (a machine's pwsh and bash share the profile store).
 entries (comma-separated, e.g. `.corp.example.com,10.0.0.0/8`) are added on top.
 The one exception is `no_proxy = *`, which stays standalone (bypass everything).
 
+A url may carry a password (`http://user:password@host:port`). `add`, `on`,
+`ls` and `status` print it as `user:***@host:port`; `proxy.conf` and the
+exported variables keep the real value. On Linux and macOS `proxy.conf` is
+`0600` and `$XDG_CONFIG_HOME/den` `0700`, whatever the umask: each write sets
+them, so a store an older den left readable is tightened too. A `proxy.conf`
+that is a symlink stays one: `add` and `rm` write through it in both shells.
+
 ### Command snippets
 Save favorite commands by name and run them later, instead of `history | grep`.
 
 | Command | What it does |
 |---------|--------------|
-| `snippet save <name> <command...>` | save a command (or pipe it via stdin); alias `snip` |
+| `snippet save <name> '<command>'` | save a command exactly as typed (or pipe it via stdin, first line only); alias `snip` |
+| `snippet save <name> <word...>` | save the words, each quoted again if it needs it, and print the saved line |
 | `snippet ls` | list saved snippets |
 | `snippet show <name>` | print a snippet's command (no run) |
 | `snippet run <name>` | run a snippet |
@@ -223,6 +231,42 @@ name is `[A-Za-z0-9_-]`, the command may contain anything on one line). `run` an
 so it is trusted), which lets it `cd`, set vars, and use the current environment.
 `pick` needs `fzf`; without it, use `snippet run <name>`. bash/zsh and PowerShell
 (a machine's pwsh and bash share the snippet store).
+
+`save` takes the command in one of these forms:
+- **One argument** (`snippet save cnt 'grep -c ">" seqs.fa | tee n.txt'`) or
+  **stdin** (`echo 'make -j8 test' | snippet save t`): stored exactly as given.
+  A snippet is one line: from stdin `save` reads only the first line and drops
+  the rest, and it refuses one argument that holds a newline. This is the form
+  for pipes, redirections, `;` and `&&`.
+- **Several words** (`snippet save clean rm "My File.txt"`): the shell has
+  already taken the quotes off each word, so `save` puts single quotes back
+  around each word that holds a blank or a character the shell would read
+  (`$ ; | & > < ' " * ? ~`, ...) and prints the line it saved
+  (`snippet: saved 'clean' -> rm 'My File.txt'`); `run` then sees the same
+  words. bash/zsh write a `'` inside as `'\''`, pwsh as `''`. pwsh hands
+  `snippet` values, not text: a first word that needs quotes is saved as
+  `& '<path>'`, so it still runs as a command; a quoted word that starts like
+  a number (`'007'`, `'1kb'`) or with a dash (`'-Verbose'`, `'--'`) stays a
+  string, while a parameter typed bare (`-Recurse`) is saved bare (pwsh takes
+  a bare `--` itself, so it never reaches `save`: quote it); `$true`,
+  `$false`, a `{ ... }` block and a list `a,b` come back as they were; any
+  other value (a hashtable, say) is saved as its text. A `$var` or `$(...)`
+  you did not quote was expanded by the shell before `snippet` ran, so the
+  saved line holds its value from that moment, and one you quoted is saved as
+  literal text. bash/zsh do the same with a glob (`*.txt`) or `~` you did not
+  quote, against the files there at that moment (a glob that matches nothing
+  reaches `save` as is in bash, and is saved quoted). pwsh leaves globs and
+  `~` to the command it runs, so they reach `save` as typed and are saved
+  quoted like the other characters above: on pwsh `snippet save l ls *.txt`
+  saves `ls '*.txt'`, which looks for a file named `*.txt` when it runs. To
+  have any of these expanded each time the snippet runs, use the one-argument
+  form (`snippet save h 'echo $HOME'`, `snippet save l 'ls *.txt'`).
+
+The store is shared, but a snippet is saved in the syntax of the shell that
+saved it, so one saved in bash/zsh may not run in pwsh, or the other way round.
+On Linux and macOS the store is `0600` in a `0700` `$XDG_CONFIG_HOME/den`, like
+`proxy.conf` (a saved command may hold a token). A store that is a symlink, into
+a dotfiles repo say, stays one: `save` and `rm` write through it in both shells.
 
 ### Cheatsheets
 Browse den's bundled cheatsheets offline. Deploy them first with

@@ -3294,6 +3294,41 @@ assert_eq "pwsh/init.ps1 prompt without zoxide shows no error" "zoxide: False
 stub:True>
 new errors: 0" "$out"
 
+# init.ps1's history handler keeps again/sagain out of the history and hands
+# every other line to the handler PSReadLine had: on PSReadLine 2.2+ the default
+# one, which answers MemoryOnly (kept out of the history file) for a line that
+# looks like it holds a secret. Loading init.ps1 a second time keeps that
+# handler, not den's own. PSReadLine loads first, as in an interactive session.
+echo "[pwsh] init.ps1's history handler keeps PSReadLine's secret filter"
+HIST_PS1="$TESTTMP/history_handler.ps1"
+cat > "$HIST_PS1" <<'PS1'
+param([string]$Den)
+Import-Module PSReadLine
+if ((Get-Module PSReadLine).Version -lt [version]'2.2') { 'SKIP'; return }
+$pre = (Get-PSReadLineOption).AddToHistoryHandler
+. (Join-Path $Den 'init.ps1')
+. (Join-Path $Den 'init.ps1')
+$h = (Get-PSReadLineOption).AddToHistoryHandler
+foreach ($l in '$env:GITHUB_TOKEN = "ghp_probe"', '$password = "hunter2"',
+    'ConvertTo-SecureString "p" -AsPlainText -Force', 'Get-Date', 'again 2', '  sagain') {
+    "$($h.Invoke($l))"
+}
+"kept: $([object]::ReferenceEquals($pre, $global:_DenPrevHistoryHandler))"
+PS1
+out=$(cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+    pwsh -NoProfile -NonInteractive -File "$HIST_PS1" "$DOTFILES/shell/pwsh" 2>/dev/null | tr -d '\r')
+if [ "$out" = SKIP ]; then
+    echo "  SKIP: pwsh/init.ps1 history handler (PSReadLine before 2.2 has no secret filter)"
+else
+    assert_eq "pwsh/init.ps1 history handler keeps secrets out of the file and drops again" "MemoryOnly
+MemoryOnly
+MemoryOnly
+MemoryAndFile
+False
+False
+kept: True" "$out"
+fi
+
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention
 # =============================================================================

@@ -9,12 +9,31 @@
 # into the CURRENT shell; `proxy off` unsets them. The active profile is tracked
 # per-shell in _DEN_PROXY_ACTIVE, so it never disagrees with another shell:
 # this feature only ever touches env vars, never global tool config.
+# A url may carry a password (http://user:password@host:port): the store is
+# 0600 in a 0700 directory, and add/on/ls/status print it as user:***@host. A
+# store that is a symlink is written through, as pwsh does (_den_put, in
+# _helpers.sh, which init.bash and init.zsh load first).
 
 # Skip in non-interactive shells
 case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 
 _proxy_conf() {
     printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/den/proxy.conf"
+}
+
+# _proxy_show <url> - the url as add/on/ls/status print it: the password of a
+# user:password@ part shows as ***. The store and the env vars keep it.
+_proxy_show() {
+    _psh_pre='' _psh_rest=$1
+    case $1 in *://*) _psh_pre="${1%%://*}://" _psh_rest=${1#*://} ;; esac
+    # The userinfo ends at the last @, the user at its first :.
+    _psh_info=${_psh_rest%@*}
+    if [ "$_psh_info" != "$_psh_rest" ] && [ "${_psh_info#*:}" != "$_psh_info" ]; then
+        printf '%s%s:***@%s' "$_psh_pre" "${_psh_info%%:*}" "${_psh_rest##*@}"
+    else
+        printf '%s' "$1"
+    fi
+    unset _psh_pre _psh_rest _psh_info
 }
 
 _proxy_usage() {
@@ -40,30 +59,47 @@ _proxy_add() {
     esac
     _pa_name=$1 _pa_url=$2 _pa_np=${3:-}
     _pa_conf=$(_proxy_conf)
-    mkdir -p "$(dirname "$_pa_conf")" || {
-        unset _pa_name _pa_url _pa_np _pa_conf
+    # The directory is made 0700, and the store 0600 (the temporary file is
+    # created so and renamed over it, or a symlink's target is made so),
+    # whatever the umask; an older den's looser modes are tightened too.
+    _pa_dir=$(dirname "$_pa_conf")
+    if ! { mkdir -p "$_pa_dir" && chmod 700 "$_pa_dir"; }; then
+        unset _pa_name _pa_url _pa_np _pa_conf _pa_dir
         return 1
-    }
+    fi
     _pa_tab=$(printf '\t')
     _pa_tmp="$_pa_conf.tmp.$$"
-    : > "$_pa_tmp" || {
+    (umask 077 && : > "$_pa_tmp") || {
         echo "proxy add: cannot write $_pa_conf" >&2
-        unset _pa_name _pa_url _pa_np _pa_conf _pa_tab _pa_tmp
+        unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp
         return 1
     }
     if [ -f "$_pa_conf" ]; then
         # Drop any existing entry with this name (compare field 1 literally, no
-        # glob), then the new one is appended below.
+        # glob), then the new one is appended below. A store that cannot be
+        # read ends the add, so it is never replaced by the new entry alone.
         while IFS= read -r _pa_line || [ -n "$_pa_line" ]; do
             if [ "${_pa_line%%"$_pa_tab"*}" != "$_pa_name" ]; then
                 printf '%s\n' "$_pa_line" >> "$_pa_tmp"
             fi
-        done < "$_pa_conf"
+        done < "$_pa_conf" || {
+            rm -f "$_pa_tmp"
+            echo "proxy add: cannot read $_pa_conf; it is left as it was" >&2
+            unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
+            return 1
+        }
     fi
     printf '%s\t%s\t%s\n' "$_pa_name" "$_pa_url" "$_pa_np" >> "$_pa_tmp"
-    mv "$_pa_tmp" "$_pa_conf"
-    echo "proxy: saved '$_pa_name' -> $_pa_url" >&2
-    unset _pa_name _pa_url _pa_np _pa_conf _pa_tab _pa_tmp _pa_line
+    if ! _den_put "$_pa_tmp" "$_pa_conf"; then
+        echo "proxy add: cannot write $_pa_conf" >&2
+        if [ -e "$_pa_tmp" ]; then
+            echo "proxy add: the whole new store is in $_pa_tmp" >&2
+        fi
+        unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
+        return 1
+    fi
+    echo "proxy: saved '$_pa_name' -> $(_proxy_show "$_pa_url")" >&2
+    unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
 }
 
 _proxy_rm() {
@@ -80,7 +116,8 @@ _proxy_rm() {
     _pr_tab=$(printf '\t')
     _pr_tmp="$_pr_conf.tmp.$$"
     _pr_found=0
-    : > "$_pr_tmp" || {
+    # A 0700 directory and a 0600 store, as add makes them.
+    { chmod 700 "$(dirname "$_pr_conf")" && (umask 077 && : > "$_pr_tmp"); } || {
         echo "proxy rm: cannot write $_pr_conf" >&2
         unset _pr_conf _pr_tab _pr_tmp _pr_found
         return 1
@@ -93,7 +130,14 @@ _proxy_rm() {
         fi
     done < "$_pr_conf"
     if [ "$_pr_found" -eq 1 ]; then
-        mv "$_pr_tmp" "$_pr_conf"
+        if ! _den_put "$_pr_tmp" "$_pr_conf"; then
+            echo "proxy rm: cannot write $_pr_conf" >&2
+            if [ -e "$_pr_tmp" ]; then
+                echo "proxy rm: the whole new store is in $_pr_tmp" >&2
+            fi
+            unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line
+            return 1
+        fi
         echo "proxy: removed '$1'" >&2
         if [ "${_DEN_PROXY_ACTIVE:-}" = "$1" ]; then
             echo "proxy: '$1' is still active in this shell; run 'proxy off'" >&2
@@ -123,9 +167,9 @@ _proxy_ls() {
             _pl_mark=' '
         fi
         if [ -n "$_pl_p" ]; then
-            printf '%s %s\t%s\t(no_proxy: %s)\n' "$_pl_mark" "$_pl_n" "$_pl_u" "$_pl_p"
+            printf '%s %s\t%s\t(no_proxy: %s)\n' "$_pl_mark" "$_pl_n" "$(_proxy_show "$_pl_u")" "$_pl_p"
         else
-            printf '%s %s\t%s\n' "$_pl_mark" "$_pl_n" "$_pl_u"
+            printf '%s %s\t%s\n' "$_pl_mark" "$_pl_n" "$(_proxy_show "$_pl_u")"
         fi
     done < "$_pl_conf"
     unset _pl_conf _pl_tab _pl_n _pl_u _pl_p _pl_mark
@@ -169,7 +213,7 @@ _proxy_on() {
     export HTTP_PROXY="$_po_url" HTTPS_PROXY="$_po_url" \
         ALL_PROXY="$_po_url" NO_PROXY="$_po_np"
     _DEN_PROXY_ACTIVE="$1"
-    echo "proxy: on ($1 -> $_po_url)" >&2
+    echo "proxy: on ($1 -> $(_proxy_show "$_po_url"))" >&2
     unset _po_conf _po_tab _po_url _po_np _po_found _po_n _po_u _po_p
 }
 
@@ -186,9 +230,9 @@ _proxy_off() {
 
 _proxy_status() {
     echo "active: ${_DEN_PROXY_ACTIVE:-(none)}"
-    echo "http_proxy=${http_proxy:-}"
-    echo "https_proxy=${https_proxy:-}"
-    echo "all_proxy=${all_proxy:-}"
+    echo "http_proxy=$(_proxy_show "${http_proxy:-}")"
+    echo "https_proxy=$(_proxy_show "${https_proxy:-}")"
+    echo "all_proxy=$(_proxy_show "${all_proxy:-}")"
     echo "no_proxy=${no_proxy:-}"
 }
 

@@ -5,13 +5,28 @@ source "$SCRIPT_DIR/helpers.sh"
 
 PROXY_SH_GUARDED="$DOTFILES/shell/posix/proxy.sh"
 PROXY_SH="$TESTTMP/proxy_test.sh"
-make_noninteractive_source_copy "$PROXY_SH_GUARDED" "$PROXY_SH"
+# proxy.sh puts its store in place with _den_put from _helpers.sh, which
+# init.bash and init.zsh load first; the file the tests source loads both.
+make_noninteractive_source_copy "$PROXY_SH_GUARDED" "$TESTTMP/proxy_only.sh"
+printf ". '%s'\n. '%s'\n" "$DOTFILES/shell/posix/_helpers.sh" "$TESTTMP/proxy_only.sh" > "$PROXY_SH" ||
+    abort_suite "cannot write $PROXY_SH"
 
 # Isolate profile storage under WORK so tests never touch the real ~/.config.
 export XDG_CONFIG_HOME="$WORK/xdg"
 PROXY_CONF="$XDG_CONFIG_HOME/den/proxy.conf"
 
+PROXY_DIR="$XDG_CONFIG_HOME/den"
+DOTS="$WORK/dots"
+
 reset_conf() { rm -f "$PROXY_CONF"; }
+
+# modes - the octal modes of the store's directory and of the store.
+modes() { stat -c '%a' "$PROXY_DIR" "$PROXY_CONF" | paste -sd' ' -; }
+
+# A url with a password, which holds a : and an @ of its own, and how den shows it.
+SECRET_URL='http://alice:S3cr:et@x@proxy.corp:8080'
+SHOWN_URL='http://alice:***@proxy.corp:8080'
+TAB=$(printf '\t')
 
 # proxy_suite <shell> — run the same checks under bash and zsh. Each subcommand
 # is chained inside ONE shell invocation because `on`/`off` only touch the
@@ -90,6 +105,87 @@ proxy_suite() {
     actual=$("$run" "$PROXY_SH" "proxy frobnicate 2>&1; echo rc=\$?" | tr -d '\r')
     assert_contains "$sh/unknown cmd msg" "unknown command" "$actual"
     assert_contains "$sh/unknown cmd rc" "rc=1" "$actual"
+
+    reset_conf
+    echo "[$sh] add, on, ls and status show a password as ***; the store and the env keep it"
+    actual=$("$run" "$PROXY_SH" "proxy add c '$SECRET_URL' 2>&1; proxy on c 2>&1; proxy ls 2>&1; proxy status 2>&1; echo env=\$http_proxy" | tr -d '\r')
+    assert_eq "$sh/password shown as ***" "proxy: saved 'c' -> $SHOWN_URL
+proxy: on (c -> $SHOWN_URL)
+* c${TAB}$SHOWN_URL
+active: c
+http_proxy=$SHOWN_URL
+https_proxy=$SHOWN_URL
+all_proxy=$SHOWN_URL
+no_proxy=localhost,127.0.0.1,::1
+env=$SECRET_URL" "$actual"
+    assert_eq "$sh/store keeps the password" "c${TAB}$SECRET_URL${TAB}" "$(cat "$PROXY_CONF")"
+
+    reset_conf
+    echo "[$sh] a url without a password shows as it is; one without a scheme is masked too"
+    actual=$("$run" "$PROXY_SH" "proxy add u http://bob@p:1 2>/dev/null; proxy add h p:3128 2>/dev/null; proxy add s 'bob:pw@p:2' 2>/dev/null; proxy ls" | tr -d '\r')
+    assert_eq "$sh/only a password is masked" "  u${TAB}http://bob@p:1
+  h${TAB}p:3128
+  s${TAB}bob:***@p:2" "$actual"
+
+    echo "[$sh] add makes the store 0600 in a 0700 directory, under umask 022"
+    rm -rf "${PROXY_DIR:?}"
+    "$run" "$PROXY_SH" "umask 022; proxy add c '$SECRET_URL' 2>/dev/null"
+    assert_eq "$sh/new store modes" "700 600" "$(modes)"
+
+    echo "[$sh] rm and add tighten an older den's 0644 store and 0755 directory"
+    printf 'a\thttp://a:1\t\nb\thttp://b:1\t\n' > "$PROXY_CONF"
+    chmod 755 "$PROXY_DIR"
+    chmod 644 "$PROXY_CONF"
+    "$run" "$PROXY_SH" "umask 022; proxy rm b 2>/dev/null"
+    assert_eq "$sh/rm tightens both" "700 600" "$(modes)"
+    chmod 755 "$PROXY_DIR"
+    chmod 644 "$PROXY_CONF"
+    "$run" "$PROXY_SH" "umask 022; proxy add c '$SECRET_URL' 2>/dev/null"
+    assert_eq "$sh/add tightens both" "700 600" "$(modes)"
+
+    # Mode 0200: the store can be written but not read. root reads it anyway,
+    # so there the case is skipped.
+    echo "[$sh] add leaves a store it cannot read as it was"
+    printf 'a\thttp://a:1\t\n' > "$PROXY_CONF"
+    if [ "$(id -u)" -ne 0 ] && chmod 200 "$PROXY_CONF" 2>/dev/null && [ ! -r "$PROXY_CONF" ]; then
+        actual=$("$run" "$PROXY_SH" "proxy add n http://n:1 2>&1; echo rc=\$?" | tr -d '\r')
+        chmod 600 "$PROXY_CONF"
+        assert_contains "$sh/unreadable store: message" "proxy add: cannot read $PROXY_CONF; it is left as it was" "$actual"
+        assert_contains "$sh/unreadable store: rc" "rc=1" "$actual"
+        assert_eq "$sh/unreadable store: kept" "a${TAB}http://a:1${TAB}" "$(cat "$PROXY_CONF")"
+    else
+        echo "  SKIP: $sh/unreadable store (running as root)"
+    fi
+
+    echo "[$sh] add and rm write through a symlinked proxy.conf, as pwsh does"
+    rm -rf "${DOTS:?}"
+    mkdir -p "$DOTS"
+    rm -f "$PROXY_CONF"
+    printf 'a\thttp://a:1\t\n' > "$DOTS/proxy.conf"
+    chmod 644 "$DOTS/proxy.conf"
+    ln -s "$DOTS/proxy.conf" "$PROXY_CONF"
+    "$run" "$PROXY_SH" "umask 022; proxy add b http://b:2 2>/dev/null; proxy rm a 2>/dev/null"
+    assert_eq "$sh/symlink kept" "link" "$([ -L "$PROXY_CONF" ] && echo link || echo replaced)"
+    assert_eq "$sh/symlink target updated, 0600" "b${TAB}http://b:2${TAB} 600" \
+        "$(cat "$DOTS/proxy.conf") $(stat -c '%a' "$DOTS/proxy.conf")"
+    rm -f "$PROXY_CONF"
+    ln -s "$DOTS/new-proxy.conf" "$PROXY_CONF"
+    "$run" "$PROXY_SH" "umask 022; proxy add n http://n:1 2>/dev/null"
+    assert_eq "$sh/dangling symlink target created" "link n${TAB}http://n:1${TAB} 600" \
+        "$([ -L "$PROXY_CONF" ] && echo link || echo replaced) $(cat "$DOTS/new-proxy.conf" 2>&1) $(stat -c '%a' "$DOTS/new-proxy.conf" 2>&1)"
+
+    # An interactive shell has den's cat wrapper (wrappers.sh), a function
+    # that runs bat with the user's bat config and prints a notice. The copy
+    # through the symlink must not go through it.
+    echo "[$sh] add writes through a symlinked proxy.conf with the native cat, not a cat function"
+    printf 'a\thttp://a:1\t\n' > "$DOTS/proxy.conf"
+    rm -f "$PROXY_CONF"
+    ln -s "$DOTS/proxy.conf" "$PROXY_CONF"
+    actual=$("$run" "$PROXY_SH" "cat() { echo '[den] cat -> bat' >&2; echo WRAPPED; }; proxy add b http://b:2 2>&1" | tr -d '\r')
+    assert_eq "$sh/cat function: message" "proxy: saved 'b' -> http://b:2" "$actual"
+    assert_eq "$sh/cat function: target updated" "a${TAB}http://a:1${TAB}
+b${TAB}http://b:2${TAB}" "$(cat "$DOTS/proxy.conf")"
+    rm -f "$PROXY_CONF"
 }
 
 proxy_suite bash
@@ -103,7 +199,11 @@ fi
 # chain inside ONE run_pwsh (env vars only live in that pwsh session). proxy status
 # prints to stdout; add/on/off messages go to stderr (not captured here).
 if command -v pwsh >/dev/null 2>&1; then
-    PROXY_PS1="$DOTFILES/shell/pwsh/proxy.ps1"
+    # proxy.ps1 writes its store with _DenWritePrivate from _helpers.ps1, which
+    # init.ps1 loads first; this file loads both in that order.
+    PROXY_PS1="$TESTTMP/proxy_test.ps1"
+    printf ". '%s'\n. '%s'\n" "$DOTFILES/shell/pwsh/_helpers.ps1" "$DOTFILES/shell/pwsh/proxy.ps1" > "$PROXY_PS1" ||
+        abort_suite "cannot write $PROXY_PS1"
 
     reset_conf
     echo "[pwsh] add + on sets env and prepends loopback to no_proxy"
@@ -127,6 +227,53 @@ if command -v pwsh >/dev/null 2>&1; then
     echo "[pwsh] add rejects an empty url"
     actual=$(run_pwsh "$PROXY_PS1" "proxy add x ''; proxy ls" 2>&1 | tr -d '\r')
     assert_contains "pwsh/proxy empty url rejected" "no profiles" "$actual"
+
+    reset_conf
+    echo "[pwsh] add, on, ls and status show a password as ***; the store and the env keep it"
+    # The messages (stderr) apart from the listings (stdout): pwsh does not keep
+    # the order between the two.
+    actual=$(run_pwsh_stderr "$PROXY_PS1" "proxy add c '$SECRET_URL'; proxy on c; proxy ls; proxy status")
+    assert_eq "pwsh/proxy password shown as *** by add and on" "proxy: saved 'c' -> $SHOWN_URL
+proxy: on (c -> $SHOWN_URL)" "$actual"
+    actual=$(run_pwsh "$PROXY_PS1" "proxy add c '$SECRET_URL'; proxy on c; proxy ls; proxy status; \"env=\$env:http_proxy\"" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/proxy password shown as *** by ls and status" "* c${TAB}$SHOWN_URL
+active: c
+http_proxy=$SHOWN_URL
+https_proxy=$SHOWN_URL
+all_proxy=$SHOWN_URL
+no_proxy=localhost,127.0.0.1,::1
+env=$SECRET_URL" "$actual"
+    assert_eq "pwsh/proxy store keeps the password" "c${TAB}$SECRET_URL${TAB}" "$(cat "$PROXY_CONF")"
+
+    reset_conf
+    echo "[pwsh] a url without a password shows as it is; one without a scheme is masked too"
+    actual=$(run_pwsh "$PROXY_PS1" "proxy add u http://bob@p:1; proxy add h p:3128; proxy add s 'bob:pw@p:2'; proxy ls" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/proxy only a password is masked" "  u${TAB}http://bob@p:1
+  h${TAB}p:3128
+  s${TAB}bob:***@p:2" "$actual"
+
+    echo "[pwsh] add makes the store 0600 in a 0700 directory, under umask 022"
+    rm -rf "${PROXY_DIR:?}"
+    (umask 022; run_pwsh "$PROXY_PS1" "proxy add c '$SECRET_URL'" 2>/dev/null)
+    assert_eq "pwsh/proxy new store modes" "700 600" "$(modes)"
+
+    echo "[pwsh] rm tightens an older den's 0644 store and 0755 directory"
+    printf 'a\thttp://a:1\t\nb\thttp://b:1\t\n' > "$PROXY_CONF"
+    chmod 755 "$PROXY_DIR"
+    chmod 644 "$PROXY_CONF"
+    (umask 022; run_pwsh "$PROXY_PS1" "proxy rm b" 2>/dev/null)
+    assert_eq "pwsh/proxy rm tightens both" "700 600" "$(modes)"
+
+    echo "[pwsh] add leaves a store it cannot read as it was"
+    printf 'a\thttp://a:1\t\n' > "$PROXY_CONF"
+    if [ "$(id -u)" -ne 0 ] && chmod 200 "$PROXY_CONF" 2>/dev/null && [ ! -r "$PROXY_CONF" ]; then
+        actual=$(run_pwsh "$PROXY_PS1" "proxy add n http://n:1; 'after'" 2>/dev/null | tr -d '\r')
+        chmod 600 "$PROXY_CONF"
+        assert_eq "pwsh/proxy unreadable store: add ends" "" "$actual"
+        assert_eq "pwsh/proxy unreadable store: kept" "a${TAB}http://a:1${TAB}" "$(cat "$PROXY_CONF")"
+    else
+        echo "  SKIP: pwsh/proxy unreadable store (running as root)"
+    fi
 else
     echo "pwsh not found; skipping pwsh proxy tests"
 fi
