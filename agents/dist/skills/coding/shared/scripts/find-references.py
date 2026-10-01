@@ -12,24 +12,40 @@ Modes:
     --in     List every top-level symbol defined in FILE, plus its usages
              elsewhere in the tree.
 
+    Each mode is ONE search over the tree: the lines holding the symbol (for
+    --in, any of the file's symbols) as a whole word are found, then each is
+    classified as a definition or a use in-process.
+
 Languages supported (best-effort via regex):
     .py .ts .tsx .js .jsx .mjs .cjs .go .rs .java .cs .sh .bash .ps1 .psm1
 
+    In PowerShell files (.ps1 .psm1 .psd1) matching ignores case, as
+    PowerShell does.
+
 Backend:
-    Uses ripgrep (rg) if available for fast search. Falls back to Python
-    standard-library os.walk + re otherwise.
+    Uses ripgrep (rg) if available for fast search. Falls back to reading
+    the files in-process otherwise, one line at a time.
 
 Search scope:
-    Both backends read every file under the root except the skipped
-    directories (.git, node_modules, .venv, build, ...), and neither follows
-    symlinks. Git-ignored and hidden files ARE searched, deliberately, and so
-    are binary ones (ripgrep is passed --text), so the result does not change
-    when ripgrep is installed or removed, nor with the ripgrep configuration
-    on the machine (RIPGREP_CONFIG_PATH is not read). A matching line is
-    printed verbatim, so a tree holding untracked secrets (.env, .npmrc,
-    *.pem) has them searched too, and a hit inside a binary file prints that
-    file's bytes: run this only on a tree whose contents you would read
-    yourself.
+    Inside a git work tree, the files git tracks plus the untracked ones it
+    does not ignore (`git ls-files --cached --others --exclude-standard`), so
+    virtual environments, build output and anything else listed in a
+    .gitignore are not searched; hidden files such as .github/ are. Outside a
+    work tree, every file under the root, except directories holding a
+    pyvenv.cfg (a virtual environment, whatever it is called). Either way
+    the skipped directories (.git, node_modules, .venv, build, ...) are left
+    out and symlinks are not followed. Both backends search that same file
+    list, and binary files as text (ripgrep is passed --text), so the result
+    does not change when ripgrep is installed or removed, nor with the
+    ripgrep configuration on the machine (RIPGREP_CONFIG_PATH is not read).
+    A matching line is printed verbatim, so a tree holding untracked secrets
+    that are not ignored has them searched too, and a hit inside a binary
+    file prints that file's bytes: run this only on a tree whose contents you
+    would read yourself.
+
+    git and rg are run by absolute path from the absolute PATH entries; one
+    found in the working directory itself is refused (Windows would
+    otherwise run a git.exe or rg.exe shipped at the root of the checkout).
 
 Output format:
     <file>:<line>:<kind>:<context>
@@ -56,91 +72,49 @@ Limitations:
 from __future__ import annotations
 
 import argparse
-import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 from _common import (
-    DEFAULT_CAPTURE,
-    DEFINITION_CAPTURE,
-    DEFINITION_PATTERNS,
-    RG_SEARCH_FLAGS,
+    TOP_LEVEL_PATTERNS,
     allow_undecodable_paths_on_stdout,
     format_hit,
-    iter_search_files,
-    parse_rg_output,
-    read_searchable_text,
-    rg_skip_globs,
+    is_definition_line,
+    iter_searchable_lines,
+    list_search_files,
+    mentions,
+    search_words,
+    top_level_definitions,
 )
 
-Hit = tuple[str, int, str]
 Result = tuple[str, int, str, str]
 
 
-def _ripgrep_available() -> bool:
-    """Return True if `rg` is on PATH."""
-    return shutil.which("rg") is not None
+def _files(root: Path, ext_filter: str | None) -> list[Path]:
+    files = list_search_files(root)
+    if ext_filter:
+        files = [f for f in files if f.suffix == ext_filter]
+    return files
 
 
-def _search_with_ripgrep(pattern: str, root: Path, ext: str | None) -> list[Hit]:
-    """Search the tree using ripgrep, restricted to one extension if given."""
-    cmd = [
-        "rg",
-        "--no-heading",
-        "--line-number",
-        "--with-filename",
-        "--no-messages",
-        # match the Python-walk fallback: search everything except SKIP_DIRS,
-        # regardless of .gitignore or hidden-dir status, so results do not
-        # depend on whether rg is installed.
-        *RG_SEARCH_FLAGS,
-        pattern,
-        str(root),
-    ]
-    if ext:
-        cmd.extend(["-g", f"*{ext}"])
-    cmd.extend(rg_skip_globs())
-    try:
-        # stdout is read as BYTES: it carries file names, and a name is not
-        # required to be valid UTF-8. parse_rg_output converts each part with
-        # the right codec.
-        proc = subprocess.run(cmd, capture_output=True, check=False)
-    except FileNotFoundError:
-        return []
-    return parse_rg_output(proc.stdout)
+def _split(
+    symbol: str, root: Path, ext_filter: str | None
+) -> tuple[list[Result], list[Result]]:
+    """(definitions, uses) of `symbol`, from one whole-word search.
 
-
-def _search_with_walk(pattern: str, root: Path, ext: str | None) -> list[Hit]:
-    """Search by walking the tree with os.walk + re (fallback path).
-
-    Line by line, the way ripgrep searches: one hit per matching LINE, not one
-    per regex match. re.finditer reported every occurrence, so a line reading
-    `widget(); widget()` produced two identical rows here and one under rg,
-    which is also what rg does with no --only-matching.
-
-    Lines are split on "\n" alone - the record separator rg uses - never with
-    str.splitlines(), which would also break on form feed, NEL or U+2028 and
-    renumber every line after one of those.
+    Every definition pattern holds the symbol as a whole word, so the
+    definition lines are a subset of the word hits: each hit is classified by
+    the patterns of its own file's extension instead of searching the tree
+    once more per (extension, pattern) pair.
     """
-    rx = re.compile(pattern, re.MULTILINE)
-    hits: list[Hit] = []
-    for path in iter_search_files(root, ext):
-        text = read_searchable_text(path)
-        if text is None:
-            continue
-        for lineno, line in enumerate(text.split("\n"), start=1):
-            if rx.search(line):
-                hits.append((str(path), lineno, line))
-    return hits
-
-
-def _search(pattern: str, root: Path, ext: str | None) -> list[Hit]:
-    """Dispatch to ripgrep when available, otherwise the walk fallback."""
-    if _ripgrep_available():
-        return _search_with_ripgrep(pattern, root, ext)
-    return _search_with_walk(pattern, root, ext)
+    defs: list[Result] = []
+    uses: list[Result] = []
+    for file, lineno, content in search_words([symbol], _files(root, ext_filter)):
+        if is_definition_line(content, Path(file).suffix, symbol):
+            defs.append((file, lineno, "def", content.strip()))
+        else:
+            uses.append((file, lineno, "use", content.strip()))
+    return defs, uses
 
 
 def find_definitions(
@@ -152,30 +126,13 @@ def find_definitions(
 
     Args:
         symbol: Literal symbol name (not regex).
-        root: Directory to walk.
+        root: Directory to search.
         ext_filter: If set, restrict to this extension (e.g. '.py').
 
     Returns:
-        Deduplicated list of (file, lineno, 'def', context) tuples.
+        List of (file, lineno, 'def', context) tuples, one per line.
     """
-    sym_esc = re.escape(symbol)
-    raw: list[Result] = []
-    for ext, templates in DEFINITION_PATTERNS.items():
-        if ext_filter and ext != ext_filter:
-            continue
-        for template in templates:
-            pattern = template.replace("{name}", sym_esc)
-            for file, lineno, content in _search(pattern, root, ext):
-                raw.append((file, lineno, "def", content.strip()))
-    seen: set[tuple[str, int]] = set()
-    unique: list[Result] = []
-    for r in raw:
-        key = (r[0], r[1])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(r)
-    return unique
+    return _split(symbol, root, ext_filter)[0]
 
 
 def find_usages(
@@ -184,21 +141,14 @@ def find_usages(
     ext_filter: str | None,
 ) -> list[Result]:
     """Find every reference to `symbol` (excluding its definitions)."""
-    sym_esc = re.escape(symbol)
-    word_pattern = rf"\b{sym_esc}\b"
-    all_hits = _search(word_pattern, root, ext_filter)
-    defs = find_definitions(symbol, root, ext_filter)
-    def_keys = {(d[0], d[1]) for d in defs}
-    results: list[Result] = []
-    for file, lineno, content in all_hits:
-        if (file, lineno) in def_keys:
-            continue
-        results.append((file, lineno, "use", content.strip()))
-    return results
+    return _split(symbol, root, ext_filter)[1]
 
 
 def list_in_file(file_path: Path, root: Path) -> list[Result]:
     """List every top-level symbol defined in `file_path`, plus external uses.
+
+    One search finds every line naming any of the file's symbols; each line
+    is then attributed to the symbols it names.
 
     Args:
         file_path: The file whose symbols to enumerate.
@@ -210,36 +160,38 @@ def list_in_file(file_path: Path, root: Path) -> list[Result]:
         other files.
     """
     ext = file_path.suffix
-    templates = DEFINITION_PATTERNS.get(ext)
-    if templates is None:
+    if ext not in TOP_LEVEL_PATTERNS:
         print(f"language not supported for --in: {ext}", file=sys.stderr)
         return []
 
-    text = file_path.read_text(encoding="utf-8", errors="ignore")
+    text = "\n".join(line for _lineno, line in iter_searchable_lines(file_path))
     local_defs: dict[str, list[tuple[int, str]]] = {}
-    capture = DEFINITION_CAPTURE.get(ext, DEFAULT_CAPTURE)
-    for template in templates:
-        capturing = template.replace("{name}", capture)
-        rx = re.compile(capturing, re.MULTILINE)
-        for match in rx.finditer(text):
-            symbol = match.group(1)
-            lineno = text.count("\n", 0, match.start()) + 1
-            line_start = text.rfind("\n", 0, match.start()) + 1
-            line_end = text.find("\n", match.end())
-            if line_end == -1:
-                line_end = len(text)
-            content = text[line_start:line_end].strip()
-            local_defs.setdefault(symbol, []).append((lineno, content))
+    for lineno, symbol, line in top_level_definitions(text, ext):
+        local_defs.setdefault(symbol, []).append((lineno, line.strip()))
 
+    # Hits come from a handful of files; resolve each one once.
+    resolved: dict[str, Path] = {}
     file_resolved = file_path.resolve()
+    hits = [
+        (u_file, u_line, u_content, Path(u_file).suffix)
+        for u_file, u_line, u_content in search_words(
+            local_defs, list_search_files(root)
+        )
+    ]
     results: list[Result] = []
     for symbol in sorted(local_defs):
         for lineno, content in local_defs[symbol]:
             results.append((str(file_path), lineno, "def", content))
-        for u_file, u_line, _, u_content in find_usages(symbol, root, None):
-            if Path(u_file).resolve() == file_resolved:
+        for u_file, u_line, u_content, u_ext in hits:
+            if not mentions(u_content, u_ext, symbol):
                 continue
-            results.append((u_file, u_line, f"use:{symbol}", u_content))
+            if is_definition_line(u_content, u_ext, symbol):
+                continue
+            if u_file not in resolved:
+                resolved[u_file] = Path(u_file).resolve()
+            if resolved[u_file] == file_resolved:
+                continue
+            results.append((u_file, u_line, f"use:{symbol}", u_content.strip()))
     return results
 
 

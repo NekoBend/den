@@ -4,31 +4,48 @@
 Usage:
     check-broken-refs.py [--base <ref>] [--root <dir>] [--lang <ext>]
 
-Default base: HEAD
+Default base: HEAD, which covers uncommitted changes only. To check changes
+that are already committed (a branch, a pull request), pass the commit they
+started from: --base "$(git merge-base <base-branch> HEAD)".
 Default root: .
 
 Strategy:
-    1. `git diff --name-only BASE -- ` lists files changed in the working tree.
+    1. `git diff --name-status -M BASE` lists files changed in the working
+       tree, a renamed file under both its old and its new path.
     2. For each changed file:
-       - Extract def symbols at BASE (via `git show <base>:<file>`).
-       - Extract def symbols from the current working-tree version.
-       - removed_defs = base_defs - current_defs.
-    3. For each removed def, search the working tree for usages.
-    4. Each usage of a removed def is reported as a broken reference.
+       - Extract its top-level definitions and its methods at BASE (via
+         `git show <base>:<old path>`) and in the working tree (new path).
+       - removed = base - current.
+    3. All removed names are searched for in ONE pass over the tree: a
+       top-level name as a whole word, a method only as `.name` attribute
+       access (dunder methods are not searched).
+    4. Each such mention outside the file(s) the name was removed from is
+       reported as a broken reference.
+
+    The base and the number of changed files examined are printed to stderr,
+    so an empty report on an empty diff is not mistaken for a clean one.
 
 Search scope:
-    Usages are searched with ripgrep when available, otherwise by walking the
-    tree; both backends read every file under the root except the skipped
-    directories (.git, node_modules, .venv, build, ...) and neither follows
-    symlinks. Git-ignored and hidden files ARE searched, deliberately (a
-    dangling reference in .github/, .claude/ or an untracked file is still a
-    dangling reference), and so are binary ones (ripgrep is passed --text), so
-    the result does not change when ripgrep is installed or removed, nor with
-    the ripgrep configuration on the machine (RIPGREP_CONFIG_PATH is not
-    read). Matching lines are printed verbatim, so a tree holding untracked
-    secrets has them searched too, and a hit inside a binary file prints that
-    file's bytes: run this only on a tree whose contents you would read
-    yourself.
+    Inside a git work tree, the files git tracks plus the untracked ones it
+    does not ignore (`git ls-files --cached --others --exclude-standard`), so
+    virtual environments, build output and anything else listed in a
+    .gitignore are not searched; hidden files such as .github/ are. Outside a
+    work tree, every file under the root, except directories holding a
+    pyvenv.cfg (a virtual environment, whatever it is called). Either way
+    the skipped directories (.git, node_modules, .venv, build, ...) are left
+    out and symlinks are not followed. Ripgrep, when installed, searches that
+    same file list, otherwise the files are read in-process, and binary files
+    are searched as text by both (ripgrep is passed --text), so the result
+    does not change when ripgrep is installed or removed, nor with the
+    ripgrep configuration on the machine (RIPGREP_CONFIG_PATH is not read).
+    Matching lines are printed verbatim, so a tree holding untracked secrets
+    that are not ignored has them searched too, and a hit inside a binary
+    file prints that file's bytes: run this only on a tree whose contents you
+    would read yourself.
+
+    git and rg are run by absolute path from the absolute PATH entries; one
+    found in the working directory itself is refused (Windows would
+    otherwise run a git.exe or rg.exe shipped at the root of the checkout).
 
 Output format:
     <file>:<line>:broken_ref:<symbol>:<context>
@@ -42,36 +59,38 @@ Exit codes:
     1  Not a git repository / git unavailable / invalid usage.
 
 Limitations:
-    Regex-based, like find-references.py. Renames that move a def to
-    another file are reported here as broken because the def left the old
-    file; manually verify the new location and ignore false positives.
-    Signature changes (same name, different params) are NOT detected.
-    Symbols added in the working tree that shadow an external symbol are
-    NOT flagged. Dynamic constructs are not analyzed.
+    Regex-based, like find-references.py. A def moved to ANOTHER file (not
+    a rename of the whole file) is reported here as broken because it left
+    the old file; manually verify the new location and ignore false
+    positives. Local variables, keyword arguments, nested functions and
+    class attributes are not definitions here. Signature changes (same name,
+    different params) are NOT detected. Symbols added in the working tree
+    that shadow an external symbol are NOT flagged. Dynamic constructs are
+    not analyzed.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from _common import (
-    DEFAULT_CAPTURE,
-    DEFINITION_CAPTURE,
+    CASE_INSENSITIVE_EXTS,
     DEFINITION_PATTERNS,
-    RG_SEARCH_FLAGS,
     allow_undecodable_paths_on_stdout,
+    find_tool,
     format_hit,
-    iter_search_files,
-    parse_rg_output,
-    read_searchable_text,
-    rg_skip_globs,
+    list_search_files,
+    member_definitions,
+    mentions,
+    search_words,
+    top_level_definitions,
 )
+
+PROG = "[check-broken-refs]"
 
 
 class GitError(RuntimeError):
@@ -86,11 +105,14 @@ def _run_git_bytes(args: list[str], cwd: Path) -> bytes:
     file that exists nowhere. Every command whose output is a PATH reads it
     from here and converts with os.fsdecode, whose surrogateescape round-trips
     back to the original bytes when the path is opened or handed to git again.
+
+    git runs by absolute path (find_tool): never one shipped in the workspace.
     """
-    if shutil.which("git") is None:
+    git = find_tool("git")
+    if git is None:
         raise GitError("git is not installed")
     proc = subprocess.run(
-        ["git", *args],
+        [git, *args],
         cwd=cwd,
         capture_output=True,
         check=False,
@@ -129,12 +151,19 @@ def _repo_root(root: Path) -> Path:
 
 def _changed_files(
     base: str, root: Path, repo_root: Path, lang_ext: str | None
-) -> list[Path]:
-    """List files changed in the working tree compared to BASE.
+) -> list[tuple[Path, Path]]:
+    """(path at BASE, path now) for each file changed in the working tree.
 
-    `git diff --name-only` prints paths relative to the REPOSITORY top-level
-    whatever the cwd is, so they are joined onto `repo_root` and then narrowed
-    to the ones that live under `root` (which may be any subdirectory).
+    `--name-status -M` is what keeps a renamed file: `--name-only` names it
+    by its NEW path alone, where nothing existed at BASE, so the file was
+    skipped and every definition removed from it went unchecked. A rename
+    arrives as `R<score> NUL old NUL new`; every other change as
+    `<status> NUL path`. A copy (C, when diff.renames=copies) leaves its
+    source in place, so only its new path is kept, as an added file.
+
+    git prints paths relative to the REPOSITORY top-level whatever the cwd
+    is, so they are joined onto `repo_root` and then narrowed to the ones that
+    live under `root` (which may be any subdirectory).
 
     `-z` is what makes the paths usable: without it git QUOTES anything
     non-ASCII (`café.py` arrives as `"caf\303\251.py"`, escapes and quotes
@@ -148,33 +177,53 @@ def _changed_files(
     decoding it with errors="replace" would point every later step at a file
     that does not exist.
     """
-    out = _run_git_bytes(["diff", "--name-only", "-z", base], root)
-    files: list[Path] = []
-    for raw in out.split(b"\x00"):
-        if not raw:
+    out = _run_git_bytes(["diff", "--name-status", "-z", "-M", base], root)
+    fields = out.split(b"\x00")
+    changed: list[tuple[Path, Path]] = []
+    i = 0
+    while i < len(fields):
+        status = fields[i]
+        if not status:
+            i += 1
             continue
-        path = repo_root / os.fsdecode(raw)
-        if not path.is_relative_to(root):
+        if status[:1] in {b"R", b"C"}:
+            old, new = fields[i + 1 : i + 3]
+            i += 3
+            if status[:1] == b"C":
+                old = new
+        else:
+            old = new = fields[i + 1]
+            i += 2
+        old_path = repo_root / os.fsdecode(old)
+        new_path = repo_root / os.fsdecode(new)
+        if not (old_path.is_relative_to(root) or new_path.is_relative_to(root)):
             continue
-        if lang_ext and path.suffix != lang_ext:
+        if lang_ext and old_path.suffix != lang_ext:
             continue
-        if path.suffix not in DEFINITION_PATTERNS:
+        if old_path.suffix not in DEFINITION_PATTERNS:
             continue
-        files.append(path)
-    return files
+        changed.append((old_path, new_path))
+    return changed
 
 
-def _extract_defs(text: str, ext: str) -> set[str]:
-    """Return the set of top-level symbol names defined in `text`."""
-    templates = DEFINITION_PATTERNS.get(ext, [])
-    capture = DEFINITION_CAPTURE.get(ext, DEFAULT_CAPTURE)
-    defs: set[str] = set()
-    for template in templates:
-        pattern = template.replace("{name}", capture)
-        defs.update(
-            match.group(1) for match in re.finditer(pattern, text, re.MULTILINE)
-        )
-    return defs
+def _names(found: list[tuple[int, str, str]]) -> set[str]:
+    return {name for _lineno, name, _line in found}
+
+
+def _removed(base: set[str], current: set[str], ext: str) -> set[str]:
+    """Names in `base` that `current` no longer has.
+
+    PowerShell names are case-insensitive, so renaming Get-Widget to
+    get-widget removes nothing there.
+    """
+    if ext not in CASE_INSENSITIVE_EXTS:
+        return base - current
+    kept = {name.casefold() for name in current}
+    return {name for name in base if name.casefold() not in kept}
+
+
+def _is_dunder(name: str) -> bool:
+    return name.startswith("__") and name.endswith("__")
 
 
 def _file_text_at_base(base: str, file: Path, repo_root: Path) -> str | None:
@@ -200,69 +249,101 @@ def _file_text_now(file: Path) -> str | None:
         return None
 
 
-def _ripgrep_available() -> bool:
-    return shutil.which("rg") is not None
-
-
-def _search_for_usages(symbol: str, root: Path) -> list[tuple[str, int, str]]:
-    """Find every occurrence of `symbol` as a whole word under `root`."""
-    word_pattern = rf"\b{re.escape(symbol)}\b"
-    if _ripgrep_available():
-        cmd = [
-            "rg",
-            "--no-heading",
-            "--line-number",
-            "--with-filename",
-            "--no-messages",
-            # same flags as find-references.py: search everything except
-            # SKIP_DIRS, ignored and hidden files included, so a dangling
-            # reference is reported whether or not rg is installed.
-            *RG_SEARCH_FLAGS,
-            word_pattern,
-            str(root),
-        ]
-        cmd.extend(rg_skip_globs())
-        try:
-            # bytes, not text: the stream carries file names (see
-            # parse_rg_output), and a name need not be valid UTF-8.
-            proc = subprocess.run(cmd, capture_output=True, check=False)
-        except FileNotFoundError:
-            return []
-        return parse_rg_output(proc.stdout)
-
-    # Fallback: walk the tree manually, line by line as ripgrep searches. One
-    # hit per matching LINE, not one per regex match: re.finditer reported
-    # every occurrence, so a line using the symbol twice became two identical
-    # broken_ref rows without rg and one with it. Lines are split on "\n"
-    # alone, the separator rg's records use.
-    rx = re.compile(word_pattern)
-    hits: list[tuple[str, int, str]] = []
-    for path in iter_search_files(root):
-        text = read_searchable_text(path)
-        if text is None:
-            continue
-        for lineno, line in enumerate(text.split("\n"), start=1):
-            if rx.search(line):
-                hits.append((str(path), lineno, line))
-    return hits
-
-
 def _normalize_ext(value: str | None) -> str | None:
     if value is None:
         return None
     return value if value.startswith(".") else f".{value}"
 
 
-def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
-    argv: list[str] | None = None,
-) -> int:
+def _removed_symbols(
+    changed: list[tuple[Path, Path]], base: str, repo_root: Path
+) -> tuple[set[str], set[str], dict[str, set[Path]]]:
+    """(top-level names, method names, where each was removed from).
+
+    Top-level names are searched as whole words, methods only as `.name`.
+    Each removed symbol maps to the resolved path(s) it was removed FROM
+    (both paths of a renamed file), so a leftover mention in that same file
+    is not reported as a broken ref: the removal is already part of the diff,
+    and using the name there (a comment, a renamed sibling, a string) is not
+    an external dangling reference.
+    """
+    words: set[str] = set()
+    members: set[str] = set()
+    removed_from: dict[str, set[Path]] = {}
+    for old, new in changed:
+        base_text = _file_text_at_base(base, old, repo_root)
+        if base_text is None:
+            # File did not exist at base; nothing to remove.
+            continue
+        current_text = _file_text_now(new) or ""  # deleted: everything removed
+        base_top = _names(top_level_definitions(base_text, old.suffix))
+        now_top = _names(top_level_definitions(current_text, new.suffix))
+        base_members = _names(member_definitions(base_text, old.suffix))
+        now_members = _names(member_definitions(current_text, new.suffix))
+        gone_top = _removed(base_top, now_top, old.suffix)
+        gone_members = {
+            name
+            for name in _removed(base_members, now_members | now_top, old.suffix)
+            if not _is_dunder(name)
+        }
+        if not gone_top and not gone_members:
+            continue
+        words |= gone_top
+        members |= gone_members
+        sources = {old.resolve()} if old == new else {old.resolve(), new.resolve()}
+        for sym in gone_top | gone_members:
+            removed_from.setdefault(sym, set()).update(sources)
+    members -= words  # removed at top level somewhere: any bare mention counts
+    return words, members, removed_from
+
+
+def _report(
+    words: set[str], members: set[str], removed_from: dict[str, set[Path]], root: Path
+) -> None:
+    """Print every mention of a removed symbol outside the file it left."""
+    # The hits come from a handful of files: resolve each one once, not once
+    # per hit (realpath costs an lstat per path component, which was 85% of
+    # the run time on a slow mount).
+    resolved: dict[str, Path | None] = {}
+
+    def resolve(file: str) -> Path | None:
+        if file not in resolved:
+            try:
+                resolved[file] = Path(file).resolve()
+            except (OSError, ValueError):
+                resolved[file] = None
+        return resolved[file]
+
+    hits = [
+        (u_file, u_lineno, u_content, Path(u_file).suffix)
+        for u_file, u_lineno, u_content in search_words(
+            words | members, list_search_files(root)
+        )
+    ]
+    for symbol in sorted(words | members):
+        member = symbol in members
+        for u_file, u_lineno, u_content, u_ext in hits:
+            if not mentions(u_content, u_ext, symbol, member=member):
+                continue
+            if resolve(u_file) in removed_from[symbol]:
+                continue
+            stripped = u_content.strip()
+            print(format_hit(u_file, u_lineno, f"broken_ref:{symbol}", stripped))
+
+
+def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--base", default="HEAD", help="Git ref to compare against (default: HEAD)."
+        "--base",
+        default="HEAD",
+        help=(
+            "Git ref to compare against (default: HEAD, i.e. uncommitted changes "
+            'only; for a branch pass "$(git merge-base <base-branch> HEAD)").'
+        ),
     )
     parser.add_argument(
         "--root", default=".", help="Working tree root (default: current directory)."
@@ -280,7 +361,7 @@ def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
 
     if not _is_git_repo(root):
         print(
-            "[check-broken-refs] SKIPPED: not a git repository or git unavailable",
+            f"{PROG} SKIPPED: not a git repository or git unavailable",
             file=sys.stderr,
         )
         return 0
@@ -294,48 +375,19 @@ def main(  # ruff: ignore[too-many-branches, too-many-locals]  # flag dispatch
         print(f"git error: {exc}", file=sys.stderr)
         return 1
 
-    removed_by_file: dict[Path, set[str]] = {}
-    for file in changed:
-        base_text = _file_text_at_base(args.base, file, repo_root)
-        if base_text is None:
-            # File did not exist at base; nothing to remove.
-            continue
-        current_text = _file_text_now(file)
-        if current_text is None:
-            # File was deleted; everything in base_text is removed.
-            removed_by_file[file] = _extract_defs(base_text, file.suffix)
-            continue
-        base_defs = _extract_defs(base_text, file.suffix)
-        current_defs = _extract_defs(current_text, file.suffix)
-        removed = base_defs - current_defs
-        if removed:
-            removed_by_file[file] = removed
+    # Said every time: an empty report on an empty diff is not a clean one.
+    count = f"{len(changed)} changed file{'' if len(changed) == 1 else 's'}"
+    hint = ""
+    if not changed and args.base == "HEAD":
+        hint = (
+            " (HEAD covers uncommitted changes only; for committed ones pass"
+            ' --base "$(git merge-base <base-branch> HEAD)")'
+        )
+    print(f"{PROG} base={args.base}: {count} examined{hint}", file=sys.stderr)
 
-    all_removed = {sym for syms in removed_by_file.values() for sym in syms}
-    if not all_removed:
-        return 0
-
-    # Map each removed symbol to the resolved path(s) it was removed FROM, so a
-    # leftover mention in that same file is not reported as a broken ref: the
-    # removal is already part of the diff, and using the name there (a comment,
-    # a renamed sibling, a string) is not an external dangling reference.
-    removed_from: dict[str, set[Path]] = {}
-    for changed_file, syms in removed_by_file.items():
-        resolved = changed_file.resolve()
-        for sym in syms:
-            removed_from.setdefault(sym, set()).add(resolved)
-
-    for symbol in sorted(all_removed):
-        for u_file, u_lineno, u_content in _search_for_usages(symbol, root):
-            try:
-                u_resolved = Path(u_file).resolve()
-            except (OSError, ValueError):
-                u_resolved = None
-            if u_resolved is not None and u_resolved in removed_from.get(symbol, set()):
-                continue
-            stripped = u_content.strip()
-            print(format_hit(u_file, u_lineno, f"broken_ref:{symbol}", stripped))
-
+    words, members, removed_from = _removed_symbols(changed, args.base, repo_root)
+    if removed_from:
+        _report(words, members, removed_from, root)
     return 0
 
 

@@ -8,6 +8,7 @@ asserts directly by pointing at a non-repo directory.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -465,18 +466,21 @@ def test_the_ripgrep_backend_is_really_invoked(
     assert "--no-config" in argv, argv
     assert "--null" in argv, argv
     assert "--text" in argv, argv
-    assert "--no-ignore" in argv, argv
-    assert "--hidden" in argv, argv
-    assert "!.git" in argv, argv
+    # rg is handed the file list itself, after `--`: the same list the
+    # fallback reads, so neither ignore rules nor globs of rg's own apply
+    files = argv[argv.index("--") + 1 :]
+    assert files == [str(tmp_path / "app.py"), str(tmp_path / "lib.py")], argv
 
 
-def test_hidden_and_ignored_usages_are_reported_by_both_backends(
+def test_hidden_and_untracked_usages_are_reported_and_ignored_ones_are_not(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
-    # The walk fallback reads dotfiles and git-ignored files, so rg is given
-    # --no-ignore/--hidden to match: a dangling reference in .github/ or in an
-    # untracked file is still a dangling reference, and the report must not
-    # depend on whether rg is installed.
+    # The search covers what `git ls-files --cached --others
+    # --exclude-standard` lists, on both backends: a dangling reference in
+    # .github/ or in an untracked file is still a dangling reference, while a
+    # virtual environment under any name (uv writes a `*` .gitignore into its
+    # own) and every other ignored file is not searched. Before, the .4win uv
+    # venv on the owner's checkout put 17,602 false lines into one run.
     init_repo(tmp_path)
     write(tmp_path, "lib.py", "def widget():\n    return 1\n")
     write(tmp_path, ".gitignore", "ignored.py\n")
@@ -486,12 +490,25 @@ def test_hidden_and_ignored_usages_are_reported_by_both_backends(
 
     write(tmp_path, "lib.py", "# gone\n")
     write(tmp_path, "ignored.py", "widget()\n")
+    write(tmp_path, "untracked.py", "widget()\n")
+    write(tmp_path, ".4win/.gitignore", "*\n")
+    write(tmp_path, ".4win/pyvenv.cfg", "home = /usr/bin\n")
+    write(tmp_path, ".4win/Lib/site-packages/pkg.py", "widget()\n")
 
+    outputs = []
     for env in backends:
         proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
         assert proc.returncode == 0, proc.stderr
-        assert "ci.yml" in proc.stdout, proc.stdout
-        assert "ignored.py" in proc.stdout, proc.stdout
+        found = sorted(
+            ln[len(f"{tmp_path}{os.sep}") :].split(":", 1)[0]
+            for ln in proc.stdout.splitlines()
+        )
+        assert found == [
+            str(Path(".github", "workflows", "ci.yml")),
+            "untracked.py",
+        ], proc.stdout
+        outputs.append(proc.stdout)
+    assert outputs[0] == outputs[1], outputs
 
 
 def test_binary_files_are_searched_as_text_by_both_backends(
@@ -743,3 +760,347 @@ def test_symlinked_files_are_not_followed(
         assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
         assert "creds" not in proc.stdout, proc.stdout
         assert "app.py" in proc.stdout, proc.stdout
+
+
+def report(proc: subprocess.CompletedProcess[str], root: Path) -> list[str]:
+    """Output lines with the `<root>/` prefix removed."""
+    prefix = f"{root}{os.sep}"
+    out = []
+    for ln in proc.stdout.splitlines():
+        assert ln.startswith(prefix), ln
+        out.append(ln[len(prefix) :])
+    return out
+
+
+# ---------- what counts as a removed definition ----------
+
+
+def test_locals_and_keyword_arguments_are_not_removed_definitions(
+    tmp_path: Path,
+) -> None:
+    # The .py assignment pattern accepted any indentation, so a function-local
+    # `path = ...` and a keyword argument on its own line (`path=path,`) were
+    # "top-level definitions". Rewriting the body removed them, and every
+    # `path` in the tree was then reported: 22,851 lines for one real commit.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "def helper(src):\n"
+        "    path = src + '/'\n"
+        "    return dict(\n"
+        "        path=path,\n"
+        "    )\n",
+    )
+    write(tmp_path, "app.py", "import os\npath = os.getcwd()\nprint(path)\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "def helper(src):\n    return src\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+
+def test_a_deleted_file_reports_module_names_and_methods_as_attributes_only(
+    tmp_path: Path,
+) -> None:
+    # Deleting a file made every local and every method a removed symbol,
+    # each searched as a bare word: `git rm den/_board.py` printed 6,195
+    # lines, 96% of them for nested names such as n, r and line. Now only
+    # module-level names are searched as words; a method is searched only as
+    # `.name` attribute access, and dunder methods not at all.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "LIMIT = 3\n"
+        "def helper():\n"
+        "    n = 1\n"
+        "    return n\n"
+        "class Box:\n"
+        "    def __init__(self):\n"
+        "        self.n = 0\n"
+        "    def run(self):\n"
+        "        return self.n\n",
+    )
+    write(
+        tmp_path,
+        "app.py",
+        "from lib import helper, Box\n"
+        "n = 3\n"
+        "run = 4\n"
+        "helper()\n"
+        "Box().run()\n"
+        "print(n, run)\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "lib.py").unlink()
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.py:1:broken_ref:Box:from lib import helper, Box",
+        "app.py:5:broken_ref:Box:Box().run()",
+        "app.py:1:broken_ref:helper:from lib import helper, Box",
+        "app.py:4:broken_ref:helper:helper()",
+        "app.py:5:broken_ref:run:Box().run()",
+    ]
+
+
+def test_bash_function_keyword_form_removal_is_reported(tmp_path: Path) -> None:
+    # `function name {` (no parentheses) was never a definition, so removing
+    # one while callers remain printed nothing: a false "zero broken refs".
+    init_repo(tmp_path)
+    write(tmp_path, "lib.sh", "function deploy_app {\n  echo x\n}\n")
+    write(tmp_path, "run.sh", "deploy_app\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.sh", "# deploy moved away\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == ["run.sh:1:broken_ref:deploy_app:deploy_app"]
+
+
+def test_powershell_names_are_case_insensitive(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # `Function` (capitalised) was not a definition and a `get-widget` call
+    # was not a use, so this removal went unreported. A change of case alone
+    # removes nothing in PowerShell, and is not reported either.
+    init_repo(tmp_path)
+    write(tmp_path, "Tools.psm1", "Function Get-Widget {\n}\nfunction Set-Thing {\n}\n")
+    write(tmp_path, "run.ps1", "get-widget\nSet-Thing\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "Tools.psm1", "function set-thing {\n}\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:get-widget"]
+
+
+def test_a_removed_typescript_enum_is_reported(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    write(tmp_path, "status.ts", "export enum OrderStatus { Open }\n")
+    write(tmp_path, "app.ts", "use(OrderStatus.Open);\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "status.ts", "export {};\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.ts:1:broken_ref:OrderStatus:use(OrderStatus.Open);"
+    ]
+
+
+# ---------- renames ----------
+
+
+def test_a_renamed_file_keeps_its_removed_definitions_checked(tmp_path: Path) -> None:
+    # `git diff --name-only` names a renamed file by its NEW path alone, where
+    # nothing existed at base, so the file was skipped and every definition
+    # removed from it went unchecked.
+    init_repo(tmp_path)
+    others = "".join(f"def f{i}():\n    return {i}\n" for i in range(20))
+    write(tmp_path, "util.py", "def helper():\n    return 1\n" + others)
+    write(tmp_path, "main.py", "from util import helper\nhelper()\nf3()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    git(tmp_path, "mv", "util.py", "helpers.py")
+    write(tmp_path, "helpers.py", "# helper went away\n" + others)
+    git(tmp_path, "add", "-A")
+
+    expected = [
+        "main.py:1:broken_ref:helper:from util import helper",
+        "main.py:2:broken_ref:helper:helper()",
+    ]
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    # f3 survived the move; the comment in the renamed file itself is not
+    # an external reference
+    assert report(proc, tmp_path) == expected
+
+    git(tmp_path, "commit", "-q", "-m", "rename")
+    proc = run("--base", "HEAD~1", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == expected
+
+
+def test_a_pure_rename_reports_nothing(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    write(tmp_path, "util.py", "def helper():\n    return 1\n")
+    write(tmp_path, "main.py", "helper()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    git(tmp_path, "mv", "util.py", "helpers.py")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+
+# ---------- cost ----------
+
+
+def counting_rg(bin_dir: Path) -> Path:
+    """A `rg` in `bin_dir` that logs one line per run, then runs the real one.
+
+    Returns the log file. git is linked next to it, so PATH=bin_dir is enough.
+    """
+    real = shutil.which("rg")
+    git_exe = shutil.which("git")
+    assert real is not None, "this test needs ripgrep on PATH"
+    assert git_exe is not None, "these tests need git on PATH"
+    log = bin_dir / "rg-runs.log"
+    stub = bin_dir / "rg"
+    stub.write_text(
+        f'#!/bin/sh\necho run >> "{log}"\nexec "{real}" "$@"\n', encoding="utf-8"
+    )
+    stub.chmod(0o755)
+    (bin_dir / Path(git_exe).name).symlink_to(git_exe)
+    return log
+
+
+def test_all_removed_symbols_are_found_in_one_search(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # One full-tree search per removed symbol (173 rg processes for one
+    # deleted stdlib module, or 173 tree walks without rg) became one search
+    # whose hits are attributed to the symbols each line names.
+    if sys.platform == "win32":
+        pytest.skip("the counting rg is a /bin/sh script")
+    log = counting_rg(tmp_path_factory.mktemp("counting-rg"))
+    env = dict(os.environ)
+    env["PATH"] = str(log.parent)
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "".join(f"def f{i}():\n    pass\n" for i in range(5)))
+    write(tmp_path, "app.py", "f0()\nf4()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    (tmp_path / "lib.py").unlink()
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.py:1:broken_ref:f0:f0()",
+        "app.py:2:broken_ref:f4:f4()",
+    ]
+    assert log.read_text(encoding="utf-8").count("run") == 1
+
+
+def test_each_hit_file_is_resolved_once(tmp_path: Path) -> None:
+    # Every hit was resolved (realpath: one lstat per path component) on its
+    # own, which was 85% of the run time on the owner's drvfs checkout.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    app = write(tmp_path, "app.py", "widget()\n" * 60)
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    write(tmp_path, "lib.py", "# gone\n")
+
+    probe = (
+        "import json, pathlib, runpy, sys\n"
+        "calls = []\n"
+        "orig = pathlib.Path.resolve\n"
+        "def counting(self, *a, **k):\n"
+        "    calls.append(str(self))\n"
+        "    return orig(self, *a, **k)\n"
+        "pathlib.Path.resolve = counting\n"
+        "script = sys.argv[1]\n"
+        "sys.path.insert(0, str(pathlib.Path(script).parent))\n"
+        "sys.argv = sys.argv[1:]\n"
+        "try:\n"
+        "    runpy.run_path(script, run_name='__main__')\n"
+        "except SystemExit:\n"
+        "    pass\n"
+        "sys.stderr.write('CALLS=' + json.dumps(calls) + '\\n')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe, str(SCRIPT), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.count("broken_ref:widget") == 60, proc.stdout
+    line = next(ln for ln in proc.stderr.splitlines() if ln.startswith("CALLS="))
+    calls = json.loads(line.removeprefix("CALLS="))
+    assert calls.count(str(app)) == 1, calls.count(str(app))
+
+
+# ---------- the base is reported ----------
+
+
+def test_the_base_and_the_changed_file_count_go_to_stderr(tmp_path: Path) -> None:
+    # The default base HEAD covers uncommitted changes only. A review of a
+    # committed branch got an empty diff, printed nothing and exited 0, which
+    # read as "no dangling references".
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    proc = run("--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "base=HEAD: 0 changed files examined" in proc.stderr, proc.stderr
+    assert "--base" in proc.stderr, proc.stderr
+    assert "merge-base" in proc.stderr, proc.stderr
+
+    write(tmp_path, "lib.py", "def widget():\n    return 2\n")
+    proc = run("--root", str(tmp_path))
+    assert "base=HEAD: 1 changed file examined" in proc.stderr, proc.stderr
+    assert "merge-base" not in proc.stderr, proc.stderr
+
+
+# ---------- git and rg are never taken from the checkout ----------
+
+
+def test_a_git_or_rg_planted_in_the_checkout_never_runs(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # A bare "git"/"rg" is looked up through every PATH entry, and an empty or
+    # relative entry means the working directory: a checkout that ships its
+    # own git or rg (git.exe / rg.exe on Windows, where the cwd is searched
+    # even without such an entry) had it run. Tools now come from absolute
+    # PATH entries only, by absolute path.
+    if sys.platform == "win32":
+        pytest.skip("the planted tools are /bin/sh scripts")
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    write(tmp_path, "lib.py", "# gone\n")
+    marker = tmp_path_factory.mktemp("marker") / "planted-ran"
+    for tool in ("git", "rg"):
+        planted = tmp_path / tool
+        planted.write_text(f'#!/bin/sh\necho {tool} >> "{marker}"\nexit 1\n')
+        planted.chmod(0o755)
+    bin_dir = tmp_path_factory.mktemp("git-only-bin")
+    git_exe = shutil.which("git")
+    assert git_exe is not None
+    (bin_dir / "git").symlink_to(git_exe)
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join([".", str(bin_dir)])
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", "."],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not marker.exists(), marker.read_text()
+    assert report(proc, tmp_path) == ["app.py:1:broken_ref:widget:widget()"]

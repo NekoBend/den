@@ -28,9 +28,12 @@ SCRIPT = (
 # (find-references.py itself is not: its filename has a hyphen).
 sys.path.insert(0, str(SCRIPT.parent))
 
+import _common  # ruff: ignore[module-import-not-at-top-of-file]
 from _common import (  # ruff: ignore[module-import-not-at-top-of-file]
     parse_rg_line,
     parse_rg_output,
+    resolve_tool,
+    search_path,
 )
 
 
@@ -52,9 +55,10 @@ def backends(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, str] | 
     """The two environments a search must return the same files in.
 
     `None` keeps the ambient PATH, which must have ripgrep on it; the second
-    replaces PATH with one empty directory, so the script cannot find rg and
-    has to walk the tree itself. BOTH halves are asserted, because either one
-    failing quietly turns every parity test into the same backend run twice.
+    replaces PATH with a directory holding nothing but a link to git, so the
+    script cannot find rg and has to read the files itself. BOTH halves are
+    asserted, because either one failing quietly turns every parity test into
+    the same backend run twice.
     Dropping only the PATH entries that contain rg is not enough: where rg
     sits in /usr/bin that removes every other tool with it.
 
@@ -68,10 +72,59 @@ def backends(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, str] | 
         "the job that runs tests/agents."
     )
     bin_dir = tmp_path_factory.mktemp("no-rg-bin")
+    # git stays reachable on both legs: inside a work tree it decides which
+    # files are searched, and the two legs must search the same ones.
+    link_git(bin_dir)
     env = dict(os.environ)
     env["PATH"] = str(bin_dir)
     assert shutil.which("rg", path=env["PATH"]) is None
+    assert shutil.which("git", path=env["PATH"]) is not None
     return [None, env]
+
+
+def link_git(bin_dir: Path) -> None:
+    """Put the real git into `bin_dir` (a link, or a copy where links fail)."""
+    git_exe = shutil.which("git")
+    assert git_exe is not None, "these tests need git on PATH"
+    link = bin_dir / Path(git_exe).name
+    try:
+        link.symlink_to(git_exe)
+    except (OSError, NotImplementedError):  # Windows without privileges
+        shutil.copy2(git_exe, link)
+
+
+def git(repo: Path, *args: str) -> None:
+    """Run a git command inside `repo`, raising on failure."""
+    exe = shutil.which("git")
+    assert exe is not None, "these tests build git repositories: install git"
+    subprocess.run([exe, *args], cwd=repo, check=True, capture_output=True)
+
+
+def rows(proc: subprocess.CompletedProcess[str], root: Path) -> list[str]:
+    """Output lines with the `<root>/` prefix removed."""
+    prefix = f"{root}{os.sep}"
+    out = []
+    for ln in proc.stdout.splitlines():
+        assert ln.startswith(prefix), ln
+        out.append(ln[len(prefix) :])
+    return out
+
+
+def counting_rg(bin_dir: Path) -> Path:
+    """A `rg` in `bin_dir` that logs one line per run, then runs the real one.
+
+    Returns the log file. git is linked next to it, so PATH=bin_dir is enough.
+    """
+    real = shutil.which("rg")
+    assert real is not None, "this test needs ripgrep on PATH"
+    log = bin_dir / "rg-runs.log"
+    stub = bin_dir / "rg"
+    stub.write_text(
+        f'#!/bin/sh\necho run >> "{log}"\nexec "{real}" "$@"\n', encoding="utf-8"
+    )
+    stub.chmod(0o755)
+    link_git(bin_dir)
+    return log
 
 
 def symlink_or_skip(link: Path, target: Path) -> None:
@@ -365,9 +418,10 @@ def test_the_ripgrep_backend_is_really_invoked(
     assert "--no-config" in argv, argv
     assert "--null" in argv, argv
     assert "--text" in argv, argv
-    assert "--no-ignore" in argv, argv
-    assert "--hidden" in argv, argv
-    assert "!.git" in argv, argv
+    # rg is handed the file list itself, after `--`: the same list the
+    # fallback reads, so neither ignore rules nor globs of rg's own apply
+    files = argv[argv.index("--") + 1 :]
+    assert files == [str(tmp_path / "mod.py")], argv
 
 
 def test_root_under_a_skipped_directory_is_still_searched(
@@ -385,21 +439,78 @@ def test_root_under_a_skipped_directory_is_still_searched(
         assert lines[0].endswith("mod.py:1:def:def widget():"), proc.stdout
 
 
-def test_hidden_and_ignored_files_are_searched_by_both_backends(
+def test_in_a_git_repo_hidden_files_are_searched_and_ignored_ones_are_not(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
-    # The walk fallback knows nothing about .gitignore or dotfiles, so rg is
-    # given --no-ignore/--hidden to match it. Pinned because dropping either
-    # flag makes the output depend on whether rg is installed.
-    (tmp_path / ".git").mkdir()  # makes rg honour .gitignore at all
+    # Inside a work tree both backends search what `git ls-files --cached
+    # --others --exclude-standard` lists. A virtual environment under any
+    # name (uv writes a `*` .gitignore into its own) and anything else the
+    # user ignores used to be searched too: a uv venv called .4win alone put
+    # 17,602 false hits into one check-broken-refs run. Hidden files are not
+    # ignored, so .github/ is still searched, tracked or not.
+    git(tmp_path, "init", "-q")
     write(tmp_path, ".gitignore", "ignored.py\n")
     write(tmp_path, "ignored.py", "widget()\n")
+    write(tmp_path, ".4win/.gitignore", "*\n")
+    write(tmp_path, ".4win/pyvenv.cfg", "home = /usr/bin\n")
+    write(tmp_path, ".4win/Lib/site-packages/pkg.py", "widget()\n")
     write(tmp_path, ".github/workflows/ci.yml", "run: widget()\n")
+    write(tmp_path, "tracked.py", "widget()\n")
+    git(tmp_path, "add", "tracked.py")
+    write(tmp_path, "untracked.py", "widget()\n")
+    outputs = []
     for env in backends:
         proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
         assert proc.returncode == 0, proc.stderr
-        assert "ignored.py" in proc.stdout, proc.stdout
-        assert "ci.yml" in proc.stdout, proc.stdout
+        found = sorted(r.split(":", 1)[0] for r in rows(proc, tmp_path))
+        assert found == [
+            str(Path(".github", "workflows", "ci.yml")),
+            "tracked.py",
+            "untracked.py",
+        ], proc.stdout
+        outputs.append(proc.stdout)
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_outside_git_a_virtualenv_of_any_name_is_not_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Outside a work tree there is no .gitignore to go by, so a directory
+    # holding a pyvenv.cfg - what marks a Python virtual environment,
+    # whatever it is called - is skipped by both backends. Everything else,
+    # hidden files included, is still searched.
+    root = tmp_path / "proj"
+    write(root, "env-3.12/pyvenv.cfg", "home = /usr/bin\n")
+    write(root, "env-3.12/lib/python3.12/site-packages/pkg.py", "widget()\n")
+    write(root, ".hidden/notes.txt", "widget()\n")
+    write(root, "src/app.py", "widget()\n")
+    outputs = []
+    for env in backends:
+        full = dict(os.environ if env is None else env)
+        full["GIT_CEILING_DIRECTORIES"] = str(tmp_path)  # never a repo above
+        proc = run("--uses", "widget", "--root", str(root), env=full)
+        assert proc.returncode == 0, proc.stderr
+        found = sorted(r.split(":", 1)[0] for r in rows(proc, root))
+        assert found == [
+            str(Path(".hidden", "notes.txt")),
+            str(Path("src", "app.py")),
+        ], proc.stdout
+        outputs.append(proc.stdout)
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_a_root_that_git_ignores_is_still_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # git lists nothing below an ignored directory, but a search the user
+    # pointed there explicitly must not come back empty because of it.
+    git(tmp_path, "init", "-q")
+    write(tmp_path, ".gitignore", "generated/\n")
+    write(tmp_path, "generated/api.py", "def widget():\n    pass\n")
+    for env in backends:
+        proc = run("--def", "widget", "--root", str(tmp_path / "generated"), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path / "generated") == ["api.py:1:def:def widget():"]
 
 
 def test_binary_files_are_searched_as_text_by_both_backends(
@@ -659,3 +770,323 @@ def test_symlinked_files_are_not_followed(
         assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
         assert "creds" not in proc.stdout, proc.stdout
         assert "real.py" in proc.stdout, proc.stdout
+
+
+# ---------- what counts as a definition ----------
+
+
+def test_keyword_arguments_and_locals_are_uses_not_definitions(tmp_path: Path) -> None:
+    # The .py assignment pattern accepted any indentation, so a keyword
+    # argument on its own line (`    path=path,`) and every local assignment
+    # counted as a DEFINITION of `path`: --def listed them, and --uses hid
+    # them although each one reads `path`. Only a column-0 assignment is a
+    # module-level name.
+    write(
+        tmp_path,
+        "mod.py",
+        "path = 'x'\n"
+        "def run(path):\n"
+        "    path = path + '/'\n"
+        "    return dict(\n"
+        "        path=path,\n"
+        "    )\n",
+    )
+    proc = run("--def", "path", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == ["mod.py:1:def:path = 'x'"]
+
+    proc = run("--uses", "path", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "mod.py:2:use:def run(path):",
+        "mod.py:3:use:path = path + '/'",
+        "mod.py:5:use:path=path,",
+    ]
+
+
+def test_in_lists_top_level_names_only(tmp_path: Path) -> None:
+    # --in documents "every top-level symbol"; it listed every local, keyword
+    # argument and method too, each with a whole-tree search of its own (89
+    # symbols for a 52-name module, and 535,857 lines for rich/progress.py).
+    target = write(
+        tmp_path,
+        "lib.py",
+        "LIMIT = 3\n"
+        "def helper(n):\n"
+        "    total = n\n"
+        "    return dict(\n"
+        "        total=total,\n"
+        "    )\n"
+        "class Box:\n"
+        "    size = 1\n"
+        "    def run(self):\n"
+        "        return 1\n",
+    )
+    write(tmp_path, "app.py", "from lib import helper\nhelper(total)\nbox.run()\n")
+    proc = run("--in", str(target), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:7:def:class Box:",
+        "lib.py:1:def:LIMIT = 3",
+        "lib.py:2:def:def helper(n):",
+        "app.py:1:use:helper:from lib import helper",
+        "app.py:2:use:helper:helper(total)",
+    ]
+
+
+def test_in_reports_the_line_a_definition_is_on(tmp_path: Path) -> None:
+    # The patterns ran over the whole text with re.MULTILINE, so `^\s*`
+    # swallowed the blank lines above `def beta` and reported it at line 3.
+    target = write(
+        tmp_path, "lib.py", "def alpha():\n    pass\n\n\ndef beta():\n    pass\n"
+    )
+    proc = run("--in", str(target), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:1:def:def alpha():",
+        "lib.py:5:def:def beta():",
+    ]
+
+
+def test_bash_function_keyword_form_is_a_definition(tmp_path: Path) -> None:
+    # `function name {` (no parentheses) is the standard bash/ksh form; the
+    # pattern required `()`, so --def, --in and check-broken-refs never saw it.
+    lib = write(tmp_path, "lib.sh", "function deploy_app {\n  echo x\n}\n")
+    write(tmp_path, "run.sh", "deploy_app\n")
+    proc = run("--def", "deploy_app", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == ["lib.sh:1:def:function deploy_app {"]
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.sh:1:def:function deploy_app {",
+        "run.sh:1:use:deploy_app:deploy_app",
+    ]
+    # a hyphenated name is not truncated into a definition of its first part
+    write(tmp_path, "other.sh", "function deploy_app-v2 {\n  :\n}\n")
+    proc = run("--def", "deploy_app", "--root", str(tmp_path))
+    assert rows(proc, tmp_path) == ["lib.sh:1:def:function deploy_app {"]
+
+
+def test_powershell_matching_ignores_case(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # PowerShell keywords and command names are case-insensitive: `Function`
+    # defines what `get-widget` calls. Both were invisible. Other languages
+    # keep exact case, so the .txt line below is not a use.
+    write(tmp_path, "Tools.psm1", "Function Get-Widget {\n    param()\n}\n")
+    write(tmp_path, "run.ps1", "get-widget\nGET-WIDGET -Name x\n")
+    write(tmp_path, "notes.txt", "get-widget\n")
+    for env in backends:
+        proc = run("--def", "Get-Widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == ["Tools.psm1:1:def:Function Get-Widget {"]
+        proc = run("--uses", "Get-Widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "run.ps1:1:use:get-widget",
+            "run.ps1:2:use:GET-WIDGET -Name x",
+        ]
+    proc = run("--in", str(tmp_path / "Tools.psm1"), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path)[0] == "Tools.psm1:1:def:Function Get-Widget {"
+    assert len(rows(proc, tmp_path)) == 3, proc.stdout
+
+
+def test_typescript_enum_and_namespace_are_definitions(tmp_path: Path) -> None:
+    status = write(
+        tmp_path,
+        "status.ts",
+        "export enum OrderStatus { Open }\n"
+        "export const enum Flag { On }\n"
+        "export namespace Shapes {\n"
+        "  export const side = 1;\n"
+        "}\n",
+    )
+    write(tmp_path, "app.ts", "use(OrderStatus.Open, Flag.On, Shapes.side);\n")
+    proc = run("--def", "OrderStatus", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == ["status.ts:1:def:export enum OrderStatus { Open }"]
+    proc = run("--in", str(status), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    defs = [r for r in rows(proc, tmp_path) if ":def:" in r]
+    assert defs == [
+        "status.ts:2:def:export const enum Flag { On }",
+        "status.ts:1:def:export enum OrderStatus { Open }",
+        "status.ts:3:def:export namespace Shapes {",
+    ]
+
+
+# ---------- one search per run ----------
+
+
+def test_each_mode_runs_one_search(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # --def ran one search per (extension, pattern) pair (66 of them), --uses
+    # one more on top, and --in all of that again for every symbol of the
+    # file. Definition lines hold the symbol as a whole word, so one word
+    # search, classified in-process, finds them all.
+    if sys.platform == "win32":
+        pytest.skip("the counting rg is a /bin/sh script")
+    log = counting_rg(tmp_path_factory.mktemp("counting-rg"))
+    env = dict(os.environ)
+    env["PATH"] = str(log.parent)
+    lib = write(
+        tmp_path,
+        "lib.py",
+        "".join(f"def f{i}():\n    pass\n" for i in range(20)),
+    )
+    write(tmp_path, "app.py", "f1()\nf7()\n")
+    for args, expected in (
+        (["--def", "f1"], ["lib.py:3:def:def f1():"]),
+        (["--uses", "f1"], ["app.py:1:use:f1()"]),
+    ):
+        log.unlink(missing_ok=True)
+        proc = run(*args, "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == expected
+        assert log.read_text(encoding="utf-8").count("run") == 1, args
+    log.unlink(missing_ok=True)
+    proc = run("--in", str(lib), "--root", str(tmp_path), env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert "app.py:1:use:f1:f1()" in rows(proc, tmp_path)
+    assert "app.py:2:use:f7:f7()" in rows(proc, tmp_path)
+    assert log.read_text(encoding="utf-8").count("run") == 1
+
+
+# ---------- the fallback reads files as a stream ----------
+
+
+def test_the_fallback_numbers_lines_as_ripgrep_does(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The fallback read whole files in text mode, whose universal newlines
+    # turn a lone "\r" into a line break, so every line after one was
+    # numbered differently from rg. Both now split on "\n" alone.
+    (tmp_path / "old-mac.txt").write_bytes(b"a\rb\rc\nwidget()\n")
+    (tmp_path / "dos.txt").write_bytes(b"x\r\nwidget()\r\n")
+    outputs = []
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert sorted(rows(proc, tmp_path)) == [
+            "dos.txt:2:use:widget()",
+            "old-mac.txt:2:use:widget()",
+        ]
+        outputs.append(proc.stdout)
+    assert outputs[0] == outputs[1], outputs
+
+
+def test_the_fallback_does_not_load_a_large_file_whole(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # Without rg every file was read whole and split, so peak memory was
+    # several times the largest file under the root (2.2 GB for a 256 MB
+    # weights file). Read as a stream it is bounded by the longest line.
+    pytest.importorskip("resource")  # POSIX only: the probe below reads ru_maxrss
+    data = tmp_path / "data.csv"
+    line = b"0123456789," * 9 + b"\n"
+    with data.open("wb") as fh:
+        for _ in range(64):
+            fh.write(line * 10_000)  # 58 MB of short lines in all
+    write(tmp_path, "app.py", "widget()\n")
+    bin_dir = tmp_path_factory.mktemp("no-rg-bin")
+    link_git(bin_dir)
+    probe = (
+        "import resource, subprocess, sys\n"
+        "subprocess.run(sys.argv[1:], check=True, stdout=subprocess.DEVNULL)\n"
+        "print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)\n"
+    )
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir)
+    proc = subprocess.run(
+        [
+            *(sys.executable, "-c", probe, sys.executable, str(SCRIPT)),
+            *("--uses", "widget", "--root", str(tmp_path)),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    peak = int(proc.stdout.strip())
+    peak_mb = peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
+    # measured: about 170 MB read whole, about 16 MB streamed
+    assert peak_mb < 60, f"peak RSS {peak_mb:.0f} MB for a 58 MB file"
+
+
+# ---------- git and rg are never taken from the workspace ----------
+
+
+def test_search_path_drops_current_directory_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An empty entry, "." and a relative directory all mean the workspace.
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(tmp_path), "", os.curdir, "rel/bin"])
+    )
+    assert search_path() == str(tmp_path)
+
+
+def test_a_tool_in_the_working_directory_is_refused_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows' which() and CreateProcess both search the cwd for a bare name,
+    # so a checkout shipping rg.exe or git.exe at its root would run.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_common, "_windows", lambda: True)
+    monkeypatch.setattr(
+        _common.shutil, "which", lambda name, path=None: str(tmp_path / name)
+    )
+    exe, refusal = resolve_tool("rg")
+    assert exe is None
+    assert refusal == f"refusing rg resolved inside the workspace ({tmp_path / 'rg'})"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the real POSIX search")
+def test_posix_resolves_to_an_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = tmp_path / "rg"
+    tool.write_text("#!/bin/sh\n")
+    tool.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    # an absolute PATH entry that happens to be the cwd still supplies it
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert resolve_tool("rg") == (str(tool), None)
+    # reached through a relative entry, it is refused
+    exe, refusal = resolve_tool("rg", path=os.curdir)
+    assert exe is None
+    assert refusal is not None
+
+
+def test_a_rg_or_git_planted_in_the_working_directory_never_runs(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # The script checked shutil.which("rg") and then ran the bare name, so a
+    # `.` (or empty) PATH entry made it run the checkout's own rg; on Windows
+    # the cwd is searched even without one. Now only absolute PATH entries
+    # supply a tool, and without a real rg the in-process reader is used.
+    if sys.platform == "win32":
+        pytest.skip("the planted tools are /bin/sh scripts")
+    marker = tmp_path_factory.mktemp("marker") / "planted-ran"
+    for tool in ("rg", "git"):
+        planted = tmp_path / tool
+        planted.write_text(f'#!/bin/sh\necho {tool} >> "{marker}"\nexit 1\n')
+        planted.chmod(0o755)
+    write(tmp_path, "app.py", "widget()\n")
+    env = dict(os.environ)
+    env["PATH"] = os.curdir
+    env["GIT_CEILING_DIRECTORIES"] = str(tmp_path.parent)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--uses", "widget", "--root", "."],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not marker.exists(), marker.read_text()
+    assert rows(proc, tmp_path) == ["app.py:1:use:widget()"]
