@@ -206,8 +206,9 @@ warn_walk() {
 }
 
 # run_pass VERB QUIET CMD TARGET MATCH... -- find the files matching MATCH under
-# the shared roots (with the prune above) and apply `CMD -h -c TARGET` to them
-# in parallel. `-c` prints one line per CHANGED file; awk counts them (fast, in
+# the shared roots (with the prune above), or with $list set take the paths
+# from that file (one of classify's lists), and apply `CMD -h -c TARGET` to
+# them in parallel. `-c` prints one line per CHANGED file; awk counts them (fast, in
 # C) for a live progress total (only to a tty) and a summary; with -v each
 # changed path is printed too. VERB is the past-tense verb for the messages;
 # QUIET=1 suppresses the summary when nothing changed (secondary passes). With
@@ -227,6 +228,8 @@ run_pass() {
 	# Files INSIDE the tree stay lstat-matched and chowned with -h, so inner
 	# symlinks are never followed.
 	local fc=(find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} "$@" -print0)
+	# A list was walked already (classify reported its errors): read it.
+	[ -z "$list" ] || fc=(cat -- "$list")
 	if [ "$dry" -eq 1 ]; then
 		# inspection mode: every pass's count is printed, on stdout. find errors
 		# must not hide behind the count pipeline here either (exit "${PIPESTATUS[0]}"
@@ -259,6 +262,26 @@ run_pass() {
 	return 0
 }
 
+# classify F_UID F_GID -- sort the files under the roots (with the prune above)
+# into the three disjoint classes the --from UID:GID passes change, in ONE walk
+# taken before anything changes: both ids match, the uid only, the gid only.
+# Each class goes to a NUL-separated list in $tmpd (both, uid, gid). A walk
+# per pass lstat()ed every inode three times, and a pass that walked after an
+# earlier pass had chowned saw that pass's files again: with --to F_UID:NEWGID
+# the uid-only walk matched every file the first pass had just re-grouped.
+# GNU find's comma operator evaluates every class for each file; the
+# parentheses keep the prune ahead of all three.
+classify() {
+	tmpd=$(mktemp -d "${TMPDIR:-/tmp}/fixids.XXXXXX")
+	trap 'rm -rf -- "$tmpd"' EXIT
+	find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} '(' \
+		'(' -uid "$1" -gid "$2" -fprint0 "$tmpd/both" ')' , \
+		'(' -uid "$1" '!' -gid "$2" -fprint0 "$tmpd/uid" ')' , \
+		'(' '!' -uid "$1" -gid "$2" -fprint0 "$tmpd/gid" ')' ')' || warn_walk
+}
+
+list=""
+
 # Which files to change, and how.
 if [ "$from_set" -eq 1 ]; then
 	[ -n "$from" ] || { echo "$prog: --from given an empty value" >&2; exit 2; }
@@ -269,9 +292,12 @@ if [ "$from_set" -eq 1 ]; then
 		# DISJOINT passes so each file gets exactly the change it matched -- a
 		# file matching only by gid must not have its uid taken over. On the
 		# typical tree (everything owned uid:gid) passes 2 and 3 match nothing.
-		run_pass chowned 0 chown "$to_uid:$to_gid" '(' -uid "$f_uid" -gid "$f_gid" ')'
-		run_pass chowned 1 chown "$to_uid" '(' -uid "$f_uid" '!' -gid "$f_gid" ')'
-		run_pass "chgrp'd" 1 chgrp "$to_gid" '(' '!' -uid "$f_uid" -gid "$f_gid" ')'
+		# The classes come from one walk (classify). A uid-only file needs a
+		# change only when the uid does, a gid-only file only when the gid does.
+		classify "$f_uid" "$f_gid"
+		list=$tmpd/both run_pass chowned 0 chown "$to_uid:$to_gid"
+		[ "$to_uid" = "$f_uid" ] || list=$tmpd/uid run_pass chowned 1 chown "$to_uid"
+		[ "$to_gid" = "$f_gid" ] || list=$tmpd/gid run_pass "chgrp'd" 1 chgrp "$to_gid"
 	else
 		# uid-only --from; or --to without a GID, where gid matches have no
 		# target gid, so only uid matches are touched (groups stay as they are)

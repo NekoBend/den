@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/helpers.sh"
 FIXIDS="$DOTFILES/shell/posix/bin/fixids"
 BASH_BIN=$(command -v bash) || abort_suite "no bash on PATH"
 REAL_ID=$(command -v id) || abort_suite "no id on PATH"
+REAL_FIND=$(command -v find) || abort_suite "no find on PATH"
 
 # fx <dir to put first on PATH, or ''> <fixids args...>: stdout and stderr,
 # then rc=<status>. Its temporary lists go under WORK.
@@ -20,7 +21,7 @@ fx() {
 }
 
 # A tree of 6 entries (the root t, a, b, b/c, node_modules, node_modules/x),
-# all owned by whoever runs the suite: U.
+# all owned by whoever runs the suite: U:G.
 setup_tree() {
     rm -rf "${WORK:?}/t"
     mkdir -p "$WORK/t/b" "$WORK/t/node_modules"
@@ -30,13 +31,17 @@ setup_tree() {
 }
 setup_tree
 U=$(stat -c %u "$WORK/t")
+G=$(stat -c %g "$WORK/t")
+NEWG=$((G + 1))
 
 # id as root sees it, and as uid/gid 1234 sees it; any other use of id (a name
 # to resolve) goes to the real one.
-mkdir -p "$TESTTMP/asroot" "$TESTTMP/asuser"
+mkdir -p "$TESTTMP/asroot" "$TESTTMP/asuser" "$TESTTMP/findlog"
 printf '#!/bin/sh\ncase "$*" in -u|-g) echo 0 ;; *) exec "%s" "$@" ;; esac\n' "$REAL_ID" > "$TESTTMP/asroot/id"
 printf '#!/bin/sh\ncase "$*" in -u|-g) echo 1234 ;; *) exec "%s" "$@" ;; esac\n' "$REAL_ID" > "$TESTTMP/asuser/id"
-chmod +x "$TESTTMP/asroot/id" "$TESTTMP/asuser/id"
+# find that logs each call
+printf '#!/bin/sh\necho find >> "%s"\nexec "%s" "$@"\n' "$WORK/find.calls" "$REAL_FIND" > "$TESTTMP/findlog/find"
+chmod +x "$TESTTMP/asroot/id" "$TESTTMP/asuser/id" "$TESTTMP/findlog/find"
 
 # =============================================================================
 # The target owner when run as root
@@ -63,6 +68,78 @@ rc=0" "$actual"
 echo "[fixids] the header's entrypoint example names the target and drops to it"
 actual=$(grep -c -F -e 'fixids --from 1000:1000 --to "$HOST_UID:$HOST_GID"' -e 'setpriv --reuid "$HOST_UID" --regid "$HOST_GID"' "$FIXIDS")
 assert_eq "fixids/header example uses --to and the same ids" "2" "$actual"
+
+# =============================================================================
+# --from UID:GID: one walk
+# =============================================================================
+# With --from UID:GID and a target GID, fixids walked the whole tree once per
+# class (both ids, uid only, gid only): three lstat()s per inode, and a later
+# walk saw the files an earlier pass had already chowned. One walk now
+# classifies every file before anything changes.
+echo "[fixids] --from UID:GID walks the tree once"
+rm -f "$WORK/find.calls"
+actual=$(fx "$TESTTMP/findlog" -n --from "$U:$G" --to 2000:2000 "$WORK/t")
+assert_eq "fixids/three classes counted" "fixids: 6 file(s) would be chowned to 2000:2000
+fixids: 0 file(s) would be chowned to 2000
+fixids: 0 file(s) would be chgrp'd to 2000
+rc=0" "$actual"
+assert_eq "fixids/one find call" "1" "$(wc -l < "$WORK/find.calls" | tr -d ' ')"
+
+# A uid-only file needs a change only when the uid changes; with the same uid
+# that pass is skipped (it used to re-chown the files the first pass had just
+# re-grouped, which now matched it).
+echo "[fixids] --to with the --from uid leaves out the uid-only pass"
+actual=$(fx "" -n --from "$U:$G" --to "$U:$NEWG" "$WORK/t")
+assert_eq "fixids/same uid: no uid-only pass" "fixids: 6 file(s) would be chowned to $U:$NEWG
+fixids: 0 file(s) would be chgrp'd to $NEWG
+rc=0" "$actual"
+
+echo "[fixids] the one walk still prunes -x directories, the directory itself too"
+actual=$(fx "" -n --from "$U:$G" --to "$U:$NEWG" -x node_modules "$WORK/t")
+assert_eq "fixids/prune with the one walk" "fixids: 4 file(s) would be chowned to $U:$NEWG
+fixids: 0 file(s) would be chgrp'd to $NEWG
+rc=0" "$actual"
+
+echo "[fixids] the class lists are removed afterwards"
+actual=$(find "$WORK/tmp" -mindepth 1)
+assert_eq "fixids/no lists left in TMPDIR" "" "$actual"
+
+# =============================================================================
+# A real run (root only)
+# =============================================================================
+# Each class gets exactly its change, once: logging chown / chgrp stand-ins
+# call the real tools. 1000:1000 -> 1000:2000 (both ids), 1000:3000 stays
+# (uid only, and the uid does not change), 3000:1000 -> 3000:2000 (gid only),
+# 3000:3000 stays.
+echo "[fixids] a real --from 1000:1000 --to 1000:2000 run changes each class once"
+if [ "$(id -u)" -eq 0 ]; then
+    rm -rf "${WORK:?}/r" "$TESTTMP/chlog"
+    mkdir -p "$WORK/r" "$TESTTMP/chlog"
+    for f in a b c d; do : > "$WORK/r/$f"; done
+    chown 1000:1000 "$WORK/r" "$WORK/r/a"
+    chown 1000:3000 "$WORK/r/b"
+    chown 3000:1000 "$WORK/r/c"
+    chown 3000:3000 "$WORK/r/d"
+    for t in chown chgrp; do
+        printf '#!/bin/sh\necho "%s $3" >> "%s"\nexec "%s" "$@"\n' "$t" "$WORK/ch.calls" "$(command -v "$t")" > "$TESTTMP/chlog/$t"
+        chmod +x "$TESTTMP/chlog/$t"
+    done
+    rm -f "$WORK/ch.calls"
+    actual=$(fx "$TESTTMP/chlog" --from 1000:1000 --to 1000:2000 "$WORK/r")
+    assert_eq "fixids/real run summary" "fixids: chowned 2 file(s) to 1000:2000
+fixids: chgrp'd 1 file(s) to 2000
+rc=0" "$actual"
+    actual=$(cd "$WORK/r" && stat -c '%n %u:%g' . a b c d)
+    assert_eq "fixids/real run owners" ". 1000:2000
+a 1000:2000
+b 1000:3000
+c 3000:2000
+d 3000:3000" "$actual"
+    assert_eq "fixids/real run: one chown and one chgrp call, no uid-only chown" "chgrp 2000
+chown 1000:2000" "$(sort "$WORK/ch.calls")"
+else
+    echo "  SKIP: fixids/real run (needs root)"
+fi
 
 # =============================================================================
 # Summary
