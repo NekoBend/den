@@ -51,9 +51,10 @@ _wrap_log() {
 # it. Typed counts through eval and $(...) at the prompt, through `bash -c` /
 # `zsh -c`, through `again` / `sagain`, which replay a typed line, and through
 # `snippet run` / `snippet pick`, which run a saved one (snippet.sh). den's
-# cd hands a directory to zoxide, and a wrapper with a native fallback runs
-# the modern tool, only when typed: code in a function or a script gets
-# builtin cd and the native command it was written for.
+# cd hands a directory to zoxide, and a wrapper named after the native
+# command it replaces runs the modern tool, only when typed: code in a
+# function or a script gets builtin cd and the native command it was written
+# for.
 # The call stack is bash's FUNCNAME or zsh's funcstack (which also lists each
 # sourced file by its path and each eval as "(eval)"); eval keeps the array
 # syntax away from a POSIX parser.
@@ -86,12 +87,14 @@ _den_typed() {
 # ========== wrapper generator ==========
 
 # _wrap <func> <modern> <modern_flags> <fallback> <fallback_flags>
-# A wrapper with a native fallback runs the modern tool only when typed at the
-# prompt (_den_typed); one with none (lt, ripgrep) always does.
+# A wrapper that takes the name of its native fallback (ls, cat, grep, find)
+# runs the modern tool only when typed at the prompt (_den_typed), since code
+# that calls that name means the native command. den's own names (la, ll, lla,
+# lt, llt, ripgrep) mean nothing else, so they run the modern tool anywhere.
 _wrap() {
     _w_name="$1" _w_mod="$2" _w_mf="$3" _w_fb="$4" _w_fbf="$5"
     _w_typed=
-    [ -n "$_w_fb" ] && _w_typed=" && _den_typed"
+    [ "$_w_name" = "$_w_fb" ] && _w_typed=" && _den_typed"
     eval "${_w_name}() {
         if [ \"\${_DEN_WRAPPERS:-1}\" != \"0\" ] && command -v ${_w_mod} >/dev/null 2>&1${_w_typed}; then
             _wrap_log \"${_w_name}\" \"${_w_mod}\" \"${_w_fb}\" \"${_w_fbf}\"

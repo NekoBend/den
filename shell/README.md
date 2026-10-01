@@ -115,16 +115,16 @@ Ways to get the native command:
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
 tool, ignoring the toggle, and print no notice.
 
-On bash/zsh a wrapper with a native fallback (`ls`, `la`, `ll`, `lla`, `cat`,
-`grep`, `find`) runs the modern tool only when typed at the prompt (`eval` and
-`$(...)` typed there, a line a typed `again` replays, and a snippet a typed
-`snippet run` or `snippet pick` runs count as typed). Run by a
-function, your own included, or by a sourced file, it runs the native command
-that code was written for, and den's `cd` is `builtin cd` there too. A function
-that relied on a wrapper now gets the native tool; call the modern tool by name
-or through its `w`-suffix form. `lt`, `llt` and `ripgrep` have no native
-command and stay modern. The check is bash's `FUNCNAME` / zsh's `funcstack`
-call stack (`_den_typed` in `_helpers.sh`).
+On bash/zsh a wrapper that replaces a native command (`ls`, `cat`, `grep`,
+`find`) runs the modern tool only when typed at the prompt (`eval` and `$(...)`
+typed there, a line a typed `again` replays, and a snippet a typed `snippet
+run` or `snippet pick` runs count as typed). Run by a function, your own
+included, or by a sourced file, it runs the native command that code was
+written for, and den's `cd` is `builtin cd` there too. A function that relied
+on such a wrapper now gets the native tool; call the modern tool by name or
+through its `w`-suffix form. den's own names (`la`, `ll`, `lla`, `lt`, `llt`,
+`ripgrep`) replace nothing and stay modern anywhere. The check is bash's
+`FUNCNAME` / zsh's `funcstack` call stack (`_den_typed` in `_helpers.sh`).
 
 On PowerShell, piping objects into a wrapper that resolves to a modern tool,
 microsoft/coreutils, or a native exe (e.g. `Get-ChildItem | wc -l`) sends the

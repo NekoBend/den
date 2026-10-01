@@ -588,13 +588,13 @@ assert_eq "pwsh/lt on 5.1 with lsd still runs lsd" "stub lsd --tree src" "$actua
 # =============================================================================
 # Wrapper notice of the real wrappers (stub modern tools)
 # =============================================================================
-# Typed at the prompt, a wrapper with a native fallback runs the modern tool;
-# in a function (a user's own included) or a sourced file it runs the native
-# command that code was written for, as builtin cd replaces den's zoxide cd
-# there. eval, $(...), `again` (stubbed here) and `snippet run` / `snippet
+# Typed at the prompt, a wrapper named after its native command (ls, cat,
+# grep, find) runs the modern tool; in a function (a user's own included) or a
+# sourced file it runs the native command that code was written for, as
+# builtin cd replaces den's zoxide cd there. eval, $(...), `again` (stubbed here) and `snippet run` / `snippet
 # pick` at the prompt count as typed; `bash -c` / `zsh -c` count as the prompt. The modern stand-ins print their
-# name and arguments. Wrappers with no native command (lt, llt, ripgrep) and
-# the w names always run the modern tool.
+# name and arguments. den's own names (la, ll, lla, lt, llt, ripgrep) and the
+# w names mean nothing else, so they always run the modern tool.
 echo ""
 echo "================================================"
 echo "  Testing where the wrappers run the modern tool"
@@ -612,14 +612,14 @@ printf 'g\tgrep banana typed.txt\n' > "$WORK/snipcfg/den/snippets"
 for _sh in bash zsh; do
     _run="run_${_sh}_i"
     echo "[$_sh] typed at the prompt: the modern tool, also through eval, \$(...) and again"
-    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK'; grep banana typed.txt; eval 'cat typed.txt'; x=\$(find .); echo \"\$x\"; again() { eval \"\$1\"; }; again 'll -d .'")
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK'; grep banana typed.txt; eval 'cat typed.txt'; x=\$(find .); echo \"\$x\"; again() { eval \"\$1\"; }; again 'ls -d .'")
     assert_eq "$_sh/typed: rg, bat, fd, lsd" "modern rg banana typed.txt
 modern bat --style=plain --paging=never typed.txt
 modern fd .
-modern lsd -l -d ." "$actual"
+modern lsd -d ." "$actual"
 
     echo "[$_sh] in a function or a sourced file: the native command"
-    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK'; f() { grep banana typed.txt; cat typed.txt; la -d .; find typed.txt; }; f; . ./typed_src.sh; again() { eval \"\$1\"; }; g() { again 'grep apple typed.txt'; }; g")
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK'; f() { grep banana typed.txt; cat typed.txt; ls -d .; find typed.txt; }; f; . ./typed_src.sh; again() { eval \"\$1\"; }; g() { again 'grep apple typed.txt'; }; g")
     assert_eq "$_sh/function, sourced file, again in a function: native" "banana
 apple
 banana
@@ -635,9 +635,13 @@ apple" "$actual"
 modern rg banana typed.txt
 banana" "$actual"
 
-    echo "[$_sh] in a function, wrappers with no native command and the w names stay modern"
-    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "f() { lt x; ripgrep y; grepw z; lsw w; }; f")
-    assert_eq "$_sh/function: lt, ripgrep, grepw, lsw modern" "modern lsd --tree x
+    echo "[$_sh] in a function, den's own names and the w names stay modern"
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "f() { la a; ll b; lla c; lt x; llt v; ripgrep y; grepw z; lsw w; }; f")
+    assert_eq "$_sh/function: la, ll, lla, lt, llt, ripgrep, grepw, lsw modern" "modern lsd -a a
+modern lsd -l b
+modern lsd -la c
+modern lsd --tree x
+modern lsd -l --tree v
 modern rg y
 modern rg z
 modern lsd w" "$actual"
