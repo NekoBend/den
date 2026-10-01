@@ -88,15 +88,18 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         r"^func\s+{name}\s*\(",
         _GO_METHOD,
         r"^type\s+{name}\s+",
-        r"^var\s+{name}\b",
-        r"^const\s+{name}\b",
+        # `var _ io.Reader = (*T)(nil)`: the blank identifier names nothing
+        r"^var\s+(?!_\b){name}\b",
+        r"^const\s+(?!_\b){name}\b",
     ],
     ".rs": [
         r"\bfn\s+{name}\s*[<(]",
         r"\bstruct\s+{name}\b",
         r"\benum\s+{name}\b",
         r"\btrait\s+{name}\b",
-        r"\b(?:const|static)\s+{name}\b",
+        # not the `fn` of `const fn`, the `mut` of `static mut`, nor `const _`
+        r"\b(?:const|static)\s+(?:mut\s+)?"
+        r"(?!(?:fn|unsafe|async|extern|_)\b){name}\b",
     ],
     ".java": [
         r"\bclass\s+{name}\b",
@@ -108,7 +111,7 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         r"\bclass\s+{name}\b",
         r"\binterface\s+{name}\b",
         r"\bstruct\s+{name}\b",
-        r"\brecord\s+{name}\b",
+        r"\brecord\s+(?:(?:struct|class)\s+)?{name}\b",  # not `struct` itself
         r"\benum\s+{name}\b",
     ],
     ".sh": [

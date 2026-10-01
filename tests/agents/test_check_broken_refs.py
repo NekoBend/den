@@ -1032,6 +1032,60 @@ def test_go_and_rust_methods_are_searched_as_members_only(tmp_path: Path) -> Non
     ]
 
 
+def test_keywords_and_the_blank_identifier_are_not_removed_names(
+    tmp_path: Path,
+) -> None:
+    # The capture took the word after `const`/`static`/`var`/`record` for the
+    # name: `pub const fn build` defined `fn`, `static mut COUNTER` defined
+    # `mut` (and hid COUNTER), Go's `var _ io.Reader = ...` and Rust's
+    # `const _` defined the blank identifier, and C#'s `record struct Pt`
+    # defined `struct`. Deleting such a file reported every `fn`, `mut`, `_`
+    # and `struct` in the tree.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.rs",
+        "pub const fn build() -> u8 { 0 }\n"
+        "static mut COUNTER: u32 = 0;\n"
+        "const _: () = ();\n",
+    )
+    write(
+        tmp_path,
+        "app.rs",
+        "fn main() {\n"
+        "    let _ = build();\n"
+        "    unsafe { COUNTER += 1 }\n"
+        "    let mut x = 1;\n"
+        "}\n",
+    )
+    write(
+        tmp_path,
+        "lib.go",
+        "package lib\n\nvar _ io.Reader = (*Box)(nil)\n\nfunc Helper() {}\n",
+    )
+    write(
+        tmp_path,
+        "app.go",
+        "package app\n\nfunc run() {\n\tfor _, v := range xs { lib.Helper() }\n}\n",
+    )
+    write(tmp_path, "Lib.cs", "public record struct Pt(int X);\n")
+    write(tmp_path, "Use.cs", "struct Other {}\nclass Use { Pt p; }\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    for name in ("lib.rs", "lib.go", "Lib.cs"):
+        (tmp_path / name).unlink()
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.rs:3:broken_ref:COUNTER:unsafe { COUNTER += 1 }",
+        "app.go:4:broken_ref:Helper:for _, v := range xs { lib.Helper() }",
+        "Use.cs:2:broken_ref:Pt:class Use { Pt p; }",
+        "app.rs:2:broken_ref:build:let _ = build();",
+    ]
+
+
 def test_java_and_csharp_nested_types_are_searched_as_members_only(
     tmp_path: Path,
 ) -> None:
