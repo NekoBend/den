@@ -5,13 +5,18 @@ source "$SCRIPT_DIR/helpers.sh"
 
 PROXY_SH_GUARDED="$DOTFILES/shell/posix/proxy.sh"
 PROXY_SH="$TESTTMP/proxy_test.sh"
-make_noninteractive_source_copy "$PROXY_SH_GUARDED" "$PROXY_SH"
+# proxy.sh puts its store in place with _den_put from _helpers.sh, which
+# init.bash and init.zsh load first; the file the tests source loads both.
+make_noninteractive_source_copy "$PROXY_SH_GUARDED" "$TESTTMP/proxy_only.sh"
+printf ". '%s'\n. '%s'\n" "$DOTFILES/shell/posix/_helpers.sh" "$TESTTMP/proxy_only.sh" > "$PROXY_SH" ||
+    abort_suite "cannot write $PROXY_SH"
 
 # Isolate profile storage under WORK so tests never touch the real ~/.config.
 export XDG_CONFIG_HOME="$WORK/xdg"
 PROXY_CONF="$XDG_CONFIG_HOME/den/proxy.conf"
 
 PROXY_DIR="$XDG_CONFIG_HOME/den"
+DOTS="$WORK/dots"
 
 reset_conf() { rm -f "$PROXY_CONF"; }
 
@@ -151,6 +156,24 @@ env=$SECRET_URL" "$actual"
     else
         echo "  SKIP: $sh/unreadable store (running as root)"
     fi
+
+    echo "[$sh] add and rm write through a symlinked proxy.conf, as pwsh does"
+    rm -rf "${DOTS:?}"
+    mkdir -p "$DOTS"
+    rm -f "$PROXY_CONF"
+    printf 'a\thttp://a:1\t\n' > "$DOTS/proxy.conf"
+    chmod 644 "$DOTS/proxy.conf"
+    ln -s "$DOTS/proxy.conf" "$PROXY_CONF"
+    "$run" "$PROXY_SH" "umask 022; proxy add b http://b:2 2>/dev/null; proxy rm a 2>/dev/null"
+    assert_eq "$sh/symlink kept" "link" "$([ -L "$PROXY_CONF" ] && echo link || echo replaced)"
+    assert_eq "$sh/symlink target updated, 0600" "b${TAB}http://b:2${TAB} 600" \
+        "$(cat "$DOTS/proxy.conf") $(stat -c '%a' "$DOTS/proxy.conf")"
+    rm -f "$PROXY_CONF"
+    ln -s "$DOTS/new-proxy.conf" "$PROXY_CONF"
+    "$run" "$PROXY_SH" "umask 022; proxy add n http://n:1 2>/dev/null"
+    assert_eq "$sh/dangling symlink target created" "link n${TAB}http://n:1${TAB} 600" \
+        "$([ -L "$PROXY_CONF" ] && echo link || echo replaced) $(cat "$DOTS/new-proxy.conf" 2>&1) $(stat -c '%a' "$DOTS/new-proxy.conf" 2>&1)"
+    rm -f "$PROXY_CONF"
 }
 
 proxy_suite bash

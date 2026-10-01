@@ -13,7 +13,8 @@
 # command in the CURRENT shell (you saved it, so it is trusted), which lets it
 # cd, set vars, and see the current environment. The store is 0600 in a 0700
 # directory (a saved command may hold a token), and one that is a symlink (into
-# a dotfiles repo, say) is written through, as pwsh does.
+# a dotfiles repo, say) is written through, as pwsh does (_den_put, in
+# _helpers.sh, which init.bash and init.zsh load first).
 
 # Skip in non-interactive shells
 case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
@@ -49,25 +50,6 @@ _snip_get() {
     done < "$_sg_file"
     unset _sg_file _sg_tab _sg_line
     return 1
-}
-
-# _snip_put <tmp> <store> - put the rebuilt store in place. A store that is a
-# symlink is written through, so the link stays and its target (created if
-# missing) gets the change and mode 0600; any other store is replaced by the
-# temporary file, which is 0600, renamed over it. >| writes even when the user
-# set noclobber. On failure the temporary file is removed, unless the write
-# through the link failed part way: the target may then be cut short and the
-# temporary file is the only whole copy, so it stays for the caller to name.
-_snip_put() {
-    if [ -L "$2" ]; then
-        if ! { [ -e "$2" ] || (umask 077 && : >| "$2"); } || ! chmod 600 "$2"; then
-            rm -f "$1"
-            return 1
-        fi
-        cat "$1" >| "$2" && rm -f "$1"
-    else
-        mv "$1" "$2" || { rm -f "$1"; return 1; }
-    fi
 }
 
 # Echo the command (so the user sees what runs) then eval it in this shell.
@@ -172,7 +154,7 @@ _snippet_save() {
         }
     fi
     printf '%s\t%s\n' "$_ss_name" "$_ss_cmd" >> "$_ss_tmp"
-    if ! _snip_put "$_ss_tmp" "$_ss_file"; then
+    if ! _den_put "$_ss_tmp" "$_ss_file"; then
         echo "snippet save: cannot write $_ss_file" >&2
         if [ -e "$_ss_tmp" ]; then
             echo "snippet save: the whole new store is in $_ss_tmp" >&2
@@ -247,7 +229,7 @@ _snippet_rm() {
         fi
     done < "$_srm_file"
     if [ "$_srm_found" -eq 1 ]; then
-        if ! _snip_put "$_srm_tmp" "$_srm_file"; then
+        if ! _den_put "$_srm_tmp" "$_srm_file"; then
             echo "snippet rm: cannot write $_srm_file" >&2
             if [ -e "$_srm_tmp" ]; then
                 echo "snippet rm: the whole new store is in $_srm_tmp" >&2

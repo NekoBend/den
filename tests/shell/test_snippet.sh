@@ -5,7 +5,11 @@ source "$SCRIPT_DIR/helpers.sh"
 
 SNIPPET_SH_GUARDED="$DOTFILES/shell/posix/snippet.sh"
 SNIPPET_SH="$TESTTMP/snippet_test.sh"
-make_noninteractive_source_copy "$SNIPPET_SH_GUARDED" "$SNIPPET_SH"
+# snippet.sh puts its store in place with _den_put from _helpers.sh, which
+# init.bash and init.zsh load first; the file the tests source loads both.
+make_noninteractive_source_copy "$SNIPPET_SH_GUARDED" "$TESTTMP/snippet_only.sh"
+printf ". '%s'\n. '%s'\n" "$DOTFILES/shell/posix/_helpers.sh" "$TESTTMP/snippet_only.sh" > "$SNIPPET_SH" ||
+    abort_suite "cannot write $SNIPPET_SH"
 
 # Isolate the snippet store under WORK so tests never touch the real ~/.config.
 export XDG_CONFIG_HOME="$WORK/xdg"

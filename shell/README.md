@@ -209,7 +209,8 @@ A url may carry a password (`http://user:password@host:port`). `add`, `on`,
 `ls` and `status` print it as `user:***@host:port`; `proxy.conf` and the
 exported variables keep the real value. On Linux and macOS `proxy.conf` is
 `0600` and `$XDG_CONFIG_HOME/den` `0700`, whatever the umask: each write sets
-them, so a store an older den left readable is tightened too.
+them, so a store an older den left readable is tightened too. A `proxy.conf`
+that is a symlink stays one: `add` and `rm` write through it in both shells.
 
 ### Command snippets
 Save favorite commands by name and run them later, instead of `history | grep`.

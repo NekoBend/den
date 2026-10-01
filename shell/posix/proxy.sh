@@ -10,7 +10,9 @@
 # per-shell in _DEN_PROXY_ACTIVE, so it never disagrees with another shell:
 # this feature only ever touches env vars, never global tool config.
 # A url may carry a password (http://user:password@host:port): the store is
-# 0600 in a 0700 directory, and add/on/ls/status print it as user:***@host.
+# 0600 in a 0700 directory, and add/on/ls/status print it as user:***@host. A
+# store that is a symlink is written through, as pwsh does (_den_put, in
+# _helpers.sh, which init.bash and init.zsh load first).
 
 # Skip in non-interactive shells
 case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
@@ -58,8 +60,8 @@ _proxy_add() {
     _pa_name=$1 _pa_url=$2 _pa_np=${3:-}
     _pa_conf=$(_proxy_conf)
     # The directory is made 0700, and the store 0600 (the temporary file is
-    # created so and renamed over it), whatever the umask; an older den's
-    # looser modes are tightened too.
+    # created so and renamed over it, or a symlink's target is made so),
+    # whatever the umask; an older den's looser modes are tightened too.
     _pa_dir=$(dirname "$_pa_conf")
     if ! { mkdir -p "$_pa_dir" && chmod 700 "$_pa_dir"; }; then
         unset _pa_name _pa_url _pa_np _pa_conf _pa_dir
@@ -88,7 +90,14 @@ _proxy_add() {
         }
     fi
     printf '%s\t%s\t%s\n' "$_pa_name" "$_pa_url" "$_pa_np" >> "$_pa_tmp"
-    mv "$_pa_tmp" "$_pa_conf"
+    if ! _den_put "$_pa_tmp" "$_pa_conf"; then
+        echo "proxy add: cannot write $_pa_conf" >&2
+        if [ -e "$_pa_tmp" ]; then
+            echo "proxy add: the whole new store is in $_pa_tmp" >&2
+        fi
+        unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
+        return 1
+    fi
     echo "proxy: saved '$_pa_name' -> $(_proxy_show "$_pa_url")" >&2
     unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
 }
@@ -107,8 +116,7 @@ _proxy_rm() {
     _pr_tab=$(printf '\t')
     _pr_tmp="$_pr_conf.tmp.$$"
     _pr_found=0
-    # A 0700 directory and a 0600 store, as add makes them: the rename gives
-    # the store this file's mode.
+    # A 0700 directory and a 0600 store, as add makes them.
     { chmod 700 "$(dirname "$_pr_conf")" && (umask 077 && : > "$_pr_tmp"); } || {
         echo "proxy rm: cannot write $_pr_conf" >&2
         unset _pr_conf _pr_tab _pr_tmp _pr_found
@@ -122,7 +130,14 @@ _proxy_rm() {
         fi
     done < "$_pr_conf"
     if [ "$_pr_found" -eq 1 ]; then
-        mv "$_pr_tmp" "$_pr_conf"
+        if ! _den_put "$_pr_tmp" "$_pr_conf"; then
+            echo "proxy rm: cannot write $_pr_conf" >&2
+            if [ -e "$_pr_tmp" ]; then
+                echo "proxy rm: the whole new store is in $_pr_tmp" >&2
+            fi
+            unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line
+            return 1
+        fi
         echo "proxy: removed '$1'" >&2
         if [ "${_DEN_PROXY_ACTIVE:-}" = "$1" ]; then
             echo "proxy: '$1' is still active in this shell; run 'proxy off'" >&2
