@@ -228,6 +228,18 @@ def _source_block(
     return result.stdout.splitlines()
 
 
+def _zsh_username() -> str:
+    """The name zsh puts in $USERNAME for this process."""
+    result = subprocess.run(
+        [_tool("zsh"), "-f", "-c", 'print -r -- "$USERNAME"'],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
 @_needs("zsh")
 def test_zshenv_gives_a_non_root_zsh_the_user_tool_directories_once(tmp_path):
     home = str(tmp_path / "home")
@@ -243,6 +255,23 @@ def test_zshenv_resets_a_root_zsh_and_adds_no_user_directories(tmp_path):
         tmp_path, "zsh", "/etc/zsh/zshenv", euid=0, home="/home/dev", user="dev"
     )
     assert out == ["/root", SYSTEM_PATH, "unset"]
+
+
+@_needs("zsh")
+def test_zshenv_skips_ubuntus_global_compinit_for_the_container_user_only(tmp_path):
+    # den's init.zsh runs its own compinit; Ubuntu's /etc/zsh/zshrc ran a full
+    # second one (about 12 ms) unless skip_global_compinit is set.
+    home = str(tmp_path / "home")
+    me = _zsh_username()
+    assert me
+    dev = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home=home, user=me
+    )
+    assert dev[2] == "1"
+    other = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home=home, user=f"{me}-other"
+    )
+    assert other[2] == "unset"
 
 
 @_needs("bash")

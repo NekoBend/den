@@ -126,6 +126,15 @@ image's `/home/dev`, so it reads root's startup files, not `dev`'s. A root
 command run without a shell keeps `HOME=/home/dev`; pass `-e HOME=/root` to
 `docker exec` for those.
 
+### zsh completion
+
+For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`: den's
+`init.zsh` runs `compinit` itself, so Ubuntu's second, full `compinit` would
+only add about 12 ms to every shell. den's `compinit -C` reuses `~/.zcompdump`
+as it is, so after you add completion functions (an apt package, a new tool),
+delete `~/.zcompdump` and start a new shell. A new container starts without
+one.
+
 ## Keeping state across rebuilds
 
 `/home/dev` lives in the container's writable layer. It survives

@@ -318,6 +318,10 @@ else
         done
     }
     export PATH
+    # den's init.zsh runs compinit itself; skip Ubuntu's full second one.
+    if [[ "$USERNAME" == "$(</etc/container-user)" ]]; then
+        skip_global_compinit=1
+    fi
 fi
 CONTAINER_ZSH_ENV
 cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
