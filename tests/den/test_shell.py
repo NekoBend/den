@@ -106,6 +106,63 @@ def test_cmd_digest_forwards_to_dg():
     assert dg.count(b"\n") == dg.count(b"\r\n"), "dg.cmd must use CRLF line endings"
 
 
+def _cmd_code(name: str) -> list[str]:
+    """A cmd shim's lines without blank lines and rem comments."""
+    lines = (_CMD_BIN / f"{name}.cmd").read_text(encoding="utf-8").splitlines()
+    return [
+        ln.strip()
+        for ln in lines
+        if ln.strip() and not ln.strip().lower().startswith("rem ")
+    ]
+
+
+# The wrapper shims and the modern tool each one prefers.
+_CMD_WRAPPERS = {
+    "ls": "lsd",
+    "la": "lsd",
+    "ll": "lsd",
+    "lla": "lsd",
+    "lt": "lsd",
+    "llt": "lsd",
+    "cat": "bat",
+    "grep": "rg",
+    "find": "fd",
+}
+
+
+def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
+    # cmd reads `where rg && (rg %*) || (findstr %*)` as `(A && B) || C`, so a
+    # tool that was there but exited non-zero (rg with no match, bat or lsd
+    # with one bad operand) ran the fallback with the same arguments: grep
+    # then waited on findstr reading the console, cat and ls printed twice.
+    # cmd cannot run here; this pins the shape: the tool is looked up on PATH
+    # only, the branch is on whether it was found, and the shim ends with the
+    # exit code of whichever ran.
+    for name, tool in _CMD_WRAPPERS.items():
+        code = _cmd_code(name)
+        joined = "\n".join(code)
+        assert not any("&&" in ln and "||" in ln for ln in code), name
+        assert f"where.exe $PATH:{tool}.exe" in joined, name
+        assert 'if defined _t "%_t%" ' in joined, name
+        assert "if not defined _t " in joined, name
+        assert code[-1] == "exit /b %errorlevel%", name
+
+
+def test_cmd_shims_call_where_and_powershell_by_system32_path():
+    # cmd looks a bare command name up in the current directory first, with
+    # every PATHEXT extension: a where.js (ramda ships one) or a committed
+    # where.bat ran in place of where.exe whenever ls, grep, cat or which did
+    # their lookup, and a powershell.bat in place of head, tail, wc and path.
+    bare = re.compile(r"(?i)(?<![\\\w.$:-])(where|powershell)(\.exe)?(?=[\s\"']|$)")
+    found = [
+        f"{f.name}: {ln}"
+        for f in sorted(_CMD_BIN.glob("*.cmd"))
+        for ln in _cmd_code(f.stem)
+        if bare.search(ln)
+    ]
+    assert not found, found
+
+
 def test_cmd_short_toggle_shims_call_their_long_names():
     # cmd cannot run here, so this pins the shape that makes the short names
     # work: CALL (a bare name would end the shim there) of the long shim by

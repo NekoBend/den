@@ -7,4 +7,4 @@ if not defined _args goto list
 endlocal & path %*
 exit /b
 :list
-powershell -NoProfile -Command "($env:PATH -split ';') -ne '' | ForEach-Object { $_ }"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "($env:PATH -split ';') -ne '' | ForEach-Object { $_ }"
