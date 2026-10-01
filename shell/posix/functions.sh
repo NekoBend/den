@@ -1106,9 +1106,24 @@ fi
 
 # ===== Zoxide Navigation =====
 
-# cd → wrapper ON: __zoxide_z, OFF: builtin cd
+# cd → wrapper ON and typed at the prompt: __zoxide_z, else builtin cd
+# zoxide reads every argument that is not a directory as a keyword to search
+# for, so it gets only a cd typed at the prompt (_den_typed, from _helpers.sh)
+# with no option. In a function or a sourced file a directory that does not
+# exist must fail, not jump to some other directory a later command then runs
+# in; and an option (-P, -L, -e, -@) went to zoxide as a keyword, so
+# `$(cd -P "$dir" && pwd)` printed nothing or another directory. A lone -
+# and `-- <dir>` are zoxide's own forms and still go to it.
 cd() {
-    if [ "${_DEN_WRAPPERS:-1}" != "0" ] && type __zoxide_z >/dev/null 2>&1; then
+    local _cd_zo=
+    if [ "${_DEN_WRAPPERS:-1}" != "0" ] && type __zoxide_z >/dev/null 2>&1 && _den_typed; then
+        case ${1-} in
+            --) _cd_zo=1 ;;
+            -?*) ;;
+            *) _cd_zo=1 ;;
+        esac
+    fi
+    if [ -n "$_cd_zo" ]; then
         __zoxide_z "$@"
     else
         builtin cd "$@"

@@ -44,6 +44,43 @@ _wrap_log() {
     fi
 }
 
+# ========== typed at the prompt ==========
+
+# _den_typed → status 0 when the den command that called it was typed at the
+# prompt, 1 when a function or a sourced file (~/.bashrc, ~/.zshrc too) ran
+# it. Typed counts through eval and $(...) at the prompt, through `bash -c` /
+# `zsh -c`, and through `again` / `sagain`, which replay a typed line. den's
+# cd hands a directory to zoxide only when typed: code in a function or a
+# script gets builtin cd.
+# The call stack is bash's FUNCNAME or zsh's funcstack (which also lists each
+# sourced file by its path and each eval as "(eval)"); eval keeps the array
+# syntax away from a POSIX parser.
+_den_typed() {
+    if [ -n "${BASH_VERSION-}" ]; then
+        eval 'set -- "${FUNCNAME[@]}"'
+    elif [ -n "${ZSH_VERSION-}" ]; then
+        eval 'set -- "${funcstack[@]}"'
+    else
+        return 0
+    fi
+    # Skip this function's own frame (zsh lists the eval above first), then
+    # the den command's; what is left are its callers.
+    while [ $# -gt 0 ]; do
+        _dt_f=$1
+        shift
+        [ "$_dt_f" = _den_typed ] && break
+    done
+    [ $# -gt 0 ] && shift
+    for _dt_f in "$@"; do
+        case $_dt_f in
+            again|sagain|'(eval)') ;;
+            *) unset _dt_f; return 1 ;;
+        esac
+    done
+    unset _dt_f
+    return 0
+}
+
 # ========== wrapper generator ==========
 
 # _wrap <func> <modern> <modern_flags> <fallback> <fallback_flags>

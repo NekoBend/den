@@ -126,7 +126,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 ### Navigation
 | Command | What it does |
 |---------|--------------|
-| `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF |
+| `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF; on bash/zsh zoxide only for a `cd` typed at the prompt with no option |
 | `cdi` | zoxide interactive pick |
 | `zd` / `zdi` | always zoxide (ignore the toggle) |
 | `back [N]` / `fwd [N]` | go N entries back / forward in this session's directory history, browser-style (default 1) |

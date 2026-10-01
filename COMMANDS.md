@@ -24,6 +24,13 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   including a script that runs `Set-StrictMode -Version Latest` (strict mode then
   applies inside den's functions too, and they are written for it). A profile can
   also set strict mode before it loads den.
+- In **bash/zsh**, den's `cd` hands its arguments to zoxide only when typed at
+  the prompt (`eval` and `$(...)` typed there count, and so does a line `again`
+  replays). Run by a function, your own included, or by a sourced file such as
+  `~/.bashrc`, it is `builtin cd`, so a directory that does not exist fails
+  instead of becoming a zoxide jump to some other directory. `cd` with an
+  option (`-P`, `-L`, ...) is always `builtin cd`, since zoxide would read the
+  option as a keyword to search for.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
@@ -35,7 +42,7 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `cd <dir>` | zoxide smart-jump when wrappers are ON, else plain cd | ✓ | ✓ | `z` |
+| `cd <dir>` | zoxide smart-jump when wrappers are ON (on bash/zsh: typed at the prompt, no option), else plain cd | ✓ | ✓ | `z` |
 | `cdi` | interactive zoxide jump (fzf picker) | ✓ | ✓ | `zi` |
 | `zd` / `zdi` | always jump via zoxide, ignoring the wrapper toggle | ✓ | ✓ | ✓ |
 | `up [N]` | go up N directories (default 1) | ✓ | ✓ | ✓ |

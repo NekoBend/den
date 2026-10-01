@@ -1274,6 +1274,69 @@ trap -- 'echo user-int' SIGINT
 trap -- 'echo user-hup' SIGHUP
 user-exit" "$out"
 
+# den's cd hands its arguments to zoxide only when cd is typed at the prompt
+# with no option. zoxide reads anything that is not a directory as keywords to
+# search for: `cd -P link` failed with "no match found" or jumped to a
+# directory whose path held "p" and "link", and in a function or a sourced
+# script a cd to a directory that did not exist jumped elsewhere instead of
+# failing. The stub __zoxide_z prints what it gets and, like zoxide's, moves
+# only to a lone existing directory. `bash -c` / `zsh -c` count as typed, and
+# `again` (stubbed here) replays a typed line, so it counts as typed too.
+cd_zoxide_cases() {
+    local sh="$1" out
+    rm -rf "$WORK/cdz"
+    mkdir -p "$WORK/cdz/real/sub" "$WORK/cdz/a"
+    ln -s "$WORK/cdz/real" "$WORK/cdz/link"
+    printf '%s\n' "cd '$WORK/cdz/a'" 'echo "sourced: $PWD"' 'HERE=$(cd -P "$OLDPWD/link" && pwd)' 'echo "HERE=$HERE"' > "$WORK/cdz/src.sh"
+    # cdz_run <commands>: in $WORK/cdz, with _helpers.sh and functions.sh
+    # loaded and the stub in place; stdout and stderr
+    cdz_run() {
+        (cd "$WORK/cdz" && "$sh" -c "source '$HELPERS_SH' && source '$FUNCTIONS_SH' && __zoxide_z() { echo \"zoxide \$*\"; if [ \$# -eq 1 ] && [ -d \"\$1\" ]; then builtin cd \"\$1\"; else return 1; fi; }; $1" 2>&1)
+    }
+
+    echo "[$sh] cd typed at the prompt goes to zoxide, also through eval, \$(...) and again"
+    out=$(cdz_run "cd proj; echo rc=\$?; cd -- proj; cd -; eval 'cd e'; x=\$(cd s); echo \"\$x\"; again() { eval \"\$1\"; }; again 'cd ag'")
+    assert_eq "$sh/typed cd, cd --, cd -, eval, \$(...), again" "zoxide proj
+rc=1
+zoxide -- proj
+zoxide -
+zoxide e
+zoxide s
+zoxide ag" "$out"
+
+    echo "[$sh] cd with an option goes to builtin cd"
+    out=$(cdz_run "x=\$(cd -P link && pwd); echo \"P=\$x\"; cd -L link && echo \"L=\$PWD\"")
+    assert_eq "$sh/cd -P and -L are builtin cd" "P=$WORK/cdz/real
+L=$WORK/cdz/link" "$out"
+
+    echo "[$sh] cd in a function or a sourced file is builtin cd"
+    out=$(cdz_run "f() { cd nosuch 2>/dev/null; echo \"f rc=\$?\"; cd a && echo \"f: \$PWD\"; }; f; builtin cd '$WORK/cdz'; . ./src.sh; g() { again 'cd ag'; }; again() { eval \"\$1\"; }; g 2>/dev/null; echo \"g rc=\$?\"")
+    assert_eq "$sh/cd in a function, a sourced file, again in a function" "f rc=1
+f: $WORK/cdz/a
+sourced: $WORK/cdz/a
+HERE=$WORK/cdz/real
+g rc=1" "$out"
+
+    echo "[$sh] cd with the wrappers off is builtin cd"
+    out=$(cdz_run "_DEN_WRAPPERS=0; cd proj 2>/dev/null; echo rc=\$?; cd a && pwd")
+    assert_eq "$sh/wrappers off" "rc=1
+$WORK/cdz/a" "$out"
+
+    # The real zoxide, where installed, with a database of its own: one entry
+    # whose path holds "p" and "link" is what `cd -P link` used to jump to.
+    if command -v zoxide >/dev/null 2>&1; then
+        mkdir -p "$WORK/cdz/my-proj/linkage" "$WORK/cdz/zo"
+        out=$(cd "$WORK/cdz" && _ZO_DATA_DIR="$WORK/cdz/zo" "$sh" -c "zoxide add '$WORK/cdz/my-proj/linkage' && source '$HELPERS_SH' && source '$FUNCTIONS_SH' && eval \"\$(zoxide init $sh --no-cmd)\" && x=\$(cd -P link && pwd); echo \"P=\$x\"; f() { cd linkage 2>/dev/null; echo \"f rc=\$?\"; }; f" 2>&1)
+        assert_eq "$sh/real zoxide: cd -P link, and cd in a function, stay builtin" "P=$WORK/cdz/real
+f rc=1" "$out"
+    else
+        echo "  SKIP: $sh/real zoxide (not installed)"
+    fi
+    rm -rf "$WORK/cdz"
+}
+
+cd_zoxide_cases bash
+
 # bash has no chpwd: the recorder runs from PROMPT_COMMAND, which is a string
 # or (bash 5.1+) an array, and must be joined once without breaking either.
 echo "[bash] PROMPT_COMMAND hook"
@@ -1883,6 +1946,8 @@ trap -- 'echo user-hup' HUP
 trap -- 'echo user-term' TERM
 TRAPINT kept
 user-exit" "$out"
+
+cd_zoxide_cases zsh
 
 echo "[zsh] chpwd hook"
 out=$(zsh -c "source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && print -r -- \${(j:,:)chpwd_functions}")
