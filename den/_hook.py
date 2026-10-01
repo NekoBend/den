@@ -896,12 +896,19 @@ def _legacy_config(spec: dict, override: str | None) -> Path | None:
 
 
 def _legacy_lines(tool: str, spec: dict, override: str | None) -> list[str]:
-    """`den hook list` lines for den's entries still in the legacy file."""
+    """`den hook list` lines for den's entries still in the legacy file. Read
+    through a symlink too: reading is harmless, and only stripping is refused."""
     legacy = _legacy_config(spec, override)
-    if legacy is None or not legacy.is_file() or _leaves_workspace(legacy):
+    if legacy is None or not legacy.is_file():
         return []
     lines = _FORMATS[spec["format"]][1](tool, spec, legacy.resolve())
-    note = f"(in {spec['legacy_config']}; re-run den install hook to move it)"
+    if _symlink_component(Path.cwd(), legacy) is not None:
+        note = (
+            f"(in {spec['legacy_config']}, a symlink den will not edit;"
+            " remove it there by hand)"
+        )
+    else:
+        note = f"(in {spec['legacy_config']}; re-run den install hook to move it)"
     return [f"{line}  {note}" for line in lines]
 
 
@@ -911,17 +918,23 @@ def _strip_legacy(
     """Remove den's entries from the legacy file, leaving everything else in it.
 
     True when nothing of den's is (left) there, and a file without den entries
-    stays byte-identical. False (one line on stderr) when the path reaches a
-    symlink: a repo can ship `.claude/settings.json` -> ~/.claude/settings.json,
-    and stripping through it would rewrite the user's global settings.
+    stays byte-identical. False (one line on stderr) when den's entries are
+    there but the path reaches a symlink: a repo can ship
+    `.claude/settings.json` -> ~/.claude/settings.json, and stripping through it
+    would rewrite the user's global settings. A symlinked file WITHOUT den's
+    entries (or a dangling link) is not den's file any more and passes quietly;
+    reading through the link to find that out writes nothing.
     """
     legacy = _legacy_config(spec, override)
     if legacy is None or not (legacy.is_file() or legacy.is_symlink()):
         return True
-    if _leaves_workspace(legacy, prefix):
+    _install, list_fn, remove_fn = _FORMATS[spec["format"]]
+    if _symlink_component(Path.cwd(), legacy) is not None:
+        if not legacy.is_file() or not list_fn(tool, spec, legacy.resolve()):
+            return True
+        _leaves_workspace(legacy, prefix)  # says why on stderr
         return False
     legacy = legacy.resolve()
-    _install, list_fn, remove_fn = _FORMATS[spec["format"]]
     if not list_fn(tool, spec, legacy):
         return True
     if not remove_fn(tool, spec, legacy):

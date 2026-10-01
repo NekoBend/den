@@ -932,6 +932,53 @@ def test_install_refuses_symlinked_config_file(tmp_path, monkeypatch, symlink, n
     assert settings.read_bytes() == before
 
 
+@pytest.mark.parametrize("dangling", [False, True])
+def test_symlinked_settings_json_without_den_entries_is_not_refused(
+    tmp_path, monkeypatch, capsys, symlink, dangling
+):
+    """den no longer writes .claude/settings.json, so a repo linking it to a
+    shared file (or to nothing) is none of den's business unless den's old
+    entries are there to move: install, list and remove all succeed quietly."""
+    shared = tmp_path / "config" / "claude.json"
+    shared.parent.mkdir()
+    if not dangling:
+        shared.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]}}))
+    proj = tmp_path / "repo"
+    (proj / ".claude").mkdir(parents=True)
+    symlink(shared, proj / ".claude" / "settings.json")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert hook_main(["list", "--tool", "claude"]) == 0
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    assert "refusing" not in capsys.readouterr().err
+    if not dangling:
+        assert json.loads(shared.read_text()) == {"permissions": {"allow": ["Bash(ls)"]}}
+    else:
+        assert not shared.exists()
+
+
+def test_list_names_den_entries_behind_a_symlinked_settings_json(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    """Reading through the link is harmless and shows what install will refuse
+    to strip; only the write through it stays refused."""
+    shared = tmp_path / "config" / "claude.json"
+    shared.parent.mkdir()
+    shared.write_text(json.dumps({"hooks": {"Stop": [_den_group("claude", "stop")]}}))
+    before = shared.read_bytes()
+    proj = tmp_path / "repo"
+    (proj / ".claude").mkdir(parents=True)
+    symlink(shared, proj / ".claude" / "settings.json")
+    monkeypatch.chdir(proj)
+    assert hook_main(["list", "--tool", "claude"]) == 0
+    captured = capsys.readouterr()
+    assert "--event stop" in captured.out and "den will not edit" in captured.out
+    assert captured.err == ""
+    assert hook_main(["remove", "--tool", "claude"]) == 1
+    assert "is a symlink" in capsys.readouterr().err
+    assert shared.read_bytes() == before
+
+
 def test_install_explicit_config_override_still_followed(
     tmp_path, monkeypatch, symlink
 ):

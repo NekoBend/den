@@ -282,7 +282,9 @@ Each hook command pins this machine's absolute `.den` path, so claude's hooks go
 to `.claude/settings.local.json`, Claude Code's personal file, not the shared
 `.claude/settings.json` you commit. `den install hook` moves den's entries out
 of `.claude/settings.json` (an earlier den wrote them there; everything else in
-the file is kept, and a file without den entries is not touched), `list` and
+the file is kept, and a file without den entries is not touched; a symlinked
+one is never edited: `list` shows den's entries there, and install and
+`uninstall hook` exit 1 until you remove them by hand), `list` and
 `uninstall hook` read both files, and inside a git work tree install adds
 `settings.local.json` to `.git/info/exclude` unless git already ignores it.
 copilot (`.github/hooks/den.json`) and cline (`.clinerules/hooks/`) have no
