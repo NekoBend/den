@@ -331,6 +331,77 @@ if zoxide_exe then
     end
 end
 
+-- ===== again [N]: re-run a command from Clink's history =====
+-- cmd's own history (doskey /history) stays empty under Clink, which keeps
+-- its own. A line that is just `again [N]` is caught here (Clink has already
+-- added it to its history): the Nth previous command, skipping again lines,
+-- goes to again.cmd in _DEN_AGAIN (or a message in _DEN_AGAIN_ERR), and
+-- again.cmd asks before it sets _DEN_AGAIN_RUN=1. The next edit prompt then
+-- hands that command to cmd as its input line, so it runs as if typed, den's
+-- aliases included. Needs Clink 1.3.18 (onprovideline, history access); on an
+-- older Clink the again alias reaches again.cmd alone, which says so.
+-- A child cmd inherits these from its parent; this session starts without.
+os.setenv("_DEN_AGAIN", nil)
+os.setenv("_DEN_AGAIN_ERR", nil)
+os.setenv("_DEN_AGAIN_RUN", nil)
+
+-- The first word of a line, lower-cased, without cmd's echo-off "@".
+local function first_word(line)
+    local w = line:match("^%s*@?(%S+)")
+    return w and w:lower()
+end
+
+local function again_filter(line)
+    if first_word(line) ~= "again" then
+        return nil
+    end
+    local arg = line:match("^%s*@?%S+%s*(.-)%s*$")
+    local n = arg == "" and 1 or (arg:match("^[1-9]%d?%d?%d?$") and tonumber(arg))
+    os.setenv("_DEN_AGAIN", nil)
+    os.setenv("_DEN_AGAIN_RUN", nil)
+    os.setenv("_DEN_AGAIN_ERR", nil)
+    if not n then
+        os.setenv("_DEN_AGAIN_ERR", "usage: again [N]  (N=positive integer, default 1)")
+    else
+        local want = n
+        local count = rl.gethistorycount()
+        local items = rl.gethistoryitems(math.max(1, count - n - 50), count)
+        local found
+        for i = #items, 1, -1 do
+            local w = first_word(items[i].line or "")
+            if w and w ~= "again" then
+                n = n - 1
+                if n == 0 then
+                    found = items[i].line
+                    break
+                end
+            end
+        end
+        if found then
+            os.setenv("_DEN_AGAIN", found)
+        else
+            os.setenv("_DEN_AGAIN_ERR", "again: no command at position " .. want .. " in history")
+        end
+    end
+    return '"' .. bin_dir .. '\\again.cmd"'
+end
+
+local function again_provide()
+    local cmd, run = os.getenv("_DEN_AGAIN"), os.getenv("_DEN_AGAIN_RUN")
+    os.setenv("_DEN_AGAIN", nil)
+    os.setenv("_DEN_AGAIN_RUN", nil)
+    os.setenv("_DEN_AGAIN_ERR", nil)
+    if run == "1" and cmd and cmd ~= "" then
+        return cmd
+    end
+    return nil
+end
+
+if clink.onfilterinput and clink.onprovideline and rl and rl.gethistoryitems then
+    clink.onfilterinput(again_filter)
+    clink.onprovideline(again_provide)
+end
+
 define_aliases()
 
 -- ===== Starship =====

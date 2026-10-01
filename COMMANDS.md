@@ -344,7 +344,7 @@ live under `$XDG_CONFIG_HOME`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `again [N]` | re-run the Nth previous command after a confirm | ✓ | ✓ | ✓ (N=1) |
+| `again [N]` | re-run the Nth previous command after a confirm | ✓ | ✓ | ✓ |
 | `sagain [N]` | `again` with sudo | ✓ | ✓ | — |
 | `reload` | clear den's shell caches and restart the shell to load the config (`exec` on bash/zsh; a new pwsh on pwsh, see below) | ✓ | ✓ | — |
 | `code` | launch VS Code (prefers code-insiders) | ✓ | ✓ | ✓ |
@@ -352,6 +352,11 @@ live under `$XDG_CONFIG_HOME`.
 
 On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 `code`); posix/pwsh fall back.
+
+On cmd, `again` reads Clink's history (cmd's own `doskey /history` stays empty
+under Clink) and needs Clink 1.3.18 or newer. Type it on a line of its own:
+after the confirm, the command becomes the next input line, so it runs as if
+typed, aliases included.
 
 On pwsh, `reload` cannot replace the running process, so it starts the same
 pwsh with the arguments this session was launched with, in the current

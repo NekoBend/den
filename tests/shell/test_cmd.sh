@@ -275,6 +275,64 @@ print(H.execs[1])')
 assert_eq "cmd/aliases: per-alias fallback" "execs=$((nshims + 11 + 15 + 11 + 2))
 \"\"C:\\Windows\\System32\\doskey.exe\" again=\"C:\\L\\clink\\bin\\again.cmd\" \$*\"" "$out"
 
+
+# =============================================================================
+# again [N]
+# =============================================================================
+echo "[cmd] again takes the previous command from Clink's history and runs it after a yes"
+out=$(run_lua again_yes '
+H.boot{ env = { STARSHIP_CPU_INTEL = "stub", _DEN_AGAIN = "stale", _DEN_AGAIN_RUN = "1" } }
+print("load: " .. H.show(H.env._DEN_AGAIN) .. " " .. H.show(H.env._DEN_AGAIN_RUN))
+H.input("echo hi")
+print("cmd runs: " .. H.input("again"))
+print("_DEN_AGAIN=" .. H.show(H.env._DEN_AGAIN) .. " _DEN_AGAIN_ERR=" .. H.show(H.env._DEN_AGAIN_ERR))
+H.env._DEN_AGAIN_RUN = "1"   -- again.cmd: the answer was yes
+print("next line: " .. H.show(H.provide()))
+print("after: " .. H.show(H.env._DEN_AGAIN) .. " " .. H.show(H.env._DEN_AGAIN_RUN))
+print("then: " .. H.show(H.provide()))')
+assert_eq "cmd/again: lookup, then the command as the next input line" 'load: nil nil
+cmd runs: "C:\L\clink\bin\again.cmd"
+_DEN_AGAIN=echo hi _DEN_AGAIN_ERR=nil
+next line: echo hi
+after: nil nil
+then: nil' "$out"
+
+echo "[cmd] again N counts back over the again lines; a no runs nothing"
+out=$(run_lua again_n '
+H.boot{ env = { STARSHIP_CPU_INTEL = "stub" } }
+for _, l in ipairs({ "dir", "echo a & echo b", "again", "  AGAIN 2", "@again", "type x.txt" }) do H.input(l) end
+H.input("again 2"); print("again 2: " .. H.show(H.env._DEN_AGAIN))
+H.input("again 3"); print("again 3: " .. H.show(H.env._DEN_AGAIN))
+H.input("again"); print("again: " .. H.show(H.env._DEN_AGAIN))
+print("no: " .. H.show(H.provide()) .. " " .. H.show(H.env._DEN_AGAIN))
+print("dir: " .. H.input("dir") .. " " .. H.show(H.env._DEN_AGAIN))')
+assert_eq "cmd/again: Nth previous non-again line" 'again 2: echo a & echo b
+again 3: dir
+again: type x.txt
+no: nil nil
+dir: dir nil' "$out"
+
+echo "[cmd] again with a bad N or too short a history leaves a message for again.cmd"
+out=$(run_lua again_err '
+H.boot{ env = { STARSHIP_CPU_INTEL = "stub" } }
+for _, l in ipairs({ "again 0", "again x", "again 01", "again 1 2", "again", "again 3" }) do
+    local r = H.input(l)
+    print(l .. ": " .. r .. " | " .. H.show(H.env._DEN_AGAIN) .. " | " .. H.show(H.env._DEN_AGAIN_ERR))
+end')
+assert_eq "cmd/again: usage and empty-history messages" 'again 0: "C:\L\clink\bin\again.cmd" | nil | usage: again [N]  (N=positive integer, default 1)
+again x: "C:\L\clink\bin\again.cmd" | nil | usage: again [N]  (N=positive integer, default 1)
+again 01: "C:\L\clink\bin\again.cmd" | nil | usage: again [N]  (N=positive integer, default 1)
+again 1 2: "C:\L\clink\bin\again.cmd" | nil | usage: again [N]  (N=positive integer, default 1)
+again: "C:\L\clink\bin\again.cmd" | nil | again: no command at position 1 in history
+again 3: "C:\L\clink\bin\again.cmd" | nil | again: no command at position 3 in history' "$out"
+
+echo "[cmd] on a Clink without onfilterinput and history access, again is left to its shim"
+out=$(run_lua again_old '
+H.boot{ old = "1.2", env = { STARSHIP_CPU_INTEL = "stub" } }
+H.input("echo hi")
+print(H.input("again") .. " " .. H.show(H.env._DEN_AGAIN) .. " " .. #H.inputs .. " " .. #H.provides)')
+assert_eq "cmd/again: old Clink, line untouched" 'again nil 0 0' "$out"
+
 fi
 
 # =============================================================================
