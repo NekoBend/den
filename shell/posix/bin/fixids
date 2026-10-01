@@ -13,9 +13,16 @@
 # before exec -- otherwise the command runs as root:
 #
 #   #!/bin/sh
-#   # entrypoint.sh -- container started as root (no USER line, or USER root)
-#   fixids --from 1000:1000 -x node_modules -x .cache "$HOME"
-#   exec setpriv --reuid 1000 --regid 1000 --clear-groups "$@"
+#   # entrypoint.sh -- container started as root (no USER line, or USER root),
+#   # with -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)": the files of the
+#   # image's user (1000:1000 here, home /home/dev) go to the host's ids, and
+#   # the command then runs as those ids.
+#   fixids --from 1000:1000 --to "$HOST_UID:$HOST_GID" -x node_modules -x .cache /home/dev
+#   exec setpriv --reuid "$HOST_UID" --regid "$HOST_GID" --clear-groups "$@"
+#
+# Name the target with --to: as root, the default target would be root:root,
+# which locks the user out of their own files, so fixids refuses to run as
+# root without --to (--to 0:0 chowns to root on purpose).
 #
 #   In a Dockerfile:  COPY shell/posix/bin/fixids /usr/local/bin/fixids
 #                     COPY entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -40,8 +47,10 @@ Options:
                        group-owned by that gid; handled independently like
                        fixuid -- a gid-only match keeps its uid). Default:
                        any file not already owned by the target (--to).
-  --to UID[:GID]       target owner (default: current \$(id -u):\$(id -g)).
-                       With no GID the group is left unchanged.
+  --to UID[:GID]       target owner (default: current \$(id -u):\$(id -g);
+                       required when run as root, where the default would be
+                       root:root: pass --to 0:0 to mean it). With no GID the
+                       group is left unchanged.
   -x, --exclude NAME   prune directories with this NAME, anywhere in the tree
                        (repeatable, e.g. -x node_modules -x .cache -x .git).
   -j, --jobs N         parallel chown workers (default: nproc, capped to the
@@ -151,12 +160,19 @@ done
 roots=("${safe_roots[@]}")
 
 # Resolve the target owner. Default: the invoker's uid:gid. With --to and no
-# GID, only the uid is changed and the group is left as it is.
+# GID, only the uid is changed and the group is left as it is. Run as root,
+# that default is root:root, which is almost never meant (a container
+# entrypoint matching the host's ids would hand the user's files to root),
+# so root has to name the target.
 if [ "$to_set" -eq 1 ]; then
 	resolve_owner "$to_spec" to_uid to_gid
 else
 	to_uid=$(id -u)
 	to_gid=$(id -g)
+	if [ "$to_uid" -eq 0 ]; then
+		echo "$prog: running as root: name the target owner with --to UID[:GID] (--to 0:0 for root)" >&2
+		exit 2
+	fi
 fi
 target=$to_uid${to_gid:+:$to_gid}
 
