@@ -279,7 +279,11 @@ on `tool_call` are applied, and `context`/`contextModification` are parsed then
 ignored). So for the CLI, den does not install a hook; instead it writes the
 imprint and memory as **`.clinerules/` rule files** (`den-imprint.md`,
 `den-memory.md`), which cline loads as always-on context at session start. `den
-memory` keeps `den-memory.md` in sync, but only when cline-cli is installed here
+memory` keeps `den-memory.md` in sync (`save`, `add`, `clear`, `restore`,
+`checkpoint`, and every `den hook run` in the workspace refresh it), so a direct
+edit to `.den/memory.md` reaches cline-cli at the next of those; the imprint rule
+tells the agent to run `den hook memory checkpoint` after one. The mirror runs
+only when cline-cli is installed here
 (detected by the `den-imprint.md` marker) -- so the extension's own
 `.clinerules/hooks/` does not trigger a memory mirror. That gate is what keeps the
 extension from double-delivering memory (it would otherwise inject via the hook

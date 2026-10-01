@@ -189,12 +189,21 @@ _CLINERULES_IMPRINT = "den-imprint.md"  # also the cline-cli "installed here" ma
 _CLINERULES_MEMORY = "den-memory.md"
 _CLINERULES_HEADER = (
     "<!-- den-managed mirror of .den/memory.md. Edit memory with `den hook memory`, "
-    "not here. -->\n\n"
+    "not here; after editing .den/memory.md directly, run "
+    "`den hook memory checkpoint` to refresh this copy. -->\n\n"
 )
 
 
 def _clinerules_dir(den_dir: Path) -> Path:
     return den_dir.parent / _CLINERULES_DIRNAME
+
+
+def _holds(path: Path, data: bytes) -> bool:
+    """True when `path` is a regular file holding exactly `data`."""
+    try:
+        return path.is_file() and path.read_bytes() == data
+    except OSError:
+        return False
 
 
 def mirror_to_clinerules(den_dir: Path) -> bool:
@@ -205,8 +214,9 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
     file is its memory-delivery channel. Gating on the cline-cli marker (not just
     the dir) is deliberate: the cline EXTENSION creates `.clinerules/hooks/` too,
     and it already injects memory per turn via its hook, so mirroring there as well
-    would double-deliver. No-op otherwise. Returns True if it wrote/removed the
-    mirror."""
+    would double-deliver. No-op otherwise, and a copy that is already current is
+    not rewritten (checkpoint and every `den hook run` call this). Returns True
+    if it wrote/removed the mirror."""
     rules = _clinerules_dir(den_dir)
     marker = rules / _CLINERULES_IMPRINT
     # The marker is PROOF that `den install hook --tool cline-cli` ran here, so it
@@ -227,7 +237,8 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
         return False  # do not mirror, and do not drop the mirror we cannot verify
     text = text or ""
     if text.strip():
-        return _write_guarded(rules, dest, (_CLINERULES_HEADER + text).encode("utf-8"))
+        data = (_CLINERULES_HEADER + text).encode("utf-8")
+        return not _holds(dest, data) and _write_guarded(rules, dest, data)
     if dest.is_file():  # memory emptied/cleared -> drop the stale mirror
         dest.unlink()
         return True
@@ -423,6 +434,9 @@ def _cmd_show(den_dir: Path, argv: list[str]) -> int:
 
 def _cmd_checkpoint(den_dir: Path, argv: list[str]) -> int:
     snap = _do_checkpoint(den_dir)
+    # Also the refresh for cline-cli's copy after a direct edit to memory.md,
+    # even when another hook already snapshotted that edit.
+    mirror_to_clinerules(den_dir)
     if isinstance(snap, _Refused):
         return 1  # asked for a checkpoint, could not make one
     if snap is not None:

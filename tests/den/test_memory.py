@@ -333,6 +333,66 @@ def test_save_refreshes_clinerules_mirror(tmp_path, monkeypatch):
     assert "v1 fact" not in _clinerules_mem(tmp_path).read_text()
 
 
+def test_checkpoint_refreshes_the_mirror_after_a_direct_edit(tmp_path, monkeypatch):
+    """The finding's repro: memory.md edited with the agent's own file tools (the
+    documented path) left cline-cli loading the overturned fact every session."""
+    from den._hook import main as hook_main
+
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 0
+    assert memory_main(["add", "Retry limit is 7"]) == 0
+    _mem(tmp_path).write_text("Retry limit is 3 (7 was overturned)\n")
+    assert memory_main(["checkpoint"]) == 0
+    mirror = _clinerules_mem(tmp_path).read_text()
+    assert "Retry limit is 3" in mirror
+    assert "Retry limit is 7\n" not in mirror
+
+
+def test_checkpoint_refreshes_a_stale_mirror_when_history_is_current(
+    tmp_path, monkeypatch
+):
+    # Another tool's hook already snapshotted the edit, so this checkpoint has
+    # nothing to snapshot; the mirror still has to catch up.
+    monkeypatch.chdir(tmp_path)
+    _cline_cli_here(tmp_path)
+    assert memory_main(["add", "old fact"]) == 0
+    _mem(tmp_path).write_text("new fact\n")
+    _memory._do_checkpoint(tmp_path / ".den")  # history now matches memory.md
+    assert memory_main(["checkpoint"]) == 0
+    assert "new fact" in _clinerules_mem(tmp_path).read_text()
+
+
+def test_hook_run_refreshes_the_mirror(tmp_path, monkeypatch, capsys):
+    # A workspace using cline-cli beside another tool's per-turn hook: the hook's
+    # checkpoint keeps the cline-cli copy current too.
+    from den._hook import main as hook_main
+
+    monkeypatch.chdir(tmp_path)
+    _cline_cli_here(tmp_path)
+    assert memory_main(["add", "old fact"]) == 0
+    _mem(tmp_path).write_text("new fact\n")
+    assert hook_main(["run", "--event", "post-tool", "--tool", "claude"]) == 0
+    assert "new fact" in _clinerules_mem(tmp_path).read_text()
+
+
+def test_checkpoint_does_not_mirror_without_cline_cli(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".clinerules" / "hooks").mkdir(parents=True)  # extension only
+    _mem(tmp_path).parent.mkdir(parents=True)
+    _mem(tmp_path).write_text("fact\n")
+    assert memory_main(["checkpoint"]) == 0
+    assert not _clinerules_mem(tmp_path).exists()
+
+
+def test_mirror_leaves_an_identical_copy_alone(tmp_path, monkeypatch):
+    # The mirror now runs on every hook event, so an unchanged copy is not
+    # rewritten each turn.
+    monkeypatch.chdir(tmp_path)
+    _cline_cli_here(tmp_path)
+    assert memory_main(["add", "fact"]) == 0
+    assert _memory.mirror_to_clinerules(tmp_path / ".den") is False
+
+
 def test_restore_refreshes_clinerules_mirror(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _cline_cli_here(tmp_path)

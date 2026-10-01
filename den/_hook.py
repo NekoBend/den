@@ -333,8 +333,10 @@ def _cmd_run(argv: list[str]) -> int:  # ruff: ignore[too-many-return-statements
     try:
         # Always checkpoint: captures the previous turn's direct edits to
         # memory.md. Cheap and content-gated, so unconditional is fine on every
-        # event.
+        # event. The mirror keeps cline-cli's .clinerules copy current with
+        # those edits (a no-op unless cline-cli is installed here).
         _do_checkpoint(den_dir)
+        mirror_to_clinerules(den_dir)
         text = _compose(den_dir) if inject else ""
     except Exception as exc:  # ruff: ignore[blind-except]  # fail open, see above
         return skip(f"{type(exc).__name__}: {exc}")
@@ -767,6 +769,9 @@ def _remove_cline(tool: str, spec: dict, config: Path) -> bool:
 _CLINERULES_RULE_HEADER = (
     "<!-- den-managed. Edit .den/imprint.md, then re-run "
     "`den install hook --tool cline-cli`. -->\n\n"
+    "cline reads den's memory from .clinerules/den-memory.md, a copy of "
+    ".den/memory.md. After you edit .den/memory.md directly, run "
+    "`den hook memory checkpoint` so the copy is refreshed.\n\n"
 )
 
 
