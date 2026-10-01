@@ -352,6 +352,15 @@ Get-ChildItem -Name ./x:y a=b +1 C:\\p\\q" "$actual"
         "$(cat "$DOTS/snippets") $(stat -c '%a' "$DOTS/snippets")"
     rm -f "$SNIPPET_FILE"
 
+    echo "[pwsh] save through a symlink whose target does not exist yet creates it"
+    link_store new-snippets
+    actual=$( (umask 022; run_pwsh "$SNIPPET_PS1" "snippet save n 'echo n'; 'after'" 2>/dev/null) | tr -d '\r')
+    assert_eq "pwsh/snippet dangling symlink: save returns" "after" "$actual"
+    assert_eq "pwsh/snippet dangling symlink kept" "link" "$([ -L "$SNIPPET_FILE" ] && echo link || echo replaced)"
+    assert_eq "pwsh/snippet dangling symlink target created" "n${TAB}echo n 600" \
+        "$(cat "$DOTS/new-snippets" 2>&1) $(stat -c '%a' "$DOTS/new-snippets" 2>&1)"
+    rm -f "$SNIPPET_FILE"
+
     reset_store
     echo "[pwsh] unknown command fails with usage"
     actual=$(run_pwsh "$SNIPPET_PS1" "snippet frobnicate" 2>&1 | tr -d '\r')

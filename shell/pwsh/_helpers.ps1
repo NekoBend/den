@@ -371,7 +371,9 @@ function _ResolvePaths([string[]]$Patterns) {
 # den's looser modes are tightened too; a store that is a symlink is written
 # through, and its target gets the mode. On Windows both keep the ACL they
 # inherit from the profile directory. A failure ends the caller, so it prints
-# no "saved" message and the text never lands in a file left readable.
+# no "saved" message and the text never lands in a file left readable: the
+# catch rethrows, because a .NET method's exception alone would end only its
+# own statement and the next one would still run.
 function _DenWritePrivate([string]$Path, [string]$Text) {
     try {
         $dir = Split-Path -Parent $Path
@@ -380,7 +382,11 @@ function _DenWritePrivate([string]$Path, [string]$Text) {
         }
         # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
         if (-not ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)) {
-            if (-not (Test-Path -LiteralPath $Path)) { [IO.File]::WriteAllText($Path, '') }
+            # Create the file if it is missing, so it can get its mode before
+            # the text goes in. Appending nothing creates it, also as the
+            # target of a symlink that points nowhere yet, for which
+            # Test-Path already says True; an existing file is left as it is.
+            [IO.File]::AppendAllText($Path, '')
             if ('System.IO.UnixFileMode' -as [type]) {
                 [IO.File]::SetUnixFileMode($dir, 'UserRead, UserWrite, UserExecute')
                 [IO.File]::SetUnixFileMode($Path, 'UserRead, UserWrite')
