@@ -368,6 +368,31 @@ def test_entrypoint_started_as_the_user_adds_the_user_tool_directories(tmp_path)
     assert f"PATH={_user_path('/home/dev')}" in result.stdout.splitlines()
 
 
+@_needs("sh", "env")
+def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
+    # A UID other than the build's re-owns all of /home/dev, which overlayfs
+    # copies into each new container (about 2 GB); the build args avoid it.
+    result, calls = _run_entrypoint(
+        tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usermod --uid 501 --gid 20 dev" in calls
+    lines = result.stderr.splitlines()
+    assert len(lines) == 1, result.stderr
+    assert "2 GB" in lines[0]
+    assert "--build-arg USER_UID=501 --build-arg USER_GID=20" in lines[0]
+
+
+@_needs("sh", "env")
+def test_entrypoint_is_quiet_when_the_ids_already_match(tmp_path):
+    result, calls = _run_entrypoint(
+        tmp_path, uid=0, env={"HOST_UID": "1000", "HOST_GID": "1000"}
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert "usermod" not in calls
+
+
 def test_test_helpers_see_the_whole_dockerfile():
     # The parser must reach the final stage, or the PATH test checks nothing.
     names = [name for name, _, _ in _stages()]

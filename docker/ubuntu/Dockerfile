@@ -263,6 +263,8 @@ if [ "$(id -u)" -eq 0 ]; then
         if [ "$target_uid" != "$old_uid" ] && getent passwd "$target_uid" >/dev/null; then
             fail 'HOST_UID already belongs to another account'
         fi
+        # On overlayfs, re-owning a file copies it into the container's layer.
+        printf '%s\n' "container-entrypoint: remapping $username from $old_uid:$old_gid to $target_uid:$target_gid re-owns $user_home, which copies about 2 GB into each new container; build with --build-arg USER_UID=$target_uid --build-arg USER_GID=$target_gid to skip this." >&2
         # Change only matching IDs. Do this before usermod so a failed workspace
         # traversal leaves the original account IDs available for a retry.
         if [ "$fix_workspace" = 1 ]; then

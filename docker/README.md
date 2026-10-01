@@ -40,7 +40,10 @@ docker buildx build --load -t den-dev -f docker/ubuntu/Dockerfile docker/ubuntu
 
 The context directory is never read, so any small directory works. To give
 `dev` your host IDs at build time, so the container never has to remap them,
-add `--build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)"`.
+add `--build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)"`. Do this
+when your UID or GID is not 1000 (macOS, LDAP and second accounts): remapping
+at run time re-owns everything in `/home/dev`, and on overlayfs that copies
+about 2 GB into each new container before the shell starts.
 
 Downloads and compile outputs for cargo, npm and uv go to BuildKit cache
 mounts, so a rebuild reuses them. Most installers fetch the latest release, and
@@ -95,8 +98,8 @@ prints a warning that shows this command.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it and re-owns the files in `/home/dev` that had the old IDs. |
-| `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. |
+| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so. On overlayfs the re-owning copies about 2 GB into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
+| `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. |
 
 On a root start, the entrypoint also makes `dev` the owner of `/workspace`
