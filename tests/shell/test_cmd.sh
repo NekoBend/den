@@ -266,6 +266,7 @@ print("lines=" .. n .. " crlf=" .. tostring(crlf))
 print(H.macrofile:match("ls=[^\r]*"))
 print(H.macrofile:match("%.9=[^\r]*"))
 print(H.macrofile:match("\n(gst=[^\r]*)"))')
+# One alias per shim, plus .., .1-.9 and c (11), 15 git, 11 docker and 2 editor macros.
 nshims=$(cd "$CMD_BIN" && ls -- *.cmd | wc -l)
 assert_eq "cmd/aliases: macro file lines" "lines=$((nshims + 11 + 15 + 11 + 2)) crlf=true
 ls=\"C:\\L\\clink\\bin\\ls.cmd\" \$*
@@ -279,7 +280,6 @@ print("execs=" .. #H.execs)
 print(H.execs[1])')
 assert_eq "cmd/aliases: per-alias fallback" "execs=$((nshims + 11 + 15 + 11 + 2))
 \"\"C:\\Windows\\System32\\doskey.exe\" again=\"C:\\L\\clink\\bin\\again.cmd\" \$*\"" "$out"
-
 
 # =============================================================================
 # again [N]
