@@ -35,7 +35,13 @@ from pathlib import Path
 
 from ._content import shell_dir
 from ._exe import find_tool, resolve_tool
-from ._install import _chmod_no_follow, _Stager, _Writer
+from ._install import (
+    _chmod_no_follow,
+    _refresh_plan_arg,
+    _Stager,
+    _Writer,
+    read_refresh_plan,
+)
 
 _COMMENT = "# ===== den ====="
 _PWSH_PROFILE = "Microsoft.PowerShell_profile.ps1"
@@ -351,9 +357,31 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     return True
 
 
-def install_shell(  # ruff: ignore[too-many-locals]  # one local per flag
+def _refresh_owned(argv: list[str]) -> tuple[set[Path] | None, list[str]] | None:
+    """(owned files, the other args) for --refresh-plan FILE, with which `den
+    upgrade --refresh` hands over the deployed files the den before the upgrade
+    proved were its own and unedited; only those are replaced without asking
+    (see _install._install_refresh). (None, argv) without the flag; None (one
+    line on stderr) when the plan is missing or unusable."""
+    split = _refresh_plan_arg(argv, "den install shell")
+    if split is None:
+        return None
+    plan_path, rest = split
+    if plan_path is None:
+        return None, rest
+    plan = read_refresh_plan(plan_path, "den install shell")
+    if plan is None:
+        return None
+    return {Path(p) for p in plan["owned"]}, rest
+
+
+def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one per flag and step
     argv: list[str],
 ) -> int:
+    parsed = _refresh_owned(argv)
+    if parsed is None:
+        return 2
+    owned, argv = parsed
     dry_run = "--dry-run" in argv
     extras = "--no-extras" not in argv
     force = "--force" in argv
@@ -378,7 +406,7 @@ def install_shell(  # ruff: ignore[too-many-locals]  # one local per flag
             return 2
 
     home = Path.home()
-    writer = _Writer(force=force)
+    writer = _Writer(force=force, owned=owned)
     install_bin = _decide_posix_bin(want=want_bin, skip=skip_bin)
     _posix_dir, pwsh_dir = _stage_shell_files(
         writer,

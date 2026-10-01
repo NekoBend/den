@@ -38,7 +38,8 @@ den verify <file.py...>               format/lint/typecheck each file, config-fa
 `den install` never silently clobbers local edits: files that already exist and
 differ from the bundled version are listed and you are asked once before
 overwriting (default no, so your changes are kept). Pass `--force` to overwrite
-without asking; non-interactive runs skip the changed files and exit non-zero,
+without asking; each file it overwrites is first copied to `<file>.den.bak`.
+Non-interactive runs skip the changed files and exit non-zero,
 so a scripted install cannot mistake a full skip for success. `den install hook`
 into a tool's settings file merges (it preserves foreign hooks and other keys).
 
@@ -106,19 +107,39 @@ reaches disk on `den install ...` - so after an upgrade your deployed skills
 and shell files are still the old version's until redeployed. Two ways:
 
 ```
-den upgrade --refresh    # upgrade, then redeploy skills (--with-parent) + shell
+den upgrade --refresh    # upgrade, then redeploy what den had deployed
 den upgrade              # upgrade only; prints a reminder to redeploy
 ```
 
-`--refresh` runs `den install skills --with-parent` and `den install shell` as
-subprocesses of the *new* binary (the running process still has the old package
-imported, so an in-process redeploy would ship stale content). den keeps no
-record of what it deployed last time, so a file the new version changed is
-indistinguishable from one you edited: without `--force` an interactive run
-asks once, and a non-interactive one keeps every such file and exits non-zero
-rather than reporting a refresh that deployed nothing. Use
-`den upgrade --refresh --force` from a script or cron. `--dry-run` prints the
-commands without running anything.
+`--refresh` redeploys only what den can prove it wrote. Before running uv, the
+running (old) den compares every deployed file in each tool dir (`~/.claude`,
+`~/.agents`, `~/.copilot`, the cline Rules dir, `~/.codex`) and the shell files
+byte for byte with its own bundled content, both skill flavors and both parent
+profiles. After the upgrade the *new* binary (the running process still has the
+old package imported) redeploys:
+
+- the skills in each tool dir that holds den's skills, in the flavor found
+  there (`--no-den-cli` or not); a skill you deleted stays deleted, a skill the
+  new version added arrives;
+- each parent prompt that matched a profile, in that same profile; a parent
+  that matches neither (hand-written, or edited) is left alone and named, even
+  with `--force`;
+- the shell files, when den's were found.
+
+A file still exactly as the old den deployed it is replaced. Any other file
+that differs (your edit, or a file from an earlier version whose update was
+skipped back then) is kept and listed, and the refresh still exits 0.
+`--force` replaces those too, copying each one to `<file>.den.bak` first.
+den still records nothing between runs: the list of files is a temporary
+hand-over from the old binary to the new one (`den install skills|shell
+--refresh-plan FILE`). Skills deployed with `--target` are not refreshed;
+re-run that install. `--dry-run` shows what would be refreshed without running
+anything.
+
+The refresh is driven by the den you upgrade *from*. Upgrading from a den
+older than this behavior still runs that den's refresh (`den install skills
+--with-parent` into `~/.claude` and `~/.agents`, frontier profile); for that
+one upgrade, run `den upgrade` without `--refresh` and redeploy by hand.
 
 Windows caveat: `den upgrade` runs from the very tool venv uv replaces, and
 Windows locks running executables. If uv reports a file-in-use error there,
