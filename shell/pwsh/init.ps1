@@ -19,10 +19,21 @@ if (Test-Path "$PSScriptRoot\proxy.ps1") { . "$PSScriptRoot\proxy.ps1" }
 if (Test-Path "$PSScriptRoot\snippet.ps1") { . "$PSScriptRoot\snippet.ps1" }
 
 # ===== History =====
+# again/sagain stay out of the history; every other line goes to the handler
+# PSReadLine had before den's. On PSReadLine 2.2+ that is its default one, which
+# keeps a line that looks like it holds a secret (password, token, apikey,
+# -AsPlainText, ...) in memory only, out of the history file; 2.0 (Windows
+# PowerShell 5.1) has none, and then every other line is saved. The handler is
+# taken once, so that loading init.ps1 again does not chain den's to itself.
 if (Get-Module -Name PSReadLine) {
+  if (-not (Test-Path Variable:global:_DenPrevHistoryHandler)) {
+    $global:_DenPrevHistoryHandler = (Get-PSReadLineOption).AddToHistoryHandler
+  }
   Set-PSReadLineOption -AddToHistoryHandler {
     param($line)
-    return ($line -notmatch '^\s*s?again(\s|$)')
+    if ($line -match '^\s*s?again(\s|$)') { return $false }
+    if ($global:_DenPrevHistoryHandler) { return $global:_DenPrevHistoryHandler.Invoke($line) }
+    return $true
   }
 }
 
