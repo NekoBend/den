@@ -52,14 +52,21 @@ _snip_get() {
 }
 
 # _snip_put <tmp> <store> - put the rebuilt store in place. A store that is a
-# symlink is written through, so the link stays and its target gets the change
-# and mode 0600; any other store is replaced by the temporary file, which is
-# 0600, renamed over it.
+# symlink is written through, so the link stays and its target (created if
+# missing) gets the change and mode 0600; any other store is replaced by the
+# temporary file, which is 0600, renamed over it. >| writes even when the user
+# set noclobber. On failure the temporary file is removed, unless the write
+# through the link failed part way: the target may then be cut short and the
+# temporary file is the only whole copy, so it stays for the caller to name.
 _snip_put() {
     if [ -L "$2" ]; then
-        (umask 077 && : >> "$2") && chmod 600 "$2" && cat "$1" > "$2" && rm -f "$1"
+        if ! { [ -e "$2" ] || (umask 077 && : >| "$2"); } || ! chmod 600 "$2"; then
+            rm -f "$1"
+            return 1
+        fi
+        cat "$1" >| "$2" && rm -f "$1"
     else
-        mv "$1" "$2"
+        mv "$1" "$2" || { rm -f "$1"; return 1; }
     fi
 }
 
@@ -155,8 +162,10 @@ _snippet_save() {
     fi
     printf '%s\t%s\n' "$_ss_name" "$_ss_cmd" >> "$_ss_tmp"
     if ! _snip_put "$_ss_tmp" "$_ss_file"; then
-        rm -f "$_ss_tmp"
         echo "snippet save: cannot write $_ss_file" >&2
+        if [ -e "$_ss_tmp" ]; then
+            echo "snippet save: the whole new store is in $_ss_tmp" >&2
+        fi
         unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
         return 1
     fi
@@ -221,8 +230,10 @@ _snippet_rm() {
     done < "$_srm_file"
     if [ "$_srm_found" -eq 1 ]; then
         if ! _snip_put "$_srm_tmp" "$_srm_file"; then
-            rm -f "$_srm_tmp"
             echo "snippet rm: cannot write $_srm_file" >&2
+            if [ -e "$_srm_tmp" ]; then
+                echo "snippet rm: the whole new store is in $_srm_tmp" >&2
+            fi
             unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line
             return 1
         fi

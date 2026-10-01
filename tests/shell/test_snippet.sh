@@ -198,6 +198,32 @@ c${TAB}echo c" "$(cat "$DOTS/snippets")"
         "$(cat "$DOTS/new-snippets") $(stat -c '%a' "$DOTS/new-snippets")"
     rm -f "$SNIPPET_FILE"
 
+    echo "[$sh] save and rm write through a symlinked store under noclobber (set -C)"
+    link_store snippets
+    printf 'a\techo a\n' > "$DOTS/snippets"
+    actual=$("$run" "$SNIPPET_SH" "set -C; snippet save b 'echo b' 2>&1; snippet rm a 2>&1" | tr -d '\r')
+    assert_eq "$sh/noclobber: messages" "snippet: saved 'b' -> echo b
+snippet: removed 'a'" "$actual"
+    assert_eq "$sh/noclobber: target updated" "b${TAB}echo b" "$(cat "$DOTS/snippets")"
+    link_store new-snippets
+    "$run" "$SNIPPET_SH" "set -C; snippet save n 'echo n' 2>/dev/null"
+    assert_eq "$sh/noclobber: dangling target created" "n${TAB}echo n" "$(cat "$DOTS/new-snippets" 2>&1)"
+    assert_eq "$sh/noclobber: symlink kept" "link" "$([ -L "$SNIPPET_FILE" ] && echo link || echo replaced)"
+
+    echo "[$sh] a write through the symlink that fails part way keeps the whole new store"
+    link_store snippets
+    printf 'a\techo a\nb\techo b\n' > "$DOTS/snippets"
+    # A cat that writes 5 bytes and fails, as on a full disk.
+    actual=$("$run" "$SNIPPET_SH" "cat() { command head -c 5 \"\$1\"; return 1; }; snippet save c 'echo c' 2>&1; echo rc=\$?" | tr -d '\r')
+    left=$(cd "$SNIPPET_DIR" && ls -A | grep -v '^snippets$')
+    assert_eq "$sh/failed write: messages" "snippet save: cannot write $SNIPPET_FILE
+snippet save: the whole new store is in $SNIPPET_DIR/$left
+rc=1" "$actual"
+    assert_eq "$sh/failed write: new store kept" "a${TAB}echo a
+b${TAB}echo b
+c${TAB}echo c" "$(cat "$SNIPPET_DIR/$left" 2>&1)"
+    rm -f "$SNIPPET_FILE" "${SNIPPET_DIR:?}/$left"
+
     echo "[$sh] pick without fzf falls back gracefully"
     if ! command -v fzf >/dev/null 2>&1; then
         actual=$("$run" "$SNIPPET_SH" "snippet pick 2>&1; echo rc=\$?" | tr -d '\r')
