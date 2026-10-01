@@ -5,6 +5,9 @@
 #
 # Snippets live in $XDG_CONFIG_HOME/den/snippets, one per line, TAB-separated:
 #   name<TAB>command
+# `save <name> '<command>'` (one argument) and stdin store the command as given;
+# `save <name> <word...>` stores the words, each quoted again where it needs it
+# (see _snippet_save). pwsh shares the store but quotes in its own syntax.
 # The command is everything after the first TAB, so it may itself contain tabs;
 # only the name (field 1) is restricted to [A-Za-z0-9_-]. `run`/`pick` eval the
 # command in the CURRENT shell (you saved it, so it is trusted), which lets it
@@ -22,7 +25,9 @@ _snip_file() {
 _snip_usage() {
     printf '%s\n' \
         "usage: snippet <command>   (alias: snip)" \
-        "  save <name> <command...>  save a command (or pipe it via stdin)" \
+        "  save <name> '<command>'   save a command as typed (or pipe it via stdin)" \
+        "  save <name> <word...>     save the words, each quoted again if it needs it" \
+        "                            (an unquoted \$var or \$(...) is expanded on save)" \
         "  ls                        list saved snippets" \
         "  show <name>               print a snippet's command (no run)" \
         "  run <name>                run a snippet" \
@@ -66,7 +71,7 @@ _snip_exec() {
 
 _snippet_save() {
     if [ -z "$1" ]; then
-        echo "usage: snippet save <name> <command...>" >&2
+        echo "usage: snippet save <name> '<command>' | <word...>" >&2
         return 1
     fi
     case "$1" in
@@ -76,8 +81,35 @@ _snippet_save() {
     esac
     _ss_name=$1
     shift
-    if [ "$#" -gt 0 ]; then
-        _ss_cmd="$*"
+    if [ "$#" -eq 1 ]; then
+        # One argument: the whole command, saved as typed.
+        _ss_cmd=$1
+    elif [ "$#" -gt 1 ]; then
+        # Several words: the shell took their quotes off, and run/pick eval the
+        # saved line, so a word with anything but [A-Za-z0-9_@%+=:,./-] in it (or
+        # empty, or starting with =, which zsh expands) goes back in single
+        # quotes, a ' in it written '\''. eval then sees the same words. A $var
+        # or $(...) the user left unquoted was expanded before snippet ran.
+        _ss_cmd=
+        for _ss_a in "$@"; do
+            case $_ss_a in
+                ''|\=*|*[!A-Za-z0-9_@%+=:,./-]*)
+                    _ss_q=
+                    while :; do
+                        case $_ss_a in
+                            *\'*)
+                                _ss_q="$_ss_q${_ss_a%%\'*}'\\''"
+                                _ss_a=${_ss_a#*\'} ;;
+                            *)
+                                _ss_q="$_ss_q$_ss_a"
+                                break ;;
+                        esac
+                    done
+                    _ss_a="'$_ss_q'" ;;
+            esac
+            _ss_cmd="${_ss_cmd:+$_ss_cmd }$_ss_a"
+        done
+        unset _ss_a _ss_q
     else
         # Read one line from stdin. `read` returns non-zero at EOF even when it
         # populated _ss_cmd (a final line with no trailing newline), so `|| true`
@@ -128,7 +160,7 @@ _snippet_save() {
         unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
         return 1
     fi
-    echo "snippet: saved '$_ss_name'" >&2
+    printf "snippet: saved '%s' -> %s\n" "$_ss_name" "$_ss_cmd" >&2
     unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
 }
 

@@ -311,7 +311,7 @@ succeeded, so a failed run leaves no truncated archive.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets | ✓ | ✓ | — |
+| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets; `save <name> '<command>'` stores it as typed, `save <name> <word...>` quotes each word again where it needs it (see shell/README.md) | ✓ | ✓ | — |
 | `cheat [name\|ls]` | browse den's bundled cheatsheets (fzf + bat) | ✓ | ✓ | — |
 | `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars); a password in a url prints as `user:***@host` | ✓ | ✓ | — |
 

@@ -1,7 +1,8 @@
 # snippet.ps1 - save favorite commands by name, then list / run them later. The pwsh
 # port of shell/posix/snippet.sh, sharing the SAME store
 # ($XDG_CONFIG_HOME/den/snippets; one "name<TAB>command" per line; LF + UTF-8) so a
-# snippet saved from bash is usable from pwsh on the same machine. run/pick
+# snippet saved from bash is usable from pwsh on the same machine, as far as its
+# syntax is (save quotes words in the saving shell's syntax). run/pick
 # Invoke-Expression the command in the CURRENT session (you saved it, so it is
 # trusted). Defining these functions has no side effects, so (like cheat.ps1) it is
 # not gated on an interactive session. The store is written by _DenWritePrivate
@@ -42,6 +43,20 @@ function _SnippetGet([string]$Name) {
     return $null
 }
 
+# _SnippetQuote <word> [-First] - one word of `snippet save <name> <word...>` as
+# PowerShell source. PowerShell took its quotes off and run/pick
+# Invoke-Expression the saved line, so a word with anything but
+# [A-Za-z0-9_./:\=+-] in it (or empty) goes back in single quotes, a ' in it
+# doubled; an array (a,b) comes back as its items joined by commas. A quoted
+# first word would be a string, not a command, so it gets the call operator.
+function _SnippetQuote($Word, [switch]$First) {
+    if ($Word -is [array]) { return (@($Word | ForEach-Object { _SnippetQuote $_ }) -join ',') }
+    $s = [string]$Word
+    if ($s -match '^[A-Za-z0-9_./:\\=+-]+\z') { return $s }
+    $q = "'" + [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($s) + "'"
+    if ($First) { "& $q" } else { $q }
+}
+
 # Echo the command (so you see what runs) then Invoke-Expression it in this session.
 function _SnippetExec([string]$Cmd) {
     [Console]::Error.WriteLine("+ $Cmd")
@@ -51,7 +66,9 @@ function _SnippetExec([string]$Cmd) {
 function _SnippetUsage {
     @(
         'usage: snippet <command>   (alias: snip)'
-        '  save <name> <command...>  save a command (or pipe it in)'
+        '  save <name> ''<command>''   save a command as typed (or pipe it in)'
+        '  save <name> <word...>     save the words, each quoted again if it needs it'
+        '                            (an unquoted $var or $(...) is expanded on save)'
         '  ls                        list saved snippets'
         '  show <name>               print a snippet (no run)'
         '  run <name>                run a snippet'
@@ -71,14 +88,20 @@ function snippet {
     switch -Regex ($sub) {
         '^save$' {
             if ($rest.Count -eq 0) {
-                [Console]::Error.WriteLine('usage: snippet save <name> <command...>'); return
+                [Console]::Error.WriteLine("usage: snippet save <name> '<command>' | <word...>"); return
             }
             $name = [string]$rest[0]
             if ($name -notmatch '^[A-Za-z0-9_-]+$') {
                 [Console]::Error.WriteLine('snippet save: name must match [A-Za-z0-9_-]'); return
             }
-            $cmd = if ($rest.Count -ge 2) {
-                ($rest[1..($rest.Count - 1)] -join ' ')
+            $cmd = if ($rest.Count -ge 3) {
+                # Several words: each quoted again where it needs it (_SnippetQuote).
+                # A $var or $(...) the user left unquoted was expanded before
+                # snippet ran.
+                @(for ($i = 1; $i -lt $rest.Count; $i++) { _SnippetQuote $rest[$i] -First:($i -eq 1) }) -join ' '
+            } elseif ($rest.Count -eq 2) {
+                # One argument: the whole command, saved as typed.
+                [string]$rest[1]
             } else {
                 # From stdin: take the FIRST line only, like posix `read -r` (no Trim).
                 (($stdin -join "`n") -split "`r?`n")[0]
@@ -90,7 +113,7 @@ function snippet {
             $lines = @(_SnippetLines | Where-Object { (_SnippetName $_) -ne $name })
             $lines += "$name`t$cmd"
             _SnippetWrite $lines
-            [Console]::Error.WriteLine("snippet: saved '$name'")
+            [Console]::Error.WriteLine("snippet: saved '$name' -> $cmd")
         }
         '^(ls|list)$' {
             $lines = @(_SnippetLines)

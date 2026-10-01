@@ -30,6 +30,26 @@ link_store() {
 
 TAB=$(printf '\t')
 
+# The several-words form of save: the shell takes the quotes off each word
+# before snippet sees it, and run evals the saved line, so the words that need
+# quotes must get them back. sq_fixture makes a directory holding "My File.txt"
+# next to "My" and "File.txt", and a FASTA file with two headers.
+SQ="$WORK/sq"
+sq_fixture() {
+    rm -rf "${SQ:?}"
+    mkdir -p "$SQ"
+    touch "$SQ/My File.txt" "$SQ/My" "$SQ/File.txt"
+    printf '>a\nAC\n>b\nGT\n' > "$SQ/seqs.fa"
+}
+SQ_WORDS="$TESTTMP/sq_words.sh"
+cat > "$SQ_WORDS" <<'SH'
+snippet save q printf '[%s]\n' "it's; here" '$HOME $(id)' '' '*' '=ls' 'a\b' 2>/dev/null
+snippet show q
+snippet run q 2>/dev/null
+snippet save s git status -sb x@y k=v ./p:q 2>/dev/null
+snippet show s
+SH
+
 # snippet_suite <shell> — same checks under bash and zsh.
 snippet_suite() {
     local sh="$1"
@@ -118,6 +138,32 @@ snippet_suite() {
     assert_contains "$sh/unknown cmd msg" "unknown command" "$actual"
     assert_contains "$sh/unknown cmd rc" "rc=1" "$actual"
 
+    reset_store
+    sq_fixture
+    echo "[$sh] save <word...> quotes a word with a blank again, so run removes that file only"
+    actual=$(cd "$SQ" && "$run" "$SNIPPET_SH" "snippet save clean rm 'My File.txt' 2>&1; snippet run clean 2>/dev/null; ls" | tr -d '\r')
+    assert_eq "$sh/save words: spaced path" "snippet: saved 'clean' -> rm 'My File.txt'
+File.txt
+My
+seqs.fa" "$actual"
+
+    echo "[$sh] save <word...> keeps a quoted > an argument, so run does not truncate the input"
+    actual=$(cd "$SQ" && "$run" "$SNIPPET_SH" "snippet save nseq grep -c '>' seqs.fa 2>/dev/null; snippet run nseq 2>/dev/null; wc -c < seqs.fa" | tr -d '\r ')
+    assert_eq "$sh/save words: quoted >" "2
+12" "$actual"
+
+    reset_store
+    echo "[$sh] save <word...> quotes ; ' \$ glob = \\ and an empty word, and leaves plain words bare"
+    actual=$(cd "$SQ" && "$run" "$SNIPPET_SH" ". '$SQ_WORDS'" | tr -d '\r')
+    assert_eq "$sh/save words: special characters" "printf '[%s]\n' 'it'\\''s; here' '\$HOME \$(id)' '' '*' '=ls' 'a\\b'
+[it's; here]
+[\$HOME \$(id)]
+[]
+[*]
+[=ls]
+[a\\b]
+git status -sb x@y k=v ./p:q" "$actual"
+
     echo "[$sh] save makes the store 0600 in a 0700 directory, under umask 022"
     rm -rf "${SNIPPET_DIR:?}"
     "$run" "$SNIPPET_SH" "umask 022; snippet save t 'echo tok' 2>/dev/null"
@@ -197,6 +243,44 @@ if command -v pwsh >/dev/null 2>&1; then
     echo "[pwsh] save from stdin takes the first line"
     actual=$(run_pwsh "$SNIPPET_PS1" "'Write-Output piped' | snippet save p; snippet show p" | tr -d '\r')
     assert_eq "pwsh/snippet stdin save" "Write-Output piped" "$actual"
+
+    reset_store
+    echo "[pwsh] save <word...> quotes a path with a blank again, so run removes that one only"
+    rm -rf "${SQ:?}"
+    mkdir -p "$SQ/My Stuff/tmp" "$SQ/My" "$SQ/Stuff/tmp"
+    touch "$SQ/My Stuff/tmp/x" "$SQ/My/keep.txt" "$SQ/Stuff/tmp/keep2.txt"
+    actual=$(cd "$SQ" && run_pwsh_stderr "$SNIPPET_PS1" "snippet save cleantmp Remove-Item -Recurse -Force 'My Stuff/tmp'")
+    assert_eq "pwsh/snippet save words: prints the saved line" "snippet: saved 'cleantmp' -> Remove-Item -Recurse -Force 'My Stuff/tmp'" "$actual"
+    actual=$(cd "$SQ" && run_pwsh "$SNIPPET_PS1" "snippet run cleantmp 2>\$null; (Get-ChildItem -Recurse -Name | Sort-Object) -join ' | '" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet save words: spaced path" "My | My Stuff | My/keep.txt | Stuff | Stuff/tmp | Stuff/tmp/keep2.txt" "$actual"
+
+    reset_store
+    echo "[pwsh] save <word...> quotes \$(...) ' \" # ; an empty word, an array and a first word, and leaves plain words bare"
+    mkdir -p "$SQ/my dir"
+    printf 'param($a) "hello $a"\n' > "$SQ/my dir/hello.ps1"
+    cat > "$TESTTMP/sq_words.ps1" <<'PS1'
+snippet save lit Write-Output 'literal $(whoami) text' "it's" "x`"y" '#c' 'a;b' '' a,'b c' 2>$null
+snippet show lit
+snippet run lit 2>$null
+snippet save h './my dir/hello.ps1' arg2 2>$null
+snippet show h
+snippet run h 2>$null
+snippet save s Get-ChildItem -Name ./x:y a=b +1 C:\p\q 2>$null
+snippet show s
+PS1
+    actual=$(cd "$SQ" && run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/sq_words.ps1'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet save words: special characters" "Write-Output 'literal \$(whoami) text' 'it''s' 'x\"y' '#c' 'a;b' '' a,'b c'
+literal \$(whoami) text
+it's
+x\"y
+#c
+a;b
+
+a
+b c
+& './my dir/hello.ps1' arg2
+hello arg2
+Get-ChildItem -Name ./x:y a=b +1 C:\\p\\q" "$actual"
 
     echo "[pwsh] save makes the store 0600 in a 0700 directory, under umask 022"
     rm -rf "${SNIPPET_DIR:?}"
