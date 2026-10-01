@@ -136,6 +136,20 @@ env=$SECRET_URL" "$actual"
     chmod 644 "$PROXY_CONF"
     "$run" "$PROXY_SH" "umask 022; proxy add c '$SECRET_URL' 2>/dev/null"
     assert_eq "$sh/add tightens both" "700 600" "$(modes)"
+
+    # Mode 0200: the store can be written but not read. root reads it anyway,
+    # so there the case is skipped.
+    echo "[$sh] add leaves a store it cannot read as it was"
+    printf 'a\thttp://a:1\t\n' > "$PROXY_CONF"
+    if [ "$(id -u)" -ne 0 ] && chmod 200 "$PROXY_CONF" 2>/dev/null && [ ! -r "$PROXY_CONF" ]; then
+        actual=$("$run" "$PROXY_SH" "proxy add n http://n:1 2>&1; echo rc=\$?" | tr -d '\r')
+        chmod 600 "$PROXY_CONF"
+        assert_contains "$sh/unreadable store: message" "proxy add: cannot read $PROXY_CONF; it is left as it was" "$actual"
+        assert_contains "$sh/unreadable store: rc" "rc=1" "$actual"
+        assert_eq "$sh/unreadable store: kept" "a${TAB}http://a:1${TAB}" "$(cat "$PROXY_CONF")"
+    else
+        echo "  SKIP: $sh/unreadable store (running as root)"
+    fi
 }
 
 proxy_suite bash
@@ -213,6 +227,17 @@ env=$SECRET_URL" "$actual"
     chmod 644 "$PROXY_CONF"
     (umask 022; run_pwsh "$PROXY_PS1" "proxy rm b" 2>/dev/null)
     assert_eq "pwsh/proxy rm tightens both" "700 600" "$(modes)"
+
+    echo "[pwsh] add leaves a store it cannot read as it was"
+    printf 'a\thttp://a:1\t\n' > "$PROXY_CONF"
+    if [ "$(id -u)" -ne 0 ] && chmod 200 "$PROXY_CONF" 2>/dev/null && [ ! -r "$PROXY_CONF" ]; then
+        actual=$(run_pwsh "$PROXY_PS1" "proxy add n http://n:1; 'after'" 2>/dev/null | tr -d '\r')
+        chmod 600 "$PROXY_CONF"
+        assert_eq "pwsh/proxy unreadable store: add ends" "" "$actual"
+        assert_eq "pwsh/proxy unreadable store: kept" "a${TAB}http://a:1${TAB}" "$(cat "$PROXY_CONF")"
+    else
+        echo "  SKIP: pwsh/proxy unreadable store (running as root)"
+    fi
 else
     echo "pwsh not found; skipping pwsh proxy tests"
 fi

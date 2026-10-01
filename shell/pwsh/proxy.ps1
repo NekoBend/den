@@ -19,10 +19,16 @@ function _ProxyFile {
     Join-Path $base 'den/proxy.conf'
 }
 
+# The store as an array of lines (empty array if none). A symlink whose target
+# does not exist yet is none too; any other read error ends the caller, so add
+# never rewrites a store it could not read.
 function _ProxyLines {
     $f = _ProxyFile
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return @() }
-    @(([IO.File]::ReadAllText($f) -replace "`r", '') -split "`n" | Where-Object { $_ -ne '' })
+    try { $text = [IO.File]::ReadAllText($f) }
+    catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return @() }
+    catch { throw }
+    @(($text -replace "`r", '') -split "`n" | Where-Object { $_ -ne '' })
 }
 
 # Lines defaults to @() rather than $null, whose .Count is an error under a

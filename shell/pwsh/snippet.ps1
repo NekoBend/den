@@ -14,11 +14,15 @@ function _SnippetFile {
     Join-Path $base 'den/snippets'
 }
 
-# The store as an array of "name<TAB>command" lines (empty array if none).
+# The store as an array of "name<TAB>command" lines (empty array if none). A
+# symlink whose target does not exist yet is none too; any other read error
+# ends the caller, so save never rewrites a store it could not read.
 function _SnippetLines {
     $f = _SnippetFile
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return @() }
-    $text = [IO.File]::ReadAllText($f)
+    try { $text = [IO.File]::ReadAllText($f) }
+    catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return @() }
+    catch { throw }
     @(($text -replace "`r", '') -split "`n" | Where-Object { $_ -ne '' })
 }
 

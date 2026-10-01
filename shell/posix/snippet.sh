@@ -157,11 +157,18 @@ _snippet_save() {
     }
     if [ -f "$_ss_file" ]; then
         # Drop any existing snippet with this name (literal field-1 compare).
+        # A store that cannot be read ends the save, so it is never replaced
+        # by one that holds the new line alone.
         while IFS= read -r _ss_line || [ -n "$_ss_line" ]; do
             if [ "${_ss_line%%"$_ss_tab"*}" != "$_ss_name" ]; then
                 printf '%s\n' "$_ss_line" >> "$_ss_tmp"
             fi
-        done < "$_ss_file"
+        done < "$_ss_file" || {
+            rm -f "$_ss_tmp"
+            echo "snippet save: cannot read $_ss_file; it is left as it was" >&2
+            unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+            return 1
+        }
     fi
     printf '%s\t%s\n' "$_ss_name" "$_ss_cmd" >> "$_ss_tmp"
     if ! _snip_put "$_ss_tmp" "$_ss_file"; then

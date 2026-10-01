@@ -74,12 +74,18 @@ _proxy_add() {
     }
     if [ -f "$_pa_conf" ]; then
         # Drop any existing entry with this name (compare field 1 literally, no
-        # glob), then the new one is appended below.
+        # glob), then the new one is appended below. A store that cannot be
+        # read ends the add, so it is never replaced by the new entry alone.
         while IFS= read -r _pa_line || [ -n "$_pa_line" ]; do
             if [ "${_pa_line%%"$_pa_tab"*}" != "$_pa_name" ]; then
                 printf '%s\n' "$_pa_line" >> "$_pa_tmp"
             fi
-        done < "$_pa_conf"
+        done < "$_pa_conf" || {
+            rm -f "$_pa_tmp"
+            echo "proxy add: cannot read $_pa_conf; it is left as it was" >&2
+            unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
+            return 1
+        }
     fi
     printf '%s\t%s\t%s\n' "$_pa_name" "$_pa_url" "$_pa_np" >> "$_pa_tmp"
     mv "$_pa_tmp" "$_pa_conf"

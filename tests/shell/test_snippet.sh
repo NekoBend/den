@@ -246,6 +246,21 @@ b${TAB}echo b
 c${TAB}echo c" "$(cat "$SNIPPET_DIR/$left" 2>&1)"
     rm -f "$SNIPPET_FILE" "${SNIPPET_DIR:?}/$left"
 
+    # Mode 0200: the store can be written but not read. root reads it anyway,
+    # so there the case is skipped.
+    echo "[$sh] save leaves a store it cannot read as it was"
+    printf 'a\techo a\n' > "$SNIPPET_FILE"
+    if [ "$(id -u)" -ne 0 ] && chmod 200 "$SNIPPET_FILE" 2>/dev/null && [ ! -r "$SNIPPET_FILE" ]; then
+        actual=$("$run" "$SNIPPET_SH" "snippet save n 'echo n' 2>&1; echo rc=\$?" | tr -d '\r')
+        chmod 600 "$SNIPPET_FILE"
+        assert_contains "$sh/unreadable store: message" "snippet save: cannot read $SNIPPET_FILE; it is left as it was" "$actual"
+        assert_contains "$sh/unreadable store: rc" "rc=1" "$actual"
+        assert_eq "$sh/unreadable store: kept" "a${TAB}echo a" "$(cat "$SNIPPET_FILE")"
+    else
+        echo "  SKIP: $sh/unreadable store (running as root)"
+    fi
+    reset_store
+
     echo "[$sh] pick without fzf falls back gracefully"
     if ! command -v fzf >/dev/null 2>&1; then
         actual=$("$run" "$SNIPPET_SH" "snippet pick 2>&1; echo rc=\$?" | tr -d '\r')
@@ -360,6 +375,18 @@ Get-ChildItem -Name ./x:y a=b +1 C:\\p\\q" "$actual"
     assert_eq "pwsh/snippet dangling symlink target created" "n${TAB}echo n 600" \
         "$(cat "$DOTS/new-snippets" 2>&1) $(stat -c '%a' "$DOTS/new-snippets" 2>&1)"
     rm -f "$SNIPPET_FILE"
+
+    echo "[pwsh] save leaves a store it cannot read as it was"
+    printf 'a\techo a\n' > "$SNIPPET_FILE"
+    if [ "$(id -u)" -ne 0 ] && chmod 200 "$SNIPPET_FILE" 2>/dev/null && [ ! -r "$SNIPPET_FILE" ]; then
+        actual=$(run_pwsh "$SNIPPET_PS1" "snippet save n 'echo n'; 'after'" 2>/dev/null | tr -d '\r')
+        chmod 600 "$SNIPPET_FILE"
+        assert_eq "pwsh/snippet unreadable store: save ends" "" "$actual"
+        assert_eq "pwsh/snippet unreadable store: kept" "a${TAB}echo a" "$(cat "$SNIPPET_FILE")"
+    else
+        echo "  SKIP: pwsh/snippet unreadable store (running as root)"
+    fi
+    reset_store
 
     reset_store
     echo "[pwsh] unknown command fails with usage"
