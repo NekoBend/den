@@ -134,6 +134,37 @@ actual=$(run_bash "$HELPERS_SH" "
 " 2>/dev/null)
 assert_eq "bash/_wrap toggle OFF uses fallback" "native test" "$actual"
 
+# --- _den_typed: was the den command typed at the prompt? ---
+# probe stands in for a den command (cd, a wrapper); `again` is a stub that
+# evals its argument, as den's again replays a history line. bash -c / zsh -c
+# is the prompt here; a script run by the shell is not.
+TYPED_PROBE='probe() { if _den_typed; then echo typed; else echo native; fi; }; again() { eval "$1"; }'
+printf '%s\n' probe > "$WORK/typed_src.sh"
+typed_cases() {
+    local sh="$1" actual
+    echo "[$sh] _den_typed: the prompt, eval, \$(...), again"
+    actual=$("run_$sh" "$HELPERS_SH" "$TYPED_PROBE; probe; eval probe; x=\$(probe); echo \"\$x\"; again probe; eval 'again probe'")
+    assert_eq "$sh/_den_typed typed" "typed
+typed
+typed
+typed
+typed" "$actual"
+    echo "[$sh] _den_typed: a function, a sourced file, again in a function"
+    actual=$("run_$sh" "$HELPERS_SH" "$TYPED_PROBE; f() { probe; }; f; . '$WORK/typed_src.sh'; g() { again probe; }; g; h() { eval probe; }; h")
+    assert_eq "$sh/_den_typed native" "native
+native
+native
+native" "$actual"
+}
+typed_cases bash
+# bash lists a script's top level as "main". (zsh lists no frame for it, but a
+# script never has den's commands unless it sources them, which counts: den
+# loads only in an interactive shell.)
+echo "[bash] _den_typed: a script bash runs"
+printf '%s\n' ". '$HELPERS_SH'" "$TYPED_PROBE" probe > "$WORK/typed_script.sh"
+actual=$(bash "$WORK/typed_script.sh")
+assert_eq "bash/_den_typed script" "native" "$actual"
+
 # --- _init_path ---
 echo "[bash] _init_path adds to PATH"
 actual=$(run_bash "$HELPERS_SH" "_init_path /test/new/path; echo \$PATH" 2>/dev/null)
@@ -230,6 +261,8 @@ assert_eq "zsh/_wrap_log line no native" "[den] mytree -> echo  (off: tgl-wr)" "
 echo "[zsh] _DEN_WRAPPER_LOG=0 silences the line"
 actual=$(run_zsh_stderr "$HELPERS_SH" "_wrap myla echo '' ls '-A'; _DEN_WRAPPER_LOG=0; myla x >/dev/null")
 assert_eq "zsh/_DEN_WRAPPER_LOG=0 silences" "" "$actual"
+
+typed_cases zsh
 
 echo "[zsh] _wsfx creates function"
 actual=$(run_zsh "$HELPERS_SH" "_wsfx echow echo ''; type echow" 2>/dev/null)

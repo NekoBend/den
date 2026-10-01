@@ -45,6 +45,9 @@ _snip_get() {
 }
 
 # Echo the command (so the user sees what runs) then eval it in this shell.
+# A snippet run or picked at the prompt counts as typed there (_den_typed in
+# _helpers.sh), so den's cd and the wrappers act as they do at the prompt; one
+# a function runs gets builtin cd and the native commands.
 _snip_exec() {
     printf '+ %s\n' "$1" >&2
     eval "$1"

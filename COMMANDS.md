@@ -24,6 +24,19 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   including a script that runs `Set-StrictMode -Version Latest` (strict mode then
   applies inside den's functions too, and they are written for it). A profile can
   also set strict mode before it loads den.
+- In **bash/zsh**, den's `cd` and the wrappers that replace a native command
+  (`ls`, `cat`, `grep`, `find`) do den's part only when typed at the prompt
+  (`eval` and `$(...)` typed there count, and so do a line a typed `again`
+  replays and a snippet a typed `snippet run` or `snippet pick` runs). Run by a
+  function, your own included, or by a sourced file such as `~/.bashrc`, `cd`
+  is `builtin cd` and each of those wrappers runs its native command, which is
+  what such code was written for. A function of yours that relied on one of
+  them (`grep` running `rg`, say) now gets the native tool: call `rg` / `fd` /
+  `bat` / `lsd` by name there, or the `*w` names (`grepw`, `findw`, `catw`,
+  `lsw`), which always run the modern tool. den's own names (`la`, `ll`, `lla`,
+  `lt`, `llt`, `ripgrep`) replace nothing and run `lsd` / `rg` anywhere. `cd`
+  with an option (`-P`, `-L`, ...) is always `builtin cd`, since zoxide would
+  read the option as a keyword to search for.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
@@ -35,7 +48,7 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `cd <dir>` | zoxide smart-jump when wrappers are ON, else plain cd | ✓ | ✓ | `z` |
+| `cd <dir>` | zoxide smart-jump when wrappers are ON (on bash/zsh: typed at the prompt, no option), else plain cd | ✓ | ✓ | `z` |
 | `cdi` | interactive zoxide jump (fzf picker) | ✓ | ✓ | `zi` |
 | `zd` / `zdi` | always jump via zoxide, ignoring the wrapper toggle | ✓ | ✓ | ✓ |
 | `up [N]` | go up N directories (default 1) | ✓ | ✓ | ✓ |
@@ -134,7 +147,10 @@ fall back with a message.
 
 Each prefers a modern tool when installed and falls back to the native command;
 all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper` / `tgl-wr`). The `*w` names
-always use the modern tool, bypassing the toggle.
+always use the modern tool, bypassing the toggle. On bash/zsh `ls`, `cat`,
+`grep` and `find` run the modern tool only when typed at the prompt; a function
+or a sourced file gets the native command (see "How to read this"). den's own
+names below (`la`, `ll`, `lla`, `lt`, `llt`) run it anywhere.
 
 On bash/zsh and pwsh, each time a wrapper that obeys the toggle runs the modern
 tool, it prints one dim line (stderr on bash/zsh); the `*w` names print nothing:
