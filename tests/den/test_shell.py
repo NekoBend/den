@@ -224,7 +224,7 @@ def test_cmd_shims_with_labels_keep_them_findable():
     # cmd reads a batch file in 512-byte blocks when it looks for a label,
     # and with LF-only line endings it can miss one: a shim that jumps to a
     # label stays under 512 bytes or keeps CRLF line endings (as dg.cmd).
-    for name in ("path", "pip", "python", "python3", "touch", "uv"):
+    for name in ("pip", "python", "python3", "touch", "uv"):
         raw = (_CMD_BIN / f"{name}.cmd").read_bytes()
         crlf = raw.count(b"\n") == raw.count(b"\r\n")
         assert len(raw) < 512 or crlf, f"{name}.cmd: {len(raw)} bytes, LF only"

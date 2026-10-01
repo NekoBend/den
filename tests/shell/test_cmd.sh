@@ -227,8 +227,15 @@ for _, n in ipairs(H.alias_names) do
 end
 table.sort(names)
 print(table.concat(names, " "))')
-want=$(cd "$CMD_BIN" && for f in *.cmd; do printf '%s\n' "${f%.cmd}"; done | LC_ALL=C sort | tr '\n' ' ')
-assert_eq "cmd/aliases: one per shim, same name" "${want% }" "$out"
+# path.cmd excepted: `path` is a cmd builtin that also sets PATH, and stays it.
+want=$(cd "$CMD_BIN" && for f in *.cmd; do [ "$f" = path.cmd ] || printf '%s\n' "${f%.cmd}"; done | LC_ALL=C sort | tr '\n' ' ')
+assert_eq "cmd/aliases: one per shim but path, same name" "${want% }" "$out"
+
+echo "[cmd] typed path stays cmd's own PATH command (it also sets PATH)"
+out=$(run_lua alias_path '
+H.boot{ env = { STARSHIP_CPU_INTEL = "stub" } }
+print("path=" .. H.show(H.aliases.path))')
+assert_eq "cmd/aliases: no alias over the path builtin" 'path=nil' "$out"
 
 echo "[cmd] the shim folder an older den put on PATH is taken off again"
 out=$(run_lua path_strip '
@@ -266,8 +273,9 @@ print("lines=" .. n .. " crlf=" .. tostring(crlf))
 print(H.macrofile:match("ls=[^\r]*"))
 print(H.macrofile:match("%.9=[^\r]*"))
 print(H.macrofile:match("\n(gst=[^\r]*)"))')
-# One alias per shim, plus .., .1-.9 and c (11), 15 git, 11 docker and 2 editor macros.
-nshims=$(cd "$CMD_BIN" && ls -- *.cmd | wc -l)
+# One alias per shim but path, plus .., .1-.9 and c (11), 15 git, 11 docker
+# and 2 editor macros.
+nshims=$(cd "$CMD_BIN" && ls -- *.cmd | grep -vxc path.cmd)
 assert_eq "cmd/aliases: macro file lines" "lines=$((nshims + 11 + 15 + 11 + 2)) crlf=true
 ls=\"C:\\L\\clink\\bin\\ls.cmd\" \$*
 .9=\"C:\\L\\clink\\bin\\up.cmd\" 9

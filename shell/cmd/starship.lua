@@ -287,10 +287,13 @@ if starship_exe then
 end
 
 -- ===== Aliases =====
--- One per shim in bin_dir, named after it (back.cmd -> back, tgl-hw.cmd -> tgl-hw).
+-- One per shim in bin_dir, named after it (back.cmd -> back, tgl-hw.cmd ->
+-- tgl-hw), except path.cmd: `path` is a cmd builtin that also sets PATH
+-- (`path C:\tools;%PATH%`), and an alias would take that over as well, so
+-- typed `path` stays cmd's own.
 for _, name in ipairs({
     "again", "back", "cat", "dg", "digest", "find", "fwd", "grep", "head", "la",
-    "ll", "lla", "llt", "ls", "lt", "mkcd", "path", "pip", "python", "python3",
+    "ll", "lla", "llt", "ls", "lt", "mkcd", "pip", "python", "python3",
     "tail", "tgl-hw", "tgl-uv", "tgl-wr", "toggle-hwinfo", "toggle-uv",
     "toggle-wrapper", "touch", "up", "uv", "wc", "which",
 }) do

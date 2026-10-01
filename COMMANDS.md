@@ -221,11 +221,12 @@ characters the text's length with its line ends.
 | `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
 | `extract <archive...>` / `xt` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
 | `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
-| `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
+| `path` | print `$PATH`, one entry per line | ✓ | ✓ | native |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
 
-On cmd, `path` with arguments is cmd's own `PATH` command, which sets `PATH`
-(`path C:\tools;%PATH%`), as it does without den.
+On cmd, `path` stays cmd's own command: it prints `PATH=...` on one line, and
+with arguments sets `PATH` (`path C:\tools;%PATH%`). den defines no alias over
+it, since the alias would take over the setting form too.
 
 `extract` and `archive` pick the format from the extension without regard to
 case (`PHOTOS.ZIP`, `DATA.TAR.GZ`). A single compressed file is still named by

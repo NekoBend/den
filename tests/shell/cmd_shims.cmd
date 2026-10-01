@@ -6,8 +6,8 @@ rem and exits with FAKE_RC. Checked: the wrappers run the tool found on PATH,
 rem keep its exit code and run their fallback only without it (find also
 rem after a failing fd); no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
-rem unchanged; python3 runs a venv's python.exe; path lists and sets PATH;
-rem again asks before it re-runs.
+rem unchanged; python3 runs a venv's python.exe; path lists PATH; again
+rem asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -184,18 +184,13 @@ call :expect %errorlevel% 0 "python3: the venv's python.exe"
 set "VIRTUAL_ENV="
 set "_DEN_VENV_PYTHON="
 
-rem --- path: lists PATH; with arguments, sets it
+rem --- path.cmd lists PATH (typed `path` stays cmd's own command)
 call "%BIN%\path.cmd" >"%O%" 2>&1
 set "FIRST="
 set /p "FIRST=" <"%O%"
 set "OK="
 if /i "%FIRST%"=="%T%\tools" set "OK=1"
 call :check "path: lists PATH"
-call "%BIN%\path.cmd" C:\den-x;%PATH%
-set "OK="
-if /i "%PATH:~0,9%"=="C:\den-x;" set "OK=1"
-call :check "path: sets PATH"
-set "PATH=%T%\tools;%BASEPATH%"
 
 rem --- again: asks, and leaves the command for the next input line on a yes
 >"%T%\yes.txt" echo y
