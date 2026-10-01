@@ -78,29 +78,66 @@ _dg_expect() {
     _dg_bylen "${#_dg_xh}" >/dev/null
 }
 
+# _dg_plain → does a *sum tool print the name $1 as it is? GNU escapes a
+# name holding a backslash, a newline or a carriage return (and starts its
+# line with a backslash), and reads a lone - as stdin; dg hashes those one by
+# one. Needs _dg_nl and _dg_cr.
+_dg_plain() {
+    case $1 in
+        -|*\\*|*"$_dg_nl"*|*"$_dg_cr"*) return 1 ;;
+    esac
+    return 0
+}
+
+# _dg_flush → hash the run of plain names in _dg_run with one call of the
+# _dg_a *sum tool, and empty the run. For such names the tool's own
+# "<hash>  <name>" lines are dg's lines; -- keeps a dash name a file.
+_dg_flush() {
+    eval '[ "${#_dg_run[@]}" -gt 0 ] || return 0
+        "${_dg_a}sum" -- "${_dg_run[@]}"
+        _dg_rc=$?
+        _dg_run=()
+        return "$_dg_rc"'
+}
+
 # _dg_print → dg [algo] <file...>: $1 is the algorithm, then the files.
 _dg_print() {
     _dg_a=$1; shift
-    # One file prints the bare hash (scriptable); several print hash and
-    # name per line, like the *sum tools, so the lines stay attributable.
-    _dg_many=$#
+    # One file prints the bare hash (scriptable).
+    if [ $# -eq 1 ]; then
+        if [ ! -f "$1" ]; then
+            echo "dg: '$1' is not a file" >&2
+            return 1
+        fi
+        _dg_hash "$_dg_a" "$1"
+        return
+    fi
+    # Several print hash and name per line, like the *sum tools, so the lines
+    # stay attributable. A run of files with plain names goes to one *sum
+    # call (_dg_flush): a call per file took two forks each, seconds for a
+    # few thousand small files. Anything else ends the run and is handled
+    # alone, so the lines keep the order of the operands.
     _dg_fail=0
+    _dg_nl='
+'
+    _dg_cr=$(printf '\r')
+    eval '_dg_run=()'
     for _dg_f in "$@"; do
+        if [ -f "$_dg_f" ] && _dg_plain "$_dg_f"; then
+            eval '_dg_run+=("$_dg_f")'
+            continue
+        fi
+        _dg_flush || _dg_fail=1
         if [ ! -f "$_dg_f" ]; then
             echo "dg: '$_dg_f' is not a file" >&2
             _dg_fail=1
-            continue
-        fi
-        if ! _dg_h=$(_dg_hash "$_dg_a" "$_dg_f"); then
-            _dg_fail=1
-            continue
-        fi
-        if [ "$_dg_many" -gt 1 ]; then
+        elif _dg_h=$(_dg_hash "$_dg_a" "$_dg_f"); then
             printf '%s  %s\n' "$_dg_h" "$_dg_f"
         else
-            printf '%s\n' "$_dg_h"
+            _dg_fail=1
         fi
     done
+    _dg_flush || _dg_fail=1
     return "$_dg_fail"
 }
 
@@ -154,6 +191,18 @@ _dg_equal() {
     return 1
 }
 
+# _dg_lower → _dg_lh in lowercase: zsh and bash 4+ do it themselves, an
+# older bash takes a tr.
+_dg_lower() {
+    if [ -n "${ZSH_VERSION-}" ]; then
+        eval '_dg_lh=${(L)_dg_lh}'
+    elif [ "${BASH_VERSINFO:-0}" -ge 4 ]; then
+        eval '_dg_lh=${_dg_lh,,}'
+    else
+        _dg_lh=$(printf '%s' "$_dg_lh" | tr ABCDEF abcdef)
+    fi
+}
+
 # _dg_line → parse one checksum-file line ($1): GNU "<hash>  <name>" or
 # "<hash> *<name>", or BSD "SHA256 (<name>) = <hash>" (MD5, SHA512 alike).
 # Sets _dg_la (algorithm, from the tag or the hash's length), _dg_lh
@@ -186,8 +235,15 @@ _dg_line() {
     esac
     case $_dg_lh in ''|*[!0123456789abcdefABCDEF]*) return 2 ;; esac
     [ -n "$_dg_ln" ] || return 2
-    _dg_lh=$(printf '%s' "$_dg_lh" | tr ABCDEF abcdef)
-    _dg_l=$(_dg_bylen "${#_dg_lh}") || return 2
+    # No fork per line: a lowercase hash (the usual case) stays as it is, and
+    # the algorithm follows from the length as in _dg_bylen.
+    case $_dg_lh in *[ABCDEF]*) _dg_lower ;; esac
+    case ${#_dg_lh} in
+        32)  _dg_l=md5 ;;
+        64)  _dg_l=sha256 ;;
+        128) _dg_l=sha512 ;;
+        *)   return 2 ;;
+    esac
     # A BSD tag has to agree with the hash's length.
     case $_dg_la in
         '')     ;;
@@ -207,8 +263,17 @@ _dg_line() {
 
 # _dg_check → dg -c <sumsfile...>: verify every entry of every checksum
 # file. Names are relative to the current directory, as with sha256sum -c.
+# Each file is read whole first, then each algorithm's entries are hashed by
+# one *sum call, then the verdicts print in the order of the lines: a call
+# (and the parsing's forks) per entry made a few thousand entries take 15 to
+# 20 seconds where sha256sum -c takes milliseconds. The entries are 1-based
+# arrays, by eval as elsewhere in this file: _dg_en (name), _dg_ex (expected
+# hash), _dg_ek (kind: miss, "one <algo>" for a name _dg_plain refuses,
+# hashed alone, or the algorithm) and _dg_got (the hash a *sum call gave).
 _dg_check() {
     _dg_cr=$(printf '\r')
+    _dg_nl='
+'
     _dg_ok=0; _dg_bad=0; _dg_miss=0; _dg_unread=0
     for _dg_sums in "$@"; do
         if [ ! -f "$_dg_sums" ] || [ ! -r "$_dg_sums" ]; then
@@ -217,6 +282,8 @@ _dg_check() {
             continue
         fi
         _dg_mal=0
+        _dg_e=0
+        eval '_dg_en=(); _dg_ex=(); _dg_ek=(); _dg_got=(); _dg_md5=(); _dg_sha256=(); _dg_sha512=()'
         # Read on fd 3, so nothing run for an entry can eat the lines.
         while IFS= read -r _dg_raw <&3 || [ -n "$_dg_raw" ]; do
             _dg_line "$_dg_raw"
@@ -224,17 +291,62 @@ _dg_check() {
                 1) continue ;;
                 2) _dg_mal=$((_dg_mal + 1)); continue ;;
             esac
+            _dg_e=$((_dg_e + 1))
             if [ ! -e "$_dg_ln" ]; then
-                printf '%s: MISSING\n' "$_dg_ln"
-                _dg_miss=$((_dg_miss + 1))
-            elif _dg_h=$(_dg_hash "$_dg_la" "$_dg_ln") && [ "$_dg_h" = "$_dg_lh" ]; then
+                _dg_k=miss
+            elif _dg_plain "$_dg_ln"; then
+                _dg_k=$_dg_la
+                eval "_dg_$_dg_la"'+=("$_dg_ln")'
+            else
+                _dg_k="one $_dg_la"
+            fi
+            eval '_dg_en[_dg_e]=$_dg_ln; _dg_ex[_dg_e]=$_dg_lh; _dg_ek[_dg_e]=$_dg_k'
+        done 3< "$_dg_sums"
+        # A *sum tool prints "<hash>  <name>" per name, in order; one it
+        # cannot read gets its message on stderr and no line. So each line
+        # goes to the next entry of that algorithm with that name, and the
+        # entries passed over keep no hash (FAILED).
+        for _dg_a in md5 sha256 sha512; do
+            eval '[ "${#_dg_'"$_dg_a"'[@]}" -gt 0 ]' || continue
+            eval '_dg_out=$("${_dg_a}sum" -- "${_dg_'"$_dg_a"'[@]}")'
+            _dg_i=0
+            while IFS= read -r _dg_ol; do
+                [ -n "$_dg_ol" ] || continue
+                # The name follows the hash and " " or " *" (binary mode).
+                _dg_on=${_dg_ol#* }
+                _dg_on=${_dg_on#?}
+                while [ "$_dg_i" -lt "$_dg_e" ]; do
+                    _dg_i=$((_dg_i + 1))
+                    eval '_dg_k=${_dg_ek[_dg_i]}; _dg_f=${_dg_en[_dg_i]}'
+                    if [ "$_dg_k" = "$_dg_a" ] && [ "$_dg_f" = "$_dg_on" ]; then
+                        eval '_dg_got[_dg_i]=${_dg_ol%% *}'
+                        break
+                    fi
+                done
+            done <<DG_SUMS
+$_dg_out
+DG_SUMS
+        done
+        _dg_i=0
+        while [ "$_dg_i" -lt "$_dg_e" ]; do
+            _dg_i=$((_dg_i + 1))
+            eval '_dg_ln=${_dg_en[_dg_i]}; _dg_lh=${_dg_ex[_dg_i]}; _dg_k=${_dg_ek[_dg_i]}; _dg_h=${_dg_got[_dg_i]-}'
+            case $_dg_k in
+                miss)
+                    printf '%s: MISSING\n' "$_dg_ln"
+                    _dg_miss=$((_dg_miss + 1))
+                    continue
+                    ;;
+                one\ *) _dg_h=$(_dg_hash "${_dg_k#one }" "$_dg_ln") || _dg_h= ;;
+            esac
+            if [ -n "$_dg_h" ] && [ "$_dg_h" = "$_dg_lh" ]; then
                 printf '%s: OK\n' "$_dg_ln"
                 _dg_ok=$((_dg_ok + 1))
             else
                 printf '%s: FAILED\n' "$_dg_ln"
                 _dg_bad=$((_dg_bad + 1))
             fi
-        done 3< "$_dg_sums"
+        done
         if [ "$_dg_mal" -gt 0 ]; then
             echo "dg: '$_dg_sums': $_dg_mal malformed line(s) ignored" >&2
         fi
@@ -319,9 +431,11 @@ dg() {
     _dg_main "$@"
     set -- "$?"
     unset _dg_mode _dg_dd _dg_o _dg_alg _dg_out _dg_xh _dg_xp _dg_a \
-        _dg_many _dg_fail _dg_f _dg_h _dg_by _dg_named _dg_ha _dg_hb \
-        _dg_cr _dg_ok _dg_bad _dg_miss _dg_unread _dg_sums _dg_mal \
-        _dg_raw _dg_n _dg_msg _dg_l _dg_le _dg_la _dg_lh _dg_ln
+        _dg_fail _dg_f _dg_h _dg_by _dg_named _dg_ha _dg_hb \
+        _dg_cr _dg_nl _dg_ok _dg_bad _dg_miss _dg_unread _dg_sums _dg_mal \
+        _dg_raw _dg_n _dg_msg _dg_l _dg_le _dg_la _dg_lh _dg_ln \
+        _dg_run _dg_rc _dg_e _dg_k _dg_i _dg_ol _dg_on _dg_en _dg_ex \
+        _dg_ek _dg_got _dg_md5 _dg_sha256 _dg_sha512
     return "$1"
 }
 

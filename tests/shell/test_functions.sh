@@ -321,6 +321,44 @@ a.txt: OK" "$actual"
     $run "$FUNCTIONS_SH" "cd '$d' && dg -c 256 SHA256SUMS" >/dev/null 2>&1
     assert_eq "$sh/dg -c with an algo exits 1" "1" "$?"
 
+    # Several files are hashed in runs, so the lines must still come in the
+    # order of the operands when a name GNU escapes (hashed alone) or a
+    # non-file sits between plain ones; and dg -c must give each *sum line to
+    # the right entry when an entry before it yields none (a directory, which
+    # stays unreadable when the tests run as root).
+    echo "[$sh] dg keeps the operands' order, and dg -c each entry's own verdict"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt 'back\\slash.txt' nosuch a.txt 2>&1")
+    assert_eq "$sh/dg several files in order around an escaped name and a non-file" "$EXPECTED_SHA256  h.txt
+$(printf 'y' | sha256sum | cut -d' ' -f1)  back\\slash.txt
+dg: 'nosuch' is not a file
+$(printf 'one' | sha256sum | cut -d' ' -f1)  a.txt" "$actual"
+    mkdir -p "$d/adir"
+    printf '%s  a.txt\n%s  adir\n%s  c.txt\n%s  h.txt\n' "$SHA256_ONE_LC" "$ZERO64" "$ZERO64" "${EXPECTED_SHA256^^}" > "$d/DIRS"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c DIRS 2>/dev/null")
+    assert_eq "$sh/dg -c a directory entry FAILED, the next ones still matched" "a.txt: OK
+adir: FAILED
+c.txt: FAILED
+h.txt: OK" "$actual"
+
+    # dg ran its *sum tool once per file, inside two command substitutions,
+    # and dg -c added a tr and a subshell per line: a few thousand small
+    # files took 10 to 20 seconds where sha256sum takes milliseconds. Stubs
+    # log each call of the *sum tools and tr: a run of plain names is one
+    # call, dg -c makes one per algorithm (plus one per name GNU escapes),
+    # and parsing makes none, an uppercase hash included.
+    echo "[$sh] dg makes one *sum call per run of files, dg -c one per algorithm"
+    mkdir -p "$d/logbin"
+    for t in md5sum sha256sum sha512sum tr; do
+        printf '#!/bin/sh\necho %s >> "%s"\nexec "%s" "$@"\n' "$t" "$d/calls" "$(command -v "$t")" > "$d/logbin/$t"
+        chmod +x "$d/logbin/$t"
+    done
+    $run "$FUNCTIONS_SH" "cd '$d' && PATH='$d/logbin':\$PATH && dg h.txt a.txt b.txt c.txt >/dev/null && dg -c SHA256SUMS MIXED DIRS >/dev/null 2>&1; dg 5 a.txt c.txt >/dev/null"
+    actual=$(sort "$d/calls" | uniq -c | sed 's/^ *//')
+    assert_eq "$sh/dg *sum and tr calls" "2 md5sum
+4 sha256sum
+1 sha512sum" "$actual"
+    rm -rf "$d/logbin" "$d/calls" "$d/adir" "$d/DIRS"
+
     # dg keeps its state in globals (POSIX sh has no local); none may outlive it.
     echo "[$sh] dg leaves no _dg_ variables behind"
     actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c BAD >/dev/null 2>&1; dg h.txt $ZERO64 >/dev/null; dg -e a.txt c.txt >/dev/null; dg h.txt a.txt >/dev/null; set | grep '^_dg_[a-z]*='")
