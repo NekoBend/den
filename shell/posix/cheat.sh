@@ -28,8 +28,11 @@ _cheat_list() {
     _cl_dir=$(_cheat_dir)
     [ -d "$_cl_dir" ] || { unset _cl_dir; return 1; }
     # `command` bypasses den's interactive wrappers (find->fd, grep->rg, cat->bat),
-    # which have incompatible flags/output and would break the lookups.
-    ( cd "$_cl_dir" || exit; command find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' ) |
+    # which have incompatible flags/output and would break the lookups. The
+    # *.den.bak[.N] files are the copies `den install cheatsheets --force` keeps
+    # of sheets it replaced, not sheets.
+    ( cd "$_cl_dir" || exit; command find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' \
+        ! -name '*.den.bak' ! -name '*.den.bak.[0-9]*' ) |
         sed 's|^\./||' | LC_ALL=C sort
     unset _cl_dir
 }

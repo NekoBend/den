@@ -10,9 +10,14 @@ function _CheatDir {
     Join-Path $base 'den/cheatsheets'
 }
 
+# *.den.bak[.N] are the copies `den install cheatsheets --force` keeps of sheets
+# it replaced, not sheets (same rule as cheat.sh).
 function _CheatList([string]$Dir) {
     Get-ChildItem -LiteralPath $Dir -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -ne '.pyc' -and $_.FullName -notmatch '__pycache__' } |
+        Where-Object {
+            $_.Extension -ne '.pyc' -and $_.FullName -notmatch '__pycache__' -and
+            $_.Name -notmatch '\.den\.bak(\.\d+)?$'
+        } |
         ForEach-Object { $_.FullName.Substring($Dir.Length + 1).Replace('\', '/') } |
         Sort-Object
 }

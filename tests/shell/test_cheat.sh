@@ -53,6 +53,17 @@ cheat_suite() {
     actual=$("$run" "$CHEAT_SH" "cheat regex/syntax" | tr -d '\r')
     assert_contains "$sh/render nested" "regex syntax" "$actual"
 
+    # `den install cheatsheets --force` copies a sheet it replaces to
+    # <sheet>.den.bak (or .den.bak.N); listed, they made `cheat <name>` ambiguous.
+    echo "[$sh] den install's --force backups are not listed or matched"
+    printf 'OLD ONELINER\n' > "$CHEAT_ROOT/shell/one-liners.md.den.bak"
+    printf 'OLDER ONELINER\n' > "$CHEAT_ROOT/shell/one-liners.md.den.bak.1"
+    actual=$("$run" "$CHEAT_SH" "cheat ls" | tr -d '\r')
+    assert_not_contains "$sh/ls no backups" ".den.bak" "$actual"
+    actual=$("$run" "$CHEAT_SH" "fzf() { return 1; }; cheat one-liners 2>&1" | tr -d '\r')
+    assert_contains "$sh/backup not ambiguous" "ONELINER_MARKER" "$actual"
+    rm -f "$CHEAT_ROOT/shell/one-liners.md.den.bak" "$CHEAT_ROOT/shell/one-liners.md.den.bak.1"
+
     echo "[$sh] a missing name fails with a message"
     actual=$("$run" "$CHEAT_SH" "cheat no-such-sheet-xyz 2>&1; echo rc=\$?" | tr -d '\r')
     assert_contains "$sh/missing msg" "no cheatsheet matching" "$actual"
@@ -111,6 +122,15 @@ if command -v pwsh >/dev/null 2>&1; then
     echo "[pwsh] a nested path substring renders the sheet"
     actual=$(run_pwsh "$CHEAT_PS1" "cheat regex/syntax" | tr -d '\r')
     assert_contains "pwsh/render nested" "regex syntax" "$actual"
+
+    echo "[pwsh] den install's --force backups are not listed or matched"
+    printf 'OLD ONELINER\n' > "$CHEAT_ROOT/shell/one-liners.md.den.bak"
+    printf 'OLDER ONELINER\n' > "$CHEAT_ROOT/shell/one-liners.md.den.bak.1"
+    actual=$(run_pwsh "$CHEAT_PS1" "cheat ls" | tr -d '\r')
+    assert_not_contains "pwsh/ls no backups" ".den.bak" "$actual"
+    actual=$(run_pwsh "$CHEAT_PS1" "function fzf { }; cheat one-liners" 2>&1 | tr -d '\r')
+    assert_contains "pwsh/backup not ambiguous" "ONELINER_MARKER" "$actual"
+    rm -f "$CHEAT_ROOT/shell/one-liners.md.den.bak" "$CHEAT_ROOT/shell/one-liners.md.den.bak.1"
 
     echo "[pwsh] a missing name fails with a message"
     actual=$(run_pwsh "$CHEAT_PS1" "cheat no-such-sheet-xyz" 2>&1 | tr -d '\r')
