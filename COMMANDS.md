@@ -23,17 +23,23 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 - In **pwsh**, a command den defines in place of one the session already had when
   den loaded (`ls`, `cat`, `cd`, `rm`, `cp`, `mv`, `mkdir`, `gc`, `gcm`, `gl`, `gps`,
   `gu`, `python`, `pip`, `uv`, `clip`, ...) is den's only when typed at the prompt of
-  an interactive session, or in a line that a typed `again` or `snippet run`
-  replays. Anywhere else (a script or a module run from the session, a function, a
-  script block such as `ForEach-Object`'s, a `pwsh -File` or `-Command` run) the
-  name runs what it ran before den loaded, with the same arguments and pipeline
-  input: a script's `gps` is `Get-Process`, and on Windows its `ls` is
-  `Get-ChildItem` and its `rm` is `Remove-Item`. A command den adds that names
-  nothing else (`archive`, `extract`, `proxy`, `snippet`, `mkcd`, `dg`, `pcp`, and on
-  Windows `head`, `tail`, `wc`, `touch`, `which`, ...) works in scripts too,
-  including a script that runs `Set-StrictMode -Version Latest` (strict mode then
-  applies inside den's functions too, and they are written for it). A profile can
-  also set strict mode before it loads den.
+  an interactive session, or in a line that a typed `again`, `snippet run` or
+  `snippet pick` replays. Anywhere else (a script or a module run from the session,
+  a function, a script block such as `ForEach-Object`'s, a `pwsh -File` or
+  `-Command` run) the name runs what it ran before den loaded, with the same
+  arguments and pipeline input: a script's `gps` is `Get-Process`, and on Windows
+  its `ls` is `Get-ChildItem` and its `rm` is `Remove-Item`. "Had" means an alias
+  or a function, or a program in a folder of the `PATH` den loaded with (den's own
+  cmd shims aside), looked up the first time a script calls the name: a den command
+  that shares its name with such a program counts as taking it over (on a Linux
+  with Perl's `ptar`, a script's `ptar` is that one). A command den adds that names
+  nothing else (`archive`, `extract`, `proxy`, `snippet`, `mkcd`, `dg`, `pcp`, the
+  `ll`/`la`/`lt` and w-suffix wrappers, and on Windows `head`, `tail`, `wc`,
+  `touch`, `which`, ...) works in scripts too, including a script that runs
+  `Set-StrictMode -Version Latest` (strict mode then applies inside den's functions
+  too, and they are written for it). A profile can also set strict mode before it
+  loads den. `Get-Command` still reports den's version of a name, and a script that
+  runs the object it returns (`& (Get-Command gps)`) runs den's version.
 - In **cmd**, den's commands are Clink aliases, which exist only at the prompt: a
   batch file sees none of them.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
@@ -262,7 +268,8 @@ pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they ru
 `pip.exe` on `PATH` inside a venv. `python` / `python3` / `py` still run through
 `uv run --python <venv version>`. Flip the redirect with `toggle-uv`. On pwsh the
 redirects apply to commands typed at the prompt; a script gets the `python`, `pip`
-and `uv` on `PATH` (see "How to read this").
+and `uv` on `PATH` (see "How to read this"). `py`, which Linux and macOS do not
+have, stays den's in scripts there.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

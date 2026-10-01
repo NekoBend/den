@@ -399,18 +399,33 @@ $global:_DenReplayDepth = 0
 # session is interactive, and install _DenLookupHook. A PostCommandLookupAction
 # that something else set first is kept and runs before den's.
 function _DenScopeOverrides {
+    _DenRecordOverrides (@($ExecutionContext.InvokeProvider.ChildItem.Get('Function:', $false)) +
+        @($ExecutionContext.InvokeProvider.ChildItem.Get('Alias:', $false)))
+    $global:_DenTypedSession = [bool](_DenInteractive)
+    $current = $ExecutionContext.InvokeCommand.PostCommandLookupAction
+    if ($null -ne $current -and -not [object]::ReferenceEquals($current, $global:_DenLookupInstalled)) {
+        $global:_DenLookupNext = $current
+    }
+    $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:_DenLookupHook
+    $global:_DenLookupInstalled = $ExecutionContext.InvokeCommand.PostCommandLookupAction
+}
+
+# _DenRecordOverrides <items> - for _DenScopeOverrides, and for toggle-uv, which
+# defines python, pip and uv after den has loaded when the session started with
+# them OFF: record what the name of each of these functions and aliases meant
+# before den. One that a module defined is not den's (fhx, gcb, scb and gtz come
+# with modules that load while den does), and neither is one that was there
+# before den. A name already recorded keeps its record.
+function _DenRecordOverrides($Items) {
     $pre = $global:_DenPreload
-    $items = @($ExecutionContext.InvokeProvider.ChildItem.Get('Function:', $false)) +
-        @($ExecutionContext.InvokeProvider.ChildItem.Get('Alias:', $false))
-    foreach ($item in $items) {
+    foreach ($item in $Items) {
         $name = $item.Name
-        if ($name.StartsWith('_') -or $name -eq 'prompt') { continue }
+        if ($name.StartsWith('_') -or $name -eq 'prompt' -or $item.ModuleName) { continue }
         $rec = @{ Kind = 'App'; Value = $null }
         if ($item -is [System.Management.Automation.AliasInfo]) {
             if ($pre.Alias.ContainsKey($name) -and $pre.Alias[$name] -eq $item.Definition) { continue }
             $rec.DenAlias = $item.Definition
         } else {
-            if ($item.ModuleName) { continue }
             if ($pre.Function.ContainsKey($name) -and [object]::ReferenceEquals($pre.Function[$name], $item.ScriptBlock)) { continue }
             [void]$global:_DenOwnText.Add($item.Definition)
         }
@@ -419,13 +434,6 @@ function _DenScopeOverrides {
         elseif ($pre.Function.ContainsKey($name)) { $rec.Kind = 'Function'; $rec.Value = $pre.Function[$name] }
         $global:_DenOverrides[$name] = $rec
     }
-    $global:_DenTypedSession = [bool](_DenInteractive)
-    $current = $ExecutionContext.InvokeCommand.PostCommandLookupAction
-    if ($null -ne $current -and -not [object]::ReferenceEquals($current, $global:_DenLookupInstalled)) {
-        $global:_DenLookupNext = $current
-    }
-    $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:_DenLookupHook
-    $global:_DenLookupInstalled = $ExecutionContext.InvokeCommand.PostCommandLookupAction
 }
 
 # _DenLookupHook - PowerShell runs it after every command lookup in the session, so
@@ -475,16 +483,22 @@ function _DenLookup([string]$Name, $Lookup) {
 # _DenHadApp <name> <record> - whether <name> named an application, or a script, on
 # the PATH den loaded with. Looked up once, the first time a call needs it, and
 # kept in the record: listing every PATH directory when den loads would cost each
-# start of PowerShell, for names that scripts seldom call.
+# start of PowerShell, for names that scripts seldom call. den's own cmd shims
+# (%LOCALAPPDATA%\clink\bin, which den's Clink script puts on cmd's PATH, so a
+# pwsh started from cmd has it too) are den's commands, not what a name meant
+# before den: that directory is skipped.
 function _DenHadApp([string]$Name, [hashtable]$Record = @{}) {
     if (-not $Name) { return $false }
     if ($null -eq $Record['Value']) {
         $exts = @('.ps1')
         if (_OnWindows) { $exts += @("$env:PATHEXT" -split ';' | Where-Object { $_ }) } else { $exts += '' }
+        $shims = ''
+        if ($env:LOCALAPPDATA) { $shims = [System.IO.Path]::Combine($env:LOCALAPPDATA, 'clink', 'bin').TrimEnd('\', '/') }
         $hit = $false
         foreach ($dir in @("$global:_DenLoadPath" -split [System.IO.Path]::PathSeparator)) {
             $dir = $dir.Trim().Trim('"')
             if (-not $dir) { continue }
+            if ($shims -and [string]::Equals($dir.TrimEnd('\', '/'), $shims, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
             foreach ($ext in $exts) {
                 try { $hit = [System.IO.File]::Exists([System.IO.Path]::Combine($dir, $Name + $ext)) } catch { $hit = $false }
                 if ($hit) { break }

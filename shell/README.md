@@ -81,13 +81,16 @@ skips it); on Linux/macOS these commands keep their native / PowerShell-builtin
 behavior, and den does not define `head`, `tail`, `wc`, `touch`, `split`, `df`,
 `env` or `which` there at all.
 
-On PowerShell, a wrapper (or any den command that took over a name the session
-already had, such as `ls`, `cat`, `cd`, `rm`, `gc` or `python`) is den's only
-when typed at the prompt. A script, a module, a function or a script block run
-from the session gets what the name meant before den loaded, with the same
-arguments and pipeline input: on Windows a script's `ls dist | Remove-Item`
-gets `Get-ChildItem`'s objects, and its `rm -Recurse` is `Remove-Item`'s. Piped
-input reaches the tool a wrapper picks as it arrives (`Get-Content -Wait log |
+On PowerShell, a den command that took over a name the session already had
+(`ls`, `cat`, `grep`, `cd`, `rm`, `gc`, `python`, ...) is den's only when typed
+at the prompt. A script, a module, a function or a script block run from the
+session gets what the name meant before den loaded, with the same arguments and
+pipeline input: on Windows a script's `ls dist | Remove-Item` gets
+`Get-ChildItem`'s objects, and its `rm -Recurse` is `Remove-Item`'s. Names den
+adds, such as `ll`, `la`, `lt` and the w-suffix wrappers, work in scripts too
+(COMMANDS.md, "How to read this").
+
+Piped input reaches the tool a wrapper picks as it arrives (`Get-Content -Wait log |
 grep x` prints each match as it comes), and with nothing piped in the tool's
 stdin stays the console's.
 

@@ -2899,6 +2899,27 @@ $WORK/cdz/elsewhere" "$actual"
 actual=$(run_pwsh "$HELPERS_PS1" "\$env:_DEN_FORCE_INTERACTIVE = '0'; . '$FUNCTIONS_PS1'; (Get-Command cd).CommandType" 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/cd stays PowerShell's alias when the session is not interactive" "Alias" "$actual"
 
+# den's cmd shims (mkcd.cmd, dg.cmd, ...) live in %LOCALAPPDATA%\clink\bin, which
+# den's Clink script puts on cmd's PATH, so a pwsh started from cmd has it too.
+# They made mkcd, dg and the other commands den adds count as taking over a
+# program, and a script got the shim: mkcd then made the directory but could not
+# move pwsh into it. Stub shims stand in, with LOCALAPPDATA set off Windows.
+echo "[pwsh] den's own cmd shims on PATH do not make a script's mkcd the shim's"
+SHIM_LAD="$WORK/shim-lad"
+rm -rf "$SHIM_LAD" "$WORK/shimtest" && mkdir -p "$SHIM_LAD/clink/bin" "$WORK/shimtest"
+for t in mkcd dg; do
+    printf '#!/bin/sh\necho "SHIM-%s $*"\n' "$t" > "$SHIM_LAD/clink/bin/$t"
+    chmod +x "$SHIM_LAD/clink/bin/$t"
+done
+printf '%s\n' 'mkcd made-by-script' '"after mkcd: $(Split-Path -Leaf (Get-Location).Path)"' > "$WORK/shimtest/usemkcd.ps1"
+actual=$(run_pwsh_den "\$env:LOCALAPPDATA = '$SHIM_LAD'; \$env:PATH = '$SHIM_LAD/clink/bin:/usr/bin:/bin'" "
+    Set-Location -LiteralPath '$WORK/shimtest'
+    & ./usemkcd.ps1
+    'dg had a program: ' + (_DenHadApp 'dg' @{ Kind = 'App'; Value = \$null })
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/a script's mkcd is den's with the cmd shims on PATH" "after mkcd: made-by-script
+dg had a program: False" "$actual"
+
 # The same with the real zoxide loaded, when it is installed: cd and zd alone
 # go home, as zoxide's own jump with no arguments and den's bash/zsh cd do.
 # HOME, the init cache and zoxide's database all live in $WORK (.NET reports no

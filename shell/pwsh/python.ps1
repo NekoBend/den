@@ -301,17 +301,21 @@ function toggle-uv {
     # scope, gone once toggle-uv returns; copy the overrides to global scope so
     # they outlive the call (posix functions are always global, hence no such
     # step in python.sh).
-    $restored = 0
+    $restored = @()
     foreach ($name in $overrides) {
       $fn = Get-Item "Function:\$name" -ErrorAction SilentlyContinue
       if ($fn) {
         Set-Item -Path "Function:global:$name" -Value $fn.ScriptBlock
-        $restored++
+        $restored += $fn
       }
     }
+    # Typed at the prompt only, as at load (see _DenScopeOverrides): a session
+    # that started with the overrides OFF never recorded these names, and its
+    # scripts would get den's python/pip/uv from here on.
+    _DenRecordOverrides $restored
     # python.ps1 defines nothing once uv stops resolving (its first line), so
     # claiming ON here would leave plain python/pip behind an ON message.
-    if ($restored -eq 0) {
+    if ($restored.Count -eq 0) {
       $env:_DEN_UV_OVERRIDE = '0'
       Write-Warning "toggle-uv: could not load the uv overrides from $src (is uv on PATH?); still OFF"
       return

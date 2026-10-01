@@ -120,6 +120,22 @@ gl: PathInfo
 gc: from the file
 gu: a,b" "$actual"
 
+# A module that loads while den does brings aliases of its own (fhx with
+# Microsoft.PowerShell.Utility, gcb, scb and gtz with
+# Microsoft.PowerShell.Management). They were recorded as den's, so a script's
+# fhx would run a program named fhx on PATH instead of Format-Hex.
+echo "[pwsh] aliases that modules defined while den loaded are not recorded as den's"
+actual=$(run_pwsh_den "\$env:PATH = '$GIT_PATH'" "
+    'fhx: ' + (Get-Alias -Name fhx).ModuleName
+    \$m = @(\$global:_DenOverrides.Keys | Where-Object {
+        \$a = Get-Alias -Name \$_ -ErrorAction SilentlyContinue
+        \$a -and \$a.ModuleName
+    })
+    'recorded: ' + ((\$m | Sort-Object) -join ',')
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/no module alias recorded as den's" "fhx: Microsoft.PowerShell.Utility
+recorded: " "$actual"
+
 # =============================================================================
 # open is not den's on macOS
 # =============================================================================

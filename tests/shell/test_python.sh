@@ -656,6 +656,27 @@ mock-uv run --python 3.12 -- python app.py" "$actual"
 echo "[pwsh] a pwsh -Command run that loaded den gets the python3 on PATH"
 actual=$(run_pwsh_den "$PY_SCRIPT_PRELUDE; \$env:_DEN_FORCE_INTERACTIVE = \$null" "python3 app.py" 2>/dev/null | tr -d '\r' || true)
 assert_eq "pwsh/python3 in a -Command run" "system-python3 app.py" "$actual"
+# A session that starts with the redirects OFF (a reload or a child pwsh after
+# toggle-uv turned them off) had no record of these names when den loaded, so
+# once toggle-uv turned them on, its scripts got den's uv, pip and python3. The
+# same holds after den loads again.
+echo "[pwsh] after toggle-uv turns the redirects on, a script still gets the uv, pip and python3 on PATH"
+actual=$(run_pwsh_den "$PY_SCRIPT_PRELUDE; \$env:_DEN_UV_OVERRIDE = '0'" "
+    toggle-uv 6>\$null
+    & '$WORK/usepy.ps1'
+    python3 app.py
+    . '$DOTFILES/shell/pwsh/init.ps1'
+    & '$WORK/usepy.ps1'
+" 2>/dev/null | tr -d '\r' || true)
+assert_eq "pwsh/uv, pip, python3 from a script after toggle-uv; typed python3; after a reload" "mock-uv run app.py
+system-pip install rich
+system-python3 app.py
+mock-uv run --python 3.12 -- python app.py
+mock-uv run --python 3.12 -- python app.py
+mock-uv run app.py
+system-pip install rich
+system-python3 app.py
+mock-uv run --python 3.12 -- python app.py" "$actual"
 
 echo "[pwsh] pip/pip3 in a venv use its own pip, else uv pip, never another pip on PATH"
 # A uv venv has no pip: the PATH lookup found the system pip ahead of it.

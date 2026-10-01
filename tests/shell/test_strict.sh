@@ -774,8 +774,11 @@ Case 'va, a world-writable activate script' { va writable }
 Case 'va, not a venv' { va sub }
 Case 'vv' { vv made-venv }
 Case 'vva' { vva made-venv2; vd }
-Case 'toggle-uv' { toggle-uv; toggle-uv }
-Case 'tgl-uv' { tgl-uv; tgl-uv }
+# toggle-uv's ON records python, pip and uv (see _DenRecordOverrides) into the
+# table the driver emptied: it is emptied again, so that the cases after it still
+# reach den's own versions.
+Case 'toggle-uv' { try { toggle-uv; toggle-uv } finally { $global:_DenOverrides = @{} } }
+Case 'tgl-uv' { try { tgl-uv; tgl-uv } finally { $global:_DenOverrides = @{} } }
 Use-StrictPath 'modern', 'fzf', 'bin', 'sys'
 Case 'uv, no uv' { uv --version }
 Case 'pip, no uv' { pip list }
@@ -785,9 +788,9 @@ Case 'python3, no uv' { python3 -V }
 Case 'py, no uv' { py -V }
 Case 'vv, no uv' { vv }
 Case 'vva, no uv' { vva }
-Case 'toggle-uv, no uv' { toggle-uv; toggle-uv }
+Case 'toggle-uv, no uv' { try { toggle-uv; toggle-uv } finally { $global:_DenOverrides = @{} } }
 Use-StrictPath
-Case 'toggle-uv, back on' { toggle-uv }
+Case 'toggle-uv, back on' { try { toggle-uv } finally { $global:_DenOverrides = @{} } }
 
 # ===== ffmpeg.ps1 =====
 foreach ($StrictF in 'tomp4:mp4', 'towebm:webm', 'tomp3:mp3', 'towav:wav', 'toflac:flac') {
@@ -952,6 +955,13 @@ Case '_DenLookup' {
 }
 # It records again into the table it finds, which the driver emptied: put that back.
 Case '_DenScopeOverrides' { try { _DenScopeOverrides } finally { $global:_DenOverrides = @{} } }
+Case '_DenRecordOverrides' {
+    try {
+        _DenRecordOverrides (@((Get-Item -LiteralPath Function:\gl), (Get-Item -LiteralPath Function:\mkcd)) +
+            @(Get-ChildItem -Path Alias: | Where-Object { $_.ModuleName } | Select-Object -First 1))
+        _DenRecordOverrides $null
+    } finally { $global:_DenOverrides = @{} }
+}
 
 # ===== every den function and alias again, with no argument =====
 # Not reload (its case is last), nor the toggles: a toggle has no other form, and
