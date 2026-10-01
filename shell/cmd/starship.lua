@@ -86,6 +86,11 @@ end
 -- (os.setalias); older Clink loads them all with one `doskey /macrofile` run,
 -- and Clink before 1.1.42 (no os.createtmpfile) runs doskey once per alias.
 -- Starting a cmd + doskey pair per alias made each new window wait for dozens.
+-- os.createtmpfile opens the file in text mode, so "\n" is written as CRLF.
+-- The file holds bin_dir as UTF-8, and doskey may read it in another code
+-- page, so a bin_dir outside ASCII (a user name in Japanese) takes the
+-- per-alias route: Clink runs the C runtime in UTF-8, so os.execute hands
+-- that path to cmd intact.
 local function define_aliases()
     if os.setalias then
         for _, a in ipairs(den_aliases) do
@@ -94,12 +99,12 @@ local function define_aliases()
         return
     end
     local f, name
-    if os.createtmpfile then
+    if os.createtmpfile and not bin_dir:find("[\128-\255]") then
         f, name = os.createtmpfile("den-aliases", ".txt")
     end
     if f then
         for _, a in ipairs(den_aliases) do
-            f:write(a[1], "=", a[2], "\r\n")
+            f:write(a[1], "=", a[2], "\n")
         end
         f:close()
         os.execute(cmd_line(doskey_exe, '/macrofile="' .. name .. '"'))

@@ -52,10 +52,14 @@ local function reader(text)
     return f
 end
 
-local function writer(path)
+-- text: a C runtime text-mode file, which writes each "\n" as "\r\n".
+local function writer(path, text)
     local buf, f = {}, {}
     function f:write(...)
-        for _, s in ipairs({ ... }) do buf[#buf + 1] = tostring(s) end
+        for _, s in ipairs({ ... }) do
+            s = tostring(s)
+            buf[#buf + 1] = text and s:gsub("\n", "\r\n") or s
+        end
         return f
     end
     function f:close()
@@ -70,7 +74,7 @@ io.open = function(path, mode)
     mode = mode or "r"
     if mode:find("[wa]") then
         if H.unwritable then return nil, path .. ": Permission denied" end
-        return writer(path)
+        return writer(path, not mode:find("b"))
     end
     local t = H.files[key(path)]
     if t == nil then return nil, path .. ": No such file or directory" end
@@ -136,9 +140,10 @@ function H.boot(opts)
     end
     os.createtmpfile = nil
     if old == "" or old == "1.6" or old == "1.2" then
-        os.createtmpfile = function(prefix, ext)
+        -- Clink's default mode is "t" (clink/lua/src/os_api.cpp).
+        os.createtmpfile = function(prefix, ext, _, mode)
             local name = "C:\\T\\" .. prefix .. "_4242_1" .. ext
-            return writer(name), name
+            return writer(name, mode ~= "b"), name
         end
     end
     clink = { promptfilter = function()
@@ -267,14 +272,14 @@ H.boot{ old = "1.6", env = { STARSHIP_CPU_INTEL = "stub" } }
 local n, crlf = 0, true
 for line in H.macrofile:gmatch("([^\n]*)\n") do
     n = n + 1
-    if not line:find("\r$") then crlf = false end
+    if not line:find("[^\r]\r$") then crlf = false end
 end
 print("lines=" .. n .. " crlf=" .. tostring(crlf))
 print(H.macrofile:match("ls=[^\r]*"))
 print(H.macrofile:match("%.9=[^\r]*"))
 print(H.macrofile:match("\n(gst=[^\r]*)"))')
 # One alias per shim but path, plus .., .1-.9 and c (11), 15 git, 11 docker
-# and 2 editor macros.
+# and 2 editor macros. The file is in text mode: one CR per line, not two.
 nshims=$(cd "$CMD_BIN" && ls -- *.cmd | grep -vxc path.cmd)
 assert_eq "cmd/aliases: macro file lines" "lines=$((nshims + 11 + 15 + 11 + 2)) crlf=true
 ls=\"C:\\L\\clink\\bin\\ls.cmd\" \$*
@@ -288,6 +293,14 @@ print("execs=" .. #H.execs)
 print(H.execs[1])')
 assert_eq "cmd/aliases: per-alias fallback" "execs=$((nshims + 11 + 15 + 11 + 2))
 \"\"C:\\Windows\\System32\\doskey.exe\" again=\"C:\\L\\clink\\bin\\again.cmd\" \$*\"" "$out"
+
+echo "[cmd] a shim path outside ASCII never goes through the macro file"
+out=$(run_lua macrofile_nonascii '
+H.boot{ old = "1.6", env = { LOCALAPPDATA = "C:\\Users\\\230\151\165\\AppData\\Local", STARSHIP_CPU_INTEL = "stub" } }
+print("execs=" .. #H.execs .. " macrofile=" .. H.show(H.macrofile ~= nil))
+print(H.execs[1])')
+assert_eq "cmd/aliases: non-ASCII bin_dir, one doskey run per alias" "execs=$((nshims + 11 + 15 + 11 + 2)) macrofile=false
+\"\"C:\\Windows\\System32\\doskey.exe\" again=\"C:\\Users\\$(printf '\346\227\245')\\AppData\\Local\\clink\\bin\\again.cmd\" \$*\"" "$out"
 
 echo "[cmd] a Lua error after the aliases leaves them defined"
 out=$(run_lua alias_first '
