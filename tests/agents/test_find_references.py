@@ -503,14 +503,104 @@ def test_a_root_that_git_ignores_is_still_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
     # git lists nothing below an ignored directory, but a search the user
-    # pointed there explicitly must not come back empty because of it.
+    # pointed there explicitly must not come back empty because of it, nor
+    # hold only the files someone force-added there: with one of them, git
+    # listed that file alone and the rest of the directory was not searched.
     git(tmp_path, "init", "-q")
     write(tmp_path, ".gitignore", "generated/\n")
     write(tmp_path, "generated/api.py", "def widget():\n    pass\n")
+    write(tmp_path, "generated/client.py", "widget()\n")
+    root = tmp_path / "generated"
     for env in backends:
-        proc = run("--def", "widget", "--root", str(tmp_path / "generated"), env=env)
+        proc = run("--def", "widget", "--root", str(root), env=env)
         assert proc.returncode == 0, proc.stderr
-        assert rows(proc, tmp_path / "generated") == ["api.py:1:def:def widget():"]
+        assert rows(proc, root) == ["api.py:1:def:def widget():"]
+    git(tmp_path, "add", "-f", "generated/api.py")
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(root), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, root) == ["client.py:1:use:widget()"]
+        proc = run("--def", "widget", "--root", str(root), env=env)
+        assert rows(proc, root) == ["api.py:1:def:def widget():"]
+
+
+def test_a_work_tree_git_cannot_list_is_searched_whole_with_a_note(
+    tmp_path: Path,
+) -> None:
+    # When `git ls-files` failed inside a work tree (an unreadable index, a
+    # repository owned by another user), the whole tree was searched,
+    # ignored files included, and nothing said why the scope had widened.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    write(repo, ".gitignore", "notes.txt\n")
+    write(repo, "notes.txt", "widget\n")
+    write(repo, "app.py", "widget()\n")
+    git(repo, "add", "-A")
+    (repo / ".git" / "index").write_bytes(b"not an index")
+    proc = run("--uses", "widget", "--root", str(repo))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, repo) == ["app.py:1:use:widget()", "notes.txt:1:use:widget"]
+    assert "git ls-files failed" in proc.stderr, proc.stderr
+    assert ".gitignore is not applied" in proc.stderr, proc.stderr
+    # outside a work tree there is nothing to say
+    plain = tmp_path / "plain"
+    write(plain, "app.py", "widget()\n")
+    env = dict(os.environ)
+    env["GIT_CEILING_DIRECTORIES"] = str(tmp_path)
+    proc = run("--uses", "widget", "--root", str(plain), env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, plain) == ["app.py:1:use:widget()"]
+    assert proc.stderr == "", proc.stderr
+
+
+def test_a_tracked_directory_replaced_by_a_symlink_is_not_followed(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The index still names conf/settings.py after conf/ became a link to a
+    # directory outside the tree (a branch that did so, reviewed after
+    # `git reset --mixed`), and joining that path onto the root read the
+    # file at the other end and printed it.
+    outside = tmp_path / "outside"
+    write(outside, "settings.py", "token_widget = 'SENTINEL-SECRET'\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    write(repo, "conf/settings.py", "DEBUG = False\n")
+    write(repo, "app.py", "token_widget\n")
+    git(repo, "add", "-A")
+    shutil.rmtree(repo / "conf")
+    symlink_or_skip(repo / "conf", outside)
+    for env in backends:
+        for mode in ("--uses", "--def"):
+            proc = run(mode, "token_widget", "--root", str(repo), env=env)
+            assert proc.returncode == 0, proc.stderr
+            assert "SENTINEL-SECRET" not in proc.stdout, proc.stdout
+        proc = run("--uses", "token_widget", "--root", str(repo), env=env)
+        assert rows(proc, repo) == ["app.py:1:use:token_widget"]
+
+
+def test_the_repositorys_fsmonitor_program_never_runs(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # Listing the files runs `git ls-files`, and git starts whatever program
+    # the repository's own .git/config names as core.fsmonitor. A tree that
+    # came with its .git (an archive, a shared folder) ran it on a search.
+    if sys.platform == "win32":
+        pytest.skip("the fsmonitor program is a /bin/sh script")
+    scratch = tmp_path_factory.mktemp("fsmonitor")
+    marker = scratch / "fsmonitor-ran"
+    hook = scratch / "hook"
+    hook.write_text(f'#!/bin/sh\necho ran >> "{marker}"\n', encoding="utf-8")
+    hook.chmod(0o755)
+    git(tmp_path, "init", "-q")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "app.py")
+    git(tmp_path, "config", "core.fsmonitor", str(hook))
+    proc = run("--uses", "widget", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == ["app.py:1:use:widget()"]
+    assert not marker.exists(), marker.read_text(encoding="utf-8")
 
 
 def test_binary_files_are_searched_as_text_by_both_backends(
@@ -848,6 +938,74 @@ def test_in_reports_the_line_a_definition_is_on(tmp_path: Path) -> None:
     ]
 
 
+def test_in_follows_python_blocks_not_indentation(tmp_path: Path) -> None:
+    # Only column 0 counted, so a function defined under a module-level
+    # `if`/`else` (or a class under `else:`) was not listed, and a line inside
+    # a string that happened to start at column 0 was. Python's tokenizer now
+    # tells which block a line is in: a def or class in a module-level block
+    # is top-level, except under `if __name__ == "__main__":`; nested
+    # functions, methods, locals, keyword arguments and assignments inside a
+    # block are not.
+    target = write(
+        tmp_path,
+        "lib.py",
+        "import os\n"
+        "try:\n"
+        "    import tomllib\n"
+        "except ImportError:\n"
+        "    tomllib = None\n"
+        "if os.name == 'nt':\n"
+        "    def helper():\n"
+        "        def inner():\n"
+        "            pass\n"
+        "        return inner\n"
+        "else:\n"
+        "    class Helper:\n"
+        "        if True:\n"
+        "            def run(self):\n"
+        "                pass\n"
+        'DOC = """\n'
+        "def fake():\n"
+        '"""\n'
+        "CALL = dict(\n"
+        "    key=1,\n"
+        ")\n"
+        "if __name__ == '__main__':\n"
+        "    def root():\n"
+        "        pass\n",
+    )
+    write(tmp_path, "app.py", "from lib import helper, Helper\nhelper()\n")
+    proc = run("--in", str(target), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:19:def:CALL = dict(",
+        'lib.py:16:def:DOC = """',
+        "lib.py:12:def:class Helper:",
+        "app.py:1:use:Helper:from lib import helper, Helper",
+        "lib.py:7:def:def helper():",
+        "app.py:1:use:helper:from lib import helper, Helper",
+        "app.py:2:use:helper:helper()",
+    ]
+
+
+def test_python_definitions_survive_a_syntax_error() -> None:
+    # Where the tokenizer gives up, the rest of the file is read by
+    # indentation: column 0 is module level, an indented def is a method.
+    text = (
+        "def alpha():\n"
+        "    s = 'unterminated\n"
+        "def beta():\n"
+        "    pass\n"
+        "class Gamma:\n"
+        "    def run(self):\n"
+        "        pass\n"
+    )
+    top = [name for _n, name, _line in _common.top_level_definitions(text, ".py")]
+    assert top == ["alpha", "beta", "Gamma"]
+    members = [name for _n, name, _line in _common.member_definitions(text, ".py")]
+    assert members == ["run"]
+
+
 def test_bash_function_keyword_form_is_a_definition(tmp_path: Path) -> None:
     # `function name {` (no parentheses) is the standard bash/ksh form; the
     # pattern required `()`, so --def, --in and check-broken-refs never saw it.
@@ -955,6 +1113,58 @@ def test_each_mode_runs_one_search(
     assert log.read_text(encoding="utf-8").count("run") == 1
 
 
+def test_a_long_pattern_does_not_split_the_file_list(
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The alternation of every name searched for was a command-line argument
+    # and counted against the command-line budget, so a few thousand removed
+    # names left room for one file per ripgrep run (and past the kernel's
+    # limit for one argument, ripgrep could not start at all). The pattern now
+    # goes in on stdin.
+    if sys.platform == "win32":
+        pytest.skip("the counting rg is a /bin/sh script")
+    log = counting_rg(tmp_path_factory.mktemp("counting-rg"))
+    monkeypatch.setenv("PATH", str(log.parent))
+    files = [write(tmp_path, f"f{i}.py", f"name_{i}()\n") for i in range(5)]
+    names = [f"name_{i}" for i in range(5)]
+    names += [f"zz_unused_symbol_{i:06d}" for i in range(4300)]  # 103,000 chars
+    _common.find_tool.cache_clear()
+    try:
+        hits = _common.search_words(names, files)
+    finally:
+        _common.find_tool.cache_clear()
+    assert hits == [(str(f), 1, f"name_{i}()") for i, f in enumerate(files)]
+    assert log.read_text(encoding="utf-8").count("run") == 1
+
+
+def test_a_pattern_ripgrep_rejects_falls_back_to_the_reader(
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ripgrep exits 2 and prints why when it cannot compile the pattern (too
+    # big, say); its empty output was taken as "no matches".
+    if sys.platform == "win32":
+        pytest.skip("the failing rg is a /bin/sh script")
+    bin_dir = tmp_path_factory.mktemp("failing-rg")
+    stub = bin_dir / "rg"
+    stub.write_text(
+        "#!/bin/sh\necho 'regex: compiled size limit exceeded' >&2\nexit 2\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    app = write(tmp_path, "app.py", "widget()\n")
+    _common.find_tool.cache_clear()
+    try:
+        hits = _common.search_words(["widget"], [app])
+    finally:
+        _common.find_tool.cache_clear()
+    assert hits == [(str(app), 1, "widget()")]
+
+
 # ---------- the fallback reads files as a stream ----------
 
 
@@ -976,6 +1186,37 @@ def test_the_fallback_numbers_lines_as_ripgrep_does(
         ]
         outputs.append(proc.stdout)
     assert outputs[0] == outputs[1], outputs
+
+
+def test_byte_order_marks_are_read_alike_by_both_backends(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # ripgrep transcodes a UTF-16 file with a byte-order mark (what Windows
+    # PowerShell writes) and drops a UTF-8 mark; the fallback did neither, so
+    # it found nothing in the UTF-16 files and printed the UTF-8 mark as part
+    # of line 1. --in missed a definition on line 1 behind the mark as well.
+    utf16 = "widget\r\nx\r\nwidget2 widget\r\n"
+    (tmp_path / "le.ps1").write_bytes(b"\xff\xfe" + utf16.encode("utf-16-le"))
+    (tmp_path / "be.ps1").write_bytes(b"\xfe\xff" + "a\nwidget\n".encode("utf-16-be"))
+    lib = tmp_path / "lib.py"
+    lib.write_bytes(b"\xef\xbb\xbfdef widget():\n    pass\n")
+    write(tmp_path, "app.py", "widget()\n")
+    outputs = []
+    for env in backends:
+        proc = run("--uses", "widget", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "app.py:1:use:widget()",
+            "be.ps1:2:use:widget",
+            "le.ps1:1:use:widget",
+            "le.ps1:3:use:widget2 widget",
+        ]
+        outputs.append(proc.stdout)
+        proc = run("--def", "widget", "--root", str(tmp_path), env=env)
+        assert rows(proc, tmp_path) == ["lib.py:1:def:def widget():"]
+    assert outputs[0] == outputs[1], outputs
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert rows(proc, tmp_path)[0] == "lib.py:1:def:def widget():"
 
 
 def test_the_fallback_does_not_load_a_large_file_whole(

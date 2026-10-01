@@ -29,11 +29,13 @@ Search scope:
     Inside a git work tree, the files git tracks plus the untracked ones it
     does not ignore (`git ls-files --cached --others --exclude-standard`), so
     virtual environments, build output and anything else listed in a
-    .gitignore are not searched; hidden files such as .github/ are. Outside a
-    work tree, every file under the root, except directories holding a
-    pyvenv.cfg (a virtual environment, whatever it is called). Either way
-    the skipped directories (.git, node_modules, .venv, build, ...) are left
-    out and symlinks are not followed. Ripgrep, when installed, searches that
+    .gitignore are not searched; hidden files such as .github/ are. Nested
+    repositories and submodules are separate work trees and are not searched.
+    A root that is itself gitignored is searched whole, except directories
+    holding a pyvenv.cfg (a virtual environment, whatever it is called).
+    Either way the skipped directories (.git, node_modules, .venv, build,
+    ...) are left out and symlinks are not followed, not even a tracked
+    directory that became one. Ripgrep, when installed, searches that
     same file list, otherwise the files are read in-process, and binary files
     are searched as text by both (ripgrep is passed --text), so the result
     does not change when ripgrep is installed or removed, nor with the
@@ -43,9 +45,14 @@ Search scope:
     file prints that file's bytes: run this only on a tree whose contents you
     would read yourself.
 
-    git and rg are run by absolute path from the absolute PATH entries; one
-    found in the working directory itself is refused (Windows would
-    otherwise run a git.exe or rg.exe shipped at the root of the checkout).
+    git and rg are run by absolute path, found in the absolute PATH entries
+    only. One found in the working directory is refused on Windows, which
+    would otherwise run a git.exe or rg.exe shipped at the root of the
+    checkout, and on any system when it was reached through a relative PATH
+    entry. git runs with core.fsmonitor=false, so a .git/config that came
+    with the tree cannot make it start the fsmonitor program it names. A
+    clean filter that config defines still runs when `git diff` rehashes a
+    changed file, as it does for any git command run in that tree.
 
 Output format:
     <file>:<line>:broken_ref:<symbol>:<context>
@@ -62,11 +69,22 @@ Limitations:
     Regex-based, like find-references.py. A def moved to ANOTHER file (not
     a rename of the whole file) is reported here as broken because it left
     the old file; manually verify the new location and ignore false
-    positives. Local variables, keyword arguments, nested functions and
-    class attributes are not definitions here. Signature changes (same name,
-    different params) are NOT detected. Symbols added in the working tree
-    that shadow an external symbol are NOT flagged. Dynamic constructs are
-    not analyzed.
+    positives.
+
+    What counts as a definition: in Python, a def or class at module level
+    (column 0, or inside a module-level if/try/with/for/while block) and an
+    assignment at column 0; a def in a class body is a method. Local
+    variables, keyword arguments, nested functions, class attributes and
+    assignments inside a block are not definitions. Shell and PowerShell
+    functions count at any depth; a shell variable does not, a PowerShell
+    `$x =` at column 0 (or a `$script:`/`$global:` one) does. In PowerShell
+    files (.ps1 .psm1 .psd1) names are compared and matched ignoring case,
+    as PowerShell does: renaming Get-Widget to get-widget removes nothing,
+    and a removed Get-Widget is found where it is called as get-widget.
+
+    Signature changes (same name, different params) are NOT detected.
+    Symbols added in the working tree that shadow an external symbol are NOT
+    flagged. Dynamic constructs are not analyzed.
 """
 
 from __future__ import annotations
@@ -83,6 +101,7 @@ from _common import (
     allow_undecodable_paths_on_stdout,
     find_tool,
     format_hit,
+    git_command,
     list_search_files,
     member_definitions,
     mentions,
@@ -106,13 +125,15 @@ def _run_git_bytes(args: list[str], cwd: Path) -> bytes:
     from here and converts with os.fsdecode, whose surrogateescape round-trips
     back to the original bytes when the path is opened or handed to git again.
 
-    git runs by absolute path (find_tool): never one shipped in the workspace.
+    git runs by absolute path (find_tool): never one shipped in the workspace,
+    and with GIT_SAFE_CONFIG, so the repository's own config cannot make it
+    start an fsmonitor program.
     """
     git = find_tool("git")
     if git is None:
         raise GitError("git is not installed")
     proc = subprocess.run(
-        [git, *args],
+        git_command(git, *args),
         cwd=cwd,
         capture_output=True,
         check=False,

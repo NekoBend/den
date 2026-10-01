@@ -12,9 +12,15 @@ Modes:
     --in     List every top-level symbol defined in FILE, plus its usages
              elsewhere in the tree.
 
-    Each mode is ONE search over the tree: the lines holding the symbol (for
-    --in, any of the file's symbols) as a whole word are found, then each is
-    classified as a definition or a use in-process.
+    Each mode reads the tree once: the lines holding the symbol (for --in,
+    any of the file's symbols) as a whole word are found, then each is
+    classified as a definition or a use in-process. With ripgrep that is one
+    run per case group (PowerShell files are searched apart, ignoring case),
+    and more only when the file list outgrows the command-line limit.
+
+    --in lists top-level names: in Python, a def or class at module level
+    (column 0, or inside a module-level if/try/with/for/while block) and an
+    assignment at column 0, never a method, a nested function or a local.
 
 Languages supported (best-effort via regex):
     .py .ts .tsx .js .jsx .mjs .cjs .go .rs .java .cs .sh .bash .ps1 .psm1
@@ -30,11 +36,15 @@ Search scope:
     Inside a git work tree, the files git tracks plus the untracked ones it
     does not ignore (`git ls-files --cached --others --exclude-standard`), so
     virtual environments, build output and anything else listed in a
-    .gitignore are not searched; hidden files such as .github/ are. Outside a
-    work tree, every file under the root, except directories holding a
-    pyvenv.cfg (a virtual environment, whatever it is called). Either way
-    the skipped directories (.git, node_modules, .venv, build, ...) are left
-    out and symlinks are not followed. Both backends search that same file
+    .gitignore are not searched; hidden files such as .github/ are. Nested
+    repositories and submodules are separate work trees and are not searched.
+    A root that is itself gitignored, and any root outside a work tree, is
+    searched whole, except directories holding a pyvenv.cfg (a virtual
+    environment, whatever it is called); so is a work tree git fails to list
+    (an unreadable index, a repository owned by another user), with a note on
+    stderr. Either way the skipped directories (.git, node_modules, .venv,
+    build, ...) are left out and symlinks are not followed, not even a
+    tracked directory that became one. Both backends search that same file
     list, and binary files as text (ripgrep is passed --text), so the result
     does not change when ripgrep is installed or removed, nor with the
     ripgrep configuration on the machine (RIPGREP_CONFIG_PATH is not read).
@@ -43,9 +53,12 @@ Search scope:
     file prints that file's bytes: run this only on a tree whose contents you
     would read yourself.
 
-    git and rg are run by absolute path from the absolute PATH entries; one
-    found in the working directory itself is refused (Windows would
-    otherwise run a git.exe or rg.exe shipped at the root of the checkout).
+    git and rg are run by absolute path, found in the absolute PATH entries
+    only. One found in the working directory is refused on Windows, which
+    would otherwise run a git.exe or rg.exe shipped at the root of the
+    checkout, and on any system when it was reached through a relative PATH
+    entry. git runs with core.fsmonitor=false, so a .git/config that came
+    with the tree cannot make it start the fsmonitor program it names.
 
 Output format:
     <file>:<line>:<kind>:<context>

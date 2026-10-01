@@ -851,6 +851,74 @@ def test_a_deleted_file_reports_module_names_and_methods_as_attributes_only(
     ]
 
 
+def test_conditionally_defined_functions_are_module_level(tmp_path: Path) -> None:
+    # Every indented def was taken for a method, so deleting a module whose
+    # helper is defined under `if os.name == "nt":`/`else:` reported neither
+    # `from lib import helper` nor `helper()`: a false "zero broken refs".
+    # A def in a module-level block is module-level, except under the main
+    # guard; a function nested in a function is not a definition at all.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "import os\n"
+        "if os.name == 'nt':\n"
+        "    def helper():\n"
+        "        def inner():\n"
+        "            return 1\n"
+        "        return inner()\n"
+        "else:\n"
+        "    def helper():\n"
+        "        return 2\n"
+        "try:\n"
+        "    class Helper:\n"
+        "        def run(self):\n"
+        "            return 3\n"
+        "except ImportError:\n"
+        "    Helper = None\n"
+        "if __name__ == '__main__':\n"
+        "    def root():\n"
+        "        return 4\n",
+    )
+    write(
+        tmp_path,
+        "app.py",
+        "from lib import helper, Helper\nhelper()\nroot()\ninner()\nobj.run()\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "lib.py").unlink()
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.py:1:broken_ref:Helper:from lib import helper, Helper",
+        "app.py:1:broken_ref:helper:from lib import helper, Helper",
+        "app.py:2:broken_ref:helper:helper()",
+        "app.py:5:broken_ref:run:obj.run()",
+    ]
+
+
+def test_a_definition_behind_a_byte_order_mark_is_seen(tmp_path: Path) -> None:
+    # A UTF-8 byte-order mark (what Windows editors often write to a .ps1) was
+    # read as part of line 1, so `^function` missed a definition there and
+    # removing it was never reported.
+    init_repo(tmp_path)
+    (tmp_path / "Tools.ps1").write_bytes(
+        b"\xef\xbb\xbffunction Get-Widget {\n}\nfunction Set-Thing {\n}\n"
+    )
+    write(tmp_path, "run.ps1", "Get-Widget\nSet-Thing\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "Tools.ps1").write_bytes(b"\xef\xbb\xbffunction Set-Thing {\n}\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:Get-Widget"]
+
+
 def test_bash_function_keyword_form_removal_is_reported(tmp_path: Path) -> None:
     # `function name {` (no parentheses) was never a definition, so removing
     # one while callers remain printed nothing: a false "zero broken refs".
@@ -1075,6 +1143,34 @@ def test_code_audit_tells_the_model_to_pass_a_base_for_committed_changes() -> No
 
 
 # ---------- git and rg are never taken from the checkout ----------
+
+
+def test_the_repositorys_fsmonitor_program_never_runs(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # git starts whatever program the repository's own .git/config names as
+    # core.fsmonitor, and `git diff` / `git ls-files` ask it which files
+    # changed: a checkout that came with its .git (an archive, a shared
+    # folder) ran it on every check.
+    if sys.platform == "win32":
+        pytest.skip("the fsmonitor program is a /bin/sh script")
+    scratch = tmp_path_factory.mktemp("fsmonitor")
+    marker = scratch / "fsmonitor-ran"
+    hook = scratch / "hook"
+    hook.write_text(f'#!/bin/sh\necho ran >> "{marker}"\n', encoding="utf-8")
+    hook.chmod(0o755)
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    write(tmp_path, "lib.py", "# gone\n")
+    git(tmp_path, "config", "core.fsmonitor", str(hook))
+
+    proc = run("--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == ["app.py:1:broken_ref:widget:widget()"]
+    assert not marker.exists(), marker.read_text(encoding="utf-8")
 
 
 def test_a_git_or_rg_planted_in_the_checkout_never_runs(
