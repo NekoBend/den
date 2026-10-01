@@ -420,8 +420,21 @@ def _run_command(
     agent's cwd ancestors, which a checked-out repo could plant to inject its own
     imprint every turn (see _cmd_run). The path is quoted for its target language."""
     d = str(den_dir)
-    quoted = "'" + d.replace("'", "''") + "'" if powershell else shlex.quote(d)
+    quoted = _ps_quote(d) if powershell else shlex.quote(d)
     return f"den hook run --event {generic} --tool {tool} --den-dir {quoted}"
+
+
+# Every character PowerShell accepts as a single quote: ASCII ' and U+2018..U+201B
+# (what CodeGeneration.EscapeSingleQuotedStringContent doubles). Doubling only the
+# ASCII one let a directory named like x<U+2019>;<code>;<U+2019>y end the string
+# early, and the rest of the name then ran as code in the cline .ps1 hook on
+# every prompt.
+_PS_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
+
+
+def _ps_quote(text: str) -> str:
+    """`text` as a PowerShell single-quoted string literal."""
+    return "'" + "".join(c + c if c in _PS_SINGLE_QUOTES else c for c in text) + "'"
 
 
 def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
@@ -666,9 +679,11 @@ def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
         cmd = _run_command(tool, generic, den_dir, powershell=_is_windows())
         if _is_windows():
             # PowerShell hook: Cline runs <Event>.ps1 and reads its stdout JSON.
+            # With a BOM: Windows PowerShell 5.1 reads a BOM-less script in the
+            # ANSI code page, which garbles a non-ASCII workspace path.
             script.write_text(
                 f"# {_MARKER} (den-managed; do not edit)\n{cmd}\n",
-                encoding="utf-8",
+                encoding="utf-8-sig",
             )
         else:
             script.write_text(

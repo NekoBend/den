@@ -2,6 +2,11 @@
 
 import json
 import shlex
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
 
 from den import _hook
 from den._hook import main as hook_main
@@ -384,6 +389,70 @@ def test_install_cline_windows_writes_ps1(tmp_path, monkeypatch):
     assert "den hook run --event per-turn --tool cline" in body
     assert "bash" not in body  # PowerShell, not a bash script
     assert not (hooks_dir / "UserPromptSubmit").exists()  # no extensionless on Windows
+
+
+# PowerShell closes a single-quoted string at any of these, not only at ASCII '.
+_PS_QUOTES = "'\u2018\u2019\u201a\u201b"
+
+
+def test_powershell_quoting_doubles_every_single_quote_character():
+    """PowerShell treats U+2018..U+201B as single quotes too, so doubling only
+    ASCII ' let a directory name close the string and run the rest as code."""
+    den_dir = Path(f"C:/w/a{_PS_QUOTES}b/.den")
+    cmd = _hook._run_command("cline", "per-turn", den_dir, powershell=True)
+    quoted = cmd.split(" --den-dir ", 1)[1]
+    doubled = "".join(q + q for q in _PS_QUOTES)
+    assert quoted == f"'C:/w/a{doubled}b/.den'"
+
+
+def _powershell() -> str | None:
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+@pytest.mark.skipif(_powershell() is None, reason="needs PowerShell")
+def test_powershell_hook_script_passes_a_typographic_quote_path_intact(
+    tmp_path, monkeypatch
+):
+    """The finding's repro: a workspace named x<U+2019>;Write-Output INJECTED;<U+2019>y
+    made the cline .ps1 hook run `Write-Output INJECTED` on every prompt."""
+    proj = tmp_path / "x\u2019;Write-Output INJECTED;\u2019y"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(_hook, "_is_windows", lambda: True)
+    hooks_dir = tmp_path / "clinehooks"
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    script = hooks_dir / "UserPromptSubmit.ps1"
+    pwsh = _powershell()
+    assert pwsh is not None
+    probe = f"function den {{ foreach ($a in $args) {{ 'ARG:' + $a }} }}; . '{script}'"
+    out = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.splitlines()
+    assert "INJECTED" not in lines, "the path ran as code"
+    assert f"ARG:{proj.resolve() / '.den'}" in lines
+
+
+def test_cline_ps1_hook_is_written_as_utf8_with_a_bom(tmp_path, monkeypatch):
+    """Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page, so a
+    non-ASCII workspace path arrived as mojibake."""
+    proj = tmp_path / "\u3086\u3046\u3053"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(_hook, "_is_windows", lambda: True)
+    hooks_dir = tmp_path / "clinehooks"
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    raw = (hooks_dir / "UserPromptSubmit.ps1").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert str(proj.resolve() / ".den").encode("utf-8") in raw
+    # still recognized as den's own on the next install and on remove
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    assert hook_main(["remove", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    assert not (hooks_dir / "UserPromptSubmit.ps1").exists()
 
 
 def test_remove_cline_windows_deletes_ps1(tmp_path, monkeypatch):
