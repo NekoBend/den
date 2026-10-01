@@ -1086,6 +1086,58 @@ def test_keywords_and_the_blank_identifier_are_not_removed_names(
     ]
 
 
+def test_lifetimes_raw_pointers_and_const_generics_are_not_rust_names(
+    tmp_path: Path,
+) -> None:
+    # The word after `const`/`static` was taken for a definition wherever
+    # the keyword stood: `&'static str` defined `str`, `*const u8` defined
+    # `u8`, and a const generic parameter (`<const N: usize>`, or one on its
+    # own line of a generic list rustfmt broke up) defined `N`. Deleting
+    # such a file reported every `str`, `u8` and `N` in the tree, and in an
+    # impl `std::str::from_utf8` as a use of the removed member `str`.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.rs",
+        'pub const NAME: &\'static str = "w";\n'
+        "pub fn as_ptr(b: &[u8]) -> *const u8 { b.as_ptr() }\n"
+        "pub fn first<const N: usize>(a: [u8; N]) -> u8 { a[0] }\n"
+        "pub struct Grid<\n"
+        "    T,\n"
+        "    const ROWS: usize,\n"
+        "> {\n"
+        "    cells: [T; ROWS],\n"
+        "}\n"
+        "impl<const N: usize> Grid<u8, N> {\n"
+        "    pub fn label(&self) -> &'static str { NAME }\n"
+        "}\n",
+    )
+    write(
+        tmp_path,
+        "app.rs",
+        "const N: usize = 2;\n"
+        "const ROWS: usize = 3;\n"
+        "fn main() {\n"
+        "    let s: &str = NAME;\n"
+        "    let u = std::str::from_utf8(&[]);\n"
+        "    let b: u8 = first([1u8; N]);\n"
+        "    let l = g.label();\n"
+        "}\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "lib.rs").unlink()
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.rs:4:broken_ref:NAME:let s: &str = NAME;",
+        "app.rs:6:broken_ref:first:let b: u8 = first([1u8; N]);",
+        "app.rs:7:broken_ref:label:let l = g.label();",
+    ]
+
+
 def test_java_and_csharp_nested_types_are_searched_as_members_only(
     tmp_path: Path,
 ) -> None:

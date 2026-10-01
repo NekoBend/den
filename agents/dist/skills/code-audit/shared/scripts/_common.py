@@ -97,9 +97,14 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         r"\bstruct\s+{name}\b",
         r"\benum\s+{name}\b",
         r"\btrait\s+{name}\b",
-        # not the `fn` of `const fn`, the `mut` of `static mut`, nor `const _`
-        r"\b(?:const|static)\s+(?:mut\s+)?"
-        r"(?!(?:fn|unsafe|async|extern|_)\b){name}\b",
+        # not the `fn` of `const fn`, the `mut` of `static mut`, nor `const _`;
+        # no `static` of a lifetime (`&'static str` defines nothing), no
+        # `const` of a raw pointer (`*const u8`) or of a const generic
+        # parameter (`<const N: usize>`, `T, const M: usize`), and none on a
+        # line of a generic list that rustfmt broke up (`    const M: usize,`):
+        # an item ends with `;` or goes on with `=`
+        r"(?<!')(?<![*<,])(?<![*<,]\s)\b(?:const|static)\s+(?:mut\s+)?"
+        r"(?!(?:fn|unsafe|async|extern|_)\b){name}\b(?!\s*:[^=;]*[,>]\s*$)",
     ],
     ".java": [
         r"\bclass\s+{name}\b",
