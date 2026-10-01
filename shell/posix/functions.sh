@@ -1230,10 +1230,13 @@ fi
 # exist must fail, not jump to some other directory a later command then runs
 # in; and an option (-P, -L, -e, -@) went to zoxide as a keyword, so
 # `$(cd -P "$dir" && pwd)` printed nothing or another directory. A lone -
-# and `-- <dir>` are zoxide's own forms and still go to it.
+# and `-- <dir>` are zoxide's own forms and still go to it. den's init loads
+# _helpers.sh first; without it (this file sourced on its own) cd cannot tell
+# a typed cd and is builtin cd.
 cd() {
     local _cd_zo=
-    if [ "${_DEN_WRAPPERS:-1}" != "0" ] && type __zoxide_z >/dev/null 2>&1 && _den_typed; then
+    if [ "${_DEN_WRAPPERS:-1}" != "0" ] && type __zoxide_z >/dev/null 2>&1 &&
+        type _den_typed >/dev/null 2>&1 && _den_typed; then
         case ${1-} in
             --) _cd_zo=1 ;;
             -?*) ;;

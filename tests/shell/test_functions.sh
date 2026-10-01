@@ -1381,6 +1381,10 @@ g rc=1" "$out"
     assert_eq "$sh/snippet run: typed; in a function: builtin cd" "zoxide proj
 f rc=1" "$out"
 
+    echo "[$sh] functions.sh sourced without _helpers.sh: cd is builtin cd, with no error"
+    out=$(cd "$WORK/cdz" && "$sh" -c "source '$FUNCTIONS_SH' && __zoxide_z() { echo zoxide; }; cd a && pwd" 2>&1)
+    assert_eq "$sh/cd without _den_typed" "$WORK/cdz/a" "$out"
+
     echo "[$sh] cd with the wrappers off is builtin cd"
     out=$(cdz_run "_DEN_WRAPPERS=0; cd proj 2>/dev/null; echo rc=\$?; cd a && pwd")
     assert_eq "$sh/wrappers off" "rc=1
