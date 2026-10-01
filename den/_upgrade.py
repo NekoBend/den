@@ -28,8 +28,8 @@ else stays and is listed. A parent prompt that matches neither profile
 (hand-written, or edited) is not refreshed at all, and a tool dir without
 den's skills is not created. The plan also lists each file this version
 deploys into what is refreshed (a skill dir that is there, the shell files)
-that is missing from disk, so the new den leaves a file the user deleted
-deleted while it still adds the files that are new in its version. And it
+that is missing from disk, so the new den does not bring back a file the user
+deleted, while it still adds the files that are new in its version. And it
 says whether den's optional shell files (the extras, the ~/.local/bin helpers)
 are on disk, so the shell is refreshed the way it was installed. No state is
 kept between runs.
@@ -172,8 +172,8 @@ def _scan_skills(
         p for p in aware.matched.keys() - free.matched if free_dirs & set(p.parents)
     }
     no_den_cli = bool(free.matched.keys() - aware.matched) and not aware_only
-    # A flavor can bundle other files than the other one, so the missing files
-    # of a --no-den-cli skill are those of the flavor the refresh deploys.
+    # One flavor can bundle files the other does not, so the missing files of a
+    # --no-den-cli skill are those of the flavor the refresh deploys.
     absent = {
         p for p in aware.absent if not (no_den_cli and free_dirs & set(p.parents))
     }
