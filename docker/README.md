@@ -18,8 +18,9 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | `utilities` | gh, bubblewrap, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; rsync built from source; rclone |
 | `workspace` | den (`uv tool install`), then `den install shell --force --bin --zsh-plugins` and `den install skills --tool claude --tool codex --with-parent --force`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
-User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`, `~/.nvm`),
-and the image puts all of them on `PATH`.
+User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
+`~/.nvm/current/bin`). They are on `dev`'s `PATH`, not the image's: see
+[Run](#run).
 
 PowerShell and opencode are left out on purpose; install them in the container
 when you need them.
@@ -97,6 +98,27 @@ when nothing is mounted there. Changing IDs needs the root start: do not pass
 a non-root `--user` to `docker run`. With a non-root `--user`, the entrypoint
 rejects `FIX_WORKSPACE_OWNERSHIP=1` and refuses to start unless the IDs
 already match.
+
+### PATH and HOME in `docker exec`
+
+`docker exec` starts every process, root's included, with the image's
+environment. Its `PATH` holds only root-owned system directories, so a
+command that a root exec looks up by name never comes from a directory `dev`
+can write. `dev`'s tool directories (`~/.nvm/current/bin`, `~/.local/bin`,
+`~/.cargo/bin`) are added by the entrypoint and, for users other than root,
+by `/etc/zsh/zshenv` and `/etc/bash.bashrc`. So
+`docker exec -it --user dev den-dev zsh` works as it is, but a `dev` command
+run without a shell needs one, or its full path:
+
+```sh
+docker exec --user dev den-dev zsh -lc 'claude --version'
+docker exec --user dev den-dev /home/dev/.local/bin/claude --version
+```
+
+A root zsh or interactive bash also gets `HOME=/root` back instead of the
+image's `/home/dev`, so it reads root's startup files, not `dev`'s. A root
+command run without a shell keeps `HOME=/home/dev`; pass `-e HOME=/root` to
+`docker exec` for those.
 
 ## Keeping state across rebuilds
 

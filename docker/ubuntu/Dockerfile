@@ -197,6 +197,11 @@ RUN --mount=type=cache,id=uv-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME
 
 # 6. Runtime entrypoint and defaults.
 USER root
+# Every docker exec, root's included, starts with the image's ENV. Keep its PATH
+# to root-owned system directories, so a root exec never resolves a command from
+# a directory dev can write. dev's tool directories come from the entrypoint and
+# from the non-root branches of /etc/zsh/zshenv and /etc/bash.bashrc below.
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Build setting: IANA timezone name; also exported to application processes.
 ARG TZ=Asia/Tokyo
 ENV TZ=${TZ}
@@ -217,7 +222,7 @@ cat > /usr/local/bin/container-entrypoint <<'ENTRYPOINT'
 # Initialize user IDs and optional workspace ownership, then drop root.
 set -eu
 
-runtime_path=$PATH
+inherited_path=$PATH
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
@@ -234,6 +239,9 @@ $record
 EOF
 [ "$user_home" = "/home/$username" ] && [ ! -L "$user_home" ] \
     || fail 'Unexpected or symlinked user home'
+# The image PATH holds system directories only; the command runs as the user
+# with the user's tool directories first (the same list as /etc/zsh/zshenv).
+runtime_path="$user_home/.nvm/current/bin:$user_home/.local/bin:$user_home/.cargo/bin:$inherited_path"
 
 target_uid=${HOST_UID:-$old_uid}
 target_gid=${HOST_GID:-$old_gid}
@@ -288,13 +296,44 @@ export PATH="$runtime_path" HOME="$user_home" USER="$username" LOGNAME="$usernam
 exec "$@"
 ENTRYPOINT
 chmod 0755 /usr/local/bin/container-entrypoint
-cat >> /etc/zsh/zshenv <<'ROOT_ZSH_ENV'
+cat >> /etc/zsh/zshenv <<'CONTAINER_ZSH_ENV'
 
-# docker exec --user changes identity but retains the image's HOME.
-if [[ "$EUID" == 0 && "$HOME" == "/home/$(</etc/container-user)" ]]; then
-    export HOME=/root USER=root LOGNAME=root
+# docker exec --user changes identity but retains the image's HOME and PATH.
+# That PATH holds system directories only: root gets its own HOME back, and
+# non-root shells add the user's tool directories (the entrypoint's list).
+if [[ "$EUID" == 0 ]]; then
+    if [[ "$HOME" == "/home/$(</etc/container-user)" ]]; then
+        export HOME=/root USER=root LOGNAME=root
+    fi
+else
+    () {
+        local dir
+        for dir in "$HOME/.cargo/bin" "$HOME/.local/bin" "$HOME/.nvm/current/bin"; do
+            [[ ":$PATH:" == *":$dir:"* ]] || PATH="$dir:$PATH"
+        done
+    }
+    export PATH
 fi
-ROOT_ZSH_ENV
+CONTAINER_ZSH_ENV
+cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
+
+# The /etc/zsh/zshenv block for interactive bash. It runs before ~/.bashrc,
+# so a root bash reads /root/.bashrc, not the user's.
+if [ "$EUID" -eq 0 ]; then
+    if [ "$HOME" = "/home/$(< /etc/container-user)" ]; then
+        export HOME=/root USER=root LOGNAME=root
+    fi
+else
+    for _container_dir in "$HOME/.cargo/bin" "$HOME/.local/bin" "$HOME/.nvm/current/bin"; do
+        case ":$PATH:" in
+            *":$_container_dir:"*) ;;
+            *) PATH="$_container_dir:$PATH" ;;
+        esac
+    done
+    unset _container_dir
+    export PATH
+fi
+CONTAINER_BASH_RC
 cat >> /etc/zsh/zshrc <<'ROOT_ZSH_WARNING'
 
 # Keep root access available, but make accidental root sessions visible.
