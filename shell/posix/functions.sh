@@ -884,16 +884,31 @@ sagain() { again --sudo "$@"; }
 # cds on one command line are each kept. back/fwd walk the lists themselves and
 # set _den_dh_nav so the hook does not take their move for a new one.
 # A directory whose name holds a newline cannot be stored and is left out.
+# _den_dh_n counts the back entries, so a move at the cap drops the farthest
+# one without walking the list: the recorder runs on every change of
+# directory (zsh's chpwd sees each builtin cd in a loop), and rebuilding the
+# list each time made such a cd 50 to 300 times slower than a plain one.
 _den_dh_max=50
 _den_dh_back=${_den_dh_back-}
 _den_dh_fwd=${_den_dh_fwd-}
 _den_dh_last=${_den_dh_last:-$PWD}
+if [ -z "${_den_dh_n-}" ]; then
+    # Counted once, for a list kept from an older functions.sh with no count.
+    _den_dh_n=0
+    _den_dh_r=$_den_dh_back
+    while [ -n "$_den_dh_r" ]; do
+        _den_dh_r=${_den_dh_r#*'
+'}
+        _den_dh_n=$((_den_dh_n + 1))
+    done
+    unset _den_dh_r
+fi
 
 # _den_dh_record → note a change of directory (the chpwd / prompt hook). Returns
 # the status it was called with, so it can sit anywhere in PROMPT_COMMAND.
 _den_dh_record() {
     local rc=$? nl='
-' rest kept='' i=0
+' far
     [ "$PWD" = "${_den_dh_last-}" ] && return "$rc"
     if [ -n "${_den_dh_nav-}" ]; then
         _den_dh_nav=
@@ -902,15 +917,23 @@ _den_dh_record() {
             *"$nl"*) ;;
             *)
                 # A consecutive duplicate is kept once, and only the nearest
-                # _den_dh_max entries are kept at all.
+                # _den_dh_max entries are kept at all: past the cap, the one
+                # farthest back (the last line) goes. zsh is slow to match
+                # "$nl"*"$nl" from the end of a long string, and bash to
+                # match *"$nl" from its start, so each takes its fast way.
                 if [ "${_den_dh_back%%"$nl"*}" != "$_den_dh_last" ]; then
-                    rest="$_den_dh_last$nl${_den_dh_back-}"
-                    while [ -n "$rest" ] && [ "$i" -lt "$_den_dh_max" ]; do
-                        kept="$kept${rest%%"$nl"*}$nl"
-                        rest=${rest#*"$nl"}
-                        i=$((i + 1))
-                    done
-                    _den_dh_back=$kept
+                    _den_dh_back="$_den_dh_last$nl${_den_dh_back-}"
+                    _den_dh_n=$((_den_dh_n + 1))
+                    if [ "$_den_dh_n" -gt "$_den_dh_max" ]; then
+                        if [ -n "${ZSH_VERSION-}" ]; then
+                            far=${_den_dh_back%"$nl"}
+                            far=${far##*"$nl"}
+                            _den_dh_back=${_den_dh_back%"$far$nl"}
+                        else
+                            _den_dh_back="${_den_dh_back%"$nl"*"$nl"}$nl"
+                        fi
+                        _den_dh_n=$((_den_dh_n - 1))
+                    fi
                 fi
                 ;;
         esac
@@ -947,6 +970,7 @@ _den_dh_go() {
     fi
     if [ ! -d "$target" ]; then
         eval "_den_dh_$1=\$before\$rest"
+        [ "$1" = back ] && _den_dh_n=$((_den_dh_n - 1))
         echo "$1: $target no longer exists, dropped from history" >&2
         return 1
     fi
@@ -958,6 +982,15 @@ _den_dh_go() {
     case $here in *"$nl"*) here= ;; *) here="$here$nl" ;; esac
     eval "_den_dh_$to=\$passed\$here\${_den_dh_$to-}"
     eval "_den_dh_$1=\$rest"
+    # Keep the back count: back N takes N entries off the back list; fwd N
+    # puts the N-1 passed over on it, and the directory left unless its name
+    # holds a newline.
+    if [ "$1" = back ]; then
+        _den_dh_n=$((_den_dh_n - i))
+    else
+        _den_dh_n=$((_den_dh_n + i - 1))
+        [ -n "$here" ] && _den_dh_n=$((_den_dh_n + 1))
+    fi
     pwd
 }
 

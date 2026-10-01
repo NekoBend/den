@@ -1213,6 +1213,30 @@ $DH/a" "$out"
     out=$(dh_run "$sh" "i=0; while [ \$i -lt 30 ]; do cd '$DH/a'; cd '$DH/b'; i=\$((i + 1)); done; back -l | wc -l")
     assert_eq "$sh/back list capped at 50" "51" "$(printf '%s' "$out" | tr -d ' ')"
 
+    # The recorder keeps a count of the back entries rather than walking the
+    # list, so back, fwd and a dropped entry must each keep it right: off by
+    # one, the list stops at 49 or grows to 51. 55 moves fill the list to
+    # d54..d5; back 2 and fwd leave it at d53..d5; d52 is dropped; then five
+    # new moves add d54 and e1..e4 and push d5, d6 and d7 out.
+    echo "[$sh] the back list stays at 50 through back, fwd and a dropped entry"
+    out=$(dh_run "$sh" "i=1; while [ \$i -le 55 ]; do mkdir -p '$DH/d'\$i; cd '$DH/d'\$i; i=\$((i + 1)); done; back 2 >/dev/null; fwd >/dev/null; rmdir '$DH/d52'; back 2 2>/dev/null; for e in e1 e2 e3 e4 e5; do mkdir -p '$DH/'\$e; cd '$DH/'\$e; done; back -l | wc -l | tr -d ' '; back -l | head -n 2")
+    assert_eq "$sh/back list at 50 after back, fwd and a drop" "51
+ 50  ~/d8
+ 49  ~/d9" "$out"
+    rm -rf "$DH"/d[0-9]* "$DH"/e[0-9]
+
+    # A move at the cap used to rebuild the whole list, one line at a time:
+    # 50 to 300 times the cost of a plain cd, paid on every cd (in zsh by
+    # every builtin cd too, through chpwd). Traced, a move at the cap must
+    # take about the same steps as a move with three entries. The traced
+    # builtin cd records through chpwd in zsh, the call after it in bash.
+    echo "[$sh] a move at the cap takes the steps of a move with a short list"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && { set -x; builtin cd '$DH'; _den_dh_record; set +x; } 2>'$DH/short.trace'; i=0; while [ \$i -lt 30 ]; do cd '$DH/a'; cd '$DH/b'; i=\$((i + 1)); done; { set -x; builtin cd '$DH/c'; _den_dh_record; set +x; } 2>'$DH/cap.trace'; back -l | wc -l | tr -d ' '")
+    short=$(wc -l < "$DH/short.trace")
+    cap=$(wc -l < "$DH/cap.trace")
+    assert_eq "$sh/the list is at the cap" "51" "$out"
+    assert_eq "$sh/a move at the cap traces at most 6 more lines (short=$short, cap=$cap)" "1" "$((cap - short <= 6))"
+
     echo "[$sh] back -i picks an entry with fzf"
     out=$(dh_run "$sh" "PATH='$DH/fzfbin':\$PATH; export FZF_PICK=2; cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back -i && FZF_PICK=+2 && back -i && FZF_PICK='*' && back -i; echo rc=\$?; pwd")
     assert_eq "$sh/back -i back, forward, current" "$DH/a
