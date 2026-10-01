@@ -1835,6 +1835,37 @@ assert_eq "zsh/builtin cd, pushd, mkcd recorded" "  3  ~/start
   1  ~/b
   *  ~/c" "$out"
 
+# reload saves this session's history before it restarts zsh. It used `fc -W`,
+# which rewrites $HISTFILE from this session's own list: a line another session
+# saved after this one started is not in that list, so it was erased. An
+# interactive zsh reads the lines below from stdin and records each in its
+# history; `fc -R` loads the file as zsh does after ~/.zshrc, the append stands
+# in for another session that exits, and the restarted zsh is a stub that ends
+# the run. zoxide and starship are left off PATH, so nothing is cached.
+echo "[zsh] init.zsh: reload keeps the lines other sessions saved"
+ZR="$WORK/zreload"
+rm -rf "$ZR"
+mkdir -p "$ZR/home/.config/shell" "$ZR/bin"
+cp "$DOTFILES"/shell/posix/*.sh "$DOTFILES/shell/zsh/init.zsh" "$ZR/home/.config/shell/"
+printf '#!/bin/sh\nexit 0\n' > "$ZR/bin/zsh"
+chmod +x "$ZR/bin/zsh"
+printf 'old1\nold2\n' > "$ZR/home/.zsh_history"
+zr_path=$(path_without zoxide starship)
+(cd "$ZR/home" && HOME="$ZR/home" XDG_CACHE_HOME="$ZR/home/.cache" PATH="$zr_path" \
+    zsh -f -i >/dev/null 2>&1 <<EOF
+. ~/.config/shell/init.zsh
+fc -R
+echo from-A
+print -r -- from-B >> ~/.zsh_history
+hash zsh='$ZR/bin/zsh'
+reload
+EOF
+)
+out=$(grep -c -x -e old1 -e old2 -e from-B -e 'echo from-A' "$ZR/home/.zsh_history")
+assert_eq "zsh/reload keeps old1, old2 and the other session's from-B, adds echo from-A once" "4" "$out"
+assert_eq "zsh/reload keeps the other session's line" "from-B" "$(grep -x from-B "$ZR/home/.zsh_history")"
+rm -rf "$ZR"
+
 # =============================================================================
 # PowerShell tests
 # =============================================================================

@@ -49,7 +49,10 @@ unset _zp
 # ===== Reload =====
 reload() {
     rm -f "${XDG_CACHE_HOME:-$HOME/.cache}"/shell/*.zsh
-    fc -W
+    # Append only this session's unsaved lines, as init.bash's `history -a`
+    # does. `fc -W` rewrote $HISTFILE from this session's list, which lacks
+    # what other sessions saved after it started, so those lines were lost.
+    fc -AI
     # Re-exec zsh explicitly, not $SHELL: $SHELL is the login shell from passwd,
     # which may be bash even when zsh was launched manually. Mirrors init.bash's
     # `exec "$BASH"`. Prefer zsh's hashed absolute path ($commands[zsh]) over a
