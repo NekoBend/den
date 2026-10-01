@@ -154,6 +154,41 @@ def test_a_root_exec_path_holds_only_system_directories():
     assert all(entry in SYSTEM_DIRS for entry in entries), env["PATH"]
 
 
+def test_den_comes_from_a_git_source_of_main_mounted_into_the_install():
+    # A RUN that cloned den was cached on its command text, so a rebuild after
+    # main moved kept the first build's den. BuildKit resolves a git source's
+    # branch to a commit on every build, and the mount makes it the install
+    # step's input.
+    stage = ""
+    source_stage = ""
+    install = ""
+    for keyword, rest in _instructions():
+        if keyword == "FROM":
+            stage = rest.split()[-1]
+        elif keyword == "ADD" and re.search(
+            r"https://github\.com/NekoBend/den\.git#main(\s|$)", rest
+        ):
+            source_stage = stage
+        elif keyword == "RUN":
+            assert "github.com/NekoBend/den" not in rest, "a RUN fetches den itself"
+            if "uv tool install" in rest:
+                install = rest
+    assert source_stage, "no stage ADDs den's main branch"
+    mounts = [
+        dict(option.split("=", 1) for option in mount.split(","))
+        for mount in re.findall(r"--mount=(\S+)", install)
+    ]
+    source_mounts = [
+        m for m in mounts if m.get("type") == "bind" and m.get("from") == source_stage
+    ]
+    assert len(source_mounts) == 1, install
+    source = source_mounts[0]["target"]
+    assert (
+        f"uv tool install --python /usr/bin/python3 --link-mode copy {source} "
+        in install
+    )
+
+
 # --- /etc/zsh/zshenv and /etc/bash.bashrc --------------------------------------
 
 

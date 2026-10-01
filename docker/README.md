@@ -3,7 +3,8 @@
 `docker/ubuntu/Dockerfile` builds the development container this repo is worked
 on in: Ubuntu 26.04 with an unprivileged `dev` user, the language toolchains,
 the coding-agent CLIs, and den with its shell setup, skills and parent prompts.
-The build clones den from GitHub, so it reads nothing from the checkout.
+The build fetches den's `main` branch from GitHub, so it reads nothing from the
+checkout.
 
 ## What the image contains
 
@@ -16,7 +17,7 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, broot, du-dust, eza, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, nvm + Node, acpx (plus its Claude skill), and the claude, codex, grok, muse and antigravity (`agy`) CLIs |
 | `utilities` | gh, bubblewrap, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; rsync built from source; rclone |
-| `workspace` | den (`uv tool install`), then `den install shell --force --bin --zsh-plugins` and `den install skills --tool claude --tool codex --with-parent --force`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
+| `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins` and `den install skills --tool claude --tool codex --with-parent --force`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
 User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
 `~/.nvm/current/bin`). They are on `dev`'s `PATH`, not the image's: see
@@ -45,6 +46,11 @@ Downloads and compile outputs for cargo, npm and uv go to BuildKit cache
 mounts, so a rebuild reuses them. Most installers fetch the latest release, and
 layer caching keeps whichever release was fetched first. Add `--no-cache` when
 you want every tool refreshed.
+
+den is the exception: each build resolves den's `main` to a commit, so a
+rebuild after `main` moves redoes the `workspace` stage and nothing before it.
+To redo that stage when `main` has not moved, for example to fetch new zsh
+plugins, add `--no-cache-filter workspace`; the Rust tools are not recompiled.
 
 ### Build ARGs
 

@@ -186,14 +186,19 @@ unzip -q -j "$archive_dir/rclone.zip" '*/rclone' -d "$archive_dir"
 install -m 0755 "$archive_dir/rclone" "$HOME/.local/bin/rclone"
 INSTALL_RCLONE
 
+# den's main branch as a BuildKit git source. Every build resolves main to a
+# commit, so the den step below reruns exactly when main moves; a RUN that
+# cloned den itself would stay cached on the first build's den.
+FROM scratch AS den-src
+ADD https://github.com/NekoBend/den.git#main /
+
 # 5. Workspace configuration. Updating den does not rebuild the utilities.
 FROM utilities AS workspace
-RUN --mount=type=cache,id=uv-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    git clone --depth 1 https://github.com/NekoBend/den.git /tmp/den && \
+RUN --mount=type=bind,from=den-src,target=/tmp/den \
+    --mount=type=cache,id=uv-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     uv tool install --python /usr/bin/python3 --link-mode copy /tmp/den && \
     den install shell --force --bin --zsh-plugins && \
-    den install skills --tool claude --tool codex --with-parent --force && \
-    rm -rf /tmp/den
+    den install skills --tool claude --tool codex --with-parent --force
 
 # 6. Runtime entrypoint and defaults.
 USER root
