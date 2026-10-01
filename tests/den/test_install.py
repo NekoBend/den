@@ -305,8 +305,8 @@ def test_install_keeps_modified_file_non_tty(tmp_path, monkeypatch):
     skill = tmp_path / "skills" / "coding" / "SKILL.md"
     skill.write_text(skill.read_text() + "\nLOCAL EDIT\n")
     # non-TTY -> the changed file is skipped, and the run says so with its exit
-    # code: `den upgrade --refresh` reads it, and a refresh that deployed none
-    # of the new version's files must not report success.
+    # code: a script (or an older den's refresh, which runs this command) must
+    # not read a run that deployed none of the new version's files as success.
     assert install_main(["skills", "--target", str(tmp_path)]) == 1
     assert "LOCAL EDIT" in skill.read_text()
     # --force is the way through, and it succeeds

@@ -236,7 +236,9 @@ Browse den's bundled cheatsheets offline. Deploy them first with
 
 Cheatsheets live under `$XDG_DATA_HOME/den/cheatsheets` (default
 `~/.local/share/den/cheatsheets`), rendered with `bat` when available, else
-`cat`. bash/zsh and PowerShell.
+`cat`. The `<sheet>.den.bak` (and `.den.bak.N`) copies `den install
+cheatsheets --force` keeps of sheets it replaced are not listed; any other
+name is. bash/zsh and PowerShell.
 
 ## Hardware info in the prompt
 

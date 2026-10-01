@@ -28,9 +28,14 @@ _cheat_list() {
     _cl_dir=$(_cheat_dir)
     [ -d "$_cl_dir" ] || { unset _cl_dir; return 1; }
     # `command` bypasses den's interactive wrappers (find->fd, grep->rg, cat->bat),
-    # which have incompatible flags/output and would break the lookups.
+    # which have incompatible flags/output and would break the lookups. Files
+    # ending in .den.bak or .den.bak.<digits> are the copies `den install
+    # cheatsheets --force` keeps of sheets it replaced, not sheets; sed drops
+    # exactly those (a find glob cannot say "digits only", and
+    # '*.den.bak.[0-9]*' hid sheets such as notes.den.bak.1draft.md).
     ( cd "$_cl_dir" || exit; command find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' ) |
-        sed 's|^\./||' | LC_ALL=C sort
+        sed -e '/\.den\.bak$/d' -e '/\.den\.bak\.[0-9][0-9]*$/d' -e 's|^\./||' |
+        LC_ALL=C sort
     unset _cl_dir
 }
 
