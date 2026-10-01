@@ -276,8 +276,8 @@ def test_zshenv_resets_a_root_zsh_and_adds_no_user_directories(tmp_path):
 
 @_needs("zsh")
 def test_zshenv_skips_ubuntus_global_compinit_for_the_container_user_only(tmp_path):
-    # den's init.zsh runs its own compinit; Ubuntu's /etc/zsh/zshrc ran a full
-    # second one (about 12 ms) unless skip_global_compinit is set.
+    # den's init.zsh runs its own compinit; Ubuntu's /etc/zsh/zshrc ran an
+    # extra full one before it (about 12 ms) unless skip_global_compinit is set.
     home = str(tmp_path / "home")
     me = _zsh_username()
     assert me

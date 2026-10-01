@@ -320,7 +320,8 @@ else
         done
     }
     export PATH
-    # den's init.zsh runs compinit itself; skip Ubuntu's full second one.
+    # den's init.zsh runs compinit itself; skip the extra full one that
+    # /etc/zsh/zshrc runs before it.
     if [[ "$USERNAME" == "$(</etc/container-user)" ]]; then
         skip_global_compinit=1
     fi

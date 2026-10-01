@@ -52,8 +52,11 @@ you want every tool refreshed.
 
 den is the exception: each build resolves den's `main` to a commit, so a
 rebuild after `main` moves redoes the `workspace` stage and nothing before it.
-To redo that stage when `main` has not moved, for example to fetch new zsh
-plugins, add `--no-cache-filter workspace`; the Rust tools are not recompiled.
+To redo that stage when `main` has not moved, for example to pick up new
+releases of den's Python dependencies or of the stage's apt packages (tzdata,
+GNU coreutils), add `--no-cache-filter workspace`; the Rust tools are not
+recompiled. The zsh plugins den installs are pinned to commits in den itself,
+so they change only when `main` does.
 
 ### Build ARGs
 
@@ -115,9 +118,10 @@ environment. Its `PATH` holds only root-owned system directories, so a
 command that a root exec looks up by name never comes from a directory `dev`
 can write. `dev`'s tool directories (`~/.nvm/current/bin`, `~/.local/bin`,
 `~/.cargo/bin`) are added by the entrypoint and, for users other than root,
-by `/etc/zsh/zshenv` and `/etc/bash.bashrc`. So
-`docker exec -it --user dev den-dev zsh` works as it is, but a `dev` command
-run without a shell needs one, or its full path:
+by `/etc/zsh/zshenv`, which every zsh reads, and `/etc/bash.bashrc`, which
+only an interactive bash reads. So `docker exec -it --user dev den-dev zsh`
+works as it is, but a `dev` command run without a shell needs zsh (`zsh -c`
+or `zsh -lc`) or its full path; `bash -c` and `sh -c` do not add them:
 
 ```sh
 docker exec --user dev den-dev zsh -lc 'claude --version'
@@ -127,17 +131,28 @@ docker exec --user dev den-dev /home/dev/.local/bin/claude --version
 A root zsh, an interactive root bash and a root login shell (`bash -l`,
 `sh -l`) also get `HOME=/root` back instead of the image's `/home/dev`, so
 they read root's startup files, not `dev`'s, and a root bash saves its history
-to `/root/.bash_history`. A root command run without a shell keeps
-`HOME=/home/dev`; pass `-e HOME=/root` to `docker exec` for those.
+to `/root/.bash_history`.
+
+A root command run without a shell, or through `bash -c` or `sh -c`, keeps
+`HOME=/home/dev`, and tools then read files `dev` can write as root's
+configuration: dpkg reads `~/.dpkg.cfg`, `python3` (which package scripts
+run, for example through `py3compile`) runs `.pth` files from the user
+site-packages under `~/.local`, and git reads `~/.gitconfig`. Run root
+administration from a root shell (`docker exec -it den-dev zsh`), or pass
+`-e HOME=/root`:
+
+```sh
+docker exec -e HOME=/root den-dev apt-get install -y <package>
+```
 
 ### zsh completion
 
 For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`: den's
-`init.zsh` runs `compinit` itself, so Ubuntu's second, full `compinit` would
-only add about 12 ms to every shell. den's `compinit -C` reuses `~/.zcompdump`
-as it is, so after you add completion functions (an apt package, a new tool),
-delete `~/.zcompdump` and start a new shell. A new container starts without
-one.
+`init.zsh` runs `compinit` itself, so the extra full `compinit` that Ubuntu's
+`/etc/zsh/zshrc` runs before den's would only add about 12 ms to every
+shell. den's `compinit -C` reuses `~/.zcompdump` as it is, so after you add
+completion functions (an apt package, a new tool), delete `~/.zcompdump` and
+start a new shell. A new container starts without one.
 
 ## Keeping state across rebuilds
 
