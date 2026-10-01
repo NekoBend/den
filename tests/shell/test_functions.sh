@@ -1285,10 +1285,13 @@ $DH/a" "$out"
     # builtin cd records through chpwd in zsh, the call after it in bash.
     echo "[$sh] a move at the cap takes the steps of a move with a short list"
     out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && { set -x; builtin cd '$DH'; _den_dh_record; set +x; } 2>'$DH/short.trace'; i=0; while [ \$i -lt 30 ]; do cd '$DH/a'; cd '$DH/b'; i=\$((i + 1)); done; { set -x; builtin cd '$DH/c'; _den_dh_record; set +x; } 2>'$DH/cap.trace'; back -l | wc -l | tr -d ' '")
-    short=$(wc -l < "$DH/short.trace")
-    cap=$(wc -l < "$DH/cap.trace")
+    # Count traced commands (lines that start with PS4's +), not lines: some
+    # bash versions print an assignment's embedded newlines literally, so the
+    # 50-entry list alone added 100 lines to the cap trace in CI.
+    short=$(grep -c '^+' "$DH/short.trace")
+    cap=$(grep -c '^+' "$DH/cap.trace")
     assert_eq "$sh/the list is at the cap" "51" "$out"
-    assert_eq "$sh/a move at the cap traces at most 10 more lines (short=$short, cap=$cap)" "1" "$((cap - short <= 10))"
+    assert_eq "$sh/a move at the cap traces at most 10 more commands (short=$short, cap=$cap)" "1" "$((cap - short <= 10))"
 
     echo "[$sh] back -i picks an entry with fzf"
     out=$(dh_run "$sh" "PATH='$DH/fzfbin':\$PATH; export FZF_PICK=2; cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back -i && FZF_PICK=+2 && back -i && FZF_PICK='*' && back -i; echo rc=\$?; pwd")
