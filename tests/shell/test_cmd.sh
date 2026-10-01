@@ -439,6 +439,114 @@ H.cwd = "C:\\a"; H.prompt()
 print(H.input("z foo") .. " execs=" .. #H.execs .. " popens=" .. #H.popens)')
 assert_eq "cmd/zoxide: absent" 'z foo execs=0 popens=0' "$out"
 
+
+# =============================================================================
+# Hardware info: the cache file shared with pwsh's hwinfo.ps1
+# =============================================================================
+# HW boots with starship on PATH. Its stub answers the PowerShell detection
+# with opts.detect (CPU line, GPU line) and starship's init with nothing;
+# HW_DUMP prints the values, the spawns and the cache file.
+HW='local CACHE = "C:\\L\\shell-cache\\hwinfo-cache.PC.ps1"
+local function hw(opts)
+    opts = opts or {}
+    opts.env = opts.env or {}
+    opts.env.PATH = "C:\\tools"
+    opts.files = opts.files or {}
+    opts.files["C:\\tools\\starship.exe"] = ""
+    opts.popen = function(c)
+        if c:find("powershell.exe", 1, true) then return opts.detect end
+        return ""
+    end
+    H.boot(opts)
+end
+local function dump()
+    local ps = 0
+    for _, c in ipairs(H.popens) do if c:find("powershell.exe", 1, true) then ps = ps + 1 end end
+    for _, v in ipairs({ "CPU_INTEL", "CPU_AMD", "GPU_NVIDIA", "GPU_AMD", "GPU_INTEL" }) do
+        local cur, saved = H.env["STARSHIP_" .. v], H.env["_DEN_SAVED_" .. v]
+        if cur or saved then print(v .. "=" .. H.show(cur) .. " saved=" .. H.show(saved)) end
+    end
+    print("detections=" .. ps .. " cache=" .. H.show(H.file(CACHE)))
+end'
+
+echo "[cmd] without starship nothing is detected"
+out=$(run_lua hw_nostarship '
+H.boot{}
+print("popens=" .. #H.popens)')
+assert_eq "cmd/hwinfo: no starship, no PowerShell" 'popens=0' "$out"
+
+echo "[cmd] the cache file hwinfo.ps1 wrote is read, not run, and nothing is detected"
+out=$(run_lua hw_read "$HW"'
+hw{ files = { [CACHE] = "\239\187\191$env:STARSHIP_CPU_INTEL = '"'i7-12700H'"'\r\n$env:STARSHIP_GPU_NVIDIA = '"'RTX O'"''"'Brien'"'\r\n" } }
+dump()')
+assert_eq "cmd/hwinfo: cache hit (BOM, CRLF, doubled quote)" "CPU_INTEL=i7-12700H saved=nil
+GPU_NVIDIA=RTX O'Brien saved=nil
+detections=0 cache=$(printf '\357\273\277')\$env:STARSHIP_CPU_INTEL = 'i7-12700H'
+\$env:STARSHIP_GPU_NVIDIA = 'RTX O''Brien'" "$(printf '%s' "$out" | tr -d '\r')"
+
+echo "[cmd] a miss detects once and writes the file as hwinfo.ps1 does"
+out=$(run_lua hw_miss "$HW"'
+hw{ detect = "Intel(R) Core(TM) i7-12700H\r\nNVIDIA GeForce RTX O'"'"'Brien\r\n" }
+dump()
+print("dir made=" .. tostring(H.dirs["c:\\l\\shell-cache"]) .. " temp left=" .. tostring(H.file(CACHE .. ".tmp.4242") ~= nil))')
+assert_eq "cmd/hwinfo: miss, detect, write" "CPU_INTEL=i7-12700H saved=nil
+GPU_NVIDIA=RTX O'Brien saved=nil
+detections=1 cache=\$env:STARSHIP_CPU_INTEL = 'i7-12700H'
+\$env:STARSHIP_GPU_NVIDIA = 'RTX O''Brien'
+
+dir made=true temp left=false" "$out"
+
+echo "[cmd] a detection that recognizes nothing is recorded, and the next window trusts it"
+out=$(run_lua hw_none "$HW"'
+hw{ detect = "Snapdragon(R) X Elite\nQualcomm(R) Adreno(TM) X1-85 GPU\n" }
+dump()
+H.popens = {}
+hw{ detect = "Intel(R) Core(TM) i7-12700H\n\n" }
+dump()')
+assert_eq "cmd/hwinfo: no-match marker" 'detections=1 cache=# den: no CPU or GPU name it recognizes
+
+detections=0 cache=# den: no CPU or GPU name it recognizes' "$out"
+
+echo "[cmd] a cache file with any other line is ignored and replaced"
+out=$(run_lua hw_bad "$HW"'
+for _, bad in ipairs({
+    "$env:STARSHIP_CPU_INTEL = '"'a'"'; Remove-Item C:\\x; '"'b'"'",
+    "$env:PATH = '"'C:/evil'"'",
+    "Remove-Item C:\\x",
+    "$env:STARSHIP_CPU_INTEL = '"'tab\there'"'",
+    "",
+}) do
+    H.files = {}; H.popens = {}; H.env = {}
+    hw{ files = { [CACHE] = bad }, detect = "AMD Ryzen 7 7840U\nAMD Radeon 780M\n" }
+    print(H.show(H.env.PATH) .. " " .. H.show(H.env.STARSHIP_CPU_AMD) .. " " .. H.show(H.env.STARSHIP_CPU_INTEL)
+        .. " | " .. H.file(CACHE):gsub("\n", " / "))
+end')
+want_bad="C:\\tools Ryzen 7 7840U nil | \$env:STARSHIP_CPU_AMD = 'Ryzen 7 7840U' / \$env:STARSHIP_GPU_AMD = 'Radeon 780M' / "
+assert_eq "cmd/hwinfo: anything but den's lines is never trusted" "$want_bad
+$want_bad
+$want_bad
+$want_bad
+$want_bad" "$out"
+
+echo "[cmd] inherited values are used as they are; a failed detection writes nothing"
+out=$(run_lua hw_inherit "$HW"'
+hw{ env = { STARSHIP_GPU_AMD = "780M" }, files = { [CACHE] = "$env:STARSHIP_CPU_INTEL = '"'x'"'\n" } }
+dump()
+H.files = {}; H.popens = {}; H.env = {}
+hw{ detect = "" }
+dump()')
+assert_eq "cmd/hwinfo: inherited, failed detection" "GPU_AMD=780M saved=nil
+detections=0 cache=\$env:STARSHIP_CPU_INTEL = 'x'
+
+detections=1 cache=nil" "$out"
+
+echo "[cmd] an inherited _DEN_HWINFO_HIDDEN=1 keeps the values hidden, as toggle-hwinfo left them"
+out=$(run_lua hw_hidden "$HW"'
+hw{ env = { _DEN_HWINFO_HIDDEN = "1" }, files = { [CACHE] = "$env:STARSHIP_CPU_INTEL = '"'i7'"'\n" } }
+dump()')
+assert_eq "cmd/hwinfo: hidden stays hidden" "CPU_INTEL=nil saved=i7
+detections=0 cache=\$env:STARSHIP_CPU_INTEL = 'i7'" "$out"
+
 fi
 
 # =============================================================================

@@ -112,52 +112,175 @@ local function define_aliases()
 end
 
 -- ===== Hardware info (for starship) =====
--- Uses env var caching — skips detection if STARSHIP_* vars are already set
--- (e.g. inherited from parent process or previous clink session).
-local has_hw_cache = (os.getenv("STARSHIP_CPU_INTEL") or os.getenv("STARSHIP_CPU_AMD")
-    or os.getenv("STARSHIP_GPU_NVIDIA") or os.getenv("STARSHIP_GPU_AMD") or os.getenv("STARSHIP_GPU_INTEL"))
+-- Only starship shows these, so none of this runs without starship on PATH.
+-- STARSHIP_* values inherited from the parent process are used as they are.
+-- Otherwise they come from the cache file den's pwsh hwinfo.ps1 keeps, which
+-- cmd shares: %LOCALAPPDATA%\shell-cache\hwinfo-cache.<COMPUTERNAME>.ps1,
+-- lines of `$env:STARSHIP_X = '<value>'`, read here as text against exactly
+-- that pattern and never run. Only when there is none does Windows PowerShell
+-- detect them, and the result is written back the way hwinfo.ps1 writes it.
+-- A detection that recognizes no name (Windows on ARM) is written too, as one
+-- comment line, so the next window does not detect again. pwsh's
+-- refresh-hwinfo deletes the file.
+local starship_exe = find_on_path("starship")
+local hw_vars = { "STARSHIP_CPU_INTEL", "STARSHIP_CPU_AMD", "STARSHIP_GPU_NVIDIA",
+    "STARSHIP_GPU_AMD", "STARSHIP_GPU_INTEL" }
+local hw_cache = os.getenv("LOCALAPPDATA") .. "\\shell-cache\\hwinfo-cache."
+    .. (os.getenv("COMPUTERNAME") or "") .. ".ps1"
+local hw_none = "# den: no CPU or GPU name it recognizes"
 
-if not has_hw_cache then
-    -- Uses PowerShell for CIM queries (WMIC deprecated on Win11)
-    local h = io.popen(cmd_line(powershell_exe, '-NoProfile -NoLogo -Command "'
-        .. '$cpu=(Get-CimInstance Win32_Processor).Name.Trim();'
-        .. "$gpu='';"
-        .. 'if(Get-Command nvidia-smi -EA 0){'
-        .. '$gpu=(nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null|Select -First 1).Trim()};'
-        .. 'if(-not $gpu){'
-        .. '$gpu=(Get-CimInstance Win32_VideoController|Select -First 1).Name.Trim()};'
-        .. 'Write-Host $cpu;Write-Host $gpu"'))
-    if h then
-        local cpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
-        local gpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
-        h:close()
+local function hw_any()
+    for _, v in ipairs(hw_vars) do
+        if os.getenv(v) then
+            return true
+        end
+    end
+    return false
+end
 
-        if cpu_raw ~= "" then
-            local cpu_short = cpu_raw
-                :gsub(".*Core%(TM%)%s*", "")
-                :gsub(".*Ryzen%s*", "Ryzen ")
-                :gsub("%s+", " ")
-                :match("^%s*(.-)%s*$")
-            if cpu_raw:find("Intel") then
-                os.setenv("STARSHIP_CPU_INTEL", cpu_short)
-            elseif cpu_raw:find("AMD") then
-                os.setenv("STARSHIP_CPU_AMD", cpu_short)
+-- What hwinfo.ps1 accepts in a value: printable ASCII, 1 to 100 characters.
+local function hw_printable(s)
+    return #s > 0 and #s <= 100 and not s:find("[^ -~]")
+end
+
+-- Set the values the cache file holds. False, with nothing set, when there is
+-- no file or a line in it is not one den writes.
+local function hw_read_cache()
+    local f = io.open(hw_cache, "rb")
+    if not f then
+        return false
+    end
+    local text = (f:read("*a") or ""):gsub("^\239\187\191", "")  -- 5.1 writes a BOM
+    f:close()
+    local vals, known = {}, false
+    for line in text:gmatch("[^\r\n]+") do
+        if line == hw_none then
+            known = true
+        else
+            local name, val = line:match("^%$env:(STARSHIP_[%u_]+) = '(.*)'$")
+            -- Inside the quotes, a ' only ever comes doubled.
+            if not name or val:gsub("''", ""):find("'") then
+                return false
+            end
+            val = val:gsub("''", "'")
+            local ours = false
+            for _, v in ipairs(hw_vars) do
+                ours = ours or v == name
+            end
+            if not ours or not hw_printable(val) then
+                return false
+            end
+            vals[name] = val
+            known = true
+        end
+    end
+    if not known then
+        return false
+    end
+    for name, val in pairs(vals) do
+        os.setenv(name, val)
+    end
+    return true
+end
+
+-- Write the values set now, as hwinfo.ps1 does (' doubled inside the quotes),
+-- through a temporary file renamed into place.
+local function hw_write_cache()
+    local lines = {}
+    for _, v in ipairs(hw_vars) do
+        local val = os.getenv(v)
+        if val then
+            if not hw_printable(val) then
+                return
+            end
+            lines[#lines + 1] = "$env:" .. v .. " = '" .. (val:gsub("'", "''")) .. "'"
+        end
+    end
+    if #lines == 0 then
+        lines[1] = hw_none
+    end
+    local dir = hw_cache:match("^(.*)\\")
+    if not os.isdir(dir) and os.mkdir then
+        os.mkdir(dir)
+    end
+    local tmp = hw_cache .. ".tmp." .. (os.getpid and os.getpid() or os.time())
+    local f = io.open(tmp, "wb")
+    if not f then
+        return
+    end
+    local ok = f:write(table.concat(lines, "\n") .. "\n")
+    f:close()
+    local unlink, move = os.unlink or os.remove, os.move or os.rename
+    if ok then
+        unlink(hw_cache)
+        if move(tmp, hw_cache) then
+            return
+        end
+    end
+    unlink(tmp)
+end
+
+if starship_exe then
+    if not hw_any() and not hw_read_cache() then
+        -- Uses PowerShell for CIM queries (WMIC deprecated on Win11)
+        local h = io.popen(cmd_line(powershell_exe, '-NoProfile -NoLogo -Command "'
+            .. '$cpu=(Get-CimInstance Win32_Processor).Name.Trim();'
+            .. "$gpu='';"
+            .. 'if(Get-Command nvidia-smi -EA 0){'
+            .. '$gpu=(nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null|Select -First 1).Trim()};'
+            .. 'if(-not $gpu){'
+            .. '$gpu=(Get-CimInstance Win32_VideoController|Select -First 1).Name.Trim()};'
+            .. 'Write-Host $cpu;Write-Host $gpu"'))
+        if h then
+            local cpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
+            local gpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
+            h:close()
+
+            if cpu_raw ~= "" then
+                local cpu_short = cpu_raw
+                    :gsub(".*Core%(TM%)%s*", "")
+                    :gsub(".*Ryzen%s*", "Ryzen ")
+                    :gsub("%s+", " ")
+                    :match("^%s*(.-)%s*$")
+                if cpu_raw:find("Intel") then
+                    os.setenv("STARSHIP_CPU_INTEL", cpu_short)
+                elseif cpu_raw:find("AMD") then
+                    os.setenv("STARSHIP_CPU_AMD", cpu_short)
+                end
+            end
+
+            if gpu_raw ~= "" then
+                local gpu_short = gpu_raw
+                    :gsub("NVIDIA%s+GeForce%s*", "")
+                    :gsub("AMD%s+", "")
+                    :gsub("Intel%(R%)%s*", "")
+                    :gsub("%s+", " ")
+                    :match("^%s*(.-)%s*$")
+                if gpu_raw:find("NVIDIA") then
+                    os.setenv("STARSHIP_GPU_NVIDIA", gpu_short)
+                elseif gpu_raw:find("AMD") or gpu_raw:find("Radeon") then
+                    os.setenv("STARSHIP_GPU_AMD", gpu_short)
+                elseif gpu_raw:find("Intel") then
+                    os.setenv("STARSHIP_GPU_INTEL", gpu_short)
+                end
+            end
+
+            if cpu_raw ~= "" or gpu_raw ~= "" then
+                hw_write_cache()
             end
         end
+    end
 
-        if gpu_raw ~= "" then
-            local gpu_short = gpu_raw
-                :gsub("NVIDIA%s+GeForce%s*", "")
-                :gsub("AMD%s+", "")
-                :gsub("Intel%(R%)%s*", "")
-                :gsub("%s+", " ")
-                :match("^%s*(.-)%s*$")
-            if gpu_raw:find("NVIDIA") then
-                os.setenv("STARSHIP_GPU_NVIDIA", gpu_short)
-            elseif gpu_raw:find("AMD") or gpu_raw:find("Radeon") then
-                os.setenv("STARSHIP_GPU_AMD", gpu_short)
-            elseif gpu_raw:find("Intel") then
-                os.setenv("STARSHIP_GPU_INTEL", gpu_short)
+    -- toggle-hwinfo leaves _DEN_HWINFO_HIDDEN=1 in the environment, so a child
+    -- cmd inherits its OFF, and the cache brings the values back: hide them
+    -- again as toggle-hwinfo does, or its next call would take the ON branch
+    -- and change nothing. Parity with hwinfo.ps1 and hwinfo.sh.
+    if os.getenv("_DEN_HWINFO_HIDDEN") == "1" then
+        for _, v in ipairs(hw_vars) do
+            local val = os.getenv(v)
+            if val then
+                os.setenv("_DEN_SAVED_" .. v:sub(#"STARSHIP_" + 1), val)
+                os.setenv(v, nil)
             end
         end
     end
@@ -491,7 +614,6 @@ end
 define_aliases()
 
 -- ===== Starship =====
-local starship_exe = find_on_path("starship")
 if starship_exe then
     local sh = io.popen(cmd_line(starship_exe, "init cmd 2>nul"))
     if sh then

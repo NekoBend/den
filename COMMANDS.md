@@ -345,6 +345,14 @@ live under `$XDG_CONFIG_HOME`.
 | `toggle-hwinfo` / `tgl-hw` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
 | `refresh-hwinfo` | clear the per-boot hardware cache so it re-detects | ✓ | ✓ | — |
 
+On cmd the CPU/GPU names come from the cache file pwsh's hwinfo keeps,
+`%LOCALAPPDATA%\shell-cache\hwinfo-cache.<COMPUTERNAME>.ps1`, which cmd reads as
+text and never runs. Only without it does a new cmd window detect them (through
+Windows PowerShell) and write the file for the next one, a "nothing recognized"
+result included; without starship nothing is detected. cmd has no
+`refresh-hwinfo`: pwsh's, or deleting that file, makes the next window detect
+again.
+
 ## History, session, editor
 
 | Command | Does | bash/zsh | pwsh | cmd |
