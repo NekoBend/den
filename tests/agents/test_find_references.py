@@ -1117,6 +1117,10 @@ BRACED_SOURCES = {
         'func (b *Box) String() string { return "" }\n'
         "\n"
         "func Helper() int { return 1 }\n"
+        "type Stack[T any] struct{ items []T }\n"
+        "func (s *Stack[T]) Push(v T) {}\n"
+        "func (Box) Size() int { return 0 }\n"
+        "func Map[T, U any](xs []T, f func(T) U) []U { return nil }\n"
     ),
     "lib.rs": (
         "//! Widgets. /* not a comment opener here {\n"
@@ -1178,7 +1182,9 @@ def test_in_lists_top_level_names_only_in_go_rust_java_and_csharp(
     # nested in a fn and a type nested in a Java or C# class as "top-level",
     # and check-broken-refs searched each removed one as a bare word. The
     # braces now decide, with comments and literals skipped; a Rust `mod` or
-    # `extern` block and a C# namespace still count as top level.
+    # `extern` block and a C# namespace still count as top level. A generic
+    # Go function or type and a method with a generic or unnamed receiver
+    # were neither, so a removed one was never searched.
     for name, body in BRACED_SOURCES.items():
         write(tmp_path, name, body)
     defs = {}
@@ -1190,6 +1196,8 @@ def test_in_lists_top_level_names_only_in_go_rust_java_and_csharp(
         "lib.go": [
             "lib.go:3:def:type Box struct{}",
             "lib.go:7:def:func Helper() int { return 1 }",
+            "lib.go:11:def:func Map[T, U any](xs []T, f func(T) U) []U { return nil }",
+            "lib.go:8:def:type Stack[T any] struct{ items []T }",
         ],
         "lib.rs": [
             "lib.rs:13:def:pub trait Shape { fn area(&self) -> f64; }",
@@ -1212,11 +1220,29 @@ def test_in_lists_top_level_names_only_in_go_rust_java_and_csharp(
         for name, body in BRACED_SOURCES.items()
     }
     assert members == {
-        "lib.go": ["String"],
+        "lib.go": ["String", "Push", "Size"],
         "lib.rs": ["new", "LIMIT", "area"],
         "Outer.java": ["Inner"],
         "Lib.cs": ["Nested"],
     }
+
+
+def test_def_finds_generic_go_definitions_and_methods_of_any_receiver(
+    tmp_path: Path,
+) -> None:
+    # The Go patterns wanted `(` right after a function's name, whitespace
+    # after a type's name and a named, non-generic receiver, so --def found
+    # none of these.
+    write(tmp_path, "lib.go", BRACED_SOURCES["lib.go"])
+    for symbol, line in (
+        ("Stack", "8:def:type Stack[T any] struct{ items []T }"),
+        ("Push", "9:def:func (s *Stack[T]) Push(v T) {}"),
+        ("Size", "10:def:func (Box) Size() int { return 0 }"),
+        ("Map", "11:def:func Map[T, U any](xs []T, f func(T) U) []U { return nil }"),
+    ):
+        proc = run("--def", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [f"lib.go:{line}"], symbol
 
 
 # ---------- one search per run ----------

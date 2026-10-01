@@ -1032,6 +1032,49 @@ def test_go_and_rust_methods_are_searched_as_members_only(tmp_path: Path) -> Non
     ]
 
 
+def test_removed_generic_go_definitions_and_methods_are_reported(
+    tmp_path: Path,
+) -> None:
+    # A generic Go function or type, and a method with a generic or unnamed
+    # receiver, matched no pattern: deleting them reported nothing. They are
+    # now a top-level name and members, the members found as `.name` only.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.go",
+        "package lib\n\n"
+        "type Stack[T any] struct{ items []T }\n"
+        "func (s *Stack[T]) Push(v T) {}\n"
+        "func (*Stack[T]) Size() int { return 0 }\n"
+        "func Map[T, U any](xs []T, f func(T) U) []U { return nil }\n",
+    )
+    write(
+        tmp_path,
+        "app.go",
+        "package app\n\n"
+        "func run() {\n"
+        "\ts := lib.Stack[int]{}\n"
+        "\ts.Push(1)\n"
+        "\tn := s.Size()\n"
+        "\tPush, Size := 1, 2\n"
+        "\t_ = lib.Map([]int{n}, f)\n"
+        "}\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "lib.go").unlink()
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.go:8:broken_ref:Map:_ = lib.Map([]int{n}, f)",
+        "app.go:5:broken_ref:Push:s.Push(1)",
+        "app.go:6:broken_ref:Size:n := s.Size()",
+        "app.go:4:broken_ref:Stack:s := lib.Stack[int]{}",
+    ]
+
+
 def test_keywords_and_the_blank_identifier_are_not_removed_names(
     tmp_path: Path,
 ) -> None:

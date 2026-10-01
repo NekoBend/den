@@ -61,8 +61,10 @@ if TYPE_CHECKING:
 Hit = tuple[str, int, str]
 
 # A Go method: a func with a receiver. Declared at column 0 like a function,
-# but reached as `value.Name`, so it is a member, not a top-level name.
-_GO_METHOD = r"^func\s+\(\s*\w+\s+\*?\w+\s*\)\s+{name}\s*\("
+# but reached as `value.Name`, so it is a member, not a top-level name. The
+# receiver may be unnamed (`func (Box) Size()`, `func (*Box) Ptr()`) and its
+# type generic (`func (s *Stack[T]) Push(v T)`).
+_GO_METHOD = r"^func\s*\(\s*(?:\w+\s+)?\*?\s*\w+\s*(?:\[[^\]]*\]\s*)?\)\s*{name}\s*\("
 
 # Where a symbol may be defined, per extension. {name} is the symbol.
 DEFINITION_PATTERNS: dict[str, list[str]] = {
@@ -85,9 +87,11 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         r"\bnamespace\s+{name}\b",
     ],
     ".go": [
-        r"^func\s+{name}\s*\(",
+        # a generic function or type takes its type parameters in brackets:
+        # `func Map[T, U any](...)`, `type Stack[T any] struct`
+        r"^func\s+{name}\s*[(\[]",
         _GO_METHOD,
-        r"^type\s+{name}\s+",
+        r"^type\s+{name}(?:\s|\[)",
         # `var _ io.Reader = (*T)(nil)`: the blank identifier names nothing
         r"^var\s+(?!_\b){name}\b",
         r"^const\s+(?!_\b){name}\b",
