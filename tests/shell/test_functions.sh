@@ -1318,12 +1318,16 @@ STUB
     chmod +x "$DH/ybin/yazi"
 }
 
+# The trap listing after y must equal the one before it. The listings are
+# compared, not spelled out, because a shell that starts with a signal ignored
+# (SIGINT and SIGQUIT in a background job of a script, SIGHUP under nohup)
+# cannot trap it and lists it as ignored.
+TRAPS_SAME="if cmp -s '$DH/traps.before' '$DH/traps.after'; then echo traps kept; else diff '$DH/traps.before' '$DH/traps.after' || :; fi"
 echo "[bash] y keeps the caller's EXIT, INT, TERM and HUP traps"
 setup_ystub
-out=$(dh_run bash "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-int' INT; trap 'echo user-hup' HUP; y; pwd; trap -p EXIT INT TERM HUP")
-assert_eq "bash/y moves, keeps the traps, and the EXIT trap still runs" "$DH/a"$'\n'"trap -- 'echo user-exit' EXIT
-trap -- 'echo user-int' SIGINT
-trap -- 'echo user-hup' SIGHUP
+out=$(dh_run bash "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-int' INT; trap 'echo user-hup' HUP; trap -p > '$DH/traps.before'; y; pwd; trap -p > '$DH/traps.after'; $TRAPS_SAME")
+assert_eq "bash/y moves, keeps the traps, and the EXIT trap still runs" "$DH/a
+traps kept
 user-exit" "$out"
 
 # den's cd hands its arguments to zoxide only when cd is typed at the prompt
@@ -1999,10 +2003,9 @@ dirhist_posix_cases zsh
 # INT, TERM and HUP traps and TRAPINT-style functions were deleted.
 echo "[zsh] y keeps the caller's INT, TERM and HUP traps and TRAP functions"
 setup_ystub
-out=$(dh_run zsh "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-hup' HUP; trap 'echo user-term' TERM; TRAPINT() { echo user-int; }; y; pwd; trap > '$DH/traps'; grep '^trap' '$DH/traps'; if functions TRAPINT >/dev/null; then echo TRAPINT kept; else echo TRAPINT gone; fi")
-assert_eq "zsh/y moves, keeps the traps and TRAPINT, and the EXIT trap still runs" "$DH/a"$'\n'"trap -- 'echo user-exit' EXIT
-trap -- 'echo user-hup' HUP
-trap -- 'echo user-term' TERM
+out=$(dh_run zsh "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-hup' HUP; trap 'echo user-term' TERM; TRAPINT() { echo user-int; }; trap > '$DH/traps.before'; y; pwd; trap > '$DH/traps.after'; $TRAPS_SAME; if functions TRAPINT >/dev/null; then echo TRAPINT kept; else echo TRAPINT gone; fi")
+assert_eq "zsh/y moves, keeps the traps and TRAPINT, and the EXIT trap still runs" "$DH/a
+traps kept
 TRAPINT kept
 user-exit" "$out"
 
