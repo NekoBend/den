@@ -18,6 +18,7 @@ content is deployed; the file name each tool reads stays the tool's own.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -184,7 +185,14 @@ class _Writer:
     asked: a differing file in `owned` -- one the den that ran before the
     upgrade proved it had written and nobody has edited since -- is replaced,
     and every other differing file is kept and listed (or, with --force, backed
-    up and replaced).
+    up and replaced). `owned` maps each such path to the SHA-256 it held then,
+    and a file is den's only while it still holds those bytes, checked again
+    right before it is written: an edit made while `uv tool upgrade` ran is the
+    user's, not den's.
+
+    Only what was listed and approved (or is still den's) is ever replaced
+    without --force: a file that changes between the listing and its write is
+    kept.
 
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), so a symlink anywhere below it - CLAUDE.md ->
@@ -193,7 +201,7 @@ class _Writer:
     The default tool dirs are not confined: a ~/.claude symlinked into a
     dotfiles repo is the user's own arrangement and keeps working."""
 
-    def __init__(self, *, force: bool, owned: set[Path] | None = None) -> None:
+    def __init__(self, *, force: bool, owned: dict[Path, str] | None = None) -> None:
         self.force = force
         self.owned = owned
         self._items: list[tuple[Path, bytes]] = []
@@ -237,6 +245,12 @@ class _Writer:
         Never through a symlink -- see _chmod_no_follow."""
         if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
             _chmod_no_follow(dest, 0o755)
+
+    def _owns(self, dest: Path, data: bytes) -> bool:
+        """Whether `data`, what `dest` holds now, is what the den before the
+        upgrade proved it wrote there (see the class docstring)."""
+        digest = None if self.owned is None else self.owned.get(dest)
+        return digest is not None and hashlib.sha256(data).hexdigest() == digest
 
     def _ask(self, changed: list[Path]) -> tuple[bool, bool]:
         """(overwrite, silently_skipped) for the files that exist and differ."""
@@ -321,8 +335,9 @@ class _Writer:
         deployed without the user choosing so: differing files kept by the
         non-interactive skip plus destinations refused under a confined root,
         so a scripted caller can exit non-zero instead of reporting a deploy
-        that never happened; an interactive "no" is the user's own choice and
-        counts 0, as does a file a refresh leaves alone (not den's to replace)."""
+        that never happened, and a file kept because it changed after it was
+        checked; an interactive "no" is the user's own choice and counts 0, as
+        does a file a refresh leaves alone (not den's to replace)."""
         refused = 0
         items: list[tuple[Path, bytes, tuple[Path, Path] | None]] = []
         for dest, content in self._items:
@@ -331,18 +346,33 @@ class _Writer:
                 refused += 1
                 continue
             items.append((dest, content, guard))
-        changed = [d for d, c, _g in items if d.is_file() and d.read_bytes() != c]
-        owned = self.owned if self.owned is not None else set()
-        overwrite, silently_skipped = self._ask([d for d in changed if d not in owned])
-        kept = 0
+        changed = []
+        for dest, content, _guard in items:
+            data = dest.read_bytes() if dest.is_file() else None
+            if data is not None and data != content and not self._owns(dest, data):
+                changed.append(dest)
+        overwrite, silently_skipped = self._ask(changed)
+        listed = set(changed)
+        approved = listed if overwrite else set()
+        kept = late = 0
         backed_up: list[tuple[Path, Path]] = []
         for dest, content, guard in items:
             if dest.is_file():
-                if dest.read_bytes() == content:
+                # Read again: what decides the write is what the file holds
+                # now, not what it held when the list above was made.
+                data = dest.read_bytes()
+                if data == content:
                     self._ensure_mode(dest)
                     continue
-                if dest not in owned:
-                    if not overwrite:
+                if not self._owns(dest, data):
+                    if not self.force and dest not in listed:
+                        late += 1
+                        print(
+                            f"  kept {dest}: it changed after den checked it",
+                            file=sys.stderr,
+                        )
+                        continue
+                    if not self.force and dest not in approved:
                         kept += 1
                         continue
                     if self.force:
@@ -367,7 +397,8 @@ class _Writer:
                 f"  refused {refused} path(s) listed above; nothing was written there",
                 file=sys.stderr,
             )
-        return refused + (kept if silently_skipped else 0)
+        late = late if self.owned is None else 0  # a refresh keeps it on purpose
+        return refused + (kept if silently_skipped else 0) + late
 
 
 def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
@@ -487,15 +518,17 @@ def _deploy(
 #
 # The den running `den upgrade` still has the OLD bundled content, so before
 # `uv tool upgrade` it compares every deployed file in each tool dir with that
-# content and writes down what matched: the plan below (den/_upgrade.py builds
-# it). The new den then reads it via `den install skills|shell --refresh-plan
-# FILE` and replaces only those files. The plan is a temporary file for that one
+# content and writes down what matched, with the SHA-256 of each matched file:
+# the plan below (den/_upgrade.py builds it). The new den then reads it via `den
+# install skills|shell --refresh-plan FILE` and replaces only those files, and
+# each only while it still holds those bytes. The plan is a temporary file for that one
 # hand-over, not a record of what den deployed: README's "no manifest" design
 # stands. Its shape is an interface between two den versions, so a later den
 # must keep accepting version 1.
 
 _PLAN_VERSION = 1
 _PARENT_FILES = frozenset(pf for _sk, _pd, pf in _TOOLS.values())
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def load_refresh_plan(path: str) -> dict:
@@ -515,8 +548,13 @@ def load_refresh_plan(path: str) -> dict:
             raise ValueError(f"not a list of strings: {value!r}")
         return [v for v in value if isinstance(v, str)]
 
-    for p in strings(plan.get("owned")):
+    owned = plan.get("owned")
+    if not isinstance(owned, dict):
+        raise ValueError(f"owned must map paths to SHA-256 digests: {owned!r}")
+    for p, digest in owned.items():
         absolute(p)
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            raise ValueError(f"not a SHA-256 digest: {digest!r}")
     strings(plan.get("known_skills"))
     skills = plan.get("skills")
     parents = plan.get("parents")
@@ -541,6 +579,11 @@ def load_refresh_plan(path: str) -> dict:
     return plan
 
 
+def refresh_owned(plan: dict) -> dict[Path, str]:
+    """The plan's files that are den's own, each with the SHA-256 it held."""
+    return {Path(p): digest for p, digest in plan["owned"].items()}
+
+
 def read_refresh_plan(path: str, prefix: str) -> dict | None:
     """load_refresh_plan, or None after one line on stderr."""
     try:
@@ -557,13 +600,16 @@ def _install_refresh(plan_path: str, *, force: bool, dry_run: bool) -> int:
     file is replaced only when the plan lists it as den's own unedited copy;
     any other one is kept and listed, or with --force backed up and replaced.
     A parent the old den did not recognize is not in the plan at all, so a
-    hand-written CLAUDE.md is never touched, not even with --force."""
+    hand-written CLAUDE.md is never touched, not even with --force, and one
+    edited after the plan was made is kept and listed, --force or not."""
     plan = read_refresh_plan(plan_path, "den install skills")
     if plan is None:
         return 2
     names = _skill_names()
     known = set(plan["known_skills"])
-    writer = _Writer(force=force, owned={Path(p) for p in plan["owned"]})
+    owned = refresh_owned(plan)
+    writer = _Writer(force=force, owned=owned)
+    parents = _Writer(force=False, owned=owned)  # --force never takes a parent
     for entry in plan["skills"]:
         target = Path(entry["target"])
         present = set(entry["names"])
@@ -579,11 +625,15 @@ def _install_refresh(plan_path: str, *, force: bool, dry_run: bool) -> int:
         if dry_run:
             print(f"[dry-run] refresh parent ({entry['profile']}) -> {entry['path']}")
         elif src.is_file():
-            writer.stage(Path(entry["path"]), src.read_bytes())
+            parents.stage(Path(entry["path"]), src.read_bytes())
             print(f"  parent ({entry['profile']}) -> {entry['path']}")
         else:
             print(f"  warning: {src} not found", file=sys.stderr)
-    return 0 if dry_run or not writer.commit() else 1
+    if dry_run:
+        return 0
+    refused = writer.commit()
+    refused += parents.commit()
+    return 0 if not refused else 1
 
 
 def _codex_config(skills_target: Path) -> None:

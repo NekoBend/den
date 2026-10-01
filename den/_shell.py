@@ -41,6 +41,7 @@ from ._install import (
     _Stager,
     _Writer,
     read_refresh_plan,
+    refresh_owned,
 )
 
 _COMMENT = "# ===== den ====="
@@ -391,7 +392,7 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
     if parsed is None:
         return 2
     plan, argv = parsed
-    owned = None if plan is None else {Path(p) for p in plan["owned"]}
+    owned = None if plan is None else refresh_owned(plan)
     dry_run = "--dry-run" in argv
     extras = "--no-extras" not in argv if plan is None else plan["shell_extras"]
     force = "--force" in argv

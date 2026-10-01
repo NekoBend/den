@@ -20,18 +20,20 @@ which still has the old bundled content (on disk in the tool venv until uv
 replaces it): every deployed file in each tool dir -- skills in either
 flavor, parent prompts in either profile, the shell files -- is compared byte
 for byte with what this version deploys, and the matches are den's own,
-unedited. The new den gets that list as a temporary plan file
-(`den install skills|shell --refresh-plan FILE`, see _install._install_refresh)
-and replaces only those; everything else stays and is listed. A parent prompt
-that matches neither profile (hand-written, or edited) is not refreshed at
-all, and a tool dir without den's skills is not created. The plan also says
-whether den's optional shell files (the extras, the ~/.local/bin helpers) are
-on disk, so the shell is refreshed the way it was installed. No state is kept
-between runs.
+unedited. The new den gets that list, with each file's SHA-256 as it was then,
+as a temporary plan file (`den install skills|shell --refresh-plan FILE`, see
+_install._install_refresh) and replaces only those, and only while they still
+hold those bytes: a file edited while uv ran is no longer den's. Everything
+else stays and is listed. A parent prompt that matches neither profile
+(hand-written, or edited) is not refreshed at all, and a tool dir without
+den's skills is not created. The plan also says whether den's optional shell
+files (the extras, the ~/.local/bin helpers) are on disk, so the shell is
+refreshed the way it was installed. No state is kept between runs.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -85,15 +87,17 @@ def _upgraded_den(uv: str) -> str | None:
 
 class _Matcher:
     """A stager (see _install._Stager) that records which staged destinations
-    already hold exactly the staged bytes, i.e. are this den's own output."""
+    already hold exactly the staged bytes, i.e. are this den's own output, each
+    with the SHA-256 of those bytes: the new den replaces it only while it still
+    holds them (see _install._Writer)."""
 
     def __init__(self) -> None:
-        self.matched: set[Path] = set()
+        self.matched: dict[Path, str] = {}
 
     def stage(self, dest: Path, content: bytes) -> None:
         try:
             if dest.is_file() and dest.read_bytes() == content:
-                self.matched.add(dest)
+                self.matched[dest] = hashlib.sha256(content).hexdigest()
         except OSError:
             pass  # unreadable: not provably den's
 
@@ -131,7 +135,7 @@ def _shell_options() -> tuple[bool, bool]:
 
 def _scan_skills(
     target: Path, names: list[str], den_free: set[str]
-) -> tuple[dict, set[Path]] | None:
+) -> tuple[dict, dict[Path, str]] | None:
     """(plan entry, den's unedited files) for one skills dir, or None when no
     deployed file there is byte-identical to this den's: den never deployed
     there (or every file was edited), and the refresh must not create it."""
@@ -149,21 +153,24 @@ def _scan_skills(
     # Which flavor was deployed: only the --no-den-cli skills differ between
     # the two, so only their files say anything.
     free_dirs = {target / n for n in den_free}
-    aware_only = {p for p in aware.matched - free.matched if free_dirs & set(p.parents)}
-    no_den_cli = bool(free.matched - aware.matched) and not aware_only
+    aware_only = {
+        p for p in aware.matched.keys() - free.matched if free_dirs & set(p.parents)
+    }
+    no_den_cli = bool(free.matched.keys() - aware.matched) and not aware_only
     entry = {"target": str(target), "names": present, "no_den_cli": no_den_cli}
     return entry, owned
 
 
-def _parent_profile(parent: Path, parent_file: str) -> str | None:
-    """The profile whose parent prompt `parent` holds byte for byte, or None."""
+def _parent_profile(parent: Path, parent_file: str) -> tuple[str, str] | None:
+    """(the profile whose parent prompt `parent` holds byte for byte, the
+    SHA-256 of those bytes), or None."""
     from ._install import _parent_source
 
     on_disk = parent.read_bytes()
     for profile in ("frontier", "weak"):
         src = _parent_source(parent_file, profile)
         if src.is_file() and src.read_bytes() == on_disk:
-            return profile
+            return profile, hashlib.sha256(on_disk).hexdigest()
     return None
 
 
@@ -177,7 +184,7 @@ def _refresh_plan() -> tuple[dict, list[Path]]:
 
     names = _skill_names()
     den_free = _den_free_skills()
-    owned: set[Path] = set()
+    owned: dict[Path, str] = {}
     skills: list[dict] = []
     parents: list[dict] = []
     left_alone: list[Path] = []
@@ -189,29 +196,31 @@ def _refresh_plan() -> tuple[dict, list[Path]]:
             scanned = _scan_skills(target, names, den_free)
             if scanned is not None:
                 skills.append(scanned[0])
-                owned |= scanned[1]
+                owned.update(scanned[1])
         parent = parent_dir / parent_file
         if parent in seen or not parent.is_file():
             continue
         seen.add(parent)
-        profile = _parent_profile(parent, parent_file)
-        if profile is None:
+        matched = _parent_profile(parent, parent_file)
+        if matched is None:
             left_alone.append(parent)
             continue
-        parents.append({"path": str(parent), "file": parent_file, "profile": profile})
-        owned.add(parent)
+        owned[parent] = matched[1]
+        parents.append(
+            {"path": str(parent), "file": parent_file, "profile": matched[0]}
+        )
     shell = _Matcher()
     _stage_shell_files(
         shell, extras=True, dry_run=False, announce=False, posix_bin=True
     )
-    owned |= shell.matched
+    owned.update(shell.matched)
     plan = {
         "den_refresh_plan": _PLAN_VERSION,
         "known_skills": names,
         "skills": skills,
         "parents": parents,
         "shell": bool(shell.matched),
-        "owned": sorted(str(p) for p in owned),
+        "owned": {str(p): owned[p] for p in sorted(owned)},
     }
     plan["shell_extras"], plan["shell_bin"] = _shell_options()
     return plan, left_alone

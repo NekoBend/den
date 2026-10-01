@@ -1,6 +1,7 @@
 """Tests for den upgrade (den/_upgrade.py)."""
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ _PLAN = {
     "shell": True,
     "shell_extras": True,
     "shell_bin": False,
-    "owned": [],
+    "owned": {},
 }
 
 
@@ -357,9 +358,12 @@ def _new_version(tmp_path: Path, *, with_shell: bool = False) -> Path:
     return root
 
 
-def _upgrade_to(monkeypatch, new_root: Path) -> list[list[str]]:
+def _upgrade_to(
+    monkeypatch, new_root: Path, during: Callable[[], None] | None = None
+) -> list[list[str]]:
     """Run den upgrade with uv faked: `uv tool upgrade den` swaps the bundled
-    content for `new_root`, and the upgraded den runs in-process on it."""
+    content for `new_root` (after calling `during`, what the user does while uv
+    runs), and the upgraded den runs in-process on it."""
     from den import _content
 
     calls: list[list[str]] = []
@@ -374,6 +378,8 @@ def _upgrade_to(monkeypatch, new_root: Path) -> list[list[str]]:
             return _Proc(0, f"{_BIN}\n")
         calls.append(cmd)
         if cmd[1:] == ["tool", "upgrade", "den"]:
+            if during is not None:
+                during()
             monkeypatch.setattr(_content, "content_root", lambda: new_root)
             return _Proc(0)
         return _Proc(cli_main(cmd[1:]))
@@ -457,6 +463,49 @@ def test_refresh_force_leaves_an_edited_den_parent_alone(tmp_path, monkeypatch, 
     assert "never a parent prompt" in usage
 
 
+def _edit_while_uv_runs() -> tuple[Path, Path, Callable[[], None]]:
+    """(a skill file, the parent prompt, what edits both): files the plan
+    proves are den's when it is made, edited before the new den writes."""
+    home = Path.home()
+    skill = home / ".claude" / "skills" / "grounding" / "SKILL.md"
+    parent = home / ".copilot" / "copilot-instructions.md"
+
+    def edit() -> None:
+        for path in (skill, parent):
+            path.write_text(path.read_text() + "\nEDITED DURING THE UPGRADE\n")
+
+    return skill, parent, edit
+
+
+def test_refresh_keeps_an_edit_made_while_uv_runs(tmp_path, monkeypatch, capsys):
+    """The plan named den's files by path only: one edited while `uv tool
+    upgrade` ran was replaced as den's, and the edit was lost without a backup."""
+    _deploy_like_a_user(monkeypatch)
+    skill, parent, edit = _edit_while_uv_runs()
+    _upgrade_to(monkeypatch, _new_version(tmp_path), during=edit)
+    assert upgrade_main(["--refresh"]) == 0
+    for path in (skill, parent):
+        assert "EDITED DURING THE UPGRADE" in path.read_text()
+        assert "NEXT VERSION" not in path.read_text()
+    out = capsys.readouterr()
+    listing = (out.out + out.err).replace("\n", "")  # rich wraps long paths
+    assert str(skill) in listing and str(parent) in listing
+
+
+def test_refresh_force_backs_up_an_edit_made_while_uv_runs(tmp_path, monkeypatch):
+    _deploy_like_a_user(monkeypatch)
+    skill, parent, edit = _edit_while_uv_runs()
+    _upgrade_to(monkeypatch, _new_version(tmp_path), during=edit)
+    assert upgrade_main(["--refresh", "--force"]) == 0
+    assert "NEXT VERSION" in skill.read_text()
+    backup = skill.with_name("SKILL.md.den.bak")
+    assert "EDITED DURING THE UPGRADE" in backup.read_text()
+    # still never a parent prompt: --force does not replace an edited one
+    assert "EDITED DURING THE UPGRADE" in parent.read_text()
+    assert "NEXT VERSION" not in parent.read_text()
+    assert not parent.with_name(parent.name + ".den.bak").exists()
+
+
 def test_refresh_keeps_the_no_den_cli_flavor_and_deleted_skills(tmp_path, monkeypatch):
     import shutil
 
@@ -529,6 +578,39 @@ def test_refresh_refreshes_the_posix_helpers_den_deployed(tmp_path, monkeypatch)
     assert "# NEXT VERSION" in fixids.read_text()
     assert fixids.stat().st_mode & 0o111
     assert (Path.home() / ".config" / "shell" / "python.sh").is_file()
+
+
+@pytest.mark.parametrize("refresh", [True, False], ids=["refresh", "install"])
+def test_a_file_edited_after_the_check_is_kept(tmp_path, monkeypatch, capsys, refresh):
+    """Only what was checked (den's, or listed and approved) is replaced: an
+    edit landing between the check and the write is kept, not overwritten."""
+    import hashlib
+
+    from den import _install
+
+    ours, edited = tmp_path / "ours.md", tmp_path / "edited.md"
+    for path in (ours, edited):
+        path.write_text("OLD\n")
+    digest = hashlib.sha256(b"OLD\n").hexdigest()
+    owned = {ours: digest, edited: digest} if refresh else None
+    writer = _install._Writer(force=False, owned=owned)
+    writer.stage(ours, b"NEW\n")
+    writer.stage(edited, b"NEW\n")
+    if not refresh:  # an install over identical files lists nothing
+        ours.write_text("NEW\n")
+        edited.write_text("NEW\n")
+    real_ask = _install._Writer._ask
+
+    def ask_then_edit(self, changed):
+        answer = real_ask(self, changed)
+        edited.write_text("MINE\n")
+        return answer
+
+    monkeypatch.setattr(_install._Writer, "_ask", ask_then_edit)
+    assert writer.commit() == (0 if refresh else 1)
+    assert ours.read_text() == "NEW\n"
+    assert edited.read_text() == "MINE\n"
+    assert f"kept {edited}: it changed after den checked it" in capsys.readouterr().err
 
 
 def test_install_force_backs_up_a_file_it_overwrites(tmp_path, monkeypatch):
@@ -637,13 +719,21 @@ def test_shell_refresh_plan_decides_extras_and_bin_itself(tmp_path, flag, capsys
 
 @pytest.mark.parametrize(
     "plan",
-    ["not json", '{"den_refresh_plan": 2}', '{"den_refresh_plan": 1, "owned": "x"}'],
+    [
+        "not json",
+        '{"den_refresh_plan": 2}',
+        '{"den_refresh_plan": 1, "owned": "x"}',
+        {**_PLAN, "owned": [str(Path(_BIN.anchor) / "x")]},  # paths, no digests
+        {**_PLAN, "owned": {str(Path(_BIN.anchor) / "x"): "not a digest"}},
+    ],
 )
 def test_a_broken_refresh_plan_is_refused(tmp_path, plan, capsys):
+    import json
+
     from den._install import main as install_main
 
     path = tmp_path / "plan.json"
-    path.write_text(plan)
+    path.write_text(plan if isinstance(plan, str) else json.dumps(plan))
     assert install_main(["skills", "--refresh-plan", str(path)]) == 2
     assert install_main(["shell", "--refresh-plan", str(path)]) == 2
     assert "cannot use the refresh plan" in capsys.readouterr().err
