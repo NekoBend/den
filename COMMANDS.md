@@ -270,7 +270,8 @@ or `_DEN_UV_OVERRIDE=0`, which a reload or a child shell started after `toggle-u
 keeps). Inside an active venv on bash/zsh/pwsh, `pip` / `pip3` use the venv's own
 pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they run
 `uv pip`, which installs into that venv. The cmd `pip` shim runs the first
-`pip.exe` on `PATH` inside a venv. `python` / `python3` / `py` still run through
+`pip.exe` on `PATH` inside a venv, and `python3` the venv's `python.exe` (a
+Windows venv has no `python3.exe`). `python` / `python3` / `py` still run through
 `uv run --python <venv version>`. Flip the redirect with `toggle-uv`.
 
 | Command | Does | bash/zsh | pwsh | cmd |

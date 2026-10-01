@@ -193,6 +193,19 @@ def test_cmd_touch_handles_every_operand():
     assert ">&2 echo usage: touch ^<file^>..." in code
 
 
+def test_cmd_python3_in_a_venv_runs_the_venvs_python():
+    # A Windows venv has python.exe and pythonw.exe but no python3.exe, so the
+    # venv branch's `python3.exe %*` skipped the venv and found another Python
+    # or the Microsoft Store stub (exit 9009). It runs the venv's python.exe
+    # when the venv has one, and python3.exe only otherwise.
+    code = _cmd_code("python3")
+    venv_python = '"%VIRTUAL_ENV%\\Scripts\\python.exe"'
+    i = code.index(":system")
+    assert code[i + 1] == f"if defined VIRTUAL_ENV if exist {venv_python} goto :venv"
+    assert code[i + 2] == "python3.exe %*"
+    assert code[code.index(":venv") + 1] == f"{venv_python} %*"
+
+
 def test_cmd_shims_with_labels_keep_them_findable():
     # cmd reads a batch file in 512-byte blocks when it looks for a label,
     # and with LF-only line endings it can miss one: a shim that jumps to a
