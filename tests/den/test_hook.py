@@ -1,5 +1,6 @@
 """Tests for den hook (den/_hook.py)."""
 
+import base64
 import json
 import os
 import shlex
@@ -538,17 +539,26 @@ def test_powershell_hook_script_passes_a_typographic_quote_path_intact(
     script = hooks_dir / "UserPromptSubmit.ps1"
     pwsh = _powershell()
     assert pwsh is not None
-    probe = f"function den {{ foreach ($a in $args) {{ 'ARG:' + $a }} }}; . '{script}'"
+    # Each argument goes out as base64 of its UTF-8 bytes: pwsh writes a pipe in
+    # [Console]::OutputEncoding (an OEM code page on Windows), which best-fits
+    # U+2019 to ASCII ' and would fail the comparison while the quoting is right.
+    probe = (
+        "function den { foreach ($a in $args) { 'ARG:' + "
+        "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($a)) } }; "
+        f". '{script}'"
+    )
     out = subprocess.run(
         [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
         capture_output=True,
         encoding="utf-8",
+        errors="replace",
         check=False,
     )
     assert out.returncode == 0, out.stderr
     lines = out.stdout.splitlines()
     assert "INJECTED" not in lines, "the path ran as code"
-    assert f"ARG:{proj.resolve() / '.den'}" in lines
+    want = base64.b64encode(str(proj.resolve() / ".den").encode("utf-8")).decode()
+    assert f"ARG:{want}" in lines
 
 
 def test_cline_ps1_hook_is_written_as_utf8_with_a_bom(tmp_path, monkeypatch):
