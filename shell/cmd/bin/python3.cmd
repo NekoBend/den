@@ -1,5 +1,5 @@
 @echo off
-rem python3 — uv-aware python3 wrapper
+rem python3 - uv-aware python3 wrapper
 rem If VIRTUAL_ENV is set or override disabled, use python3.exe directly; else delegate to uv run
 rem Inside a venv that is the venv's python.exe: a Windows venv has no python3.exe,
 rem so python3.exe found another Python (or the Microsoft Store stub) instead.
