@@ -111,6 +111,65 @@ local function define_aliases()
     end
 end
 
+-- ===== Aliases =====
+-- Defined here, before anything below can fail, so a Lua error in the
+-- hardware, zoxide or again setup still leaves den's commands in place.
+-- One per shim in bin_dir, named after it (back.cmd -> back, tgl-hw.cmd ->
+-- tgl-hw), except path.cmd: `path` is a cmd builtin that also sets PATH
+-- (`path C:\tools;%PATH%`), and an alias would take that over as well, so
+-- typed `path` stays cmd's own.
+for _, name in ipairs({
+    "again", "back", "cat", "dg", "digest", "find", "fwd", "grep", "head", "la",
+    "ll", "lla", "llt", "ls", "lt", "mkcd", "pip", "python", "python3",
+    "tail", "tgl-hw", "tgl-uv", "tgl-wr", "toggle-hwinfo", "toggle-uv",
+    "toggle-wrapper", "touch", "up", "uv", "wc", "which",
+}) do
+    alias(name, shim(name))
+end
+
+-- Navigation. A macro never expands another macro, so .1-.9 run up.cmd by path.
+alias("..", "cd ..")
+for n = 1, 9 do
+    alias("." .. n, shim("up", tostring(n)))
+end
+alias("c", "cls")
+
+-- Git
+alias("g", "git $*")
+alias("ga", "git add $*")
+alias("gaa", "git add --all")
+alias("gb", "git branch $*")
+alias("gc", "git commit $*")
+alias("gcm", "git commit -m $*")
+alias("gco", "git checkout $*")
+alias("gd", "git diff $*")
+alias("gds", "git diff --staged $*")
+alias("gf", "git fetch --all --prune")
+alias("gl", "git log --oneline --graph $*")
+alias("gpl", "git pull $*")
+alias("gps", "git push $*")
+alias("gst", "git status -sb")
+alias("gsw", "git switch $*")
+
+-- Docker
+alias("d", "docker $*")
+alias("dc", "docker compose $*")
+alias("dcb", "docker compose build $*")
+alias("dcd", "docker compose down $*")
+alias("dce", "docker compose exec $*")
+alias("dcl", "docker compose logs $*")
+alias("dcu", "docker compose up $*")
+alias("di", "docker images $*")
+alias("dps", "docker ps $*")
+alias("dri", "docker run -it $*")
+alias("drir", "docker run -it --rm $*")
+
+-- Editor
+alias("code", "code-insiders $*")
+alias("gu", "gitui $*")
+
+define_aliases()
+
 -- ===== Hardware info (for starship) =====
 -- Only starship shows these, so none of this runs without starship on PATH.
 -- STARSHIP_* values inherited from the parent process are used as they are.
@@ -285,61 +344,6 @@ if starship_exe then
         end
     end
 end
-
--- ===== Aliases =====
--- One per shim in bin_dir, named after it (back.cmd -> back, tgl-hw.cmd ->
--- tgl-hw), except path.cmd: `path` is a cmd builtin that also sets PATH
--- (`path C:\tools;%PATH%`), and an alias would take that over as well, so
--- typed `path` stays cmd's own.
-for _, name in ipairs({
-    "again", "back", "cat", "dg", "digest", "find", "fwd", "grep", "head", "la",
-    "ll", "lla", "llt", "ls", "lt", "mkcd", "pip", "python", "python3",
-    "tail", "tgl-hw", "tgl-uv", "tgl-wr", "toggle-hwinfo", "toggle-uv",
-    "toggle-wrapper", "touch", "up", "uv", "wc", "which",
-}) do
-    alias(name, shim(name))
-end
-
--- Navigation. A macro never expands another macro, so .1-.9 run up.cmd by path.
-alias("..", "cd ..")
-for n = 1, 9 do
-    alias("." .. n, shim("up", tostring(n)))
-end
-alias("c", "cls")
-
--- Git
-alias("g", "git $*")
-alias("ga", "git add $*")
-alias("gaa", "git add --all")
-alias("gb", "git branch $*")
-alias("gc", "git commit $*")
-alias("gcm", "git commit -m $*")
-alias("gco", "git checkout $*")
-alias("gd", "git diff $*")
-alias("gds", "git diff --staged $*")
-alias("gf", "git fetch --all --prune")
-alias("gl", "git log --oneline --graph $*")
-alias("gpl", "git pull $*")
-alias("gps", "git push $*")
-alias("gst", "git status -sb")
-alias("gsw", "git switch $*")
-
--- Docker
-alias("d", "docker $*")
-alias("dc", "docker compose $*")
-alias("dcb", "docker compose build $*")
-alias("dcd", "docker compose down $*")
-alias("dce", "docker compose exec $*")
-alias("dcl", "docker compose logs $*")
-alias("dcu", "docker compose up $*")
-alias("di", "docker images $*")
-alias("dps", "docker ps $*")
-alias("dri", "docker run -it $*")
-alias("drir", "docker run -it --rm $*")
-
--- Editor
-alias("code", "code-insiders $*")
-alias("gu", "gitui $*")
 
 -- ===== zoxide =====
 -- zoxide has no cmd init (`zoxide init cmd` is an error), so den does what
@@ -613,8 +617,6 @@ if clink.onfilterinput and clink.onprovideline and rl and rl.gethistoryitems the
     clink.onfilterinput(again_filter)
     clink.onprovideline(again_provide)
 end
-
-define_aliases()
 
 -- ===== Starship =====
 if starship_exe then

@@ -289,6 +289,13 @@ print(H.execs[1])')
 assert_eq "cmd/aliases: per-alias fallback" "execs=$((nshims + 11 + 15 + 11 + 2))
 \"\"C:\\Windows\\System32\\doskey.exe\" again=\"C:\\L\\clink\\bin\\again.cmd\" \$*\"" "$out"
 
+echo "[cmd] a Lua error after the aliases leaves them defined"
+out=$(run_lua alias_first '
+local ok = pcall(H.boot, { env = { PATH = "C:\\tools" }, files = { ["C:\\tools\\starship.exe"] = "" },
+    popen = function() error("boom") end })
+print("boot ok=" .. tostring(ok) .. " ls=" .. H.show(H.aliases.ls))')
+assert_eq "cmd/aliases: defined before the hardware setup" 'boot ok=false ls="C:\L\clink\bin\ls.cmd" $*' "$out"
+
 # =============================================================================
 # again [N]
 # =============================================================================
