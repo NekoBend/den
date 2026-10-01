@@ -51,12 +51,17 @@ function _SnippetGet([string]$Name) {
 # PowerShell source. PowerShell took its quotes off and run/pick
 # Invoke-Expression the saved line, so a word with anything but
 # [A-Za-z0-9_./:\=+-] in it (or empty) goes back in single quotes, a ' in it
-# doubled; an array (a,b) comes back as its items joined by commas. A quoted
-# first word would be a string, not a command, so it gets the call operator.
+# doubled. So does a string that starts like a number ('007', '1kb', '.5'),
+# which PowerShell would read back as one; a number typed bare keeps the text
+# it was typed as. $true/$false and a { } block come back as themselves, and
+# an array (a,b) as its items joined by commas. A quoted first word would be a
+# string, not a command, so it gets the call operator.
 function _SnippetQuote($Word, [switch]$First) {
     if ($Word -is [array]) { return (@($Word | ForEach-Object { _SnippetQuote $_ }) -join ',') }
+    if ($Word -is [bool]) { return $(if ($Word) { '$true' } else { '$false' }) }
+    if ($Word -is [scriptblock]) { return '{' + $Word + '}' }
     $s = [string]$Word
-    if ($s -match '^[A-Za-z0-9_./:\\=+-]+\z') { return $s }
+    if ($s -match '^[A-Za-z0-9_./:\\=+-]+\z' -and -not ($Word -is [string] -and $s -match '^\.?\d')) { return $s }
     $q = "'" + [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($s) + "'"
     if ($First) { "& $q" } else { $q }
 }

@@ -240,9 +240,12 @@ so it is trusted), which lets it `cd`, set vars, and use the current environment
   around each word that holds a blank or a character the shell would read
   (`$ ; | & > < ' " * ? ~`, ...) and prints the line it saved
   (`snippet: saved 'clean' -> rm 'My File.txt'`); `run` then sees the same
-  words. bash/zsh write a `'` inside as `'\''`, pwsh as `''`; on pwsh a first
-  word that needs quotes is saved as `& '<path>'`, so it still runs as a
-  command, and `a,b` stays a list. A `$var` or `$(...)` you did not quote was
+  words. bash/zsh write a `'` inside as `'\''`, pwsh as `''`. pwsh hands
+  `snippet` values, not text: a first word that needs quotes is saved as
+  `& '<path>'`, so it still runs as a command; a quoted word that starts like
+  a number (`'007'`, `'1kb'`) stays a string; `$true`, `$false`, a `{ ... }`
+  block and a list `a,b` come back as they were; any other value (a hashtable,
+  say) is saved as its text. A `$var` or `$(...)` you did not quote was
   expanded by the shell before `snippet` ran, so the saved line holds its value
   from that moment, and one you quoted is saved as literal text. To have it
   expanded each time the snippet runs, use the one-argument form

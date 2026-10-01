@@ -345,6 +345,18 @@ b c
 hello arg2
 Get-ChildItem -Name ./x:y a=b +1 C:\\p\\q" "$actual"
 
+    reset_store
+    echo "[pwsh] save <word...> keeps values: a quoted number stays a string, a bare one a number, \$true and a { } block themselves"
+    cat > "$TESTTMP/sq_values.ps1" <<'PS1'
+function show { ($args | ForEach-Object { "$_" + ':' + $_.GetType().Name }) -join ' ' }
+snippet save v show '007' '1kb' '.5' '0x10' 007 1kb $true $false { $_ } 2>$null
+snippet show v
+snippet run v 2>$null
+PS1
+    actual=$(run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/sq_values.ps1'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet save words: values" "show '007' '1kb' '.5' '0x10' 007 1kb \$true \$false { \$_ }
+007:String 1kb:String .5:String 0x10:String 7:Int32 1024:Int32 True:Boolean False:Boolean  \$_ :ScriptBlock" "$actual"
+
     echo "[pwsh] save makes the store 0600 in a 0700 directory, under umask 022"
     rm -rf "${SNIPPET_DIR:?}"
     (umask 022; run_pwsh "$SNIPPET_PS1" "snippet save t 'Write-Output tok'" 2>/dev/null)
