@@ -460,8 +460,10 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
         want=want_coreutils, skip=skip_coreutils, dry_run=dry_run
     )
     # A non-interactive run that kept differing files deployed nothing for them;
-    # report that with the exit code so `den upgrade --refresh` cannot call a
-    # refresh that landed none of the new version's files a success.
+    # report that with the exit code so a script (or the refresh of a den that
+    # predates --refresh-plan) cannot call a run that landed none of the new
+    # version's files a success. With a plan the kept files are on purpose, and
+    # _Writer.commit does not count them.
     rc = rc or (1 if skipped else 0)
 
     # coreutils installs a PSConsoleHostReadLine rewriter into the profile that

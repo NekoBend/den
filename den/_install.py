@@ -783,8 +783,10 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             "to install it into each tool's location."
         )
     # A non-interactive run that kept differing files deployed nothing for them.
-    # Say so with the exit code: `den upgrade --refresh` (and any script) would
-    # otherwise read "success" from a run that left the old version in place.
+    # Say so with the exit code: a script (or the refresh of a den that predates
+    # --refresh-plan) would otherwise read "success" from a run that left the
+    # old version in place. A plan-driven refresh keeps files on purpose and
+    # exits 0 (_install_refresh).
     return 1 if skipped else 0
 
 
