@@ -812,6 +812,23 @@ def test_install_leaves_exclude_alone_when_git_already_ignores_it(
     assert (exclude.read_bytes() if exclude.is_file() else None) == before
 
 
+def test_install_does_not_write_exclude_through_a_symlinked_git_info(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    """An extracted archive can ship .git/info as a link to another directory;
+    only the exclude file itself was checked, so den appended there."""
+    repo = _git_repo(tmp_path / "repo")
+    info = repo / ".git" / "info"
+    shutil.rmtree(info, ignore_errors=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink(outside, info)
+    monkeypatch.chdir(repo)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert not (outside / "exclude").exists()
+    assert "is a symlink" in capsys.readouterr().err
+
+
 def test_install_outside_a_git_repo_writes_no_exclude(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert hook_main(["install", "--tool", "claude"]) == 0

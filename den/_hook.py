@@ -981,8 +981,9 @@ def _git_exclude(path: Path) -> None:
     excl = _git(git, path.parent, "rev-parse", "--git-path", "info/exclude")
     if not top or not excl or top.returncode or excl.returncode:
         return
+    top_dir = Path(top.stdout.strip()).resolve()
     try:
-        rel = path.resolve().relative_to(Path(top.stdout.strip()).resolve())
+        rel = path.resolve().relative_to(top_dir)
     except ValueError:
         return
     exclude = Path(excl.stdout.strip())
@@ -994,9 +995,15 @@ def _git_exclude(path: Path) -> None:
     # directory named `[ws]` matches itself.
     pattern = "/" + re.sub(r"([\\*?\[])", r"\\\1", rel.as_posix())
     try:
-        if exclude.is_symlink():
+        # Inside the work tree every component counts: an extracted archive can
+        # ship .git/info itself as a link. Outside it (a linked worktree's
+        # common dir) the layout is the user's, and only the file is checked.
+        bad = _symlink_component(top_dir, exclude)
+        if bad is None and exclude.is_symlink():
+            bad = exclude
+        if bad is not None:
             print(
-                f"{_ERR_INSTALL}: not editing {exclude}: it is a symlink",
+                f"{_ERR_INSTALL}: not editing {exclude}: {bad} is a symlink",
                 file=sys.stderr,
             )
             return
