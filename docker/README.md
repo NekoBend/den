@@ -124,10 +124,11 @@ docker exec --user dev den-dev zsh -lc 'claude --version'
 docker exec --user dev den-dev /home/dev/.local/bin/claude --version
 ```
 
-A root zsh or interactive bash also gets `HOME=/root` back instead of the
-image's `/home/dev`, so it reads root's startup files, not `dev`'s. A root
-command run without a shell keeps `HOME=/home/dev`; pass `-e HOME=/root` to
-`docker exec` for those.
+A root zsh, an interactive root bash and a root login shell (`bash -l`,
+`sh -l`) also get `HOME=/root` back instead of the image's `/home/dev`, so
+they read root's startup files, not `dev`'s, and a root bash saves its history
+to `/root/.bash_history`. A root command run without a shell keeps
+`HOME=/home/dev`; pass `-e HOME=/root` to `docker exec` for those.
 
 ### zsh completion
 

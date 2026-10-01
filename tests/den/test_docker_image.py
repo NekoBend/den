@@ -3,11 +3,11 @@
 CI never builds this image (ci.yml only runs `docker buildx build --check` on
 it), so these tests read the Dockerfile instead. They evaluate the ENV that
 every `docker exec` starts with, check how den is fetched, and run the scripts
-the image installs (the entrypoint and the /etc/zsh/zshenv and /etc/bash.bashrc
-blocks) in a scratch directory. Commands that would change accounts or files
-are stubs there, and `$EUID` is read from FAKE_EUID so the root branches run
-without root. The script tests are skipped on native Windows and where the
-shell they need is missing.
+the image installs (the entrypoint, the /etc/zsh/zshenv and /etc/bash.bashrc
+blocks and the /etc/profile.d script) in a scratch directory. Commands that
+would change accounts or files are stubs there, and the effective UID is read
+from FAKE_EUID so the root branches run without root. The script tests are
+skipped on native Windows and where the shell they need is missing.
 """
 
 import re
@@ -99,10 +99,10 @@ def _stages() -> list[tuple[str, dict[str, str], dict[str, str]]]:
 
 
 def _appended_block(target: str) -> str:
-    """The heredoc the image appends to ``target`` (cat >> target <<'MARKER')."""
-    pattern = rf"cat >> {re.escape(target)} <<'(\w+)'\n(.*?)\n\1\n"
+    """The heredoc the image writes to ``target`` (cat >> or > target <<'MARKER')."""
+    pattern = rf"cat >>? {re.escape(target)} <<'(\w+)'\n(.*?)\n\1\n"
     match = re.search(pattern, _text(), flags=re.DOTALL)
-    assert match, f"the Dockerfile appends nothing to {target}"
+    assert match, f"the Dockerfile writes nothing to {target}"
     return match.group(2) + "\n"
 
 
@@ -193,16 +193,30 @@ def test_den_comes_from_a_git_source_of_main_mounted_into_the_install():
 
 
 def _source_block(
-    tmp_path: Path, shell: str, target: str, *, euid: int, home: str, user: str
+    tmp_path: Path,
+    shell: str,
+    target: str,
+    *,
+    euid: int,
+    home: str,
+    user: str,
+    histfile: str = "",
 ) -> list[str]:
-    """Source the block twice in ``shell``; return HOME, PATH, skip_global_compinit."""
+    """Source the block twice in ``shell``.
+
+    Returns HOME, PATH, skip_global_compinit and HISTFILE. ``histfile`` stands
+    in for the HISTFILE bash sets from HOME before it reads its startup files.
+    """
     user_file = tmp_path / "container-user"
     user_file.write_text(f"{user}\n", encoding="utf-8")
+    text = _appended_block(target)
+    # bash and zsh blocks read $EUID; the POSIX sh profile script runs id -u.
+    euid_ref = '"$(id -u)"' if '"$(id -u)"' in text else '"$EUID"'
     block = tmp_path / "block"
     block.write_text(
         _patched(
-            _appended_block(target),
-            {"/etc/container-user": str(user_file), '"$EUID"': '"$FAKE_EUID"'},
+            text,
+            {"/etc/container-user": str(user_file), euid_ref: '"$FAKE_EUID"'},
         ),
         encoding="utf-8",
     )
@@ -210,11 +224,14 @@ def _source_block(
     # with -f, and in this image that file runs the very block under test.
     probe = (
         f"export HOME={shlex.quote(home)} PATH={SYSTEM_PATH}; "
-        "unset skip_global_compinit; "
-        f". {shlex.quote(str(block))}; . {shlex.quote(str(block))}; "
-        'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}"'
+        "unset skip_global_compinit HISTFILE; "
+        + (f"HISTFILE={shlex.quote(histfile)}; " if histfile else "")
+        + f". {shlex.quote(str(block))}; . {shlex.quote(str(block))}; "
+        'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}" '
+        '"${HISTFILE-unset}"'
     )
-    argv = [_tool(shell), "-f" if shell == "zsh" else "--norc", "-c", probe]
+    flags = {"zsh": ["-f"], "bash": ["--norc"], "sh": []}[shell]
+    argv = [_tool(shell), *flags, "-c", probe]
     result = subprocess.run(
         argv,
         env={"FAKE_EUID": str(euid), "PATH": SYSTEM_PATH},
@@ -254,7 +271,7 @@ def test_zshenv_resets_a_root_zsh_and_adds_no_user_directories(tmp_path):
     out = _source_block(
         tmp_path, "zsh", "/etc/zsh/zshenv", euid=0, home="/home/dev", user="dev"
     )
-    assert out == ["/root", SYSTEM_PATH, "unset"]
+    assert out == ["/root", SYSTEM_PATH, "unset", "unset"]
 
 
 @_needs("zsh")
@@ -291,6 +308,80 @@ def test_bashrc_gives_a_root_bash_its_own_home(tmp_path):
         tmp_path, "bash", "/etc/bash.bashrc", euid=0, home="/home/dev", user="dev"
     )
     assert out[:2] == ["/root", SYSTEM_PATH]
+
+
+@_needs("bash")
+def test_bashrc_moves_a_root_bash_history_out_of_the_user_home(tmp_path):
+    # bash sets HISTFILE from the HOME it starts with, so a root bash that got
+    # HOME=/root back still saved its history (typed secrets included) to
+    # /home/dev/.bash_history, a file dev can read or point at a root file.
+    out = _source_block(
+        tmp_path,
+        "bash",
+        "/etc/bash.bashrc",
+        euid=0,
+        home="/home/dev",
+        user="dev",
+        histfile="/home/dev/.bash_history",
+    )
+    assert out == ["/root", SYSTEM_PATH, "unset", "/root/.bash_history"]
+
+
+@_needs("bash")
+def test_bashrc_keeps_a_history_file_it_did_not_derive_from_the_user_home(tmp_path):
+    root_choice = _source_block(
+        tmp_path,
+        "bash",
+        "/etc/bash.bashrc",
+        euid=0,
+        home="/home/dev",
+        user="dev",
+        histfile="/root/elsewhere",
+    )
+    assert root_choice[3] == "/root/elsewhere"
+    home = str(tmp_path / "home")
+    dev = _source_block(
+        tmp_path,
+        "bash",
+        "/etc/bash.bashrc",
+        euid=1000,
+        home=home,
+        user="dev",
+        histfile=f"{home}/.bash_history",
+    )
+    assert dev[3] == f"{home}/.bash_history"
+
+
+def _profile_script() -> str:
+    match = re.search(r"cat > (/etc/profile\.d/\S+) <<'", _text())
+    assert match, "the Dockerfile writes no /etc/profile.d script"
+    return match.group(1)
+
+
+def test_the_profile_script_has_a_name_etc_profile_runs():
+    # Ubuntu's /etc/profile only sources names run-parts lists with this regex.
+    name = _profile_script().rsplit("/", 1)[1]
+    assert re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9._-]*\.sh", name), name
+
+
+@_needs("sh", "bash")
+@pytest.mark.parametrize("shell", ["sh", "bash"])
+def test_profile_gives_a_root_login_shell_its_own_home(tmp_path, shell):
+    # A root `docker exec den-dev bash -lc ...` or `sh -lc ...` is not
+    # interactive, so it skips /etc/bash.bashrc and ran dev's ~/.profile.
+    out = _source_block(
+        tmp_path, shell, _profile_script(), euid=0, home="/home/dev", user="dev"
+    )
+    assert out[:2] == ["/root", SYSTEM_PATH]
+
+
+@_needs("sh")
+def test_profile_leaves_a_non_root_login_shell_alone(tmp_path):
+    home = str(tmp_path / "home")
+    out = _source_block(
+        tmp_path, "sh", _profile_script(), euid=1000, home=home, user="dev"
+    )
+    assert out[:2] == [home, SYSTEM_PATH]
 
 
 # --- the entrypoint ------------------------------------------------------------

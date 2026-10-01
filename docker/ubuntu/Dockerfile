@@ -331,9 +331,15 @@ cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
 # The /etc/zsh/zshenv block for interactive bash. It runs before ~/.bashrc,
 # so a root bash reads /root/.bashrc, not the user's.
 if [ "$EUID" -eq 0 ]; then
-    if [ "$HOME" = "/home/$(< /etc/container-user)" ]; then
+    _container_home=/home/$(< /etc/container-user)
+    if [ "$HOME" = "$_container_home" ]; then
         export HOME=/root USER=root LOGNAME=root
+        # bash set HISTFILE from the old HOME before it read this file.
+        if [ "${HISTFILE-}" = "$_container_home/.bash_history" ]; then
+            HISTFILE=/root/.bash_history
+        fi
     fi
+    unset _container_home
 else
     for _container_dir in "$HOME/.cargo/bin" "$HOME/.local/bin" "$HOME/.nvm/current/bin"; do
         case ":$PATH:" in
@@ -345,6 +351,14 @@ else
     export PATH
 fi
 CONTAINER_BASH_RC
+cat > /etc/profile.d/00-container-home.sh <<'CONTAINER_PROFILE'
+# A root login shell (bash -l, sh -l) reads ~/.profile, and docker exec leaves
+# HOME at the user's home. /etc/profile runs this file before ~/.profile.
+if [ "$(id -u)" -eq 0 ] && [ "$HOME" = "/home/$(cat /etc/container-user)" ]; then
+    export HOME=/root USER=root LOGNAME=root
+fi
+CONTAINER_PROFILE
+chmod 0644 /etc/profile.d/00-container-home.sh
 cat >> /etc/zsh/zshrc <<'ROOT_ZSH_WARNING'
 
 # Keep root access available, but make accidental root sessions visible.
