@@ -499,6 +499,37 @@ def test_outside_git_a_virtualenv_of_any_name_is_not_searched(
     assert outputs[0] == outputs[1], outputs
 
 
+def test_a_root_that_is_itself_a_virtualenv_is_searched(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # Every exclusion applies BELOW the root: a root git ignores, or one
+    # called build/ or node_modules/, is still searched because the user
+    # pointed there, and a root holding a pyvenv.cfg is no different.
+    # Refusing it would also search nothing in a project that keeps its venv
+    # at its own top (`python -m venv .`). A venv below it is still skipped,
+    # outside a work tree and under a root git ignores alike.
+    plain = tmp_path / "plain" / "env"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    write(repo, ".gitignore", ".venv/\n")
+    ignored = repo / ".venv"
+    for venv in (plain, ignored):
+        write(venv, "pyvenv.cfg", "home = /usr/bin\n")
+        write(venv, "lib/site-packages/pkg.py", "widget()\n")
+        write(venv, "inner/pyvenv.cfg", "home = /usr/bin\n")
+        write(venv, "inner/lib/dep.py", "widget()\n")
+    for env in backends:
+        full = dict(os.environ if env is None else env)
+        full["GIT_CEILING_DIRECTORIES"] = str(tmp_path)  # plain/ is in no repo
+        for venv in (plain, ignored):
+            proc = run("--uses", "widget", "--root", str(venv), env=full)
+            assert proc.returncode == 0, proc.stderr
+            assert rows(proc, venv) == [
+                f"{Path('lib', 'site-packages', 'pkg.py')}:1:use:widget()"
+            ], proc.stdout
+
+
 def test_a_root_that_git_ignores_is_still_searched(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:

@@ -33,14 +33,17 @@ Search scope:
     .gitignore are not searched; hidden files such as .github/ are. Nested
     repositories and submodules are separate work trees and are not searched.
     A root that is itself gitignored is searched whole, except directories
-    holding a pyvenv.cfg (a virtual environment, whatever it is called).
-    Either way the skipped directories (.git, node_modules, .venv, build,
-    ...) are left out and symlinks are not followed, not even a tracked
-    directory that became one. Ripgrep, when installed, searches that
-    same file list, otherwise the files are read in-process, and binary files
-    are searched as text by both (ripgrep is passed --text), so the result
-    does not change when ripgrep is installed or removed, nor with the
-    ripgrep configuration on the machine (RIPGREP_CONFIG_PATH is not read).
+    below it holding a pyvenv.cfg (a virtual environment, whatever it is
+    called). Either way the skipped directories (.git, node_modules, .venv,
+    build, ...) are left out and symlinks are not followed, not even a
+    tracked directory that became one. These rules apply below the root
+    only: a root you name is searched even when it is ignored, holds a
+    pyvenv.cfg or is called .venv/ or build/. Ripgrep, when installed,
+    searches that same file list, otherwise the files are read in-process,
+    and binary files are searched as text by both (ripgrep is passed
+    --text), so the result does not change when ripgrep is installed or
+    removed, nor with the ripgrep configuration on the machine
+    (RIPGREP_CONFIG_PATH is not read).
     Matching lines are printed verbatim, so a tree holding untracked secrets
     that are not ignored has them searched too, and a hit inside a binary
     file prints that file's bytes: run this only on a tree whose contents you

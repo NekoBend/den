@@ -776,9 +776,13 @@ def _git_listing(root: Path) -> list[str] | None:
 def _walk(root: Path) -> list[Path]:
     """Every regular file under `root`, for a root outside a git work tree.
 
-    Prunes SKIP_DIRS and every directory holding a pyvenv.cfg, which is what
-    marks a Python virtual environment whatever it is called. Symlinks are
-    neither followed nor listed.
+    Prunes, below `root`, SKIP_DIRS and every directory holding a
+    pyvenv.cfg, which is what marks a Python virtual environment whatever it
+    is called. `root` itself is searched even when it holds one, as a root
+    git ignores (_git_listing) or one named like a SKIP_DIRS entry is: it is
+    where the user asked to look, and a project that keeps its environment
+    at its own top (`python -m venv .`) would otherwise search nothing.
+    Symlinks are neither followed nor listed.
     """
     found: list[Path] = []
     pending = [root]
@@ -827,7 +831,7 @@ def list_search_files(root: Path) -> list[Path]:
     Inside a git work tree that is what `git ls-files --cached --others
     --exclude-standard` lists, so ignored files (virtual environments, build
     output, caches) are not searched. Outside one, every file under the root
-    is, except directories that hold a pyvenv.cfg. Both ways:
+    is, except directories below it that hold a pyvenv.cfg. Both ways:
 
     - SKIP_DIRS are dropped by NAME below `root`, so a checkout that itself
       lives under `build/`, `dist/`, `target/` ... is still searched. A
