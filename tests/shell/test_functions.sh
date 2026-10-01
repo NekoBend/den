@@ -359,6 +359,18 @@ h.txt: OK" "$actual"
 1 sha512sum" "$actual"
     rm -rf "$d/logbin" "$d/calls" "$d/adir" "$d/DIRS"
 
+    # One call for every file must still fit on a command line: a glob of
+    # thousands of long names reaches a shell function whole, but exec
+    # refuses it ("Argument list too long"). A 512 KiB stack limit makes
+    # Linux cap the arguments at 128 KiB, under the 2500 names here.
+    echo "[$sh] dg and dg -c split a file list too long for one command line"
+    mkdir -p "$d/many"
+    (cd "$d/many" && for i in $(seq 1 2500); do : > "$(printf 'a-long-file-name-that-makes-the-argument-list-big-%05d.txt' "$i")"; done && sha256sum -- *.txt > ../MANY)
+    actual=$($run "$FUNCTIONS_SH" "cd '$d/many' && ulimit -s 512 && dg -- *.txt | grep -c '  a-long-' && dg -c ../MANY | grep -c ': OK\$'" 2>&1)
+    assert_eq "$sh/dg and dg -c hash all 2500 files" "2500
+2500" "$actual"
+    rm -rf "$d/many" "$d/MANY"
+
     # dg keeps its state in globals (POSIX sh has no local); none may outlive it.
     echo "[$sh] dg leaves no _dg_ variables behind"
     actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c BAD >/dev/null 2>&1; dg h.txt $ZERO64 >/dev/null; dg -e a.txt c.txt >/dev/null; dg h.txt a.txt >/dev/null; set | grep '^_dg_[a-z]*='")

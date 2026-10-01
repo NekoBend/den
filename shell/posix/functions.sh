@@ -89,12 +89,14 @@ _dg_plain() {
     return 0
 }
 
-# _dg_flush → hash the run of plain names in _dg_run with one call of the
-# _dg_a *sum tool, and empty the run. For such names the tool's own
-# "<hash>  <name>" lines are dg's lines; -- keeps a dash name a file.
+# _dg_flush → hash the run of plain names in _dg_run with the _dg_a *sum
+# tool, and empty the run. For such names the tool's own "<hash>  <name>"
+# lines are dg's lines; -- keeps a dash name a file. xargs splits a list
+# longer than one command line may hold into several calls, in order (a
+# glob of thousands of long names passes a shell function, but not exec).
 _dg_flush() {
     eval '[ "${#_dg_run[@]}" -gt 0 ] || return 0
-        "${_dg_a}sum" -- "${_dg_run[@]}"
+        printf "%s\0" "${_dg_run[@]}" | xargs -0 "${_dg_a}sum" --
         _dg_rc=$?
         _dg_run=()
         return "$_dg_rc"'
@@ -305,10 +307,11 @@ _dg_check() {
         # A *sum tool prints "<hash>  <name>" per name, in order; one it
         # cannot read gets its message on stderr and no line. So each line
         # goes to the next entry of that algorithm with that name, and the
-        # entries passed over keep no hash (FAILED).
+        # entries passed over keep no hash (FAILED). xargs keeps each call
+        # within the command-line limit, as in _dg_flush.
         for _dg_a in md5 sha256 sha512; do
             eval '[ "${#_dg_'"$_dg_a"'[@]}" -gt 0 ]' || continue
-            eval '_dg_out=$("${_dg_a}sum" -- "${_dg_'"$_dg_a"'[@]}")'
+            eval '_dg_out=$(printf "%s\0" "${_dg_'"$_dg_a"'[@]}" | xargs -0 "${_dg_a}sum" --)'
             _dg_i=0
             while IFS= read -r _dg_ol; do
                 [ -n "$_dg_ol" ] || continue
