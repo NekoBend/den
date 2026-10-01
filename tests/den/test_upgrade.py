@@ -37,6 +37,8 @@ _PLAN = {
     "skills": [{"target": "/x/skills", "names": ["coding"], "no_den_cli": False}],
     "parents": [],
     "shell": True,
+    "shell_extras": True,
+    "shell_bin": False,
     "owned": [],
 }
 
@@ -145,6 +147,7 @@ def test_dry_run_shows_the_forced_steps(monkeypatch, capsys):
     assert "den install skills --refresh-plan <plan> --force" in out
     assert "den install shell --refresh-plan <plan> --force" in out
     assert "would refresh skills in /x/skills" in out
+    assert "shell files (with the extras, without the ~/.local/bin helpers)" in out
 
 
 def test_refresh_step_failure_is_reported(monkeypatch, capsys):
@@ -344,7 +347,11 @@ def _new_version(tmp_path: Path, *, with_shell: bool = False) -> Path:
     (new_skill / "SKILL.md").write_text("---\nname: brand-new\n---\nNEW SKILL\n")
     if with_shell:
         shutil.copytree(_REPO / "shell", root / "shell", ignore=skip)
-        for rel in ("shell/posix/aliases.sh", "shell/posix/functions.sh"):
+        for rel in (
+            "shell/posix/aliases.sh",
+            "shell/posix/functions.sh",
+            "shell/posix/bin/fixids",
+        ):
             with (root / rel).open("a", encoding="utf-8") as fh:
                 fh.write("\n# NEXT VERSION\n")
     return root
@@ -486,6 +493,44 @@ def test_refresh_replaces_unedited_shell_files_only(tmp_path, monkeypatch):
     assert (shell / "aliases.sh").read_text() == "# my aliases\n"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="deploys the POSIX shell files")
+def test_refresh_keeps_a_no_extras_shell_install_as_it_was(tmp_path, monkeypatch):
+    """The refresh ran a plain `install shell`, which created every extras file
+    a --no-extras install had left out."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 0
+    home = Path.home()
+    shell = home / ".config" / "shell"
+    before = sorted(p.name for p in shell.iterdir())
+    assert "python.sh" not in before
+    _upgrade_to(monkeypatch, _new_version(tmp_path, with_shell=True))
+    assert upgrade_main(["--refresh"]) == 0
+    assert "# NEXT VERSION" in (shell / "functions.sh").read_text()
+    assert sorted(p.name for p in shell.iterdir()) == before
+    assert not (home / ".local" / "bin" / "fixids").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="deploys the POSIX shell files")
+def test_refresh_refreshes_the_posix_helpers_den_deployed(tmp_path, monkeypatch):
+    """The refresh never passed --bin, and without a terminal that meant no
+    ~/.local/bin helpers: den's own copies stayed on the old version."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell", "--bin"]) == 0
+    fixids = Path.home() / ".local" / "bin" / "fixids"
+    assert fixids.is_file()
+    _upgrade_to(monkeypatch, _new_version(tmp_path, with_shell=True))
+    assert upgrade_main(["--refresh"]) == 0
+    assert "# NEXT VERSION" in fixids.read_text()
+    assert fixids.stat().st_mode & 0o111
+    assert (Path.home() / ".config" / "shell" / "python.sh").is_file()
+
+
 def test_install_force_backs_up_a_file_it_overwrites(tmp_path, monkeypatch):
     from den._install import main as install_main
 
@@ -576,6 +621,18 @@ def test_install_force_refuses_to_back_up_through_a_symlink(
     assert outside.read_text() == "not den's\n"
     assert skill.read_text() == "MINE\n", "not replaced without a backup"
     assert "symlink" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["--no-extras", "--bin", "--no-bin"])
+def test_shell_refresh_plan_decides_extras_and_bin_itself(tmp_path, flag, capsys):
+    import json
+
+    from den._install import main as install_main
+
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(_PLAN))
+    assert install_main(["shell", "--refresh-plan", str(path), flag]) == 2
+    assert f"decides {flag} itself" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

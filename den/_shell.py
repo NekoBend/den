@@ -357,33 +357,43 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     return True
 
 
-def _refresh_owned(argv: list[str]) -> tuple[set[Path] | None, list[str]] | None:
-    """(owned files, the other args) for --refresh-plan FILE, with which `den
+def _plan_and_args(argv: list[str]) -> tuple[dict | None, list[str]] | None:
+    """(the plan, the other args) for --refresh-plan FILE, with which `den
     upgrade --refresh` hands over the deployed files the den before the upgrade
-    proved were its own and unedited; only those are replaced without asking
-    (see _install._install_refresh). (None, argv) without the flag; None (one
-    line on stderr) when the plan is missing or unusable."""
+    proved were its own and unedited (only those are replaced without asking,
+    see _install._install_refresh) and whether the extras and the ~/.local/bin
+    helpers were installed. (None, argv) without the flag; None (one line on
+    stderr) when the plan is missing or unusable, or comes with a flag it
+    decides itself."""
     split = _refresh_plan_arg(argv, "den install shell")
     if split is None:
         return None
     plan_path, rest = split
     if plan_path is None:
         return None, rest
+    decided = [a for a in rest if a in {"--no-extras", "--bin", "--no-bin"}]
+    if decided:
+        print(
+            f"den install shell: --refresh-plan decides {' '.join(decided)} itself",
+            file=sys.stderr,
+        )
+        return None
     plan = read_refresh_plan(plan_path, "den install shell")
     if plan is None:
         return None
-    return {Path(p) for p in plan["owned"]}, rest
+    return plan, rest
 
 
 def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one per flag and step
     argv: list[str],
 ) -> int:
-    parsed = _refresh_owned(argv)
+    parsed = _plan_and_args(argv)
     if parsed is None:
         return 2
-    owned, argv = parsed
+    plan, argv = parsed
+    owned = None if plan is None else {Path(p) for p in plan["owned"]}
     dry_run = "--dry-run" in argv
-    extras = "--no-extras" not in argv
+    extras = "--no-extras" not in argv if plan is None else plan["shell_extras"]
     force = "--force" in argv
     want_coreutils = "--coreutils" in argv
     skip_coreutils = "--no-coreutils" in argv
@@ -407,7 +417,10 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
 
     home = Path.home()
     writer = _Writer(force=force, owned=owned)
-    install_bin = _decide_posix_bin(want=want_bin, skip=skip_bin)
+    if plan is None:
+        install_bin = _decide_posix_bin(want=want_bin, skip=skip_bin)
+    else:  # installed the way it was: never asks, never adds what was left out
+        install_bin = plan["shell_bin"] and not _windows()
     _posix_dir, pwsh_dir = _stage_shell_files(
         writer,
         extras=extras,

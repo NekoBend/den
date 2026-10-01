@@ -126,7 +126,9 @@ old package imported) redeploys:
 - each parent prompt that matched a profile, in that same profile; a parent
   that matches neither (hand-written, or edited) is left alone and named, even
   with `--force`;
-- the shell files, when den's were found.
+- the shell files, when den's were found, as they were installed: the extras
+  only when some were on disk (a `--no-extras` install stays without), and
+  den's `~/.local/bin` helpers only when some were there (`--bin`).
 
 A file still exactly as the old den deployed it is replaced. Any other file
 that differs (your edit, or a file from an earlier version whose update was

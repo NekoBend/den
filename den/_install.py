@@ -535,8 +535,9 @@ def load_refresh_plan(path: str) -> dict:
         ):
             raise ValueError(f"bad parent entry: {entry!r}")
         absolute(entry.get("path"))
-    if not isinstance(plan.get("shell"), bool):
-        raise ValueError("shell must be true or false")
+    for key in ("shell", "shell_extras", "shell_bin"):
+        if not isinstance(plan.get(key), bool):
+            raise ValueError(f"{key} must be true or false")
     return plan
 
 

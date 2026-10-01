@@ -24,7 +24,9 @@ unedited. The new den gets that list as a temporary plan file
 (`den install skills|shell --refresh-plan FILE`, see _install._install_refresh)
 and replaces only those; everything else stays and is listed. A parent prompt
 that matches neither profile (hand-written, or edited) is not refreshed at
-all, and a tool dir without den's skills is not created. No state is kept
+all, and a tool dir without den's skills is not created. The plan also says
+whether den's optional shell files (the extras, the ~/.local/bin helpers) are
+on disk, so the shell is refreshed the way it was installed. No state is kept
 between runs.
 """
 
@@ -94,6 +96,37 @@ class _Matcher:
                 self.matched.add(dest)
         except OSError:
             pass  # unreadable: not provably den's
+
+
+class _Dests:
+    """A stager that only records the staged destinations."""
+
+    def __init__(self) -> None:
+        self.dests: set[Path] = set()
+
+    def stage(self, dest: Path, content: bytes) -> None:
+        self.dests.add(dest)
+
+
+def _shell_options() -> tuple[bool, bool]:
+    """(extras, posix bin): whether any of den's optional shell files is on
+    disk, so the refresh installs the shell the way it was installed. Without
+    this it ran a plain `install shell`: every extras file a --no-extras install
+    left out appeared, and den's own ~/.local/bin helpers were never refreshed
+    (no --bin and no terminal to ask)."""
+    from ._shell import _stage_shell_files
+
+    staged = {}
+    for extras, posix_bin in ((False, False), (True, False), (False, True)):
+        stager = _Dests()
+        _stage_shell_files(
+            stager, extras=extras, dry_run=False, announce=False, posix_bin=posix_bin
+        )
+        staged[extras, posix_bin] = stager.dests
+    core = staged[False, False]
+    extras_found = any(p.is_file() for p in staged[True, False] - core)
+    bin_found = any(p.is_file() for p in staged[False, True] - core)
+    return extras_found, bin_found
 
 
 def _scan_skills(
@@ -180,6 +213,7 @@ def _refresh_plan() -> tuple[dict, list[Path]]:
         "shell": bool(shell.matched),
         "owned": sorted(str(p) for p in owned),
     }
+    plan["shell_extras"], plan["shell_bin"] = _shell_options()
     return plan, left_alone
 
 
@@ -205,7 +239,12 @@ def _describe(plan: dict, left_alone: list[Path]) -> None:
     for entry in plan["parents"]:
         print(f"[dry-run] would refresh {entry['path']} ({entry['profile']} parent)")
     if plan["shell"]:
-        print("[dry-run] would refresh the shell files")
+        extras = "with" if plan["shell_extras"] else "without"
+        helpers = "with" if plan["shell_bin"] else "without"
+        print(
+            f"[dry-run] would refresh the shell files ({extras} the extras,"
+            f" {helpers} the ~/.local/bin helpers)"
+        )
     if not plan["skills"] and not plan["parents"] and not plan["shell"]:
         print("[dry-run] nothing to refresh: no deployed den files found")
     for parent in left_alone:
