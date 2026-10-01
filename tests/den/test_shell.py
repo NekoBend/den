@@ -163,6 +163,24 @@ def test_cmd_shims_call_where_and_powershell_by_system32_path():
     assert not found, found
 
 
+def test_cmd_uv_passes_the_run_arguments_through_as_typed():
+    # uv.cmd rebuilt the arguments after `run` with `set "_args=!_args! %1"`
+    # and shift, under delayed expansion: %1 splits on = , ; as well as
+    # blanks, ! was dropped, the loop stopped at an empty "", and a quoted
+    # & | < > closed the set command's quote and ran as cmd syntax. The
+    # Windows CI job runs the shim; this pins the shape it relies on: the
+    # raw argument text, cut after `run`, goes to uv.exe through delayed
+    # expansion (after cmd has parsed the line), and CRLF keeps its goto
+    # label findable in a file this size.
+    raw = (_CMD_BIN / "uv.cmd").read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n"), "uv.cmd must use CRLF line endings"
+    code = _cmd_code("uv")
+    assert not [ln for ln in code if ln.lower().split()[0] == "shift"]
+    assert "set _raw=%*" in code
+    assert 'set "_rest=!_raw:*run=!"' in code
+    assert 'uv.exe run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code
+
+
 def test_cmd_short_toggle_shims_call_their_long_names():
     # cmd cannot run here, so this pins the shape that makes the short names
     # work: CALL (a bare name would end the shim there) of the long shim by

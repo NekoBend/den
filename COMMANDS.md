@@ -282,6 +282,12 @@ pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they ru
 
 The uv redirects load only when uv is installed.
 
+On cmd, `uv` injects `--python` only when `_DEN_VENV_PYTHON` (the venv's version)
+comes from a bash/zsh or pwsh session where `va` ran and that started this cmd:
+cmd has no `va`, and a venv activated in cmd (`activate.bat`) leaves `uv run` as
+typed. The arguments after `run` reach uv unchanged, quoted `&` `|` `<` `>` and
+`=` `,` `;` `!` included.
+
 `va` refuses a venv it cannot trust and prints the command to source it yourself:
 one whose `bin/` (`Scripts/`) or activate script git tracks, or is a symlink, one
 whose `pyvenv.cfg` git tracks, one whose activate script is world-writable, one
