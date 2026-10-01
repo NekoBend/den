@@ -81,9 +81,15 @@ skips it); on Linux/macOS these commands keep their native / PowerShell-builtin
 behavior, and den does not define `head`, `tail`, `wc`, `touch`, `split`, `df`,
 `env` or `which` there at all.
 
-On PowerShell, piped input reaches the tool a wrapper picks as it arrives
-(`Get-Content -Wait log | grep x` prints each match as it comes), and with
-nothing piped in the tool's stdin stays the console's.
+On PowerShell, a wrapper (or any den command that took over a name the session
+already had, such as `ls`, `cat`, `cd`, `rm`, `gc` or `python`) is den's only
+when typed at the prompt. A script, a module, a function or a script block run
+from the session gets what the name meant before den loaded, with the same
+arguments and pipeline input: on Windows a script's `ls dist | Remove-Item`
+gets `Get-ChildItem`'s objects, and its `rm -Recurse` is `Remove-Item`'s. Piped
+input reaches the tool a wrapper picks as it arrives (`Get-Content -Wait log |
+grep x` prints each match as it comes), and with nothing piped in the tool's
+stdin stays the console's.
 
 Because the modern tools take different flags and produce different output than
 the native commands, a command written for the native tool can misbehave when a
@@ -132,7 +138,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 ### Navigation
 | Command | What it does |
 |---------|--------------|
-| `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF |
+| `cd` | zoxide jump when wrappers are ON (pwsh: when typed at the prompt), `builtin cd` when OFF |
 | `cdi` | zoxide interactive pick |
 | `zd` / `zdi` | always zoxide (ignore the toggle) |
 | `back [N]` / `fwd [N]` | go N entries back / forward in this session's directory history, browser-style (default 1) |

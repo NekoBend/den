@@ -123,6 +123,26 @@ run_pwsh() {
     "
 }
 
+# run_pwsh_den <prelude> <cmd> - load den the way $PROFILE does (init.ps1, from
+# DOTFILES) in an interactive session (_DEN_FORCE_INTERACTIVE=1), after the
+# PowerShell code <prelude> (stock aliases to stand in for Windows', a PATH),
+# then run <cmd>. pwsh counts <cmd> as typed at the prompt: a command at the top
+# level of -Command has CommandOrigin Runspace. A script <cmd> runs with & runs
+# as a user's script does. HOME and the XDG directories are TESTTMP/den-home,
+# so den's caches stay out of the real ones; stdin is /dev/null. Expand the
+# PowerShell variables in both arguments (\$) as for run_pwsh.
+run_pwsh_den() {
+    local home="$TESTTMP/den-home"
+    mkdir -p "$home/.local/share" "$home/.cache" "$home/.config" || return 1
+    HOME="$home" XDG_DATA_HOME="$home/.local/share" XDG_CACHE_HOME="$home/.cache" \
+        XDG_CONFIG_HOME="$home/.config" _DEN_FORCE_INTERACTIVE=1 \
+        pwsh -NoProfile -NonInteractive -Command "
+            $1
+            . '$DOTFILES/shell/pwsh/init.ps1'
+            $2
+        " < /dev/null
+}
+
 # ===== Streaming through pwsh functions =====
 
 # STREAM_PRODUCER is PowerShell that outputs "one", waits 1.5 s, then outputs

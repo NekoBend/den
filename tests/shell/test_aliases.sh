@@ -53,6 +53,74 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 assert_eq "pwsh/den commands are functions (not shadowed)" "OK" "$actual"
 
 # =============================================================================
+# The git shortcuts that took over a cmdlet alias run only when typed
+# =============================================================================
+# gc, gcm, gl, gps and gu are also PowerShell's aliases for Get-Content,
+# Get-Command, Get-Location, Get-Process and Get-Unique, which den removes so that
+# its git shortcuts win at the prompt. Scripts and modules run from the session
+# used to get the shortcuts too: `gps | Sort-Object CPU` pushed to the remote and
+# `(gcm tool).Source` made a commit. Now only a command typed at the prompt gets
+# den's version; a script or a module gets the cmdlet. A stub git logs each call.
+GIT_BIN="$WORK/git-bin"
+mkdir -p "$GIT_BIN"
+cat > "$GIT_BIN/git" << STUB
+#!/bin/sh
+echo "git \$*" >> '$WORK/git-calls.log'
+echo "STUB-GIT \$*"
+STUB
+chmod +x "$GIT_BIN/git"
+printf 'from the file\n' > "$WORK/config.txt"
+cat > "$WORK/use-git-aliases.ps1" << 'PS1'
+"gps: $((gps -Id $PID).GetType().Name)"
+"gcm: $((gcm Get-Date).CommandType)"
+"gl: $((gl).GetType().Name)"
+"gc: $(gc -LiteralPath $args[0])"
+"gu: $(('b', 'a', 'a' | Sort-Object | gu) -join ',')"
+PS1
+printf '%s\n' 'function Find-Tool([string]$Name) { "module gcm: $((gcm $Name).CommandType)" }' > "$WORK/finder.psm1"
+GIT_PATH="$GIT_BIN:/usr/bin:/bin"
+
+echo "[pwsh] gc/gcm/gl/gps/gu in a script or a module are the cmdlets"
+rm -f "$WORK/git-calls.log"
+actual=$(run_pwsh_den "\$env:PATH = '$GIT_PATH'" "
+    & '$WORK/use-git-aliases.ps1' '$WORK/config.txt'
+    Import-Module '$WORK/finder.psm1'
+    Find-Tool Get-Date
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/git shortcut names in a script and a module" "gps: Process
+gcm: Cmdlet
+gl: PathInfo
+gc: from the file
+gu: a,b
+module gcm: Cmdlet" "$actual"
+assert_eq "pwsh/a script and a module ran no git" "" "$(cat "$WORK/git-calls.log" 2>/dev/null)"
+
+echo "[pwsh] gps and gcm typed at the prompt are still git's"
+rm -f "$WORK/git-calls.log"
+actual=$(run_pwsh_den "\$env:PATH = '$GIT_PATH'" "gps origin main; gcm 'a message'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/typed git shortcuts" "STUB-GIT push origin main
+STUB-GIT commit -m a message" "$actual"
+
+# again re-runs a line from the history as it ran when typed, and so does
+# snippet run; a script that the line runs gets the cmdlets.
+echo "[pwsh] a line again replays runs den's shortcuts, and its scripts the cmdlets"
+rm -f "$WORK/git-calls.log"
+actual=$(run_pwsh_den "\$env:PATH = '$GIT_PATH'" "
+    function global:Read-Host { 'y' }
+    Add-History -InputObject ([pscustomobject]@{
+        CommandLine = \"gps origin main; & '$WORK/use-git-aliases.ps1' '$WORK/config.txt'\"; ExecutionStatus = 'Completed'
+        StartExecutionTime = [datetime]::Now; EndExecutionTime = [datetime]::Now
+    })
+    again 6>\$null
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/again replays as typed" "STUB-GIT push origin main
+gps: Process
+gcm: Cmdlet
+gl: PathInfo
+gc: from the file
+gu: a,b" "$actual"
+
+# =============================================================================
 # open is not den's on macOS
 # =============================================================================
 # macOS has its own /usr/bin/open, which also opens URLs and takes -a and -R;
@@ -110,18 +178,23 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " | tr -d '\r')
 assert_contains "pwsh/code prefers code-insiders" "STUB-INSIDERS ." "$actual"
 
-# code resolves the editor through _ResolveCmd, whose cache was once kept in
-# $script:, which inside a user's .ps1 is that script's scope: there the cache
-# was $null and code reported "not installed".
-echo "[pwsh] code works from a user script"
+# den's code takes over the `code` on PATH, so only a code typed at the prompt is
+# den's: a user's script gets that `code`, as without den. Where no `code` was on
+# PATH when den loaded, code is den's alone and a script gets den's too. It
+# resolves the editor through _ResolveCmd, whose cache was once kept in $script:,
+# which inside a user's .ps1 is that script's scope: there the cache was $null and
+# code reported "not installed".
+echo "[pwsh] code in a script is the code on PATH; typed, it is den's"
 printf '%s\n' 'code --version' > "$WORK/usecode.ps1"
-actual=$(run_pwsh "$HELPERS_PS1" "
-    \$env:_DEN_FORCE_INTERACTIVE = '1'
-    \$env:PATH = '$CODE_BIN'
-    . '$P/aliases.ps1'
-    & '$WORK/usecode.ps1'
-" 2>&1 | tr -d '\r')
-assert_eq "pwsh/code from a script" "STUB-INSIDERS --version" "$actual"
+actual=$(run_pwsh_den "\$env:PATH = '$CODE_BIN'" "& '$WORK/usecode.ps1'; code --version" 2>&1 | tr -d '\r')
+assert_eq "pwsh/code from a script runs the code on PATH" "STUB-CODE --version
+STUB-INSIDERS --version" "$actual"
+INSIDERS_ONLY="$WORK/insiders-only"
+mkdir -p "$INSIDERS_ONLY"
+cp "$CODE_BIN/code-insiders" "$INSIDERS_ONLY/"
+echo "[pwsh] code works from a user script where only den's code exists"
+actual=$(run_pwsh_den "\$env:PATH = '$INSIDERS_ONLY'" "& '$WORK/usecode.ps1'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/code from a script, no code on PATH" "STUB-INSIDERS --version" "$actual"
 
 echo "[pwsh] code warns when no editor is installed"
 actual=$(run_pwsh "$HELPERS_PS1" "

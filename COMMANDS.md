@@ -14,16 +14,28 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   add its own). cmd is a deliberately thinner subset; a `—` in the cmd column is
   usually intentional, not an oversight.
 - These are shell-sourced commands (aliases/functions/wrappers). In **bash/zsh**
-  they are all interactive-only. In **pwsh** only the native-command-shadowing
-  wrappers/aliases/coreutils/completion are interactive-gated; the additive helpers
+  they are all interactive-only. In **pwsh** the wrappers, aliases, coreutils,
+  completion and `cd` load only in an interactive session; the other helpers
   (functions, python, ffmpeg, parallel, snippet, cheat, proxy, hwinfo) load whenever
   the profile is sourced. Many commands also load only when their tool is present
   (uv, ffmpeg, zoxide, fzf, lsd/bat/fd/rg). The one exception is the standalone
   `fixids` executable (below), which lives on `PATH` and runs from any context.
-- In **pwsh**, a script run in a session that loaded them can call these commands,
+- In **pwsh**, a command den defines in place of one the session already had when
+  den loaded (`ls`, `cat`, `cd`, `rm`, `cp`, `mv`, `mkdir`, `gc`, `gcm`, `gl`, `gps`,
+  `gu`, `python`, `pip`, `uv`, `clip`, ...) is den's only when typed at the prompt of
+  an interactive session, or in a line that a typed `again` or `snippet run`
+  replays. Anywhere else (a script or a module run from the session, a function, a
+  script block such as `ForEach-Object`'s, a `pwsh -File` or `-Command` run) the
+  name runs what it ran before den loaded, with the same arguments and pipeline
+  input: a script's `gps` is `Get-Process`, and on Windows its `ls` is
+  `Get-ChildItem` and its `rm` is `Remove-Item`. A command den adds that names
+  nothing else (`archive`, `extract`, `proxy`, `snippet`, `mkcd`, `dg`, `pcp`, and on
+  Windows `head`, `tail`, `wc`, `touch`, `which`, ...) works in scripts too,
   including a script that runs `Set-StrictMode -Version Latest` (strict mode then
   applies inside den's functions too, and they are written for it). A profile can
   also set strict mode before it loads den.
+- In **cmd**, den's commands are Clink aliases, which exist only at the prompt: a
+  batch file sees none of them.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
@@ -248,7 +260,9 @@ keeps). Inside an active venv on bash/zsh/pwsh, `pip` / `pip3` use the venv's ow
 pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they run
 `uv pip`, which installs into that venv. The cmd `pip` shim runs the first
 `pip.exe` on `PATH` inside a venv. `python` / `python3` / `py` still run through
-`uv run --python <venv version>`. Flip the redirect with `toggle-uv`.
+`uv run --python <venv version>`. Flip the redirect with `toggle-uv`. On pwsh the
+redirects apply to commands typed at the prompt; a script gets the `python`, `pip`
+and `uv` on `PATH` (see "How to read this").
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

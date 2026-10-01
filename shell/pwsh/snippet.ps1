@@ -45,10 +45,11 @@ function _SnippetGet([string]$Name) {
     return $null
 }
 
-# Echo the command (so you see what runs) then Invoke-Expression it in this session.
-function _SnippetExec([string]$Cmd) {
+# Echo the command (so you see what runs) then Invoke-Expression it in this session,
+# as typed when snippet itself was (<Typed>; see _DenTyped).
+function _SnippetExec([string]$Cmd, [bool]$Typed) {
     [Console]::Error.WriteLine("+ $Cmd")
-    Invoke-Expression $Cmd
+    _DenReplay $Cmd $Typed
 }
 
 function _SnippetUsage {
@@ -125,7 +126,7 @@ function snippet {
             if ($null -eq $c) {
                 [Console]::Error.WriteLine("snippet run: no such snippet '$($rest[0])' (snippet ls)"); return
             }
-            _SnippetExec $c
+            _SnippetExec $c (_DenTyped $MyInvocation.CommandOrigin)
         }
         '^pick$' {
             if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
@@ -138,7 +139,7 @@ function snippet {
             $sel = $lines | fzf --no-multi --prompt 'snippet> '
             if (-not $sel) { return }
             $i = $sel.IndexOf("`t")
-            if ($i -ge 0) { _SnippetExec $sel.Substring($i + 1) }
+            if ($i -ge 0) { _SnippetExec $sel.Substring($i + 1) (_DenTyped $MyInvocation.CommandOrigin) }
         }
         '^(-h|--help|help)$' { _SnippetUsage }
         default {

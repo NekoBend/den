@@ -9,6 +9,8 @@ if (-not (_DenInteractive)) { return }
 # FUNCTIONS below (alias beats function in command resolution): gc=Get-Content,
 # gcm=Get-Command, gl=Get-Location, gps=Get-Process, gu=Get-Unique. These are
 # default aliases on every platform; -EA SilentlyContinue is a no-op if absent.
+# The git shortcuts run only when typed at the prompt: in a script or a module,
+# gps is still Get-Process and gcm Get-Command (see _DenScopeOverrides).
 foreach ($a in 'gc', 'gcm', 'gl', 'gps', 'gu') {
     Remove-Item "alias:$a" -Force -ErrorAction SilentlyContinue
 }

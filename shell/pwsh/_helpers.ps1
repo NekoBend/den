@@ -1,6 +1,23 @@
 # _helpers.ps1 — DRY helpers for den PowerShell config.
 # Dot-sourced first by init.ps1.
 
+# ========== what the session had before den ==========
+
+# The aliases and functions this session has before den defines anything, for
+# _DenScopeOverrides: a den command that took over one of these names runs that one
+# when a script calls it. Taken first thing here, on every load of this file; on a
+# load after the first one it holds den's own commands too, which
+# _DenScopeOverrides recognizes by name. The provider is read directly rather than
+# through Get-ChildItem, whose module would load here, before den needs it.
+$global:_DenPreload = @{ Alias = @{}; Function = @{} }
+foreach ($_denItem in @($ExecutionContext.InvokeProvider.ChildItem.Get('Alias:', $false))) {
+    $global:_DenPreload.Alias[$_denItem.Name] = $_denItem.Definition
+}
+foreach ($_denItem in @($ExecutionContext.InvokeProvider.ChildItem.Get('Function:', $false))) {
+    $global:_DenPreload.Function[$_denItem.Name] = $_denItem.ScriptBlock
+}
+Remove-Variable -Name _denItem -ErrorAction SilentlyContinue
+
 # ========== wrapper log ==========
 
 # _WrapLog <name> <tool> — announce a modern-tool substitution on EVERY wrapped
@@ -340,6 +357,165 @@ function _CoreutilsBin {
         $global:_DenCoreutils = $found
     }
     if ($global:_DenCoreutils) { return $global:_DenCoreutils } else { return $null }
+}
+
+# ========== den's commands at the prompt only ==========
+
+# A command den defines in place of one the session already had (ls, cat, cd, rm,
+# gc, gps, python, uv, clip, ...) runs den's version only when it is typed at the
+# prompt of an interactive session (CommandOrigin Runspace), or run directly by a
+# line that a typed `again` or `snippet` replays. Called from anywhere else (a
+# script, a module, a function, a script block such as ForEach-Object's, a
+# pwsh -File or -Command run), the name means what it meant before den loaded, with
+# the same arguments and pipeline input: `ls dist | Remove-Item` in a script gets
+# Get-ChildItem's objects on Windows, and `gps` in a script is Get-Process, not
+# git push. A command den adds whose name meant nothing before (archive, proxy,
+# mkcd, ...) runs everywhere den loaded it.
+# init.ps1 calls _DenScopeOverrides once den has loaded. It records what each
+# name den defined meant before (an alias, such as Windows' ls, cat, rm, gc or cd;
+# a function, such as Windows' mkdir; or else, looked up the first time a call
+# needs it, an application or script on the PATH den loaded with) and installs
+# _DenLookupHook as PostCommandLookupAction, which PowerShell runs after it has
+# looked up a command. When that lookup found den's own definition for a call that
+# was not typed, the hook hands PowerShell the earlier command instead. A function
+# of the same name that is not den's (a script's or a module's own, or one defined
+# at the prompt after den) is left alone. Names that start with _ are den's
+# internal helpers and are not recorded.
+# The records persist across loads of this file (a second `. $PROFILE`): a name is
+# recorded the first time den defines it.
+if (-not (Test-Path -Path Variable:global:_DenOverrides)) {
+    $global:_DenOverrides = @{}    # name -> @{ Kind = 'Alias'|'Function'|'App'; Value; [DenAlias] }
+    $global:_DenOwnText = [System.Collections.Generic.HashSet[string]]::new()
+    $global:_DenLoadPath = $env:PATH
+    $global:_DenTypedSession = $false
+    $global:_DenLookupNext = $null
+    $global:_DenLookupInstalled = $null
+    $global:_DenInLookup = $false
+}
+$global:_DenReplayDepth = 0
+
+# _DenScopeOverrides - record, for every function and alias den defined since this
+# file was loaded, what its name meant before (see above), note whether this
+# session is interactive, and install _DenLookupHook. A PostCommandLookupAction
+# that something else set first is kept and runs before den's.
+function _DenScopeOverrides {
+    $pre = $global:_DenPreload
+    $items = @($ExecutionContext.InvokeProvider.ChildItem.Get('Function:', $false)) +
+        @($ExecutionContext.InvokeProvider.ChildItem.Get('Alias:', $false))
+    foreach ($item in $items) {
+        $name = $item.Name
+        if ($name.StartsWith('_') -or $name -eq 'prompt') { continue }
+        $rec = @{ Kind = 'App'; Value = $null }
+        if ($item -is [System.Management.Automation.AliasInfo]) {
+            if ($pre.Alias.ContainsKey($name) -and $pre.Alias[$name] -eq $item.Definition) { continue }
+            $rec.DenAlias = $item.Definition
+        } else {
+            if ($item.ModuleName) { continue }
+            if ($pre.Function.ContainsKey($name) -and [object]::ReferenceEquals($pre.Function[$name], $item.ScriptBlock)) { continue }
+            [void]$global:_DenOwnText.Add($item.Definition)
+        }
+        if ($global:_DenOverrides.ContainsKey($name)) { continue }
+        if ($pre.Alias.ContainsKey($name)) { $rec.Kind = 'Alias'; $rec.Value = $pre.Alias[$name] }
+        elseif ($pre.Function.ContainsKey($name)) { $rec.Kind = 'Function'; $rec.Value = $pre.Function[$name] }
+        $global:_DenOverrides[$name] = $rec
+    }
+    $global:_DenTypedSession = [bool](_DenInteractive)
+    $current = $ExecutionContext.InvokeCommand.PostCommandLookupAction
+    if ($null -ne $current -and -not [object]::ReferenceEquals($current, $global:_DenLookupInstalled)) {
+        $global:_DenLookupNext = $current
+    }
+    $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:_DenLookupHook
+    $global:_DenLookupInstalled = $ExecutionContext.InvokeCommand.PostCommandLookupAction
+}
+
+# _DenLookupHook - PowerShell runs it after every command lookup in the session, so
+# it reads one hashtable and returns for every name den did not define; _DenLookup
+# does the rest. _DenInLookup keeps the lookups _DenLookup itself makes out of it.
+$global:_DenLookupHook = {
+    param($Name, $Lookup)
+    if ($null -ne $global:_DenLookupNext) { $global:_DenLookupNext.Invoke($Name, $Lookup) }
+    if ($null -ne $global:_DenOverrides[$Name] -and -not $global:_DenInLookup) { _DenLookup $Name $Lookup }
+}
+
+# _DenLookup <name> <lookup> - for _DenLookupHook: when the lookup found den's own
+# definition of <name> for a call that was not typed, put the command the name
+# meant before den in its place. When there was none, or it cannot be found now,
+# den's definition stays. A failure here never fails the lookup.
+function _DenLookup([string]$Name, $Lookup) {
+    $rec = $global:_DenOverrides[$Name]
+    if ($null -eq $Lookup -or $null -eq $rec) { return }
+    $global:_DenInLookup = $true
+    try {
+        if ($global:_DenTypedSession -and (_DenTyped $Lookup.CommandOrigin 1)) { return }
+        $found = $Lookup.Command
+        if ($found -is [System.Management.Automation.FunctionInfo]) {
+            if (-not $global:_DenOwnText.Contains($found.Definition)) { return }
+        } elseif ($found -is [System.Management.Automation.AliasInfo]) {
+            if (-not $rec.ContainsKey('DenAlias') -or $found.Definition -ne $rec.DenAlias) { return }
+        } else {
+            return
+        }
+        $original = $null
+        if ($rec.Kind -eq 'Function') {
+            $Lookup.CommandScriptBlock = $rec.Value
+            return
+        } elseif ($rec.Kind -eq 'Alias') {
+            $original = $ExecutionContext.InvokeCommand.GetCommand($rec.Value, [System.Management.Automation.CommandTypes]::All)
+        } elseif (_DenHadApp $Name $rec) {
+            $original = $ExecutionContext.InvokeCommand.GetCommand($Name, [System.Management.Automation.CommandTypes]'Application, ExternalScript')
+        }
+        if ($null -ne $original) { $Lookup.Command = $original }
+    } catch {
+        $null = $_
+    } finally {
+        $global:_DenInLookup = $false
+    }
+}
+
+# _DenHadApp <name> <record> - whether <name> named an application, or a script, on
+# the PATH den loaded with. Looked up once, the first time a call needs it, and
+# kept in the record: listing every PATH directory when den loads would cost each
+# start of PowerShell, for names that scripts seldom call.
+function _DenHadApp([string]$Name, [hashtable]$Record = @{}) {
+    if (-not $Name) { return $false }
+    if ($null -eq $Record['Value']) {
+        $exts = @('.ps1')
+        if (_OnWindows) { $exts += @("$env:PATHEXT" -split ';' | Where-Object { $_ }) } else { $exts += '' }
+        $hit = $false
+        foreach ($dir in @("$global:_DenLoadPath" -split [System.IO.Path]::PathSeparator)) {
+            $dir = $dir.Trim().Trim('"')
+            if (-not $dir) { continue }
+            foreach ($ext in $exts) {
+                try { $hit = [System.IO.File]::Exists([System.IO.Path]::Combine($dir, $Name + $ext)) } catch { $hit = $false }
+                if ($hit) { break }
+            }
+            if ($hit) { break }
+        }
+        $Record['Value'] = $hit
+    }
+    return [bool]$Record['Value']
+}
+
+# _DenTyped <origin> [hops] - whether a call counts as typed at the prompt: its
+# CommandOrigin is Runspace, or it comes straight from a line that _DenReplay runs
+# for a typed `again` or `snippet` (a script or a function that line runs does
+# not). <origin> is $MyInvocation.CommandOrigin of the den function asking, which
+# calls this itself; [hops] counts the frames between that function and this one
+# (_DenLookup, run by the lookup hook, passes 1 for itself).
+function _DenTyped([string]$Origin, [int]$Hops = 0) {
+    if ($Origin -eq 'Runspace') { return $true }
+    if ($global:_DenReplayDepth -le 0) { return $false }
+    return @(Get-PSCallStack).Count -eq $global:_DenReplayDepth + 3 + $Hops
+}
+
+# _DenReplay <line> <typed> - Invoke-Expression <line>, for again and snippet. When
+# the command replaying it was typed (<typed>), the commands the line calls itself
+# count as typed too (see _DenTyped), as they did when the line was first typed.
+function _DenReplay([string]$Line, [bool]$Typed) {
+    $outer = $global:_DenReplayDepth
+    $global:_DenReplayDepth = 0
+    if ($Typed) { $global:_DenReplayDepth = @(Get-PSCallStack).Count }
+    try { Invoke-Expression $Line } finally { $global:_DenReplayDepth = $outer }
 }
 
 # ========== path operands ==========

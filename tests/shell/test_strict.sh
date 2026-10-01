@@ -206,6 +206,12 @@ foreach ($_StrictN in $_StrictFunctions + $_StrictAliases) {
 }
 $global:_StrictSkip = @{}
 $global:_StrictDone = $false
+# The cases run as a user's script does, and there a den command that took over
+# an earlier one (ls, cat, cd, gc, ...) runs that earlier one instead (see
+# _DenScopeOverrides). Its records are set aside so that the cases reach den's own
+# versions; the cases for the lookup hook put them back.
+$global:_StrictOverrides = $global:_DenOverrides
+$global:_DenOverrides = @{}
 try { & $env:STRICT_CASES } catch { $_StrictOut.Add("CRASH $($_.Exception.Message)") }
 Get-PSBreakpoint | Remove-PSBreakpoint
 if (-not $global:_StrictDone) { $_StrictOut.Add('CRASH the case script stopped before its end') }
@@ -912,10 +918,46 @@ Case 'snippet remove, no such snippet' { snippet remove nope }
 Case 'snippet rm, no name' { snippet rm }
 Case 'snippet, unknown command' { snippet bogus }
 
+# ===== den's commands from a script: the lookup hook =====
+# With the records back (the driver set them aside), each call below goes through
+# _DenLookupHook: a name den took over runs the command it meant before (an
+# alias's cmdlet, an application on the PATH), a name den added runs den's.
+function Invoke-WithOverrides([scriptblock]$StrictBody) {
+    $global:_DenOverrides = $global:_StrictOverrides
+    try { & $StrictBody } finally { $global:_DenOverrides = @{} }
+}
+Case 'a script calls gc, gcm, gl, gps, gu' {
+    Invoke-WithOverrides { gc a.txt; $null = gcm Get-Date; gl; $null = gps -Id $PID; 'b', 'a', 'a' | Sort-Object | gu }
+}
+Case 'a script calls cat, ls, grep, find' { Invoke-WithOverrides { cat a.txt; 'x' | cat; ls; grep alpha a.txt; find . -name a.txt } }
+Case 'a script calls cd' { Invoke-WithOverrides { cd sub; cd -LiteralPath ..; cd missing-strict } }
+Case 'a script calls a command den added' { Invoke-WithOverrides { mkcd made-by-mkcd; up } }
+Case 'a script runs a line replayed as typed' { Invoke-WithOverrides { _DenReplay 'gl; cd sub' $true } }
+Case '_DenTyped' { _DenTyped 'Runspace'; _DenTyped 'Internal'; _DenTyped 'Internal' 1 }
+Case '_DenReplay' { _DenReplay "Write-Output 'replayed'" $true; _DenReplay "Write-Output 'replayed'" $false }
+Case '_DenHadApp' {
+    _DenHadApp 'cat' @{ Kind = 'App'; Value = $null }
+    _DenHadApp 'nonexistent-strict' @{ Kind = 'App'; Value = $null }
+    _DenHadApp 'cat' @{ Kind = 'App'; Value = $true }
+}
+Case '_DenLookup' {
+    $StrictLookup = [pscustomobject]@{ CommandOrigin = 'Internal'; Command = $null; CommandScriptBlock = $null }
+    Invoke-WithOverrides {
+        $StrictLookup.Command = Get-Item -LiteralPath Function:\gl
+        _DenLookup 'gl' $StrictLookup
+        $StrictLookup.Command = Get-Item -LiteralPath Function:\Case
+        _DenLookup 'gl' $StrictLookup
+        _DenLookup 'nonexistent-strict' $StrictLookup
+    }
+}
+# It records again into the table it finds, which the driver emptied: put that back.
+Case '_DenScopeOverrides' { try { _DenScopeOverrides } finally { $global:_DenOverrides = @{} } }
+
 # ===== every den function and alias again, with no argument =====
 # Not reload (its case is last), nor the toggles: a toggle has no other form, and
-# the cases above run each one twice, so its switch ends where it began.
-$StrictNoArgSkip = 'reload', 'toggle-wrapper', 'tgl-wr', 'toggle-uv', 'tgl-uv', 'toggle-hwinfo', 'tgl-hw'
+# the cases above run each one twice, so its switch ends where it began. Nor
+# _DenScopeOverrides, which would fill the records the driver set aside.
+$StrictNoArgSkip = 'reload', 'toggle-wrapper', 'tgl-wr', 'toggle-uv', 'tgl-uv', 'toggle-hwinfo', 'tgl-hw', '_DenScopeOverrides'
 foreach ($StrictFn in $global:_StrictFunctions + $global:_StrictAliases) {
     if ($StrictNoArgSkip -contains $StrictFn -or $global:_StrictSkip.ContainsKey($StrictFn)) { continue }
     Case "$StrictFn, no argument" ([scriptblock]::Create("& '$StrictFn'"))

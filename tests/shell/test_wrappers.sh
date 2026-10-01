@@ -354,27 +354,61 @@ actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
 assert_eq "pwsh/cat|head|wc" "5" "$actual"
 
 # =============================================================================
-# PowerShell: wrappers called from a user script
+# PowerShell: a wrapper is den's only when typed at the prompt
 # =============================================================================
-# A function's $script: is the scope of the script RUNNING it, so the command
-# cache _helpers.ps1 kept there was $null inside a user's .ps1: each wrapper call
-# printed "You cannot call a method on a null-valued expression" and fell through
-# to its PowerShell fallback. Run cat/grep/head from a script with &, and from a
-# function inside it, as a user's script would.
-echo ""
-echo "[pwsh] wrappers called from a user script"
+# A user's script run from the session gets what the name meant before den
+# loaded: here the native cat and grep (on Windows, the ls and cat aliases'
+# Get-ChildItem and Get-Content). The w-suffix names, which name nothing else,
+# stay den's there. A stub bat stands in for the modern tool. den's commands
+# keep their command cache in $global:, since a function's $script: is the
+# scope of the script running it, where a cache was $null: catw resolves bat
+# from the script.
+SCRIPT_BIN="$TESTTMP/script-bin"
+mkdir -p "$SCRIPT_BIN"
+printf '#!/bin/sh\necho "STUB-BAT $*"\n' > "$SCRIPT_BIN/bat"
+chmod +x "$SCRIPT_BIN/bat"
+SCRIPT_PATH="$SCRIPT_BIN:/usr/bin:/bin"
 cat > "$WORK/usewrap.ps1" <<EOF
 cat '$WORK/fruits.txt' | grep 'an'
-function Get-FirstLine { cat '$WORK/lines20.txt' | head -n 2 }
+function Get-FirstLine { cat '$WORK/lines20.txt' | Select-Object -First 2 }
 Get-FirstLine
+catw '$WORK/fruits.txt'
 EOF
-actual=$(run_pwsh "$COMBINED_PS1" "\$env:_DEN_WRAPPER_LOG = '0'; & '$WORK/usewrap.ps1'" 2>/dev/null)
-actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
-assert_eq "pwsh/wrappers from a script" "banana
+echo ""
+echo "[pwsh] a user script gets the native cat and grep, and den's catw"
+actual=$(run_pwsh_den "\$env:PATH = '$SCRIPT_PATH'; \$env:_DEN_WRAPPER_LOG = '0'" \
+    "& '$WORK/usewrap.ps1'; cat '$WORK/fruits.txt'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/a script's cat and grep, then a typed cat" "banana
 line1
-line2" "$actual"
-err=$(run_pwsh_stderr "$COMBINED_PS1" "\$env:_DEN_WRAPPER_LOG = '0'; & '$WORK/usewrap.ps1'")
-assert_eq "pwsh/wrappers from a script: no errors" "" "$err"
+line2
+STUB-BAT --style=plain --paging=never $WORK/fruits.txt
+STUB-BAT --style=plain --paging=never $WORK/fruits.txt" "$actual"
+
+# On Windows ls and cat are aliases of Get-ChildItem and Get-Content, which den
+# removes so that its wrappers win at the prompt. A script then got den's ls,
+# which prints names: `ls dist | Remove-Item -Recurse` removed the items of those
+# names in the current directory and left dist's. Stock aliases stand in for
+# Windows' here.
+echo "[pwsh] ls and cat in a script are Windows' Get-ChildItem and Get-Content"
+rm -rf "$WORK/vite" && mkdir -p "$WORK/vite/dist/assets"
+echo src > "$WORK/vite/index.html"
+echo built > "$WORK/vite/dist/index.html"
+echo js > "$WORK/vite/dist/assets/a.js"
+cat > "$WORK/clean-dist.ps1" <<'EOF'
+ls dist | Remove-Item -Recurse -Force
+"index.html kept: $(Test-Path index.html); dist: [$((Get-ChildItem dist -Name) -join ',')]"
+"cat -Raw: $((cat index.html -Raw).Trim())"
+"sizes: $(ls -File | ForEach-Object { '{0}={1}' -f $_.Name, $_.Length })"
+EOF
+actual=$(cd "$WORK/vite" && run_pwsh_den "
+    Set-Alias -Name ls -Value Get-ChildItem; Set-Alias -Name cat -Value Get-Content
+    \$env:PATH = '$SCRIPT_PATH'; \$env:_DEN_WRAPPER_LOG = '0'
+" "ls; & '$WORK/clean-dist.ps1'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/typed ls lists names, a script's ls and cat are the cmdlets" "dist
+index.html
+index.html kept: True; dist: []
+cat -Raw: src
+sizes: index.html=4" "$actual"
 
 # =============================================================================
 # PowerShell: what is piped into a wrapper streams through; nothing piped, no pipe
@@ -441,6 +475,44 @@ actual=$(cd "$WORK/pipe" && run_pwsh "$HELPERS_PS1" "
     (Get-ChildItem -Recurse -File -Name | Sort-Object) -join ','
 " < /dev/null 2>&1 | tr -d '\r')
 assert_eq "pwsh/piped rm, cp, mv without coreutils" "c.txt,dest/c.txt,dest/d.txt" "$actual"
+
+# With coreutils, a script got rm/cp/mkdir handing PowerShell parameters to it
+# (`rm -Recurse -Force` failed on -e, and the script went on). A script gets the
+# cmdlets of the stock aliases now, and Windows' mkdir function; typed, rm is
+# coreutils' rm. Stock aliases and a mkdir function stand in for Windows' (with
+# $env:OS and $IsLinux set too, as on Windows), and a stub for coreutils. Only
+# the script's report line is kept: den's load warns here about caches it
+# cannot check off Windows.
+echo "[pwsh] Windows with coreutils: a script's rm, cp, mkdir are the cmdlets"
+rm -rf "$WORK/wincu" && mkdir -p "$WORK/wincu/old/sub"
+echo old > "$WORK/wincu/t.txt"; echo new > "$WORK/wincu/s.txt"; : > "$WORK/wincu/a.tmp"
+cat > "$TESTTMP/coreutils-log" <<EOF
+#!/bin/sh
+echo "coreutils \$*" >> '$WORK/wincu-calls.log'
+EOF
+chmod +x "$TESTTMP/coreutils-log"
+cat > "$WORK/cleanup.ps1" <<'EOF'
+rm -Recurse -Force old
+$d = mkdir -Force out
+cp s.txt t.txt -Force
+Get-ChildItem -Filter *.tmp | rm
+"old removed: $(-not (Test-Path old)); made: $($d.Name); t.txt: $(Get-Content t.txt); a.tmp removed: $(-not (Test-Path a.tmp))"
+EOF
+rm -f "$WORK/wincu-calls.log"
+actual=$(cd "$WORK/wincu" && run_pwsh_den "
+    \$env:OS = 'Windows_NT'
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    Set-Variable -Name IsLinux -Value \$false -Scope Global -Force
+    \$env:_DEN_COREUTILS = '$TESTTMP/coreutils-log'
+    foreach (\$a in @{ cp = 'Copy-Item'; mv = 'Move-Item'; rm = 'Remove-Item'; rmdir = 'Remove-Item' }.GetEnumerator()) {
+        Set-Alias -Name \$a.Key -Value \$a.Value -Scope Global
+    }
+    function global:mkdir { New-Item -ItemType Directory @args }
+    \$env:PATH = '/usr/bin:/bin'
+" "& '$WORK/cleanup.ps1'; rm -rf typed" 2>/dev/null | tr -d '\r' | grep -F 'old removed')
+assert_eq "pwsh/a script's rm, mkdir, cp on Windows with coreutils" \
+    "old removed: True; made: out; t.txt: new; a.tmp removed: True" "$actual"
+assert_eq "pwsh/only the typed rm reached coreutils" "coreutils rm -rf typed" "$(cat "$WORK/wincu-calls.log" 2>/dev/null)"
 
 # =============================================================================
 # PowerShell extended tests — grep additional flags

@@ -127,3 +127,9 @@ Remove-Variable _s -ErrorAction SilentlyContinue
 # oh-my-posh or posh-git init) replaces the wrapper the same way; then only den's
 # navigation commands and back/fwd record, as COMMANDS.md warns.
 _DenDirHookPrompt
+
+# ===== Overrides at the prompt only =====
+# Last, once every den command exists: a command den defined in place of one the
+# session already had runs den's version only when typed at the prompt; scripts,
+# modules and -File/-Command runs get the earlier command (see _helpers.ps1).
+_DenScopeOverrides
