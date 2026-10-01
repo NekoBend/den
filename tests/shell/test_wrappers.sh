@@ -588,6 +588,48 @@ assert_eq "pwsh/lt on 5.1 with lsd still runs lsd" "stub lsd --tree src" "$actua
 # =============================================================================
 # Wrapper notice of the real wrappers (stub modern tools)
 # =============================================================================
+# Typed at the prompt, a wrapper with a native fallback runs the modern tool;
+# in a function (a user's own included) or a sourced file it runs the native
+# command that code was written for, as builtin cd replaces den's zoxide cd
+# there. eval, $(...) and `again` (stubbed here) at the prompt count as typed;
+# `bash -c` / `zsh -c` count as the prompt. The modern stand-ins print their
+# name and arguments. Wrappers with no native command (lt, llt, ripgrep) and
+# the w names always run the modern tool.
+echo ""
+echo "================================================"
+echo "  Testing where the wrappers run the modern tool"
+echo "================================================"
+printf 'apple\nbanana\n' > "$WORK/typed.txt"
+printf '%s\n' "grep banana typed.txt" "ls -d ." > "$WORK/typed_src.sh"
+for _sh in bash zsh; do
+    _run="run_${_sh}_i"
+    echo "[$_sh] typed at the prompt: the modern tool, also through eval, \$(...) and again"
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK'; grep banana typed.txt; eval 'cat typed.txt'; x=\$(find .); echo \"\$x\"; again() { eval \"\$1\"; }; again 'll -d .'")
+    assert_eq "$_sh/typed: rg, bat, fd, lsd" "modern rg banana typed.txt
+modern bat --style=plain --paging=never typed.txt
+modern fd .
+modern lsd -l -d ." "$actual"
+
+    echo "[$_sh] in a function or a sourced file: the native command"
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK'; f() { grep banana typed.txt; cat typed.txt; la -d .; find typed.txt; }; f; . ./typed_src.sh; again() { eval \"\$1\"; }; g() { again 'grep apple typed.txt'; }; g")
+    assert_eq "$_sh/function, sourced file, again in a function: native" "banana
+apple
+banana
+.
+typed.txt
+banana
+.
+apple" "$actual"
+
+    echo "[$_sh] in a function, wrappers with no native command and the w names stay modern"
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "f() { lt x; ripgrep y; grepw z; lsw w; }; f")
+    assert_eq "$_sh/function: lt, ripgrep, grepw, lsw modern" "modern lsd --tree x
+modern rg y
+modern rg z
+modern lsd w" "$actual"
+done
+
+# =============================================================================
 # The fallback tests above run without the modern tools; here stub lsd/bat on
 # PATH make the real wrappers take the modern branch, so the notice they print
 # (with each wrapper's own fallback flags) is compared as a whole line, and the
@@ -635,6 +677,10 @@ for _sh in bash zsh; do
     echo "[$_sh] w-suffix names print no notice"
     actual=$("$_run" "$WRAPPERS_SH" "lsw >/dev/null; catw /dev/null")
     assert_eq "$_sh/notice none for lsw catw" "" "$actual"
+
+    echo "[$_sh] a wrapper a function runs prints no notice (it runs the native command)"
+    actual=$("$_run" "$WRAPPERS_SH" "f() { ls >/dev/null; cat /dev/null; }; f")
+    assert_eq "$_sh/notice none for ls cat in a function" "" "$actual"
 done
 
 echo "[pwsh] real wrappers print the notice; w-suffix names do not"

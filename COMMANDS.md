@@ -24,13 +24,18 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   including a script that runs `Set-StrictMode -Version Latest` (strict mode then
   applies inside den's functions too, and they are written for it). A profile can
   also set strict mode before it loads den.
-- In **bash/zsh**, den's `cd` hands its arguments to zoxide only when typed at
+- In **bash/zsh**, den's `cd` and the wrappers with a native fallback (`ls`,
+  `la`, `ll`, `lla`, `cat`, `grep`, `find`) do den's part only when typed at
   the prompt (`eval` and `$(...)` typed there count, and so does a line `again`
   replays). Run by a function, your own included, or by a sourced file such as
-  `~/.bashrc`, it is `builtin cd`, so a directory that does not exist fails
-  instead of becoming a zoxide jump to some other directory. `cd` with an
-  option (`-P`, `-L`, ...) is always `builtin cd`, since zoxide would read the
-  option as a keyword to search for.
+  `~/.bashrc`, `cd` is `builtin cd` and each wrapper runs its native command,
+  which is what such code was written for. A function of yours that relied on
+  a wrapper (`grep` running `rg`, say) now gets the native tool: call `rg` /
+  `fd` / `bat` / `lsd` by name there, or the `*w` names (`grepw`, `findw`,
+  `catw`, `lsw`), which always run the modern tool. `lt`, `llt` and `ripgrep`
+  have no native command and run `lsd` / `rg` anywhere. `cd` with an option
+  (`-P`, `-L`, ...) is always `builtin cd`, since zoxide would read the option
+  as a keyword to search for.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
@@ -141,7 +146,9 @@ fall back with a message.
 
 Each prefers a modern tool when installed and falls back to the native command;
 all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper` / `tgl-wr`). The `*w` names
-always use the modern tool, bypassing the toggle.
+always use the modern tool, bypassing the toggle. On bash/zsh the modern tool
+runs only when the wrapper is typed at the prompt; a function or a sourced file
+gets the native command (see "How to read this").
 
 On bash/zsh and pwsh, each time a wrapper that obeys the toggle runs the modern
 tool, it prints one dim line (stderr on bash/zsh); the `*w` names print nothing:
