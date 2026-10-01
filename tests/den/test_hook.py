@@ -1046,18 +1046,47 @@ def test_install_cline_cli_refuses_a_file_at_clinerules(tmp_path, monkeypatch, c
     assert "not a directory" in capsys.readouterr().err
 
 
-def test_remove_and_list_cline_cli_refuse_a_file_at_clinerules(
+def test_remove_and_list_treat_a_single_file_clinerules_as_not_installed(
     tmp_path, monkeypatch, capsys
 ):
+    """A regular FILE at .clinerules is cline's classic single-file rules format,
+    not something a repo planted: cline-cli is simply not installed there, so
+    list and remove say nothing and succeed, and the file is left alone."""
     proj = tmp_path / "repo"
     (proj / ".den").mkdir(parents=True)
-    (proj / ".clinerules").write_text("not a directory\n")
+    (proj / ".clinerules").write_text("Use tabs.\n")
     monkeypatch.chdir(proj)
-    assert hook_main(["remove", "--tool", "cline-cli"]) == 1
+    assert hook_main(["remove", "--tool", "cline-cli"]) == 0
     assert hook_main(["list", "--tool", "cline-cli"]) == 0
     out = capsys.readouterr()
     assert out.out == "", "nothing reported as den-managed"
-    assert (proj / ".clinerules").read_text() == "not a directory\n"
+    assert "refusing" not in out.err
+    assert (proj / ".clinerules").read_text() == "Use tabs.\n"
+
+
+def test_uninstall_hook_succeeds_beside_a_single_file_clinerules(
+    tmp_path, monkeypatch, capsys
+):
+    """The finding's repro: `den uninstall hook` (every tool) exited 1 because the
+    never-installed cline-cli refused the classic .clinerules file."""
+    from den._uninstall import main as uninstall_main
+
+    (tmp_path / ".clinerules").write_text("Use tabs.\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert uninstall_main(["hook"]) == 0
+    assert "refusing" not in capsys.readouterr().err
+    assert (tmp_path / ".clinerules").read_text() == "Use tabs.\n"
+
+
+def test_install_cline_refuses_a_single_file_clinerules(tmp_path, monkeypatch, capsys):
+    """The extension's hooks go in .clinerules/hooks/; with .clinerules a FILE the
+    mkdir raised NotADirectoryError straight out of `den install hook`."""
+    (tmp_path / ".clinerules").write_text("Use tabs.\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline"]) == 1
+    assert "not a directory" in capsys.readouterr().err
+    assert (tmp_path / ".clinerules").read_text() == "Use tabs.\n"
 
 
 def test_install_cline_cli_refuses_a_directory_at_a_rule_file(

@@ -659,7 +659,16 @@ def _cline_script_name(native: str) -> str:
 
 
 def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    config.mkdir(parents=True, exist_ok=True)
+    try:
+        config.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        # A regular file on the way: typically cline's classic single-file
+        # `.clinerules`, which has no room for a hooks/ dir. Leave it alone.
+        print(
+            f"{_ERR_INSTALL}: refusing {config}: it or a parent is not a directory",
+            file=sys.stderr,
+        )
+        return False
     for generic, native in spec["events"].items():
         script = config / _cline_script_name(native)
         if script.is_symlink():
@@ -805,8 +814,20 @@ def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> b
     return True
 
 
+def _single_file_clinerules(den_dir: Path) -> bool:
+    """True when `.clinerules` is a regular file: cline's classic single-file
+    rules format, so cline-cli (which needs the directory) is not installed
+    here. list and remove take that as "nothing of den's" and stay quiet; only
+    install, which would have to replace the file, refuses it."""
+    rules = _clinerules_dir(den_dir)
+    return not rules.is_symlink() and rules.is_file()
+
+
 def _list_clinerules(tool: str, spec: dict, config: Path) -> list[str]:
-    targets = _clinerules_targets(_find_den_dir(Path.cwd()))
+    den_dir = _find_den_dir(Path.cwd())
+    if _single_file_clinerules(den_dir):
+        return []
+    targets = _clinerules_targets(den_dir)
     if targets is None:
         return []
     return [f"{tool}  {p.name}  {p}" for p in targets if p.is_file()]
@@ -817,7 +838,10 @@ def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
     # path _resolve_config vetted is not the one being unlinked here. Derive and
     # guard the real one, or the unlinks follow a planted link out of the
     # workspace and destroy someone else's files.
-    targets = _clinerules_targets(_find_den_dir(Path.cwd()))
+    den_dir = _find_den_dir(Path.cwd())
+    if _single_file_clinerules(den_dir):
+        return True
+    targets = _clinerules_targets(den_dir)
     if targets is None:
         return False
     for path in targets:
