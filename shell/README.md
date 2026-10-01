@@ -292,7 +292,8 @@ shell/
     bin/          standalone POSIX executables (fixids: fast, filtered,
                   parallel chown -- a faster fixuid; self-documented, -h)
   pwsh/        PowerShell port (init.ps1 entry; coreutils.ps1 reimplements UNIX tools)
-  cmd/         Windows CMD command shims (cmd/bin/*.cmd) + starship.lua
+  cmd/         Windows CMD command shims (cmd/bin/*.cmd, typed through the Clink
+               aliases starship.lua defines; never on PATH) + starship.lua
   bash/init.bash   entry point sourced from ~/.bashrc
   zsh/init.zsh     entry point sourced from ~/.zshrc
   starship/starship.toml   prompt configuration

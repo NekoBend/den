@@ -24,6 +24,13 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   including a script that runs `Set-StrictMode -Version Latest` (strict mode then
   applies inside den's functions too, and they are written for it). A profile can
   also set strict mode before it loads den.
+- In **cmd**, they are Clink aliases (doskey macros) for the shims in
+  `%LOCALAPPDATA%\clink\bin`, which den does not put on `PATH`. Clink expands an
+  alias only on a line typed at its prompt, so a batch file, `cmd /c`, any other
+  program and starship's own probes get Windows' commands (System32 `find.exe`,
+  the real `python`), and den's own commands (`mkcd`, `dg`, `back`, `touch`, `head`,
+  ...) do not exist there either. That is one difference from pwsh, where a
+  script can call them.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
@@ -199,6 +206,9 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
+
+On cmd, `path` with arguments is cmd's own `PATH` command, which sets `PATH`
+(`path C:\tools;%PATH%`), as it does without den.
 
 `extract` and `archive` pick the format from the extension without regard to
 case (`PHOTOS.ZIP`, `DATA.TAR.GZ`). A single compressed file is still named by

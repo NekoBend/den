@@ -2,11 +2,27 @@
 settings.set("clink.logo", "none")
 settings.set("prompt.spacing", "sparse")  -- cmd.exe adds its own newline + starship add_newline = 2 lines; sparse normalizes to 1
 
--- ===== Add bin/ to PATH (wrapper scripts for cmd aliases) =====
+-- ===== den's command shims: Clink aliases, never on PATH =====
+-- The shims in bin_dir (ls.cmd, find.cmd, python.cmd, ...) are reached only
+-- through the aliases defined below. An alias (a doskey macro) expands only on
+-- a line typed at the Clink prompt, so batch files, `cmd /c`, child processes
+-- and starship's own probes keep seeing Windows' commands: System32 find.exe,
+-- the real python. den's own commands (mkcd, dg, back, ...) do not exist there
+-- either. bin_dir used to be put on PATH; a cmd started from such an older
+-- session inherits that entry, so take it off again.
 local bin_dir = os.getenv("LOCALAPPDATA") .. "\\clink\\bin"
-local current_path = os.getenv("PATH") or ""
-if not current_path:find(bin_dir, 1, true) then
-    os.setenv("PATH", bin_dir .. ";" .. current_path)
+do
+    local kept, dropped = {}, false
+    for dir in (os.getenv("PATH") or ""):gmatch("[^;]+") do
+        if dir:gsub('"', ""):gsub("[\\/]+$", ""):lower() == bin_dir:lower() then
+            dropped = true
+        else
+            kept[#kept + 1] = dir
+        end
+    end
+    if dropped then
+        os.setenv("PATH", table.concat(kept, ";"))
+    end
 end
 
 -- ===== Spawn helpers (never resolve a command from the current directory) =====
@@ -52,9 +68,47 @@ local system_root = os.getenv("SystemRoot") or os.getenv("windir") or "C:\\Windo
 local doskey_exe = system_root .. "\\System32\\doskey.exe"
 local powershell_exe = system_root .. "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
 
--- doskey <macro> — define one doskey macro through the System32 binary.
-local function doskey(macro)
-    os.execute(cmd_line(doskey_exe, macro))
+-- den's aliases, in the order they are defined: { name, macro text } pairs.
+local den_aliases = {}
+local function alias(name, text)
+    den_aliases[#den_aliases + 1] = { name, text }
+end
+
+-- The macro text that runs bin_dir\<file>.cmd with <args> ($* = every argument
+-- typed after the alias). The path is quoted and its "$" doubled, since doskey
+-- reads "$" as the start of a macro code.
+local function shim(file, args)
+    local path = (bin_dir .. "\\" .. file .. ".cmd"):gsub("%$", "$$")
+    return '"' .. path .. '" ' .. (args or "$*")
+end
+
+-- Define every alias in den_aliases. Clink 1.6.11+ sets them in this process
+-- (os.setalias); older Clink loads them all with one `doskey /macrofile` run,
+-- and Clink before 1.1.42 (no os.createtmpfile) runs doskey once per alias.
+-- Starting a cmd + doskey pair per alias made each new window wait for dozens.
+local function define_aliases()
+    if os.setalias then
+        for _, a in ipairs(den_aliases) do
+            os.setalias(a[1], a[2])
+        end
+        return
+    end
+    local f, name
+    if os.createtmpfile then
+        f, name = os.createtmpfile("den-aliases", ".txt")
+    end
+    if f then
+        for _, a in ipairs(den_aliases) do
+            f:write(a[1], "=", a[2], "\r\n")
+        end
+        f:close()
+        os.execute(cmd_line(doskey_exe, '/macrofile="' .. name .. '"'))
+        os.remove(name)
+        return
+    end
+    for _, a in ipairs(den_aliases) do
+        os.execute(cmd_line(doskey_exe, a[1] .. "=" .. a[2]))
+    end
 end
 
 -- ===== Hardware info (for starship) =====
@@ -109,52 +163,57 @@ if not has_hw_cache then
     end
 end
 
--- ===== Navigation (doskey - simple aliases) =====
-doskey('..=cd ..')
-doskey('.1=up 1')
-doskey('.2=up 2')
-doskey('.3=up 3')
-doskey('.4=up 4')
-doskey('.5=up 5')
-doskey('.6=up 6')
-doskey('.7=up 7')
-doskey('.8=up 8')
-doskey('.9=up 9')
-doskey('c=cls')
+-- ===== Aliases =====
+-- One per shim in bin_dir, named after it (back.cmd -> back, tgl-hw.cmd -> tgl-hw).
+for _, name in ipairs({
+    "again", "back", "cat", "dg", "digest", "find", "fwd", "grep", "head", "la",
+    "ll", "lla", "llt", "ls", "lt", "mkcd", "path", "pip", "python", "python3",
+    "tail", "tgl-hw", "tgl-uv", "tgl-wr", "toggle-hwinfo", "toggle-uv",
+    "toggle-wrapper", "touch", "up", "uv", "wc", "which",
+}) do
+    alias(name, shim(name))
+end
 
--- ===== Git =====
-doskey('g=git $*')
-doskey('ga=git add $*')
-doskey('gaa=git add --all')
-doskey('gb=git branch $*')
-doskey('gc=git commit $*')
-doskey('gcm=git commit -m $*')
-doskey('gco=git checkout $*')
-doskey('gd=git diff $*')
-doskey('gds=git diff --staged $*')
-doskey('gf=git fetch --all --prune')
-doskey('gl=git log --oneline --graph $*')
-doskey('gpl=git pull $*')
-doskey('gps=git push $*')
-doskey('gst=git status -sb')
-doskey('gsw=git switch $*')
+-- Navigation. A macro never expands another macro, so .1-.9 run up.cmd by path.
+alias("..", "cd ..")
+for n = 1, 9 do
+    alias("." .. n, shim("up", tostring(n)))
+end
+alias("c", "cls")
 
--- ===== Docker =====
-doskey('d=docker $*')
-doskey('dc=docker compose $*')
-doskey('dcb=docker compose build $*')
-doskey('dcd=docker compose down $*')
-doskey('dce=docker compose exec $*')
-doskey('dcl=docker compose logs $*')
-doskey('dcu=docker compose up $*')
-doskey('di=docker images $*')
-doskey('dps=docker ps $*')
-doskey('dri=docker run -it $*')
-doskey('drir=docker run -it --rm $*')
+-- Git
+alias("g", "git $*")
+alias("ga", "git add $*")
+alias("gaa", "git add --all")
+alias("gb", "git branch $*")
+alias("gc", "git commit $*")
+alias("gcm", "git commit -m $*")
+alias("gco", "git checkout $*")
+alias("gd", "git diff $*")
+alias("gds", "git diff --staged $*")
+alias("gf", "git fetch --all --prune")
+alias("gl", "git log --oneline --graph $*")
+alias("gpl", "git pull $*")
+alias("gps", "git push $*")
+alias("gst", "git status -sb")
+alias("gsw", "git switch $*")
 
--- ===== Editor =====
-doskey('code=code-insiders $*')
-doskey('gu=gitui $*')
+-- Docker
+alias("d", "docker $*")
+alias("dc", "docker compose $*")
+alias("dcb", "docker compose build $*")
+alias("dcd", "docker compose down $*")
+alias("dce", "docker compose exec $*")
+alias("dcl", "docker compose logs $*")
+alias("dcu", "docker compose up $*")
+alias("di", "docker images $*")
+alias("dps", "docker ps $*")
+alias("dri", "docker run -it $*")
+alias("drir", "docker run -it --rm $*")
+
+-- Editor
+alias("code", "code-insiders $*")
+alias("gu", "gitui $*")
 
 -- ===== Directory history for back / fwd (and _OLDPWD) =====
 -- Browser-style history for this cmd session. It lives in two environment
@@ -266,11 +325,13 @@ if zoxide_exe then
         zh:close()
         if zoxide_init and zoxide_init ~= "" then
             load(zoxide_init)()
-            doskey('zd=z $*')
-            doskey('zdi=zi $*')
+            alias("zd", "z $*")
+            alias("zdi", "zi $*")
         end
     end
 end
+
+define_aliases()
 
 -- ===== Starship =====
 local starship_exe = find_on_path("starship")
