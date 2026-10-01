@@ -109,11 +109,17 @@ assert_eq "fixids/no lists left in TMPDIR" "" "$actual"
 # name an ancestor directory) to chown. A file-size limit of one block stands
 # in for a full TMPDIR: with SIGXFSZ ignored find gets EFBIG, names the list
 # and exits 1; with it at its default find is killed. Either way fixids now
-# stops before any pass.
+# stops before any pass. A probe first checks that the limit holds here.
 mkdir -p "$WORK/big"
 for i in $(seq 1 100); do : > "$WORK/big/a-file-name-long-enough-to-fill-a-block-$i"; done
+_fsz=$("$BASH_BIN" -c 'trap "" XFSZ; ulimit -f 1; head -c 4096 /dev/zero > "$1" 2>/dev/null; stat -c %s "$1"' _ "$WORK/fsz.probe")
+rm -f "$WORK/fsz.probe"
 for _xfsz in ignored default; do
     echo "[fixids] a class list cut short (SIGXFSZ $_xfsz) stops the run before any pass"
+    if ! [ "${_fsz:-4096}" -lt 4096 ] 2>/dev/null; then
+        echo "  SKIP: fixids/cut list (ulimit -f does not limit writes here)"
+        continue
+    fi
     if [ "$_xfsz" = ignored ]; then _trap='trap "" XFSZ;'; else _trap='trap - XFSZ;'; fi
     actual=$(mkdir -p "$WORK/tmp"; PATH="$PATH" TMPDIR="$WORK/tmp" "$BASH_BIN" -c "$_trap ulimit -f 1; exec \"\$0\" \"\$@\"" "$BASH_BIN" "$FIXIDS" -n --from "$U:$G" --to 2000:2000 "$WORK/big" 2>&1; echo "rc=$?")
     assert_contains "fixids/cut list ($_xfsz): stops" "nothing was changed" "$actual"
