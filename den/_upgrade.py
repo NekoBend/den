@@ -26,9 +26,13 @@ _install._install_refresh) and replaces only those, and only while they still
 hold those bytes: a file edited while uv ran is no longer den's. Everything
 else stays and is listed. A parent prompt that matches neither profile
 (hand-written, or edited) is not refreshed at all, and a tool dir without
-den's skills is not created. The plan also says whether den's optional shell
-files (the extras, the ~/.local/bin helpers) are on disk, so the shell is
-refreshed the way it was installed. No state is kept between runs.
+den's skills is not created. The plan also lists each file this version
+deploys into what is refreshed (a skill dir that is there, the shell files)
+that is missing from disk, so the new den leaves a file the user deleted
+deleted while it still adds the files that are new in its version. And it
+says whether den's optional shell files (the extras, the ~/.local/bin helpers)
+are on disk, so the shell is refreshed the way it was installed. No state is
+kept between runs.
 """
 
 from __future__ import annotations
@@ -89,14 +93,18 @@ class _Matcher:
     """A stager (see _install._Stager) that records which staged destinations
     already hold exactly the staged bytes, i.e. are this den's own output, each
     with the SHA-256 of those bytes: the new den replaces it only while it still
-    holds them (see _install._Writer)."""
+    holds them (see _install._Writer). `absent` collects the destinations with
+    nothing at all on disk."""
 
     def __init__(self) -> None:
         self.matched: dict[Path, str] = {}
+        self.absent: set[Path] = set()
 
     def stage(self, dest: Path, content: bytes) -> None:
         try:
-            if dest.is_file() and dest.read_bytes() == content:
+            if not os.path.lexists(dest):
+                self.absent.add(dest)
+            elif dest.is_file() and dest.read_bytes() == content:
                 self.matched[dest] = hashlib.sha256(content).hexdigest()
         except OSError:
             pass  # unreadable: not provably den's
@@ -112,12 +120,13 @@ class _Dests:
         self.dests.add(dest)
 
 
-def _shell_options() -> tuple[bool, bool]:
-    """(extras, posix bin): whether any of den's optional shell files is on
-    disk, so the refresh installs the shell the way it was installed. Without
-    this it ran a plain `install shell`: every extras file a --no-extras install
-    left out appeared, and den's own ~/.local/bin helpers were never refreshed
-    (no --bin and no terminal to ask)."""
+def _shell_options() -> tuple[bool, bool, set[Path]]:
+    """(extras, posix bin, missing): whether any of den's optional shell files
+    is on disk, so the refresh installs the shell the way it was installed, and
+    which of the files a refresh with those options deploys are not on disk.
+    Without the two flags it ran a plain `install shell`: every extras file a
+    --no-extras install left out appeared, and den's own ~/.local/bin helpers
+    were never refreshed (no --bin and no terminal to ask)."""
     from ._shell import _stage_shell_files
 
     staged = {}
@@ -130,15 +139,21 @@ def _shell_options() -> tuple[bool, bool]:
     core = staged[False, False]
     extras_found = any(p.is_file() for p in staged[True, False] - core)
     bin_found = any(p.is_file() for p in staged[False, True] - core)
-    return extras_found, bin_found
+    deployed = core.union(
+        staged[True, False] if extras_found else (),
+        staged[False, True] if bin_found else (),
+    )
+    missing = {p for p in deployed if not os.path.lexists(p)}
+    return extras_found, bin_found, missing
 
 
 def _scan_skills(
     target: Path, names: list[str], den_free: set[str]
-) -> tuple[dict, dict[Path, str]] | None:
-    """(plan entry, den's unedited files) for one skills dir, or None when no
-    deployed file there is byte-identical to this den's: den never deployed
-    there (or every file was edited), and the refresh must not create it."""
+) -> tuple[dict, dict[Path, str], set[Path]] | None:
+    """(plan entry, den's unedited files, the files of its skills that are
+    missing) for one skills dir, or None when no deployed file there is
+    byte-identical to this den's: den never deployed there (or every file was
+    edited), and the refresh must not create it."""
     from ._install import _install_skill
 
     present = [n for n in names if (target / n).is_dir()]
@@ -157,8 +172,15 @@ def _scan_skills(
         p for p in aware.matched.keys() - free.matched if free_dirs & set(p.parents)
     }
     no_den_cli = bool(free.matched.keys() - aware.matched) and not aware_only
+    # A flavor can bundle other files than the other one, so the missing files
+    # of a --no-den-cli skill are those of the flavor the refresh deploys.
+    absent = {
+        p for p in aware.absent if not (no_den_cli and free_dirs & set(p.parents))
+    }
+    if no_den_cli:
+        absent |= free.absent
     entry = {"target": str(target), "names": present, "no_den_cli": no_den_cli}
-    return entry, owned
+    return entry, owned, absent
 
 
 def _parent_profile(parent: Path, parent_file: str) -> tuple[str, str] | None:
@@ -174,17 +196,37 @@ def _parent_profile(parent: Path, parent_file: str) -> tuple[str, str] | None:
     return None
 
 
+def _scan_shell(owned: dict[Path, str], absent: set[Path]) -> dict:
+    """The plan's shell fields. Adds den's unedited shell files to `owned` and,
+    when there are any (the shell is refreshed), the missing ones to `absent`."""
+    from ._shell import _stage_shell_files
+
+    shell = _Matcher()
+    _stage_shell_files(
+        shell, extras=True, dry_run=False, announce=False, posix_bin=True
+    )
+    owned.update(shell.matched)
+    extras, posix_bin, missing = _shell_options()
+    if shell.matched:
+        absent |= missing
+    return {
+        "shell": bool(shell.matched),
+        "shell_extras": extras,
+        "shell_bin": posix_bin,
+    }
+
+
 def _refresh_plan() -> tuple[dict, list[Path]]:
     """(the refresh plan, parent prompts left alone). Must run before the
     upgrade: it reads THIS version's bundled content. See the module docstring;
     the plan's shape is _install.load_refresh_plan's."""
     from ._install import _PLAN_VERSION, _TOOLS, _skill_names, _tool_paths
-    from ._shell import _stage_shell_files
     from ._uninstall import _den_free_skills
 
     names = _skill_names()
     den_free = _den_free_skills()
     owned: dict[Path, str] = {}
+    absent: set[Path] = set()
     skills: list[dict] = []
     parents: list[dict] = []
     left_alone: list[Path] = []
@@ -197,6 +239,7 @@ def _refresh_plan() -> tuple[dict, list[Path]]:
             if scanned is not None:
                 skills.append(scanned[0])
                 owned.update(scanned[1])
+                absent |= scanned[2]
         parent = parent_dir / parent_file
         if parent in seen or not parent.is_file():
             continue
@@ -209,21 +252,16 @@ def _refresh_plan() -> tuple[dict, list[Path]]:
         parents.append(
             {"path": str(parent), "file": parent_file, "profile": matched[0]}
         )
-    shell = _Matcher()
-    _stage_shell_files(
-        shell, extras=True, dry_run=False, announce=False, posix_bin=True
-    )
-    owned.update(shell.matched)
-    plan = {
+    shell = _scan_shell(owned, absent)
+    return {
         "den_refresh_plan": _PLAN_VERSION,
         "known_skills": names,
         "skills": skills,
         "parents": parents,
-        "shell": bool(shell.matched),
+        **shell,
         "owned": {str(p): owned[p] for p in sorted(owned)},
-    }
-    plan["shell_extras"], plan["shell_bin"] = _shell_options()
-    return plan, left_alone
+        "absent": sorted(str(p) for p in absent),
+    }, left_alone
 
 
 def _refresh_steps(plan: dict, plan_file: str, *, force: bool) -> list[tuple[str, ...]]:
@@ -274,11 +312,12 @@ def _usage() -> None:
         "             in every tool dir that has den's, the parent prompts den\n"
         "             deployed (in the same profile), and the shell files. Only\n"
         "             files still exactly as the old version deployed them are\n"
-        "             replaced; edited ones are kept and listed, and a parent\n"
-        "             prompt not exactly as den deployed it (edited or\n"
-        "             hand-written) is never touched.\n"
+        "             replaced; edited ones are kept and listed, deleted ones\n"
+        "             stay deleted, and a parent prompt not exactly as den\n"
+        "             deployed it (edited or hand-written) is never touched.\n"
         "  --force    also replace the kept skill and shell files, copying\n"
-        "             each to <file>.den.bak first (never a parent prompt)\n"
+        "             each to <file>.den.bak first, and create the deleted\n"
+        "             ones (never a parent prompt)\n"
         "  --dry-run  print what would be refreshed without running anything"
     )
 

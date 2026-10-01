@@ -188,7 +188,12 @@ class _Writer:
     up and replaced). `owned` maps each such path to the SHA-256 it held then,
     and a file is den's only while it still holds those bytes, checked again
     right before it is written: an edit made while `uv tool upgrade` ran is the
-    user's, not den's.
+    user's, not den's. A file in `absent` -- one the den before the upgrade
+    deploys but found missing (deleted, or never deployed because an earlier
+    update was skipped) -- is not created and is listed (--force creates it);
+    a missing file the refresh stages that is not in `absent` is new in this
+    version and is created. A file in `owned` that is gone by the time it is
+    written was deleted while uv ran, and is treated the same way.
 
     Only what was listed and approved (or is still den's) is ever replaced
     without --force: a file that changes between the listing and its write is
@@ -201,9 +206,16 @@ class _Writer:
     The default tool dirs are not confined: a ~/.claude symlinked into a
     dotfiles repo is the user's own arrangement and keeps working."""
 
-    def __init__(self, *, force: bool, owned: dict[Path, str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        force: bool,
+        owned: dict[Path, str] | None = None,
+        absent: set[Path] | None = None,
+    ) -> None:
         self.force = force
         self.owned = owned
+        self.absent = absent or set()
         self._items: list[tuple[Path, bytes]] = []
         self._roots: list[Path] = []
 
@@ -251,6 +263,12 @@ class _Writer:
         upgrade proved it wrote there (see the class docstring)."""
         digest = None if self.owned is None else self.owned.get(dest)
         return digest is not None and hashlib.sha256(data).hexdigest() == digest
+
+    def _deleted(self, dest: Path) -> bool:
+        """Whether `dest` is missing although the den before the upgrade
+        deploys it (see the class docstring)."""
+        known = dest in self.absent or (self.owned is not None and dest in self.owned)
+        return known and not os.path.lexists(dest)
 
     def _ask(self, changed: list[Path]) -> tuple[bool, bool]:
         """(overwrite, silently_skipped) for the files that exist and differ."""
@@ -346,17 +364,17 @@ class _Writer:
                 refused += 1
                 continue
             items.append((dest, content, guard))
-        changed = []
-        for dest, content, _guard in items:
-            data = dest.read_bytes() if dest.is_file() else None
-            if data is not None and data != content and not self._owns(dest, data):
-                changed.append(dest)
+        changed = self._changed(items)
         overwrite, silently_skipped = self._ask(changed)
         listed = set(changed)
         approved = listed if overwrite else set()
         kept = late = 0
         backed_up: list[tuple[Path, Path]] = []
+        missing: list[Path] = []
         for dest, content, guard in items:
+            if self._deleted(dest) and not self.force:
+                missing.append(dest)
+                continue
             if dest.is_file():
                 # Read again: what decides the write is what the file holds
                 # now, not what it held when the list above was made.
@@ -388,8 +406,37 @@ class _Writer:
                 refused += 1
                 continue
             self._ensure_mode(dest)
+        self._report(backed_up, missing, kept, refused)
+        late = late if self.owned is None else 0  # a refresh keeps it on purpose
+        return refused + (kept if silently_skipped else 0) + late
+
+    def _changed(
+        self, items: list[tuple[Path, bytes, tuple[Path, Path] | None]]
+    ) -> list[Path]:
+        """The staged files that exist, differ, and are not den's: the list
+        _ask shows."""
+        changed = []
+        for dest, content, _guard in items:
+            data = dest.read_bytes() if dest.is_file() else None
+            if data is not None and data != content and not self._owns(dest, data):
+                changed.append(dest)
+        return changed
+
+    @staticmethod
+    def _report(
+        backed_up: list[tuple[Path, Path]], missing: list[Path], kept: int, refused: int
+    ) -> None:
+        """commit's closing lines."""
         for d, bak in backed_up:
             print(f"  backed up {d} -> {bak.name}", file=sys.stderr)
+        if missing:
+            _ui.say(
+                "Not created again (deleted since den deployed them, or never"
+                " deployed; --force creates them):",
+                style="yellow",
+            )
+            for d in missing:
+                _ui.say(f"  {d}", style="yellow")
         if kept:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
         if refused:
@@ -397,8 +444,6 @@ class _Writer:
                 f"  refused {refused} path(s) listed above; nothing was written there",
                 file=sys.stderr,
             )
-        late = late if self.owned is None else 0  # a refresh keeps it on purpose
-        return refused + (kept if silently_skipped else 0) + late
 
 
 def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
@@ -573,15 +618,22 @@ def load_refresh_plan(path: str) -> dict:
         ):
             raise ValueError(f"bad parent entry: {entry!r}")
         absolute(entry.get("path"))
+    for p in strings(plan.get("absent")):
+        absolute(p)
     for key in ("shell", "shell_extras", "shell_bin"):
         if not isinstance(plan.get(key), bool):
             raise ValueError(f"{key} must be true or false")
     return plan
 
 
-def refresh_owned(plan: dict) -> dict[Path, str]:
-    """The plan's files that are den's own, each with the SHA-256 it held."""
-    return {Path(p): digest for p, digest in plan["owned"].items()}
+def refresh_writer(plan: dict, *, force: bool) -> _Writer:
+    """A _Writer for the plan: it replaces the files the plan proves are den's
+    and does not create again the ones it found missing (see _Writer)."""
+    return _Writer(
+        force=force,
+        owned={Path(p): digest for p, digest in plan["owned"].items()},
+        absent={Path(p) for p in plan["absent"]},
+    )
 
 
 def read_refresh_plan(path: str, prefix: str) -> dict | None:
@@ -599,6 +651,8 @@ def _install_refresh(plan_path: str, *, force: bool, dry_run: bool) -> int:
     version added) and each parent prompt in its recorded profile. A differing
     file is replaced only when the plan lists it as den's own unedited copy;
     any other one is kept and listed, or with --force backed up and replaced.
+    A file of a present skill that the plan found missing stays missing and is
+    listed (--force creates it); a file new in this version is created.
     A parent the old den did not recognize is not in the plan at all, so a
     hand-written CLAUDE.md is never touched, not even with --force, and one
     edited after the plan was made is kept and listed, --force or not."""
@@ -607,9 +661,8 @@ def _install_refresh(plan_path: str, *, force: bool, dry_run: bool) -> int:
         return 2
     names = _skill_names()
     known = set(plan["known_skills"])
-    owned = refresh_owned(plan)
-    writer = _Writer(force=force, owned=owned)
-    parents = _Writer(force=False, owned=owned)  # --force never takes a parent
+    writer = refresh_writer(plan, force=force)
+    parents = refresh_writer(plan, force=False)  # --force never takes a parent
     for entry in plan["skills"]:
         target = Path(entry["target"])
         present = set(entry["names"])

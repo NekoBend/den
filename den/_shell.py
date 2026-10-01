@@ -41,7 +41,7 @@ from ._install import (
     _Stager,
     _Writer,
     read_refresh_plan,
-    refresh_owned,
+    refresh_writer,
 )
 
 _COMMENT = "# ===== den ====="
@@ -392,7 +392,6 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
     if parsed is None:
         return 2
     plan, argv = parsed
-    owned = None if plan is None else refresh_owned(plan)
     dry_run = "--dry-run" in argv
     extras = "--no-extras" not in argv if plan is None else plan["shell_extras"]
     force = "--force" in argv
@@ -417,7 +416,7 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
             return 2
 
     home = Path.home()
-    writer = _Writer(force=force, owned=owned)
+    writer = _Writer(force=force) if plan is None else refresh_writer(plan, force=force)
     if plan is None:
         install_bin = _decide_posix_bin(want=want_bin, skip=skip_bin)
     else:  # installed the way it was: never asks, never adds what was left out

@@ -122,25 +122,28 @@ old package imported) redeploys:
 
 - the skills in each tool dir that holds den's skills, in the flavor found
   there (`--no-den-cli` or not); a skill you deleted stays deleted, a skill the
-  new version added arrives;
+  new version added arrives, and the same holds for a file within a skill;
 - each parent prompt that matched a profile, in that same profile; a parent
   that matches neither (hand-written, or edited) is left alone and named, even
   with `--force`;
 - the shell files, when den's were found, as they were installed: the extras
   only when some were on disk (a `--no-extras` install stays without), and
-  den's `~/.local/bin` helpers only when some were there (`--bin`).
+  den's `~/.local/bin` helpers only when some were there (`--bin`); a shell
+  file you deleted stays deleted.
 
 A file still exactly as the old den deployed it is replaced; that is checked
 again right before the write, so an edit made while uv runs counts as yours.
 Any other file that differs (your edit, or a file from an earlier version
 whose update was skipped back then) is kept and listed, and the refresh still
-exits 0. `--force` replaces those too, copying each one to `<file>.den.bak`
-first (a parent prompt edited while uv ran is kept even then). den still
-records nothing between runs: the list of files, with a SHA-256 of each, is a
-temporary hand-over from the old binary to the new one (`den install
-skills|shell --refresh-plan FILE`). Skills deployed with `--target` are not
-refreshed; re-run that install. `--dry-run` shows what would be refreshed
-without running anything.
+exits 0. A file the old den deploys that is missing (deleted, or never
+deployed because an earlier update was skipped) is not created and is listed
+too. `--force` replaces or creates those as well, copying each existing one
+to `<file>.den.bak` first (a parent prompt edited while uv ran is kept even
+then). den still records nothing between runs: the lists of files, with a
+SHA-256 of each one den wrote, are a temporary hand-over from the old binary
+to the new one (`den install skills|shell --refresh-plan FILE`). Skills
+deployed with `--target` are not refreshed; re-run that install. `--dry-run`
+shows what would be refreshed without running anything.
 
 The refresh is driven by the den you upgrade *from*. Upgrading from a den
 older than this behavior still runs that den's refresh (`den install skills

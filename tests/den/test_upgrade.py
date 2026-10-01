@@ -41,6 +41,7 @@ _PLAN = {
     "shell_extras": True,
     "shell_bin": False,
     "owned": {},
+    "absent": [],
 }
 
 
@@ -526,6 +527,59 @@ def test_refresh_keeps_the_no_den_cli_flavor_and_deleted_skills(tmp_path, monkey
     assert "NEXT VERSION" in coding
 
 
+def _next_with_a_new_example(tmp_path: Path) -> Path:
+    """The next version, with a file added to a skill that already exists."""
+    root = _new_version(tmp_path)
+    examples = root / "agents" / "src" / "skills" / "coding" / "examples"
+    (examples / "zig.md").write_text("NEW EXAMPLE\n")
+    return root
+
+
+def test_refresh_leaves_a_deleted_skill_file_deleted(tmp_path, monkeypatch, capsys):
+    """The refresh restaged every file of each skill it kept, so one file the
+    user deleted (not the whole skill) came back."""
+    _deploy_like_a_user(monkeypatch)
+    examples = Path.home() / ".claude" / "skills" / "coding" / "examples"
+    (examples / "rust.md").unlink()
+    meanwhile = (examples / "python.md").unlink  # den's when the plan was made
+    _upgrade_to(monkeypatch, _next_with_a_new_example(tmp_path), during=meanwhile)
+    assert upgrade_main(["--refresh"]) == 0
+    assert not (examples / "rust.md").exists()
+    assert not (examples / "python.md").exists()
+    assert (examples / "zig.md").read_text() == "NEW EXAMPLE\n", "a new file arrives"
+    assert "NEXT VERSION" in (examples.parent / "SKILL.md").read_text()
+    out = capsys.readouterr()
+    assert str(examples / "rust.md") in (out.out + out.err).replace("\n", "")
+
+
+def test_refresh_force_recreates_a_deleted_skill_file(tmp_path, monkeypatch):
+    _deploy_like_a_user(monkeypatch)
+    rust = Path.home() / ".claude" / "skills" / "coding" / "examples" / "rust.md"
+    rust.unlink()
+    _upgrade_to(monkeypatch, _next_with_a_new_example(tmp_path))
+    assert upgrade_main(["--refresh", "--force"]) == 0
+    assert rust.is_file()
+    assert not list(rust.parent.glob("*.den.bak*")), "nothing there to back up"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="deploys the POSIX shell files")
+def test_refresh_leaves_a_deleted_shell_file_deleted(tmp_path, monkeypatch, capsys):
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    assert install_main(["shell"]) == 0
+    shell = Path.home() / ".config" / "shell"
+    (shell / "proxy.sh").unlink()  # one of the extras, not wanted
+    _upgrade_to(monkeypatch, _new_version(tmp_path, with_shell=True))
+    assert upgrade_main(["--refresh"]) == 0
+    assert "# NEXT VERSION" in (shell / "functions.sh").read_text()
+    assert (shell / "python.sh").is_file(), "the other extras are refreshed"
+    assert not (shell / "proxy.sh").exists()
+    out = capsys.readouterr()
+    assert str(shell / "proxy.sh") in (out.out + out.err).replace("\n", "")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="deploys the POSIX shell files")
 def test_refresh_replaces_unedited_shell_files_only(tmp_path, monkeypatch):
     from den._install import main as install_main
@@ -725,6 +779,7 @@ def test_shell_refresh_plan_decides_extras_and_bin_itself(tmp_path, flag, capsys
         '{"den_refresh_plan": 1, "owned": "x"}',
         {**_PLAN, "owned": [str(Path(_BIN.anchor) / "x")]},  # paths, no digests
         {**_PLAN, "owned": {str(Path(_BIN.anchor) / "x"): "not a digest"}},
+        {**_PLAN, "absent": "x"},
     ],
 )
 def test_a_broken_refresh_plan_is_refused(tmp_path, plan, capsys):
