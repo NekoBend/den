@@ -647,22 +647,24 @@ def test_a_file_edited_after_the_check_is_kept(tmp_path, monkeypatch, capsys, re
 
     from den import _install
 
+    # Bytes, not text: write_text writes "\r\n" on Windows, which the
+    # byte-for-byte check rightly calls an edit.
     ours, edited = tmp_path / "ours.md", tmp_path / "edited.md"
     for path in (ours, edited):
-        path.write_text("OLD\n")
+        path.write_bytes(b"OLD\n")
     digest = hashlib.sha256(b"OLD\n").hexdigest()
     owned = {ours: digest, edited: digest} if refresh else None
     writer = _install._Writer(force=False, owned=owned)
     writer.stage(ours, b"NEW\n")
     writer.stage(edited, b"NEW\n")
     if not refresh:  # an install over identical files lists nothing
-        ours.write_text("NEW\n")
-        edited.write_text("NEW\n")
+        ours.write_bytes(b"NEW\n")
+        edited.write_bytes(b"NEW\n")
     real_ask = _install._Writer._ask
 
     def ask_then_edit(self, changed):
         answer = real_ask(self, changed)
-        edited.write_text("MINE\n")
+        edited.write_bytes(b"MINE\n")
         return answer
 
     monkeypatch.setattr(_install._Writer, "_ask", ask_then_edit)
