@@ -230,6 +230,12 @@ seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope
 foreign hooks untouched. Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
 
+`--all-tools` installs every verified tool: claude, copilot and cline (the
+extension). cline-cli is installed only when named, and naming it together
+with cline is refused (exit 2), in the interactive picker too, because the
+extension would then load the imprint and memory twice (see below). For
+`list` and `uninstall hook`, `--all-tools` still covers every tool.
+
 The workspace-relative config (`.claude/settings.json` and the other per-tool
 paths below) must stay in the workspace: `den install hook` refuses it when any
 path component is a symlink, so a checked-out repo cannot redirect the install
@@ -260,7 +266,7 @@ memory` keeps `den-memory.md` in sync, but only when cline-cli is installed here
 (detected by the `den-imprint.md` marker) -- so the extension's own
 `.clinerules/hooks/` does not trigger a memory mirror. That gate is what keeps the
 extension from double-delivering memory (it would otherwise inject via the hook
-AND read the `.clinerules` rule); do not install both for the extension.
+AND read the `.clinerules` rule), and it is why den refuses to install both.
 
 For `cline` (extension), `install` writes one script per event, named for the
 platform Cline expects: extensionless `<Event>` (executable bash) on macOS/Linux,

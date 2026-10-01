@@ -253,6 +253,52 @@ def test_install_refuses_unverified_tool(tmp_path, monkeypatch):
     assert not cfg.exists()
 
 
+def test_install_all_tools_installs_every_verified_tool_and_exits_0(
+    tmp_path, monkeypatch, capsys
+):
+    """--all-tools used to include the unverified codex, so it always ended with
+    exit 1, and both cline flavors, which the extension then double-delivers."""
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--all-tools"]) == 0
+    err = capsys.readouterr().err
+    assert "not verified" not in err
+    assert (tmp_path / ".clinerules" / "hooks" / "UserPromptSubmit").is_file()
+    assert (tmp_path / ".github" / "hooks" / "den.json").is_file()
+    assert not (tmp_path / ".clinerules" / "den-imprint.md").exists(), "no cline-cli"
+
+
+def test_install_refuses_cline_together_with_cline_cli(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = hook_main(["install", "--tool", "cline", "--tool", "cline-cli"])
+    assert rc == 2
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "cline-cli" in err[0]
+    assert not (tmp_path / ".clinerules").exists()
+    assert not (tmp_path / ".den").exists(), "nothing written"
+
+
+def test_install_picker_refuses_cline_together_with_cline_cli(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    answers = iter([["cline", "cline-cli"], ["cline-cli"]])
+    monkeypatch.setattr("den._ui.select", lambda *a, **k: next(answers))
+    assert hook_main(["install"]) == 0
+    assert "cline-cli" in capsys.readouterr().out, "the refusal was explained"
+    assert (tmp_path / ".clinerules" / "den-imprint.md").is_file()
+    assert not (tmp_path / ".clinerules" / "hooks").exists()
+
+
+def test_remove_all_tools_still_covers_cline_cli(tmp_path, monkeypatch):
+    # --all-tools leaves cline-cli out of an INSTALL only; remove must still
+    # find what an explicit --tool cline-cli installed.
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 0
+    assert hook_main(["remove", "--all-tools"]) == 0
+    assert not (tmp_path / ".clinerules" / "den-imprint.md").exists()
+
+
 def test_gemini_tool_is_retired(tmp_path, monkeypatch, capsys):
     # gemini-cli hit upstream EOL; its successor (Antigravity) reads the
     # cross-tool files den already deploys, so the tool entry is gone and

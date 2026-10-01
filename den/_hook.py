@@ -931,16 +931,42 @@ def _surface_existing_memory(den_dir: Path) -> None:
         print(f"  | {_safe_for_terminal(first)[:80]}", file=sys.stderr)
 
 
+# cline (the extension's per-turn hook) and cline-cli (the .clinerules rule files)
+# both reach the VS Code extension, which then gets the imprint and memory twice.
+_CLINE_PAIR = ("cline", "cline-cli")
+_CLINE_PAIR_REASON = (
+    "cline (the VS Code extension's per-turn hook) and cline-cli (.clinerules "
+    "rule files) together make the extension load the imprint and memory twice; "
+    "install one of them"
+)
+
+
+def _both_clines(tools: list[str]) -> bool:
+    return all(t in tools for t in _CLINE_PAIR)
+
+
+def _install_all_tools() -> list[str]:
+    """What `den install hook --all-tools` installs: every verified tool, with
+    cline standing for both cline flavors (see _CLINE_PAIR). An unverified tool
+    is not "all" of anything installable, so it is not attempted either."""
+    return [t for t, s in _TOOLS.items() if s["verified"] and t != "cline-cli"]
+
+
 def _pick_tools_interactive() -> list[str] | None:
     """Ask which tools to install hooks for (checkbox). Returns --tool flags,
-    or None if nothing was selected."""
+    or None if nothing was selected. Asks again when both cline flavors are
+    picked."""
     from . import _ui
 
     _ui.say("den hook install -- per-turn imprint hooks in this workspace.")
-    chosen = _ui.select(
-        "Which tools? (space to toggle, enter to confirm)",
-        [(t, t == "claude") for t, s in _TOOLS.items() if s["verified"]],
-    )
+    while True:
+        chosen = _ui.select(
+            "Which tools? (space to toggle, enter to confirm)",
+            [(t, t == "claude") for t, s in _TOOLS.items() if s["verified"]],
+        )
+        if not _both_clines(chosen):
+            break
+        _ui.say(f"  {_CLINE_PAIR_REASON}.", style="yellow")
     if not chosen:
         _ui.say("  (none selected; nothing to install)")
         return None
@@ -960,8 +986,11 @@ def _cmd_install(argv: list[str]) -> int:
             return 0
         argv = picked + list(argv)
 
-    tools, override = _parse_tool_args(argv)
+    tools, override = _parse_tool_args(argv, all_tools=_install_all_tools())
     if tools is None:
+        return 2
+    if _both_clines(tools):
+        print(f"{_ERR_INSTALL}: {_CLINE_PAIR_REASON}.", file=sys.stderr)
         return 2
 
     den_dir = _find_den_dir(Path.cwd())
@@ -978,9 +1007,10 @@ def _cmd_install(argv: list[str]) -> int:
         spec = _TOOLS[tool]
         handlers = _FORMATS.get(spec.get("format", ""))
         if not spec["verified"] or handlers is None:
+            verified = ", ".join(t for t, s in _TOOLS.items() if s["verified"])
             print(
                 f"den hook install: '{tool}' is not verified yet; skipping. "
-                f"Verified: claude, copilot, cline.",
+                f"Verified: {verified}.",
                 file=sys.stderr,
             )
             rc = 1
@@ -1049,8 +1079,11 @@ def _cmd_imprint(argv: list[str]) -> int:
 
 
 def _parse_tool_args(
-    argv: list[str], *, default_all: bool = False
+    argv: list[str], *, default_all: bool = False, all_tools: list[str] | None = None
 ) -> tuple[list[str] | None, str | None]:
+    """(tools, --config) from argv. --all-tools means `all_tools` (install's
+    installable set), else every tool den knows, so list and remove still reach
+    whatever an explicit --tool installed."""
     tools: list[str] = []
     override: str | None = None
     i = 0
@@ -1063,7 +1096,7 @@ def _parse_tool_args(
             tools.append(name)
             i += 2
         elif argv[i] == "--all-tools":
-            tools = list(_TOOLS)
+            tools = list(_TOOLS) if all_tools is None else list(all_tools)
             i += 1
         elif argv[i] == "--config" and i + 1 < len(argv):
             override = argv[i + 1]
