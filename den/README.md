@@ -207,6 +207,13 @@ the hooks never block a tool call. Each turn the tool runs `den hook run`, which
    `den hook memory show` (agent-owned memory) as additional context, and
 2. checkpoints memory, capturing the previous turn's direct edits.
 
+`den hook run` fails open for every tool: an argument it does not know (an
+event or tool from another den version), a pinned `--den-dir` that is not
+absolute on this OS (a command written on the other side of a WSL/Windows
+pair), or an error while reading memory is one line on stderr, the tool's
+empty response, and exit 0 with nothing injected. It never exits 2, which
+Claude Code treats as blocking the prompt.
+
 Two files, two owners:
 
 - `.den/imprint.md` - static directives that must not fall out of context (read

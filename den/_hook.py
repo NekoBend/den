@@ -266,15 +266,29 @@ _EMITTERS = {
 # --------------------------------------------------------------------------- #
 
 
-def _cmd_run(argv: list[str]) -> int:
-    event, tool, den_dir_arg = _parse_run_args(argv)
-    if event is None or tool is None:
-        return 2
+def _cmd_run(argv: list[str]) -> int:  # ruff: ignore[too-many-return-statements]  # one exit per skip
+    """The per-event worker. It FAILS OPEN: every problem -- a bad argument, a
+    --den-dir that is not absolute here (a command written on the other OS of a
+    WSL/Windows pair), an event or tool this den version does not know, an error
+    while reading memory -- is one line on stderr, the tool's empty response on
+    stdout, and exit 0. Never 2: Claude Code treats exit 2 as "block", which
+    erases every prompt and keeps Stop from stopping, and a hook that can only
+    imprint must never take the session down with it."""
+    event, tool, den_dir_arg, problem = _parse_run_args(argv)
+    spec = _TOOLS.get(tool) if tool else None
+    emit = _EMITTERS.get(spec.get("emit", "")) if spec else None
+    native = spec["events"].get(event, event) if spec and event else ""
 
-    spec = _TOOLS.get(tool)
+    def skip(reason: str) -> int:
+        print(f"den hook run: {reason}; nothing injected", file=sys.stderr)
+        if emit is not None:
+            emit(native, "")
+        return 0
+
+    if problem:
+        return skip(problem)
     if spec is None:
-        print(f"den hook run: unknown tool '{tool}'", file=sys.stderr)
-        return 2
+        return skip(f"unknown tool '{tool}'")
     if spec.get("format") == "clinerules":
         print(
             f"den hook run: '{tool}' delivers via .clinerules rule files, not a "
@@ -283,8 +297,7 @@ def _cmd_run(argv: list[str]) -> int:
         )
         return 0
     if event not in spec["events"]:
-        print(f"den hook run: tool '{tool}' has no event '{event}'", file=sys.stderr)
-        return 2
+        return skip(f"tool '{tool}' has no event '{event}'")
 
     # Prefer the den dir pinned at install time (--den-dir): it binds the hook to
     # the workspace the user explicitly set up, so a checked-out repo cannot get
@@ -297,38 +310,38 @@ def _cmd_run(argv: list[str]) -> int:
             # against the agent's cwd, which is exactly the cwd-dependence pinning
             # exists to remove (a repo could ship a hook with --den-dir .den).
             # Refuse rather than silently re-open the injection vector.
-            print(
-                f"den hook run: --den-dir must be absolute, got '{den_dir_arg}'",
-                file=sys.stderr,
-            )
-            return 2
+            return skip(f"--den-dir must be absolute, got '{den_dir_arg}'")
     else:
         den_dir = _find_den_dir(Path.cwd())
-
-    # Always checkpoint: captures the previous turn's direct edits to memory.md.
-    # Cheap and content-gated, so unconditional is fine on every event.
-    _do_checkpoint(den_dir)
 
     # Inject only on inject-events; other events still get an (empty) response
     # because some tools (cline, copilot) require valid JSON on every hook.
     # copilot's per-turn (userPromptSubmitted) is notification-only, so do not
     # compose for it -- it injects only at session-start.
     inject = event in _INJECT_EVENTS and not (tool == "copilot" and event == "per-turn")
-    text = _compose(den_dir) if inject else ""
-    emit = _EMITTERS.get(spec["emit"])
+    try:
+        # Always checkpoint: captures the previous turn's direct edits to
+        # memory.md. Cheap and content-gated, so unconditional is fine on every
+        # event.
+        _do_checkpoint(den_dir)
+        text = _compose(den_dir) if inject else ""
+    except Exception as exc:  # ruff: ignore[blind-except]  # fail open, see above
+        return skip(f"{type(exc).__name__}: {exc}")
     if emit is None:
         # Fallback for tools whose emitter is not implemented yet: plain stdout.
         if text:
             sys.stdout.write(text + "\n")
     else:
-        emit(spec["events"][event], text)
+        emit(native, text)
 
     return 0
 
 
 def _parse_run_args(
     argv: list[str],
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """(event, tool, den_dir, problem). Whatever parsed is returned even when
+    there is a problem, so the caller can still answer the tool it names."""
     event = tool = den_dir = None
     i = 0
     while i < len(argv):
@@ -342,12 +355,10 @@ def _parse_run_args(
             den_dir = argv[i + 1]
             i += 2
         else:
-            print(f"den hook run: unexpected arg '{argv[i]}'", file=sys.stderr)
-            return None, None, None
+            return event, tool, den_dir, f"unexpected arg '{argv[i]}'"
     if event is None or tool is None:
-        print("den hook run: --event and --tool are required", file=sys.stderr)
-        return None, None, None
-    return event, tool, den_dir
+        return event, tool, den_dir, "--event and --tool are required"
+    return event, tool, den_dir, None
 
 
 # --------------------------------------------------------------------------- #

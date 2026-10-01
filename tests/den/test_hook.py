@@ -1,6 +1,7 @@
 """Tests for den hook (den/_hook.py)."""
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -104,14 +105,81 @@ def test_run_falls_back_to_ancestor_walk_without_pin(tmp_path, monkeypatch, caps
 
 def test_run_refuses_relative_den_dir(tmp_path, monkeypatch, capsys):
     # a relative --den-dir resolves against cwd, re-opening the injection vector
-    # a repo could plant (`--den-dir .den`). Must be refused, not used.
+    # a repo could plant (`--den-dir .den`). Must be refused, not used -- and the
+    # refusal must not block the turn (see the fail-open tests below).
     _seed(tmp_path, imprint="PLANTED\n")
     monkeypatch.chdir(tmp_path)
     rc = hook_main(
         ["run", "--event", "per-turn", "--tool", "claude", "--den-dir", ".den"]
     )
-    assert rc == 2
-    assert "must be absolute" in capsys.readouterr().err
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "must be absolute" in out.err
+    assert "PLANTED" not in out.out
+    assert not (tmp_path / ".den" / "history").exists(), "nothing ran on it"
+
+
+# --------------------------------------------------------------------------- #
+# run fails open: exit 2 is Claude Code's "block" (the prompt is erased, Stop
+# cannot stop), so no problem in den may ever surface as 2. A failing run says so
+# in one stderr line, answers with the tool's empty response, and exits 0.
+# --------------------------------------------------------------------------- #
+
+_EMPTY_RESPONSE = {"claude": "", "copilot": "{}", "cline": '{"cancel": false}'}
+
+
+@pytest.mark.parametrize("tool", sorted(_EMPTY_RESPONSE))
+def test_run_with_another_os_den_dir_fails_open(tmp_path, monkeypatch, capsys, tool):
+    """The finding's repro: a hook command committed on Windows names a C:\\ path,
+    which is not absolute on POSIX (and a /home path is not on Windows)."""
+    monkeypatch.chdir(tmp_path)
+    foreign = "/home/me/proj/.den" if os.name == "nt" else "C:\\Users\\me\\proj\\.den"
+    argv = ["run", "--event", "per-turn", "--tool", tool, "--den-dir", foreign]
+    assert hook_main(argv) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == _EMPTY_RESPONSE[tool]
+    assert len(out.err.strip().splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--tool", "claude"],
+        ["run", "--event", "per-turn"],
+        ["run", "--event", "nope", "--tool", "claude"],
+        ["run", "--event", "per-turn", "--tool", "nope"],
+        ["run", "--event", "per-turn", "--tool", "claude", "--bogus"],
+    ],
+)
+def test_run_argument_problems_fail_open(tmp_path, monkeypatch, capsys, argv):
+    # version skew (an event or tool the installed den no longer has) and a
+    # hand-edited command both land here
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(argv) == 0
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert len(out.err.strip().splitlines()) == 1
+
+
+def test_run_unknown_event_still_answers_cline_with_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "nope", "--tool", "cline"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"cancel": False}
+
+
+def test_run_survives_an_unexpected_error(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, imprint="IMP\n")
+    monkeypatch.chdir(tmp_path)
+
+    def _boom(_den_dir):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(_hook, "_do_checkpoint", _boom)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "cline"]) == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {"cancel": False}
+    assert "Permission denied" in out.err
+    assert len(out.err.strip().splitlines()) == 1
 
 
 def test_install_backs_up_malformed_json(tmp_path, monkeypatch):
@@ -167,17 +235,6 @@ def test_run_post_tool_checkpoints_without_output(tmp_path, monkeypatch, capsys)
     assert hook_main(["run", "--event", "post-tool", "--tool", "claude"]) == 0
     assert capsys.readouterr().out == ""
     assert (tmp_path / ".den" / "history").is_dir()
-
-
-def test_run_requires_event_and_tool(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    assert hook_main(["run", "--tool", "claude"]) == 2
-    assert hook_main(["run", "--event", "per-turn"]) == 2
-
-
-def test_run_rejects_unknown_event(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    assert hook_main(["run", "--event", "nope", "--tool", "claude"]) == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -302,12 +359,17 @@ def test_remove_all_tools_still_covers_cline_cli(tmp_path, monkeypatch):
 def test_gemini_tool_is_retired(tmp_path, monkeypatch, capsys):
     # gemini-cli hit upstream EOL; its successor (Antigravity) reads the
     # cross-tool files den already deploys, so the tool entry is gone and
-    # both install and run treat it as unknown.
+    # both install and run treat it as unknown. run fails open (exit 0, one
+    # stderr line), so a leftover gemini hook config never blocks anything.
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "settings.json"
     assert hook_main(["install", "--tool", "gemini", "--config", str(cfg)]) != 0
     assert not cfg.exists()
-    assert hook_main(["run", "--event", "per-turn", "--tool", "gemini"]) != 0
+    capsys.readouterr()
+    assert hook_main(["run", "--event", "per-turn", "--tool", "gemini"]) == 0
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "unknown tool 'gemini'" in out.err
 
 
 def test_remove_strips_den_keeps_foreign(tmp_path, monkeypatch):
