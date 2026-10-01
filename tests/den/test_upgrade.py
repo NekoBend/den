@@ -144,7 +144,7 @@ def test_dry_run_shows_the_forced_steps(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "den install skills --refresh-plan <plan> --force" in out
     assert "den install shell --refresh-plan <plan> --force" in out
-    assert "skills in /x/skills" in out
+    assert "would refresh skills in /x/skills" in out
 
 
 def test_refresh_step_failure_is_reported(monkeypatch, capsys):

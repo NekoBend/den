@@ -197,20 +197,21 @@ def _refresh_steps(plan: dict, plan_file: str, *, force: bool) -> list[tuple[str
     return steps
 
 
-def _describe(plan: dict, left_alone: list[Path], prefix: str) -> None:
-    """What the refresh will touch, one line each."""
+def _describe(plan: dict, left_alone: list[Path]) -> None:
+    """The dry-run's account of the plan, one line each."""
     for entry in plan["skills"]:
-        print(f"{prefix}skills in {entry['target']} ({len(entry['names'])} found)")
+        found = len(entry["names"])
+        print(f"[dry-run] would refresh skills in {entry['target']} ({found} found)")
     for entry in plan["parents"]:
-        print(f"{prefix}parent {entry['path']} ({entry['profile']})")
+        print(f"[dry-run] would refresh {entry['path']} ({entry['profile']} parent)")
     if plan["shell"]:
-        print(f"{prefix}the shell files")
+        print("[dry-run] would refresh the shell files")
     if not plan["skills"] and not plan["parents"] and not plan["shell"]:
-        print(f"{prefix}nothing: no deployed den skills, parent or shell files found")
+        print("[dry-run] nothing to refresh: no deployed den files found")
     for parent in left_alone:
         print(
-            f"{prefix}not {parent}: it matches neither parent den deploys"
-            " (hand-written or edited), so it is left alone"
+            f"[dry-run] would leave {parent} alone: it matches neither parent den"
+            " deploys (hand-written or edited)"
         )
 
 
@@ -288,7 +289,7 @@ def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag
     if dry_run:
         print(f"[dry-run] would run: uv {' '.join(upgrade_args)}")
         if refresh:
-            _describe(plan, left_alone, "[dry-run] would refresh: ")
+            _describe(plan, left_alone)
             for step in _refresh_steps(plan, "<plan>", force=force):
                 print(f"[dry-run] would run: den {' '.join(step)}")
         return 0
