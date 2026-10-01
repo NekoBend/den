@@ -32,6 +32,8 @@ cat > "$CMD_STUB" <<'LUA'
 local H = { env = {}, files = {}, dirs = {}, execs = {}, popens = {}, written = {},
             aliases = {}, alias_names = {}, filters = {}, inputs = {}, provides = {},
             history = {}, cwd = "C:\\start" }
+-- The real ones, for a scenario that runs a tool for real (pwsh).
+H.real_open, H.real_popen = io.open, io.popen
 local function key(p) return p:lower() end
 
 local function reader(text)
@@ -472,8 +474,10 @@ assert_eq "cmd/zoxide: absent" 'z foo execs=0 popens=0' "$out"
 # Hardware info: the cache file shared with pwsh's hwinfo.ps1
 # =============================================================================
 # HW boots with starship on PATH. Its stub answers the PowerShell detection
-# with opts.detect (CPU line, GPU line) and starship's init with nothing;
-# HW_DUMP prints the values, the spawns and the cache file.
+# with opts.detect (what hw_detect prints: STARSHIP_X=<name> lines, then ok)
+# and starship's init with nothing; dump() prints the values, the spawns and
+# the cache file. The names themselves are checked against hwinfo.ps1 with
+# pwsh further down.
 HW='local CACHE = "C:\\L\\shell-cache\\hwinfo-cache.PC.ps1"
 local function hw(opts)
     opts = opts or {}
@@ -514,7 +518,7 @@ detections=0 cache=$(printf '\357\273\277')\$env:STARSHIP_CPU_INTEL = 'i7-12700H
 
 echo "[cmd] a miss detects once and writes the file as hwinfo.ps1 does"
 out=$(run_lua hw_miss "$HW"'
-hw{ detect = "Intel(R) Core(TM) i7-12700H\r\nNVIDIA GeForce RTX O'"'"'Brien\r\n" }
+hw{ detect = "STARSHIP_CPU_INTEL=i7-12700H\r\nSTARSHIP_GPU_NVIDIA=RTX O'"'"'Brien\r\nok\r\n" }
 dump()
 print("dir made=" .. tostring(H.dirs["c:\\l\\shell-cache"]) .. " temp left=" .. tostring(H.file(CACHE .. ".tmp.4242") ~= nil))')
 assert_eq "cmd/hwinfo: miss, detect, write" "CPU_INTEL=i7-12700H saved=nil
@@ -526,10 +530,10 @@ dir made=true temp left=false" "$out"
 
 echo "[cmd] a detection that recognizes nothing is recorded, and the next window trusts it"
 out=$(run_lua hw_none "$HW"'
-hw{ detect = "Snapdragon(R) X Elite\nQualcomm(R) Adreno(TM) X1-85 GPU\n" }
+hw{ detect = "ok\n" }
 dump()
 H.popens = {}
-hw{ detect = "Intel(R) Core(TM) i7-12700H\n\n" }
+hw{ detect = "STARSHIP_CPU_INTEL=i7-12700H\nok\n" }
 dump()')
 assert_eq "cmd/hwinfo: no-match marker" 'detections=1 cache=# den: no CPU or GPU name it recognizes
 
@@ -545,7 +549,7 @@ for _, bad in ipairs({
     "",
 }) do
     H.files = {}; H.popens = {}; H.env = {}
-    hw{ files = { [CACHE] = bad }, detect = "AMD Ryzen 7 7840U\nAMD Radeon 780M\n" }
+    hw{ files = { [CACHE] = bad }, detect = "STARSHIP_CPU_AMD=Ryzen 7 7840U\nSTARSHIP_GPU_AMD=Radeon 780M\nok\n" }
     print(H.show(H.env.PATH) .. " " .. H.show(H.env.STARSHIP_CPU_AMD) .. " " .. H.show(H.env.STARSHIP_CPU_INTEL)
         .. " | " .. H.file(CACHE):gsub("\n", " / "))
 end')
@@ -568,12 +572,118 @@ detections=0 cache=\$env:STARSHIP_CPU_INTEL = 'x'
 
 detections=1 cache=nil" "$out"
 
+echo "[cmd] the detection's output sets only den's names; cut short, it keeps what came first"
+out=$(run_lua hw_output "$HW"'
+hw{ detect = "PATH=C:\\evil\nSTARSHIP_CONFIG=C:\\evil.toml\nSTARSHIP_GPU_AMD=\nSTARSHIP_CPU_AMD=Ryzen 7 7840U \r\nok\n" }
+print(H.show(H.env.PATH) .. " " .. H.show(H.env.STARSHIP_CONFIG))
+dump()
+H.files = {}; H.popens = {}; H.env = {}
+hw{ detect = "STARSHIP_CPU_INTEL=i7-12700H\nGet-CimInstance : Invalid class\n" }
+dump()
+H.files = {}; H.popens = {}; H.env = {}
+hw{ detect = "Get-ItemProperty : Cannot find path\n" }
+dump()')
+assert_eq "cmd/hwinfo: detection output" "C:\\tools nil
+CPU_AMD=Ryzen 7 7840U saved=nil
+detections=1 cache=\$env:STARSHIP_CPU_AMD = 'Ryzen 7 7840U'
+
+CPU_INTEL=i7-12700H saved=nil
+detections=1 cache=\$env:STARSHIP_CPU_INTEL = 'i7-12700H'
+
+detections=1 cache=nil" "$out"
+
 echo "[cmd] an inherited _DEN_HWINFO_HIDDEN=1 keeps the values hidden, as toggle-hwinfo left them"
 out=$(run_lua hw_hidden "$HW"'
 hw{ env = { _DEN_HWINFO_HIDDEN = "1" }, files = { [CACHE] = "$env:STARSHIP_CPU_INTEL = '"'i7'"'\n" } }
 dump()')
 assert_eq "cmd/hwinfo: hidden stays hidden" "CPU_INTEL=nil saved=i7
 detections=0 cache=\$env:STARSHIP_CPU_INTEL = 'i7'" "$out"
+
+# Both shells read and write one cache file, so cmd must name the hardware as
+# hwinfo.ps1 does. Each sample (registry CPU name | nvidia-smi's answer | first
+# video controller) goes through hwinfo.ps1's own detection block and through
+# the command starship.lua hands powershell.exe, both run by pwsh with the
+# registry, CIM and nvidia-smi faked; they must name it alike.
+if command -v pwsh >/dev/null 2>&1; then
+    echo "[cmd] the hardware names match hwinfo.ps1's (they share the cache file)"
+    HW_SAMPLES="$TESTTMP/hw_samples.txt"
+    cat > "$HW_SAMPLES" <<'SAMPLES'
+Intel(R) Core(TM) i7-12700H|NVIDIA GeForce RTX 3060 Laptop GPU|Intel(R) Iris(R) Xe Graphics
+13th Gen Intel(R) Core(TM) i7-13700K||Intel(R) UHD Graphics 770
+Intel(R) Xeon(R) W-2295 CPU @ 3.00GHz|NVIDIA RTX A4000|Microsoft Basic Display Adapter
+Intel(R) Celeron(R) N4020 CPU @ 1.10GHz||Intel(R) UHD Graphics 600
+AMD Ryzen 9 5900X 12-Core Processor||AMD Radeon RX 6800 XT
+AMD Ryzen 7 7840U w/ Radeon 780M Graphics||AMD Radeon 780M Graphics
+Snapdragon(R) X Elite - X1E78100 - Qualcomm(R) Oryon(TM) CPU||Qualcomm(R) Adreno(TM) X1-85 GPU
+SAMPLES
+    # The fakes; $hwSample holds one sample line when they run.
+    HW_FAKES="$TESTTMP/hw_fakes.ps1"
+    cat > "$HW_FAKES" <<'FAKES'
+$hwCpu, $hwSmi, $hwGpu = $hwSample -split '\|'
+function Get-ItemProperty { [pscustomobject]@{ ProcessorNameString = $hwCpu } }
+function Get-CimInstance {
+  if ("$args" -match 'Processor') { [pscustomobject]@{ Name = $hwCpu } }
+  else { [pscustomobject]@{ Name = $hwGpu } }
+}
+# nvidia-smi exists only when the sample has an answer from it; an empty
+# PATH keeps a real one out of Get-Command's sight.
+$env:PATH = ''
+Remove-Item Function:\nvidia-smi -ErrorAction SilentlyContinue
+if ($hwSmi) { function nvidia-smi { $hwSmi } }
+foreach ($v in 'STARSHIP_CPU_INTEL', 'STARSHIP_CPU_AMD', 'STARSHIP_GPU_NVIDIA', 'STARSHIP_GPU_AMD', 'STARSHIP_GPU_INTEL') {
+  Remove-Item "Env:\$v" -ErrorAction SilentlyContinue
+}
+FAKES
+    # hwinfo.ps1's detection: from the CPU lookup to the end of its try block.
+    HW_PS_BLOCK=$(sed -n '/\$cpuName = (Get-ItemProperty/,/} catch {}/p' "$DOTFILES/shell/pwsh/hwinfo.ps1" | sed '$d')
+    assert_contains "cmd/hwinfo: hwinfo.ps1's detection block found" '$gpuShort = ' "$HW_PS_BLOCK"
+    HW_PS="$TESTTMP/hw_pwsh.ps1"
+    {
+        printf '%s\n' "foreach (\$hwSample in Get-Content -LiteralPath '$HW_SAMPLES') {"
+        cat "$HW_FAKES"
+        printf 'try {\n%s\n} catch {}\n' "$HW_PS_BLOCK"
+        cat <<'PRINT'
+$o = foreach ($v in 'STARSHIP_CPU_INTEL', 'STARSHIP_CPU_AMD', 'STARSHIP_GPU_NVIDIA', 'STARSHIP_GPU_AMD', 'STARSHIP_GPU_INTEL') {
+  $x = [Environment]::GetEnvironmentVariable($v); if ($x) { "$v=$x" }
+}
+if ($o) { $o -join ' ' } else { 'none' }
+}
+PRINT
+    } > "$HW_PS"
+    want=$(pwsh -NoProfile -NonInteractive -File "$HW_PS" 2>&1 | tr -d '\r')
+    assert_eq "cmd/hwinfo: hwinfo.ps1's names for the first sample" \
+        "STARSHIP_CPU_INTEL=i7-12700H STARSHIP_GPU_NVIDIA=RTX 3060 Laptop GPU" "$(printf '%s\n' "$want" | head -n 1)"
+    # The scenario writes each run's script to hw_cmd.ps1: the sample, the
+    # fakes, then the -Command text starship.lua built.
+    HW_CMD="$TESTTMP/hw_cmd.ps1"
+    out=$(run_lua hw_names '
+local vars = { "STARSHIP_CPU_INTEL", "STARSHIP_CPU_AMD", "STARSHIP_GPU_NVIDIA", "STARSHIP_GPU_AMD", "STARSHIP_GPU_INTEL" }
+local fakes = H.real_open([['"$HW_FAKES"']]):read("*a")
+local function ps_quote(s) return "'"'"'" .. s:gsub("'"'"'", "'"''"'") .. "'"'"'" end
+for sample in H.real_open([['"$HW_SAMPLES"']]):lines() do
+    H.files = {}; H.popens = {}; H.env = {}
+    H.boot{ env = { PATH = "C:\\tools" }, files = { ["C:\\tools\\starship.exe"] = "" },
+        popen = function(c)
+            if not c:find("powershell.exe", 1, true) then return "" end
+            local text = assert(c:match("%-Command \"(.*)\"\"$"))
+            local f = assert(H.real_open([['"$HW_CMD"']], "w"))
+            f:write("$hwSample = ", ps_quote(sample), "\n", fakes, text, "\n")
+            f:close()
+            local p = H.real_popen([[pwsh -NoProfile -NonInteractive -File "'"$HW_CMD"'" 2>&1]])
+            local r = p:read("*a")
+            p:close()
+            return r
+        end }
+    local o = {}
+    for _, v in ipairs(vars) do
+        if H.env[v] then o[#o + 1] = v .. "=" .. H.env[v] end
+    end
+    print(#o > 0 and table.concat(o, " ") or "none")
+end')
+    assert_eq "cmd/hwinfo: cmd names every sample as hwinfo.ps1 does" "$want" "$out"
+else
+    echo "  SKIP: hardware names against hwinfo.ps1 (no pwsh)"
+fi
 
 fi
 

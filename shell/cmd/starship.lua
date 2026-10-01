@@ -182,7 +182,8 @@ define_aliases()
 -- cmd shares: %LOCALAPPDATA%\shell-cache\hwinfo-cache.<COMPUTERNAME>.ps1,
 -- lines of `$env:STARSHIP_X = '<value>'`, read here as text against exactly
 -- that pattern and never run. Only when there is none does Windows PowerShell
--- detect them, and the result is written back the way hwinfo.ps1 writes it.
+-- detect them, with hwinfo.ps1's own detection and naming (hw_detect below),
+-- and the result is written back the way hwinfo.ps1 writes it.
 -- A detection that recognizes no name (Windows on ARM) is written too, as one
 -- comment line, so the next window does not detect again. pwsh's
 -- refresh-hwinfo deletes the file.
@@ -192,6 +193,15 @@ local hw_vars = { "STARSHIP_CPU_INTEL", "STARSHIP_CPU_AMD", "STARSHIP_GPU_NVIDIA
 local hw_cache = os.getenv("LOCALAPPDATA") .. "\\shell-cache\\hwinfo-cache."
     .. (os.getenv("COMPUTERNAME") or "") .. ".ps1"
 local hw_none = "# den: no CPU or GPU name it recognizes"
+
+local function hw_known(name)
+    for _, v in ipairs(hw_vars) do
+        if v == name then
+            return true
+        end
+    end
+    return false
+end
 
 local function hw_any()
     for _, v in ipairs(hw_vars) do
@@ -227,11 +237,7 @@ local function hw_read_cache()
                 return false
             end
             val = val:gsub("''", "'")
-            local ours = false
-            for _, v in ipairs(hw_vars) do
-                ours = ours or v == name
-            end
-            if not ours or not hw_printable(val) then
+            if not hw_known(name) or not hw_printable(val) then
                 return false
             end
             vals[name] = val
@@ -284,52 +290,41 @@ local function hw_write_cache()
     unlink(tmp)
 end
 
+-- hwinfo.ps1's detection as one Windows PowerShell command, its -replace
+-- chains copied as they are: both shells read and write the same cache file,
+-- so they must name the hardware alike. The CPU name comes from the registry,
+-- the GPU's from nvidia-smi or else the first video controller. It prints a
+-- STARSHIP_X=<name> line for each one it recognizes, then "ok" once it got
+-- through; a failure part way leaves only the lines printed before it.
+local hw_detect = table.concat({
+    [[try{]],
+    [[$c=(Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction Stop).ProcessorNameString.Trim();]],
+    [[$s=($c -replace '\(R\)' -replace '\(TM\)' -replace '\d+\w+ Gen ' -replace 'Genuine ' -replace 'Intel ' -replace 'AMD ' -replace 'Core ' -replace ' CPU.*$' -replace ' \d+-Core Processor' -replace '\s+', ' ').Trim();]],
+    [[if($c -match 'Intel'){'STARSHIP_CPU_INTEL='+$s}elseif($c -match 'AMD'){'STARSHIP_CPU_AMD='+$s};]],
+    [[$g='';if(Get-Command nvidia-smi -ErrorAction SilentlyContinue){$g=nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null|Select-Object -First 1;if($g){$g=$g.Trim()}};]],
+    [[if(-not $g){$g=(Get-CimInstance Win32_VideoController -ErrorAction Stop|Select-Object -First 1).Name.Trim()};]],
+    [[$t=($g -replace 'NVIDIA\s+GeForce\s*' -replace 'AMD\s+' -replace 'Intel\(R\)\s*' -replace '\s+', ' ').Trim();]],
+    [[if($g -match 'NVIDIA'){'STARSHIP_GPU_NVIDIA='+$t}elseif($g -match 'AMD|Radeon'){'STARSHIP_GPU_AMD='+$t}elseif($g -match 'Intel'){'STARSHIP_GPU_INTEL='+$t};]],
+    [['ok'}catch{}]],
+})
+
 if starship_exe then
     if not hw_any() and not hw_read_cache() then
-        -- Uses PowerShell for CIM queries (WMIC deprecated on Win11)
-        local h = io.popen(cmd_line(powershell_exe, '-NoProfile -NoLogo -Command "'
-            .. '$cpu=(Get-CimInstance Win32_Processor).Name.Trim();'
-            .. "$gpu='';"
-            .. 'if(Get-Command nvidia-smi -EA 0){'
-            .. '$gpu=(nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null|Select -First 1).Trim()};'
-            .. 'if(-not $gpu){'
-            .. '$gpu=(Get-CimInstance Win32_VideoController|Select -First 1).Name.Trim()};'
-            .. 'Write-Host $cpu;Write-Host $gpu"'))
+        local h = io.popen(cmd_line(powershell_exe, '-NoProfile -NoLogo -Command "' .. hw_detect .. '"'))
         if h then
-            local cpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
-            local gpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
+            local out = h:read("*a") or ""
             h:close()
-
-            if cpu_raw ~= "" then
-                local cpu_short = cpu_raw
-                    :gsub(".*Core%(TM%)%s*", "")
-                    :gsub(".*Ryzen%s*", "Ryzen ")
-                    :gsub("%s+", " ")
-                    :match("^%s*(.-)%s*$")
-                if cpu_raw:find("Intel") then
-                    os.setenv("STARSHIP_CPU_INTEL", cpu_short)
-                elseif cpu_raw:find("AMD") then
-                    os.setenv("STARSHIP_CPU_AMD", cpu_short)
+            local found, ran = false, false
+            for line in out:gmatch("[^\r\n]+") do
+                local name, val = line:match("^(STARSHIP_[%u_]+)=(.-)%s*$")
+                if name and hw_known(name) and val ~= "" then
+                    os.setenv(name, val)
+                    found = true
+                elseif line:match("^ok%s*$") then
+                    ran = true
                 end
             end
-
-            if gpu_raw ~= "" then
-                local gpu_short = gpu_raw
-                    :gsub("NVIDIA%s+GeForce%s*", "")
-                    :gsub("AMD%s+", "")
-                    :gsub("Intel%(R%)%s*", "")
-                    :gsub("%s+", " ")
-                    :match("^%s*(.-)%s*$")
-                if gpu_raw:find("NVIDIA") then
-                    os.setenv("STARSHIP_GPU_NVIDIA", gpu_short)
-                elseif gpu_raw:find("AMD") or gpu_raw:find("Radeon") then
-                    os.setenv("STARSHIP_GPU_AMD", gpu_short)
-                elseif gpu_raw:find("Intel") then
-                    os.setenv("STARSHIP_GPU_INTEL", gpu_short)
-                end
-            end
-
-            if cpu_raw ~= "" or gpu_raw ~= "" then
+            if found or ran then
                 hw_write_cache()
             end
         end
