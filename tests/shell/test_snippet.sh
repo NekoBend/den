@@ -49,6 +49,17 @@ snippet run q 2>/dev/null
 snippet save s git status -sb x@y k=v ./p:q 2>/dev/null
 snippet show s
 SH
+# zsh's globsubst gives an unquoted expansion's ~ and = their meaning again,
+# so a quoted ~ or = word must stay quoted on the way into the store.
+SQ_GLOBSUBST="$TESTTMP/sq_globsubst.zsh"
+cat > "$SQ_GLOBSUBST" <<'SH'
+setopt globsubst
+snippet save w printf '<%s>\n' '~/x' '~' '=foo' "x'~/y" 2>/dev/null
+snippet show w
+snippet run w 2>/dev/null
+snippet save o '~/bin/t =x' 2>/dev/null
+snippet show o
+SH
 
 # snippet_suite <shell> — same checks under bash and zsh.
 snippet_suite() {
@@ -163,6 +174,17 @@ seqs.fa" "$actual"
 [=ls]
 [a\\b]
 git status -sb x@y k=v ./p:q" "$actual"
+
+    if [ "$sh" = zsh ]; then
+        echo "[zsh] save keeps a quoted ~ or = word, and a one-argument command, as given under globsubst"
+        actual=$(cd "$SQ" && run_zsh "$SNIPPET_SH" ". '$SQ_GLOBSUBST'" | tr -d '\r')
+        assert_eq "zsh/save under globsubst" "printf '<%s>\\n' '~/x' '~' '=foo' 'x'\\''~/y'
+<~/x>
+<~>
+<=foo>
+<x'~/y>
+~/bin/t =x" "$actual"
+    fi
 
     echo "[$sh] save makes the store 0600 in a 0700 directory, under umask 022"
     rm -rf "${SNIPPET_DIR:?}"

@@ -90,23 +90,26 @@ _snippet_save() {
     shift
     if [ "$#" -eq 1 ]; then
         # One argument: the whole command, saved as typed.
-        _ss_cmd=$1
+        _ss_cmd="$1"
     elif [ "$#" -gt 1 ]; then
         # Several words: the shell took their quotes off, and run/pick eval the
         # saved line, so a word with anything but [A-Za-z0-9_@%+=:,./-] in it (or
         # empty, or starting with =, which zsh expands) goes back in single
         # quotes, a ' in it written '\''. eval then sees the same words. A $var
         # or $(...) the user left unquoted was expanded before snippet ran.
+        # Each expansion of a word stays in double quotes, even in case and in
+        # assignments: with zsh's globsubst an unquoted one has its ~ and =
+        # expanded.
         _ss_cmd=
         for _ss_a in "$@"; do
-            case $_ss_a in
+            case "$_ss_a" in
                 ''|\=*|*[!A-Za-z0-9_@%+=:,./-]*)
                     _ss_q=
                     while :; do
-                        case $_ss_a in
+                        case "$_ss_a" in
                             *\'*)
                                 _ss_q="$_ss_q${_ss_a%%\'*}'\\''"
-                                _ss_a=${_ss_a#*\'} ;;
+                                _ss_a="${_ss_a#*\'}" ;;
                             *)
                                 _ss_q="$_ss_q$_ss_a"
                                 break ;;
@@ -193,7 +196,7 @@ _snippet_show() {
         echo "usage: snippet show <name>" >&2
         return 1
     fi
-    if ! _ssh_cmd=$(_snip_get "$1"); then
+    if ! _ssh_cmd="$(_snip_get "$1")"; then
         echo "snippet show: no such snippet '$1'" >&2
         unset _ssh_cmd
         return 1
@@ -252,7 +255,7 @@ _snippet_run() {
         echo "usage: snippet run <name>" >&2
         return 1
     fi
-    if ! _sr_cmd=$(_snip_get "$1"); then
+    if ! _sr_cmd="$(_snip_get "$1")"; then
         echo "snippet run: no such snippet '$1' (snippet ls)" >&2
         unset _sr_cmd
         return 1
