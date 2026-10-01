@@ -53,15 +53,20 @@ function _SnippetGet([string]$Name) {
 # [A-Za-z0-9_./:\=+-] in it (or empty) goes back in single quotes, a ' in it
 # doubled. So does a string that starts like a number ('007', '1kb', '.5'),
 # which PowerShell would read back as one; a number typed bare keeps the text
-# it was typed as. $true/$false and a { } block come back as themselves, and
-# an array (a,b) as its items joined by commas. A quoted first word would be a
-# string, not a command, so it gets the call operator.
+# it was typed as. A string that starts with '-' ('-Verbose', '--') is quoted
+# too, or it would come back as a parameter or the end of them. A parameter
+# typed bare (-Recurse, -Path:) carries the hidden <CommandParameterName> note
+# PowerShell puts on $args for splatting, and goes back as typed, whatever
+# dash it starts with. $true/$false and a { } block come back as themselves,
+# and an array (a,b) as its items joined by commas. A quoted first word would
+# be a string, not a command, so it gets the call operator.
 function _SnippetQuote($Word, [switch]$First) {
     if ($Word -is [array]) { return (@($Word | ForEach-Object { _SnippetQuote $_ }) -join ',') }
     if ($Word -is [bool]) { return $(if ($Word) { '$true' } else { '$false' }) }
     if ($Word -is [scriptblock]) { return '{' + $Word + '}' }
     $s = [string]$Word
-    if ($s -match '^[A-Za-z0-9_./:\\=+-]+\z' -and -not ($Word -is [string] -and $s -match '^\.?\d')) { return $s }
+    if ($null -ne $Word -and $null -ne $Word.PSObject.Properties['<CommandParameterName>']) { return $s }
+    if ($s -match '^[A-Za-z0-9_./:\\=+-]+\z' -and -not ($Word -is [string] -and $s -match '^(\.?\d|-)')) { return $s }
     $q = "'" + [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($s) + "'"
     if ($First) { "& $q" } else { $q }
 }

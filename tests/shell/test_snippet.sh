@@ -397,6 +397,31 @@ PS1
     assert_eq "pwsh/snippet save words: values" "show '007' '1kb' '.5' '0x10' 007 1kb \$true \$false { \$_ }
 007:String 1kb:String .5:String 0x10:String 7:Int32 1024:Int32 True:Boolean False:Boolean  \$_ :ScriptBlock" "$actual"
 
+    reset_store
+    echo "[pwsh] save <word...> quotes a string that starts with a dash, and keeps a parameter typed bare"
+    # sw tells a bound -Flag from a string '-Flag'. The en dash parameter is
+    # built from [char]0x2013 and shown as <U+2013>.
+    cat > "$TESTTMP/sq_dash.ps1" <<'PS1'
+function sw { param([switch]$Flag, [Parameter(ValueFromRemainingArguments)]$Rest) "flag=$Flag rest=$($Rest -join ',')" }
+snippet save q sw '-Flag' '--' '-x:1' '-' x 2>$null
+snippet show q
+snippet run q 2>$null
+snippet save b sw -Flag y 2>$null
+snippet show b
+snippet run b 2>$null
+$d = [char]0x2013
+Invoke-Expression "snippet save e sw ${d}Flag z 2>`$null"
+(snippet show e).Replace([string]$d, '<U+2013>')
+snippet run e 2>$null
+PS1
+    actual=$(run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/sq_dash.ps1'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet save words: dash-leading strings and parameters" "sw '-Flag' '--' '-x:1' '-' x
+flag=False rest=-Flag,--,-x:1,-,x
+sw -Flag y
+flag=True rest=y
+sw <U+2013>Flag z
+flag=True rest=z" "$actual"
+
     echo "[pwsh] save makes the store 0600 in a 0700 directory, under umask 022"
     rm -rf "${SNIPPET_DIR:?}"
     (umask 022; run_pwsh "$SNIPPET_PS1" "snippet save t 'Write-Output tok'" 2>/dev/null)

@@ -246,19 +246,21 @@ so it is trusted), which lets it `cd`, set vars, and use the current environment
   words. bash/zsh write a `'` inside as `'\''`, pwsh as `''`. pwsh hands
   `snippet` values, not text: a first word that needs quotes is saved as
   `& '<path>'`, so it still runs as a command; a quoted word that starts like
-  a number (`'007'`, `'1kb'`) stays a string; `$true`, `$false`, a `{ ... }`
-  block and a list `a,b` come back as they were; any other value (a hashtable,
-  say) is saved as its text. A `$var` or `$(...)` you did not quote was
-  expanded by the shell before `snippet` ran, so the saved line holds its value
-  from that moment, and one you quoted is saved as literal text. bash/zsh do
-  the same with a glob (`*.txt`) or `~` you did not quote, against the files
-  there at that moment (a glob that matches nothing reaches `save` as is in
-  bash, and is saved quoted). pwsh leaves globs and `~` to the command it runs,
-  so they reach `save` as typed and are saved quoted like the other characters
-  above: on pwsh `snippet save l ls *.txt` saves `ls '*.txt'`, which looks for
-  a file named `*.txt` when it runs. To have any of these expanded each time
-  the snippet runs, use the one-argument form (`snippet save h 'echo $HOME'`,
-  `snippet save l 'ls *.txt'`).
+  a number (`'007'`, `'1kb'`) or with a dash (`'-Verbose'`, `'--'`) stays a
+  string, while a parameter typed bare (`-Recurse`) is saved bare (pwsh takes
+  a bare `--` itself, so it never reaches `save`: quote it); `$true`,
+  `$false`, a `{ ... }` block and a list `a,b` come back as they were; any
+  other value (a hashtable, say) is saved as its text. A `$var` or `$(...)`
+  you did not quote was expanded by the shell before `snippet` ran, so the
+  saved line holds its value from that moment, and one you quoted is saved as
+  literal text. bash/zsh do the same with a glob (`*.txt`) or `~` you did not
+  quote, against the files there at that moment (a glob that matches nothing
+  reaches `save` as is in bash, and is saved quoted). pwsh leaves globs and
+  `~` to the command it runs, so they reach `save` as typed and are saved
+  quoted like the other characters above: on pwsh `snippet save l ls *.txt`
+  saves `ls '*.txt'`, which looks for a file named `*.txt` when it runs. To
+  have any of these expanded each time the snippet runs, use the one-argument
+  form (`snippet save h 'echo $HOME'`, `snippet save l 'ls *.txt'`).
 
 The store is shared, but a snippet is saved in the syntax of the shell that
 saved it, so one saved in bash/zsh may not run in pwsh, or the other way round.
