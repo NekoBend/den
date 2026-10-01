@@ -431,6 +431,25 @@ def test_refresh_force_backs_up_what_it_replaces(tmp_path, monkeypatch):
     assert backups == [backup.relative_to(home)], "den's own files need no backup"
 
 
+def test_refresh_force_leaves_an_edited_den_parent_alone(tmp_path, monkeypatch, capsys):
+    """--force replaces kept skill and shell files, never a parent prompt: an
+    edited one matches neither profile, so the plan does not name it."""
+    _deploy_like_a_user(monkeypatch)
+    parent = Path.home() / ".copilot" / "copilot-instructions.md"
+    parent.write_text(parent.read_text() + "\nMY EDIT TO THE DEN PARENT\n")
+    before = parent.read_bytes()
+    _upgrade_to(monkeypatch, _new_version(tmp_path))
+    assert upgrade_main(["--refresh", "--force"]) == 0
+    assert parent.read_bytes() == before
+    assert not parent.with_name(parent.name + ".den.bak").exists()
+    assert "copilot-instructions.md alone" in capsys.readouterr().err.replace("\n", "")
+    capsys.readouterr()
+    assert upgrade_main(["--help"]) == 0
+    usage = " ".join(capsys.readouterr().out.split())
+    assert "--force also replace the kept skill and shell files" in usage
+    assert "never a parent prompt" in usage
+
+
 def test_refresh_keeps_the_no_den_cli_flavor_and_deleted_skills(tmp_path, monkeypatch):
     import shutil
 

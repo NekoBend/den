@@ -227,9 +227,10 @@ def _usage() -> None:
         "             deployed (in the same profile), and the shell files. Only\n"
         "             files still exactly as the old version deployed them are\n"
         "             replaced; edited ones are kept and listed, and a parent\n"
-        "             prompt den did not deploy is never touched.\n"
-        "  --force    also replace the kept files, copying each to\n"
-        "             <file>.den.bak first\n"
+        "             prompt not exactly as den deployed it (edited or\n"
+        "             hand-written) is never touched.\n"
+        "  --force    also replace the kept skill and shell files, copying\n"
+        "             each to <file>.den.bak first (never a parent prompt)\n"
         "  --dry-run  print what would be refreshed without running anything"
     )
 
