@@ -167,6 +167,9 @@ On cmd, a wrapper runs the modern tool whenever `PATH` has it and ends with
 the tool's exit code; the native command runs only when the tool is missing or
 the wrappers are off. A `grep` with no match therefore exits 1 instead of
 running `findstr` too, and a `cat` or `ls` with one bad operand prints once.
+`find` is the exception: as before, `find.exe` also runs when `fd` exits
+non-zero, which is how a DOS-style `find "text" file.txt` typed at the prompt
+still answers.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

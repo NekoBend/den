@@ -3,10 +3,11 @@ rem cmd_shims.cmd - run den's cmd shims (shell\cmd\bin) for real. The Windows
 rem CI job calls it; it exits 1 when any check fails. The tools are stand-ins
 rem that cmd_fake_tool.ps1 builds: each prints its arguments as [arg] lines
 rem and exits with FAKE_RC. Checked: the wrappers run the tool found on PATH,
-rem keep its exit code and run their fallback only without it; no where.* or
-rem tool in the current directory runs; touch takes several files; uv passes
-rem the arguments after `run` through unchanged; python3 runs a venv's
-rem python.exe; path lists and sets PATH; again asks before it re-runs.
+rem keep its exit code and run their fallback only without it (find also
+rem after a failing fd); no where.* or tool in the current directory runs;
+rem touch takes several files; uv passes the arguments after `run` through
+rem unchanged; python3 runs a venv's python.exe; path lists and sets PATH;
+rem again asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -57,9 +58,13 @@ call :expect %errorlevel% 1 "grep: rg finds nothing, exit 1, no findstr after it
 call "%BIN%\cat.cmd" a.txt missing.txt >"%O%" 2>&1
 call :expect %errorlevel% 1 "cat: bat fails, no type after it"
 
->"%W%" echo [x]
-call "%BIN%\find.cmd" x <nul >"%O%" 2>&1
-call :expect %errorlevel% 1 "find: fd fails, no find.exe after it"
+rem find is the exception: find.exe still runs after a failing fd, so a
+rem DOS-style find typed at the prompt answers as it always has
+call "%BIN%\find.cmd" "zzz" a.txt >"%O%" 2>&1
+set "RC=%errorlevel%"
+set "OK="
+"%FINDSTR%" /x /l /c:"[zzz]" "%O%" >nul && "%FINDSTR%" /x /l /c:"zzz" "%O%" >nul && if "%RC%"=="0" set "OK=1"
+call :check "find: fd fails, then find.exe answers"
 
 set "FAKE_RC="
 >"%W%" echo [--tree]

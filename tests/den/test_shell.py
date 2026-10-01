@@ -116,7 +116,8 @@ def _cmd_code(name: str) -> list[str]:
     ]
 
 
-# The wrapper shims and the modern tool each one prefers.
+# The wrapper shims and the modern tool each one prefers. find.cmd is not
+# here: it keeps running find.exe after a failing fd (see its own test).
 _CMD_WRAPPERS = {
     "ls": "lsd",
     "la": "lsd",
@@ -126,7 +127,6 @@ _CMD_WRAPPERS = {
     "llt": "lsd",
     "cat": "bat",
     "grep": "rg",
-    "find": "fd",
 }
 
 
@@ -146,6 +146,20 @@ def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
         assert 'if defined _t "%_t%" ' in joined, name
         assert "if not defined _t " in joined, name
         assert code[-1] == "exit /b %errorlevel%", name
+
+
+def test_cmd_find_still_falls_back_to_find_exe_after_fd_fails():
+    # A DOS-style `find "text" file.txt` or `find /c /v "" file.txt` typed at
+    # the prompt makes fd exit non-zero (it reads file.txt as a search path),
+    # and the find.exe run after it is what answered. That stays as it was
+    # (what `find` should mean on cmd is not decided); only the lookup moved
+    # to System32's where.exe and fd's absolute path.
+    code = _cmd_code("find")
+    find_exe = "%SystemRoot%\\System32\\find.exe %*"
+    assert "where.exe $PATH:fd.exe" in "\n".join(code)
+    assert f'if defined _t "%_t%" %* || {find_exe}' in code
+    assert f"if not defined _t {find_exe}" in code
+    assert code[-1] == "exit /b %errorlevel%"
 
 
 def test_cmd_shims_call_where_and_powershell_by_system32_path():
