@@ -932,9 +932,12 @@ def _strip_legacy(
 
 
 def _git(git: str, cwd: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only git query in the workspace. core.fsmonitor is forced off:
+    it is the repository-config setting that runs a command on reads, and the
+    workspace may be an extracted archive with a .git/config of its own."""
     try:
         return subprocess.run(
-            [git, "-C", str(cwd), *args],
+            [git, "-c", "core.fsmonitor=false", "-C", str(cwd), *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
