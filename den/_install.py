@@ -212,10 +212,14 @@ class _Writer:
         force: bool,
         owned: dict[Path, str] | None = None,
         absent: set[Path] | None = None,
+        forceable: bool = True,
     ) -> None:
         self.force = force
         self.owned = owned
         self.absent = absent or set()
+        # False for what --force never replaces (a parent prompt): the lists
+        # then do not offer it
+        self.forceable = forceable
         self._items: list[tuple[Path, bytes]] = []
         self._roots: list[Path] = []
 
@@ -278,9 +282,13 @@ class _Writer:
             # A refresh asks nothing: what it may replace was decided before the
             # upgrade. The rest is the user's (or a version whose update was
             # skipped), kept and listed.
+            hint = (
+                "--force backs each up to <file>.den.bak and replaces it"
+                if self.forceable
+                else "never replaced, not even with --force"
+            )
             _ui.say(
-                "Left alone (edited, or not as den last deployed them; "
-                "--force backs each up to <file>.den.bak and replaces it):",
+                f"Left alone (edited, or not as den last deployed them; {hint}):",
                 style="yellow",
             )
             for d in changed:
@@ -422,17 +430,21 @@ class _Writer:
                 changed.append(dest)
         return changed
 
-    @staticmethod
     def _report(
-        backed_up: list[tuple[Path, Path]], missing: list[Path], kept: int, refused: int
+        self,
+        backed_up: list[tuple[Path, Path]],
+        missing: list[Path],
+        kept: int,
+        refused: int,
     ) -> None:
         """commit's closing lines."""
         for d, bak in backed_up:
             print(f"  backed up {d} -> {bak.name}", file=sys.stderr)
         if missing:
+            hint = "; --force creates them" if self.forceable else ""
             _ui.say(
                 "Not created again (deleted since den deployed them, or never"
-                " deployed; --force creates them):",
+                f" deployed{hint}):",
                 style="yellow",
             )
             for d in missing:
@@ -626,13 +638,14 @@ def load_refresh_plan(path: str) -> dict:
     return plan
 
 
-def refresh_writer(plan: dict, *, force: bool) -> _Writer:
+def refresh_writer(plan: dict, *, force: bool, forceable: bool = True) -> _Writer:
     """A _Writer for the plan: it replaces the files the plan proves are den's
     and does not create again the ones it found missing (see _Writer)."""
     return _Writer(
         force=force,
         owned={Path(p): digest for p, digest in plan["owned"].items()},
         absent={Path(p) for p in plan["absent"]},
+        forceable=forceable,
     )
 
 
@@ -662,7 +675,7 @@ def _install_refresh(plan_path: str, *, force: bool, dry_run: bool) -> int:
     names = _skill_names()
     known = set(plan["known_skills"])
     writer = refresh_writer(plan, force=force)
-    parents = refresh_writer(plan, force=False)  # --force never takes a parent
+    parents = refresh_writer(plan, force=False, forceable=False)  # never by --force
     for entry in plan["skills"]:
         target = Path(entry["target"])
         present = set(entry["names"])

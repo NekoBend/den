@@ -493,7 +493,9 @@ def test_refresh_keeps_an_edit_made_while_uv_runs(tmp_path, monkeypatch, capsys)
     assert str(skill) in listing and str(parent) in listing
 
 
-def test_refresh_force_backs_up_an_edit_made_while_uv_runs(tmp_path, monkeypatch):
+def test_refresh_force_backs_up_an_edit_made_while_uv_runs(
+    tmp_path, monkeypatch, capsys
+):
     _deploy_like_a_user(monkeypatch)
     skill, parent, edit = _edit_while_uv_runs()
     _upgrade_to(monkeypatch, _new_version(tmp_path), during=edit)
@@ -505,6 +507,9 @@ def test_refresh_force_backs_up_an_edit_made_while_uv_runs(tmp_path, monkeypatch
     assert "EDITED DURING THE UPGRADE" in parent.read_text()
     assert "NEXT VERSION" not in parent.read_text()
     assert not parent.with_name(parent.name + ".den.bak").exists()
+    out = capsys.readouterr()
+    listing = " ".join((out.out + out.err).split())
+    assert "never replaced, not even with --force" in listing
 
 
 def test_refresh_keeps_the_no_den_cli_flavor_and_deleted_skills(tmp_path, monkeypatch):
