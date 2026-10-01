@@ -5,9 +5,10 @@
 #
 # Snippets live in $XDG_CONFIG_HOME/den/snippets, one per line, TAB-separated:
 #   name<TAB>command
-# `save <name> '<command>'` (one argument) and stdin store the command as given;
-# `save <name> <word...>` stores the words, each quoted again where it needs it
-# (see _snippet_save). pwsh shares the store but quotes in its own syntax.
+# `save <name> '<command>'` (one argument) and stdin (its first line only) store
+# the command as given; `save <name> <word...>` stores the words, each quoted
+# again where it needs it (see _snippet_save). pwsh shares the store but quotes
+# in its own syntax.
 # The command is everything after the first TAB, so it may itself contain tabs;
 # only the name (field 1) is restricted to [A-Za-z0-9_-]. `run`/`pick` eval the
 # command in the CURRENT shell (you saved it, so it is trusted), which lets it

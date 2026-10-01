@@ -111,6 +111,12 @@ snippet_suite() {
     assert_eq "$sh/stdin save" "echo piped" "$actual"
 
     reset_store
+    echo "[$sh] save from stdin keeps the first line only"
+    actual=$("$run" "$SNIPPET_SH" "printf 'echo first\necho second\n' | snippet save f 2>&1; snippet show f" | tr -d '\r')
+    assert_eq "$sh/stdin save first line" "snippet: saved 'f'
+echo first" "$actual"
+
+    reset_store
     echo "[$sh] save from stdin without a trailing newline"
     actual=$("$run" "$SNIPPET_SH" "printf 'echo nonl' | snippet save b >/dev/null 2>&1; snippet show b" | tr -d '\r')
     assert_eq "$sh/stdin save no-newline" "echo nonl" "$actual"
@@ -332,7 +338,7 @@ if command -v pwsh >/dev/null 2>&1; then
 
     reset_store
     echo "[pwsh] save from stdin takes the first line"
-    actual=$(run_pwsh "$SNIPPET_PS1" "'Write-Output piped' | snippet save p; snippet show p" | tr -d '\r')
+    actual=$(run_pwsh "$SNIPPET_PS1" "'Write-Output piped', 'Write-Output dropped' | snippet save p; snippet show p" | tr -d '\r')
     assert_eq "pwsh/snippet stdin save" "Write-Output piped" "$actual"
 
     reset_store

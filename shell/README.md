@@ -217,7 +217,7 @@ Save favorite commands by name and run them later, instead of `history | grep`.
 
 | Command | What it does |
 |---------|--------------|
-| `snippet save <name> '<command>'` | save a command exactly as typed (or pipe it via stdin); alias `snip` |
+| `snippet save <name> '<command>'` | save a command exactly as typed (or pipe it via stdin, first line only); alias `snip` |
 | `snippet save <name> <word...>` | save the words, each quoted again if it needs it, and print the saved line |
 | `snippet ls` | list saved snippets |
 | `snippet show <name>` | print a snippet's command (no run) |
@@ -235,7 +235,9 @@ so it is trusted), which lets it `cd`, set vars, and use the current environment
 `save` takes the command in one of these forms:
 - **One argument** (`snippet save cnt 'grep -c ">" seqs.fa | tee n.txt'`) or
   **stdin** (`echo 'make -j8 test' | snippet save t`): stored exactly as given.
-  This is the form for pipes, redirections, `;` and `&&`.
+  A snippet is one line: from stdin `save` reads only the first line and drops
+  the rest, and it refuses one argument that holds a newline. This is the form
+  for pipes, redirections, `;` and `&&`.
 - **Several words** (`snippet save clean rm "My File.txt"`): the shell has
   already taken the quotes off each word, so `save` puts single quotes back
   around each word that holds a blank or a character the shell would read
