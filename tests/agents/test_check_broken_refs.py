@@ -1062,6 +1062,18 @@ def test_the_base_and_the_changed_file_count_go_to_stderr(tmp_path: Path) -> Non
     assert "merge-base" not in proc.stderr, proc.stderr
 
 
+def test_code_audit_tells_the_model_to_pass_a_base_for_committed_changes() -> None:
+    skills = SCRIPT.parents[2] / "skills" / "code-audit"
+    step3 = (skills / "SKILL.md").read_text(encoding="utf-8")
+    step3 = step3[step3.index("### Step 3") : step3.index("### Step 4")]
+    correctness = (skills / "reference" / "dimensions" / "correctness.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (step3, correctness):
+        assert "--base" in text, text
+        assert "git merge-base" in text, text
+
+
 # ---------- git and rg are never taken from the checkout ----------
 
 
