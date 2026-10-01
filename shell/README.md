@@ -128,7 +128,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 |---------|--------------|
 | `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF |
 | `cdi` | zoxide interactive pick |
-| `zd` / `zdi` | always zoxide (ignore the toggle) |
+| `zd` / `zdi` | always zoxide (ignore the toggle); cmd also has `z` / `zi`, each on a line of its own |
 | `back [N]` / `fwd [N]` | go N entries back / forward in this session's directory history, browser-style (default 1) |
 | `back -l` / `back -i` | list the history / pick an entry with fzf (no `-i` on cmd); see COMMANDS.md |
 | `up [N]`, `.1`..`.9` | go up N directories (`..` = up 1; no `.1`..`.9` on pwsh, which reads `.1` as the number 0.1) |

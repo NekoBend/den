@@ -86,7 +86,12 @@ end
 os.getenv = function(n) return H.env[n] end
 os.setenv = function(n, v) H.env[n] = v; return true end
 os.getcwd = function() return H.cwd end
-os.isdir = function(p) return H.dirs[key(p)] == true end
+-- A relative path is taken from H.cwd, as Windows does.
+local function abs(p)
+    if p:match("^%a:") or p:match("^[\\/]") then return p end
+    return (H.cwd:gsub("\\$", "")) .. "\\" .. p
+end
+os.isdir = function(p) return H.dirs[key(abs(p))] == true end
 os.mkdir = function(p) H.dirs[key(p)] = true; return true end
 os.execute = function(c)
     H.execs[#H.execs + 1] = c
@@ -332,6 +337,107 @@ H.boot{ old = "1.2", env = { STARSHIP_CPU_INTEL = "stub" } }
 H.input("echo hi")
 print(H.input("again") .. " " .. H.show(H.env._DEN_AGAIN) .. " " .. #H.inputs .. " " .. #H.provides)')
 assert_eq "cmd/again: old Clink, line untouched" 'again nil 0 0' "$out"
+
+
+# =============================================================================
+# zoxide: z / zi / zd / zdi and zoxide add
+# =============================================================================
+# ZX boots with zoxide on PATH; its stub answers `query` with C:\proj\<last
+# keyword> (nothing for "nomatch").
+ZX='local function zx(opts)
+    opts = opts or {}
+    opts.env = opts.env or {}
+    opts.env.PATH = "C:\\tools"
+    opts.env.STARSHIP_CPU_INTEL = "stub"
+    opts.files = { ["C:\\tools\\zoxide.exe"] = "" }
+    opts.popen = function(c)
+        local last = c:match("\"([^\"]*)\"\"$")
+        if not c:find(" query ", 1, true) or not last or last == "nomatch" then return "" end
+        return "C:\\proj\\" .. last .. "\n"
+    end
+    H.boot(opts)
+end'
+
+echo "[cmd] no zoxide init at startup: zoxide has no cmd target"
+out=$(run_lua zx_start "$ZX"'
+zx()
+print("popens=" .. #H.popens .. " execs=" .. #H.execs .. " handlers=" .. #H.inputs)')
+assert_eq "cmd/zoxide: startup spawns nothing" 'popens=0 execs=0 handlers=2' "$out"
+
+echo "[cmd] z / zd ask zoxide query for the keywords and cd there"
+out=$(run_lua zx_query "$ZX"'
+zx()
+print(H.input("z foo bar"))
+print(H.popens[1])
+print(H.input("zd \"my dir\" \"a&b\""))
+print(H.popens[2])
+print(H.input("Z nomatch"))')
+assert_eq "cmd/zoxide: z and zd" 'cd /d "C:\proj\bar"
+""C:\tools\zoxide.exe" query --exclude "C:\start" -- "foo" "bar""
+cd /d "C:\proj\a&b"
+""C:\tools\zoxide.exe" query --exclude "C:\start" -- "my dir" "a&b""
+verify other 2>nul' "$out"
+
+echo "[cmd] zi / zdi use zoxide's interactive picker"
+out=$(run_lua zx_interactive "$ZX"'
+zx()
+print(H.input("zi foo"))
+print(H.popens[1])
+print(H.input("zdi"))
+print(H.popens[2])')
+assert_eq "cmd/zoxide: zi and zdi" 'cd /d "C:\proj\foo"
+""C:\tools\zoxide.exe" query --interactive -- "foo""
+verify other 2>nul
+""C:\tools\zoxide.exe" query --interactive --"' "$out"
+
+echo "[cmd] z alone goes home, z - back, z <dir> straight there, a drive root stays quoted"
+out=$(run_lua zx_forms "$ZX"'
+zx{ dirs = { "C:\\sub" }, cwd = "C:\\" }
+print(H.input("z"))
+print(H.input("z -") .. " " .. #H.popens)
+H.env._OLDPWD = "C:\\prev"
+print(H.input("z -"))
+print(H.input("z sub"))
+print("popens=" .. #H.popens)
+print(H.input("z x"))
+print(H.popens[1])' 2>&1)
+assert_eq "cmd/zoxide: the special forms" 'cd /d "C:\Users\me"
+zoxide: _OLDPWD is not set
+verify other 2>nul 0
+cd /d "C:\prev"
+cd /d "sub"
+popens=0
+cd /d "C:\proj\x"
+""C:\tools\zoxide.exe" query --exclude "C:\\" -- "x""' "$out"
+
+echo "[cmd] a line with more than one command is left to cmd"
+out=$(run_lua zx_compound "$ZX"'
+zx()
+print(H.input("z foo & dir"))
+print(H.input("zip -r a.zip ."))
+print("popens=" .. #H.popens)')
+assert_eq "cmd/zoxide: compound lines and other words untouched" 'z foo & dir
+zip -r a.zip .
+popens=0' "$out"
+
+echo "[cmd] each directory change is fed to zoxide add, once"
+out=$(run_lua zx_add "$ZX"'
+zx()
+H.prompt(); print("first prompt: " .. #H.execs)
+H.cwd = "C:\\a"; H.prompt(); print(H.execs[1])
+H.prompt(); print("same dir: " .. #H.execs)
+H.cwd = "C:\\"; H.prompt(); print(H.execs[2])')
+assert_eq "cmd/zoxide: zoxide add on change" 'first prompt: 0
+""C:\tools\zoxide.exe" add -- "C:\a""
+same dir: 1
+""C:\tools\zoxide.exe" add -- "C:\\""' "$out"
+
+echo "[cmd] without zoxide nothing is added or rewritten"
+out=$(run_lua zx_none '
+H.boot{ env = { STARSHIP_CPU_INTEL = "stub" } }
+H.cwd = "C:\\a"; H.prompt()
+print(H.input("z foo") .. " execs=" .. #H.execs .. " popens=" .. #H.popens)')
+assert_eq "cmd/zoxide: absent" 'z foo execs=0 popens=0' "$out"
 
 fi
 

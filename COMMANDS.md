@@ -57,9 +57,14 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 | `c` | clear the screen | ✓ | ✓ | ✓ |
 
 den initializes zoxide with `--no-cmd` in bash/zsh/pwsh, so bare `z` / `zi` do not
-exist there — you jump through den's toggle-aware `cd` / `cdi` or the always-on
-`zd` / `zdi`. Only cmd runs `zoxide init cmd` without `--no-cmd`, so there `z` / `zi`
-work directly (with `zd` / `zdi` as doskey aliases for them).
+exist there: you jump through den's toggle-aware `cd` / `cdi` or the always-on
+`zd` / `zdi`. zoxide has no cmd init, so on cmd den's `starship.lua` does that
+work: it tells zoxide each directory you move to (`zoxide add`), and a line that
+is just `z ...` / `zi ...` (or `zd ...` / `zdi ...`, the same) becomes a `cd /d` to
+the directory `zoxide query` picks. As with zoxide's own `z`, `z` alone goes to
+`%USERPROFILE%`, `z -` to the previous directory and `z <existing dir>` straight
+there. This needs zoxide on `PATH` when cmd starts and Clink 1.2.16 or newer, and
+works only on a line of its own (`z foo & dir` is left to cmd).
 
 `back` / `fwd` work like a browser's back and forward buttons over this shell
 session's directory history (kept in memory, never written to disk):
@@ -95,7 +100,7 @@ $ back -l
   record at once when typed, not when a script or a function runs them, so a
   script counts only by where it ends up); cmd the Clink prompt filter in
   `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`
-  (`_OLDPWD` is still set too).
+  (`_OLDPWD` is still set too) and tells zoxide about each move.
 - On PowerShell the prompt recorder wraps the `prompt` function when den's line
   in `$PROFILE` runs, after the starship prompt den sets up there. The wrapper
   also runs zoxide's prompt hook, which starship's prompt setup drops; that is

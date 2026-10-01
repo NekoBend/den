@@ -215,6 +215,21 @@ alias("drir", "docker run -it --rm $*")
 alias("code", "code-insiders $*")
 alias("gu", "gitui $*")
 
+-- ===== zoxide =====
+-- zoxide has no cmd init (`zoxide init cmd` is an error), so den does what
+-- zoxide's own init does elsewhere: the directory-history filter below runs
+-- `zoxide add` for each directory you move to, and a line that is just
+-- `z ...` / `zi ...` (or zd / zdi, the names the other shells use) becomes a
+-- `cd /d` to the directory `zoxide query` picks.
+local zoxide_exe = find_on_path("zoxide")
+
+-- One argument for a program's command line, in double quotes. A trailing
+-- backslash is doubled, or it would escape the closing quote (C:\ would
+-- arrive as C:"). The text holds no double quote: words lose theirs.
+local function quote_arg(s)
+    return '"' .. (s:gsub("(\\+)$", "%1%1")) .. '"'
+end
+
 -- ===== Directory history for back / fwd (and _OLDPWD) =====
 -- Browser-style history for this cmd session. It lives in two environment
 -- variables, where the back.cmd / fwd.cmd shims (run by this same cmd process)
@@ -312,23 +327,94 @@ function dirhist_filter:filter(prompt)
     if cur ~= _prev_dir then
         os.setenv("_OLDPWD", _prev_dir)
         _prev_dir = cur
+        if zoxide_exe then
+            os.execute(cmd_line(zoxide_exe, "add -- " .. quote_arg(cur)))
+        end
     end
     return nil  -- don't modify prompt
 end
 
--- ===== Zoxide (smart cd) =====
-local zoxide_exe = find_on_path("zoxide")
-if zoxide_exe then
-    local zh = io.popen(cmd_line(zoxide_exe, "init cmd 2>nul"))
-    if zh then
-        local zoxide_init = zh:read("*a")
-        zh:close()
-        if zoxide_init and zoxide_init ~= "" then
-            load(zoxide_init)()
-            alias("zd", "z $*")
-            alias("zdi", "zi $*")
+-- ===== z / zi / zd / zdi =====
+-- Split a typed line into words as cmd quotes them: blanks separate, double
+-- quotes group and are dropped. nil when an & | < > or ^ stands outside
+-- quotes: a line with more than one command is left to cmd.
+local function split_words(line)
+    local words, word, quoted, inword = {}, {}, false, false
+    for c in line:gmatch(".") do
+        if c == '"' then
+            quoted, inword = not quoted, true
+        elseif not quoted and c:match("%s") then
+            if inword then
+                words[#words + 1] = table.concat(word)
+                word, inword = {}, false
+            end
+        elseif not quoted and c:match("[&|<>^]") then
+            return nil
+        else
+            word[#word + 1] = c
+            inword = true
         end
     end
+    if inword then
+        words[#words + 1] = table.concat(word)
+    end
+    return words
+end
+
+-- The directory `zoxide query <opts> -- <words>` picks, or nil when it finds
+-- none or its picker is cancelled (zoxide says why on stderr).
+local function zoxide_query(opts, words)
+    local args = { "query" }
+    for _, o in ipairs(opts) do
+        args[#args + 1] = o
+    end
+    args[#args + 1] = "--"
+    for _, w in ipairs(words) do
+        args[#args + 1] = quote_arg(w)
+    end
+    local h = io.popen(cmd_line(zoxide_exe, table.concat(args, " ")))
+    if not h then
+        return nil
+    end
+    local dir = (h:read("*l") or ""):gsub("%s+$", "")
+    h:close()
+    return dir ~= "" and dir or nil
+end
+
+-- As zoxide's z: no words go home, `-` to the previous directory, one word
+-- that names a directory straight there, anything else to zoxide's best
+-- match other than here. zi picks interactively (fzf). No pick leaves a
+-- command that only sets ERRORLEVEL 1 (`verify other`).
+local function zoxide_filter(line)
+    local words = split_words(line)
+    local cmd = words and words[1] and words[1]:lower()
+    if cmd ~= "z" and cmd ~= "zd" and cmd ~= "zi" and cmd ~= "zdi" then
+        return nil
+    end
+    table.remove(words, 1)
+    local dir
+    if cmd == "zi" or cmd == "zdi" then
+        dir = zoxide_query({ "--interactive" }, words)
+    elseif #words == 0 then
+        dir = os.getenv("USERPROFILE")
+    elseif #words == 1 and words[1] == "-" then
+        dir = os.getenv("_OLDPWD")
+        if not dir then
+            io.stderr:write("zoxide: _OLDPWD is not set\n")
+        end
+    elseif #words == 1 and os.isdir(words[1]) then
+        dir = words[1]
+    else
+        dir = zoxide_query({ "--exclude", quote_arg(os.getcwd()) }, words)
+    end
+    if not dir then
+        return "verify other 2>nul"
+    end
+    return 'cd /d "' .. dir .. '"'
+end
+
+if zoxide_exe and clink.onfilterinput then
+    clink.onfilterinput(zoxide_filter)
 end
 
 -- ===== again [N]: re-run a command from Clink's history =====
