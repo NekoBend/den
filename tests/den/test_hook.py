@@ -952,7 +952,9 @@ def test_symlinked_settings_json_without_den_entries_is_not_refused(
     assert hook_main(["remove", "--tool", "claude"]) == 0
     assert "refusing" not in capsys.readouterr().err
     if not dangling:
-        assert json.loads(shared.read_text()) == {"permissions": {"allow": ["Bash(ls)"]}}
+        assert json.loads(shared.read_text()) == {
+            "permissions": {"allow": ["Bash(ls)"]}
+        }
     else:
         assert not shared.exists()
 

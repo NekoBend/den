@@ -479,6 +479,67 @@ def test_install_force_backs_up_a_file_it_overwrites(tmp_path, monkeypatch):
     assert skill.with_name("SKILL.md.den.bak").read_text() == "MINE\n"
 
 
+def _skill_install(where: str, tmp_path: Path) -> tuple[list[str], Path]:
+    """(install skills args, the coding SKILL.md they deploy) for a confined
+    --target workspace or for a tool dir under the home."""
+    if where == "target":
+        return ["skills", "--target", str(tmp_path)], tmp_path / "skills"
+    return ["skills", "--tool", "claude"], Path.home() / ".claude" / "skills"
+
+
+@pytest.mark.parametrize("where", ["target", "tool"])
+def test_install_force_never_replaces_an_earlier_backup(
+    tmp_path, monkeypatch, capsys, where
+):
+    """The first --force saved the user's edit; a later one (after an upgrade,
+    the file holds den's previous content) must not back that up over it."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    deployed = skill.read_text()
+    skill.write_text("MINE\n")
+    assert install_main([*args, "--force"]) == 0
+    skill.write_text("den's content from an older version\n")
+    capsys.readouterr()
+    assert install_main([*args, "--force"]) == 0
+    assert skill.read_text() == deployed
+    assert skill.with_name("SKILL.md.den.bak").read_text() == "MINE\n"
+    second = skill.with_name("SKILL.md.den.bak.1")
+    assert second.read_text() == "den's content from an older version\n"
+    assert "SKILL.md.den.bak.1" in capsys.readouterr().err
+    # the same content again reuses the backup that already holds it
+    skill.write_text("MINE\n")
+    assert install_main([*args, "--force"]) == 0
+    assert not skill.with_name("SKILL.md.den.bak.2").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("where", ["target", "tool"])
+@pytest.mark.parametrize(
+    ("mode", "want"), [(0o600, 0o600), (0o755, 0o644)], ids=["private", "script"]
+)
+def test_install_force_backup_keeps_the_files_permissions(
+    tmp_path, monkeypatch, mode, want, where
+):
+    """A private file's backup must not be world-readable, and a backed-up
+    script must not stay executable."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    skill.chmod(mode)
+    assert install_main([*args, "--force"]) == 0
+    backup = skill.with_name("SKILL.md.den.bak")
+    assert backup.read_text() == "MINE\n"
+    assert backup.stat().st_mode & 0o777 == want
+
+
 def test_install_force_refuses_to_back_up_through_a_symlink(
     tmp_path, monkeypatch, symlink, capsys
 ):

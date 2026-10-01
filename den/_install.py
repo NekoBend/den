@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,7 +32,7 @@ from typing import Protocol
 from . import _ui
 from ._content import cheatsheets_dir, dist_dir, shared_dir, skills_dir
 from ._exe import find_tool
-from ._memory import _refuse_symlink, _write_guarded
+from ._memory import _NOFOLLOW, _refuse_symlink, _write_guarded
 
 # tool -> (skills_dir, parent_dir, parent_file). The cline (VS Code extension)
 # parent_dir is dynamic -- see _tool_paths/_cline_rules_dir; the value here is
@@ -176,7 +177,8 @@ class _Writer:
     files are written silently; files that already exist and DIFFER are listed
     and, unless --force, the user is asked once before overwriting (default no,
     so local edits are kept). Non-interactive: differing files are skipped.
-    --force copies each differing file to <file>.den.bak before replacing it.
+    --force copies each differing file to <file>.den.bak (or the first free
+    .den.bak.N) before replacing it.
 
     With `owned` (`den upgrade --refresh`, see _install_refresh) nothing is
     asked: a differing file in `owned` -- one the den that ran before the
@@ -263,35 +265,56 @@ class _Writer:
         return False, True
 
     @staticmethod
-    def _backup(dest: Path, guard: tuple[Path, Path] | None) -> bool:
-        """Copy `dest` to <dest>.den.bak before --force replaces it. False (one
-        line on stderr) when no backup could be made; the caller then leaves
-        `dest` alone, since replacing what could not be kept is the loss the
-        backup exists to prevent. An earlier backup is replaced: the file about
-        to be overwritten is the newer state. The copy is a plain 0644 file, so
-        a backed-up ~/.local/bin helper is not left executable on PATH."""
+    def _backup(dest: Path, guard: tuple[Path, Path] | None) -> Path | None:
+        """Copy `dest` beside itself before --force replaces it; the copy's
+        path, or None (one line on stderr) when no backup could be made, and
+        the caller then leaves `dest` alone, since replacing what could not be
+        kept is the loss the backup exists to prevent.
+
+        The copy is <dest>.den.bak, or the first free one of .den.bak.1, .2,
+        ...: an earlier backup holding something else (the edit an earlier
+        --force saved) is never replaced, and one holding these very bytes is
+        reused. It keeps the file's permission bits minus execute, so a private
+        file's copy stays private and a backed-up ~/.local/bin helper is not
+        left executable on PATH. A symlink (or anything not a regular file) at
+        a backup name refuses the backup instead of writing through it."""
+        # Under a confined root, `guard` holds the resolved path commit()
+        # already checked for symlinked components; the copy is its sibling.
+        real = guard[1] if guard is not None else dest
         try:
             data = dest.read_bytes()
-            if guard is not None:  # a confined root: never through a link below it
-                root, real = guard
-                return _write_guarded(
-                    root, real.with_name(real.name + ".den.bak"), data, _ERR
-                )
-            bak = dest.with_name(dest.name + ".den.bak")
-            if bak.is_symlink() or (bak.exists() and not bak.is_file()):
-                print(
-                    f"{_ERR}: not replacing {dest}: {bak} is not a regular file",
-                    file=sys.stderr,
-                )
-                return False
-            bak.write_bytes(data)
+            mode = stat.S_IMODE(dest.stat().st_mode) & 0o666
+            n = 0
+            while True:
+                bak = real.with_name(real.name + ".den.bak" + (f".{n}" if n else ""))
+                if bak.is_symlink() or (bak.exists() and not bak.is_file()):
+                    what = "a symlink" if bak.is_symlink() else "not a regular file"
+                    print(
+                        f"{_ERR}: not replacing {dest}: {bak} is {what}",
+                        file=sys.stderr,
+                    )
+                    return None
+                if not bak.exists():
+                    break
+                if bak.read_bytes() == data:
+                    return bak
+                n += 1
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
+            fd = os.open(bak, flags, 0o600)
+            fchmod = getattr(os, "fchmod", None)  # not on Windows before 3.13
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                if fchmod is not None:
+                    fchmod(fh.fileno(), mode)
+            if fchmod is None:
+                _chmod_no_follow(bak, mode)
         except OSError as exc:
             print(
                 f"{_ERR}: not replacing {dest}: cannot back it up: {exc}",
                 file=sys.stderr,
             )
-            return False
-        return True
+            return None
+        return bak
 
     def commit(self) -> int:  # ruff: ignore[too-many-branches]  # one per outcome
         """Write the staged files. Returns the number of files that were NOT
@@ -312,7 +335,7 @@ class _Writer:
         owned = self.owned if self.owned is not None else set()
         overwrite, silently_skipped = self._ask([d for d in changed if d not in owned])
         kept = 0
-        backed_up: list[Path] = []
+        backed_up: list[tuple[Path, Path]] = []
         for dest, content, guard in items:
             if dest.is_file():
                 if dest.read_bytes() == content:
@@ -323,10 +346,11 @@ class _Writer:
                         kept += 1
                         continue
                     if self.force:
-                        if not self._backup(dest, guard):
+                        bak = self._backup(dest, guard)
+                        if bak is None:
                             refused += 1
                             continue
-                        backed_up.append(dest)
+                        backed_up.append((dest, bak))
             if guard is None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
@@ -334,8 +358,8 @@ class _Writer:
                 refused += 1
                 continue
             self._ensure_mode(dest)
-        for d in backed_up:
-            print(f"  backed up {d} -> {d.name}.den.bak", file=sys.stderr)
+        for d, bak in backed_up:
+            print(f"  backed up {d} -> {bak.name}", file=sys.stderr)
         if kept:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
         if refused:
@@ -878,7 +902,8 @@ def _usage() -> None:
         " bundled sheets -> data dir\n"
         "\n"
         "Existing files that differ are kept unless you confirm (or pass --force,\n"
-        "which first copies each one it overwrites to <file>.den.bak).\n"
+        "which first copies each one it overwrites to <file>.den.bak, or to\n"
+        "<file>.den.bak.N when an earlier backup holds something else).\n"
         "\n"
         f"Tools: {', '.join(_TOOLS)}.\n"
         "skills with no --tool/--target deploys to ~/.claude and ~/.agents.\n"

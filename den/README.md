@@ -38,7 +38,9 @@ den verify <file.py...>               format/lint/typecheck each file, config-fa
 `den install` never silently clobbers local edits: files that already exist and
 differ from the bundled version are listed and you are asked once before
 overwriting (default no, so your changes are kept). Pass `--force` to overwrite
-without asking; each file it overwrites is first copied to `<file>.den.bak`.
+without asking; each file it overwrites is first copied to `<file>.den.bak`
+(`.den.bak.1`, `.2`, ... when an earlier backup holds something else; the copy
+keeps the file's permissions minus execute).
 Non-interactive runs skip the changed files and exit non-zero,
 so a scripted install cannot mistake a full skip for success. `den install hook`
 into a tool's settings file merges (it preserves foreign hooks and other keys).
