@@ -4,12 +4,14 @@ settings.set("prompt.spacing", "sparse")  -- cmd.exe adds its own newline + star
 
 -- ===== den's command shims: Clink aliases, never on PATH =====
 -- The shims in bin_dir (ls.cmd, find.cmd, python.cmd, ...) are reached only
--- through the aliases defined below. An alias (a doskey macro) expands only on
--- a line typed at the Clink prompt, so batch files, `cmd /c`, child processes
--- and starship's own probes keep seeing Windows' commands: System32 find.exe,
--- the real python. den's own commands (mkcd, dg, back, ...) do not exist there
--- either. bin_dir used to be put on PATH; a cmd started from such an older
--- session inherits that entry, so take it off again.
+-- through the aliases defined below. An alias (a doskey macro) expands only
+-- where a command starts on a line typed at the Clink prompt: at the start of
+-- the line, or after | or & (Clink's doskey.enhanced, on by default). Batch
+-- files, `cmd /c`, child processes and starship's own probes therefore keep
+-- seeing Windows' commands: System32 find.exe, the real python. den's own
+-- commands (mkcd, dg, back, ...) do not exist there either. bin_dir used to be
+-- put on PATH; a cmd started from such an older session inherits that entry,
+-- so take it off again.
 local bin_dir = os.getenv("LOCALAPPDATA") .. "\\clink\\bin"
 do
     local kept, dropped = {}, false

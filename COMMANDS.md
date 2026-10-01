@@ -26,11 +26,13 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   also set strict mode before it loads den.
 - In **cmd**, they are Clink aliases (doskey macros) for the shims in
   `%LOCALAPPDATA%\clink\bin`, which den does not put on `PATH`. Clink expands an
-  alias only on a line typed at its prompt, so a batch file, `cmd /c`, any other
-  program and starship's own probes get Windows' commands (System32 `find.exe`,
-  the real `python`), and den's own commands (`mkcd`, `dg`, `back`, `touch`, `head`,
-  ...) do not exist there either. That is one difference from pwsh, where a
-  script can call them.
+  alias only where a command starts on a line typed at its prompt: at the start
+  of the line, or after `|` or `&` (Clink's `doskey.enhanced`, on by default),
+  not after `if`, `for ... do`, `start` or `cmd /c`. So a batch file, `cmd /c`,
+  any other program and starship's own probes get Windows' commands (System32
+  `find.exe`, the real `python`), and den's own commands (`mkcd`, `dg`, `back`,
+  `touch`, `head`, ...) do not exist there either. That is one difference from
+  pwsh, where a script can call them.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
