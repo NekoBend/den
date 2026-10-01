@@ -197,7 +197,7 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `head` / `tail` | first / last N lines | native | ✓ | ✓ (positional) |
 | `wc` | line / word / char counts | native | ✓ | ✓ (positional) |
 | `which` | locate a command on PATH | native | ✓ | ✓ |
-| `touch` | create / update-timestamp a file | native | ✓ | ✓ |
+| `touch` | create each file, or update its timestamp | native | ✓ | ✓ |
 | `df` | disk free space | native | ✓ | — |
 | `env` | print env / run with VAR=val overrides | native | ✓ | — |
 | `split` | split a file into chunks | native | ✓ | — |
