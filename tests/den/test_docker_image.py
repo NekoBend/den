@@ -470,7 +470,8 @@ def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
     assert "usermod --uid 501 --gid 20 dev" in calls
     lines = result.stderr.splitlines()
     assert len(lines) == 1, result.stderr
-    assert "2 GB" in lines[0]
+    # The copy is an overlayfs cost; other storage drivers re-own in place.
+    assert "on overlayfs copies about 2 GB" in lines[0]
     assert "--build-arg USER_UID=501 --build-arg USER_GID=20" in lines[0]
 
 

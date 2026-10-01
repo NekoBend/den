@@ -98,7 +98,7 @@ prints a warning that shows this command.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so. On overlayfs the re-owning copies about 2 GB into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
+| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs den-dev`). On overlayfs the re-owning copies about 2 GB into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
 | `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. |
 
