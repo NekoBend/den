@@ -550,6 +550,51 @@ detections=0 cache=\$env:STARSHIP_CPU_INTEL = 'i7'" "$out"
 fi
 
 # =============================================================================
+# The PowerShell the head / tail / wc shims run
+# =============================================================================
+# A shim hands powershell.exe -Command "<text>" with its arguments in _ARG1 /
+# _ARG2; run that text the same way with pwsh.
+cmd_ps_commands() {
+    sed -n 's/.*powershell\(\.exe"\)\{0,1\} -NoProfile -Command "\(.*\)"[[:space:]]*$/\2/p' "$CMD_BIN/$1.cmd"
+}
+ps_counts() {
+    _ARG1="$1" pwsh -NoProfile -NonInteractive -Command "\$o = & { $2 }; '{0} {1} {2}' -f \$o.Lines, \$o.Words, \$o.Characters"
+}
+
+if command -v pwsh >/dev/null 2>&1; then
+    WC_CMD=$(cmd_ps_commands wc)
+    printf 'a b\n\n\nc\n\n' > "$WORK/wc-blank.txt"
+    printf 'x y' > "$WORK/wc-noeol.txt"
+    printf 'a\r\nb\r\n' > "$WORK/wc-crlf.txt"
+    : > "$WORK/wc-empty.txt"
+
+    echo "[cmd] wc counts blank lines and line ends, as GNU wc and pwsh's wc do"
+    assert_eq "cmd/wc: blank lines" "5 3 9" "$(ps_counts "$WORK/wc-blank.txt" "$WC_CMD")"
+    assert_eq "cmd/wc: no final line feed" "0 2 3" "$(ps_counts "$WORK/wc-noeol.txt" "$WC_CMD")"
+    assert_eq "cmd/wc: CRLF" "2 2 6" "$(ps_counts "$WORK/wc-crlf.txt" "$WC_CMD")"
+    assert_eq "cmd/wc: empty file" "0 0 0" "$(ps_counts "$WORK/wc-empty.txt" "$WC_CMD")"
+
+    echo "[cmd] wc keeps Measure-Object's table"
+    out=$(_ARG1="$WORK/wc-blank.txt" pwsh -NoProfile -NonInteractive -Command "$WC_CMD" \
+        | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^$')
+    assert_match "cmd/wc: header" "^Lines +Words +Characters +Property$" "$(printf '%s\n' "$out" | head -n 1)"
+    assert_match "cmd/wc: values" "^ +5 +3 +9 *$" "$(printf '%s\n' "$out" | tail -n 1)"
+
+    echo "[cmd] tail reads the last lines with Get-Content -Tail"
+    seq 1 15 > "$WORK/tail.txt"
+    TAIL_DEFAULT=$(cmd_ps_commands tail | sed -n 1p)
+    TAIL_N=$(cmd_ps_commands tail | sed -n 2p)
+    assert_eq "cmd/tail: default 10" "$(seq 6 15)" "$(_ARG1="$WORK/tail.txt" pwsh -NoProfile -NonInteractive -Command "$TAIL_DEFAULT" | tr -d '\r')"
+    assert_eq "cmd/tail: N" "$(seq 13 15)" "$(_ARG1="$WORK/tail.txt" _ARG2=3 pwsh -NoProfile -NonInteractive -Command "$TAIL_N" | tr -d '\r')"
+    # Select-Object -Last passed every line of the file through the pipeline
+    # (about 3 s for a 92 MB log, against 0.3 s with -Tail).
+    assert_eq "cmd/tail: both forms use -Tail, none streams the file" "2 0" \
+        "$(cmd_ps_commands tail | grep -c -- ' -Tail ') $(cmd_ps_commands tail | grep -c 'Select-Object -Last')"
+else
+    echo "  SKIP: head/tail/wc PowerShell (no pwsh)"
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 print_summary "test_cmd"

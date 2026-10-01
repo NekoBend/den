@@ -202,6 +202,10 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `env` | print env / run with VAR=val overrides | native | ✓ | — |
 | `split` | split a file into chunks | native | ✓ | — |
 
+cmd's `wc` reads the file once: lines are line feeds (blank lines count, a last
+line without one does not, as in GNU `wc -l`), words runs of non-blanks, and
+characters the text's length with its line ends.
+
 ## File utilities
 
 | Command | Does | bash/zsh | pwsh | cmd |
