@@ -168,6 +168,30 @@ def test_run_argument_problems_fail_open(tmp_path, monkeypatch, capsys, argv):
     assert len(out.err.strip().splitlines()) == 1
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ~user lookup, removable cwd")
+@pytest.mark.parametrize("tool", sorted(_EMPTY_RESPONSE))
+@pytest.mark.parametrize("where", ["unknown-user", "gone-cwd"])
+def test_run_fails_open_when_the_den_dir_cannot_be_found(
+    tmp_path, monkeypatch, capsys, tool, where
+):
+    """Finding the .den dir happened before the fail-open guard: `~nouser`
+    raised RuntimeError in expanduser and a deleted cwd FileNotFoundError, both
+    as a traceback and exit 1 instead of the tool's empty response."""
+    argv = ["run", "--event", "per-turn", "--tool", tool]
+    if where == "unknown-user":
+        monkeypatch.chdir(tmp_path)
+        argv += ["--den-dir", "~den-test-no-such-user/.den"]
+    else:
+        gone = tmp_path / "gone"
+        gone.mkdir()
+        monkeypatch.chdir(gone)
+        gone.rmdir()
+    assert hook_main(argv) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == _EMPTY_RESPONSE[tool]
+    assert len(out.err.strip().splitlines()) == 1
+
+
 def test_run_unknown_event_still_answers_cline_with_json(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert hook_main(["run", "--event", "nope", "--tool", "cline"]) == 0

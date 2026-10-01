@@ -314,20 +314,14 @@ def _cmd_run(argv: list[str]) -> int:  # ruff: ignore[too-many-return-statements
     if event not in spec["events"]:
         return skip(f"tool '{tool}' has no event '{event}'")
 
-    # Prefer the den dir pinned at install time (--den-dir): it binds the hook to
-    # the workspace the user explicitly set up, so a checked-out repo cannot get
-    # its own ancestor/nested .den injected. Fall back to the cwd-ancestor walk
-    # only for hooks installed before pinning existed (backward compat).
-    if den_dir_arg:
-        den_dir = Path(den_dir_arg).expanduser()
-        if not den_dir.is_absolute():
-            # install always bakes an ABSOLUTE path; a relative --den-dir resolves
-            # against the agent's cwd, which is exactly the cwd-dependence pinning
-            # exists to remove (a repo could ship a hook with --den-dir .den).
-            # Refuse rather than silently re-open the injection vector.
-            return skip(f"--den-dir must be absolute, got '{den_dir_arg}'")
-    else:
-        den_dir = _find_den_dir(Path.cwd())
+    try:
+        # Guarded too: `~nouser` makes expanduser raise RuntimeError, and a
+        # deleted working directory makes Path.cwd raise FileNotFoundError.
+        den_dir = _run_den_dir(den_dir_arg)
+    except Exception as exc:  # ruff: ignore[blind-except]  # fail open, see above
+        return skip(f"{type(exc).__name__}: {exc}")
+    if den_dir is None:
+        return skip(f"--den-dir must be absolute, got '{den_dir_arg}'")
 
     # Inject only on inject-events; other events still get an (empty) response
     # because some tools (cline, copilot) require valid JSON on every hook.
@@ -352,6 +346,24 @@ def _cmd_run(argv: list[str]) -> int:  # ruff: ignore[too-many-return-statements
         emit(native, text)
 
     return 0
+
+
+def _run_den_dir(den_dir_arg: str | None) -> Path | None:
+    """The .den dir a hook run works on, or None for a --den-dir that is not
+    absolute.
+
+    The den dir pinned at install time (--den-dir) wins: it binds the hook to
+    the workspace the user explicitly set up, so a checked-out repo cannot get
+    its own ancestor/nested .den injected. The cwd-ancestor walk is only for
+    hooks installed before pinning existed (backward compat)."""
+    if not den_dir_arg:
+        return _find_den_dir(Path.cwd())
+    den_dir = Path(den_dir_arg).expanduser()
+    # install always bakes an ABSOLUTE path; a relative --den-dir resolves
+    # against the agent's cwd, which is exactly the cwd-dependence pinning
+    # exists to remove (a repo could ship a hook with --den-dir .den). Refuse
+    # rather than silently re-open the injection vector.
+    return den_dir if den_dir.is_absolute() else None
 
 
 def _parse_run_args(
