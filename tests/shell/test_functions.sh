@@ -1226,6 +1226,30 @@ rc=1" "$out"
 
 dirhist_posix_cases bash
 
+# y sets a trap for its temp file, and afterwards used `trap -` on EXIT, INT,
+# TERM and HUP: that left the defaults, not the traps the user had (an EXIT
+# trap that kills ssh-agent, say), so they were gone for the rest of the
+# session. The yazi stub writes $YAZI_CWD to its --cwd-file.
+setup_ystub() {
+    mkdir -p "$DH/ybin" "$DH/a"
+    cat > "$DH/ybin/yazi" <<'STUB'
+#!/bin/sh
+for a; do
+    case $a in --cwd-file=*) printf '%s\n' "$YAZI_CWD" > "${a#--cwd-file=}" ;; esac
+done
+STUB
+    chmod +x "$DH/ybin/yazi"
+}
+
+echo "[bash] y keeps the caller's EXIT, INT, TERM and HUP traps"
+setup_ystub
+out=$(dh_run bash "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-int' INT; trap 'echo user-hup' HUP; y; pwd; trap -p EXIT INT TERM HUP")
+assert_eq "bash/y moves, keeps the traps, and the EXIT trap still runs" "$DH/a
+trap -- 'echo user-exit' EXIT
+trap -- 'echo user-int' SIGINT
+trap -- 'echo user-hup' SIGHUP
+user-exit" "$out"
+
 # bash has no chpwd: the recorder runs from PROMPT_COMMAND, which is a string
 # or (bash 5.1+) an array, and must be joined once without breaking either.
 echo "[bash] PROMPT_COMMAND hook"
@@ -1823,6 +1847,18 @@ actual=$(run_zsh "$FUNCTIONS_SH" "cd /tmp && cd / && back" 2>/dev/null)
 assert_eq "zsh/back OLDPWD" "/tmp" "$actual"
 
 dirhist_posix_cases zsh
+
+# zsh kept the EXIT trap (one set in a function is the function's own), but
+# INT, TERM and HUP traps and TRAPINT-style functions were deleted.
+echo "[zsh] y keeps the caller's INT, TERM and HUP traps and TRAP functions"
+setup_ystub
+out=$(dh_run zsh "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-hup' HUP; trap 'echo user-term' TERM; TRAPINT() { echo user-int; }; y; pwd; trap > '$DH/traps'; grep '^trap' '$DH/traps'; if functions TRAPINT >/dev/null; then echo TRAPINT kept; else echo TRAPINT gone; fi")
+assert_eq "zsh/y moves, keeps the traps and TRAPINT, and the EXIT trap still runs" "$DH/a
+trap -- 'echo user-exit' EXIT
+trap -- 'echo user-hup' HUP
+trap -- 'echo user-term' TERM
+TRAPINT kept
+user-exit" "$out"
 
 echo "[zsh] chpwd hook"
 out=$(zsh -c "source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && print -r -- \${(j:,:)chpwd_functions}")

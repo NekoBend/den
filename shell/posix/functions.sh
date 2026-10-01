@@ -763,14 +763,24 @@ y() {
         echo "yazi is not installed." >&2
         return 1
     fi
-    local tmp cwd
+    local tmp cwd traps=''
     tmp="$(mktemp -t "yazi-cwd.XXXXXX")" || return 1
+    # The temp-file trap is y's own: afterwards the caller's EXIT, INT, TERM
+    # and HUP traps (an ssh-agent cleanup on EXIT, say) come back, where
+    # `trap -` used to leave the defaults. zsh puts them back itself when y
+    # returns (local_traps); bash keeps them as commands to eval.
+    if [ -n "${ZSH_VERSION-}" ]; then
+        setopt local_options local_traps
+    else
+        traps=$(trap -p EXIT INT TERM HUP)
+    fi
     trap 'rm -f -- "$tmp"' EXIT INT TERM HUP
     yazi "$@" --cwd-file="$tmp"
     if cwd="$(command cat -- "$tmp")" && [ -n "$cwd" ] && [ -d "$cwd" ] && [ "$cwd" != "$PWD" ]; then
         builtin cd -- "$cwd"
     fi
     trap - EXIT INT TERM HUP
+    eval "$traps"
     rm -f -- "$tmp"
 }
 
