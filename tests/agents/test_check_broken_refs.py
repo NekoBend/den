@@ -971,6 +971,109 @@ def test_a_removed_typescript_enum_is_reported(tmp_path: Path) -> None:
     ]
 
 
+def test_go_and_rust_methods_are_searched_as_members_only(tmp_path: Path) -> None:
+    # A Go receiver method, every fn of a Rust impl and a fn nested in a fn
+    # were "top-level" names, so deleting their file searched `String`,
+    # `len` and `build` as bare words: a type alias, an unrelated function
+    # and its own definition line were all reported. A method is now looked
+    # for as `.name` (in Rust also `Type::name`), a nested fn not at all.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.go",
+        "package lib\n\n"
+        "type Box struct{}\n\n"
+        'func (b *Box) String() string { return "" }\n\n'
+        "func Helper() int { return 1 }\n",
+    )
+    write(
+        tmp_path,
+        "app.go",
+        "package app\n\n"
+        "type String = string\n\n"
+        "func show(b *lib.Box) string { return b.String() }\n",
+    )
+    write(
+        tmp_path,
+        "lib.rs",
+        "pub struct Widget;\n"
+        "impl Widget {\n"
+        "    pub fn new() -> Self {\n"
+        "        fn build() -> Widget { Widget }\n"
+        "        build()\n"
+        "    }\n"
+        "    pub fn len(&self) -> usize { 0 }\n"
+        "}\n",
+    )
+    write(
+        tmp_path,
+        "app.rs",
+        "fn build() -> u8 { 1 }\n"
+        "fn len(n: usize) -> usize { n }\n"
+        "fn main() {\n"
+        "    let w = Widget::new();\n"
+        "    let n = w.len();\n"
+        "}\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "lib.go").unlink()
+    (tmp_path / "lib.rs").unlink()
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.go:5:broken_ref:Box:func show(b *lib.Box) string { return b.String() }",
+        "app.go:5:broken_ref:String:func show(b *lib.Box) string { return b.String() }",
+        "app.rs:4:broken_ref:Widget:let w = Widget::new();",
+        "app.rs:5:broken_ref:len:let n = w.len();",
+        "app.rs:4:broken_ref:new:let w = Widget::new();",
+    ]
+
+
+def test_java_and_csharp_nested_types_are_searched_as_members_only(
+    tmp_path: Path,
+) -> None:
+    # A type nested in a Java or C# class was a "top-level" name, so another
+    # class's own nested type of the same name was reported when it was
+    # removed. A top-level type inside a C# namespace block is still one.
+    init_repo(tmp_path)
+    write(
+        tmp_path, "Outer.java", "public class Outer {\n    static class Inner {}\n}\n"
+    )
+    write(
+        tmp_path,
+        "App.java",
+        "class App {\n    static class Inner {}\n    Outer.Inner a;\n}\n",
+    )
+    write(
+        tmp_path,
+        "Lib.cs",
+        "namespace Lib {\n    public class Shell {\n        public class Nested {}\n"
+        "    }\n}\n",
+    )
+    write(
+        tmp_path,
+        "Use.cs",
+        "class Use {\n    class Nested {}\n    Lib.Shell.Nested n;\n}\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "Outer.java").unlink()
+    (tmp_path / "Lib.cs").unlink()
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "App.java:3:broken_ref:Inner:Outer.Inner a;",
+        "Use.cs:3:broken_ref:Nested:Lib.Shell.Nested n;",
+        "App.java:3:broken_ref:Outer:Outer.Inner a;",
+        "Use.cs:3:broken_ref:Shell:Lib.Shell.Nested n;",
+    ]
+
+
 # ---------- renames ----------
 
 

@@ -1075,6 +1075,119 @@ def test_typescript_enum_and_namespace_are_definitions(tmp_path: Path) -> None:
     ]
 
 
+# Rust, Java and C# files whose members, nested functions, comments and
+# literals all look like top-level definitions to a pattern alone.
+BRACED_SOURCES = {
+    "lib.go": (
+        "package lib\n"
+        "\n"
+        "type Box struct{}\n"
+        "\n"
+        'func (b *Box) String() string { return "" }\n'
+        "\n"
+        "func Helper() int { return 1 }\n"
+    ),
+    "lib.rs": (
+        "//! Widgets. /* not a comment opener here {\n"
+        "#[derive(Debug)]\n"
+        "pub struct Widget<'a> { name: &'a str }\n"
+        "/* outer /* nested */ fn ghost() { */\n"
+        "impl<'a> Widget<'a> {\n"
+        "    pub fn new(name: &'a str) -> Self {\n"
+        "        fn check(c: char) -> bool { c == '{' }\n"
+        '        let _ = r#"fn phantom() {"#;\n'
+        "        Widget { name }\n"
+        "    }\n"
+        "    const LIMIT: usize = 3;\n"
+        "}\n"
+        "pub trait Shape { fn area(&self) -> f64; }\n"
+        "pub(crate) mod inner {\n"
+        "    pub fn nested() {}\n"
+        "}\n"
+        'extern "C" {\n'
+        "    fn c_abs(x: i32) -> i32;\n"
+        "}\n"
+        "pub fn helper(x: [u8; 4]) -> impl Iterator<Item = u8> {\n"
+        "    x.into_iter()\n"
+        "}\n"
+    ),
+    "Outer.java": (
+        "package app;\n"
+        "\n"
+        '@SuppressWarnings({"unchecked", "rawtypes"})\n'
+        "public class Outer {\n"
+        "    static class Inner {}\n"
+        "    void run() {\n"
+        "        class Local {}\n"
+        '        String s = "class Ghost {";\n'
+        "    }\n"
+        "}\n"
+        "\n"
+        "final class Second {}\n"
+    ),
+    "Lib.cs": (
+        "namespace App {\n"
+        "    #region Types\n"
+        "    [Serializable]\n"
+        "    public class Outer<T> where T : class {\n"
+        "        public class Nested {}\n"
+        '        void M() { var s = $"{{class Ghost}}"; var v = @"a""}"; }\n'
+        "    }\n"
+        "    #endregion\n"
+        "}\n"
+    ),
+}
+
+
+def test_in_lists_top_level_names_only_in_go_rust_java_and_csharp(
+    tmp_path: Path,
+) -> None:
+    # TOP_LEVEL_PATTERNS reused the definition patterns, which match at any
+    # depth: --in listed a Go receiver method, every fn of a Rust impl, a fn
+    # nested in a fn and a type nested in a Java or C# class as "top-level",
+    # and check-broken-refs searched each removed one as a bare word. The
+    # braces now decide, with comments and literals skipped; a Rust `mod` or
+    # `extern` block and a C# namespace still count as top level.
+    for name, body in BRACED_SOURCES.items():
+        write(tmp_path, name, body)
+    defs = {}
+    for name in BRACED_SOURCES:
+        proc = run("--in", str(tmp_path / name), "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        defs[name] = [r for r in rows(proc, tmp_path) if ":def:" in r]
+    assert defs == {
+        "lib.go": [
+            "lib.go:3:def:type Box struct{}",
+            "lib.go:7:def:func Helper() int { return 1 }",
+        ],
+        "lib.rs": [
+            "lib.rs:13:def:pub trait Shape { fn area(&self) -> f64; }",
+            "lib.rs:3:def:pub struct Widget<'a> { name: &'a str }",
+            "lib.rs:18:def:fn c_abs(x: i32) -> i32;",
+            "lib.rs:20:def:pub fn helper(x: [u8; 4]) -> impl Iterator<Item = u8> {",
+            "lib.rs:15:def:pub fn nested() {}",
+        ],
+        "Outer.java": [
+            "Outer.java:4:def:public class Outer {",
+            "Outer.java:12:def:final class Second {}",
+        ],
+        "Lib.cs": ["Lib.cs:4:def:public class Outer<T> where T : class {"],
+    }
+    # what check-broken-refs searches as attribute access instead
+    members = {
+        name: [
+            n for _n, n, _line in _common.member_definitions(body, Path(name).suffix)
+        ]
+        for name, body in BRACED_SOURCES.items()
+    }
+    assert members == {
+        "lib.go": ["String"],
+        "lib.rs": ["new", "LIMIT", "area"],
+        "Outer.java": ["Inner"],
+        "Lib.cs": ["Nested"],
+    }
+
+
 # ---------- one search per run ----------
 
 

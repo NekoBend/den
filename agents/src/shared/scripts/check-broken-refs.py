@@ -17,8 +17,9 @@ Strategy:
          `git show <base>:<old path>`) and in the working tree (new path).
        - removed = base - current.
     3. All removed names are searched for in ONE pass over the tree: a
-       top-level name as a whole word, a method only as `.name` attribute
-       access (dunder methods are not searched).
+       top-level name as a whole word, a member (a method, or a type nested
+       in a Java or C# type) only as `.name` attribute access, or in a Rust
+       file also as `Type::name` (dunder methods are not searched).
     4. Each such mention outside the file(s) the name was removed from is
        reported as a broken reference.
 
@@ -75,7 +76,12 @@ Limitations:
     (column 0, or inside a module-level if/try/with/for/while block) and an
     assignment at column 0; a def in a class body is a method. Local
     variables, keyword arguments, nested functions, class attributes and
-    assignments inside a block are not definitions. Shell and PowerShell
+    assignments inside a block are not definitions. A Go func with a
+    receiver is a method. In Rust, Java and C# the braces decide: a
+    definition outside every type and function body (a Rust `mod` or
+    `extern` block and a C# namespace count as outside) is top-level, a fn
+    or const in a Rust impl or trait and a type nested in a Java or C# type
+    is a member, anything in a function body is neither. Shell and PowerShell
     functions count at any depth; a shell variable does not, a PowerShell
     `$x =` at column 0 (or a `$script:`/`$global:` one) does. In PowerShell
     files (.ps1 .psm1 .psd1) names are compared and matched ignoring case,

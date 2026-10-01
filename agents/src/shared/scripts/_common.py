@@ -13,8 +13,9 @@ it before compiling the regex:
     TOP_LEVEL_PATTERNS   which names a file defines at module level
                          (find-references --in, check-broken-refs). `{name}`
                          becomes a capture group.
-    MEMBER_PATTERNS      methods (check-broken-refs only): a removed one is
-                         looked for as `.name` attribute access, never as a
+    MEMBER_PATTERNS      methods, and nested types in Java and C#
+                         (check-broken-refs only): a removed one is looked
+                         for as attribute access (MEMBER_ACCESS), never as a
                          bare word.
 
 Every pattern is applied to ONE line at a time, in Python, never handed to
@@ -25,7 +26,10 @@ lookarounds that ripgrep's regex engine lacks.
 
 For Python files, which block a line sits in decides which table applies
 (see _python_scopes): indentation alone cannot tell a method from a function
-defined under a module-level `if`.
+defined under a module-level `if`. For Rust, Java and C# files the braces
+around a definition decide (see _brace_scopes): the same pattern finds a
+top-level name outside every type and function body and a member inside a
+Rust impl or trait or a Java or C# type, and nothing in a function body.
 
 The search plumbing both scripts share lives here too: which files are
 searched, the absolute path of git and rg, the ripgrep invocation and the
@@ -36,6 +40,7 @@ return the same lines, and print them the same way.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import functools
 import io
@@ -54,6 +59,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
 Hit = tuple[str, int, str]
+
+# A Go method: a func with a receiver. Declared at column 0 like a function,
+# but reached as `value.Name`, so it is a member, not a top-level name.
+_GO_METHOD = r"^func\s+\(\s*\w+\s+\*?\w+\s*\)\s+{name}\s*\("
 
 # Where a symbol may be defined, per extension. {name} is the symbol.
 DEFINITION_PATTERNS: dict[str, list[str]] = {
@@ -77,7 +86,7 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
     ],
     ".go": [
         r"^func\s+{name}\s*\(",
-        r"^func\s+\(\s*\w+\s+\*?\w+\s*\)\s+{name}\s*\(",
+        _GO_METHOD,
         r"^type\s+{name}\s+",
         r"^var\s+{name}\b",
         r"^const\s+{name}\b",
@@ -147,7 +156,13 @@ TOP_LEVEL_PATTERNS: dict[str, list[str]] = {
         _TS_PREFIX + r"(?:const\s+)?enum\s+{name}\b",
         _TS_PREFIX + r"namespace\s+{name}\b",
     ],
-    ".go": DEFINITION_PATTERNS[".go"],
+    # Every Go definition sits at column 0; a method is a member.
+    ".go": [p for p in DEFINITION_PATTERNS[".go"] if p != _GO_METHOD],
+    # Rust, Java, C#: applied only outside every type and function body
+    # (_brace_scopes), where a Rust `mod` or `extern` block and a C#
+    # namespace still count as outside. A function nested in a function, a
+    # method of a Rust impl and a type nested in a Java class all used to be
+    # "top-level" here, and each removed one was searched as a bare word.
     ".rs": DEFINITION_PATTERNS[".rs"],
     ".java": DEFINITION_PATTERNS[".java"],
     ".cs": DEFINITION_PATTERNS[".cs"],
@@ -158,14 +173,28 @@ TOP_LEVEL_PATTERNS: dict[str, list[str]] = {
     ".ps1": DEFINITION_PATTERNS[".ps1"],
 }
 
-# Methods. A removed one is searched for only as `.name` attribute access, so
-# deleting a class does not report every bare occurrence of `run` or `get`.
+# Members. A removed one is searched for only as attribute access
+# (MEMBER_ACCESS), so deleting a class does not report every bare occurrence
+# of `run`, `new` or `String`.
 # Python: applied only to a line directly in a class body (_python_scopes),
 # so a function nested in another function is neither a method nor a
 # top-level name.
+# Rust, Java, C#: applied only directly in a type body (_brace_scopes): the
+# fns and consts of a Rust impl or trait, the types nested in a Java or C#
+# type.
 MEMBER_PATTERNS: dict[str, list[str]] = {
     ".py": [r"^\s+(?:async\s+)?def\s+{name}\s*\("],
+    ".go": [_GO_METHOD],
+    ".rs": DEFINITION_PATTERNS[".rs"],
+    ".java": DEFINITION_PATTERNS[".java"],
+    ".cs": DEFINITION_PATTERNS[".cs"],
 }
+
+# How a member is reached, by the suffix of the file that names it: as
+# `.name`, and in Rust as `Type::name` too, which is how an associated
+# function such as `new` is called.
+MEMBER_ACCESS: dict[str, str] = {".rs": r"(?:\.|::)"}
+DEFAULT_MEMBER_ACCESS = r"\."
 
 # The Python top-level patterns that also apply, with the indentation
 # removed, to a line inside a module-level block: def and class.
@@ -376,25 +405,224 @@ def _python_definitions(text: str, *, member: bool) -> list[tuple[int, str, str]
     return _scan(picked)
 
 
+# ---------- Rust, Java, C#: scopes from braces ----------
+
+# What the block a `{` opens holds, by the first word of the code before it
+# that is not a modifier: "module" (top-level names), "class" (members), or
+# "" for any other word (a function body, a struct's fields, an
+# initializer), where nothing is either.
+_BLOCK_KINDS: dict[str, tuple[dict[str, str], frozenset[str]]] = {
+    ".rs": (
+        {"mod": "module", "impl": "class", "trait": "class"},
+        frozenset({"pub", "unsafe", "async", "const", "default", "extern", "auto"}),
+    ),
+    ".java": (
+        dict.fromkeys(("class", "interface", "enum", "record"), "class"),
+        frozenset(
+            {"public", "protected", "private", "static", "final", "abstract"}
+            | {"sealed", "non", "strictfp"}  # `non-sealed` is two words here
+        ),
+    ),
+    ".cs": (
+        {"namespace": "module"}
+        | dict.fromkeys(("class", "interface", "struct", "record", "enum"), "class"),
+        frozenset(
+            {"public", "private", "protected", "internal", "static", "sealed"}
+            | {"abstract", "partial", "readonly", "unsafe", "new", "ref", "file"}
+        ),
+    ),
+}
+# Removed from that code before its first word is taken: Rust attributes and
+# `pub(crate)`, Java annotations (but not `@interface`), C# attributes and
+# preprocessor lines such as `#region`.
+_BLOCK_DECORATIONS: dict[str, re.Pattern[str]] = {
+    ".rs": re.compile(r"#!?\[(?:[^\[\]]|\[[^\[\]]*\])*\]|\bpub\s*\([^)]*\)"),
+    ".java": re.compile(
+        r"@(?!interface\b)\w+(?:\s*\.\s*\w+)*(?:\s*\((?:[^()]|\([^()]*\))*\))?"
+    ),
+    ".cs": re.compile(r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]|^[ \t]*#.*$", re.MULTILINE),
+}
+_WORD = re.compile(r"[A-Za-z_]\w*")
+
+
+def _block_kind(header: str, ext: str) -> str:
+    """What a block whose `{` follows `header` holds: see _BLOCK_KINDS."""
+    kinds, modifiers = _BLOCK_KINDS[ext]
+    words = _WORD.findall(_BLOCK_DECORATIONS[ext].sub(" ", header))
+    for word in words:
+        if word not in modifiers:
+            return kinds.get(word, "")
+    # Rust `extern "C" { ... }` (its string is gone by now): foreign items
+    return "module" if "extern" in words else ""
+
+
+# Comments and literals hold braces and semicolons that are text, not
+# structure. Each alternative's end is found by _literal_end, by its name.
+_LEX_TAIL = (
+    r"|(?P<line>//)|(?P<block>/\*)"
+    r"|(?P<char>'(?:\\.[^'\n]{0,9}|[^\\'\n])')"  # never a Rust lifetime ('a)
+    r"|(?P<punct>[{}()\[\];])"
+)
+_LEXERS: dict[str, re.Pattern[str]] = {
+    ".rs": re.compile(r'(?P<raw>(?<!\w)[bc]?r(?P<hashes>#*)")|(?P<str>")' + _LEX_TAIL),
+    ".java": re.compile(r'(?P<text>""")|(?P<str>")' + _LEX_TAIL),
+    ".cs": re.compile(
+        r'(?P<rawcs>\$*"{3,})|(?P<verbatim>\$?@\$?")|(?P<str>\$?")' + _LEX_TAIL
+    ),
+}
+# The rest of a string after its opening quote. A Rust string may span
+# lines; a Java or C# one ends at its line's end even when unterminated.
+_STRING_BODIES: dict[str, re.Pattern[str]] = {
+    "str": re.compile(r'(?:[^"\\\n]|\\.)*"?'),
+    "rust-str": re.compile(r'(?:[^"\\]|\\.)*(?:"|\Z)', re.DOTALL),
+    "text": re.compile(r'(?:[^\\]|\\.)*?(?:"""|\Z)', re.DOTALL),  # Java """
+    "verbatim": re.compile(r'(?:[^"]|"")*(?:"|\Z)', re.DOTALL),  # C# @"..."
+}
+# What ends the other comments and literals: the line comment stops before it
+_CLOSERS = {"line": "\n", "block": "*/"}
+_COMMENT_MARK = re.compile(r"/\*|\*/")
+
+
+def _nested_comment_end(text: str, pos: int) -> int:
+    """Offset just past the Rust block comment open at `pos`; they nest."""
+    depth = 1
+    while depth and (mark := _COMMENT_MARK.search(text, pos)) is not None:
+        depth += 1 if mark.group() == "/*" else -1
+        pos = mark.end()
+    return len(text) if depth else pos
+
+
+def _literal_end(text: str, match: re.Match[str], ext: str) -> int:
+    """Offset just past the comment or literal `match` opens."""
+    kind, pos = match.lastgroup or "", match.end()
+    if kind == "char":
+        return pos
+    if kind == "str" and ext == ".rs":
+        kind = "rust-str"
+    if kind in _STRING_BODIES:
+        body = _STRING_BODIES[kind].match(text, pos)
+        return len(text) if body is None else body.end()
+    if kind == "block" and ext == ".rs":
+        return _nested_comment_end(text, pos)
+    if kind == "raw":  # Rust r#"...": the quote, then as many `#`
+        closer = '"' + match.group("hashes")
+    elif kind == "rawcs":  # C# """...""": as many quotes as it opened with
+        closer = match.group().lstrip("$")
+    else:
+        closer = _CLOSERS[kind]
+    at = text.find(closer, pos)
+    if at == -1:
+        return len(text)
+    return at if kind == "line" else at + len(closer)
+
+
+@functools.lru_cache(maxsize=8)
+def _brace_scopes(text: str, ext: str) -> tuple[list[int], list[str]]:
+    """Where each scope of `text` starts: (offsets, scopes), sorted.
+
+    The scope at an offset is that of the last start at or before it:
+    "module" outside every type and function body (in a Rust `mod` or
+    `extern` block and a C# namespace too), "class" directly in a Rust impl
+    or trait or a Java or C# type, and "" anywhere else - in a function
+    body, a struct's fields, an initializer, a comment or a literal. What a
+    block holds comes from the code before its `{` (_block_kind); a block
+    inside parentheses or brackets (an array in an annotation, a lambda in
+    a call) holds nothing.
+
+    A brace without its partner does not stop the scan: an extra `}` is
+    ignored, a missing one leaves the rest of the file in that block.
+    """
+    lexer = _LEXERS[ext]
+    offsets, scopes = [0], ["module"]
+    # each open block: (the scope around it, the bracket depth at its `{`;
+    # above 0 when it opened inside parentheses or brackets)
+    stack: list[tuple[str, int]] = []
+    scope, depth = "module", 0
+    header: list[str] = []  # the code since the last `;`, `{` or `}`
+    pos = 0
+    while (match := lexer.search(text, pos)) is not None:
+        header.append(text[pos : match.start()])
+        pos = match.end()
+        punct = match.group()
+        if match.lastgroup != "punct":
+            pos = _literal_end(text, match, ext)
+            offsets += [match.start(), pos]
+            scopes += ["", scope]
+            punct = " "
+        elif punct in "([":
+            depth += 1
+        elif punct in ")]":
+            depth = max(depth - 1, 0)
+        elif punct == "{":
+            stack.append((scope, depth))
+            # inside brackets it holds nothing, and the header goes on
+            scope = _block_kind("".join(header), ext) if scope and not depth else ""
+            offsets.append(pos)
+            scopes.append(scope)
+        elif punct == "}" and stack:
+            scope, depth = stack.pop()
+            offsets.append(match.start())
+            scopes.append(scope)
+        if punct in ";{}" and not depth:
+            header = []
+        else:
+            header.append(punct)
+    return offsets, scopes
+
+
+def _braced_definitions(
+    text: str, ext: str, templates: list[str], scope: str
+) -> list[tuple[int, str, str]]:
+    """(lineno, name, line) for each name `templates` find in `scope`.
+
+    A match counts where its first character is in that scope
+    (_brace_scopes), so `impl W { fn new() }` on one line is a member, and a
+    definition inside a comment or a string is nothing.
+    """
+    lines = _lines(text)
+    offsets, scopes = _brace_scopes("\n".join(lines), ext)
+    rxs = _compile(ext, templates)
+    found: list[tuple[int, str, str]] = []
+    seen: set[tuple[int, str]] = set()
+    start = 0  # offset of the line in the joined text
+    for lineno, line in enumerate(lines, 1):
+        for rx in rxs:
+            for match in rx.finditer(line):
+                at = bisect.bisect_right(offsets, start + match.start()) - 1
+                key = (lineno, match.group(1))
+                if scopes[at] == scope and key not in seen:
+                    seen.add(key)
+                    found.append((lineno, match.group(1), line))
+        start += len(line) + 1
+    return found
+
+
+# Languages whose top-level names and members _brace_scopes tells apart.
+BRACED_EXTS: frozenset[str] = frozenset(_BLOCK_KINDS)
+
+
 def top_level_definitions(text: str, ext: str) -> list[tuple[int, str, str]]:
     """(lineno, name, line) for every top-level definition in `text`."""
     if ext == ".py":
         return _python_definitions(text, member=False)
+    if ext in BRACED_EXTS:
+        return _braced_definitions(text, ext, TOP_LEVEL_PATTERNS[ext], "module")
     rxs = _compile(ext, TOP_LEVEL_PATTERNS.get(ext, []))
     return _scan((n, line, line, rxs) for n, line in enumerate(_lines(text), 1))
 
 
 def member_definitions(text: str, ext: str) -> list[tuple[int, str, str]]:
-    """(lineno, name, line) for every method defined in `text`."""
+    """(lineno, name, line) for every member defined in `text`."""
     if ext == ".py":
         return _python_definitions(text, member=True)
+    if ext in BRACED_EXTS:
+        return _braced_definitions(text, ext, MEMBER_PATTERNS[ext], "class")
     rxs = _compile(ext, MEMBER_PATTERNS.get(ext, []))
     return _scan((n, line, line, rxs) for n, line in enumerate(_lines(text), 1))
 
 
 @functools.cache
-def _word_rx(symbol: str, *, ignore_case: bool, member: bool) -> re.Pattern[str]:
-    prefix = r"\." if member else r"\b"
+def _word_rx(symbol: str, *, ignore_case: bool, prefix: str) -> re.Pattern[str]:
     return re.compile(
         rf"{prefix}{re.escape(symbol)}\b", re.IGNORECASE if ignore_case else 0
     )
@@ -403,12 +631,14 @@ def _word_rx(symbol: str, *, ignore_case: bool, member: bool) -> re.Pattern[str]
 def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     """Whether `line` (of a file with suffix `ext`) names `symbol`.
 
-    As a whole word, or with member=True only as `.symbol` attribute access.
+    As a whole word, or with member=True only as attribute access
+    (MEMBER_ACCESS: `.symbol`, and `::symbol` in Rust).
     """
     ignore_case = ext in CASE_INSENSITIVE_EXTS
     if not ignore_case and symbol not in line:  # the cheap test first
         return False
-    rx = _word_rx(symbol, ignore_case=ignore_case, member=member)
+    prefix = MEMBER_ACCESS.get(ext, DEFAULT_MEMBER_ACCESS) if member else r"\b"
+    rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix)
     return rx.search(line) is not None
 
 
