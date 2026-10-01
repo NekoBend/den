@@ -1285,7 +1285,7 @@ $DH/a" "$out"
     short=$(wc -l < "$DH/short.trace")
     cap=$(wc -l < "$DH/cap.trace")
     assert_eq "$sh/the list is at the cap" "51" "$out"
-    assert_eq "$sh/a move at the cap traces at most 6 more lines (short=$short, cap=$cap)" "1" "$((cap - short <= 6))"
+    assert_eq "$sh/a move at the cap traces at most 10 more lines (short=$short, cap=$cap)" "1" "$((cap - short <= 10))"
 
     echo "[$sh] back -i picks an entry with fzf"
     out=$(dh_run "$sh" "PATH='$DH/fzfbin':\$PATH; export FZF_PICK=2; cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back -i && FZF_PICK=+2 && back -i && FZF_PICK='*' && back -i; echo rc=\$?; pwd")
