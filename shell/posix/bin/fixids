@@ -24,6 +24,11 @@
 # which locks the user out of their own files, so fixids refuses to run as
 # root without --to (--to 0:0 chowns to root on purpose).
 #
+# fixids finds the files first and then chowns them by path; with --from
+# UID:GID the chowns start only after the whole walk. Run it before anything
+# else uses the tree, as an entrypoint does: a process that renames
+# directories in the tree meanwhile could make a chown land on another file.
+#
 #   In a Dockerfile:  COPY shell/posix/bin/fixids /usr/local/bin/fixids
 #                     COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 #                     ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
@@ -271,13 +276,29 @@ run_pass() {
 # the uid-only walk matched every file the first pass had just re-grouped.
 # GNU find's comma operator evaluates every class for each file; the
 # parentheses keep the prune ahead of all three.
+# A list find could not write in full (TMPDIR full, a file-size limit), or one
+# a find stopped by a signal left, can end in or splice in part of a path,
+# which chown would take for a path (an ancestor directory, say). So when
+# find names a list in an error, or does not exit 0 or 1, fixids stops before
+# it changes anything. Other walk errors (an unreadable directory) let the
+# passes run, as before; find's messages are read for this and then printed.
 classify() {
+	local err rc=0 bad=0
 	tmpd=$(mktemp -d "${TMPDIR:-/tmp}/fixids.XXXXXX")
 	trap 'rm -rf -- "$tmpd"' EXIT
-	find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} '(' \
+	err=$(find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} '(' \
 		'(' -uid "$1" -gid "$2" -fprint0 "$tmpd/both" ')' , \
 		'(' -uid "$1" '!' -gid "$2" -fprint0 "$tmpd/uid" ')' , \
-		'(' '!' -uid "$1" -gid "$2" -fprint0 "$tmpd/gid" ')' ')' || warn_walk
+		'(' '!' -uid "$1" -gid "$2" -fprint0 "$tmpd/gid" ')' ')' 2>&1 >/dev/null) || rc=$?
+	[ -z "$err" ] || printf '%s\n' "$err" >&2
+	[ "$rc" -eq 0 ] && return 0
+	[ "$rc" -eq 1 ] || bad=1
+	case $err in *"${tmpd##*/}/"*) bad=1 ;; esac
+	if [ "$bad" -eq 1 ]; then
+		echo "$prog: the file lists under ${tmpd%/*} are incomplete (find exit $rc); nothing was changed" >&2
+		exit 1
+	fi
+	warn_walk
 }
 
 list=""

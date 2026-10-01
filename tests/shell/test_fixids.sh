@@ -104,6 +104,41 @@ echo "[fixids] the class lists are removed afterwards"
 actual=$(find "$WORK/tmp" -mindepth 1)
 assert_eq "fixids/no lists left in TMPDIR" "" "$actual"
 
+# A list find could not write in full ended in part of a path, and the passes
+# still ran: xargs -0 handed that fragment (a prefix of a real path, which can
+# name an ancestor directory) to chown. A file-size limit of one block stands
+# in for a full TMPDIR: with SIGXFSZ ignored find gets EFBIG, names the list
+# and exits 1; with it at its default find is killed. Either way fixids now
+# stops before any pass.
+mkdir -p "$WORK/big"
+for i in $(seq 1 100); do : > "$WORK/big/a-file-name-long-enough-to-fill-a-block-$i"; done
+for _xfsz in ignored default; do
+    echo "[fixids] a class list cut short (SIGXFSZ $_xfsz) stops the run before any pass"
+    if [ "$_xfsz" = ignored ]; then _trap='trap "" XFSZ;'; else _trap='trap - XFSZ;'; fi
+    actual=$(mkdir -p "$WORK/tmp"; PATH="$PATH" TMPDIR="$WORK/tmp" "$BASH_BIN" -c "$_trap ulimit -f 1; exec \"\$0\" \"\$@\"" "$BASH_BIN" "$FIXIDS" -n --from "$U:$G" --to 2000:2000 "$WORK/big" 2>&1; echo "rc=$?")
+    assert_contains "fixids/cut list ($_xfsz): stops" "nothing was changed" "$actual"
+    assert_contains "fixids/cut list ($_xfsz): names the lists" "fixids: the file lists under $WORK/tmp are incomplete (find exit " "$actual"
+    assert_not_contains "fixids/cut list ($_xfsz): no pass ran" "would be" "$actual"
+    assert_eq "fixids/cut list ($_xfsz): exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+    assert_eq "fixids/cut list ($_xfsz): lists removed" "" "$(find "$WORK/tmp" -mindepth 1)"
+done
+rm -rf "${WORK:?}/big"
+
+# An unreadable directory is a walk error, not a list error: the passes still
+# run over what find could read, and the run fails. Root reads any directory.
+echo "[fixids] an unreadable directory still lets the passes run"
+if [ "$(id -u)" -ne 0 ]; then
+    setup_tree
+    chmod 000 "$WORK/t/b"
+    actual=$(fx "" -n --from "$U:$G" --to "$U:$NEWG" "$WORK/t")
+    chmod 755 "$WORK/t/b"
+    assert_contains "fixids/unreadable dir: walk error reported" "fixids: find reported errors; the walk was incomplete" "$actual"
+    assert_contains "fixids/unreadable dir: passes ran" "fixids: 5 file(s) would be chowned to $U:$NEWG" "$actual"
+    assert_eq "fixids/unreadable dir: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+else
+    echo "  SKIP: fixids/unreadable dir (root reads every directory)"
+fi
+
 # =============================================================================
 # A real run (root only)
 # =============================================================================
