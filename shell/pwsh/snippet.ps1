@@ -4,7 +4,9 @@
 # snippet saved from bash is usable from pwsh on the same machine. run/pick
 # Invoke-Expression the command in the CURRENT session (you saved it, so it is
 # trusted). Defining these functions has no side effects, so (like cheat.ps1) it is
-# not gated on an interactive session.
+# not gated on an interactive session. The store is written by _DenWritePrivate
+# (_helpers.ps1, which init.ps1 loads first): 0600 in a 0700 directory off
+# Windows, and through a symlink, as snippet.sh does.
 
 function _SnippetFile {
     $base = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }
@@ -22,14 +24,9 @@ function _SnippetLines {
 # Lines defaults to @() rather than $null, whose .Count is an error under a
 # caller's Set-StrictMode.
 function _SnippetWrite([string[]]$Lines = @()) {
-    $f = _SnippetFile
-    $dir = Split-Path -Parent $f
-    if (-not (Test-Path -LiteralPath $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    }
-    # LF + UTF-8 (no BOM) via WriteAllText so posix can read the shared store.
+    # LF + UTF-8 (no BOM) so posix can read the shared store.
     $text = if ($Lines.Count) { ($Lines -join "`n") + "`n" } else { '' }
-    [IO.File]::WriteAllText($f, $text, [Text.UTF8Encoding]::new($false))
+    _DenWritePrivate (_SnippetFile) $text
 }
 
 function _SnippetName([string]$Line) {

@@ -229,6 +229,9 @@ name is `[A-Za-z0-9_-]`, the command may contain anything on one line). `run` an
 so it is trusted), which lets it `cd`, set vars, and use the current environment.
 `pick` needs `fzf`; without it, use `snippet run <name>`. bash/zsh and PowerShell
 (a machine's pwsh and bash share the snippet store).
+On Linux and macOS the store is `0600` in a `0700` `$XDG_CONFIG_HOME/den`, like
+`proxy.conf` (a saved command may hold a token). A store that is a symlink, into
+a dotfiles repo say, stays one: `save` and `rm` write through it in both shells.
 
 ### Cheatsheets
 Browse den's bundled cheatsheets offline. Deploy them first with

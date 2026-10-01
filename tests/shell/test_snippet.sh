@@ -11,7 +11,24 @@ make_noninteractive_source_copy "$SNIPPET_SH_GUARDED" "$SNIPPET_SH"
 export XDG_CONFIG_HOME="$WORK/xdg"
 SNIPPET_FILE="$XDG_CONFIG_HOME/den/snippets"
 
+SNIPPET_DIR="$XDG_CONFIG_HOME/den"
+DOTS="$WORK/dots"
+
 reset_store() { rm -f "$SNIPPET_FILE"; }
+
+# modes - the octal modes of the store's directory and of the store.
+modes() { stat -c '%a' "$SNIPPET_DIR" "$SNIPPET_FILE" | paste -sd' ' -; }
+
+# link_store <target> - make the store a symlink to <target> under $DOTS, as a
+# dotfiles repo would.
+link_store() {
+    rm -rf "${DOTS:?}"
+    mkdir -p "$DOTS" "$SNIPPET_DIR"
+    rm -f "$SNIPPET_FILE"
+    ln -s "$DOTS/$1" "$SNIPPET_FILE"
+}
+
+TAB=$(printf '\t')
 
 # snippet_suite <shell> — same checks under bash and zsh.
 snippet_suite() {
@@ -101,6 +118,40 @@ snippet_suite() {
     assert_contains "$sh/unknown cmd msg" "unknown command" "$actual"
     assert_contains "$sh/unknown cmd rc" "rc=1" "$actual"
 
+    echo "[$sh] save makes the store 0600 in a 0700 directory, under umask 022"
+    rm -rf "${SNIPPET_DIR:?}"
+    "$run" "$SNIPPET_SH" "umask 022; snippet save t 'echo tok' 2>/dev/null"
+    assert_eq "$sh/new store modes" "700 600" "$(modes)"
+
+    echo "[$sh] rm and save tighten an older den's 0644 store and 0755 directory"
+    printf 'a\techo a\nb\techo b\n' > "$SNIPPET_FILE"
+    chmod 755 "$SNIPPET_DIR"
+    chmod 644 "$SNIPPET_FILE"
+    "$run" "$SNIPPET_SH" "umask 022; snippet rm b 2>/dev/null"
+    assert_eq "$sh/rm gives the store 0600" "600" "$(stat -c '%a' "$SNIPPET_FILE")"
+    chmod 644 "$SNIPPET_FILE"
+    "$run" "$SNIPPET_SH" "umask 022; snippet save c 'echo c' 2>/dev/null"
+    assert_eq "$sh/save tightens both" "700 600" "$(modes)"
+
+    echo "[$sh] save and rm write through a symlinked store"
+    link_store snippets
+    printf 'a\techo a\n' > "$DOTS/snippets"
+    chmod 644 "$DOTS/snippets"
+    "$run" "$SNIPPET_SH" "umask 022; snippet save b 'echo b' 2>/dev/null; snippet save c 'echo c' 2>/dev/null; snippet rm a 2>/dev/null"
+    assert_eq "$sh/symlink kept" "link" "$([ -L "$SNIPPET_FILE" ] && echo link || echo replaced)"
+    assert_eq "$sh/symlink target updated" "b${TAB}echo b
+c${TAB}echo c" "$(cat "$DOTS/snippets")"
+    assert_eq "$sh/symlink target 0600" "600" "$(stat -c '%a' "$DOTS/snippets")"
+    assert_eq "$sh/no temporary file left" "" "$(cd "$SNIPPET_DIR" && ls -A | grep -v '^snippets$')"
+
+    echo "[$sh] save through a symlink whose target does not exist yet creates it"
+    link_store new-snippets
+    "$run" "$SNIPPET_SH" "umask 022; snippet save n 'echo n' 2>/dev/null"
+    assert_eq "$sh/dangling symlink kept" "link" "$([ -L "$SNIPPET_FILE" ] && echo link || echo replaced)"
+    assert_eq "$sh/dangling symlink target created" "n${TAB}echo n 600" \
+        "$(cat "$DOTS/new-snippets") $(stat -c '%a' "$DOTS/new-snippets")"
+    rm -f "$SNIPPET_FILE"
+
     echo "[$sh] pick without fzf falls back gracefully"
     if ! command -v fzf >/dev/null 2>&1; then
         actual=$("$run" "$SNIPPET_SH" "snippet pick 2>&1; echo rc=\$?" | tr -d '\r')
@@ -121,7 +172,11 @@ fi
 # pwsh port: same store (XDG_CONFIG_HOME), same TAB format. Messages go to the
 # process stderr (bash's $(...) captures stdout only), so data reads stay clean.
 if command -v pwsh >/dev/null 2>&1; then
-    SNIPPET_PS1="$DOTFILES/shell/pwsh/snippet.ps1"
+    # snippet.ps1 writes its store with _DenWritePrivate from _helpers.ps1, which
+    # init.ps1 loads first; this file loads both in that order.
+    SNIPPET_PS1="$TESTTMP/snippet_test.ps1"
+    printf ". '%s'\n. '%s'\n" "$DOTFILES/shell/pwsh/_helpers.ps1" "$DOTFILES/shell/pwsh/snippet.ps1" > "$SNIPPET_PS1" ||
+        abort_suite "cannot write $SNIPPET_PS1"
 
     reset_store
     echo "[pwsh] save + show"
@@ -142,6 +197,28 @@ if command -v pwsh >/dev/null 2>&1; then
     echo "[pwsh] save from stdin takes the first line"
     actual=$(run_pwsh "$SNIPPET_PS1" "'Write-Output piped' | snippet save p; snippet show p" | tr -d '\r')
     assert_eq "pwsh/snippet stdin save" "Write-Output piped" "$actual"
+
+    echo "[pwsh] save makes the store 0600 in a 0700 directory, under umask 022"
+    rm -rf "${SNIPPET_DIR:?}"
+    (umask 022; run_pwsh "$SNIPPET_PS1" "snippet save t 'Write-Output tok'" 2>/dev/null)
+    assert_eq "pwsh/snippet new store modes" "700 600" "$(modes)"
+
+    echo "[pwsh] rm tightens an older den's 0644 store and 0755 directory"
+    printf 'a\techo a\nb\techo b\n' > "$SNIPPET_FILE"
+    chmod 755 "$SNIPPET_DIR"
+    chmod 644 "$SNIPPET_FILE"
+    (umask 022; run_pwsh "$SNIPPET_PS1" "snippet rm b" 2>/dev/null)
+    assert_eq "pwsh/snippet rm tightens both" "700 600" "$(modes)"
+
+    echo "[pwsh] save and rm write through a symlinked store"
+    link_store snippets
+    printf 'a\techo a\n' > "$DOTS/snippets"
+    chmod 644 "$DOTS/snippets"
+    (umask 022; run_pwsh "$SNIPPET_PS1" "snippet save b 'echo b'; snippet rm a" 2>/dev/null)
+    assert_eq "pwsh/snippet symlink kept" "link" "$([ -L "$SNIPPET_FILE" ] && echo link || echo replaced)"
+    assert_eq "pwsh/snippet symlink target updated, 0600" "b${TAB}echo b 600" \
+        "$(cat "$DOTS/snippets") $(stat -c '%a' "$DOTS/snippets")"
+    rm -f "$SNIPPET_FILE"
 
     reset_store
     echo "[pwsh] unknown command fails with usage"

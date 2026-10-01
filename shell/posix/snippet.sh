@@ -8,7 +8,9 @@
 # The command is everything after the first TAB, so it may itself contain tabs;
 # only the name (field 1) is restricted to [A-Za-z0-9_-]. `run`/`pick` eval the
 # command in the CURRENT shell (you saved it, so it is trusted), which lets it
-# cd, set vars, and see the current environment.
+# cd, set vars, and see the current environment. The store is 0600 in a 0700
+# directory (a saved command may hold a token), and one that is a symlink (into
+# a dotfiles repo, say) is written through, as pwsh does.
 
 # Skip in non-interactive shells
 case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
@@ -42,6 +44,18 @@ _snip_get() {
     done < "$_sg_file"
     unset _sg_file _sg_tab _sg_line
     return 1
+}
+
+# _snip_put <tmp> <store> - put the rebuilt store in place. A store that is a
+# symlink is written through, so the link stays and its target gets the change
+# and mode 0600; any other store is replaced by the temporary file, which is
+# 0600, renamed over it.
+_snip_put() {
+    if [ -L "$2" ]; then
+        (umask 077 && : >> "$2") && chmod 600 "$2" && cat "$1" > "$2" && rm -f "$1"
+    else
+        mv "$1" "$2"
+    fi
 }
 
 # Echo the command (so the user sees what runs) then eval it in this shell.
@@ -85,15 +99,18 @@ _snippet_save() {
         return 1
     fi
     _ss_file=$(_snip_file)
-    mkdir -p "$(dirname "$_ss_file")" || {
-        unset _ss_name _ss_cmd _ss_file
+    # The directory is made 0700 and the temporary file 0600, whatever the
+    # umask; an older den's looser directory is tightened too.
+    _ss_dir=$(dirname "$_ss_file")
+    if ! { mkdir -p "$_ss_dir" && chmod 700 "$_ss_dir"; }; then
+        unset _ss_name _ss_cmd _ss_file _ss_dir
         return 1
-    }
+    fi
     _ss_tab=$(printf '\t')
     _ss_tmp="$_ss_file.tmp.$$"
-    : > "$_ss_tmp" || {
+    (umask 077 && : > "$_ss_tmp") || {
         echo "snippet save: cannot write $_ss_file" >&2
-        unset _ss_name _ss_cmd _ss_file _ss_tab _ss_tmp
+        unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp
         return 1
     }
     if [ -f "$_ss_file" ]; then
@@ -105,9 +122,14 @@ _snippet_save() {
         done < "$_ss_file"
     fi
     printf '%s\t%s\n' "$_ss_name" "$_ss_cmd" >> "$_ss_tmp"
-    mv "$_ss_tmp" "$_ss_file"
+    if ! _snip_put "$_ss_tmp" "$_ss_file"; then
+        rm -f "$_ss_tmp"
+        echo "snippet save: cannot write $_ss_file" >&2
+        unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+        return 1
+    fi
     echo "snippet: saved '$_ss_name'" >&2
-    unset _ss_name _ss_cmd _ss_file _ss_tab _ss_tmp _ss_line
+    unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
 }
 
 _snippet_ls() {
@@ -153,7 +175,7 @@ _snippet_rm() {
     _srm_tab=$(printf '\t')
     _srm_tmp="$_srm_file.tmp.$$"
     _srm_found=0
-    : > "$_srm_tmp" || {
+    (umask 077 && : > "$_srm_tmp") || {
         echo "snippet rm: cannot write $_srm_file" >&2
         unset _srm_file _srm_tab _srm_tmp _srm_found
         return 1
@@ -166,7 +188,12 @@ _snippet_rm() {
         fi
     done < "$_srm_file"
     if [ "$_srm_found" -eq 1 ]; then
-        mv "$_srm_tmp" "$_srm_file"
+        if ! _snip_put "$_srm_tmp" "$_srm_file"; then
+            rm -f "$_srm_tmp"
+            echo "snippet rm: cannot write $_srm_file" >&2
+            unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line
+            return 1
+        fi
         echo "snippet: removed '$1'" >&2
     else
         rm -f "$_srm_tmp"

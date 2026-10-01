@@ -316,8 +316,8 @@ succeeded, so a failed run leaves no truncated archive.
 | `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars); a password in a url prints as `user:***@host` | ✓ | ✓ | — |
 
 Cheatsheets are deployed by `den install cheatsheets`; snippets and proxy profiles
-live in `$XDG_CONFIG_HOME/den`, which den keeps `0700` with `proxy.conf` `0600`
-on Linux and macOS (a proxy url may hold a password).
+live in `$XDG_CONFIG_HOME/den`, which den keeps `0700` with both files `0600`
+on Linux and macOS (a proxy url may hold a password, a snippet a token).
 
 ## Hardware / prompt
 
