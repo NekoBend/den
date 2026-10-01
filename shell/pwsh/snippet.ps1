@@ -75,7 +75,7 @@ function _SnippetExec([string]$Cmd) {
 function _SnippetUsage {
     @(
         'usage: snippet <command>   (alias: snip)'
-        '  save <name> ''<command>''   save a command as typed (or pipe it in)'
+        '  save <name> ''<command>''   save a command as typed (or pipe it in, first line only)'
         '  save <name> <word...>     save the words, each quoted again if it needs it'
         '                            (an unquoted $var or $(...) is expanded on save)'
         '  ls                        list saved snippets'

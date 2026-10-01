@@ -27,7 +27,7 @@ _snip_file() {
 _snip_usage() {
     printf '%s\n' \
         "usage: snippet <command>   (alias: snip)" \
-        "  save <name> '<command>'   save a command as typed (or pipe it via stdin)" \
+        "  save <name> '<command>'   save a command as typed (or pipe it via stdin, first line only)" \
         "  save <name> <word...>     save the words, each quoted again if it needs it" \
         "                            (an unquoted \$var or \$(...) is expanded on save)" \
         "  ls                        list saved snippets" \
