@@ -274,7 +274,8 @@ foreign hooks untouched. Generic events map to each tool's own names:
 
 `--all-tools` installs every verified tool: claude, copilot and cline (the
 extension). cline-cli is installed only when named, and naming it together
-with cline is refused (exit 2), in the interactive picker too, because the
+with cline (or with `--all-tools`, which adds to any `--tool`) is refused
+(exit 2), in the interactive picker too, because the
 extension would then load the imprint and memory twice (see below). For
 `list` and `uninstall hook`, `--all-tools` still covers every tool.
 

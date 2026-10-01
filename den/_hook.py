@@ -1282,9 +1282,11 @@ def _cmd_imprint(argv: list[str]) -> int:
 def _parse_tool_args(
     argv: list[str], *, default_all: bool = False, all_tools: list[str] | None = None
 ) -> tuple[list[str] | None, str | None]:
-    """(tools, --config) from argv. --all-tools means `all_tools` (install's
+    """(tools, --config) from argv. --all-tools adds `all_tools` (install's
     installable set), else every tool den knows, so list and remove still reach
-    whatever an explicit --tool installed."""
+    whatever an explicit --tool installed. It adds to the --tool list rather
+    than replacing it, so the flags' order cannot drop a tool the user named
+    (`--tool cline-cli --all-tools` reaches install's cline pair refusal)."""
     tools: list[str] = []
     override: str | None = None
     i = 0
@@ -1294,10 +1296,12 @@ def _parse_tool_args(
             if name not in _TOOLS:
                 print(f"den hook: unknown tool '{name}'", file=sys.stderr)
                 return None, None
-            tools.append(name)
+            if name not in tools:
+                tools.append(name)
             i += 2
         elif argv[i] == "--all-tools":
-            tools = list(_TOOLS) if all_tools is None else list(all_tools)
+            every = list(_TOOLS) if all_tools is None else all_tools
+            tools += [t for t in every if t not in tools]
             i += 1
         elif argv[i] == "--config" and i + 1 < len(argv):
             override = argv[i + 1]

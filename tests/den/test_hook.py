@@ -341,6 +341,21 @@ def test_install_refuses_cline_together_with_cline_cli(tmp_path, monkeypatch, ca
     assert not (tmp_path / ".den").exists(), "nothing written"
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [["--all-tools", "--tool", "cline-cli"], ["--tool", "cline-cli", "--all-tools"]],
+)
+def test_install_all_tools_plus_cline_cli_is_refused_in_either_order(
+    tmp_path, monkeypatch, capsys, argv
+):
+    """--all-tools after --tool replaced the list, so the cline-cli named first
+    was silently swapped for cline instead of being refused."""
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", *argv]) == 2
+    assert "cline-cli" in capsys.readouterr().err
+    assert not (tmp_path / ".den").exists(), "nothing written"
+
+
 def test_install_picker_refuses_cline_together_with_cline_cli(
     tmp_path, monkeypatch, capsys
 ):
