@@ -63,8 +63,9 @@ Commands like `ls`, `cat`, `grep`, `find` dispatch through tiers, in order:
 On Windows the pwsh side also routes the no-modern-tool commands through
 microsoft/coreutils when it is installed: `head`, `tail`, `wc`, `touch`,
 `split`, `df`, `env`, and the destructive `cp`, `mv`, `rm`, `mkdir`, `rmdir`
-(each falls back to the PowerShell builtin when coreutils is absent, so the
-no-coreutils baseline is unchanged). Install it with `den install shell
+(each falls back to the PowerShell builtin when coreutils is absent, with the
+same arguments and piped input, so `Get-ChildItem *.log | rm` works as with the
+stock alias). Install it with `den install shell
 --coreutils` (or answer yes when `den install shell` asks; it is admin/all-user
 only). microsoft/coreutils also inlines a `PSConsoleHostReadLine` rewriter into
 your PowerShell profile that retargets typed `ls`/`cat`/... to coreutils before
@@ -78,6 +79,10 @@ point them elsewhere with `_DEN_COREUTILS=<path>`, or disable the tier with
 `_DEN_COREUTILS=0`. The tier is Windows + pwsh 7 only (Windows PowerShell 5.1
 skips it); on Linux/macOS these commands keep their native / PowerShell-builtin
 behavior.
+
+On PowerShell, piped input reaches the tool a wrapper picks as it arrives
+(`Get-Content -Wait log | grep x` prints each match as it comes), and with
+nothing piped in the tool's stdin stays the console's.
 
 Because the modern tools take different flags and produce different output than
 the native commands, a command written for the native tool can misbehave when a

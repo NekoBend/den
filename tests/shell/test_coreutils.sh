@@ -559,6 +559,47 @@ assert_contains "pwsh/which stderr has message" "usage:" "$err"
 assert_not_contains "pwsh/which no double prefix" "which: which:" "$err"
 
 # =============================================================================
+# Piped input streams
+# =============================================================================
+# head and tail collected all their input before they looked at it, so
+# `seq 2000000 | head -n 3` took 1.2 s and nothing came out of an endless
+# producer. The time each line comes out is measured downstream.
+echo "[pwsh] head and tail -n +N pass piped lines on as they come"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    \$t0 = [DateTime]::UtcNow
+    $STREAM_PRODUCER | head -n 1 | ForEach-Object { if (([DateTime]::UtcNow - \$t0).TotalMilliseconds -lt 1000) { 'head: at once' } else { 'head: late' } }
+    \$t0 = [DateTime]::UtcNow
+    $STREAM_PRODUCER | tail -n +1 | Select-Object -First 1 | ForEach-Object { if (([DateTime]::UtcNow - \$t0).TotalMilliseconds -lt 1000) { 'tail: at once' } else { 'tail: late' } }
+    1..5 | head -n -2
+    1..5 | tail -n 2
+" 2>/dev/null | clean)
+assert_eq "pwsh/head and tail stream; -n -N and -n N still hold back" "head: at once
+tail: at once
+1
+2
+3
+4
+5" "$actual"
+
+# With microsoft/coreutils, head/tail/wc/... handed it `$input`, collected in
+# full, and with nothing piped in an empty pipe for stdin. A stub stands in for
+# coreutils (see make_stamp_stub in helpers.sh).
+CU_STAMP="$TESTTMP/coreutils-stamp"
+make_stamp_stub "$CU_STAMP" || abort_suite "cannot write $CU_STAMP"
+CU_SETUP="
+    \$env:_DEN_FORCE_INTERACTIVE = '1'; \$env:_DEN_COREUTILS = '$CU_STAMP'
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    . '$COREUTILS_PS1'
+"
+for cmd in head tail wc split env; do
+    echo "[pwsh] $cmd with coreutils streams piped input, and gets no pipe with none"
+    actual=$(run_pwsh "$DOTFILES/shell/pwsh/_helpers.ps1" "$CU_SETUP; $STREAM_PRODUCER | $cmd" < /dev/null 2>&1 | clean)
+    assert_streams "pwsh/$cmd with coreutils streams" "$actual"
+    actual=$(run_pwsh "$DOTFILES/shell/pwsh/_helpers.ps1" "$CU_SETUP; $cmd" < /dev/null 2>&1 | clean)
+    assert_eq "pwsh/$cmd with coreutils, no stdin pipe" "stdin: not a pipe" "$actual"
+done
+
+# =============================================================================
 # Summary
 # =============================================================================
 print_summary "test_coreutils"

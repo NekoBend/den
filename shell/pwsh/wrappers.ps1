@@ -108,10 +108,10 @@ New-WrapperSuffix 'grepw' 'rg'  ''
 New-WrapperSuffix 'lsw'   'lsd' ''
 
 # ===== Destructive coreutils: microsoft/coreutils on Windows, else PS builtin =====
-# Windows-only. On Linux/macOS `cp`/`mv`/`rm`/`mkdir`/`rmdir` keep their stock
-# PowerShell-alias behavior (the builtin cmdlets). With microsoft/coreutils installed
-# these gain real Unix flags (`rm -rf`, `cp -r`, ...); without it they fall back to
-# the same builtin cmdlet, so this never changes the no-coreutils Windows baseline.
+# Windows-only. On Linux/macOS `cp`/`mv`/`rm`/`mkdir`/`rmdir` keep their native
+# commands. With microsoft/coreutils installed, these gain real Unix flags (`rm -rf`,
+# `cp -r`, ...); without it they run the builtin cmdlet with the same arguments and
+# pipeline input (`Get-ChildItem *.log | rm`), as the stock aliases do.
 if ($PSVersionTable.PSEdition -eq 'Core' -and $IsWindows) {
     # cp/mv/rm/rmdir are built-in PowerShell ALIASES on Windows (-> Copy-Item /
     # Move-Item / Remove-Item), and an alias outranks a function in command
@@ -121,9 +121,9 @@ if ($PSVersionTable.PSEdition -eq 'Core' -and $IsWindows) {
     foreach ($a in 'cp', 'mv', 'rm', 'rmdir') {
         Remove-Item "alias:$a" -Force -ErrorAction SilentlyContinue
     }
-    New-CoreutilsWrapper 'cp'    'cp'    'Copy-Item @Args'
-    New-CoreutilsWrapper 'mv'    'mv'    'Move-Item @Args'
-    New-CoreutilsWrapper 'rm'    'rm'    'Remove-Item @Args'
-    New-CoreutilsWrapper 'mkdir' 'mkdir' 'New-Item -ItemType Directory @Args'
-    New-CoreutilsWrapper 'rmdir' 'rmdir' 'Remove-Item @Args'
+    New-CoreutilsWrapper 'cp'    'cp'    'Copy-Item'
+    New-CoreutilsWrapper 'mv'    'mv'    'Move-Item'
+    New-CoreutilsWrapper 'rm'    'rm'    'Remove-Item'
+    New-CoreutilsWrapper 'mkdir' 'mkdir' 'New-Item -ItemType Directory'
+    New-CoreutilsWrapper 'rmdir' 'rmdir' 'Remove-Item'
 }

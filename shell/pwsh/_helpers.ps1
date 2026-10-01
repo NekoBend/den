@@ -363,6 +363,15 @@ function _ResolvePaths([string[]]$Patterns) {
 
 # ========== wrapper generator ==========
 
+# The functions these generators define pass the call on to the tool they pick
+# through a steppable pipeline: each object piped in reaches the tool as it
+# arrives, and what the tool prints comes back as it prints it, so
+# `tail -f log | grep x` shows each match at once. A call with nothing piped in
+# runs the tool directly, so its stdin stays the console's (rg searches the
+# current directory rather than an empty stdin, and `rm -i` can ask). The
+# generated body reads its arguments as $__a, and the scriptblock in $__run is
+# the one command the call runs (a steppable pipeline holds exactly one).
+
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
 function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr) {
     # Dispatch order: modern tool -> (Windows) microsoft/coreutils -> native exe on
@@ -374,6 +383,10 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # skipped on Windows so it never resolves to the DOS command -- coreutils or the
     # PS fallback handles them instead. The coreutils and native lookups are both
     # LAZY (resolved on the non-modern branch only), so startup stays cheap.
+    # The fallback runs in the function itself when nothing is piped in, so an
+    # error it writes is the function's ("lt: ..."). With input piped in, it runs
+    # as a scriptblock of its own, which sees the call's arguments as $Args and
+    # what was piped in as $input, all at once.
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
     $winNativeSkip = @('find', 'sort', 'more')
     $nativeGuard = if ($NativeCmd -and ($NativeCmd -in $winNativeSkip)) {
@@ -384,20 +397,37 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
         "`$false"
     }
     $sb = [scriptblock]::Create(@"
-if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
-    _WrapLog '$FuncName' '$Modern'
-    `$input | & '$Modern' $ModernFlags @Args
-} else {
-    `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
-    if (`$__cu) {
-        `$input | & `$__cu $NativeCmd $NativeCmdFlags @Args
+begin {
+    `$__a = `$args
+    if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
+        _WrapLog '$FuncName' '$Modern'
+        `$__run = { & '$Modern' $ModernFlags @__a }
     } else {
-        `$__nc = if ($nativeGuard) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }
-        if (`$__nc) {
-            `$input | & `$__nc $NativeCmdFlags @Args
+        `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
+        `$__nc = if (-not `$__cu -and ($nativeGuard)) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }
+        if (`$__cu) {
+            `$__run = { & `$__cu $NativeCmd $NativeCmdFlags @__a }
+        } elseif (`$__nc) {
+            `$__run = { & `$__nc $NativeCmdFlags @__a }
+        } elseif (`$MyInvocation.ExpectingInput) {
+            `$__fb = { $fallbackCode }
+            `$__run = { & `$__fb @__a }
         } else {
-            $fallbackCode
+            `$__run = `$null
         }
+    }
+    `$__sp = `$null
+    if (`$null -ne `$__run -and `$MyInvocation.ExpectingInput) {
+        `$__sp = `$__run.GetSteppablePipeline()
+        `$__sp.Begin(`$true)
+    }
+}
+process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
+end {
+    if (`$null -ne `$__sp) { `$__sp.End() }
+    elseif (`$null -ne `$__run) { & `$__run }
+    else {
+        $fallbackCode
     }
 }
 "@)
@@ -407,27 +437,51 @@ if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
 # New-WrapperSuffix <func> <modern> <modernFlags> — always use modern (w-suffix)
 function New-WrapperSuffix([string]$FuncName, [string]$Modern, [string]$ModernFlags) {
     $sb = [scriptblock]::Create(@"
-if (_ResolveCmd '$Modern') {
-    `$input | & '$Modern' $ModernFlags @Args
-} else {
-    Write-Warning "${FuncName}: $Modern is not installed."
+begin {
+    `$__a = `$args
+    `$__run = `$null
+    `$__sp = `$null
+    if (_ResolveCmd '$Modern') {
+        `$__run = { & '$Modern' $ModernFlags @__a }
+        if (`$MyInvocation.ExpectingInput) {
+            `$__sp = `$__run.GetSteppablePipeline()
+            `$__sp.Begin(`$true)
+        }
+    } else {
+        Write-Warning "${FuncName}: $Modern is not installed."
+    }
 }
+process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
+end { if (`$null -ne `$__sp) { `$__sp.End() } elseif (`$null -ne `$__run) { & `$__run } }
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb
 }
 
-# New-CoreutilsWrapper <func> <cmdName> <builtinExpr> — for commands with no modern
+# New-CoreutilsWrapper <func> <cmdName> <builtinCmd> - for commands with no modern
 # tool: prefer microsoft/coreutils on Windows, else the PowerShell builtin. Used for
-# the destructive coreutils (cp/mv/rm/mkdir/rmdir). On non-Windows _CoreutilsBin is
-# $null so these collapse to the builtin, matching the stock PowerShell aliases.
-function New-CoreutilsWrapper([string]$FuncName, [string]$CmdName, [string]$BuiltinExpr) {
+# the destructive coreutils (cp/mv/rm/mkdir/rmdir). <builtinCmd> is the cmdlet with
+# any fixed arguments ('Copy-Item', 'New-Item -ItemType Directory'); it gets the
+# call's arguments and its pipeline input, so `Get-ChildItem *.log | rm` removes
+# those files as Remove-Item does. On non-Windows _CoreutilsBin is $null so these
+# collapse to the builtin, matching the stock PowerShell aliases.
+function New-CoreutilsWrapper([string]$FuncName, [string]$CmdName, [string]$BuiltinCmd) {
     $sb = [scriptblock]::Create(@"
-`$__cu = _CoreutilsBin
-if (`$__cu) {
-    `$input | & `$__cu $CmdName @Args
-} else {
-    $BuiltinExpr
+begin {
+    `$__a = `$args
+    `$__cu = _CoreutilsBin
+    if (`$__cu) {
+        `$__run = { & `$__cu $CmdName @__a }
+    } else {
+        `$__run = { $BuiltinCmd @__a }
+    }
+    `$__sp = `$null
+    if (`$MyInvocation.ExpectingInput) {
+        `$__sp = `$__run.GetSteppablePipeline()
+        `$__sp.Begin(`$true)
+    }
 }
+process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
+end { if (`$null -ne `$__sp) { `$__sp.End() } else { & `$__run } }
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb
 }

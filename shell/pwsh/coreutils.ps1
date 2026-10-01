@@ -4,13 +4,20 @@
 # Skip in non-interactive sessions to avoid breaking scripts
 if (-not (_DenInteractive)) { return }
 
+# The functions that can hand a call to microsoft/coreutils pass what is piped in
+# on through a steppable pipeline, as the generated wrappers do (see New-Wrapper in
+# _helpers.ps1): each object reaches the binary as it arrives, and a call with
+# nothing piped in runs the binary directly, its stdin the console's. Their
+# PowerShell versions read piped input in a process block, an object at a time.
+
 # ===== Unix-like Utilities =====
 
 # df → disk free space
 # Usage: df [path ...]
+# df reads no input, so microsoft/coreutils gets none.
 function df {
   $__cu = _CoreutilsBin
-  if ($__cu) { $input | & $__cu df @Args; return }
+  if ($__cu) { & $__cu df @Args; return }
   $paths = @($Args)
   $result = Get-PSDrive -PSProvider FileSystem |
     Select-Object Name,
@@ -30,63 +37,97 @@ function df {
 # env → list environment variables / run command with modified env
 # Usage: env [VAR=val ...] [command [args ...]], no args = print all
 function env {
-  $__cu = _CoreutilsBin
-  if ($__cu) { $input | & $__cu env @Args; return }
-  $assigns = @(); $cmd = $null; $cmdArgs = @()
-  $i = 0
-  while ($i -lt $Args.Count) {
-    $a = $Args[$i]
-    if ($null -eq $cmd -and $a -match '^([^=]+)=(.*)$') {
-      $assigns += @{ Name = $Matches[1]; Value = $Matches[2] }
-    } elseif ($null -eq $cmd) {
-      $cmd = $a
-    } else {
-      $cmdArgs += $a
+  begin {
+    $__cu = _CoreutilsBin
+    $__a = $args
+    $__sp = $null
+    if ($__cu -and $MyInvocation.ExpectingInput) {
+      $__sp = { & $__cu env @__a }.GetSteppablePipeline()
+      $__sp.Begin($true)
     }
-    $i++
   }
-  if ($null -ne $cmd) {
-    $saved = @{}
-    foreach ($kv in $assigns) {
-      $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name)
-      [Environment]::SetEnvironmentVariable($kv.Name, $kv.Value)
-    }
-    try { & $cmd @cmdArgs }
-    finally {
-      foreach ($kv in $assigns) {
-        if ($null -eq $saved[$kv.Name]) { [Environment]::SetEnvironmentVariable($kv.Name, $null) }
-        else { [Environment]::SetEnvironmentVariable($kv.Name, $saved[$kv.Name]) }
+  process { if ($null -ne $__sp) { $__sp.Process($_) } }
+  end {
+    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($__cu) { & $__cu env @__a; return }
+    $assigns = @(); $cmd = $null; $cmdArgs = @()
+    $i = 0
+    while ($i -lt $__a.Count) {
+      $a = $__a[$i]
+      if ($null -eq $cmd -and $a -match '^([^=]+)=(.*)$') {
+        $assigns += @{ Name = $Matches[1]; Value = $Matches[2] }
+      } elseif ($null -eq $cmd) {
+        $cmd = $a
+      } else {
+        $cmdArgs += $a
       }
+      $i++
     }
-  } else {
-    Get-ChildItem Env: | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }
+    if ($null -ne $cmd) {
+      $saved = @{}
+      foreach ($kv in $assigns) {
+        $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name)
+        [Environment]::SetEnvironmentVariable($kv.Name, $kv.Value)
+      }
+      try { & $cmd @cmdArgs }
+      finally {
+        foreach ($kv in $assigns) {
+          if ($null -eq $saved[$kv.Name]) { [Environment]::SetEnvironmentVariable($kv.Name, $null) }
+          else { [Environment]::SetEnvironmentVariable($kv.Name, $saved[$kv.Name]) }
+        }
+      }
+    } else {
+      Get-ChildItem Env: | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }
+    }
   }
 }
 
 # head → first N lines of a file (default: 10)
 # Usage: head [-n N] [-n -N] [-N] [-q] [-v] [file ...], supports pipe input
+# Piped input is read an object at a time: the first N come out as they arrive
+# (the rest is still read, and dropped), and -n -N holds back only the last N.
 function head {
-  $__cu = _CoreutilsBin
-  if ($__cu) { $input | & $__cu head @Args; return }
-  $lines = 10; $excludeLast = 0; $files = @(); $quiet = $false; $verbose = $false; $i = 0
-  while ($i -lt $Args.Count) {
-    $a = $Args[$i]
-    if ($a -eq '-n' -and ($i + 1) -lt $Args.Count) {
-      $v = $Args[$i + 1]
-      if ($v -match '^-(\d+)$') { $excludeLast = [int]$Matches[1]; $lines = 0 }
-      else { $lines = [int]$v; $excludeLast = 0 }
-      $i += 2
+  begin {
+    $__cu = _CoreutilsBin
+    $__in = $MyInvocation.ExpectingInput
+    $__a = $args
+    $__sp = $null
+    if ($__cu) {
+      if ($__in) { $__sp = { & $__cu head @__a }.GetSteppablePipeline(); $__sp.Begin($true) }
+      return
     }
-    elseif ($a -match '^-(\d+)$') { $lines = [int]$Matches[1]; $i++ }
-    elseif ($a -eq '-q' -or $a -eq '--quiet') { $quiet = $true; $i++ }
-    elseif ($a -eq '-v' -or $a -eq '--verbose') { $verbose = $true; $i++ }
-    else { $files += $a; $i++ }
+    $lines = 10; $excludeLast = 0; $files = @(); $quiet = $false; $verbose = $false; $i = 0
+    while ($i -lt $__a.Count) {
+      $a = $__a[$i]
+      if ($a -eq '-n' -and ($i + 1) -lt $__a.Count) {
+        $v = $__a[$i + 1]
+        if ($v -match '^-(\d+)$') { $excludeLast = [int]$Matches[1]; $lines = 0 }
+        else { $lines = [int]$v; $excludeLast = 0 }
+        $i += 2
+      }
+      elseif ($a -match '^-(\d+)$') { $lines = [int]$Matches[1]; $i++ }
+      elseif ($a -eq '-q' -or $a -eq '--quiet') { $quiet = $true; $i++ }
+      elseif ($a -eq '-v' -or $a -eq '--verbose') { $verbose = $true; $i++ }
+      else { $files += $a; $i++ }
+    }
+    $seen = 0
+    $held = [System.Collections.Generic.Queue[object]]::new()
   }
-  $showHeader = ($files.Count -gt 1 -and -not $quiet) -or $verbose
-  if ($files.Count -eq 0) {
-    if ($excludeLast -gt 0) { $input | Select-Object -SkipLast $excludeLast }
-    else { $input | Select-Object -First $lines }
-  } else {
+  process {
+    if ($null -ne $__sp) { $__sp.Process($_); return }
+    if ($__cu -or -not $__in -or $files.Count -gt 0) { return }
+    if ($excludeLast -gt 0) {
+      $held.Enqueue($_)
+      if ($held.Count -gt $excludeLast) { $held.Dequeue() }
+    } elseif ($seen -lt $lines) {
+      $_
+      $seen++
+    }
+  }
+  end {
+    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($__cu) { & $__cu head @__a; return }
+    $showHeader = ($files.Count -gt 1 -and -not $quiet) -or $verbose
     for ($fi = 0; $fi -lt $files.Count; $fi++) {
       $f = $files[$fi]
       if ($showHeader) { Write-Host "==> $f <==" }
@@ -103,191 +144,231 @@ function head {
 # split → split a file into chunks
 # Usage: split [-l N] [-n l/N] [-b SIZE] [-a LEN] [file] [prefix]
 function split {
-  $__cu = _CoreutilsBin
-  if ($__cu) { $input | & $__cu split @Args; return }
-  # Every captured operand is cast to [string]. PowerShell binds a bare
-  # numeric argument as a NUMBER, and "$x -ne ''" coerces the right side to
-  # the left side's type, so [int]'' is 0 and `-n 0` compared equal to "not
-  # given": the invalid-chunk-count guard below was unreachable and
-  # `split -n 0` silently fell through to the 1000-line default instead of
-  # being refused. The same held for `-b 0`, and for a file literally named
-  # "0", which "$path -eq ''" read as "no file, use stdin".
-  $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixLen = 2; $i = 0
-  while ($i -lt $Args.Count) {
-    $a = [string]$Args[$i]
-    if ($a -eq '-l' -and ($i + 1) -lt $Args.Count) { $lines = [int]$Args[$i + 1]; $i += 2 }
-    elseif ($a -eq '-n' -and ($i + 1) -lt $Args.Count) { $chunks = [string]$Args[$i + 1]; $i += 2 }
-    elseif ($a -eq '-b' -and ($i + 1) -lt $Args.Count) { $bytes = [string]$Args[$i + 1]; $i += 2 }
-    elseif ($a -eq '-a' -and ($i + 1) -lt $Args.Count) { $suffixLen = [int]$Args[$i + 1]; $i += 2 }
-    else {
-      if ($path -eq '') { $path = $a } else { $prefix = $a }
-      $i++
-    }
+  begin {
+    $__cu = _CoreutilsBin
+    $__in = $MyInvocation.ExpectingInput
+    $__a = $args
+    $__sp = $null
+    $__piped = [System.Collections.Generic.List[object]]::new()
+    if ($__cu -and $__in) { $__sp = { & $__cu split @__a }.GetSteppablePipeline(); $__sp.Begin($true) }
   }
-  if ($path -eq '') {
-    $content = @($input)
-    if ($content.Count -eq 0) { Write-Error "usage: [-l N] [-n l/N] [-b SIZE] <file> [prefix]"; return }
+  process {
+    if ($null -ne $__sp) { $__sp.Process($_) }
+    elseif ($__in -and -not $__cu) { $__piped.Add($_) }
   }
-
-  # Generate suffix: aa, ab, ... like GNU split
-  function _suffix([int]$idx, [int]$len) {
-    $s = ''; for ($j = $len - 1; $j -ge 0; $j--) {
-      $s = [char](97 + ($idx % 26)) + $s; $idx = [math]::Floor($idx / 26)
-    }; $s
-  }
-
-  # .NET resolves relative paths against the process directory, which
-  # Set-Location never updates, so the input and every output name are
-  # resolved against the PowerShell location first (literally: no wildcards).
-  $sess = $ExecutionContext.SessionState.Path
-  $full = ''
-  if ($path -ne '') {
-    $full = $sess.GetUnresolvedProviderPathFromPSPath($path)
-    if (-not [System.IO.File]::Exists($full)) { Write-Error "cannot open '$path' for reading: No such file"; return }
-  }
-
-  if ($bytes -ne '') {
-    # Byte splitting
-    $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB }
-    $sz = if ($bytes -match '^(\d+)([KMG])$') { [long]$Matches[1] * $mult[$Matches[2]] } else { [long]$bytes }
-    # A size of 0 advances the write loop by 0 bytes for ever, so it has to be
-    # refused rather than run. It was unreachable while `-b 0` was read as
-    # "-b not given"; the [string] cast above is what makes it reachable.
-    if ($sz -lt 1) { Write-Error "invalid byte size '$bytes'"; return }
-    # Streamed through one reusable buffer. ReadAllBytes plus a range slice
-    # per part ($data[$a..$b], an object[] of boxed bytes) took about 50x the
-    # file size in memory and ran some 250x slower than native split, so a
-    # multi-GB file could not be split at all.
-    $in = if ($full) { [System.IO.File]::OpenRead($full) }
-          else { [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes(($content -join "`n") + "`n")) }
-    $buf = New-Object byte[] ([int][math]::Min($sz, 1MB))
-    $idx = 0
-    try {
-      while ($true) {
-        $n = $in.Read($buf, 0, [int][math]::Min([long]$buf.Length, $sz))
-        if ($n -le 0) { break }
-        $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
-        try {
-          $out.Write($buf, 0, $n)
-          $left = $sz - $n
-          while ($left -gt 0) {
-            $n = $in.Read($buf, 0, [int][math]::Min([long]$buf.Length, $left))
-            if ($n -le 0) { break }
-            $out.Write($buf, 0, $n)
-            $left -= $n
-          }
-        } finally { $out.Dispose() }
-        $idx++
+  end {
+    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($__cu) { & $__cu split @__a; return }
+    # Every captured operand is cast to [string]. PowerShell binds a bare
+    # numeric argument as a NUMBER, and "$x -ne ''" coerces the right side to
+    # the left side's type, so [int]'' is 0 and `-n 0` compared equal to "not
+    # given": the invalid-chunk-count guard below was unreachable and
+    # `split -n 0` silently fell through to the 1000-line default instead of
+    # being refused. The same held for `-b 0`, and for a file literally named
+    # "0", which "$path -eq ''" read as "no file, use stdin".
+    $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixLen = 2; $i = 0
+    while ($i -lt $__a.Count) {
+      $a = [string]$__a[$i]
+      if ($a -eq '-l' -and ($i + 1) -lt $__a.Count) { $lines = [int]$__a[$i + 1]; $i += 2 }
+      elseif ($a -eq '-n' -and ($i + 1) -lt $__a.Count) { $chunks = [string]$__a[$i + 1]; $i += 2 }
+      elseif ($a -eq '-b' -and ($i + 1) -lt $__a.Count) { $bytes = [string]$__a[$i + 1]; $i += 2 }
+      elseif ($a -eq '-a' -and ($i + 1) -lt $__a.Count) { $suffixLen = [int]$__a[$i + 1]; $i += 2 }
+      else {
+        if ($path -eq '') { $path = $a } else { $prefix = $a }
+        $i++
       }
-    } finally { $in.Dispose() }
-    Write-Host "Split into $idx files"
-    return
-  }
+    }
+    if ($path -eq '') {
+      $content = $__piped.ToArray()
+      if ($content.Count -eq 0) { Write-Error "usage: [-l N] [-n l/N] [-b SIZE] <file> [prefix]"; return }
+    }
 
-  if ($chunks -ne '') {
-    $n = [int]($chunks -replace '^l/', '')
-    if ($n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
-  }
+    # Generate suffix: aa, ab, ... like GNU split
+    function _suffix([int]$idx, [int]$len) {
+      $s = ''; for ($j = $len - 1; $j -ge 0; $j--) {
+        $s = [char](97 + ($idx % 26)) + $s; $idx = [math]::Floor($idx / 26)
+      }; $s
+    }
 
-  if ($full) {
-    # A file is split on its raw bytes, cut after each LF, so the parts put
-    # back together (cat x*) are the file again, as with GNU split. Reading
-    # lines with Get-Content and writing them with Set-Content decoded them
-    # (a non-UTF-8 byte became U+FFFD), rewrote the line endings and added a
-    # final newline the file did not have. The chunk sizes are den's own:
-    # -l N lines per part, -n N parts of ceil(lines/N) lines each.
-    $buf = New-Object byte[] 65536
+    # .NET resolves relative paths against the process directory, which
+    # Set-Location never updates, so the input and every output name are
+    # resolved against the PowerShell location first (literally: no wildcards).
+    $sess = $ExecutionContext.SessionState.Path
+    $full = ''
+    if ($path -ne '') {
+      $full = $sess.GetUnresolvedProviderPathFromPSPath($path)
+      if (-not [System.IO.File]::Exists($full)) { Write-Error "cannot open '$path' for reading: No such file"; return }
+    }
+
+    if ($bytes -ne '') {
+      # Byte splitting
+      $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB }
+      $sz = if ($bytes -match '^(\d+)([KMG])$') { [long]$Matches[1] * $mult[$Matches[2]] } else { [long]$bytes }
+      # A size of 0 advances the write loop by 0 bytes for ever, so it has to be
+      # refused rather than run. It was unreachable while `-b 0` was read as
+      # "-b not given"; the [string] cast above is what makes it reachable.
+      if ($sz -lt 1) { Write-Error "invalid byte size '$bytes'"; return }
+      # Streamed through one reusable buffer. ReadAllBytes plus a range slice
+      # per part ($data[$a..$b], an object[] of boxed bytes) took about 50x the
+      # file size in memory and ran some 250x slower than native split, so a
+      # multi-GB file could not be split at all.
+      $in = if ($full) { [System.IO.File]::OpenRead($full) }
+            else { [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes(($content -join "`n") + "`n")) }
+      $buf = New-Object byte[] ([int][math]::Min($sz, 1MB))
+      $idx = 0
+      try {
+        while ($true) {
+          $n = $in.Read($buf, 0, [int][math]::Min([long]$buf.Length, $sz))
+          if ($n -le 0) { break }
+          $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
+          try {
+            $out.Write($buf, 0, $n)
+            $left = $sz - $n
+            while ($left -gt 0) {
+              $n = $in.Read($buf, 0, [int][math]::Min([long]$buf.Length, $left))
+              if ($n -le 0) { break }
+              $out.Write($buf, 0, $n)
+              $left -= $n
+            }
+          } finally { $out.Dispose() }
+          $idx++
+        }
+      } finally { $in.Dispose() }
+      Write-Host "Split into $idx files"
+      return
+    }
+
     if ($chunks -ne '') {
-      # Count the lines first: every LF, plus a last line without one.
-      $count = 0; $last = [byte]10
+      $n = [int]($chunks -replace '^l/', '')
+      if ($n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
+    }
+
+    if ($full) {
+      # A file is split on its raw bytes, cut after each LF, so the parts put
+      # back together (cat x*) are the file again, as with GNU split. Reading
+      # lines with Get-Content and writing them with Set-Content decoded them
+      # (a non-UTF-8 byte became U+FFFD), rewrote the line endings and added a
+      # final newline the file did not have. The chunk sizes are den's own:
+      # -l N lines per part, -n N parts of ceil(lines/N) lines each.
+      $buf = New-Object byte[] 65536
+      if ($chunks -ne '') {
+        # Count the lines first: every LF, plus a last line without one.
+        $count = 0; $last = [byte]10
+        $in = [System.IO.File]::OpenRead($full)
+        try {
+          while (($got = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+            $p = 0
+            while (($p = [Array]::IndexOf($buf, [byte]10, $p, $got - $p)) -ge 0) { $count++; $p++ }
+            $last = $buf[$got - 1]
+          }
+        } finally { $in.Dispose() }
+        if ($last -ne 10) { $count++ }
+        $lines = [math]::Ceiling($count / $n)
+      }
+      if ($lines -lt 1) { $lines = 1000 }
+      $idx = 0; $inChunk = 0; $out = $null
       $in = [System.IO.File]::OpenRead($full)
       try {
         while (($got = $in.Read($buf, 0, $buf.Length)) -gt 0) {
           $p = 0
-          while (($p = [Array]::IndexOf($buf, [byte]10, $p, $got - $p)) -ge 0) { $count++; $p++ }
-          $last = $buf[$got - 1]
-        }
-      } finally { $in.Dispose() }
-      if ($last -ne 10) { $count++ }
-      $lines = [math]::Ceiling($count / $n)
-    }
-    if ($lines -lt 1) { $lines = 1000 }
-    $idx = 0; $inChunk = 0; $out = $null
-    $in = [System.IO.File]::OpenRead($full)
-    try {
-      while (($got = $in.Read($buf, 0, $buf.Length)) -gt 0) {
-        $p = 0
-        while ($p -lt $got) {
-          if ($null -eq $out) {
-            $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
-            $idx++
+          while ($p -lt $got) {
+            if ($null -eq $out) {
+              $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
+              $idx++
+            }
+            $nl = [Array]::IndexOf($buf, [byte]10, $p, $got - $p)
+            if ($nl -lt 0) { $out.Write($buf, $p, $got - $p); break }
+            $out.Write($buf, $p, $nl + 1 - $p)
+            $p = $nl + 1
+            $inChunk++
+            if ($inChunk -ge $lines) { $out.Dispose(); $out = $null; $inChunk = 0 }
           }
-          $nl = [Array]::IndexOf($buf, [byte]10, $p, $got - $p)
-          if ($nl -lt 0) { $out.Write($buf, $p, $got - $p); break }
-          $out.Write($buf, $p, $nl + 1 - $p)
-          $p = $nl + 1
-          $inChunk++
-          if ($inChunk -ge $lines) { $out.Dispose(); $out = $null; $inChunk = 0 }
         }
+      } finally {
+        if ($null -ne $out) { $out.Dispose() }
+        $in.Dispose()
       }
-    } finally {
-      if ($null -ne $out) { $out.Dispose() }
-      $in.Dispose()
+      if ($idx -eq 0) { Write-Host "Split into 0 files"; return }
+      Write-Host "Split into $idx files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($idx-1) $suffixLen))"
+      return
     }
-    if ($idx -eq 0) { Write-Host "Split into 0 files"; return }
-    Write-Host "Split into $idx files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($idx-1) $suffixLen))"
-    return
-  }
 
-  # Piped input arrives as strings, already decoded: it is written back as
-  # lines. $content is @() above, so .Count and the slice are strict-safe.
-  if ($chunks -ne '') { $lines = [math]::Ceiling($content.Count / $n) }
-  if ($lines -lt 1) { $lines = 1000 }
-  $total = [math]::Ceiling($content.Count / $lines)
-  for ($idx = 0; $idx -lt $total; $idx++) {
-    $start = $idx * $lines
-    $outFile = "${prefix}$(_suffix $idx $suffixLen)"
-    $content[$start..([math]::Min($start + $lines, $content.Count) - 1)] | Set-Content -LiteralPath $outFile
+    # Piped input arrives as strings, already decoded: it is written back as
+    # lines. $content is @() above, so .Count and the slice are strict-safe.
+    if ($chunks -ne '') { $lines = [math]::Ceiling($content.Count / $n) }
+    if ($lines -lt 1) { $lines = 1000 }
+    $total = [math]::Ceiling($content.Count / $lines)
+    for ($idx = 0; $idx -lt $total; $idx++) {
+      $start = $idx * $lines
+      $outFile = "${prefix}$(_suffix $idx $suffixLen)"
+      $content[$start..([math]::Min($start + $lines, $content.Count) - 1)] | Set-Content -LiteralPath $outFile
+    }
+    Write-Host "Split into $total files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($total-1) $suffixLen))"
   }
-  Write-Host "Split into $total files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($total-1) $suffixLen))"
 }
 
 # tail → last N lines of a file (default: 10)
 # Usage: tail [-n N] [-n +N] [-N] [-f] [-q] [-v] [file ...], supports pipe input
+# Piped input is read an object at a time: -n +N passes each line on as it
+# arrives, and -n N holds only the last N.
 function tail {
-  $__cu = _CoreutilsBin
-  if ($__cu) { $input | & $__cu tail @Args; return }
-  $lines = 10; $fromLine = 0; $files = @(); $follow = $false; $quiet = $false; $verbose = $false; $i = 0
-  while ($i -lt $Args.Count) {
-    $a = $Args[$i]
-    if ($a -eq '-n' -and ($i + 1) -lt $Args.Count) {
-      $v = $Args[$i + 1]
-      if ($v -match '^\+(\d+)$') { $fromLine = [int]$Matches[1]; $lines = 0 }
-      else { $lines = [int]$v; $fromLine = 0 }
-      $i += 2
+  begin {
+    $__cu = _CoreutilsBin
+    $__in = $MyInvocation.ExpectingInput
+    $__a = $args
+    $__sp = $null
+    if ($__cu) {
+      if ($__in) { $__sp = { & $__cu tail @__a }.GetSteppablePipeline(); $__sp.Begin($true) }
+      return
     }
-    elseif ($a -eq '-f') { $follow = $true; $i++ }
-    elseif ($a -match '^-(\d+)$') { $lines = [int]$Matches[1]; $i++ }
-    elseif ($a -eq '-q' -or $a -eq '--quiet') { $quiet = $true; $i++ }
-    elseif ($a -eq '-v' -or $a -eq '--verbose') { $verbose = $true; $i++ }
-    else { $files += $a; $i++ }
-  }
-  $showHeader = ($files.Count -gt 1 -and -not $quiet) -or $verbose
-  if ($follow -and $files.Count -ge 1) {
-    Get-Content -LiteralPath $files[0] -Tail $lines -Wait
-  } elseif ($files.Count -eq 0) {
-    if ($fromLine -gt 0) { $input | Select-Object -Skip ($fromLine - 1) }
-    else { $input | Select-Object -Last $lines }
-  } else {
-    for ($fi = 0; $fi -lt $files.Count; $fi++) {
-      $f = $files[$fi]
-      if ($showHeader) { Write-Host "==> $f <==" }
-      if ($fromLine -gt 0) {
-        Get-Content -LiteralPath $f | Select-Object -Skip ($fromLine - 1)
-      } else {
-        Get-Content -LiteralPath $f -Tail $lines
+    $lines = 10; $fromLine = 0; $files = @(); $follow = $false; $quiet = $false; $verbose = $false; $i = 0
+    while ($i -lt $__a.Count) {
+      $a = $__a[$i]
+      if ($a -eq '-n' -and ($i + 1) -lt $__a.Count) {
+        $v = $__a[$i + 1]
+        if ($v -match '^\+(\d+)$') { $fromLine = [int]$Matches[1]; $lines = 0 }
+        else { $lines = [int]$v; $fromLine = 0 }
+        $i += 2
       }
-      if ($fi -lt $files.Count - 1 -and -not $quiet) { Write-Host "" }
+      elseif ($a -eq '-f') { $follow = $true; $i++ }
+      elseif ($a -match '^-(\d+)$') { $lines = [int]$Matches[1]; $i++ }
+      elseif ($a -eq '-q' -or $a -eq '--quiet') { $quiet = $true; $i++ }
+      elseif ($a -eq '-v' -or $a -eq '--verbose') { $verbose = $true; $i++ }
+      else { $files += $a; $i++ }
+    }
+    $seen = 0
+    $held = [System.Collections.Generic.Queue[object]]::new()
+  }
+  process {
+    if ($null -ne $__sp) { $__sp.Process($_); return }
+    if ($__cu -or -not $__in -or $files.Count -gt 0) { return }
+    if ($fromLine -gt 0) {
+      $seen++
+      if ($seen -ge $fromLine) { $_ }
+    } else {
+      $held.Enqueue($_)
+      if ($held.Count -gt $lines) { [void]$held.Dequeue() }
+    }
+  }
+  end {
+    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($__cu) { & $__cu tail @__a; return }
+    $showHeader = ($files.Count -gt 1 -and -not $quiet) -or $verbose
+    if ($follow -and $files.Count -ge 1) {
+      Get-Content -LiteralPath $files[0] -Tail $lines -Wait
+    } elseif ($files.Count -eq 0) {
+      if ($fromLine -le 0) { $held.ToArray() }
+    } else {
+      for ($fi = 0; $fi -lt $files.Count; $fi++) {
+        $f = $files[$fi]
+        if ($showHeader) { Write-Host "==> $f <==" }
+        if ($fromLine -gt 0) {
+          Get-Content -LiteralPath $f | Select-Object -Skip ($fromLine - 1)
+        } else {
+          Get-Content -LiteralPath $f -Tail $lines
+        }
+        if ($fi -lt $files.Count - 1 -and -not $quiet) { Write-Host "" }
+      }
     }
   }
 }
@@ -361,66 +442,93 @@ function _wcOne {
 
 # wc → line, word, and character count (supports -l, -w, -c flags)
 # Usage: wc [-l] [-w] [-c|-m] [file ...], supports pipe input
+# Piped input is counted an object at a time, not held: Measure-Object takes
+# each one as it arrives, and the characters (with a newline after each line,
+# as in a file) are added up alongside.
 function wc {
-  $__cu = _CoreutilsBin
-  if ($__cu) { $input | & $__cu wc @Args; return }
-  $flags = @(); $files = @()
-  foreach ($a in $Args) {
-    if ($a -match '^-[lwcm]+$') { $flags += $a }
-    else { $files += $a }
+  begin {
+    $__cu = _CoreutilsBin
+    $__in = $MyInvocation.ExpectingInput
+    $__a = $args
+    $__sp = $null
+    if ($__cu) {
+      if ($__in) { $__sp = { & $__cu wc @__a }.GetSteppablePipeline(); $__sp.Begin($true) }
+      return
+    }
+    $flags = @(); $files = @()
+    foreach ($a in $__a) {
+      if ($a -match '^-[lwcm]+$') { $flags += $a }
+      else { $files += $a }
+    }
+    $needChar = $false
+    $mo = @{}
+    if ($flags.Count -eq 0) {
+      $mo['Line'] = $true; $mo['Word'] = $true; $mo['Character'] = $true
+      $needChar = $true
+    } else {
+      $all = ($flags -join '').Replace('-', '')
+      if ($all -match 'l') { $mo['Line'] = $true }
+      if ($all -match 'w') { $mo['Word'] = $true }
+      if ($all -match '[cm]') { $mo['Character'] = $true; $needChar = $true }
+    }
+    $count = $null
+    if ($files.Count -eq 0) {
+      $count = { Measure-Object @mo }.GetSteppablePipeline()
+      $count.Begin($true)
+    }
+    $seen = 0
+    $chars = 0
   }
-  $needChar = $false
-  $mo = @{}
-  if ($flags.Count -eq 0) {
-    $mo['Line'] = $true; $mo['Word'] = $true; $mo['Character'] = $true
-    $needChar = $true
-  } else {
-    $all = ($flags -join '').Replace('-', '')
-    if ($all -match 'l') { $mo['Line'] = $true }
-    if ($all -match 'w') { $mo['Word'] = $true }
-    if ($all -match '[cm]') { $mo['Character'] = $true; $needChar = $true }
+  process {
+    if ($null -ne $__sp) { $__sp.Process($_); return }
+    if ($__cu -or -not $__in -or $files.Count -gt 0) { return }
+    $null = $count.Process($_)
+    $seen++
+    $chars += "$_".Length + 1
   }
-  if ($files.Count -eq 0) {
-    $lines = @($input)
-    $r = $lines | Measure-Object @mo
-    if ($needChar -and $lines.Count -gt 0) {
-      $raw = ($lines -join "`n") + "`n"
-      $r | Add-Member -NotePropertyName 'Characters' -NotePropertyValue $raw.Length -Force
-    }
-    $r
-  } elseif ($files.Count -eq 1) {
-    $r = _wcOne $files[0] $mo $needChar
-    $r
-  } else {
-    $results = @()
-    $totals = @{
-      Lines = 0
-      Words = 0
-      Characters = 0
-    }
-    foreach ($f in $files) {
-      $r = _wcOne $f $mo $needChar
-      if ($null -eq $r) { continue }
-      $r | Add-Member -NotePropertyName 'File' -NotePropertyValue $f -Force
-      if ($r.PSObject.Properties['Lines']) { $totals['Lines'] += $r.Lines }
-      if ($r.PSObject.Properties['Words']) { $totals['Words'] += $r.Words }
-      if ($r.PSObject.Properties['Characters']) { $totals['Characters'] += $r.Characters }
-      $results += $r
-    }
+  end {
+    if ($null -ne $__sp) { $__sp.End(); return }
+    if ($__cu) { & $__cu wc @__a; return }
+    if ($files.Count -eq 0) {
+      $r = $count.End()
+      if ($needChar -and $seen -gt 0) {
+        $r | Add-Member -NotePropertyName 'Characters' -NotePropertyValue $chars -Force
+      }
+      $r
+    } elseif ($files.Count -eq 1) {
+      $r = _wcOne $files[0] $mo $needChar
+      $r
+    } else {
+      $results = @()
+      $totals = @{
+        Lines = 0
+        Words = 0
+        Characters = 0
+      }
+      foreach ($f in $files) {
+        $r = _wcOne $f $mo $needChar
+        if ($null -eq $r) { continue }
+        $r | Add-Member -NotePropertyName 'File' -NotePropertyValue $f -Force
+        if ($r.PSObject.Properties['Lines']) { $totals['Lines'] += $r.Lines }
+        if ($r.PSObject.Properties['Words']) { $totals['Words'] += $r.Words }
+        if ($r.PSObject.Properties['Characters']) { $totals['Characters'] += $r.Characters }
+        $results += $r
+      }
 
-    $total = [pscustomobject]@{}
-    if ($mo.ContainsKey('Line')) {
-      $total | Add-Member -NotePropertyName 'Lines' -NotePropertyValue $totals['Lines'] -Force
+      $total = [pscustomobject]@{}
+      if ($mo.ContainsKey('Line')) {
+        $total | Add-Member -NotePropertyName 'Lines' -NotePropertyValue $totals['Lines'] -Force
+      }
+      if ($mo.ContainsKey('Word')) {
+        $total | Add-Member -NotePropertyName 'Words' -NotePropertyValue $totals['Words'] -Force
+      }
+      if ($needChar) {
+        $total | Add-Member -NotePropertyName 'Characters' -NotePropertyValue $totals['Characters'] -Force
+      }
+      $total | Add-Member -NotePropertyName 'File' -NotePropertyValue 'total' -Force
+      $results += $total
+      $results | Format-Table -AutoSize
     }
-    if ($mo.ContainsKey('Word')) {
-      $total | Add-Member -NotePropertyName 'Words' -NotePropertyValue $totals['Words'] -Force
-    }
-    if ($needChar) {
-      $total | Add-Member -NotePropertyName 'Characters' -NotePropertyValue $totals['Characters'] -Force
-    }
-    $total | Add-Member -NotePropertyName 'File' -NotePropertyValue 'total' -Force
-    $results += $total
-    $results | Format-Table -AutoSize
   }
 }
 

@@ -330,12 +330,18 @@ Case '_ResolveCmd, not found' { _ResolveCmd 'nonexistent-strict' 'App'; _Resolve
 Case '_CoreutilsBin' { _CoreutilsBin }
 Case '_CoreutilsBin, disabled' { $env:_DEN_COREUTILS = '0'; try { _CoreutilsBin } finally { Remove-Item Env:\_DEN_COREUTILS } }
 Case 'New-Wrapper' { New-Wrapper 'strict-w1' 'bat' '' 'cat' '' ''; strict-w1 a.txt }
+Case 'New-Wrapper, piped' { 'x', 'y' | strict-w1 }
 Case 'New-Wrapper, native' { New-Wrapper 'strict-w2' 'nonexistent-strict' '' 'cat' '' ''; strict-w2 a.txt }
+Case 'New-Wrapper, native, piped' { 'x' | strict-w2 }
 Case 'New-Wrapper, fallback' { New-Wrapper 'strict-w3' 'nonexistent-strict' '' 'find' '' '"fallback"'; strict-w3 }
+Case 'New-Wrapper, fallback, piped' { 'x' | strict-w3 }
 Case 'New-Wrapper, no fallback' { New-Wrapper 'strict-w4' 'nonexistent-strict' '' '' '' ''; strict-w4 }
 Case 'New-WrapperSuffix' { New-WrapperSuffix 'strict-s1' 'bat' ''; strict-s1 a.txt }
+Case 'New-WrapperSuffix, piped' { 'x' | strict-s1 }
 Case 'New-WrapperSuffix, not installed' { New-WrapperSuffix 'strict-s2' 'nonexistent-strict' ''; strict-s2 }
-Case 'New-CoreutilsWrapper' { New-CoreutilsWrapper 'strict-c1' 'cp' 'Copy-Item @Args'; strict-c1 a.txt a-copy.txt }
+Case 'New-WrapperSuffix, not installed, piped' { 'x' | strict-s2 }
+Case 'New-CoreutilsWrapper' { New-CoreutilsWrapper 'strict-c1' 'cp' 'Copy-Item'; strict-c1 a.txt a-copy.txt }
+Case 'New-CoreutilsWrapper, piped' { Get-Item -LiteralPath a.txt | strict-c1 -Destination a-copy2.txt }
 Case 'toggle-wrapper' { toggle-wrapper; toggle-wrapper }
 Case 'tgl-wr' { tgl-wr; tgl-wr }
 Case '_DenTrustedCacheOwner' {

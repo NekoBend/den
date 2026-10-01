@@ -123,6 +123,44 @@ run_pwsh() {
     "
 }
 
+# ===== Streaming through pwsh functions =====
+
+# STREAM_PRODUCER is PowerShell that outputs "one", waits 1.5 s, then outputs
+# "two". make_stamp_stub <path> writes a stub program there: when its stdin is
+# a pipe it prints "<nanoseconds since the epoch> <line>" for each line as it
+# reads it, otherwise "stdin: not a pipe".
+STREAM_PRODUCER="& { 'one'; Start-Sleep -Milliseconds 1500; 'two' }"
+make_stamp_stub() {
+    cat > "$1" <<'STUB' && chmod +x "$1"
+#!/bin/sh
+if [ -p /dev/stdin ]; then
+    while IFS= read -r l; do echo "$(date +%s%N) $l"; done
+else
+    echo "stdin: not a pipe"
+fi
+STUB
+}
+
+# assert_streams <label> <output> - pass when the stamp stub read STREAM_PRODUCER's
+# second line a second or more after its first, as it does when each line
+# reaches it as it comes; a function that holds its input until the producer
+# ends hands both over at once.
+assert_streams() {
+    local label="$1" first second gap
+    first=$(printf '%s\n' "$2" | sed -n 's/^\([0-9]\{10,\}\) one$/\1/p')
+    second=$(printf '%s\n' "$2" | sed -n 's/^\([0-9]\{10,\}\) two$/\1/p')
+    if [ -z "$first" ] || [ -z "$second" ]; then
+        assert_eq "$label" "two stamped lines" "$2"
+        return
+    fi
+    gap=$(((second - first) / 1000000))
+    if [ "$gap" -ge 1000 ]; then
+        assert_eq "$label" "ok" "ok"
+    else
+        assert_eq "$label" "1000 ms or more between the lines" "$gap ms"
+    fi
+}
+
 # ===== Stderr helpers =====
 
 assert_not_contains() {

@@ -374,6 +374,72 @@ err=$(run_pwsh_stderr "$COMBINED_PS1" "\$env:_DEN_WRAPPER_LOG = '0'; & '$WORK/us
 assert_eq "pwsh/wrappers from a script: no errors" "" "$err"
 
 # =============================================================================
+# PowerShell: what is piped into a wrapper streams through; nothing piped, no pipe
+# =============================================================================
+# The generated wrappers handed the tool `$input`, which a function collects in
+# full first: nothing reached the tool before the producer ended, so
+# `tail -f log | grep x` never printed. With nothing piped in, `$input |` still
+# made the tool's stdin an empty pipe: rg searched that instead of the current
+# directory, and rm -i read EOF for its answer. See make_stamp_stub and
+# assert_streams in helpers.sh.
+STREAM_BIN="$TESTTMP/stream-bin"
+mkdir -p "$STREAM_BIN"
+make_stamp_stub "$STREAM_BIN/stamp" || abort_suite "cannot write $STREAM_BIN/stamp"
+cp "$STREAM_BIN/stamp" "$STREAM_BIN/rg"
+STREAM_SETUP="
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-Wrapper 'stampn' 'nonexistent-modern' '' 'stamp' '' ''
+    New-WrapperSuffix 'stampw' 'stamp' ''
+"
+
+echo "[pwsh] grep (rg), a native tier and a w-suffix wrapper stream piped input"
+actual=$(PATH="$STREAM_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$STREAM_SETUP; $STREAM_PRODUCER | grep x" < /dev/null 2>&1 | tr -d '\r')
+assert_streams "pwsh/grep (rg) streams" "$actual"
+actual=$(PATH="$STREAM_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$STREAM_SETUP; $STREAM_PRODUCER | stampn" < /dev/null 2>&1 | tr -d '\r')
+assert_streams "pwsh/a native tier streams" "$actual"
+actual=$(PATH="$STREAM_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$STREAM_SETUP; $STREAM_PRODUCER | stampw" < /dev/null 2>&1 | tr -d '\r')
+assert_streams "pwsh/a w-suffix wrapper streams" "$actual"
+
+echo "[pwsh] with nothing piped in, a wrapper's tool gets no pipe for stdin"
+actual=$(PATH="$STREAM_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$STREAM_SETUP; grep x; stampn; stampw" < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/no stdin pipe for grep (rg), a native tier, a w-suffix wrapper" "stdin: not a pipe
+stdin: not a pipe
+stdin: not a pipe" "$actual"
+
+# The Windows coreutils tier: rm/cp/... hand microsoft/coreutils the same way.
+# $IsWindows is a constant, set with -Force; the stub stands in for coreutils.
+WIN_SETUP="
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    \$env:_DEN_COREUTILS = '$STREAM_BIN/stamp'
+    New-CoreutilsWrapper 'stampc' 'stamp-sub' 'Copy-Item'
+"
+echo "[pwsh] a coreutils wrapper streams piped input, and gets no pipe with none"
+actual=$(run_pwsh "$HELPERS_PS1" "$WIN_SETUP; $STREAM_PRODUCER | stampc" < /dev/null 2>&1 | tr -d '\r')
+assert_streams "pwsh/a coreutils wrapper streams" "$actual"
+actual=$(run_pwsh "$HELPERS_PS1" "$WIN_SETUP; stampc" < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/no stdin pipe for a coreutils wrapper" "stdin: not a pipe" "$actual"
+
+# =============================================================================
+# PowerShell: rm/cp/mv/mkdir/rmdir on Windows
+# =============================================================================
+# Without microsoft/coreutils, rm/cp/mv run the builtin cmdlet, which never got
+# what was piped in: `Get-ChildItem *.tmp | rm` stopped at "missing mandatory
+# parameters: Path" and removed nothing.
+echo "[pwsh] Windows without coreutils: rm, cp and mv take piped items"
+rm -rf "$WORK/pipe" && mkdir -p "$WORK/pipe/dest"
+touch "$WORK/pipe/a.tmp" "$WORK/pipe/b.tmp" "$WORK/pipe/c.txt" "$WORK/pipe/d.txt"
+actual=$(cd "$WORK/pipe" && run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'; \$env:_DEN_COREUTILS = '0'
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    . '$WRAPPERS_PS1'
+    Get-ChildItem -Filter *.tmp | rm
+    Get-ChildItem -Filter c.txt | cp -Destination dest
+    Get-ChildItem -Filter d.txt | mv -Destination dest
+    (Get-ChildItem -Recurse -File -Name | Sort-Object) -join ','
+" < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/piped rm, cp, mv without coreutils" "c.txt,dest/c.txt,dest/d.txt" "$actual"
+
+# =============================================================================
 # PowerShell extended tests — grep additional flags
 # =============================================================================
 echo ""
