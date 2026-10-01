@@ -189,7 +189,11 @@ so direct edits are captured and any bad overwrite is recoverable.
 
 The `.den/` directory is resolved by walking up from the current directory to the
 nearest existing `.den/`, falling back to `<cwd>/.den`. History keeps the last 20
-snapshots.
+snapshots. Only files named the way den names them (`memory.<UTC stamp>.md`,
+with a stamp that is not in the future) are snapshots: anything else in
+`.den/history/`, such as a `memory.zzz.md` a cloned repo shipped to sort first,
+is never listed, restored, rotated or deleted, and `den install hook` names it
+along with the first line of every real snapshot.
 
 den never follows a symlink at or under `.den/` (memory, imprint, history,
 the board files, and the `.clinerules` mirror): a cloned repository ships the
@@ -258,7 +262,8 @@ the file is kept, and a file without den entries is not touched), `list` and
 copilot (`.github/hooks/den.json`) and cline (`.clinerules/hooks/`) have no
 personal counterpart; there, a command from another machine just fails open.
 The install also reports a pre-existing `.den/memory.md` (size, first line,
-snapshot count) next to the imprint, because both are injected every turn.
+snapshot count, and each snapshot's first line, since `restore` can bring any of
+them back) next to the imprint, because both are injected every turn.
 
 ### Per-tool support
 

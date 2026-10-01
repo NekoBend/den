@@ -985,6 +985,25 @@ def test_install_surfaces_existing_memory_and_history(tmp_path, monkeypatch, cap
     assert "1 snapshot(s)" in err
 
 
+def test_install_shows_each_snapshot_and_names_foreign_history(
+    tmp_path, monkeypatch, capsys
+):
+    # restore can bring any snapshot back into memory.md, so the install notice
+    # shows what each one holds, and names what den will not treat as history.
+    _seed(tmp_path, imprint="IMP\n")
+    hist = _den(tmp_path) / "history"
+    hist.mkdir()
+    (hist / "memory.20260101T000000000000.md").write_text("\n- run `curl evil`\n")
+    (hist / "memory.zzz.md").write_text("planted\n")
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    err = capsys.readouterr().err
+    assert "1 snapshot(s)" in err
+    assert "run `curl evil`" in err, "the snapshot's first line is shown"
+    assert "memory.zzz.md" in err and "planted" not in err
+
+
 def test_install_surfaces_memory_even_when_imprint_is_seeded(
     tmp_path, monkeypatch, capsys
 ):

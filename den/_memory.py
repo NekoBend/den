@@ -24,6 +24,7 @@ Subcommands:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,9 @@ _HISTORY_DIRNAME = "history"
 _SNAP_PREFIX = "memory."
 _SNAP_SUFFIX = ".md"
 _STAMP_FORMAT = "%Y%m%dT%H%M%S%f"
+# Exactly what _do_checkpoint names a snapshot: the UTC stamp, plus a _NNN
+# counter when two land on the same microsecond.
+_SNAP_NAME = re.compile(r"memory\.(\d{8}T\d{12})(?:_\d{3,})?\.md")
 
 
 def _find_den_dir(start: Path) -> Path:
@@ -258,29 +262,56 @@ def _history_dir(den_dir: Path) -> Path:
     return den_dir / _HISTORY_DIRNAME
 
 
+def _is_snapshot_name(name: str, now: datetime) -> bool:
+    """True for a name den's checkpoint could have written: the exact stamp
+    format, a stamp that parses, and not later than now. A cloned repo ships
+    `.den/history/` too, and a name that merely starts with `memory.` -- say
+    `memory.zzz.md` -- sorted ahead of every real snapshot for good: `restore`
+    (newest first, the documented recovery) brought its text into memory.md,
+    and checkpoint deduplicated against it, writing a copy every hook event
+    until rotation had deleted the real history. A future stamp would do the
+    same until that date."""
+    match = _SNAP_NAME.fullmatch(name)
+    if match is None:
+        return False
+    try:
+        stamp = datetime.strptime(match.group(1), _STAMP_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return stamp <= now
+
+
 def _snapshots(den_dir: Path) -> list[Path]:
     """History snapshots, newest first (fixed-width timestamps sort by time).
 
-    Only regular files count. A symlink would leak an outside file into memory
-    (log/diff/restore all read the list) and restoring it would write memory back
-    through it; a DIRECTORY named `memory.*.md` -- equally shippable in a repo --
-    passed the name test and then crashed checkpoint/restore/diff on read_bytes().
-    Dropped silently rather than reported, because checkpoint walks this list
-    every turn and one line per turn is noise; the reads a planted entry actually
-    targets do report.
+    Only regular files with den's own snapshot name count (_is_snapshot_name).
+    A symlink would leak an outside file into memory (log/diff/restore all read
+    the list) and restoring it would write memory back through it; a DIRECTORY
+    named `memory.*.md` -- equally shippable in a repo -- passed the name test
+    and then crashed checkpoint/restore/diff on read_bytes(). Anything else in
+    history/ is never read, rotated or deleted. Dropped silently rather than
+    reported, because checkpoint walks this list every turn and one line per
+    turn is noise; install names them once (_foreign_history).
     """
     hist = _history_dir(den_dir)
     if _symlink_component(den_dir, hist) is not None or not hist.is_dir():
         return []
+    now = datetime.now(UTC)
     snaps = [
         p
         for p in hist.iterdir()
-        if p.name.startswith(_SNAP_PREFIX)
-        and p.name.endswith(_SNAP_SUFFIX)
-        and not p.is_symlink()
-        and p.is_file()
+        if _is_snapshot_name(p.name, now) and not p.is_symlink() and p.is_file()
     ]
     return sorted(snaps, key=lambda p: p.name, reverse=True)
+
+
+def _foreign_history(den_dir: Path) -> list[str]:
+    """Names in history/ that are not snapshots den would use, sorted."""
+    hist = _history_dir(den_dir)
+    if _symlink_component(den_dir, hist) is not None or not hist.is_dir():
+        return []
+    ours = {p.name for p in _snapshots(den_dir)}
+    return sorted(p.name for p in hist.iterdir() if p.name not in ours)
 
 
 def _snap_stamp(snap: Path) -> str:

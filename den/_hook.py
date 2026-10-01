@@ -52,10 +52,13 @@ from ._memory import (
     _clinerules_dir,
     _do_checkpoint,
     _find_den_dir,
+    _first_line,
+    _foreign_history,
     _history_dir,
     _memory_path,
     _read_guarded_text,
     _read_text_or_empty,
+    _snap_stamp,
     _snapshots,
     _symlink_component,
     _write_guarded,
@@ -1073,22 +1076,34 @@ def _surface_existing_memory(den_dir: Path) -> None:
     `_compose` injects .den/memory.md every turn exactly like the imprint, and
     install pins whatever .den/ is already here -- so a memory.md (and history)
     that came with a checked-out repo is instruction injection the user has never
-    seen. First line, size and snapshot count is enough to make them look.
+    seen. `restore` can bring any snapshot back into memory.md, so each one's
+    first line is shown too, and files in history/ den does not take for
+    snapshots are named (it never reads them).
     """
     mem = _memory_path(den_dir)
     text = _read_text_or_empty(den_dir, mem, _ERR_INSTALL, errors="replace")
-    snaps = len(_snapshots(den_dir))
-    if not text.strip() and not snaps:
-        return
-    print(
-        f"{_ERR_INSTALL}: using the existing memory at {mem} "
-        f"({len(text.encode('utf-8'))} bytes, {snaps} snapshot(s) in "
-        f"{_history_dir(den_dir)}) -- it is injected every turn:",
-        file=sys.stderr,
-    )
-    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-    if first:
-        print(f"  | {_safe_for_terminal(first)[:80]}", file=sys.stderr)
+    snaps = _snapshots(den_dir)
+    foreign = _foreign_history(den_dir)
+    if text.strip() or snaps:
+        print(
+            f"{_ERR_INSTALL}: using the existing memory at {mem} "
+            f"({len(text.encode('utf-8'))} bytes, {len(snaps)} snapshot(s) in "
+            f"{_history_dir(den_dir)}) -- it is injected every turn:",
+            file=sys.stderr,
+        )
+        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        if first:
+            print(f"  | {_safe_for_terminal(first)[:80]}", file=sys.stderr)
+        for i, snap in enumerate(snaps, start=1):
+            line = _safe_for_terminal(_first_line(snap))
+            print(f"  #{i} {_snap_stamp(snap)} | {line}", file=sys.stderr)
+    if foreign:
+        print(
+            f"{_ERR_INSTALL}: ignoring {len(foreign)} file(s) in "
+            f"{_history_dir(den_dir)} that are not den snapshots: "
+            + ", ".join(_safe_for_terminal(n) for n in foreign),
+            file=sys.stderr,
+        )
 
 
 # cline (the extension's per-turn hook) and cline-cli (the .clinerules rule files)
