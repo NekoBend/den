@@ -82,7 +82,7 @@ behavior.
 Because the modern tools take different flags and produce different output than
 the native commands, a command written for the native tool can misbehave when a
 wrapper substitutes the modern one. To make that visible, a dim notice prints on
-**every** wrapped call:
+**every** wrapped call that runs the modern tool:
 
 ```
 [den] ls -> lsd  (native: command ls, off: tgl-wr)
@@ -336,7 +336,7 @@ of zoxide and starship. zsh and PowerShell mirror this.
 | Variable | Effect |
 |----------|--------|
 | `_DEN_WRAPPERS=0` | use native commands instead of modern tools |
-| `_DEN_WRAPPER_LOG=0` | silence the wrapper notice (printed on every wrapped call) |
+| `_DEN_WRAPPER_LOG=0` | silence the wrapper notice (printed on every wrapped call that runs the modern tool) |
 | `_DEN_COREUTILS=<path>` | use a specific microsoft/coreutils binary, e.g. `C:\Program Files\coreutils\coreutils.exe` (Windows) |
 | `_DEN_COREUTILS=0` | disable the microsoft/coreutils tier (Windows) |
 | `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv` / `tgl-uv`); a shell started with `0` loads no override |
