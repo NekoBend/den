@@ -107,8 +107,9 @@ _proxy_rm() {
     _pr_tab=$(printf '\t')
     _pr_tmp="$_pr_conf.tmp.$$"
     _pr_found=0
-    # 0600 like add's: the rename gives the store this file's mode.
-    (umask 077 && : > "$_pr_tmp") || {
+    # A 0700 directory and a 0600 store, as add makes them: the rename gives
+    # the store this file's mode.
+    { chmod 700 "$(dirname "$_pr_conf")" && (umask 077 && : > "$_pr_tmp"); } || {
         echo "proxy rm: cannot write $_pr_conf" >&2
         unset _pr_conf _pr_tab _pr_tmp _pr_found
         return 1

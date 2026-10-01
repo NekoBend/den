@@ -233,7 +233,8 @@ _snippet_rm() {
     _srm_tab=$(printf '\t')
     _srm_tmp="$_srm_file.tmp.$$"
     _srm_found=0
-    (umask 077 && : > "$_srm_tmp") || {
+    # A 0700 directory and a 0600 store, as save makes them.
+    { chmod 700 "$(dirname "$_srm_file")" && (umask 077 && : > "$_srm_tmp"); } || {
         echo "snippet rm: cannot write $_srm_file" >&2
         unset _srm_file _srm_tab _srm_tmp _srm_found
         return 1
