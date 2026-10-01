@@ -32,13 +32,16 @@ WRAPPERS_PS1_STRIPPED="$TESTTMP/wrappers_stripped.ps1"
     echo ". '$HELPERS_PS1'"
     grep -v '_DenInteractive' "$WRAPPERS_PS1" | sed '/Remove-Item alias:ls/d'
 } > "$WRAPPERS_PS1_STRIPPED" || abort_suite "cannot write $WRAPPERS_PS1_STRIPPED"
-# Combined wrappers + coreutils for pipe chain tests
+# Combined wrappers + coreutils for pipe chain tests. coreutils.ps1 defines its
+# commands on Windows only, so its _OnWindows line goes too: these run on Linux.
 COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
 COMBINED_PS1="$TESTTMP/wrappers_combined.ps1"
 {
     cat "$WRAPPERS_PS1_STRIPPED"
-    grep -v '_DenInteractive' "$COREUTILS_PS1"
+    grep -v '_DenInteractive' "$COREUTILS_PS1" | grep -vF 'if (-not (_OnWindows)) { return }'
 } > "$COMBINED_PS1" || abort_suite "cannot write $COMBINED_PS1"
+grep -qxF 'if (-not (_OnWindows)) { return }' "$COREUTILS_PS1" ||
+    abort_suite "coreutils.ps1 no longer has the _OnWindows line this suite strips"
 
 # The same wrappers with the edition check reading "Desktop", standing in for
 # Windows PowerShell 5.1 (no 5.1 host runs here).

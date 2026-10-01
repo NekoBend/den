@@ -997,10 +997,13 @@ run_strict "$DOTFILES/shell/pwsh" "$REPORT"
 assert_eq "pwsh/strict run reached its end" "" "$(report_lines "$REPORT" CRASH)"
 # One name from each file, so a load that defined nothing cannot pass the rest.
 missing=""
-for name in _ResolveCmd cat wc dg gst toggle-hwinfo uv tomp4 pcp cheat proxy snippet reload prompt digest; do
+# coreutils.ps1 defines its commands on Windows only (the Windows run checks wc).
+for name in _ResolveCmd cat dg gst toggle-hwinfo uv tomp4 pcp cheat proxy snippet reload prompt digest; do
     report_lines "$REPORT" FUNCTION ALIAS | grep -qx "\(FUNCTION\|ALIAS\) $name" || missing="$missing $name"
 done
 assert_eq "pwsh/strict inventory holds a function from every file" "" "$missing"
+assert_eq "pwsh/strict inventory holds no Windows gap-filler off Windows" "" \
+    "$(report_lines "$REPORT" FUNCTION | grep -xE 'FUNCTION (df|env|head|split|tail|touch|wc|which)' || true)"
 echo "  inventory: $(report_lines "$REPORT" FUNCTION | wc -l) functions, $(report_lines "$REPORT" ALIAS | wc -l) aliases"
 report_lines "$REPORT" SKIPPED | sed 's/^/  /'
 assert_eq "pwsh/strict no strict-mode error in den" "" "$(report_lines "$REPORT" VIOLATION)"
@@ -1019,6 +1022,8 @@ assert_eq "pwsh/strict no strict-mode error in den, as pwsh 7 on Windows" "" \
     "$(report_lines "$WINDOWS_REPORT" VIOLATION)"
 assert_eq "pwsh/strict every den function is called, as pwsh 7 on Windows" "" \
     "$(report_lines "$WINDOWS_REPORT" UNCOVERED)"
+assert_eq "pwsh/strict inventory holds coreutils.ps1, as pwsh 7 on Windows" "FUNCTION wc" \
+    "$(report_lines "$WINDOWS_REPORT" FUNCTION | grep -x 'FUNCTION wc' || true)"
 
 echo "[pwsh] den's functions under Set-StrictMode, as Windows PowerShell 5.1"
 DESKTOP_DEN="$S/pwsh-desktop"

@@ -53,6 +53,25 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 assert_eq "pwsh/den commands are functions (not shadowed)" "OK" "$actual"
 
 # =============================================================================
+# open is not den's on macOS
+# =============================================================================
+# macOS has its own /usr/bin/open, which also opens URLs and takes -a and -R;
+# den's open (Invoke-Item) replaced it. $IsMacOS is a constant, set with -Force.
+echo "[pwsh] open is den's on Linux, not on macOS"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    . '$P/aliases.ps1'
+    [bool](Get-Command open -CommandType Function -ErrorAction SilentlyContinue)
+    Remove-Item Function:\\open
+    Set-Variable -Name IsLinux -Value \$false -Scope Global -Force
+    Set-Variable -Name IsMacOS -Value \$true -Scope Global -Force
+    . '$P/aliases.ps1'
+    [bool](Get-Command open -CommandType Function -ErrorAction SilentlyContinue)
+" | tr -d '\r')
+assert_eq "pwsh/open on Linux, then on macOS" "True
+False" "$actual"
+
+# =============================================================================
 # code: cross-platform fallback (code-insiders -> code -> code.cmd)
 # =============================================================================
 # `code.cmd` is a Windows-only launcher name, so probing only that name left

@@ -5,11 +5,15 @@ source "$SCRIPT_DIR/helpers.sh"
 
 COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
 
-# Strip the `_DenInteractive` guard for non-interactive testing. In TESTTMP,
-# out of reach of the fixture resets that wipe WORK.
+# Strip the `_DenInteractive` guard for non-interactive testing, and stand in
+# for Windows: coreutils.ps1 defines its commands only where _OnWindows is true,
+# and these tests run on Linux. In TESTTMP, out of reach of the fixture resets
+# that wipe WORK.
 COREUTILS_PS1_STRIPPED="$TESTTMP/coreutils_stripped.ps1"
-grep -v '_DenInteractive' "$COREUTILS_PS1" > "$COREUTILS_PS1_STRIPPED" ||
-    abort_suite "cannot write $COREUTILS_PS1_STRIPPED"
+{
+    echo 'function _OnWindows { $true }'
+    grep -v '_DenInteractive' "$COREUTILS_PS1"
+} > "$COREUTILS_PS1_STRIPPED" || abort_suite "cannot write $COREUTILS_PS1_STRIPPED"
 
 # =============================================================================
 # PowerShell tests
@@ -557,6 +561,31 @@ echo "[pwsh] which usage stderr"
 err=$(run_pwsh_stderr_oneline "$COREUTILS_PS1_STRIPPED" "which")
 assert_contains "pwsh/which stderr has message" "usage:" "$err"
 assert_not_contains "pwsh/which no double prefix" "which: which:" "$err"
+
+# =============================================================================
+# Windows only
+# =============================================================================
+# These fill a gap Windows has. On Linux and macOS pwsh they replaced the real
+# tools with PowerShell versions 100-240 times slower (wc -l on a 1M-line file:
+# 1352 ms against 12 ms) that read fewer flags. $IsWindows is a constant, set
+# with -Force to stand in for Windows.
+GAP_FILLERS="'df', 'env', 'head', 'split', 'tail', 'touch', 'wc', 'which'"
+echo "[pwsh] df, env, head, split, tail, touch, wc, which are den's on Windows only"
+actual=$(run_pwsh "$DOTFILES/shell/pwsh/_helpers.ps1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    . '$COREUTILS_PS1'
+    'off Windows: ' + @(Get-Command $GAP_FILLERS -CommandType Function -ErrorAction SilentlyContinue).Count
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    . '$COREUTILS_PS1'
+    'on Windows: ' + @(Get-Command $GAP_FILLERS -CommandType Function -ErrorAction SilentlyContinue).Count
+" 2>&1 | clean)
+assert_eq "pwsh/gap-fillers off and on Windows" "off Windows: 0
+on Windows: 8" "$actual"
+
+# df took every argument for a drive to filter by, so `df -h` printed nothing.
+echo "[pwsh] df -h lists the drives as df does"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "@(df -h | Out-String -Stream | Where-Object { \$_.Trim() }).Count -ge 3" 2>/dev/null | clean)
+assert_eq "pwsh/df -h is not a drive filter" "True" "$actual"
 
 # =============================================================================
 # Piped input streams

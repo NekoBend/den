@@ -4,6 +4,11 @@
 # Skip in non-interactive sessions to avoid breaking scripts
 if (-not (_DenInteractive)) { return }
 
+# Windows only: these fill a gap that Windows has (COMMANDS.md, "Unix coreutils").
+# Linux and macOS have the real tools, which these would only replace with slower
+# PowerShell versions that read fewer of their flags.
+if (-not (_OnWindows)) { return }
+
 # The functions that can hand a call to microsoft/coreutils pass what is piped in
 # on through a steppable pipeline, as the generated wrappers do (see New-Wrapper in
 # _helpers.ps1): each object reaches the binary as it arrives, and a call with
@@ -13,12 +18,12 @@ if (-not (_DenInteractive)) { return }
 # ===== Unix-like Utilities =====
 
 # df → disk free space
-# Usage: df [path ...]
+# Usage: df [path ...]; flags (-h, -T, ...) are ignored rather than read as paths.
 # df reads no input, so microsoft/coreutils gets none.
 function df {
   $__cu = _CoreutilsBin
   if ($__cu) { & $__cu df @Args; return }
-  $paths = @($Args)
+  $paths = @($Args | Where-Object { "$_" -notlike '-*' })
   $result = Get-PSDrive -PSProvider FileSystem |
     Select-Object Name,
       @{N='Used(GB)';  E={[math]::Round($_.Used / 1GB, 1)}},

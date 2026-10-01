@@ -172,8 +172,9 @@ PowerShell cmdlet behavior.
 
 ## Unix coreutils (Windows fills a gap)
 
-pwsh and cmd add these because Windows lacks them; bash/zsh already have the real
-tools. The cmd shims are positional-only (no GNU flags, no pipe input).
+pwsh and cmd add these on Windows because Windows lacks them; bash/zsh, and pwsh on
+Linux and macOS, keep the real tools. The cmd shims are positional-only (no GNU
+flags, no pipe input). On pwsh, `df` ignores flags such as `-h`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
@@ -333,7 +334,7 @@ live under `$XDG_CONFIG_HOME`.
 | `sagain [N]` | `again` with sudo | ✓ | ✓ | — |
 | `reload` | clear den's shell caches and restart the shell to load the config (`exec` on bash/zsh; a new pwsh on pwsh, see below) | ✓ | ✓ | — |
 | `code` | launch VS Code (prefers code-insiders) | ✓ | ✓ | ✓ |
-| `open <path>` | open a file/dir with the default app | — | ✓ | — |
+| `open <path>` | open a file/dir with the default app (pwsh on macOS keeps the system `open`) | — | ✓ | — |
 
 On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 `code`); posix/pwsh fall back.

@@ -78,7 +78,8 @@ wrappers resolve the binary at its fixed install path
 point them elsewhere with `_DEN_COREUTILS=<path>`, or disable the tier with
 `_DEN_COREUTILS=0`. The tier is Windows + pwsh 7 only (Windows PowerShell 5.1
 skips it); on Linux/macOS these commands keep their native / PowerShell-builtin
-behavior.
+behavior, and den does not define `head`, `tail`, `wc`, `touch`, `split`, `df`,
+`env` or `which` there at all.
 
 On PowerShell, piped input reaches the tool a wrapper picks as it arrives
 (`Get-Content -Wait log | grep x` prints each match as it comes), and with

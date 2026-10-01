@@ -197,9 +197,13 @@ function gu {
 
 # ===== OS Integration =====
 
-# open → open file/directory with default application (macOS-style)
-function open {
-  param([string]$Path = '.')
-  Invoke-Item $Path
+# open → open file/directory with default application (macOS-style). Not defined on
+# macOS, whose own /usr/bin/open also takes URLs and flags (-a, -R) that this one
+# does not. The edition is tested first: Windows PowerShell 5.1 has no $IsMacOS.
+if (-not ($PSVersionTable.PSEdition -eq 'Core' -and $IsMacOS)) {
+  function open {
+    param([string]$Path = '.')
+    Invoke-Item $Path
+  }
 }
 
