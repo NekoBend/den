@@ -150,6 +150,12 @@ snippet_suite() {
     assert_contains "$sh/unknown cmd rc" "rc=1" "$actual"
 
     reset_store
+    echo "[$sh] save prints the line it saved for several words only, not for one argument or stdin"
+    actual=$("$run" "$SNIPPET_SH" "snippet save o 'echo tok' 2>&1; printf 'echo tok\n' | snippet save i 2>&1" | tr -d '\r')
+    assert_eq "$sh/save message: one argument and stdin" "snippet: saved 'o'
+snippet: saved 'i'" "$actual"
+
+    reset_store
     sq_fixture
     echo "[$sh] save <word...> quotes a word with a blank again, so run removes that file only"
     actual=$(cd "$SQ" && "$run" "$SNIPPET_SH" "snippet save clean rm 'My File.txt' 2>&1; snippet run clean 2>/dev/null; ls" | tr -d '\r')
@@ -224,7 +230,7 @@ c${TAB}echo c" "$(cat "$DOTS/snippets")"
     link_store snippets
     printf 'a\techo a\n' > "$DOTS/snippets"
     actual=$("$run" "$SNIPPET_SH" "set -C; snippet save b 'echo b' 2>&1; snippet rm a 2>&1" | tr -d '\r')
-    assert_eq "$sh/noclobber: messages" "snippet: saved 'b' -> echo b
+    assert_eq "$sh/noclobber: messages" "snippet: saved 'b'
 snippet: removed 'a'" "$actual"
     assert_eq "$sh/noclobber: target updated" "b${TAB}echo b" "$(cat "$DOTS/snippets")"
     link_store new-snippets
@@ -306,6 +312,12 @@ if command -v pwsh >/dev/null 2>&1; then
     echo "[pwsh] save from stdin takes the first line"
     actual=$(run_pwsh "$SNIPPET_PS1" "'Write-Output piped' | snippet save p; snippet show p" | tr -d '\r')
     assert_eq "pwsh/snippet stdin save" "Write-Output piped" "$actual"
+
+    reset_store
+    echo "[pwsh] save prints the line it saved for several words only, not for one argument or stdin"
+    actual=$(run_pwsh_stderr "$SNIPPET_PS1" "snippet save o 'echo tok'; 'echo tok' | snippet save i")
+    assert_eq "pwsh/snippet save message: one argument and stdin" "snippet: saved 'o'
+snippet: saved 'i'" "$actual"
 
     reset_store
     echo "[pwsh] save <word...> quotes a path with a blank again, so run removes that one only"

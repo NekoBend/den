@@ -122,7 +122,13 @@ function snippet {
             $lines = @(_SnippetLines | Where-Object { (_SnippetName $_) -ne $name })
             $lines += "$name`t$cmd"
             _SnippetWrite $lines
-            [Console]::Error.WriteLine("snippet: saved '$name' -> $cmd")
+            # The several-words form prints the line it saved, with the quotes
+            # it put back; the others saved what the user gave.
+            if ($rest.Count -ge 3) {
+                [Console]::Error.WriteLine("snippet: saved '$name' -> $cmd")
+            } else {
+                [Console]::Error.WriteLine("snippet: saved '$name'")
+            }
         }
         '^(ls|list)$' {
             $lines = @(_SnippetLines)

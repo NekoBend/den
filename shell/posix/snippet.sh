@@ -86,12 +86,13 @@ _snippet_save() {
             echo "snippet save: name must match [A-Za-z0-9_-]" >&2
             return 1 ;;
     esac
-    _ss_name=$1
+    _ss_name=$1 _ss_words=
     shift
     if [ "$#" -eq 1 ]; then
         # One argument: the whole command, saved as typed.
         _ss_cmd="$1"
     elif [ "$#" -gt 1 ]; then
+        _ss_words=1
         # Several words: the shell took their quotes off, and run/pick eval the
         # saved line, so a word with anything but [A-Za-z0-9_@%+=:,./-] in it (or
         # empty, or starting with =, which zsh expands) goes back in single
@@ -130,14 +131,14 @@ _snippet_save() {
     fi
     if [ -z "$_ss_cmd" ]; then
         echo "snippet save: empty command" >&2
-        unset _ss_name _ss_cmd
+        unset _ss_name _ss_words _ss_cmd
         return 1
     fi
     # The store is one record per line, so a newline in the command would split
     # into phantom rows that `run` could eval; reject multi-line commands.
     if [ "$(printf '%s' "$_ss_cmd" | wc -l)" -ne 0 ]; then
         echo "snippet save: command must be a single line" >&2
-        unset _ss_name _ss_cmd
+        unset _ss_name _ss_words _ss_cmd
         return 1
     fi
     _ss_file=$(_snip_file)
@@ -145,14 +146,14 @@ _snippet_save() {
     # umask; an older den's looser directory is tightened too.
     _ss_dir=$(dirname "$_ss_file")
     if ! { mkdir -p "$_ss_dir" && chmod 700 "$_ss_dir"; }; then
-        unset _ss_name _ss_cmd _ss_file _ss_dir
+        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir
         return 1
     fi
     _ss_tab=$(printf '\t')
     _ss_tmp="$_ss_file.tmp.$$"
     (umask 077 && : > "$_ss_tmp") || {
         echo "snippet save: cannot write $_ss_file" >&2
-        unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp
+        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp
         return 1
     }
     if [ -f "$_ss_file" ]; then
@@ -166,7 +167,7 @@ _snippet_save() {
         done < "$_ss_file" || {
             rm -f "$_ss_tmp"
             echo "snippet save: cannot read $_ss_file; it is left as it was" >&2
-            unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+            unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
             return 1
         }
     fi
@@ -176,11 +177,17 @@ _snippet_save() {
         if [ -e "$_ss_tmp" ]; then
             echo "snippet save: the whole new store is in $_ss_tmp" >&2
         fi
-        unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
         return 1
     fi
-    printf "snippet: saved '%s' -> %s\n" "$_ss_name" "$_ss_cmd" >&2
-    unset _ss_name _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+    # The several-words form prints the line it saved, with the quotes it put
+    # back; the others saved what the user gave, which needs no echo.
+    if [ -n "$_ss_words" ]; then
+        printf "snippet: saved '%s' -> %s\n" "$_ss_name" "$_ss_cmd" >&2
+    else
+        echo "snippet: saved '$_ss_name'" >&2
+    fi
+    unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
 }
 
 _snippet_ls() {
