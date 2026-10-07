@@ -109,9 +109,12 @@ function env {
 # -First run inside head (through a steppable pipeline) stops the commands
 # before head too, but names a processor the pipeline does not hold, so no
 # command after head gets its end: `head -n 2 | Measure-Object` printed nothing.
+# As with Select-Object -First, head run through another function's steppable
+# pipeline stops that function as well: the Nth object, not yet handed back to
+# it, is lost, and neither it nor a command after it gets its end.
 # The internals are the same in PowerShell's first open-source release, in 6.0
-# and in 7.6; where one is missing, head reads what comes after the Nth and
-# drops it, as it did before, and leaves nothing in $Error.
+# and in 7.0 to 7.6; where one is missing, head reads what comes after the Nth
+# and drops it, as it did before, and leaves nothing in $Error.
 # With coreutils, head is a program, and the commands before it run to their end
 # after it exits, as they do before any program (pwsh 7.6 on Linux).
 function head {
