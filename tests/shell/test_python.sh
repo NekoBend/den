@@ -610,23 +610,73 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
 " | tr -d '\r')
 assert_eq "pwsh/uv run separates script.py" "mock-uv run --python 3.12 -- script.py" "$actual"
 
-# The overrides resolve uv/pip/python through _ResolveCmd, whose cache was once
-# kept in $script:, which inside a user's .ps1 is that script's scope: there the
-# cache was $null, `uv` did not resolve and `python3` ran `& $null`.
-echo "[pwsh] uv/pip/python3 overrides work from a user script"
+# den's uv, pip and python3 take over the ones on PATH, so they are den's only
+# when typed at the prompt of an interactive session: a user's script, and a
+# pwsh -Command run that loaded the profile, get the uv, pip and python3 on
+# PATH, as without den. py, which names nothing on PATH here, stays den's in a
+# script too. Inside a venv den's uv run adds --python, which tells the two uv
+# apart. Stubs stand in for the system pip and python3. The overrides resolve
+# uv through _ResolveCmd, whose cache was once kept in $script:, which inside a
+# user's .ps1 is that script's scope: there `uv` did not resolve and py ran
+# `& $null`.
+PY_SCRIPT_BIN="$WORK/py-script-bin"
+mkdir -p "$PY_SCRIPT_BIN"
+# The mock uv, but with no completion script for den's load to cache.
+cat > "$PY_SCRIPT_BIN/uv" << 'MOCK'
+#!/bin/sh
+[ "$1" = generate-shell-completion ] && exit 0
+echo "mock-uv $*"
+MOCK
+chmod +x "$PY_SCRIPT_BIN/uv"
+for t in pip python3; do
+    printf '#!/bin/sh\necho "system-%s $*"\n' "$t" > "$PY_SCRIPT_BIN/$t"
+    chmod +x "$PY_SCRIPT_BIN/$t"
+done
 cat > "$WORK/usepy.ps1" <<'EOF'
-$env:VIRTUAL_ENV = $null
-uv --version
+uv run app.py
 pip install rich
 function Invoke-Py { python3 app.py }
 Invoke-Py
+py app.py
 EOF
-actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "& '$WORK/usepy.ps1'" 2>/dev/null | tr -d '\r')
-assert_contains "pwsh/uv from a script" "mock-uv --version" "$actual"
-assert_contains "pwsh/pip from a script" "mock-uv pip install rich" "$actual"
-assert_contains "pwsh/python3 from a script" "mock-uv run -- python app.py" "$actual"
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "& '$WORK/usepy.ps1'")
-assert_eq "pwsh/python overrides from a script: no errors" "" "$err"
+PY_SCRIPT_PRELUDE="\$env:PATH = '$PY_SCRIPT_BIN:/usr/bin:/bin'; \$env:VIRTUAL_ENV = '$WORK/novenv'; \$env:_DEN_VENV_PYTHON = '3.12'"
+echo "[pwsh] a user script gets the uv, pip and python3 on PATH, and den's py"
+actual=$(run_pwsh_den "$PY_SCRIPT_PRELUDE" "& '$WORK/usepy.ps1'" 2>/dev/null | tr -d '\r' || true)
+assert_eq "pwsh/uv, pip, python3, py from a script" "mock-uv run app.py
+system-pip install rich
+system-python3 app.py
+mock-uv run --python 3.12 -- python app.py" "$actual"
+err=$(run_pwsh_den "$PY_SCRIPT_PRELUDE" "& '$WORK/usepy.ps1'" 2>&1 >/dev/null | tr -d '\r' || true)
+assert_eq "pwsh/python names from a script: no errors" "" "$err"
+echo "[pwsh] typed at the prompt, uv, pip and python3 are den's"
+actual=$(run_pwsh_den "$PY_SCRIPT_PRELUDE" "uv run app.py; pip install rich 6>\$null; python3 app.py" 2>/dev/null | tr -d '\r' || true)
+assert_eq "pwsh/typed uv, pip, python3" "mock-uv run --python 3.12 -- app.py
+mock-uv pip install rich
+mock-uv run --python 3.12 -- python app.py" "$actual"
+echo "[pwsh] a pwsh -Command run that loaded den gets the python3 on PATH"
+actual=$(run_pwsh_den "$PY_SCRIPT_PRELUDE; \$env:_DEN_FORCE_INTERACTIVE = \$null" "python3 app.py" 2>/dev/null | tr -d '\r' || true)
+assert_eq "pwsh/python3 in a -Command run" "system-python3 app.py" "$actual"
+# A session that starts with the redirects OFF (a reload or a child pwsh after
+# toggle-uv turned them off) had no record of these names when den loaded, so
+# once toggle-uv turned them on, its scripts got den's uv, pip and python3. The
+# same holds after den loads again.
+echo "[pwsh] after toggle-uv turns the redirects on, a script still gets the uv, pip and python3 on PATH"
+actual=$(run_pwsh_den "$PY_SCRIPT_PRELUDE; \$env:_DEN_UV_OVERRIDE = '0'" "
+    toggle-uv 6>\$null
+    & '$WORK/usepy.ps1'
+    python3 app.py
+    . '$DOTFILES/shell/pwsh/init.ps1'
+    & '$WORK/usepy.ps1'
+" 2>/dev/null | tr -d '\r' || true)
+assert_eq "pwsh/uv, pip, python3 from a script after toggle-uv; typed python3; after a reload" "mock-uv run app.py
+system-pip install rich
+system-python3 app.py
+mock-uv run --python 3.12 -- python app.py
+mock-uv run --python 3.12 -- python app.py
+mock-uv run app.py
+system-pip install rich
+system-python3 app.py
+mock-uv run --python 3.12 -- python app.py" "$actual"
 
 echo "[pwsh] pip/pip3 in a venv use its own pip, else uv pip, never another pip on PATH"
 # A uv venv has no pip: the PATH lookup found the system pip ahead of it.

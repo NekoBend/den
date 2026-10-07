@@ -14,16 +14,32 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   add its own). cmd is a deliberately thinner subset; a `—` in the cmd column is
   usually intentional, not an oversight.
 - These are shell-sourced commands (aliases/functions/wrappers). In **bash/zsh**
-  they are all interactive-only. In **pwsh** only the native-command-shadowing
-  wrappers/aliases/coreutils/completion are interactive-gated; the additive helpers
+  they are all interactive-only. In **pwsh** the wrappers, aliases, coreutils,
+  completion and `cd` load only in an interactive session; the other helpers
   (functions, python, ffmpeg, parallel, snippet, cheat, proxy, hwinfo) load whenever
   the profile is sourced. Many commands also load only when their tool is present
   (uv, ffmpeg, zoxide, fzf, lsd/bat/fd/rg). The one exception is the standalone
   `fixids` executable (below), which lives on `PATH` and runs from any context.
-- In **pwsh**, a script run in a session that loaded them can call these commands,
-  including a script that runs `Set-StrictMode -Version Latest` (strict mode then
-  applies inside den's functions too, and they are written for it). A profile can
-  also set strict mode before it loads den.
+- In **pwsh**, a command den defines in place of one the session already had when
+  den loaded (`ls`, `cat`, `cd`, `rm`, `cp`, `mv`, `mkdir`, `gc`, `gcm`, `gl`, `gps`,
+  `gu`, `python`, `pip`, `uv`, `clip`, ...) is den's only when typed at the prompt of
+  an interactive session, or in a line that a typed `again`, `snippet run` or
+  `snippet pick` replays. Anywhere else (a script or a module run from the session,
+  a function, a script block such as `ForEach-Object`'s, a `pwsh -File` or
+  `-Command` run) the name runs what it ran before den loaded, with the same
+  arguments and pipeline input: a script's `gps` is `Get-Process`, and on Windows
+  its `ls` is `Get-ChildItem` and its `rm` is `Remove-Item`. "Had" means an alias
+  or a function, or a program in a folder of the `PATH` den loaded with (den's own
+  cmd shims aside), looked up the first time a script calls the name: a den command
+  that shares its name with such a program counts as taking it over (on a Linux
+  with Perl's `ptar`, a script's `ptar` is that one). A command den adds that names
+  nothing else (`archive`, `extract`, `proxy`, `snippet`, `mkcd`, `dg`, `pcp`, the
+  `ll`/`la`/`lt` and w-suffix wrappers, and on Windows `head`, `tail`, `wc`,
+  `touch`, `which`, ...) works in scripts too, including a script that runs
+  `Set-StrictMode -Version Latest` (strict mode then applies inside den's functions
+  too, and they are written for it). A profile can also set strict mode before it
+  loads den. `Get-Command` still reports den's version of a name, and a script that
+  runs the object it returns (`& (Get-Command gps)`) runs den's version.
 - In **bash/zsh**, den's `cd` and the wrappers that replace a native command
   (`ls`, `cat`, `grep`, `find`) do den's part only when typed at the prompt
   (`eval` and `$(...)` typed there count, and so do a line a typed `again`
@@ -57,7 +73,7 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `cd <dir>` | zoxide smart-jump when wrappers are ON (on bash/zsh: typed at the prompt, no option), else plain cd | ✓ | ✓ | `z` |
+| `cd <dir>` | zoxide smart-jump when wrappers are ON, typed at the prompt and given no option (bash/zsh `-P`, pwsh `-Path` / `-LiteralPath` ...), else plain cd | ✓ | ✓ | `z` |
 | `cdi` | interactive zoxide jump (fzf picker) | ✓ | ✓ | `zi` |
 | `zd` / `zdi` | always jump via zoxide, ignoring the wrapper toggle | ✓ | ✓ | ✓ |
 | `up [N]` | go up N directories (default 1) | ✓ | ✓ | ✓ |
@@ -210,8 +226,9 @@ PowerShell cmdlet behavior.
 
 ## Unix coreutils (Windows fills a gap)
 
-pwsh and cmd add these because Windows lacks them; bash/zsh already have the real
-tools. The cmd shims are positional-only (no GNU flags, no pipe input).
+pwsh and cmd add these on Windows because Windows lacks them; bash/zsh, and pwsh on
+Linux and macOS, keep the real tools. The cmd shims are positional-only (no GNU
+flags, no pipe input). On pwsh, `df` ignores flags such as `-h`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
@@ -295,6 +312,9 @@ pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they ru
 through `uv run --python <venv version>`. Inside a venv on cmd, the `pip` shim
 runs the first `pip.exe` on `PATH`, and `python3` the venv's `python.exe` (a
 Windows venv has no `python3.exe`). Flip the redirect with `toggle-uv`.
+On pwsh the redirects apply to commands typed at the prompt; a script gets the
+`python`, `pip` and `uv` on `PATH` (see "How to read this"). `py`, which Linux
+and macOS do not have, stays den's in scripts there.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
@@ -399,7 +419,7 @@ pwsh's, or deleting that file, makes the next window detect again.
 | `sagain [N]` | `again` with sudo | ✓ | ✓ | — |
 | `reload` | clear den's shell caches and restart the shell to load the config (`exec` on bash/zsh; a new pwsh on pwsh, see below) | ✓ | ✓ | — |
 | `code` | launch VS Code (prefers code-insiders) | ✓ | ✓ | ✓ |
-| `open <path>` | open a file/dir with the default app | — | ✓ | — |
+| `open <path>` | open a file/dir with the default app (pwsh on macOS keeps the system `open`) | — | ✓ | — |
 
 On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 `code`); posix/pwsh fall back.

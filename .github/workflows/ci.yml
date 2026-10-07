@@ -301,6 +301,17 @@ jobs:
           }
           if ($shadowed) { throw "den functions shadowed by builtin aliases: $($shadowed -join ', ')" }
           Write-Output "no builtin alias shadows den's wrappers: $($collide -join ', ')"
+          # den's versions run only for commands typed at a prompt. This step runs as
+          # a script, so it gets Windows' own: mkdir and ls give objects, rm takes them.
+          $d = mkdir (Join-Path $env:RUNNER_TEMP 'den-scope') -Force
+          $null = New-Item -ItemType File -Path (Join-Path $d.FullName 'a.tmp')
+          $kinds = (ls $d.FullName | ForEach-Object { $_.GetType().Name }) -join ','
+          ls $d.FullName -Filter *.tmp | rm
+          $left = @(Get-ChildItem $d.FullName).Count
+          if ($d -isnot [System.IO.DirectoryInfo] -or $kinds -ne 'FileInfo' -or $left -ne 0) {
+            throw "a script got den's commands: mkdir=$($d.GetType().Name) ls=$kinds left=$left"
+          }
+          Write-Output "a script's mkdir, ls and rm are Windows' own"
       - name: cmd back/fwd shims (lists seeded by hand)
         # starship.lua's Clink filter keeps _DEN_DIRBACK / _DEN_DIRFWD and cannot
         # run here, so seed the lists and check what back.cmd / fwd.cmd print,

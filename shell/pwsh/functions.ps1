@@ -844,24 +844,38 @@ function ports {
 $_z = Initialize-Cache 'zoxide' @('init', 'powershell', '--no-cmd')
 if ($_z) { . $_z }
 Remove-Variable _z -ErrorAction SilentlyContinue
-Remove-Item alias:cd -Force -ErrorAction SilentlyContinue
 
-# cd → wrapper ON: __zoxide_z, OFF: Set-Location
+# cd → typed at the prompt with wrappers ON: __zoxide_z, else Set-Location
+# Interactive sessions only, like the other commands that take over a native one
+# (a pwsh -File or -Command run keeps the cd alias). zoxide jumps only for a cd
+# typed at the prompt (see _DenTyped): it goes to the best match when the
+# directory does not exist, which a script must not do, and a script calls the
+# stock Set-Location anyway (see _DenScopeOverrides). A Set-Location parameter
+# (-Path, -LiteralPath, -PassThru, ...) also goes to Set-Location, whose
+# parameters zoxide would take for keywords; `cd -` and `cd +` stay zoxide's.
+# The arguments are $args rather than a parameter, so that @args passes such a
+# parameter on as one.
 # Given no arguments, cd and zd go to $HOME themselves and cdi and zdi pass
-# zoxide none. $Rest is $null then, and @Rest would pass that $null on as one
-# argument (__zoxide_z tests it as a path, fails, and stays put); zoxide's own
-# jump with no arguments is a bare Set-Location, which goes home only from
-# PowerShell 6 on. $HOME, unlike ~, is reachable from any drive (Env:, HKLM:).
-function cd {
-  param([Parameter(ValueFromRemainingArguments)]$Rest)
-  if ($env:_DEN_WRAPPERS -ne '0' -and (Get-Command __zoxide_z -ErrorAction SilentlyContinue)) {
-    if ($null -eq $Rest) { Set-Location -LiteralPath $HOME } else { __zoxide_z @Rest }
-  } else {
-    # No arguments leave $Rest $null, not empty: a caller's Set-StrictMode makes
-    # .Count on it an error.
-    if ($null -eq $Rest) { Set-Location ~ } else { Set-Location @Rest }
+# zoxide none: zoxide's own jump with no arguments is a bare Set-Location, which
+# goes home only from PowerShell 6 on. $HOME, unlike ~, is reachable from any
+# drive (Env:, HKLM:).
+if (_DenInteractive) {
+  Remove-Item alias:cd -Force -ErrorAction SilentlyContinue
+  function cd {
+    $zoxide = $env:_DEN_WRAPPERS -ne '0' -and (_DenTyped $MyInvocation.CommandOrigin) -and
+      (Get-Command __zoxide_z -ErrorAction SilentlyContinue)
+    foreach ($a in $args) {
+      if ($a -is [string] -and $a -match '^-[A-Za-z]') { $zoxide = $false }
+    }
+    if ($zoxide) {
+      if ($args.Count -eq 0) { Set-Location -LiteralPath $HOME } else { __zoxide_z @args }
+    } elseif ($args.Count -eq 0) {
+      Set-Location ~
+    } else {
+      Microsoft.PowerShell.Management\Set-Location @args
+    }
+    _DenDirMoved $MyInvocation
   }
-  _DenDirMoved $MyInvocation
 }
 
 # cdi → wrapper ON: __zoxide_zi (interactive)
@@ -994,16 +1008,19 @@ function again {
   $history = @(Get-History -Count ($N + 20) | Where-Object { $_.CommandLine -notmatch '^s?again(\s|$)' })
   if ($history.Count -lt $N) { Write-Error "no command at position $N in history"; return }
   $cmd = $history[-$N].CommandLine
+  # Replayed as typed when again itself was: den's versions of ls, cd, gcm, ...
+  # run for the line as they did the first time (see _DenTyped).
+  $typed = _DenTyped $MyInvocation.CommandOrigin
   if ($Sudo) {
     Write-Host "+ sudo $cmd"
     $ans = Read-Host 'Re-run with sudo? [Y/n]'
     if ($ans -eq 'n' -or $ans -eq 'N') { return }
-    Invoke-Expression "sudo $cmd"
+    _DenReplay "sudo $cmd" $typed
   } else {
     Write-Host "+ $cmd"
     $ans = Read-Host 'Re-run? [Y/n]'
     if ($ans -eq 'n' -or $ans -eq 'N') { return }
-    Invoke-Expression $cmd
+    _DenReplay $cmd $typed
   }
 }
 

@@ -32,13 +32,16 @@ WRAPPERS_PS1_STRIPPED="$TESTTMP/wrappers_stripped.ps1"
     echo ". '$HELPERS_PS1'"
     grep -v '_DenInteractive' "$WRAPPERS_PS1" | sed '/Remove-Item alias:ls/d'
 } > "$WRAPPERS_PS1_STRIPPED" || abort_suite "cannot write $WRAPPERS_PS1_STRIPPED"
-# Combined wrappers + coreutils for pipe chain tests
+# Combined wrappers + coreutils for pipe chain tests. coreutils.ps1 defines its
+# commands on Windows only, so its _OnWindows line goes too: these run on Linux.
 COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
 COMBINED_PS1="$TESTTMP/wrappers_combined.ps1"
 {
     cat "$WRAPPERS_PS1_STRIPPED"
-    grep -v '_DenInteractive' "$COREUTILS_PS1"
+    grep -v '_DenInteractive' "$COREUTILS_PS1" | grep -vF 'if (-not (_OnWindows)) { return }'
 } > "$COMBINED_PS1" || abort_suite "cannot write $COMBINED_PS1"
+grep -qxF 'if (-not (_OnWindows)) { return }' "$COREUTILS_PS1" ||
+    abort_suite "coreutils.ps1 no longer has the _OnWindows line this suite strips"
 
 # The same wrappers with the edition check reading "Desktop", standing in for
 # Windows PowerShell 5.1 (no 5.1 host runs here).
@@ -351,27 +354,225 @@ actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
 assert_eq "pwsh/cat|head|wc" "5" "$actual"
 
 # =============================================================================
-# PowerShell: wrappers called from a user script
+# PowerShell: a wrapper is den's only when typed at the prompt
 # =============================================================================
-# A function's $script: is the scope of the script RUNNING it, so the command
-# cache _helpers.ps1 kept there was $null inside a user's .ps1: each wrapper call
-# printed "You cannot call a method on a null-valued expression" and fell through
-# to its PowerShell fallback. Run cat/grep/head from a script with &, and from a
-# function inside it, as a user's script would.
-echo ""
-echo "[pwsh] wrappers called from a user script"
+# A user's script run from the session gets what the name meant before den
+# loaded: here the native cat and grep (on Windows, the ls and cat aliases'
+# Get-ChildItem and Get-Content). The w-suffix names, which name nothing else,
+# stay den's there. A stub bat stands in for the modern tool. den's commands
+# keep their command cache in $global:, since a function's $script: is the
+# scope of the script running it, where a cache was $null: catw resolves bat
+# from the script.
+SCRIPT_BIN="$TESTTMP/script-bin"
+mkdir -p "$SCRIPT_BIN"
+printf '#!/bin/sh\necho "STUB-BAT $*"\n' > "$SCRIPT_BIN/bat"
+chmod +x "$SCRIPT_BIN/bat"
+SCRIPT_PATH="$SCRIPT_BIN:/usr/bin:/bin"
 cat > "$WORK/usewrap.ps1" <<EOF
 cat '$WORK/fruits.txt' | grep 'an'
-function Get-FirstLine { cat '$WORK/lines20.txt' | head -n 2 }
+function Get-FirstLine { cat '$WORK/lines20.txt' | Select-Object -First 2 }
 Get-FirstLine
+catw '$WORK/fruits.txt'
 EOF
-actual=$(run_pwsh "$COMBINED_PS1" "\$env:_DEN_WRAPPER_LOG = '0'; & '$WORK/usewrap.ps1'" 2>/dev/null)
-actual=$(echo "$actual" | tr -d '\r' | sed '/^$/d')
-assert_eq "pwsh/wrappers from a script" "banana
+echo ""
+echo "[pwsh] a user script gets the native cat and grep, and den's catw"
+actual=$(run_pwsh_den "\$env:PATH = '$SCRIPT_PATH'; \$env:_DEN_WRAPPER_LOG = '0'" \
+    "& '$WORK/usewrap.ps1'; cat '$WORK/fruits.txt'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/a script's cat and grep, then a typed cat" "banana
 line1
-line2" "$actual"
-err=$(run_pwsh_stderr "$COMBINED_PS1" "\$env:_DEN_WRAPPER_LOG = '0'; & '$WORK/usewrap.ps1'")
-assert_eq "pwsh/wrappers from a script: no errors" "" "$err"
+line2
+STUB-BAT --style=plain --paging=never $WORK/fruits.txt
+STUB-BAT --style=plain --paging=never $WORK/fruits.txt" "$actual"
+
+# On Windows ls and cat are aliases of Get-ChildItem and Get-Content, which den
+# removes so that its wrappers win at the prompt. A script then got den's ls,
+# which prints names: `ls dist | Remove-Item -Recurse` removed the items of those
+# names in the current directory and left dist's. Stock aliases stand in for
+# Windows' here.
+echo "[pwsh] ls and cat in a script are Windows' Get-ChildItem and Get-Content"
+rm -rf "$WORK/vite" && mkdir -p "$WORK/vite/dist/assets"
+echo src > "$WORK/vite/index.html"
+echo built > "$WORK/vite/dist/index.html"
+echo js > "$WORK/vite/dist/assets/a.js"
+cat > "$WORK/clean-dist.ps1" <<'EOF'
+ls dist | Remove-Item -Recurse -Force
+"index.html kept: $(Test-Path index.html); dist: [$((Get-ChildItem dist -Name) -join ',')]"
+"cat -Raw: $((cat index.html -Raw).Trim())"
+"sizes: $(ls -File | ForEach-Object { '{0}={1}' -f $_.Name, $_.Length })"
+EOF
+actual=$(cd "$WORK/vite" && run_pwsh_den "
+    Set-Alias -Name ls -Value Get-ChildItem; Set-Alias -Name cat -Value Get-Content
+    \$env:PATH = '$SCRIPT_PATH'; \$env:_DEN_WRAPPER_LOG = '0'
+" "ls; & '$WORK/clean-dist.ps1'" 2>&1 | tr -d '\r')
+assert_eq "pwsh/typed ls lists names, a script's ls and cat are the cmdlets" "dist
+index.html
+index.html kept: True; dist: []
+cat -Raw: src
+sizes: index.html=4" "$actual"
+
+# =============================================================================
+# PowerShell: what is piped into a wrapper streams through; nothing piped, no pipe
+# =============================================================================
+# The generated wrappers handed the tool `$input`, which a function collects in
+# full first: nothing reached the tool before the producer ended, so
+# `tail -f log | grep x` never printed. With nothing piped in, `$input |` still
+# made the tool's stdin an empty pipe: rg searched that instead of the current
+# directory, and rm -i read EOF for its answer. See make_stamp_stub and
+# assert_streams in helpers.sh.
+STREAM_BIN="$TESTTMP/stream-bin"
+mkdir -p "$STREAM_BIN"
+make_stamp_stub "$STREAM_BIN/stamp" || abort_suite "cannot write $STREAM_BIN/stamp"
+cp "$STREAM_BIN/stamp" "$STREAM_BIN/rg"
+STREAM_SETUP="
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-Wrapper 'stampn' 'nonexistent-modern' '' 'stamp' '' ''
+    New-WrapperSuffix 'stampw' 'stamp' ''
+"
+
+echo "[pwsh] grep (rg), a native tier and a w-suffix wrapper stream piped input"
+actual=$(PATH="$STREAM_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$STREAM_SETUP; $STREAM_PRODUCER | grep x" < /dev/null 2>&1 | tr -d '\r')
+assert_streams "pwsh/grep (rg) streams" "$actual"
+actual=$(PATH="$STREAM_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$STREAM_SETUP; $STREAM_PRODUCER | stampn" < /dev/null 2>&1 | tr -d '\r')
+assert_streams "pwsh/a native tier streams" "$actual"
+actual=$(PATH="$STREAM_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$STREAM_SETUP; $STREAM_PRODUCER | stampw" < /dev/null 2>&1 | tr -d '\r')
+assert_streams "pwsh/a w-suffix wrapper streams" "$actual"
+
+echo "[pwsh] with nothing piped in, a wrapper's tool gets no pipe for stdin"
+actual=$(PATH="$STREAM_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$STREAM_SETUP; grep x; stampn; stampw" < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/no stdin pipe for grep (rg), a native tier, a w-suffix wrapper" "stdin: not a pipe
+stdin: not a pipe
+stdin: not a pipe" "$actual"
+
+# The Windows coreutils tier: rm/cp/... hand microsoft/coreutils the same way.
+# $IsWindows is a constant, set with -Force; the stub stands in for coreutils.
+WIN_SETUP="
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    \$env:_DEN_COREUTILS = '$STREAM_BIN/stamp'
+    New-CoreutilsWrapper 'stampc' 'stamp-sub' 'Copy-Item'
+"
+echo "[pwsh] a coreutils wrapper streams piped input, and gets no pipe with none"
+actual=$(run_pwsh "$HELPERS_PS1" "$WIN_SETUP; $STREAM_PRODUCER | stampc" < /dev/null 2>&1 | tr -d '\r')
+assert_streams "pwsh/a coreutils wrapper streams" "$actual"
+actual=$(run_pwsh "$HELPERS_PS1" "$WIN_SETUP; stampc" < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/no stdin pipe for a coreutils wrapper" "stdin: not a pipe" "$actual"
+
+# At the end of a line typed at the prompt, the tool writes to the console itself.
+# The steppable pipeline used to hand the tool's output back to the function, so
+# its stdout was a pipe there too: rg held its output (block buffering) and
+# dropped its colors, and what it did print showed up only when the next line
+# went in, or at the end; `Get-Content -Wait log | grep x` showed nothing. The
+# stub prints as rg does (see make_tty_stub), and each line is timed when it
+# reaches the terminal. One session runs three lines, one per generator; the
+# PATH has the stub as rg and as microsoft/coreutils.
+TTY_BIN="$TESTTMP/tty-bin"
+mkdir -p "$TTY_BIN"
+make_tty_stub "$TTY_BIN/rg" || abort_suite "cannot write $TTY_BIN/rg"
+echo "[pwsh] grep, a w-suffix wrapper and a coreutils wrapper at the end of a typed line write to the terminal as the tool prints"
+# One line of statements: the pipelines run at the top level of -Command, as
+# typed at the prompt.
+actual=$(run_pty_stamped env PATH="$TTY_BIN:$PATH" pwsh -NoProfile -NonInteractive -Command "\
+. '$WRAPPERS_PS1_STRIPPED'; \$env:_DEN_WRAPPER_LOG = '0'; New-WrapperSuffix 'ttyw' 'rg' ''; \
+$STREAM_PRODUCER | grep x; 'next'; $STREAM_PRODUCER | ttyw; 'next'; \
+Set-Variable -Name IsWindows -Value \$true -Scope Global -Force; \$env:_DEN_COREUTILS = '$TTY_BIN/rg'; \
+New-CoreutilsWrapper 'ttyc' 'tty-sub' 'Copy-Item'; $STREAM_PRODUCER | ttyc" 2>&1)
+for i in 1 2 3; do
+    part=$(printf '%s\n' "$actual" | awk -v want="$i" '/ next$/ { n++; next } n + 1 == want')
+    case $i in 1) what="grep (rg)" ;; 2) what="a w-suffix wrapper" ;; 3) what="a coreutils wrapper" ;; esac
+    assert_streams "pwsh/$what at the end of a typed line writes to the terminal" "$part"
+done
+
+# A line that stops before its end, through Select-Object -First further down
+# or a host stopping it (as for Ctrl+C), left the tool waiting on its stdin, a
+# process that lived until PowerShell exited. See make_pid_stub and
+# make_stub_state_ps1 in helpers.sh. The stopped case needs PowerShell 7.3 or
+# later (a clean block).
+PID_BIN="$TESTTMP/pid-bin"
+mkdir -p "$PID_BIN"
+make_pid_stub "$PID_BIN/rg" || abort_suite "cannot write $PID_BIN/rg"
+STUB_STATE_PS1="$TESTTMP/stub-state.ps1"
+make_stub_state_ps1 "$STUB_STATE_PS1" || abort_suite "cannot write $STUB_STATE_PS1"
+echo "[pwsh] a line that stops early leaves no tool behind"
+actual=$(PATH="$PID_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    . '$STUB_STATE_PS1'
+    \$env:_DEN_WRAPPER_LOG = '0'
+    New-WrapperSuffix 'pidw' 'rg' ''
+    \$env:PIDSTUB_FILE = '$TESTTMP/sel-grep.pid'
+    \$null = 1..5000 | ForEach-Object { \"l\$_\" } | grep l | Select-Object -First 1
+    'grep | Select-Object -First 1: ' + (Get-StubState \$env:PIDSTUB_FILE)
+    \$env:PIDSTUB_FILE = '$TESTTMP/sel-w.pid'
+    \$null = 1..5000 | ForEach-Object { \"l\$_\" } | pidw l | Select-Object -First 1
+    'w-suffix | Select-Object -First 1: ' + (Get-StubState \$env:PIDSTUB_FILE)
+    \$env:PIDSTUB_FILE = '$TESTTMP/stop-grep.pid'
+    'grep, stopped: ' + (Test-StubStopped \". '$WRAPPERS_PS1_STRIPPED'; \`\$env:_DEN_WRAPPER_LOG = '0'\" \"& { 'l1'; Start-Sleep 60 } | grep l\")
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    \$env:_DEN_COREUTILS = '$PID_BIN/rg'
+    New-CoreutilsWrapper 'pidc' 'pid-sub' 'Copy-Item'
+    \$env:PIDSTUB_FILE = '$TESTTMP/sel-c.pid'
+    \$null = 1..5000 | ForEach-Object { \"l\$_\" } | pidc | Select-Object -First 1
+    'coreutils wrapper | Select-Object -First 1: ' + (Get-StubState \$env:PIDSTUB_FILE)
+" < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/a stopped line leaves no tool running" "grep | Select-Object -First 1: gone
+w-suffix | Select-Object -First 1: gone
+grep, stopped: gone
+coreutils wrapper | Select-Object -First 1: gone" "$actual"
+
+# =============================================================================
+# PowerShell: rm/cp/mv/mkdir/rmdir on Windows
+# =============================================================================
+# Without microsoft/coreutils, rm/cp/mv run the builtin cmdlet, which never got
+# what was piped in: `Get-ChildItem *.tmp | rm` stopped at "missing mandatory
+# parameters: Path" and removed nothing.
+echo "[pwsh] Windows without coreutils: rm, cp and mv take piped items"
+rm -rf "$WORK/pipe" && mkdir -p "$WORK/pipe/dest"
+touch "$WORK/pipe/a.tmp" "$WORK/pipe/b.tmp" "$WORK/pipe/c.txt" "$WORK/pipe/d.txt"
+actual=$(cd "$WORK/pipe" && run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'; \$env:_DEN_COREUTILS = '0'
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    . '$WRAPPERS_PS1'
+    Get-ChildItem -Filter *.tmp | rm
+    Get-ChildItem -Filter c.txt | cp -Destination dest
+    Get-ChildItem -Filter d.txt | mv -Destination dest
+    (Get-ChildItem -Recurse -File -Name | Sort-Object) -join ','
+" < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/piped rm, cp, mv without coreutils" "c.txt,dest/c.txt,dest/d.txt" "$actual"
+
+# With coreutils, a script got rm/cp/mkdir handing PowerShell parameters to it
+# (`rm -Recurse -Force` failed on -e, and the script went on). A script gets the
+# cmdlets of the stock aliases now, and Windows' mkdir function; typed, rm is
+# coreutils' rm. Stock aliases and a mkdir function stand in for Windows' (with
+# $env:OS and $IsLinux set too, as on Windows), and a stub for coreutils. Only
+# the script's report line is kept: den's load warns here about caches it
+# cannot check off Windows.
+echo "[pwsh] Windows with coreutils: a script's rm, cp, mkdir are the cmdlets"
+rm -rf "$WORK/wincu" && mkdir -p "$WORK/wincu/old/sub"
+echo old > "$WORK/wincu/t.txt"; echo new > "$WORK/wincu/s.txt"; : > "$WORK/wincu/a.tmp"
+cat > "$TESTTMP/coreutils-log" <<EOF
+#!/bin/sh
+echo "coreutils \$*" >> '$WORK/wincu-calls.log'
+EOF
+chmod +x "$TESTTMP/coreutils-log"
+cat > "$WORK/cleanup.ps1" <<'EOF'
+rm -Recurse -Force old
+$d = mkdir -Force out
+cp s.txt t.txt -Force
+Get-ChildItem -Filter *.tmp | rm
+"old removed: $(-not (Test-Path old)); made: $($d.Name); t.txt: $(Get-Content t.txt); a.tmp removed: $(-not (Test-Path a.tmp))"
+EOF
+rm -f "$WORK/wincu-calls.log"
+actual=$(cd "$WORK/wincu" && run_pwsh_den "
+    \$env:OS = 'Windows_NT'
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    Set-Variable -Name IsLinux -Value \$false -Scope Global -Force
+    \$env:_DEN_COREUTILS = '$TESTTMP/coreutils-log'
+    foreach (\$a in @{ cp = 'Copy-Item'; mv = 'Move-Item'; rm = 'Remove-Item'; rmdir = 'Remove-Item' }.GetEnumerator()) {
+        Set-Alias -Name \$a.Key -Value \$a.Value -Scope Global
+    }
+    function global:mkdir { New-Item -ItemType Directory @args }
+    \$env:PATH = '/usr/bin:/bin'
+" "& '$WORK/cleanup.ps1'; rm -rf typed" 2>/dev/null | tr -d '\r' | grep -F 'old removed')
+assert_eq "pwsh/a script's rm, mkdir, cp on Windows with coreutils" \
+    "old removed: True; made: out; t.txt: new; a.tmp removed: True" "$actual"
+assert_eq "pwsh/only the typed rm reached coreutils" "coreutils rm -rf typed" "$(cat "$WORK/wincu-calls.log" 2>/dev/null)"
 
 # =============================================================================
 # PowerShell extended tests — grep additional flags

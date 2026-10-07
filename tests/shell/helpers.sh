@@ -128,6 +128,150 @@ run_pwsh() {
     "
 }
 
+# run_pwsh_den <prelude> <cmd> - load den the way $PROFILE does (init.ps1, from
+# DOTFILES) in an interactive session (_DEN_FORCE_INTERACTIVE=1), after the
+# PowerShell code <prelude> (stock aliases to stand in for Windows', a PATH),
+# then run <cmd>. pwsh counts <cmd> as typed at the prompt: a command at the top
+# level of -Command has CommandOrigin Runspace. A script <cmd> runs with & runs
+# as a user's script does. HOME and the XDG directories are TESTTMP/den-home,
+# so den's caches stay out of the real ones; stdin is /dev/null. Expand the
+# PowerShell variables in both arguments (\$) as for run_pwsh.
+run_pwsh_den() {
+    local home="$TESTTMP/den-home"
+    mkdir -p "$home/.local/share" "$home/.cache" "$home/.config" || return 1
+    HOME="$home" XDG_DATA_HOME="$home/.local/share" XDG_CACHE_HOME="$home/.cache" \
+        XDG_CONFIG_HOME="$home/.config" _DEN_FORCE_INTERACTIVE=1 \
+        pwsh -NoProfile -NonInteractive -Command "
+            $1
+            . '$DOTFILES/shell/pwsh/init.ps1'
+            $2
+        " < /dev/null
+}
+
+# ===== Streaming through pwsh functions =====
+
+# STREAM_PRODUCER is PowerShell that outputs "one", waits 1.5 s, then outputs
+# "two". make_stamp_stub <path> writes a stub program there: when its stdin is
+# a pipe it prints "<nanoseconds since the epoch> <line>" for each line as it
+# reads it, otherwise "stdin: not a pipe".
+STREAM_PRODUCER="& { 'one'; Start-Sleep -Milliseconds 1500; 'two' }"
+make_stamp_stub() {
+    cat > "$1" <<'STUB' && chmod +x "$1"
+#!/bin/sh
+if [ -p /dev/stdin ]; then
+    while IFS= read -r l; do echo "$(date +%s%N) $l"; done
+else
+    echo "stdin: not a pipe"
+fi
+STUB
+}
+
+# assert_streams <label> <output> - pass when the stamp stub read STREAM_PRODUCER's
+# second line a second or more after its first, as it does when each line
+# reaches it as it comes; a function that holds its input until the producer
+# ends hands both over at once.
+assert_streams() {
+    local label="$1" first second gap
+    first=$(printf '%s\n' "$2" | sed -n 's/^\([0-9]\{10,\}\) one$/\1/p')
+    second=$(printf '%s\n' "$2" | sed -n 's/^\([0-9]\{10,\}\) two$/\1/p')
+    if [ -z "$first" ] || [ -z "$second" ]; then
+        assert_eq "$label" "two stamped lines" "$2"
+        return
+    fi
+    gap=$(((second - first) / 1000000))
+    if [ "$gap" -ge 1000 ]; then
+        assert_eq "$label" "ok" "ok"
+    else
+        assert_eq "$label" "1000 ms or more between the lines" "$gap ms"
+    fi
+}
+
+# make_tty_stub <path> writes a stub program that copies its stdin to stdout
+# the way rg prints: each line as it reads it when stdout is a terminal, and
+# everything at the end of its input when stdout is a pipe (block buffering).
+make_tty_stub() {
+    cat > "$1" <<'STUB' && chmod +x "$1"
+#!/bin/sh
+if [ -t 1 ]; then
+    while IFS= read -r l; do echo "$l"; done
+else
+    all=$(cat)
+    printf '%s\n' "$all"
+fi
+STUB
+}
+
+# run_pty_stamped <command...> - run the command in a terminal of its own
+# (script(1), through /bin/sh: no newline in the arguments), its stdin
+# /dev/null, and print each line it writes there as
+# "<nanoseconds since the epoch> <line>", stamped when the line reaches the
+# terminal, without the terminal's control sequences and carriage returns.
+# With STREAM_PRODUCER's lines, assert_streams then tells whether each one
+# reached the terminal as it came.
+run_pty_stamped() {
+    local script_bin cmd
+    script_bin=$(command -v script) || {
+        echo "script(1) is not installed"
+        return 1
+    }
+    cmd=$(printf '%q ' "$@")
+    SHELL=/bin/sh "$script_bin" -qfec "$cmd" /dev/null < /dev/null | while IFS= read -r l; do
+        printf '%s %s\n' "$(date +%s%N)" "$l"
+    done | sed -e 's/\x1b\][^\x07]*\x07//g' -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' -e 's/\x1b[=>]//g' -e 's/\r//g'
+}
+
+# make_pid_stub <path> writes a stub program that writes its process id to the
+# file named by $PIDSTUB_FILE, then copies its stdin to stdout line by line until
+# its stdin ends.
+make_pid_stub() {
+    cat > "$1" <<'STUB' && chmod +x "$1"
+#!/bin/sh
+echo $$ > "$PIDSTUB_FILE"
+while IFS= read -r l; do echo "$l"; done
+STUB
+}
+
+# make_stub_state_ps1 <path> writes PowerShell functions for the pid stub:
+# Get-StubState <pid file> tells whether the stub that wrote it is still running
+# half a second after a line ended ("running" or "gone");
+# Test-StubStopped <setup> <line> runs the setup and the line in a runspace of
+# its own, stops it (as a host does for Ctrl+C) once the stub has written
+# $env:PIDSTUB_FILE, and tells the same; Test-CleanBlock <function> tells whether
+# the function has a clean block.
+make_stub_state_ps1() {
+    cat > "$1" <<'PS1'
+function Wait-Stub([string]$File) {
+    for ($i = 0; $i -lt 150; $i++) {
+        if (Test-Path -LiteralPath $File) {
+            $t = Get-Content -LiteralPath $File -TotalCount 1
+            if ($t) { return [int]$t }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    return 0
+}
+function Get-PidState([int]$StubPid) {
+    if ($StubPid -eq 0) { return 'never started' }
+    Start-Sleep -Milliseconds 500
+    if (Get-Process -Id $StubPid -ErrorAction SilentlyContinue) { 'running' } else { 'gone' }
+}
+function Get-StubState([string]$File) { Get-PidState (Wait-Stub $File) }
+function Test-StubStopped([string]$Setup, [string]$Line) {
+    $ps = [powershell]::Create()
+    $null = $ps.AddScript("$Setup`n$Line")
+    $null = $ps.BeginInvoke()
+    $p = Wait-Stub $env:PIDSTUB_FILE
+    $ps.Stop()
+    Get-PidState $p
+}
+function Test-CleanBlock([string]$Name) {
+    $ast = (Get-Item -LiteralPath "Function:\$Name").ScriptBlock.Ast
+    if ($ast -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $ast = $ast.Body }
+    $null -ne $ast.CleanBlock
+}
+PS1
+}
+
 # ===== Stderr helpers =====
 
 assert_not_contains() {

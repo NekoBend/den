@@ -1,6 +1,23 @@
 # _helpers.ps1 — DRY helpers for den PowerShell config.
 # Dot-sourced first by init.ps1.
 
+# ========== what the session had before den ==========
+
+# The aliases and functions this session has before den defines anything, for
+# _DenScopeOverrides: a den command that took over one of these names runs that one
+# when a script calls it. Taken first thing here, on every load of this file; on a
+# load after the first one it holds den's own commands too, which
+# _DenScopeOverrides recognizes by name. The provider is read directly rather than
+# through Get-ChildItem, whose module would load here, before den needs it.
+$global:_DenPreload = @{ Alias = @{}; Function = @{} }
+foreach ($_denItem in @($ExecutionContext.InvokeProvider.ChildItem.Get('Alias:', $false))) {
+    $global:_DenPreload.Alias[$_denItem.Name] = $_denItem.Definition
+}
+foreach ($_denItem in @($ExecutionContext.InvokeProvider.ChildItem.Get('Function:', $false))) {
+    $global:_DenPreload.Function[$_denItem.Name] = $_denItem.ScriptBlock
+}
+Remove-Variable -Name _denItem -ErrorAction SilentlyContinue
+
 # ========== wrapper log ==========
 
 # _WrapLog <name> <tool> — announce a modern-tool substitution on EVERY wrapped
@@ -342,6 +359,179 @@ function _CoreutilsBin {
     if ($global:_DenCoreutils) { return $global:_DenCoreutils } else { return $null }
 }
 
+# ========== den's commands at the prompt only ==========
+
+# A command den defines in place of one the session already had (ls, cat, cd, rm,
+# gc, gps, python, uv, clip, ...) runs den's version only when it is typed at the
+# prompt of an interactive session (CommandOrigin Runspace), or run directly by a
+# line that a typed `again` or `snippet` replays. Called from anywhere else (a
+# script, a module, a function, a script block such as ForEach-Object's, a
+# pwsh -File or -Command run), the name means what it meant before den loaded, with
+# the same arguments and pipeline input: `ls dist | Remove-Item` in a script gets
+# Get-ChildItem's objects on Windows, and `gps` in a script is Get-Process, not
+# git push. A command den adds whose name meant nothing before (archive, proxy,
+# mkcd, ...) runs everywhere den loaded it.
+# init.ps1 calls _DenScopeOverrides once den has loaded. It records what each
+# name den defined meant before (an alias, such as Windows' ls, cat, rm, gc or cd;
+# a function, such as Windows' mkdir; or else, looked up the first time a call
+# needs it, an application or script on the PATH den loaded with) and installs
+# _DenLookupHook as PostCommandLookupAction, which PowerShell runs after it has
+# looked up a command. When that lookup found den's own definition for a call that
+# was not typed, the hook hands PowerShell the earlier command instead. A function
+# of the same name that is not den's (a script's or a module's own, or one defined
+# at the prompt after den) is left alone. Names that start with _ are den's
+# internal helpers and are not recorded.
+# The records persist across loads of this file (a second `. $PROFILE`): a name is
+# recorded the first time den defines it.
+if (-not (Test-Path -Path Variable:global:_DenOverrides)) {
+    $global:_DenOverrides = @{}    # name -> @{ Kind = 'Alias'|'Function'|'App'; Value; [DenAlias] }
+    $global:_DenOwnText = [System.Collections.Generic.HashSet[string]]::new()
+    $global:_DenLoadPath = $env:PATH
+    $global:_DenTypedSession = $false
+    $global:_DenLookupNext = $null
+    $global:_DenLookupInstalled = $null
+    $global:_DenInLookup = $false
+}
+$global:_DenReplayDepth = 0
+
+# _DenScopeOverrides - record, for every function and alias den defined since this
+# file was loaded, what its name meant before (see above), note whether this
+# session is interactive, and install _DenLookupHook. A PostCommandLookupAction
+# that something else set first is kept and runs before den's.
+function _DenScopeOverrides {
+    _DenRecordOverrides (@($ExecutionContext.InvokeProvider.ChildItem.Get('Function:', $false)) +
+        @($ExecutionContext.InvokeProvider.ChildItem.Get('Alias:', $false)))
+    $global:_DenTypedSession = [bool](_DenInteractive)
+    $current = $ExecutionContext.InvokeCommand.PostCommandLookupAction
+    if ($null -ne $current -and -not [object]::ReferenceEquals($current, $global:_DenLookupInstalled)) {
+        $global:_DenLookupNext = $current
+    }
+    $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:_DenLookupHook
+    $global:_DenLookupInstalled = $ExecutionContext.InvokeCommand.PostCommandLookupAction
+}
+
+# _DenRecordOverrides <items> - for _DenScopeOverrides, and for toggle-uv, which
+# defines python, pip and uv after den has loaded when the session started with
+# them OFF: record what the name of each of these functions and aliases meant
+# before den. One that a module defined is not den's (fhx, gcb, scb and gtz come
+# with modules that load while den does), and neither is one that was there
+# before den. A name already recorded keeps its record.
+function _DenRecordOverrides($Items) {
+    $pre = $global:_DenPreload
+    foreach ($item in $Items) {
+        $name = $item.Name
+        if ($name.StartsWith('_') -or $name -eq 'prompt' -or $item.ModuleName) { continue }
+        $rec = @{ Kind = 'App'; Value = $null }
+        if ($item -is [System.Management.Automation.AliasInfo]) {
+            if ($pre.Alias.ContainsKey($name) -and $pre.Alias[$name] -eq $item.Definition) { continue }
+            $rec.DenAlias = $item.Definition
+        } else {
+            if ($pre.Function.ContainsKey($name) -and [object]::ReferenceEquals($pre.Function[$name], $item.ScriptBlock)) { continue }
+            [void]$global:_DenOwnText.Add($item.Definition)
+        }
+        if ($global:_DenOverrides.ContainsKey($name)) { continue }
+        if ($pre.Alias.ContainsKey($name)) { $rec.Kind = 'Alias'; $rec.Value = $pre.Alias[$name] }
+        elseif ($pre.Function.ContainsKey($name)) { $rec.Kind = 'Function'; $rec.Value = $pre.Function[$name] }
+        $global:_DenOverrides[$name] = $rec
+    }
+}
+
+# _DenLookupHook - PowerShell runs it after every command lookup in the session, so
+# it reads one hashtable and returns for every name den did not define; _DenLookup
+# does the rest. _DenInLookup keeps the lookups _DenLookup itself makes out of it.
+$global:_DenLookupHook = {
+    param($Name, $Lookup)
+    if ($null -ne $global:_DenLookupNext) { $global:_DenLookupNext.Invoke($Name, $Lookup) }
+    if ($null -ne $global:_DenOverrides[$Name] -and -not $global:_DenInLookup) { _DenLookup $Name $Lookup }
+}
+
+# _DenLookup <name> <lookup> - for _DenLookupHook: when the lookup found den's own
+# definition of <name> for a call that was not typed, put the command the name
+# meant before den in its place. When there was none, or it cannot be found now,
+# den's definition stays. A failure here never fails the lookup.
+function _DenLookup([string]$Name, $Lookup) {
+    $rec = $global:_DenOverrides[$Name]
+    if ($null -eq $Lookup -or $null -eq $rec) { return }
+    $global:_DenInLookup = $true
+    try {
+        if ($global:_DenTypedSession -and (_DenTyped $Lookup.CommandOrigin 1)) { return }
+        $found = $Lookup.Command
+        if ($found -is [System.Management.Automation.FunctionInfo]) {
+            if (-not $global:_DenOwnText.Contains($found.Definition)) { return }
+        } elseif ($found -is [System.Management.Automation.AliasInfo]) {
+            if (-not $rec.ContainsKey('DenAlias') -or $found.Definition -ne $rec.DenAlias) { return }
+        } else {
+            return
+        }
+        $original = $null
+        if ($rec.Kind -eq 'Function') {
+            $Lookup.CommandScriptBlock = $rec.Value
+            return
+        } elseif ($rec.Kind -eq 'Alias') {
+            $original = $ExecutionContext.InvokeCommand.GetCommand($rec.Value, [System.Management.Automation.CommandTypes]::All)
+        } elseif (_DenHadApp $Name $rec) {
+            $original = $ExecutionContext.InvokeCommand.GetCommand($Name, [System.Management.Automation.CommandTypes]'Application, ExternalScript')
+        }
+        if ($null -ne $original) { $Lookup.Command = $original }
+    } catch {
+        $null = $_
+    } finally {
+        $global:_DenInLookup = $false
+    }
+}
+
+# _DenHadApp <name> <record> - whether <name> named an application, or a script, on
+# the PATH den loaded with. Looked up once, the first time a call needs it, and
+# kept in the record: listing every PATH directory when den loads would cost each
+# start of PowerShell, for names that scripts seldom call. den's own cmd shims
+# (%LOCALAPPDATA%\clink\bin, which den's Clink script puts on cmd's PATH, so a
+# pwsh started from cmd has it too) are den's commands, not what a name meant
+# before den: that directory is skipped.
+function _DenHadApp([string]$Name, [hashtable]$Record = @{}) {
+    if (-not $Name) { return $false }
+    if ($null -eq $Record['Value']) {
+        $exts = @('.ps1')
+        if (_OnWindows) { $exts += @("$env:PATHEXT" -split ';' | Where-Object { $_ }) } else { $exts += '' }
+        $shims = ''
+        if ($env:LOCALAPPDATA) { $shims = [System.IO.Path]::Combine($env:LOCALAPPDATA, 'clink', 'bin').TrimEnd('\', '/') }
+        $hit = $false
+        foreach ($dir in @("$global:_DenLoadPath" -split [System.IO.Path]::PathSeparator)) {
+            $dir = $dir.Trim().Trim('"')
+            if (-not $dir) { continue }
+            if ($shims -and [string]::Equals($dir.TrimEnd('\', '/'), $shims, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            foreach ($ext in $exts) {
+                try { $hit = [System.IO.File]::Exists([System.IO.Path]::Combine($dir, $Name + $ext)) } catch { $hit = $false }
+                if ($hit) { break }
+            }
+            if ($hit) { break }
+        }
+        $Record['Value'] = $hit
+    }
+    return [bool]$Record['Value']
+}
+
+# _DenTyped <origin> [hops] - whether a call counts as typed at the prompt: its
+# CommandOrigin is Runspace, or it comes straight from a line that _DenReplay runs
+# for a typed `again` or `snippet` (a script or a function that line runs does
+# not). <origin> is $MyInvocation.CommandOrigin of the den function asking, which
+# calls this itself; [hops] counts the frames between that function and this one
+# (_DenLookup, run by the lookup hook, passes 1 for itself).
+function _DenTyped([string]$Origin, [int]$Hops = 0) {
+    if ($Origin -eq 'Runspace') { return $true }
+    if ($global:_DenReplayDepth -le 0) { return $false }
+    return @(Get-PSCallStack).Count -eq $global:_DenReplayDepth + 3 + $Hops
+}
+
+# _DenReplay <line> <typed> - Invoke-Expression <line>, for again and snippet. When
+# the command replaying it was typed (<typed>), the commands the line calls itself
+# count as typed too (see _DenTyped), as they did when the line was first typed.
+function _DenReplay([string]$Line, [bool]$Typed) {
+    $outer = $global:_DenReplayDepth
+    $global:_DenReplayDepth = 0
+    if ($Typed) { $global:_DenReplayDepth = @(Get-PSCallStack).Count }
+    try { Invoke-Expression $Line } finally { $global:_DenReplayDepth = $outer }
+}
+
 # ========== path operands ==========
 
 # _ResolvePaths <operand...> - the paths a function's file operands stand for,
@@ -407,6 +597,60 @@ function _DenWritePrivate([string]$Path, [string]$Text) {
 
 # ========== wrapper generator ==========
 
+# The functions these generators define, and the coreutils.ps1 ones that can hand
+# a call to microsoft/coreutils, pass what is piped in on to the tool they pick
+# through a steppable pipeline: each object reaches the tool as it arrives. The
+# pipeline is begun with $ExecutionContext, so the tool writes to the function's
+# own output: when that is the console (the call ends the line typed at the
+# prompt), the tool writes to the console itself, as when it is run bare, so
+# `Get-Content -Wait log | grep x` shows each match the moment rg prints it, in
+# rg's colors. When a command further down the line reads that output, the tool
+# writes to a pipe, and PowerShell passes on what it wrote as it does for any
+# program: when the next object goes in, and at the end. A call with nothing
+# piped in runs the tool directly, so its stdin stays the console's (rg searches
+# the current directory rather than an empty stdin, and `rm -i` can ask). The
+# generated body reads its arguments as $__a, and the scriptblock in $__run is
+# the one command the call runs (a steppable pipeline holds exactly one); end
+# sets $__sp back to $null once it has ended the pipeline. When a line stops
+# before the end (Ctrl+C, an error, or Select-Object -First further down), the
+# clean block that _DenSpClean adds on PowerShell 7.3 and later ends it instead,
+# which closes the tool's stdin: else the tool would wait on it, a process left
+# behind until PowerShell exits. Older versions have no clean block.
+
+# _DenSpClean - the clean block for those functions: on PowerShell 7.3 and later,
+# which added clean blocks, one that ends the steppable pipeline in $__sp when end
+# did not; '' before 7.3. The generators add it to the text they build, and
+# _DenAddClean to functions already defined, so Windows PowerShell 5.1 never
+# parses it.
+function _DenSpClean {
+    $major = $PSVersionTable.PSVersion.Major
+    if ($major -gt 7 -or ($major -eq 7 -and $PSVersionTable.PSVersion.Minor -ge 3)) {
+        return 'clean { if ($null -ne $__sp) { _DenSpStop $__sp } }'
+    }
+    return ''
+}
+
+# _DenSpStop <pipeline> - for that clean block: end a steppable pipeline that a
+# stopped line left open, so the tool it runs reads the end of its input and
+# exits, then dispose of it. Neither can fail the clean block.
+function _DenSpStop($Sp) {
+    if ($null -eq $Sp) { return }
+    try { $null = $Sp.End() } catch { $null = $_ }
+    try { $Sp.Dispose() } catch { $null = $_ }
+}
+
+# _DenAddClean <name...> - add _DenSpClean's block to these functions (coreutils.ps1's,
+# whose source has to parse on 5.1). Nothing before PowerShell 7.3.
+function _DenAddClean([string[]]$Names) {
+    $clean = _DenSpClean
+    if (-not $clean) { return }
+    foreach ($n in $Names) {
+        $f = Get-Item -LiteralPath "Function:\$n" -ErrorAction SilentlyContinue
+        if ($null -eq $f) { continue }
+        Set-Item -Path "function:global:$n" -Value ([scriptblock]::Create($f.Definition + "`n" + $clean))
+    }
+}
+
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
 function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr) {
     # Dispatch order: modern tool -> (Windows) microsoft/coreutils -> native exe on
@@ -418,6 +662,10 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # skipped on Windows so it never resolves to the DOS command -- coreutils or the
     # PS fallback handles them instead. The coreutils and native lookups are both
     # LAZY (resolved on the non-modern branch only), so startup stays cheap.
+    # The fallback runs in the function itself when nothing is piped in, so an
+    # error it writes is the function's ("lt: ..."). With input piped in, it runs
+    # as a scriptblock of its own, which sees the call's arguments as $Args and
+    # what was piped in as $input, all at once.
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
     $winNativeSkip = @('find', 'sort', 'more')
     $nativeGuard = if ($NativeCmd -and ($NativeCmd -in $winNativeSkip)) {
@@ -428,22 +676,40 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
         "`$false"
     }
     $sb = [scriptblock]::Create(@"
-if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
-    _WrapLog '$FuncName' '$Modern'
-    `$input | & '$Modern' $ModernFlags @Args
-} else {
-    `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
-    if (`$__cu) {
-        `$input | & `$__cu $NativeCmd $NativeCmdFlags @Args
+begin {
+    `$__sp = `$null
+    `$__a = `$args
+    if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
+        _WrapLog '$FuncName' '$Modern'
+        `$__run = { & '$Modern' $ModernFlags @__a }
     } else {
-        `$__nc = if ($nativeGuard) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }
-        if (`$__nc) {
-            `$input | & `$__nc $NativeCmdFlags @Args
+        `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
+        `$__nc = if (-not `$__cu -and ($nativeGuard)) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }
+        if (`$__cu) {
+            `$__run = { & `$__cu $NativeCmd $NativeCmdFlags @__a }
+        } elseif (`$__nc) {
+            `$__run = { & `$__nc $NativeCmdFlags @__a }
+        } elseif (`$MyInvocation.ExpectingInput) {
+            `$__fb = { $fallbackCode }
+            `$__run = { & `$__fb @__a }
         } else {
-            $fallbackCode
+            `$__run = `$null
         }
     }
+    if (`$null -ne `$__run -and `$MyInvocation.ExpectingInput) {
+        `$__sp = `$__run.GetSteppablePipeline()
+        `$__sp.Begin(`$true, `$ExecutionContext)
+    }
 }
+process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
+end {
+    if (`$null -ne `$__sp) { `$__s = `$__sp; `$__sp = `$null; `$__s.End() }
+    elseif (`$null -ne `$__run) { & `$__run }
+    else {
+        $fallbackCode
+    }
+}
+$(_DenSpClean)
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb
 }
@@ -451,27 +717,56 @@ if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
 # New-WrapperSuffix <func> <modern> <modernFlags> — always use modern (w-suffix)
 function New-WrapperSuffix([string]$FuncName, [string]$Modern, [string]$ModernFlags) {
     $sb = [scriptblock]::Create(@"
-if (_ResolveCmd '$Modern') {
-    `$input | & '$Modern' $ModernFlags @Args
-} else {
-    Write-Warning "${FuncName}: $Modern is not installed."
+begin {
+    `$__sp = `$null
+    `$__a = `$args
+    `$__run = `$null
+    if (_ResolveCmd '$Modern') {
+        `$__run = { & '$Modern' $ModernFlags @__a }
+        if (`$MyInvocation.ExpectingInput) {
+            `$__sp = `$__run.GetSteppablePipeline()
+            `$__sp.Begin(`$true, `$ExecutionContext)
+        }
+    } else {
+        Write-Warning "${FuncName}: $Modern is not installed."
+    }
 }
+process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
+end {
+    if (`$null -ne `$__sp) { `$__s = `$__sp; `$__sp = `$null; `$__s.End() }
+    elseif (`$null -ne `$__run) { & `$__run }
+}
+$(_DenSpClean)
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb
 }
 
-# New-CoreutilsWrapper <func> <cmdName> <builtinExpr> — for commands with no modern
+# New-CoreutilsWrapper <func> <cmdName> <builtinCmd> - for commands with no modern
 # tool: prefer microsoft/coreutils on Windows, else the PowerShell builtin. Used for
-# the destructive coreutils (cp/mv/rm/mkdir/rmdir). On non-Windows _CoreutilsBin is
-# $null so these collapse to the builtin, matching the stock PowerShell aliases.
-function New-CoreutilsWrapper([string]$FuncName, [string]$CmdName, [string]$BuiltinExpr) {
+# the destructive coreutils (cp/mv/rm/mkdir/rmdir). <builtinCmd> is the cmdlet with
+# any fixed arguments ('Copy-Item', 'New-Item -ItemType Directory'); it gets the
+# call's arguments and its pipeline input, so `Get-ChildItem *.log | rm` removes
+# those files as Remove-Item does. On non-Windows _CoreutilsBin is $null so these
+# collapse to the builtin, matching the stock PowerShell aliases.
+function New-CoreutilsWrapper([string]$FuncName, [string]$CmdName, [string]$BuiltinCmd) {
     $sb = [scriptblock]::Create(@"
-`$__cu = _CoreutilsBin
-if (`$__cu) {
-    `$input | & `$__cu $CmdName @Args
-} else {
-    $BuiltinExpr
+begin {
+    `$__sp = `$null
+    `$__a = `$args
+    `$__cu = _CoreutilsBin
+    if (`$__cu) {
+        `$__run = { & `$__cu $CmdName @__a }
+    } else {
+        `$__run = { $BuiltinCmd @__a }
+    }
+    if (`$MyInvocation.ExpectingInput) {
+        `$__sp = `$__run.GetSteppablePipeline()
+        `$__sp.Begin(`$true, `$ExecutionContext)
+    }
 }
+process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
+end { if (`$null -ne `$__sp) { `$__s = `$__sp; `$__sp = `$null; `$__s.End() } else { & `$__run } }
+$(_DenSpClean)
 "@)
     Set-Item -Path "function:global:$FuncName" -Value $sb
 }

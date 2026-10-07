@@ -15,9 +15,11 @@ SNIPPET_SH="$TESTTMP/snippet_test.sh"
 make_noninteractive_source_copy "$DOTFILES/shell/posix/snippet.sh" "$SNIPPET_SH"
 
 # PowerShell functions.ps1 now depends on _helpers.ps1 (Initialize-Cache).
-# Create a combined PS1 that loads helpers first.
+# Create a combined PS1 that loads helpers first. It loads as an interactive
+# session does: den's cd exists only there.
 FUNCTIONS_PS1_COMBINED="$TESTTMP/functions_combined.ps1"
 {
+    echo "\$env:_DEN_FORCE_INTERACTIVE = '1'"
     echo ". '$HELPERS_PS1'"
     cat "$FUNCTIONS_PS1"
 } > "$FUNCTIONS_PS1_COMBINED" || abort_suite "cannot write $FUNCTIONS_PS1_COMBINED"
@@ -3090,6 +3092,59 @@ z:1
 z:2
 zi:1
 zi:2" "$actual"
+# cd jumps through zoxide only when typed at the prompt. zoxide goes to its best
+# match when the directory does not exist, so a script's `cd build`, in a
+# project without build/, went to another project's build/ and carried on
+# there. A cd with a Set-Location parameter goes to Set-Location too: zoxide
+# took -LiteralPath and -Path for keywords, found no match, and stayed put. The
+# stand-in zoxide jumps to elsewhere/ whatever it is given; again replays a typed
+# line as typed. A session that is not interactive keeps PowerShell's cd alias.
+echo "[pwsh] cd: zoxide only when typed; Set-Location in a script or with its parameters"
+rm -rf "$WORK/cdz" && mkdir -p "$WORK/cdz/here/a[1]" "$WORK/cdz/here/my dir" "$WORK/cdz/elsewhere"
+printf '%s\n' 'cd missing-dir' '"script is in: $((Get-Location).Path)"' > "$WORK/cdz/script.ps1"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    \$env:_DEN_WRAPPERS = '1'
+    function global:__zoxide_z { Set-Location -LiteralPath '$WORK/cdz/elsewhere' }
+    function global:Read-Host { 'y' }
+    Set-Location -LiteralPath '$WORK/cdz/here'; & '$WORK/cdz/script.ps1'
+    Set-Location -LiteralPath '$WORK/cdz/here'; cd -LiteralPath 'a[1]'; (Get-Location).Path
+    Set-Location -LiteralPath '$WORK/cdz/here'; (cd -Path 'my dir' -PassThru).Path
+    Set-Location -LiteralPath '$WORK/cdz/here'; cd anything; (Get-Location).Path
+    Add-History -InputObject ([pscustomobject]@{
+        CommandLine = 'cd anything'; ExecutionStatus = 'Completed'
+        StartExecutionTime = [datetime]::Now; EndExecutionTime = [datetime]::Now
+    })
+    Set-Location -LiteralPath '$WORK/cdz/here'; again 6>\$null; (Get-Location).Path
+" < /dev/null 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/cd from a script, with -LiteralPath, -Path; typed; again" "script is in: $WORK/cdz/here
+$WORK/cdz/here/a[1]
+$WORK/cdz/here/my dir
+$WORK/cdz/elsewhere
+$WORK/cdz/elsewhere" "$actual"
+actual=$(run_pwsh "$HELPERS_PS1" "\$env:_DEN_FORCE_INTERACTIVE = '0'; . '$FUNCTIONS_PS1'; (Get-Command cd).CommandType" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/cd stays PowerShell's alias when the session is not interactive" "Alias" "$actual"
+
+# den's cmd shims (mkcd.cmd, dg.cmd, ...) live in %LOCALAPPDATA%\clink\bin, which
+# den's Clink script puts on cmd's PATH, so a pwsh started from cmd has it too.
+# They made mkcd, dg and the other commands den adds count as taking over a
+# program, and a script got the shim: mkcd then made the directory but could not
+# move pwsh into it. Stub shims stand in, with LOCALAPPDATA set off Windows.
+echo "[pwsh] den's own cmd shims on PATH do not make a script's mkcd the shim's"
+SHIM_LAD="$WORK/shim-lad"
+rm -rf "$SHIM_LAD" "$WORK/shimtest" && mkdir -p "$SHIM_LAD/clink/bin" "$WORK/shimtest"
+for t in mkcd dg; do
+    printf '#!/bin/sh\necho "SHIM-%s $*"\n' "$t" > "$SHIM_LAD/clink/bin/$t"
+    chmod +x "$SHIM_LAD/clink/bin/$t"
+done
+printf '%s\n' 'mkcd made-by-script' '"after mkcd: $(Split-Path -Leaf (Get-Location).Path)"' > "$WORK/shimtest/usemkcd.ps1"
+actual=$(run_pwsh_den "\$env:LOCALAPPDATA = '$SHIM_LAD'; \$env:PATH = '$SHIM_LAD/clink/bin:/usr/bin:/bin'" "
+    Set-Location -LiteralPath '$WORK/shimtest'
+    & ./usemkcd.ps1
+    'dg had a program: ' + (_DenHadApp 'dg' @{ Kind = 'App'; Value = \$null })
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/a script's mkcd is den's with the cmd shims on PATH" "after mkcd: made-by-script
+dg had a program: False" "$actual"
+
 # The same with the real zoxide loaded, when it is installed: cd and zd alone
 # go home, as zoxide's own jump with no arguments and den's bash/zsh cd do.
 # HOME, the init cache and zoxide's database all live in $WORK (.NET reports no
