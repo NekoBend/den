@@ -228,9 +228,14 @@ line it leaves out stays out).
 
 - **bash**: `proxy add` takes the line out of the history list (`history -d`)
   before bash writes `$HISTFILE` (at exit, or from a `history -a` in
-  `PROMPT_COMMAND`). In a subshell (a pipe, `$(...)`) it cannot, and prints the
-  `history -d N` that does; a setup that writes the history before a command
-  runs (`history -a` in `PS0` or a DEBUG trap) has written the line already.
+  `PROMPT_COMMAND`). In a subshell (a pipe, `$(...)`) it cannot: it prints the
+  `history -d N` that takes the line out of the list, and a history file
+  written after each command (`history -a` in `PROMPT_COMMAND`) has the line
+  by then, so take it out of that file by hand. A setup that writes the
+  history before a command runs (`history -a` in `PS0` or a DEBUG trap) has
+  written the line already, and with `shopt -u cmdhist` a `proxy add` inside a
+  command of several lines is not found (each line is an entry of its own, and
+  the last one is not it).
 - **zsh**: a `zshaddhistory` hook (added with `add-zsh-hook`, next to yours)
   does not save the line; it can still be recalled until the next line runs.
   The hook answers 1, not 2 (memory only), because `fc -W`, which `reload`

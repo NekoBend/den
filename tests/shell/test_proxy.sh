@@ -332,6 +332,24 @@ assert_contains "bash/history: HISTIGNORE unchanged" "HI=echo mine" "$(cat "$HIS
 echo "[bash] proxy add in a pipe says how to take the line out"
 hist_bash '' 'echo before' "$SECRET_LINE 2>&1 | cat" > /dev/null
 assert_contains "bash/history: subshell hint" "it ran in a subshell; run: history -d 2" "$(cat "$HIST_OUT")"
+# A history -a after each command writes the line before the hint can be acted
+# on, so the hint says to take it out of the file as well.
+assert_contains "bash/history: subshell hint names the file a history -a wrote" \
+    "a history file written after each command, by history -a in PROMPT_COMMAND, gets the line anyway: take it out of that file by hand" \
+    "$(cat "$HIST_OUT")"
+
+# bash before 4.0 (macOS's /bin/bash) has no BASHPID; with it unset, as there,
+# a subshell is still found (BASH_SUBSHELL), in a pipe and in $(...).
+for sub in "$SECRET_LINE 2>&1 | cat" "echo \"\$($SECRET_LINE 2>&1)\""; do
+    reset_conf
+    echo "[bash] without BASHPID, proxy add in a subshell still says how to take the line out: $sub"
+    hist_bash 'unset BASHPID' 'echo before' "$sub" > /dev/null
+    assert_contains "bash/history: subshell hint without BASHPID" "it ran in a subshell; run: history -d 2" "$(cat "$HIST_OUT")"
+done
+reset_conf
+echo "[bash] without BASHPID, proxy add outside a subshell still takes the line out"
+actual=$(hist_bash 'unset BASHPID' "${HIST_LINES[@]}")
+assert_eq "bash/history: without BASHPID, only the line with a password is left out" "$HIST_KEPT" "$actual"
 
 if command -v zsh >/dev/null 2>&1; then
     reset_conf

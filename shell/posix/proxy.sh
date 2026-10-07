@@ -108,9 +108,13 @@ _proxy_secret_line() {
 # entry that _proxy_secret_line finds goes: when HISTCONTROL or HISTIGNORE
 # kept this line out (a leading space, a duplicate), the last entry is an
 # older line, and it stays unless it holds such a url too. A subshell (a pipe,
-# $(...)) has a copy of the list, so there the command to run is printed.
-# What bash wrote before the command ran (a `history -a` from PS0 or a DEBUG
-# trap) stays. zsh keeps the line out in _proxy_histhook, below.
+# $(...)) has a copy of the list, so there the command to run is printed; a
+# history file written after each command (a `history -a` in PROMPT_COMMAND)
+# gets the line anyway, and the message says to take it out of that file. What
+# bash wrote before the command ran (a `history -a` from PS0 or a DEBUG trap)
+# stays, and with `shopt -u cmdhist` a proxy add inside a command of several
+# lines is not the last entry, so it stays too. zsh keeps the line out in
+# _proxy_histhook, below.
 _proxy_forget() {
     [ -n "${BASH_VERSION-}" ] || return 0
     _pf_pw=0
@@ -126,17 +130,25 @@ _proxy_forget() {
         if _proxy_secret_line "$_pf_h"; then
             _pf_n=${_pf_h#"${_pf_h%%[0-9]*}"}
             _pf_n=${_pf_n%%[!0-9]*}
-            # shellcheck disable=SC3028  # BASHPID: this function runs only in bash
+            # A subshell: its BASHPID is not $$. bash before 4.0 (macOS's
+            # /bin/bash) has no BASHPID; there BASH_SUBSHELL counts them.
+            _pf_sub=0
+            # shellcheck disable=SC3028  # BASHPID, BASH_SUBSHELL: this function runs only in bash
+            if [ -n "${BASHPID-}" ]; then
+                [ "$BASHPID" = "$$" ] || _pf_sub=1
+            elif [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then
+                _pf_sub=1
+            fi
             if [ -z "$_pf_n" ]; then
                 :
-            elif [ "${BASHPID:-$$}" = "$$" ]; then
+            elif [ "$_pf_sub" -eq 0 ]; then
                 history -d "$_pf_n"
             else
-                echo "proxy: this line, password and all, stays in the shell history: it ran in a subshell; run: history -d $_pf_n" >&2
+                echo "proxy: this line, password and all, stays in the shell history: it ran in a subshell; run: history -d $_pf_n (a history file written after each command, by history -a in PROMPT_COMMAND, gets the line anyway: take it out of that file by hand)" >&2
             fi
         fi
     fi
-    unset _pf_pw _pf_a _pf_h _pf_n
+    unset _pf_pw _pf_a _pf_h _pf_n _pf_sub
 }
 
 # _proxy_histhook <line> - zsh's zshaddhistory hook: a line that
