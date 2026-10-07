@@ -66,7 +66,7 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `cd <dir>` | zoxide smart-jump when wrappers are ON (on bash/zsh: typed at the prompt, no option), else plain cd | ✓ | ✓ | `z` |
+| `cd <dir>` | zoxide smart-jump when wrappers are ON and typed at the prompt (on bash/zsh also with no option), else plain cd | ✓ | ✓ | `z` |
 | `cdi` | interactive zoxide jump (fzf picker) | ✓ | ✓ | `zi` |
 | `zd` / `zdi` | always jump via zoxide, ignoring the wrapper toggle | ✓ | ✓ | ✓ |
 | `up [N]` | go up N directories (default 1) | ✓ | ✓ | ✓ |
