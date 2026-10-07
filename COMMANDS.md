@@ -24,6 +24,19 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   including a script that runs `Set-StrictMode -Version Latest` (strict mode then
   applies inside den's functions too, and they are written for it). A profile can
   also set strict mode before it loads den.
+- In **bash/zsh**, den's `cd` and the wrappers that replace a native command
+  (`ls`, `cat`, `grep`, `find`) do den's part only when typed at the prompt
+  (`eval` and `$(...)` typed there count, and so do a line a typed `again`
+  replays and a snippet a typed `snippet run` or `snippet pick` runs). Run by a
+  function, your own included, or by a sourced file such as `~/.bashrc`, `cd`
+  is `builtin cd` and each of those wrappers runs its native command, which is
+  what such code was written for. A function of yours that relied on one of
+  them (`grep` running `rg`, say) now gets the native tool: call `rg` / `fd` /
+  `bat` / `lsd` by name there, or the `*w` names (`grepw`, `findw`, `catw`,
+  `lsw`), which always run the modern tool. den's own names (`la`, `ll`, `lla`,
+  `lt`, `llt`, `ripgrep`) replace nothing and run `lsd` / `rg` anywhere. `cd`
+  with an option (`-P`, `-L`, ...) is always `builtin cd`, since zoxide would
+  read the option as a keyword to search for.
 - In **cmd**, they are Clink aliases (doskey macros) for the shims in
   `%LOCALAPPDATA%\clink\bin`, which den does not put on `PATH`. Clink expands an
   alias only where a command starts on a line typed at its prompt: at the start
@@ -44,7 +57,7 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `cd <dir>` | zoxide smart-jump when wrappers are ON, else plain cd | ✓ | ✓ | `z` |
+| `cd <dir>` | zoxide smart-jump when wrappers are ON (on bash/zsh: typed at the prompt, no option), else plain cd | ✓ | ✓ | `z` |
 | `cdi` | interactive zoxide jump (fzf picker) | ✓ | ✓ | `zi` |
 | `zd` / `zdi` | always jump via zoxide, ignoring the wrapper toggle | ✓ | ✓ | ✓ |
 | `up [N]` | go up N directories (default 1) | ✓ | ✓ | ✓ |
@@ -148,7 +161,10 @@ fall back with a message.
 
 Each prefers a modern tool when installed and falls back to the native command;
 all obey `_DEN_WRAPPERS` (flip with `toggle-wrapper` / `tgl-wr`). The `*w` names
-always use the modern tool, bypassing the toggle.
+always use the modern tool, bypassing the toggle. On bash/zsh `ls`, `cat`,
+`grep` and `find` run the modern tool only when typed at the prompt; a function
+or a sourced file gets the native command (see "How to read this"). den's own
+names below (`la`, `ll`, `lla`, `lt`, `llt`) run it anywhere.
 
 On bash/zsh and pwsh, each time a wrapper that obeys the toggle runs the modern
 tool, it prints one dim line (stderr on bash/zsh); the `*w` names print nothing:
@@ -348,12 +364,17 @@ succeeded, so a failed run leaves no truncated archive.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets | ✓ | ✓ | — |
+| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets; `save <name> '<command>'` stores it as typed, `save <name> <word...>` quotes each word again where it needs it (see shell/README.md) | ✓ | ✓ | — |
 | `cheat [name\|ls]` | browse den's bundled cheatsheets (fzf + bat) | ✓ | ✓ | — |
-| `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars) | ✓ | ✓ | — |
+| `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars); a password in a url prints as `user:***@host`, and the `proxy add` line that typed it stays out of the history file | ✓ | ✓ | — |
 
 Cheatsheets are deployed by `den install cheatsheets`; snippets and proxy profiles
-live under `$XDG_CONFIG_HOME`.
+live in `$XDG_CONFIG_HOME/den`, which den keeps `0700` with both files `0600`
+on Linux and macOS (a proxy url may hold a password, a snippet a token).
+A `proxy add` line whose url holds a password is kept out of the shell's
+history file: bash takes it out of the history list when it runs, zsh does not
+save it (a `zshaddhistory` hook), and pwsh keeps it in PSReadLine's memory only;
+see shell/README.md for what each shell can and cannot catch.
 
 ## Hardware / prompt
 
@@ -423,7 +444,7 @@ this is the shape.
 |---|---|
 | `den install [skills\|shell\|hook\|cheatsheets]` | deploy a component (no target on a TTY = interactive); `skills --profile weak\|frontier` picks the parent-prompt profile (frontier default) |
 | `den uninstall [skills\|shell\|hook\|cheatsheets]` | remove den-identical files for a component |
-| `den upgrade [--refresh]` | upgrade den via uv; `--refresh` redeploys skills + shell with the new binary (alias: `den update`) |
+| `den upgrade [--refresh] [--force]` | upgrade den via uv; `--refresh` redeploys, with the new binary, only the skills, parent prompts and shell files the old version deployed and nobody edited (`--force` also replaces edited skill and shell files, backing each up to `<file>.den.bak`; a parent prompt not exactly as den deployed it is never touched) (alias: `den update`) |
 | `den install shell` | the command in this reference — deploys bash/zsh/pwsh/cmd config |
 | `den hook <install\|remove\|list\|run\|imprint>` | per-workspace per-turn agent imprint hooks (runtime plumbing) |
 | `den hook memory <show\|save\|add\|checkpoint\|log\|restore\|diff\|clear\|path>` | workspace session memory (also `den memory ...`) |

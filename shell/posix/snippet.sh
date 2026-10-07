@@ -5,10 +5,17 @@
 #
 # Snippets live in $XDG_CONFIG_HOME/den/snippets, one per line, TAB-separated:
 #   name<TAB>command
+# `save <name> '<command>'` (one argument) and stdin (its first line only) store
+# the command as given; `save <name> <word...>` stores the words, each quoted
+# again where it needs it (see _snippet_save). pwsh shares the store but quotes
+# in its own syntax.
 # The command is everything after the first TAB, so it may itself contain tabs;
 # only the name (field 1) is restricted to [A-Za-z0-9_-]. `run`/`pick` eval the
 # command in the CURRENT shell (you saved it, so it is trusted), which lets it
-# cd, set vars, and see the current environment.
+# cd, set vars, and see the current environment. The store is 0600 in a 0700
+# directory (a saved command may hold a token), and one that is a symlink (into
+# a dotfiles repo, say) is written through, as pwsh does (_den_put, in
+# _helpers.sh, which init.bash and init.zsh load first).
 
 # Skip in non-interactive shells
 case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
@@ -20,7 +27,9 @@ _snip_file() {
 _snip_usage() {
     printf '%s\n' \
         "usage: snippet <command>   (alias: snip)" \
-        "  save <name> <command...>  save a command (or pipe it via stdin)" \
+        "  save <name> '<command>'   save a command as typed (or pipe it via stdin, first line only)" \
+        "  save <name> <word...>     save the words, each quoted again if it needs it" \
+        "                            (an unquoted \$var or \$(...) is expanded on save)" \
         "  ls                        list saved snippets" \
         "  show <name>               print a snippet's command (no run)" \
         "  run <name>                run a snippet" \
@@ -45,6 +54,9 @@ _snip_get() {
 }
 
 # Echo the command (so the user sees what runs) then eval it in this shell.
+# A snippet run or picked at the prompt counts as typed there (_den_typed in
+# _helpers.sh), so den's cd and the wrappers act as they do at the prompt; one
+# a function runs gets builtin cd and the native commands.
 _snip_exec() {
     printf '+ %s\n' "$1" >&2
     eval "$1"
@@ -52,7 +64,7 @@ _snip_exec() {
 
 _snippet_save() {
     if [ -z "$1" ]; then
-        echo "usage: snippet save <name> <command...>" >&2
+        echo "usage: snippet save <name> '<command>' | <word...>" >&2
         return 1
     fi
     case "$1" in
@@ -60,10 +72,41 @@ _snippet_save() {
             echo "snippet save: name must match [A-Za-z0-9_-]" >&2
             return 1 ;;
     esac
-    _ss_name=$1
+    _ss_name=$1 _ss_words=
     shift
-    if [ "$#" -gt 0 ]; then
-        _ss_cmd="$*"
+    if [ "$#" -eq 1 ]; then
+        # One argument: the whole command, saved as typed.
+        _ss_cmd="$1"
+    elif [ "$#" -gt 1 ]; then
+        _ss_words=1
+        # Several words: the shell took their quotes off, and run/pick eval the
+        # saved line, so a word with anything but [A-Za-z0-9_@%+=:,./-] in it (or
+        # empty, or starting with =, which zsh expands) goes back in single
+        # quotes, a ' in it written '\''. eval then sees the same words. A $var
+        # or $(...) the user left unquoted was expanded before snippet ran.
+        # Each expansion of a word stays in double quotes, even in case and in
+        # assignments: with zsh's globsubst an unquoted one has its ~ and =
+        # expanded.
+        _ss_cmd=
+        for _ss_a in "$@"; do
+            case "$_ss_a" in
+                ''|\=*|*[!A-Za-z0-9_@%+=:,./-]*)
+                    _ss_q=
+                    while :; do
+                        case "$_ss_a" in
+                            *\'*)
+                                _ss_q="$_ss_q${_ss_a%%\'*}'\\''"
+                                _ss_a="${_ss_a#*\'}" ;;
+                            *)
+                                _ss_q="$_ss_q$_ss_a"
+                                break ;;
+                        esac
+                    done
+                    _ss_a="'$_ss_q'" ;;
+            esac
+            _ss_cmd="${_ss_cmd:+$_ss_cmd }$_ss_a"
+        done
+        unset _ss_a _ss_q
     else
         # Read one line from stdin. `read` returns non-zero at EOF even when it
         # populated _ss_cmd (a final line with no trailing newline), so `|| true`
@@ -74,40 +117,63 @@ _snippet_save() {
     fi
     if [ -z "$_ss_cmd" ]; then
         echo "snippet save: empty command" >&2
-        unset _ss_name _ss_cmd
+        unset _ss_name _ss_words _ss_cmd
         return 1
     fi
     # The store is one record per line, so a newline in the command would split
     # into phantom rows that `run` could eval; reject multi-line commands.
     if [ "$(printf '%s' "$_ss_cmd" | wc -l)" -ne 0 ]; then
         echo "snippet save: command must be a single line" >&2
-        unset _ss_name _ss_cmd
+        unset _ss_name _ss_words _ss_cmd
         return 1
     fi
     _ss_file=$(_snip_file)
-    mkdir -p "$(dirname "$_ss_file")" || {
-        unset _ss_name _ss_cmd _ss_file
+    # The directory is made 0700 and the temporary file 0600, whatever the
+    # umask; an older den's looser directory is tightened too.
+    _ss_dir=$(dirname "$_ss_file")
+    if ! { mkdir -p "$_ss_dir" && chmod 700 "$_ss_dir"; }; then
+        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir
         return 1
-    }
+    fi
     _ss_tab=$(printf '\t')
     _ss_tmp="$_ss_file.tmp.$$"
-    : > "$_ss_tmp" || {
+    (umask 077 && : > "$_ss_tmp") || {
         echo "snippet save: cannot write $_ss_file" >&2
-        unset _ss_name _ss_cmd _ss_file _ss_tab _ss_tmp
+        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp
         return 1
     }
     if [ -f "$_ss_file" ]; then
         # Drop any existing snippet with this name (literal field-1 compare).
+        # A store that cannot be read ends the save, so it is never replaced
+        # by one that holds the new line alone.
         while IFS= read -r _ss_line || [ -n "$_ss_line" ]; do
             if [ "${_ss_line%%"$_ss_tab"*}" != "$_ss_name" ]; then
                 printf '%s\n' "$_ss_line" >> "$_ss_tmp"
             fi
-        done < "$_ss_file"
+        done < "$_ss_file" || {
+            rm -f "$_ss_tmp"
+            echo "snippet save: cannot read $_ss_file; it is left as it was" >&2
+            unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+            return 1
+        }
     fi
     printf '%s\t%s\n' "$_ss_name" "$_ss_cmd" >> "$_ss_tmp"
-    mv "$_ss_tmp" "$_ss_file"
-    echo "snippet: saved '$_ss_name'" >&2
-    unset _ss_name _ss_cmd _ss_file _ss_tab _ss_tmp _ss_line
+    if ! _den_put "$_ss_tmp" "$_ss_file"; then
+        echo "snippet save: cannot write $_ss_file" >&2
+        if [ -e "$_ss_tmp" ]; then
+            echo "snippet save: the whole new store is in $_ss_tmp" >&2
+        fi
+        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+        return 1
+    fi
+    # The several-words form prints the line it saved, with the quotes it put
+    # back; the others saved what the user gave, which needs no echo.
+    if [ -n "$_ss_words" ]; then
+        printf "snippet: saved '%s' -> %s\n" "$_ss_name" "$_ss_cmd" >&2
+    else
+        echo "snippet: saved '$_ss_name'" >&2
+    fi
+    unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
 }
 
 _snippet_ls() {
@@ -130,7 +196,7 @@ _snippet_show() {
         echo "usage: snippet show <name>" >&2
         return 1
     fi
-    if ! _ssh_cmd=$(_snip_get "$1"); then
+    if ! _ssh_cmd="$(_snip_get "$1")"; then
         echo "snippet show: no such snippet '$1'" >&2
         unset _ssh_cmd
         return 1
@@ -153,7 +219,8 @@ _snippet_rm() {
     _srm_tab=$(printf '\t')
     _srm_tmp="$_srm_file.tmp.$$"
     _srm_found=0
-    : > "$_srm_tmp" || {
+    # A 0700 directory and a 0600 store, as save makes them.
+    { chmod 700 "$(dirname "$_srm_file")" && (umask 077 && : > "$_srm_tmp"); } || {
         echo "snippet rm: cannot write $_srm_file" >&2
         unset _srm_file _srm_tab _srm_tmp _srm_found
         return 1
@@ -166,7 +233,14 @@ _snippet_rm() {
         fi
     done < "$_srm_file"
     if [ "$_srm_found" -eq 1 ]; then
-        mv "$_srm_tmp" "$_srm_file"
+        if ! _den_put "$_srm_tmp" "$_srm_file"; then
+            echo "snippet rm: cannot write $_srm_file" >&2
+            if [ -e "$_srm_tmp" ]; then
+                echo "snippet rm: the whole new store is in $_srm_tmp" >&2
+            fi
+            unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line
+            return 1
+        fi
         echo "snippet: removed '$1'" >&2
     else
         rm -f "$_srm_tmp"
@@ -182,7 +256,7 @@ _snippet_run() {
         echo "usage: snippet run <name>" >&2
         return 1
     fi
-    if ! _sr_cmd=$(_snip_get "$1"); then
+    if ! _sr_cmd="$(_snip_get "$1")"; then
         echo "snippet run: no such snippet '$1' (snippet ls)" >&2
         unset _sr_cmd
         return 1
