@@ -19,10 +19,31 @@ if (Test-Path "$PSScriptRoot\proxy.ps1") { . "$PSScriptRoot\proxy.ps1" }
 if (Test-Path "$PSScriptRoot\snippet.ps1") { . "$PSScriptRoot\snippet.ps1" }
 
 # ===== History =====
+# again/sagain stay out of the history; every other line goes to the handler
+# PSReadLine had before den's. On PSReadLine 2.2+ that is its default one, which
+# keeps a line that looks like it holds a secret (password, token, apikey,
+# -AsPlainText, ...) in memory only, out of the history file; 2.0 (Windows
+# PowerShell 5.1) has none, and then every other line is saved. The handler is
+# taken once, so that loading init.ps1 again does not chain den's to itself.
+# A line that runs proxy add with a url that holds a password (_ProxySecretLine,
+# proxy.ps1) is then kept in memory only (MemoryOnly, PSReadLine 2.2+) or, on 2.0,
+# whose handler answers only yes or no, not kept at all; a line the handler before
+# den's left out stays out.
 if (Get-Module -Name PSReadLine) {
+  if (-not (Test-Path Variable:global:_DenPrevHistoryHandler)) {
+    $global:_DenPrevHistoryHandler = (Get-PSReadLineOption).AddToHistoryHandler
+  }
   Set-PSReadLineOption -AddToHistoryHandler {
     param($line)
-    return ($line -notmatch '^\s*s?again(\s|$)')
+    if ($line -match '^\s*s?again(\s|$)') { return $false }
+    $keep = if ($global:_DenPrevHistoryHandler) { $global:_DenPrevHistoryHandler.Invoke($line) } else { $true }
+    if ((Test-Path Function:\_ProxySecretLine) -and (_ProxySecretLine $line) -and
+      "$keep" -notin 'False', 'SkipAdding') {
+      $option = 'Microsoft.PowerShell.AddToHistoryOption' -as [type]
+      if ($option) { return $option::MemoryOnly }
+      return $false
+    }
+    return $keep
   }
 }
 
