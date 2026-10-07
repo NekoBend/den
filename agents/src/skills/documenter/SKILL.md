@@ -150,24 +150,79 @@ This two-step flow is for Confluence pages only.
 The storage format is not the self-contained HTML file described above;
 do not mix the two.
 
-### Step G1: Pin audience and goal
-Who reads this (new user, integrator, contributor) and what they should be able
-to DO after reading. Pin the scope (README vs quickstart vs tutorial vs concept
-explanation). Ask if unclear.
+### Step G1: Pin the reader, the goal, and the scope
 
-### Step G2: Outline
-List the sections in reading order (for example: what it is, prerequisites,
-install, quickstart, common tasks, gotchas). Confirm the outline covers the
-goal before writing the body.
+Write down three things before you write the document:
+
+- the reader: their role, and how much they already know about the topic
+- the goal: what the reader can do, decide, or understand after reading
+- the scope: what the document covers, and what it does not cover
+
+Put the reader and the scope near the top of the document itself.
+When two kinds of readers need different things,
+write one document or one clearly separated section for each.
+Ask when the reader or the goal is unclear.
+
+### Step G2: Pick the genre and outline
+
+Pick one genre from the table below.
+One document has one genre:
+do not put a procedure inside a concept explanation,
+and do not put background inside a how-to.
+Outline the sections in the table's order.
+Write each heading so it states the point of its section:
+reading only the title and the headings in order
+must give the reader the conclusion and the flow.
+
+| Genre | Sections in order | Check before sending |
+|---|---|---|
+| README | what it is; install; quickstart; common tasks; where to get help | every command runs |
+| how-to | goal; prerequisites; numbered steps; result; if it fails | each step is one action |
+| tutorial | what the reader builds; prerequisites; steps, each with a visible result; next steps | a newcomer can finish it |
+| concept explanation | the idea in one sentence; how it works, from a concrete example to the general rule; why it matters; limits; related topics | no procedure inside |
+| design doc | background; goals and non-goals; proposed design; alternatives considered; risks; open questions | every alternative says why it was not chosen |
+| proposal | the request or the recommendation; background; options with their cost; the recommended option and why; what the reader is asked to do | the request is in the first paragraph |
+| report | the conclusion; findings with numbers and their sources; analysis; next steps | every number traces to a source |
+| runbook | when to use it; impact; checks; steps to mitigate; steps to resolve; who to escalate to | each step names its expected result |
+| meeting minutes | date and attendees; decisions, each with its reason; action items, each with one owner and a due date; open questions | no owner or date the notes do not contain |
+| decision record | context; the decision in one sentence; options considered; consequences; status | the decision is one sentence |
+| slide outline | title; one message per slide, written as a full sentence; 3 to 5 supporting points per slide; speaker notes | the slide messages alone tell the story |
+
+When the request is to revise a draft,
+keep the draft's genre and section order
+unless the user asks to restructure it.
 
 ### Step G3: Write the sections
-Concrete and task-oriented. Include runnable commands or code where the reader
-needs to act. Every claim matches the actual system; do not describe features
-that do not exist.
 
-### Step G4: Walkthrough check
-A reader following the steps in order would succeed: no missing prerequisite,
-every command and example is runnable, nothing assumed but unstated.
+Read shared/reference/writing.md and follow it.
+When the document is in Japanese,
+also read shared/reference/japanese-style.md,
+and write the whole document in です・ます
+unless the user asks for another style.
+
+Put the conclusion, the recommendation, or the request
+in the first paragraph,
+then the reasons and the details.
+Mark anything the source does not support
+as a proposal, a plan, or an open question (Source rule).
+
+When the request is to revise a draft:
+keep every claim, number, name, and date the draft contains,
+and change only how it is written.
+Do not add a fact or a claim.
+If a sentence is unclear in meaning, not only in wording,
+ask instead of guessing what it meant.
+
+### Step G4: Reader check
+
+Read the document as the reader from Step G1 and check:
+
+- the title and the headings alone give the conclusion and the flow
+- the conclusion or the request is in the first paragraph
+- every term is defined at its first use, and one idea keeps one term
+- every number, date, name, owner, and due date matches the source
+- a procedure works when followed from the first step, with nothing assumed but unstated
+- the row's check in the genre table holds
 
 ## Output format
 
