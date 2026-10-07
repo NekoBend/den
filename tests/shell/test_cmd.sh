@@ -347,6 +347,14 @@ again: type x.txt
 no: nil nil
 dir: dir nil' "$out"
 
+echo "[cmd] again finds the command before any number of again lines"
+out=$(run_lua again_long '
+H.boot{ env = { STARSHIP_CPU_INTEL = "stub" } }
+H.input("echo real")
+for _ = 1, 260 do H.input("again") end
+H.input("again 1"); print("again 1: " .. H.show(H.env._DEN_AGAIN) .. " | " .. H.show(H.env._DEN_AGAIN_ERR))')
+assert_eq "cmd/again: 260 again lines are skipped" 'again 1: echo real | nil' "$out"
+
 echo "[cmd] again with a bad N or too short a history leaves a message for again.cmd"
 out=$(run_lua again_err '
 H.boot{ env = { STARSHIP_CPU_INTEL = "stub" } }

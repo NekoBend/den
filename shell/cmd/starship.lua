@@ -582,18 +582,24 @@ local function again_filter(line)
         os.setenv("_DEN_AGAIN_ERR", "usage: again [N]  (N=positive integer, default 1)")
     else
         local want = n
-        local count = rl.gethistorycount()
-        local items = rl.gethistoryitems(math.max(1, count - n - 50), count)
+        -- Walk back a page at a time: any number of again lines may sit in
+        -- between, and each one is skipped rather than counted.
+        local last = rl.gethistorycount()
         local found
-        for i = #items, 1, -1 do
-            local w = first_word(items[i].line or "")
-            if w and w ~= "again" then
-                n = n - 1
-                if n == 0 then
-                    found = items[i].line
-                    break
+        while last >= 1 and not found do
+            local first = math.max(1, last - 199)
+            local items = rl.gethistoryitems(first, last) or {}
+            for i = #items, 1, -1 do
+                local w = first_word(items[i].line or "")
+                if w and w ~= "again" then
+                    n = n - 1
+                    if n == 0 then
+                        found = items[i].line
+                        break
+                    end
                 end
             end
+            last = first - 1
         end
         if found then
             os.setenv("_DEN_AGAIN", found)
