@@ -92,8 +92,28 @@ function env {
 
 # head → first N lines of a file (default: 10)
 # Usage: head [-n N] [-n -N] [-N] [-q] [-v] [file ...], supports pipe input
-# Piped input is read an object at a time: the first N come out as they arrive
-# (the rest is still read, and dropped), and -n -N holds back only the last N.
+# Piped input is read an object at a time: the first N come out as they arrive,
+# and once the Nth is out head stops the commands before it, as Select-Object
+# -First does, so `Get-Content -Wait log | head -n 1` returns and a producer
+# makes no more than N; -n -N holds back only the last N, and reads to the end.
+# PowerShell has no public way for a function to stop the commands before it.
+# Select-Object -First throws an internal StopUpstreamCommandsException naming
+# its own command processor; that processor records it with the pipeline
+# (ManageInvocationException) and throws the PipelineStoppedException the
+# commands before it see, and the pipeline then ends only the commands after
+# the one named. head does the same through reflection: begin, while head's own
+# processor is the current one, builds the exception naming it, and process
+# hands it to that processor's ManageInvocationException once the Nth is out.
+# Thrown as it is, the exception is not caught on its way up through a script
+# block that pipes into head, and ends the script around the line. Select-Object
+# -First run inside head (through a steppable pipeline) stops the commands
+# before head too, but names a processor the pipeline does not hold, so no
+# command after head gets its end: `head -n 2 | Measure-Object` printed nothing.
+# The internals are the same in PowerShell's first open-source release, in 6.0
+# and in 7.6; where one is missing, head reads what comes after the Nth and
+# drops it, as it did before.
+# With coreutils, head is a program, and the commands before it run to their end
+# after it exits, as they do before any program (pwsh 7.6 on Linux).
 function head {
   begin {
     $__sp = $null
@@ -120,6 +140,24 @@ function head {
     }
     $seen = 0
     $held = [System.Collections.Generic.Queue[object]]::new()
+    # The stop (see above): $__stop holds head's processor, its
+    # ManageInvocationException and the exception, or $null.
+    $__stop = $null
+    if ($__in -and $files.Count -eq 0 -and $excludeLast -eq 0) {
+      try {
+        $bf = [System.Reflection.BindingFlags]'Instance, NonPublic'
+        $ctxField = @([System.Management.Automation.EngineIntrinsics].GetFields($bf) |
+          Where-Object { $_.FieldType.FullName -eq 'System.Management.Automation.ExecutionContext' })[0]
+        $ctx = $ctxField.GetValue($ExecutionContext)
+        $proc = $ctx.GetType().GetProperty('CurrentCommandProcessor', $bf).GetValue($ctx)
+        $cmd = $proc.GetType().GetProperty('Command', $bf).GetValue($proc)
+        $manage = $proc.GetType().GetMethod('ManageInvocationException', $bf)
+        $type = [psobject].Assembly.GetType('System.Management.Automation.StopUpstreamCommandsException', $true)
+        if ($null -ne $manage) {
+          $__stop = @{ Processor = $proc; Manage = $manage; Exception = [Activator]::CreateInstance($type, @($cmd)) }
+        }
+      } catch { $__stop = $null }
+    }
   }
   process {
     if ($null -ne $__sp) { $__sp.Process($_); return }
@@ -127,9 +165,14 @@ function head {
     if ($excludeLast -gt 0) {
       $held.Enqueue($_)
       if ($held.Count -gt $excludeLast) { $held.Dequeue() }
-    } elseif ($seen -lt $lines) {
-      $_
-      $seen++
+    } else {
+      if ($seen -lt $lines) {
+        $_
+        $seen++
+      }
+      if ($seen -ge $lines -and $null -ne $__stop) {
+        throw $__stop.Manage.Invoke($__stop.Processor, @($__stop.Exception))
+      }
     }
   }
   end {

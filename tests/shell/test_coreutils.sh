@@ -612,6 +612,67 @@ tail: at once
 4
 5" "$actual"
 
+# head passed the first N piped objects on and then read every object after
+# them, and dropped it: the commands before it did all their work (head -n 1
+# took all 10 of a producer's objects), and one that never ends never let it
+# return. It now stops them once the Nth is out, as Select-Object -First does.
+# A counter in each producer tells how many objects it made: N exactly, as for
+# Select-Object -First N, since head stops on the Nth and does not wait for one
+# more. The producers are a cmdlet, a script block and a function, which pass
+# the stop up in different ways; the commands after head still get their end
+# (Measure-Object counts what head passed on), and -n -N still reads to the end.
+# The stop leaves nothing in $Error; _CoreutilsBin, which the stripped copy
+# does not define (an error per call), says here that coreutils is absent.
+echo "[pwsh] head stops the commands before it once the Nth piped object is out"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$Error.Clear()
+    function Get-Made { \$global:made = 0; 1..10 | ForEach-Object { \$global:made++; \$_ } }
+    \$global:made = 0
+    \$out = 1..10 | ForEach-Object { \$global:made++; \$_ } | head -n 1
+    'cmdlet, head -n 1: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    \$global:made = 0
+    \$out = 1..10 | ForEach-Object { \$global:made++; \$_ } | head -n 3
+    'cmdlet, head -n 3: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    \$global:made = 0
+    \$out = & { foreach (\$i in 1..10) { \$global:made++; \$i } } | head -2
+    'script block, head -2: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    \$out = Get-Made | head -n 3
+    'function, head -n 3: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    \$global:made = 0
+    'head -n 3 | Measure-Object: ' + (1..10 | ForEach-Object { \$global:made++; \$_ } | head -n 3 | Measure-Object).Count + ' made ' + \$global:made
+    \$global:made = 0
+    \$out = 1..10 | ForEach-Object { \$global:made++; \$_ } | head -n -2
+    'head -n -2: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    'errors: ' + \$Error.Count
+" 2>/dev/null | clean)
+assert_eq "pwsh/head stops the producer at the Nth object" "cmdlet, head -n 1: 1 made 1
+cmdlet, head -n 3: 1,2,3 made 3
+script block, head -2: 1,2 made 2
+function, head -n 3: 1,2,3 made 3
+head -n 3 | Measure-Object: 3 made 3
+head -n -2: 1,2,3,4,5,6,7,8 made 10
+errors: 0" "$actual"
+
+# A producer that never ends: head waited on it for ever. The line runs under
+# a timeout, since without the stop it hangs rather than fails.
+echo "[pwsh] head returns from a producer that never ends"
+printf 'a\nb\n' > "$WORK/wait.log"
+raw=$(timeout 30 pwsh -NoProfile -NonInteractive -Command "
+    . '$COREUTILS_PS1_STRIPPED'
+    & { while (\$true) { 'tick'; Start-Sleep -Milliseconds 50 } } | head -n 2
+    'after the loop'
+    Get-Content -LiteralPath '$WORK/wait.log' -Wait | head -n 1
+    'after Get-Content -Wait'
+" 2>/dev/null)
+assert_eq "pwsh/head returns from an endless producer (timeout: 124)" "0" "$?"
+actual=$(printf '%s\n' "$raw" | clean)
+assert_eq "pwsh/head output from an endless producer" "tick
+tick
+after the loop
+a
+after Get-Content -Wait" "$actual"
+
 # With microsoft/coreutils, head/tail/wc/... handed it `$input`, collected in
 # full, and with nothing piped in an empty pipe for stdin. A stub stands in for
 # coreutils (see make_stamp_stub in helpers.sh).
