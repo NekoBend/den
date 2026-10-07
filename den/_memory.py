@@ -23,7 +23,9 @@ Subcommands:
 
 from __future__ import annotations
 
+import contextlib
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +38,9 @@ _HISTORY_DIRNAME = "history"
 _SNAP_PREFIX = "memory."
 _SNAP_SUFFIX = ".md"
 _STAMP_FORMAT = "%Y%m%dT%H%M%S%f"
+# Exactly what _do_checkpoint names a snapshot: the UTC stamp, plus a _NNN
+# counter when two land on the same microsecond.
+_SNAP_NAME = re.compile(r"memory\.(\d{8}T\d{12})(?:_\d{3,})?\.md")
 
 
 def _find_den_dir(start: Path) -> Path:
@@ -189,12 +194,21 @@ _CLINERULES_IMPRINT = "den-imprint.md"  # also the cline-cli "installed here" ma
 _CLINERULES_MEMORY = "den-memory.md"
 _CLINERULES_HEADER = (
     "<!-- den-managed mirror of .den/memory.md. Edit memory with `den hook memory`, "
-    "not here. -->\n\n"
+    "not here; after editing .den/memory.md directly, run "
+    "`den hook memory checkpoint` to refresh this copy. -->\n\n"
 )
 
 
 def _clinerules_dir(den_dir: Path) -> Path:
     return den_dir.parent / _CLINERULES_DIRNAME
+
+
+def _holds(path: Path, data: bytes) -> bool:
+    """True when `path` is a regular file holding exactly `data`."""
+    try:
+        return path.is_file() and path.read_bytes() == data
+    except OSError:
+        return False
 
 
 def mirror_to_clinerules(den_dir: Path) -> bool:
@@ -205,8 +219,9 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
     file is its memory-delivery channel. Gating on the cline-cli marker (not just
     the dir) is deliberate: the cline EXTENSION creates `.clinerules/hooks/` too,
     and it already injects memory per turn via its hook, so mirroring there as well
-    would double-deliver. No-op otherwise. Returns True if it wrote/removed the
-    mirror."""
+    would double-deliver. No-op otherwise, and a copy that is already current is
+    not rewritten (checkpoint and every `den hook run` call this). Returns True
+    if it wrote/removed the mirror."""
     rules = _clinerules_dir(den_dir)
     marker = rules / _CLINERULES_IMPRINT
     # The marker is PROOF that `den install hook --tool cline-cli` ran here, so it
@@ -227,7 +242,8 @@ def mirror_to_clinerules(den_dir: Path) -> bool:
         return False  # do not mirror, and do not drop the mirror we cannot verify
     text = text or ""
     if text.strip():
-        return _write_guarded(rules, dest, (_CLINERULES_HEADER + text).encode("utf-8"))
+        data = (_CLINERULES_HEADER + text).encode("utf-8")
+        return not _holds(dest, data) and _write_guarded(rules, dest, data)
     if dest.is_file():  # memory emptied/cleared -> drop the stale mirror
         dest.unlink()
         return True
@@ -247,29 +263,56 @@ def _history_dir(den_dir: Path) -> Path:
     return den_dir / _HISTORY_DIRNAME
 
 
+def _is_snapshot_name(name: str, now: datetime) -> bool:
+    """True for a name den's checkpoint could have written: the exact stamp
+    format, a stamp that parses, and not later than now. A cloned repo ships
+    `.den/history/` too, and a name that merely starts with `memory.` -- say
+    `memory.zzz.md` -- sorted ahead of every real snapshot for good: `restore`
+    (newest first, the documented recovery) brought its text into memory.md,
+    and checkpoint deduplicated against it, writing a copy every hook event
+    until rotation had deleted the real history. A future stamp would do the
+    same until that date."""
+    match = _SNAP_NAME.fullmatch(name)
+    if match is None:
+        return False
+    try:
+        stamp = datetime.strptime(match.group(1), _STAMP_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return stamp <= now
+
+
 def _snapshots(den_dir: Path) -> list[Path]:
     """History snapshots, newest first (fixed-width timestamps sort by time).
 
-    Only regular files count. A symlink would leak an outside file into memory
-    (log/diff/restore all read the list) and restoring it would write memory back
-    through it; a DIRECTORY named `memory.*.md` -- equally shippable in a repo --
-    passed the name test and then crashed checkpoint/restore/diff on read_bytes().
-    Dropped silently rather than reported, because checkpoint walks this list
-    every turn and one line per turn is noise; the reads a planted entry actually
-    targets do report.
+    Only regular files with den's own snapshot name count (_is_snapshot_name).
+    A symlink would leak an outside file into memory (log/diff/restore all read
+    the list) and restoring it would write memory back through it; a DIRECTORY
+    named `memory.*.md` -- equally shippable in a repo -- passed the name test
+    and then crashed checkpoint/restore/diff on read_bytes(). Anything else in
+    history/ is never read, rotated or deleted. Dropped silently rather than
+    reported, because checkpoint walks this list every turn and one line per
+    turn is noise; install names them once (_foreign_history).
     """
     hist = _history_dir(den_dir)
     if _symlink_component(den_dir, hist) is not None or not hist.is_dir():
         return []
+    now = datetime.now(UTC)
     snaps = [
         p
         for p in hist.iterdir()
-        if p.name.startswith(_SNAP_PREFIX)
-        and p.name.endswith(_SNAP_SUFFIX)
-        and not p.is_symlink()
-        and p.is_file()
+        if _is_snapshot_name(p.name, now) and not p.is_symlink() and p.is_file()
     ]
     return sorted(snaps, key=lambda p: p.name, reverse=True)
+
+
+def _foreign_history(den_dir: Path) -> list[str]:
+    """Names in history/ that are not snapshots den would use, sorted."""
+    hist = _history_dir(den_dir)
+    if _symlink_component(den_dir, hist) is not None or not hist.is_dir():
+        return []
+    ours = {p.name for p in _snapshots(den_dir)}
+    return sorted(p.name for p in hist.iterdir() if p.name not in ours)
 
 
 def _snap_stamp(snap: Path) -> str:
@@ -412,6 +455,40 @@ def _parse_index(argv: list[str]) -> int | None:
         return None
 
 
+def utf8_stdout() -> None:
+    """Write stdout as UTF-8, whatever the locale. Memory and the imprint are
+    UTF-8 and so is what reads den's output; a Windows den whose stdout is
+    redirected (an agent running it) got the ANSI code page instead, with
+    strict errors, so an em dash or an emoji in memory -- or the seeded
+    imprint's own Japanese -- crashed `show` and `den hook imprint`."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        # a stream that cannot switch keeps its own encoding
+        with contextlib.suppress(OSError, ValueError):
+            reconfigure(encoding="utf-8")
+
+
+def _read_stdin(prefix: str) -> str | None:
+    """stdin as UTF-8 text (a leading BOM dropped), whatever the locale; None
+    (one line on stderr) when it is not UTF-8. The locale codec turned piped
+    UTF-8 into mojibake on cp1252 -- written to memory.md and injected every
+    turn -- and raised on cp932."""
+    stream = sys.stdin
+    if stream is None:
+        return ""
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:  # already text (an embedding host, a test's StringIO)
+        return stream.read()
+    try:
+        return buffer.read().decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        print(
+            f"{prefix}: stdin is not UTF-8 text ({exc}); nothing written",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _cmd_show(den_dir: Path, argv: list[str]) -> int:
     text = _read_guarded_text(den_dir, _memory_path(den_dir))
     if isinstance(text, _Unreadable):
@@ -423,6 +500,9 @@ def _cmd_show(den_dir: Path, argv: list[str]) -> int:
 
 def _cmd_checkpoint(den_dir: Path, argv: list[str]) -> int:
     snap = _do_checkpoint(den_dir)
+    # Also the refresh for cline-cli's copy after a direct edit to memory.md,
+    # even when another hook already snapshotted that edit.
+    mirror_to_clinerules(den_dir)
     if isinstance(snap, _Refused):
         return 1  # asked for a checkpoint, could not make one
     if snap is not None:
@@ -434,14 +514,22 @@ def _save_content(argv: list[str]) -> str | int:
     """The text `save` will write: stdin, or the file named by --file. An int is
     the exit code to return instead (the message is already out)."""
     if not (argv and argv[0] in {"--file", "-f"}):
-        return sys.stdin.read()
+        text = _read_stdin("den hook memory save")
+        return 2 if text is None else text
     if len(argv) < 2:
         print("den hook memory save: --file needs a path", file=sys.stderr)
         return 2
     try:
-        return Path(argv[1]).read_text(encoding="utf-8")
+        # utf-8-sig: a leading BOM is dropped, as for stdin (_read_stdin)
+        return Path(argv[1]).read_text(encoding="utf-8-sig")
     except OSError as exc:
         print(f"den hook memory save: cannot read {argv[1]}: {exc}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError as exc:
+        print(
+            f"den hook memory save: {argv[1]} is not UTF-8 text ({exc})",
+            file=sys.stderr,
+        )
         return 2
 
 
@@ -462,13 +550,14 @@ def _cmd_add(den_dir: Path, argv: list[str]) -> int:
     """Append one fact to memory.md (from args, or stdin if none). Low-friction
     counterpart to save's wholesale overwrite: a weak agent records a single
     line without rewriting the whole file. Snapshots the prior content first."""
-    content = " ".join(argv) if argv else sys.stdin.read()
-    if not content.strip():
+    content = " ".join(argv) if argv else _read_stdin("den hook memory add")
+    if content is not None and not content.strip():
         print(
             "den hook memory add: nothing to add (give text or pipe it on stdin)",
             file=sys.stderr,
         )
-        return 2
+    if content is None or not content.strip():
+        return 2  # (an undecodable stdin already said why)
     mem = _memory_path(den_dir)
     if _refuse_symlink(den_dir, mem, "write"):
         return 1
@@ -627,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
         _usage()
         return 2
 
+    utf8_stdout()
     den_dir = _find_den_dir(Path.cwd())
     return handler(den_dir, rest)
 

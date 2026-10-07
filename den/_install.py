@@ -18,9 +18,12 @@ content is deployed; the file name each tool reads stays the tool's own.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,7 +33,7 @@ from typing import Protocol
 from . import _ui
 from ._content import cheatsheets_dir, dist_dir, shared_dir, skills_dir
 from ._exe import find_tool
-from ._memory import _refuse_symlink, _write_guarded
+from ._memory import _NOFOLLOW, _refuse_symlink, _write_guarded
 
 # tool -> (skills_dir, parent_dir, parent_file). The cline (VS Code extension)
 # parent_dir is dynamic -- see _tool_paths/_cline_rules_dir; the value here is
@@ -175,6 +178,26 @@ class _Writer:
     files are written silently; files that already exist and DIFFER are listed
     and, unless --force, the user is asked once before overwriting (default no,
     so local edits are kept). Non-interactive: differing files are skipped.
+    --force copies each differing file to <file>.den.bak (or the first free
+    .den.bak.N) before replacing it.
+
+    With `owned` (`den upgrade --refresh`, see _install_refresh) nothing is
+    asked: a differing file in `owned` -- one the den that ran before the
+    upgrade proved it had written and nobody has edited since -- is replaced,
+    and every other differing file is kept and listed (or, with --force, backed
+    up and replaced). `owned` maps each such path to the SHA-256 it held then,
+    and a file is den's only while it still holds those bytes, checked again
+    right before it is written: an edit made while `uv tool upgrade` ran is the
+    user's, not den's. A file in `absent` -- one the den before the upgrade
+    deploys but found missing (deleted, or never deployed because an earlier
+    update was skipped) -- is not created and is listed (--force creates it);
+    a missing file the refresh stages that is not in `absent` is new in this
+    version and is created. A file in `owned` that is gone by the time it is
+    written was deleted while uv ran, and is treated the same way.
+
+    Only what was listed and approved (or is still den's) is ever replaced
+    without --force: a file that changes between the listing and its write is
+    kept.
 
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), so a symlink anywhere below it - CLAUDE.md ->
@@ -183,8 +206,20 @@ class _Writer:
     The default tool dirs are not confined: a ~/.claude symlinked into a
     dotfiles repo is the user's own arrangement and keeps working."""
 
-    def __init__(self, *, force: bool) -> None:
+    def __init__(
+        self,
+        *,
+        force: bool,
+        owned: dict[Path, str] | None = None,
+        absent: set[Path] | None = None,
+        forceable: bool = True,
+    ) -> None:
         self.force = force
+        self.owned = owned
+        self.absent = absent or set()
+        # False for what --force never replaces (a parent prompt): the lists
+        # then do not offer it
+        self.forceable = forceable
         self._items: list[tuple[Path, bytes]] = []
         self._roots: list[Path] = []
 
@@ -227,10 +262,38 @@ class _Writer:
         if dest.suffix in {".sh", ".py"} and "/scripts/" in dest.as_posix():
             _chmod_no_follow(dest, 0o755)
 
+    def _owns(self, dest: Path, data: bytes) -> bool:
+        """Whether `data`, what `dest` holds now, is what the den before the
+        upgrade proved it wrote there (see the class docstring)."""
+        digest = None if self.owned is None else self.owned.get(dest)
+        return digest is not None and hashlib.sha256(data).hexdigest() == digest
+
+    def _deleted(self, dest: Path) -> bool:
+        """Whether `dest` is missing although the den before the upgrade
+        deploys it (see the class docstring)."""
+        known = dest in self.absent or (self.owned is not None and dest in self.owned)
+        return known and not os.path.lexists(dest)
+
     def _ask(self, changed: list[Path]) -> tuple[bool, bool]:
         """(overwrite, silently_skipped) for the files that exist and differ."""
         if not changed or self.force:
             return True, False
+        if self.owned is not None:
+            # A refresh asks nothing: what it may replace was decided before the
+            # upgrade. The rest is the user's (or a version whose update was
+            # skipped), kept and listed.
+            hint = (
+                "--force backs each up to <file>.den.bak and replaces it"
+                if self.forceable
+                else "never replaced, not even with --force"
+            )
+            _ui.say(
+                f"Left alone (edited, or not as den last deployed them; {hint}):",
+                style="yellow",
+            )
+            for d in changed:
+                _ui.say(f"  {d}", style="yellow")
+            return False, False
         _ui.say(
             "These files exist and differ from the bundled version:", style="yellow"
         )
@@ -241,13 +304,66 @@ class _Writer:
         print("  skipped (re-run with --force to overwrite)", file=sys.stderr)
         return False, True
 
-    def commit(self) -> int:
+    @staticmethod
+    def _backup(dest: Path, guard: tuple[Path, Path] | None) -> Path | None:
+        """Copy `dest` beside itself before --force replaces it; the copy's
+        path, or None (one line on stderr) when no backup could be made, and
+        the caller then leaves `dest` alone, since replacing what could not be
+        kept is the loss the backup exists to prevent.
+
+        The copy is <dest>.den.bak, or the first free one of .den.bak.1, .2,
+        ...: an earlier backup holding something else (the edit an earlier
+        --force saved) is never replaced, and one holding these very bytes is
+        reused. It keeps the file's permission bits minus execute, so a private
+        file's copy stays private and a backed-up ~/.local/bin helper is not
+        left executable on PATH. A symlink (or anything not a regular file) at
+        a backup name refuses the backup instead of writing through it."""
+        # Under a confined root, `guard` holds the resolved path commit()
+        # already checked for symlinked components; the copy is its sibling.
+        real = guard[1] if guard is not None else dest
+        try:
+            data = dest.read_bytes()
+            mode = stat.S_IMODE(dest.stat().st_mode) & 0o666
+            n = 0
+            while True:
+                bak = real.with_name(real.name + ".den.bak" + (f".{n}" if n else ""))
+                if bak.is_symlink() or (bak.exists() and not bak.is_file()):
+                    what = "a symlink" if bak.is_symlink() else "not a regular file"
+                    print(
+                        f"{_ERR}: not replacing {dest}: {bak} is {what}",
+                        file=sys.stderr,
+                    )
+                    return None
+                if not bak.exists():
+                    break
+                if bak.read_bytes() == data:
+                    return bak
+                n += 1
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
+            fd = os.open(bak, flags, 0o600)
+            fchmod = getattr(os, "fchmod", None)  # not on Windows before 3.13
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                if fchmod is not None:
+                    fchmod(fh.fileno(), mode)
+            if fchmod is None:
+                _chmod_no_follow(bak, mode)
+        except OSError as exc:
+            print(
+                f"{_ERR}: not replacing {dest}: cannot back it up: {exc}",
+                file=sys.stderr,
+            )
+            return None
+        return bak
+
+    def commit(self) -> int:  # ruff: ignore[too-many-branches]  # one per outcome
         """Write the staged files. Returns the number of files that were NOT
         deployed without the user choosing so: differing files kept by the
         non-interactive skip plus destinations refused under a confined root,
         so a scripted caller can exit non-zero instead of reporting a deploy
-        that never happened; an interactive "no" is the user's own choice and
-        counts 0."""
+        that never happened, and a file kept because it changed after it was
+        checked; an interactive "no" is the user's own choice and counts 0, as
+        does a file a refresh leaves alone (not den's to replace)."""
         refused = 0
         items: list[tuple[Path, bytes, tuple[Path, Path] | None]] = []
         for dest, content in self._items:
@@ -256,17 +372,41 @@ class _Writer:
                 refused += 1
                 continue
             items.append((dest, content, guard))
-        changed = [d for d, c, _g in items if d.is_file() and d.read_bytes() != c]
+        changed = self._changed(items)
         overwrite, silently_skipped = self._ask(changed)
-        kept = 0
+        listed = set(changed)
+        approved = listed if overwrite else set()
+        kept = late = 0
+        backed_up: list[tuple[Path, Path]] = []
+        missing: list[Path] = []
         for dest, content, guard in items:
+            if self._deleted(dest) and not self.force:
+                missing.append(dest)
+                continue
             if dest.is_file():
-                if dest.read_bytes() == content:
+                # Read again: what decides the write is what the file holds
+                # now, not what it held when the list above was made.
+                data = dest.read_bytes()
+                if data == content:
                     self._ensure_mode(dest)
                     continue
-                if not overwrite:
-                    kept += 1
-                    continue
+                if not self._owns(dest, data):
+                    if not self.force and dest not in listed:
+                        late += 1
+                        print(
+                            f"  kept {dest}: it changed after den checked it",
+                            file=sys.stderr,
+                        )
+                        continue
+                    if not self.force and dest not in approved:
+                        kept += 1
+                        continue
+                    if self.force:
+                        bak = self._backup(dest, guard)
+                        if bak is None:
+                            refused += 1
+                            continue
+                        backed_up.append((dest, bak))
             if guard is None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
@@ -274,6 +414,41 @@ class _Writer:
                 refused += 1
                 continue
             self._ensure_mode(dest)
+        self._report(backed_up, missing, kept, refused)
+        late = late if self.owned is None else 0  # a refresh keeps it on purpose
+        return refused + (kept if silently_skipped else 0) + late
+
+    def _changed(
+        self, items: list[tuple[Path, bytes, tuple[Path, Path] | None]]
+    ) -> list[Path]:
+        """The staged files that exist, differ, and are not den's: the list
+        _ask shows."""
+        changed = []
+        for dest, content, _guard in items:
+            data = dest.read_bytes() if dest.is_file() else None
+            if data is not None and data != content and not self._owns(dest, data):
+                changed.append(dest)
+        return changed
+
+    def _report(
+        self,
+        backed_up: list[tuple[Path, Path]],
+        missing: list[Path],
+        kept: int,
+        refused: int,
+    ) -> None:
+        """commit's closing lines."""
+        for d, bak in backed_up:
+            print(f"  backed up {d} -> {bak.name}", file=sys.stderr)
+        if missing:
+            hint = "; --force creates them" if self.forceable else ""
+            _ui.say(
+                "Not created again (deleted since den deployed them, or never"
+                f" deployed{hint}):",
+                style="yellow",
+            )
+            for d in missing:
+                _ui.say(f"  {d}", style="yellow")
         if kept:
             print(f"  kept {kept} modified file(s) as-is", file=sys.stderr)
         if refused:
@@ -281,7 +456,6 @@ class _Writer:
                 f"  refused {refused} path(s) listed above; nothing was written there",
                 file=sys.stderr,
             )
-        return refused + (kept if silently_skipped else 0)
 
 
 def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
@@ -397,6 +571,137 @@ def _deploy(
             print(f"  warning: {src} not found", file=sys.stderr)
 
 
+# --- den upgrade --refresh: replace only what the previous version wrote --- #
+#
+# The den running `den upgrade` still has the OLD bundled content, so before
+# `uv tool upgrade` it compares every deployed file in each tool dir with that
+# content and writes down what matched, with the SHA-256 of each matched file:
+# the plan below (den/_upgrade.py builds it). The new den then reads it via `den
+# install skills|shell --refresh-plan FILE` and replaces only those files, and
+# each only while it still holds those bytes. The plan is a temporary file for that one
+# hand-over, not a record of what den deployed: README's "no manifest" design
+# stands. Its shape is an interface between two den versions, so a later den
+# must keep accepting version 1.
+
+_PLAN_VERSION = 1
+_PARENT_FILES = frozenset(pf for _sk, _pd, pf in _TOOLS.values())
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def load_refresh_plan(path: str) -> dict:
+    """The refresh plan at `path`, checked for shape. ValueError says what is
+    wrong (OSError when it cannot be read)."""
+    plan = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(plan, dict) or plan.get("den_refresh_plan") != _PLAN_VERSION:
+        raise ValueError(f"not a version {_PLAN_VERSION} den refresh plan")
+
+    def absolute(value: object) -> str:
+        if not isinstance(value, str) or not Path(value).is_absolute():
+            raise ValueError(f"not an absolute path: {value!r}")
+        return value
+
+    def strings(value: object) -> list[str]:
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(f"not a list of strings: {value!r}")
+        return [v for v in value if isinstance(v, str)]
+
+    owned = plan.get("owned")
+    if not isinstance(owned, dict):
+        raise ValueError(f"owned must map paths to SHA-256 digests: {owned!r}")
+    for p, digest in owned.items():
+        absolute(p)
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            raise ValueError(f"not a SHA-256 digest: {digest!r}")
+    strings(plan.get("known_skills"))
+    skills = plan.get("skills")
+    parents = plan.get("parents")
+    if not isinstance(skills, list) or not isinstance(parents, list):
+        raise ValueError("skills and parents must be lists")
+    for entry in skills:
+        if not isinstance(entry, dict) or not isinstance(entry.get("no_den_cli"), bool):
+            raise ValueError(f"bad skills entry: {entry!r}")
+        absolute(entry.get("target"))
+        strings(entry.get("names"))
+    for entry in parents:
+        if (
+            not isinstance(entry, dict)
+            or entry.get("file") not in _PARENT_FILES
+            or entry.get("profile") not in {"frontier", "weak"}
+        ):
+            raise ValueError(f"bad parent entry: {entry!r}")
+        absolute(entry.get("path"))
+    for p in strings(plan.get("absent")):
+        absolute(p)
+    for key in ("shell", "shell_extras", "shell_bin"):
+        if not isinstance(plan.get(key), bool):
+            raise ValueError(f"{key} must be true or false")
+    return plan
+
+
+def refresh_writer(plan: dict, *, force: bool, forceable: bool = True) -> _Writer:
+    """A _Writer for the plan: it replaces the files the plan proves are den's
+    and does not create again the ones it found missing (see _Writer)."""
+    return _Writer(
+        force=force,
+        owned={Path(p): digest for p, digest in plan["owned"].items()},
+        absent={Path(p) for p in plan["absent"]},
+        forceable=forceable,
+    )
+
+
+def read_refresh_plan(path: str, prefix: str) -> dict | None:
+    """load_refresh_plan, or None after one line on stderr."""
+    try:
+        return load_refresh_plan(path)
+    except (OSError, ValueError) as exc:
+        print(f"{prefix}: cannot use the refresh plan {path}: {exc}", file=sys.stderr)
+        return None
+
+
+def _install_refresh(plan_path: str, *, force: bool, dry_run: bool) -> int:
+    """`den install skills --refresh-plan FILE`: redeploy the skills into each
+    tool dir the plan names (the skill dirs present there, plus skills this
+    version added) and each parent prompt in its recorded profile. A differing
+    file is replaced only when the plan lists it as den's own unedited copy;
+    any other one is kept and listed, or with --force backed up and replaced.
+    A file of a present skill that the plan found missing stays missing and is
+    listed (--force creates it); a file new in this version is created.
+    A parent the old den did not recognize is not in the plan at all, so a
+    hand-written CLAUDE.md is never touched, not even with --force, and one
+    edited after the plan was made is kept and listed, --force or not."""
+    plan = read_refresh_plan(plan_path, "den install skills")
+    if plan is None:
+        return 2
+    names = _skill_names()
+    known = set(plan["known_skills"])
+    writer = refresh_writer(plan, force=force)
+    parents = refresh_writer(plan, force=False, forceable=False)  # never by --force
+    for entry in plan["skills"]:
+        target = Path(entry["target"])
+        present = set(entry["names"])
+        wanted = [n for n in names if n in present or n not in known]
+        if dry_run:
+            print(f"[dry-run] refresh skills -> {target}/: {' '.join(wanted)}")
+            continue
+        print(f"refreshing skills -> {target}")
+        for name in wanted:
+            print(_install_skill(name, target, writer, no_den_cli=entry["no_den_cli"]))
+    for entry in plan["parents"]:
+        src = _parent_source(entry["file"], entry["profile"])
+        if dry_run:
+            print(f"[dry-run] refresh parent ({entry['profile']}) -> {entry['path']}")
+        elif src.is_file():
+            parents.stage(Path(entry["path"]), src.read_bytes())
+            print(f"  parent ({entry['profile']}) -> {entry['path']}")
+        else:
+            print(f"  warning: {src} not found", file=sys.stderr)
+    if dry_run:
+        return 0
+    refused = writer.commit()
+    refused += parents.commit()
+    return 0 if not refused else 1
+
+
 def _codex_config(skills_target: Path) -> None:
     print("\n# --- paste into ~/.codex/config.toml ---")
     for name in _skill_names():
@@ -463,6 +768,41 @@ def _parse(  # ruff: ignore[too-many-branches]  # one branch per flag
         force,
         profile,
         no_den_cli,
+    )
+
+
+def _refresh_plan_arg(
+    argv: list[str], prefix: str
+) -> tuple[str | None, list[str]] | None:
+    """(the --refresh-plan FILE, the other args), or None (one line on stderr)
+    when the flag has no value."""
+    if "--refresh-plan" not in argv:
+        return None, argv
+    i = argv.index("--refresh-plan")
+    if i + 1 >= len(argv):
+        print(f"{prefix}: --refresh-plan needs a file", file=sys.stderr)
+        return None
+    return argv[i + 1], argv[:i] + argv[i + 2 :]
+
+
+def _install_skills_cmd(argv: list[str]) -> int:
+    """`den install skills`: the refresh hand-over, or an ordinary install."""
+    split = _refresh_plan_arg(argv, "den install skills")
+    if split is None:
+        return 2
+    plan_path, argv = split
+    if plan_path is None:
+        return _install_skills(argv)
+    extra = [a for a in argv if a not in {"--force", "--dry-run"}]
+    if extra:
+        print(
+            "den install skills: --refresh-plan takes only --force and"
+            f" --dry-run, not {' '.join(extra)}",
+            file=sys.stderr,
+        )
+        return 2
+    return _install_refresh(
+        plan_path, force="--force" in argv, dry_run="--dry-run" in argv
     )
 
 
@@ -559,8 +899,10 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
             "to install it into each tool's location."
         )
     # A non-interactive run that kept differing files deployed nothing for them.
-    # Say so with the exit code: `den upgrade --refresh` (and any script) would
-    # otherwise read "success" from a run that left the old version in place.
+    # Say so with the exit code: a script (or the refresh of a den that predates
+    # --refresh-plan) would otherwise read "success" from a run that left the
+    # old version in place. A plan-driven refresh keeps files on purpose and
+    # exits 0 (_install_refresh).
     return 1 if skipped else 0
 
 
@@ -678,7 +1020,9 @@ def _usage() -> None:
         "  cheatsheets [--dry-run] [--force]                  "
         " bundled sheets -> data dir\n"
         "\n"
-        "Existing files that differ are kept unless you confirm (or pass --force).\n"
+        "Existing files that differ are kept unless you confirm (or pass --force,\n"
+        "which first copies each one it overwrites to <file>.den.bak, or to\n"
+        "<file>.den.bak.N when an earlier backup holds something else).\n"
         "\n"
         f"Tools: {', '.join(_TOOLS)}.\n"
         "skills with no --tool/--target deploys to ~/.claude and ~/.agents.\n"
@@ -706,7 +1050,7 @@ def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-
         _usage()
         return 0
     if target == "skills":
-        return _install_skills(rest)
+        return _install_skills_cmd(rest)
     if target == "shell":
         from ._shell import install_shell
 

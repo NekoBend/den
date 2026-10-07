@@ -10,9 +10,16 @@ function _CheatDir {
     Join-Path $base 'den/cheatsheets'
 }
 
+# Files ending in .den.bak or .den.bak.<digits> are the copies `den install
+# cheatsheets --force` keeps of sheets it replaced, not sheets (same rule as
+# cheat.sh). Matched case-sensitively and with ASCII digits only ([0-9], where
+# \d also takes other scripts' digits), as den writes them and cheat.sh drops them.
 function _CheatList([string]$Dir) {
     Get-ChildItem -LiteralPath $Dir -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -ne '.pyc' -and $_.FullName -notmatch '__pycache__' } |
+        Where-Object {
+            $_.Extension -ne '.pyc' -and $_.FullName -notmatch '__pycache__' -and
+            $_.Name -cnotmatch '\.den\.bak(\.[0-9]+)?$'
+        } |
         ForEach-Object { $_.FullName.Substring($Dir.Length + 1).Replace('\', '/') } |
         Sort-Object
 }
