@@ -50,6 +50,10 @@ run the checks and scripts SKILL.md Step 3 names:
   defects, and the typecheck confirms imported APIs actually resolve.
 - check-broken-refs.py (path in SKILL.md Step 3)
   confirms a renamed or removed symbol left no dangling reference.
+  For committed changes, run it with
+  `--base "$(git merge-base <base-branch> HEAD)"`:
+  the default base HEAD sees uncommitted edits only,
+  so on a committed branch it examines nothing and reports nothing.
 
 Then reason by hand: list the inputs the code claims to handle
 and trace each one through to its result.
