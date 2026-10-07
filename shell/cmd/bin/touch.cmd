@@ -12,10 +12,7 @@ if "%~1"=="" exit /b %_rc%
 if exist "%~1" (
     copy /b "%~1"+,, "%~1" >nul || set "_rc=1"
 ) else (
-    rem A redirection that cannot open its file does not always reach ||:
-    rem check that the file now exists.
-    type nul >"%~1" 2>nul
-    if not exist "%~1" set "_rc=1"
+    type nul >"%~1" || set "_rc=1"
 )
 shift
 goto next

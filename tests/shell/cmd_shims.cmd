@@ -133,8 +133,9 @@ set "OK="
 "%FINDSTR%" /b /l /c:"usage: touch" "%O%" >nul && if "%RC%"=="1" set "OK=1"
 call :check "touch: usage without a file"
 call "%BIN%\touch.cmd" t1.txt no-such-dir\x.txt 2>nul
+set "RC=%errorlevel%"
 set "OK="
-if "%errorlevel%"=="1" set "OK=1"
+if "%RC%"=="1" set "OK=1"
 call :check "touch: exit 1 when one fails"
 
 rem --- uv: the arguments after run arrive as typed
