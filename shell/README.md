@@ -212,6 +212,30 @@ exported variables keep the real value. On Linux and macOS `proxy.conf` is
 them, so a store an older den left readable is tightened too. A `proxy.conf`
 that is a symlink stays one: `add` and `rm` write through it in both shells.
 
+The line that typed such a url (`proxy add corp http://al:S3cr3t@p.corp:8080`)
+stays out of the shell's history file; a `proxy add` line without a password
+is saved as usual. den finds the line by its text (`proxy`, then `add`, then a
+`user:password@` url), so on zsh and pwsh a line that only looks like one
+(`echo proxy add c http://al:pw@p`) is left out too, and in every shell
+`proxy add` behind an alias is not seen. Each shell's own settings still apply:
+`HISTIGNORE` / `HISTCONTROL`, `HISTORY_IGNORE` and a `zshaddhistory` of your
+own, and an `AddToHistoryHandler` set before init.ps1 (den's handler chains to
+it, and a line it leaves out stays out).
+
+- **bash**: `proxy add` takes the line out of the history list (`history -d`)
+  before bash writes `$HISTFILE` (at exit, or from a `history -a` in
+  `PROMPT_COMMAND`). In a subshell (a pipe, `$(...)`) it cannot, and prints the
+  `history -d N` that does; a setup that writes the history before a command
+  runs (`history -a` in `PS0` or a DEBUG trap) has written the line already.
+- **zsh**: a `zshaddhistory` hook (added with `add-zsh-hook`, next to yours)
+  does not save the line; it can still be recalled until the next line runs.
+  The hook answers 1, not 2 (memory only), because `fc -W`, which `reload`
+  runs, and `fc -A` write a line kept in memory only to the file.
+- **pwsh**: init.ps1's history handler keeps the line in PSReadLine's memory
+  only (`MemoryOnly`, PSReadLine 2.2+), so it can be recalled in this session;
+  PSReadLine 2.0 (Windows PowerShell 5.1's) has no such answer, and there the
+  line is not kept at all.
+
 ### Command snippets
 Save favorite commands by name and run them later, instead of `history | grep`.
 
