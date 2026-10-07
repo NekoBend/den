@@ -44,13 +44,59 @@ _wrap_log() {
     fi
 }
 
+# ========== typed at the prompt ==========
+
+# _den_typed → status 0 when the den command that called it was typed at the
+# prompt, 1 when a function or a sourced file (~/.bashrc, ~/.zshrc too) ran
+# it. Typed counts through eval and $(...) at the prompt, through `bash -c` /
+# `zsh -c`, through `again` / `sagain`, which replay a typed line, and through
+# `snippet run` / `snippet pick`, which run a saved one (snippet.sh). den's
+# cd hands a directory to zoxide, and a wrapper named after the native
+# command it replaces runs the modern tool, only when typed: code in a
+# function or a script gets builtin cd and the native command it was written
+# for.
+# The call stack is bash's FUNCNAME or zsh's funcstack (which also lists each
+# sourced file by its path and each eval as "(eval)"); eval keeps the array
+# syntax away from a POSIX parser.
+_den_typed() {
+    if [ -n "${BASH_VERSION-}" ]; then
+        eval 'set -- "${FUNCNAME[@]}"'
+    elif [ -n "${ZSH_VERSION-}" ]; then
+        eval 'set -- "${funcstack[@]}"'
+    else
+        return 0
+    fi
+    # Skip this function's own frame (zsh lists the eval above first), then
+    # the den command's; what is left are its callers.
+    while [ $# -gt 0 ]; do
+        _dt_f=$1
+        shift
+        [ "$_dt_f" = _den_typed ] && break
+    done
+    [ $# -gt 0 ] && shift
+    for _dt_f in "$@"; do
+        case $_dt_f in
+            again|sagain|snippet|_snippet_run|_snippet_pick|_snip_exec|'(eval)') ;;
+            *) unset _dt_f; return 1 ;;
+        esac
+    done
+    unset _dt_f
+    return 0
+}
+
 # ========== wrapper generator ==========
 
 # _wrap <func> <modern> <modern_flags> <fallback> <fallback_flags>
+# A wrapper that takes the name of its native fallback (ls, cat, grep, find)
+# runs the modern tool only when typed at the prompt (_den_typed), since code
+# that calls that name means the native command. den's own names (la, ll, lla,
+# lt, llt, ripgrep) mean nothing else, so they run the modern tool anywhere.
 _wrap() {
     _w_name="$1" _w_mod="$2" _w_mf="$3" _w_fb="$4" _w_fbf="$5"
+    _w_typed=
+    [ "$_w_name" = "$_w_fb" ] && _w_typed=" && _den_typed"
     eval "${_w_name}() {
-        if [ \"\${_DEN_WRAPPERS:-1}\" != \"0\" ] && command -v ${_w_mod} >/dev/null 2>&1; then
+        if [ \"\${_DEN_WRAPPERS:-1}\" != \"0\" ] && command -v ${_w_mod} >/dev/null 2>&1${_w_typed}; then
             _wrap_log \"${_w_name}\" \"${_w_mod}\" \"${_w_fb}\" \"${_w_fbf}\"
             ${_w_mod} ${_w_mf} \"\$@\"
         elif [ -n \"${_w_fb}\" ]; then
@@ -59,7 +105,7 @@ _wrap() {
             echo \"${_w_name}: ${_w_mod} is not installed.\" >&2; return 1
         fi
     }"
-    unset _w_name _w_mod _w_mf _w_fb _w_fbf
+    unset _w_name _w_mod _w_mf _w_fb _w_fbf _w_typed
 }
 
 # _wsfx <func> <modern> <modern_flags> — always use modern (w-suffix bypass)

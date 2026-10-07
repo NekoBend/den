@@ -82,7 +82,7 @@ behavior.
 Because the modern tools take different flags and produce different output than
 the native commands, a command written for the native tool can misbehave when a
 wrapper substitutes the modern one. To make that visible, a dim notice prints on
-**every** wrapped call:
+**every** wrapped call that runs the modern tool:
 
 ```
 [den] ls -> lsd  (native: command ls, off: tgl-wr)
@@ -115,6 +115,17 @@ Ways to get the native command:
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
 tool, ignoring the toggle, and print no notice.
 
+On bash/zsh a wrapper that replaces a native command (`ls`, `cat`, `grep`,
+`find`) runs the modern tool only when typed at the prompt (`eval` and `$(...)`
+typed there, a line a typed `again` replays, and a snippet a typed `snippet
+run` or `snippet pick` runs count as typed). Run by a function, your own
+included, or by a sourced file, it runs the native command that code was
+written for, and den's `cd` is `builtin cd` there too. A function that relied
+on such a wrapper now gets the native tool; call the modern tool by name or
+through its `w`-suffix form. den's own names (`la`, `ll`, `lla`, `lt`, `llt`,
+`ripgrep`) replace nothing and stay modern anywhere. The check is bash's
+`FUNCNAME` / zsh's `funcstack` call stack (`_den_typed` in `_helpers.sh`).
+
 On PowerShell, piping objects into a wrapper that resolves to a modern tool,
 microsoft/coreutils, or a native exe (e.g. `Get-ChildItem | wc -l`) sends the
 formatted text representation of those objects, not the objects themselves, so
@@ -126,7 +137,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 ### Navigation
 | Command | What it does |
 |---------|--------------|
-| `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF |
+| `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF; on bash/zsh zoxide only for a `cd` typed at the prompt with no option |
 | `cdi` | zoxide interactive pick |
 | `zd` / `zdi` | always zoxide (ignore the toggle) |
 | `back [N]` / `fwd [N]` | go N entries back / forward in this session's directory history, browser-style (default 1) |
@@ -405,7 +416,7 @@ of zoxide and starship. zsh and PowerShell mirror this.
 | Variable | Effect |
 |----------|--------|
 | `_DEN_WRAPPERS=0` | use native commands instead of modern tools |
-| `_DEN_WRAPPER_LOG=0` | silence the wrapper notice (printed on every wrapped call) |
+| `_DEN_WRAPPER_LOG=0` | silence the wrapper notice (printed on every wrapped call that runs the modern tool) |
 | `_DEN_COREUTILS=<path>` | use a specific microsoft/coreutils binary, e.g. `C:\Program Files\coreutils\coreutils.exe` (Windows) |
 | `_DEN_COREUTILS=0` | disable the microsoft/coreutils tier (Windows) |
 | `_DEN_UV_OVERRIDE` | uv python/pip override state (via `toggle-uv` / `tgl-uv`); a shell started with `0` loads no override |

@@ -13,9 +13,21 @@
 # before exec -- otherwise the command runs as root:
 #
 #   #!/bin/sh
-#   # entrypoint.sh -- container started as root (no USER line, or USER root)
-#   fixids --from 1000:1000 -x node_modules -x .cache "$HOME"
-#   exec setpriv --reuid 1000 --regid 1000 --clear-groups "$@"
+#   # entrypoint.sh -- container started as root (no USER line, or USER root),
+#   # with -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)": the files of the
+#   # image's user (1000:1000 here, home /home/dev) go to the host's ids, and
+#   # the command then runs as those ids.
+#   fixids --from 1000:1000 --to "$HOST_UID:$HOST_GID" -x node_modules -x .cache /home/dev
+#   exec setpriv --reuid "$HOST_UID" --regid "$HOST_GID" --clear-groups "$@"
+#
+# Name the target with --to: as root, the default target would be root:root,
+# which locks the user out of their own files, so fixids refuses to run as
+# root without --to (--to 0:0 chowns to root on purpose).
+#
+# fixids finds the files first and then chowns them by path; with --from
+# UID:GID the chowns start only after the whole walk. Run it before anything
+# else uses the tree, as an entrypoint does: a process that renames
+# directories in the tree meanwhile could make a chown land on another file.
 #
 #   In a Dockerfile:  COPY shell/posix/bin/fixids /usr/local/bin/fixids
 #                     COPY entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -40,8 +52,10 @@ Options:
                        group-owned by that gid; handled independently like
                        fixuid -- a gid-only match keeps its uid). Default:
                        any file not already owned by the target (--to).
-  --to UID[:GID]       target owner (default: current \$(id -u):\$(id -g)).
-                       With no GID the group is left unchanged.
+  --to UID[:GID]       target owner (default: current \$(id -u):\$(id -g);
+                       required when run as root, where the default would be
+                       root:root: pass --to 0:0 to mean it). With no GID the
+                       group is left unchanged.
   -x, --exclude NAME   prune directories with this NAME, anywhere in the tree
                        (repeatable, e.g. -x node_modules -x .cache -x .git).
   -j, --jobs N         parallel chown workers (default: nproc, capped to the
@@ -151,12 +165,19 @@ done
 roots=("${safe_roots[@]}")
 
 # Resolve the target owner. Default: the invoker's uid:gid. With --to and no
-# GID, only the uid is changed and the group is left as it is.
+# GID, only the uid is changed and the group is left as it is. Run as root,
+# that default is root:root, which is almost never meant (a container
+# entrypoint matching the host's ids would hand the user's files to root),
+# so root has to name the target.
 if [ "$to_set" -eq 1 ]; then
 	resolve_owner "$to_spec" to_uid to_gid
 else
 	to_uid=$(id -u)
 	to_gid=$(id -g)
+	if [ "$to_uid" -eq 0 ]; then
+		echo "$prog: running as root: name the target owner with --to UID[:GID] (--to 0:0 for root)" >&2
+		exit 2
+	fi
 fi
 target=$to_uid${to_gid:+:$to_gid}
 
@@ -190,8 +211,9 @@ warn_walk() {
 }
 
 # run_pass VERB QUIET CMD TARGET MATCH... -- find the files matching MATCH under
-# the shared roots (with the prune above) and apply `CMD -h -c TARGET` to them
-# in parallel. `-c` prints one line per CHANGED file; awk counts them (fast, in
+# the shared roots (with the prune above), or with $list set take the paths
+# from that file (one of classify's lists), and apply `CMD -h -c TARGET` to
+# them in parallel. `-c` prints one line per CHANGED file; awk counts them (fast, in
 # C) for a live progress total (only to a tty) and a summary; with -v each
 # changed path is printed too. VERB is the past-tense verb for the messages;
 # QUIET=1 suppresses the summary when nothing changed (secondary passes). With
@@ -211,6 +233,8 @@ run_pass() {
 	# Files INSIDE the tree stay lstat-matched and chowned with -h, so inner
 	# symlinks are never followed.
 	local fc=(find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} "$@" -print0)
+	# A list was walked already (classify reported its errors): read it.
+	[ -z "$list" ] || fc=(cat -- "$list")
 	if [ "$dry" -eq 1 ]; then
 		# inspection mode: every pass's count is printed, on stdout. find errors
 		# must not hide behind the count pipeline here either (exit "${PIPESTATUS[0]}"
@@ -243,6 +267,42 @@ run_pass() {
 	return 0
 }
 
+# classify F_UID F_GID -- sort the files under the roots (with the prune above)
+# into the three disjoint classes the --from UID:GID passes change, in ONE walk
+# taken before anything changes: both ids match, the uid only, the gid only.
+# Each class goes to a NUL-separated list in $tmpd (both, uid, gid). A walk
+# per pass lstat()ed every inode three times, and a pass that walked after an
+# earlier pass had chowned saw that pass's files again: with --to F_UID:NEWGID
+# the uid-only walk matched every file the first pass had just re-grouped.
+# GNU find's comma operator evaluates every class for each file; the
+# parentheses keep the prune ahead of all three.
+# A list find could not write in full (TMPDIR full, a file-size limit), or one
+# a find stopped by a signal left, can end in or splice in part of a path,
+# which chown would take for a path (an ancestor directory, say). So when
+# find names a list in an error, or does not exit 0 or 1, fixids stops before
+# it changes anything. Other walk errors (an unreadable directory) let the
+# passes run, as before; find's messages are read for this and then printed.
+classify() {
+	local err rc=0 bad=0
+	tmpd=$(mktemp -d "${TMPDIR:-/tmp}/fixids.XXXXXX")
+	trap 'rm -rf -- "$tmpd"' EXIT
+	err=$(find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} '(' \
+		'(' -uid "$1" -gid "$2" -fprint0 "$tmpd/both" ')' , \
+		'(' -uid "$1" '!' -gid "$2" -fprint0 "$tmpd/uid" ')' , \
+		'(' '!' -uid "$1" -gid "$2" -fprint0 "$tmpd/gid" ')' ')' 2>&1 >/dev/null) || rc=$?
+	[ -z "$err" ] || printf '%s\n' "$err" >&2
+	[ "$rc" -eq 0 ] && return 0
+	[ "$rc" -eq 1 ] || bad=1
+	case $err in *"${tmpd##*/}/"*) bad=1 ;; esac
+	if [ "$bad" -eq 1 ]; then
+		echo "$prog: the file lists under ${tmpd%/*} are incomplete (find exit $rc); nothing was changed" >&2
+		exit 1
+	fi
+	warn_walk
+}
+
+list=""
+
 # Which files to change, and how.
 if [ "$from_set" -eq 1 ]; then
 	[ -n "$from" ] || { echo "$prog: --from given an empty value" >&2; exit 2; }
@@ -253,9 +313,12 @@ if [ "$from_set" -eq 1 ]; then
 		# DISJOINT passes so each file gets exactly the change it matched -- a
 		# file matching only by gid must not have its uid taken over. On the
 		# typical tree (everything owned uid:gid) passes 2 and 3 match nothing.
-		run_pass chowned 0 chown "$to_uid:$to_gid" '(' -uid "$f_uid" -gid "$f_gid" ')'
-		run_pass chowned 1 chown "$to_uid" '(' -uid "$f_uid" '!' -gid "$f_gid" ')'
-		run_pass "chgrp'd" 1 chgrp "$to_gid" '(' '!' -uid "$f_uid" -gid "$f_gid" ')'
+		# The classes come from one walk (classify). A uid-only file needs a
+		# change only when the uid does, a gid-only file only when the gid does.
+		classify "$f_uid" "$f_gid"
+		list=$tmpd/both run_pass chowned 0 chown "$to_uid:$to_gid"
+		[ "$to_uid" = "$f_uid" ] || list=$tmpd/uid run_pass chowned 1 chown "$to_uid"
+		[ "$to_gid" = "$f_gid" ] || list=$tmpd/gid run_pass "chgrp'd" 1 chgrp "$to_gid"
 	else
 		# uid-only --from; or --to without a GID, where gid matches have no
 		# target gid, so only uid matches are touched (groups stay as they are)

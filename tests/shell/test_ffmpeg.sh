@@ -80,6 +80,17 @@ assert_contains "bash/togif paletteuse" "paletteuse" "$actual"
 assert_contains "bash/togif fps" "fps=10" "$actual"
 assert_contains "bash/togif width" "scale=480" "$actual"
 
+# togif's palette trap used to end in `trap -` on EXIT, INT, TERM and HUP,
+# which left the defaults: the traps the user had were gone afterwards. The
+# trap listings before and after the call are compared, not spelled out: a
+# shell that starts with a signal ignored (SIGINT and SIGQUIT in a background
+# job of a script, SIGHUP under nohup) cannot trap it and lists it as ignored.
+TRAPS_SAME="if cmp -s '$WORK/traps.before' '$WORK/traps.after'; then echo traps kept; else diff '$WORK/traps.before' '$WORK/traps.after' || :; fi"
+echo "[bash] togif keeps the caller's EXIT, INT, TERM and HUP traps"
+actual=$(run_bash "$FFMPEG_SH_TEST" "trap 'echo user-exit' EXIT; trap 'echo user-int' INT; trap 'echo user-term' TERM; trap -p > '$WORK/traps.before'; togif input.mp4 >/dev/null; trap -p > '$WORK/traps.after'; $TRAPS_SAME")
+assert_eq "bash/togif keeps the traps, and the EXIT trap still runs" "traps kept
+user-exit" "$actual"
+
 echo "[bash] thumbnail defaults"
 actual=$(run_bash "$FFMPEG_SH_TEST" 'thumbnail input.mp4')
 assert_contains "bash/thumbnail time" "-ss 00:00:01" "$actual"
@@ -119,6 +130,12 @@ actual=$(run_zsh "$FFMPEG_SH_TEST" 'togif input.mp4 out.gif 15 640')
 assert_contains "zsh/togif fps" "fps=15" "$actual"
 assert_contains "zsh/togif width" "scale=640" "$actual"
 assert_contains "zsh/togif output" "out.gif" "$actual"
+
+echo "[zsh] togif keeps the caller's INT, TERM and HUP traps and TRAP functions"
+actual=$(run_zsh "$FFMPEG_SH_TEST" "trap 'echo user-exit' EXIT; trap 'echo user-hup' HUP; TRAPINT() { echo user-int; }; trap > '$WORK/traps.before'; togif input.mp4 >/dev/null; trap > '$WORK/traps.after'; $TRAPS_SAME; if functions TRAPINT >/dev/null; then echo TRAPINT kept; else echo TRAPINT gone; fi")
+assert_eq "zsh/togif keeps the traps and TRAPINT, and the EXIT trap still runs" "traps kept
+TRAPINT kept
+user-exit" "$actual"
 
 echo "[zsh] clip auto output"
 actual=$(run_zsh "$FFMPEG_SH_TEST" 'clip input.mp4 00:01:00 00:02:00')
