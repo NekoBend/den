@@ -803,7 +803,7 @@ def test_install_shell_bin_keeps_modified_file_content_and_mode(tmp_path, monkey
     mine.write_text("#!/bin/sh\n# my own fixids\n")
     mine.chmod(0o600)
     # non-tty + differing file -> nothing deployed for it, so rc is non-zero
-    # (a scripted `den upgrade --refresh` must not read this as success)
+    # (a script, or an older den's refresh, must not read this as success)
     assert install_main(["shell", "--bin"]) == 1
     # the kept file is untouched: content AND mode
     assert mine.read_text() == "#!/bin/sh\n# my own fixids\n"

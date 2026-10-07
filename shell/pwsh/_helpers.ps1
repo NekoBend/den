@@ -551,6 +551,50 @@ function _ResolvePaths([string[]]$Patterns) {
     return ,$out
 }
 
+# ========== den's stores ==========
+
+# _DenWritePrivate <path> <text> - write text (UTF-8 without a BOM, which posix
+# reads too) to one of den's stores under $XDG_CONFIG_HOME/den, which proxy.ps1
+# and snippet.ps1 share with bash/zsh: proxy.conf may hold a proxy password, and
+# snippets holds saved commands. On Linux and macOS the directory is made 0700
+# and the file 0600 before the text goes in, whatever the umask, so an older
+# den's looser modes are tightened too; a store that is a symlink is written
+# through, and its target gets the mode. On Windows both keep the ACL they
+# inherit from the profile directory. A failure ends the caller, so it prints
+# no "saved" message and the text never lands in a file left readable: the
+# catch rethrows, because a .NET method's exception alone would end only its
+# own statement and the next one would still run.
+function _DenWritePrivate([string]$Path, [string]$Text) {
+    try {
+        $dir = Split-Path -Parent $Path
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
+        if (-not ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)) {
+            # Create the file if it is missing, so it can get its mode before
+            # the text goes in. Appending nothing creates it, also as the
+            # target of a symlink that points nowhere yet, for which
+            # Test-Path already says True; an existing file is left as it is.
+            [IO.File]::AppendAllText($Path, '')
+            if ('System.IO.UnixFileMode' -as [type]) {
+                [IO.File]::SetUnixFileMode($dir, 'UserRead, UserWrite, UserExecute')
+                [IO.File]::SetUnixFileMode($Path, 'UserRead, UserWrite')
+            } else {
+                # pwsh before 7.3 (.NET 6 and older) has no such API.
+                $chmod = _ResolveCmd 'chmod' 'App'
+                if (-not $chmod) { throw "chmod not found: cannot make $Path private" }
+                & $chmod 700 $dir
+                if ($LASTEXITCODE -eq 0) { & $chmod 600 $Path }
+                if ($LASTEXITCODE -ne 0) { throw "cannot make $Path private" }
+            }
+        }
+        [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
+    } catch {
+        throw
+    }
+}
+
 # ========== wrapper generator ==========
 
 # The functions these generators define, and the coreutils.ps1 ones that can hand

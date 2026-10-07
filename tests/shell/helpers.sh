@@ -47,9 +47,14 @@ assert_not_exists() {
     fi
 }
 
+# The assertions feed grep from a here-string, not from `printf | grep -q`:
+# grep -q exits at the first match, printf then dies of SIGPIPE, and pipefail
+# (above) turns that into a failed match. assert_contains and assert_match
+# then FAILed, and assert_not_contains PASSed, on a long actual that matched
+# early.
 assert_match() {
     local label="$1" pattern="$2" actual="$3"
-    if printf '%s\n' "$actual" | grep -qE "$pattern"; then
+    if grep -qE -- "$pattern" <<<"$actual"; then
         echo "  PASS: $label"
         ((PASS++)) || true
     else
@@ -61,7 +66,7 @@ assert_match() {
 
 assert_contains() {
     local label="$1" substring="$2" actual="$3"
-    if printf '%s\n' "$actual" | grep -qF -- "$substring"; then
+    if grep -qF -- "$substring" <<<"$actual"; then
         echo "  PASS: $label"
         ((PASS++)) || true
     else
@@ -271,7 +276,7 @@ PS1
 
 assert_not_contains() {
     local label="$1" substring="$2" actual="$3"
-    if printf '%s\n' "$actual" | grep -qF -- "$substring"; then
+    if grep -qF -- "$substring" <<<"$actual"; then
         echo "  FAIL: $label (should NOT contain '$substring')"
         ERRORS+=("$label")
         ((FAIL++)) || true

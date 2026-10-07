@@ -10,6 +10,9 @@ HELPERS_PS1="$DOTFILES/shell/pwsh/_helpers.ps1"
 FUNCTIONS_PS1="$DOTFILES/shell/pwsh/functions.ps1"
 
 make_noninteractive_source_copy "$FUNCTIONS_SH_GUARDED" "$FUNCTIONS_SH"
+# snippet.sh, for the cd cases a snippet runs.
+SNIPPET_SH="$TESTTMP/snippet_test.sh"
+make_noninteractive_source_copy "$DOTFILES/shell/posix/snippet.sh" "$SNIPPET_SH"
 
 # PowerShell functions.ps1 now depends on _helpers.ps1 (Initialize-Cache).
 # Create a combined PS1 that loads helpers first. It loads as an interactive
@@ -322,6 +325,56 @@ a.txt: OK" "$actual"
     assert_contains "$sh/dg -c counts an unreadable sums file" "1 sums file(s) unreadable" "$err"
     $run "$FUNCTIONS_SH" "cd '$d' && dg -c 256 SHA256SUMS" >/dev/null 2>&1
     assert_eq "$sh/dg -c with an algo exits 1" "1" "$?"
+
+    # Several files are hashed in runs, so the lines must still come in the
+    # order of the operands when a name GNU escapes (hashed alone) or a
+    # non-file sits between plain ones; and dg -c must give each *sum line to
+    # the right entry when an entry before it yields none (a directory, which
+    # stays unreadable when the tests run as root).
+    echo "[$sh] dg keeps the operands' order, and dg -c each entry's own verdict"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg h.txt 'back\\slash.txt' nosuch a.txt 2>&1")
+    assert_eq "$sh/dg several files in order around an escaped name and a non-file" "$EXPECTED_SHA256  h.txt
+$(printf 'y' | sha256sum | cut -d' ' -f1)  back\\slash.txt
+dg: 'nosuch' is not a file
+$(printf 'one' | sha256sum | cut -d' ' -f1)  a.txt" "$actual"
+    mkdir -p "$d/adir"
+    printf '%s  a.txt\n%s  adir\n%s  c.txt\n%s  h.txt\n' "$SHA256_ONE_LC" "$ZERO64" "$ZERO64" "${EXPECTED_SHA256^^}" > "$d/DIRS"
+    actual=$($run "$FUNCTIONS_SH" "cd '$d' && dg -c DIRS 2>/dev/null")
+    assert_eq "$sh/dg -c a directory entry FAILED, the next ones still matched" "a.txt: OK
+adir: FAILED
+c.txt: FAILED
+h.txt: OK" "$actual"
+
+    # dg ran its *sum tool once per file, inside two command substitutions,
+    # and dg -c added a tr and a subshell per line: a few thousand small
+    # files took 10 to 20 seconds where sha256sum takes milliseconds. Stubs
+    # log each call of the *sum tools and tr: a run of plain names is one
+    # call, dg -c makes one per algorithm (plus one per name GNU escapes),
+    # and parsing makes none, an uppercase hash included.
+    echo "[$sh] dg makes one *sum call per run of files, dg -c one per algorithm"
+    mkdir -p "$d/logbin"
+    for t in md5sum sha256sum sha512sum tr; do
+        printf '#!/bin/sh\necho %s >> "%s"\nexec "%s" "$@"\n' "$t" "$d/calls" "$(command -v "$t")" > "$d/logbin/$t"
+        chmod +x "$d/logbin/$t"
+    done
+    $run "$FUNCTIONS_SH" "cd '$d' && PATH='$d/logbin':\$PATH && dg h.txt a.txt b.txt c.txt >/dev/null && dg -c SHA256SUMS MIXED DIRS >/dev/null 2>&1; dg 5 a.txt c.txt >/dev/null"
+    actual=$(sort "$d/calls" | uniq -c | sed 's/^ *//')
+    assert_eq "$sh/dg *sum and tr calls" "2 md5sum
+4 sha256sum
+1 sha512sum" "$actual"
+    rm -rf "$d/logbin" "$d/calls" "$d/adir" "$d/DIRS"
+
+    # One call for every file must still fit on a command line: a glob of
+    # thousands of long names reaches a shell function whole, but exec
+    # refuses it ("Argument list too long"). A 512 KiB stack limit makes
+    # Linux cap the arguments at 128 KiB, under the 2500 names here.
+    echo "[$sh] dg and dg -c split a file list too long for one command line"
+    mkdir -p "$d/many"
+    (cd "$d/many" && for i in $(seq 1 2500); do : > "$(printf 'a-long-file-name-that-makes-the-argument-list-big-%05d.txt' "$i")"; done && sha256sum -- *.txt > ../MANY)
+    actual=$($run "$FUNCTIONS_SH" "cd '$d/many' && ulimit -s 512 && dg -- *.txt | grep -c '  a-long-' && dg -c ../MANY | grep -c ': OK\$'" 2>&1)
+    assert_eq "$sh/dg and dg -c hash all 2500 files" "2500
+2500" "$actual"
+    rm -rf "$d/many" "$d/MANY"
 
     # dg keeps its state in globals (POSIX sh has no local); none may outlive it.
     echo "[$sh] dg leaves no _dg_ variables behind"
@@ -1215,6 +1268,33 @@ $DH/a" "$out"
     out=$(dh_run "$sh" "i=0; while [ \$i -lt 30 ]; do cd '$DH/a'; cd '$DH/b'; i=\$((i + 1)); done; back -l | wc -l")
     assert_eq "$sh/back list capped at 50" "51" "$(printf '%s' "$out" | tr -d ' ')"
 
+    # The recorder keeps a count of the back entries rather than walking the
+    # list, so back, fwd and a dropped entry must each keep it right: off by
+    # one, the list stops at 49 or grows to 51. 55 moves fill the list to
+    # d54..d5; back 2 and fwd leave it at d53..d5; d52 is dropped; then five
+    # new moves add d54 and e1..e4 and push d5, d6 and d7 out.
+    echo "[$sh] the back list stays at 50 through back, fwd and a dropped entry"
+    out=$(dh_run "$sh" "i=1; while [ \$i -le 55 ]; do mkdir -p '$DH/d'\$i; cd '$DH/d'\$i; i=\$((i + 1)); done; back 2 >/dev/null; fwd >/dev/null; rmdir '$DH/d52'; back 2 2>/dev/null; for e in e1 e2 e3 e4 e5; do mkdir -p '$DH/'\$e; cd '$DH/'\$e; done; back -l | wc -l | tr -d ' '; back -l | head -n 2")
+    assert_eq "$sh/back list at 50 after back, fwd and a drop" "51
+ 50  ~/d8
+ 49  ~/d9" "$out"
+    rm -rf "$DH"/d[0-9]* "$DH"/e[0-9]
+
+    # A move at the cap used to rebuild the whole list, one line at a time:
+    # 50 to 300 times the cost of a plain cd, paid on every cd (in zsh by
+    # every builtin cd too, through chpwd). Traced, a move at the cap must
+    # take about the same steps as a move with three entries. The traced
+    # builtin cd records through chpwd in zsh, the call after it in bash.
+    echo "[$sh] a move at the cap takes the steps of a move with a short list"
+    out=$(dh_run "$sh" "cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && { set -x; builtin cd '$DH'; _den_dh_record; set +x; } 2>'$DH/short.trace'; i=0; while [ \$i -lt 30 ]; do cd '$DH/a'; cd '$DH/b'; i=\$((i + 1)); done; { set -x; builtin cd '$DH/c'; _den_dh_record; set +x; } 2>'$DH/cap.trace'; back -l | wc -l | tr -d ' '")
+    # Count traced commands (lines that start with PS4's +), not lines: some
+    # bash versions print an assignment's embedded newlines literally, so the
+    # 50-entry list alone added 100 lines to the cap trace in CI.
+    short=$(grep -c '^+' "$DH/short.trace")
+    cap=$(grep -c '^+' "$DH/cap.trace")
+    assert_eq "$sh/the list is at the cap" "51" "$out"
+    assert_eq "$sh/a move at the cap traces at most 10 more commands (short=$short, cap=$cap)" "1" "$((cap - short <= 10))"
+
     echo "[$sh] back -i picks an entry with fzf"
     out=$(dh_run "$sh" "PATH='$DH/fzfbin':\$PATH; export FZF_PICK=2; cd '$DH/a' && cd '$DH/b' && cd '$DH/c' && back -i && FZF_PICK=+2 && back -i && FZF_PICK='*' && back -i; echo rc=\$?; pwd")
     assert_eq "$sh/back -i back, forward, current" "$DH/a
@@ -1227,6 +1307,108 @@ rc=1" "$out"
 }
 
 dirhist_posix_cases bash
+
+# y sets a trap for its temp file, and afterwards used `trap -` on EXIT, INT,
+# TERM and HUP: that left the defaults, not the traps the user had (an EXIT
+# trap that kills ssh-agent, say), so they were gone for the rest of the
+# session. The yazi stub writes $YAZI_CWD to its --cwd-file.
+setup_ystub() {
+    mkdir -p "$DH/ybin" "$DH/a"
+    cat > "$DH/ybin/yazi" <<'STUB'
+#!/bin/sh
+for a; do
+    case $a in --cwd-file=*) printf '%s\n' "$YAZI_CWD" > "${a#--cwd-file=}" ;; esac
+done
+STUB
+    chmod +x "$DH/ybin/yazi"
+}
+
+# The trap listing after y must equal the one before it. The listings are
+# compared, not spelled out, because a shell that starts with a signal ignored
+# (SIGINT and SIGQUIT in a background job of a script, SIGHUP under nohup)
+# cannot trap it and lists it as ignored.
+TRAPS_SAME="if cmp -s '$DH/traps.before' '$DH/traps.after'; then echo traps kept; else diff '$DH/traps.before' '$DH/traps.after' || :; fi"
+echo "[bash] y keeps the caller's EXIT, INT, TERM and HUP traps"
+setup_ystub
+out=$(dh_run bash "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-int' INT; trap 'echo user-hup' HUP; trap -p > '$DH/traps.before'; y; pwd; trap -p > '$DH/traps.after'; $TRAPS_SAME")
+assert_eq "bash/y moves, keeps the traps, and the EXIT trap still runs" "$DH/a
+traps kept
+user-exit" "$out"
+
+# den's cd hands its arguments to zoxide only when cd is typed at the prompt
+# with no option. zoxide reads anything that is not a directory as keywords to
+# search for: `cd -P link` failed with "no match found" or jumped to a
+# directory whose path held "p" and "link", and in a function or a sourced
+# script a cd to a directory that did not exist jumped elsewhere instead of
+# failing. The stub __zoxide_z prints what it gets and, like zoxide's, moves
+# only to a lone existing directory. `bash -c` / `zsh -c` count as typed, and
+# `again` (stubbed here) replays a typed line, so it counts as typed too, as
+# does `snippet run` (the real one) at the prompt.
+cd_zoxide_cases() {
+    local sh="$1" out
+    rm -rf "$WORK/cdz"
+    mkdir -p "$WORK/cdz/real/sub" "$WORK/cdz/a"
+    ln -s "$WORK/cdz/real" "$WORK/cdz/link"
+    printf '%s\n' "cd '$WORK/cdz/a'" 'echo "sourced: $PWD"' 'HERE=$(cd -P "$OLDPWD/link" && pwd)' 'echo "HERE=$HERE"' > "$WORK/cdz/src.sh"
+    # cdz_run <commands>: in $WORK/cdz, with _helpers.sh and functions.sh
+    # loaded and the stub in place; stdout and stderr
+    cdz_run() {
+        (cd "$WORK/cdz" && "$sh" -c "source '$HELPERS_SH' && source '$FUNCTIONS_SH' && __zoxide_z() { echo \"zoxide \$*\"; if [ \$# -eq 1 ] && [ -d \"\$1\" ]; then builtin cd \"\$1\"; else return 1; fi; }; $1" 2>&1)
+    }
+
+    echo "[$sh] cd typed at the prompt goes to zoxide, also through eval, \$(...) and again"
+    out=$(cdz_run "cd proj; echo rc=\$?; cd -- proj; cd -; eval 'cd e'; x=\$(cd s); echo \"\$x\"; again() { eval \"\$1\"; }; again 'cd ag'")
+    assert_eq "$sh/typed cd, cd --, cd -, eval, \$(...), again" "zoxide proj
+rc=1
+zoxide -- proj
+zoxide -
+zoxide e
+zoxide s
+zoxide ag" "$out"
+
+    echo "[$sh] cd with an option goes to builtin cd"
+    out=$(cdz_run "x=\$(cd -P link && pwd); echo \"P=\$x\"; cd -L link && echo \"L=\$PWD\"")
+    assert_eq "$sh/cd -P and -L are builtin cd" "P=$WORK/cdz/real
+L=$WORK/cdz/link" "$out"
+
+    echo "[$sh] cd in a function or a sourced file is builtin cd"
+    out=$(cdz_run "f() { cd nosuch 2>/dev/null; echo \"f rc=\$?\"; cd a && echo \"f: \$PWD\"; }; f; builtin cd '$WORK/cdz'; . ./src.sh; g() { again 'cd ag'; }; again() { eval \"\$1\"; }; g 2>/dev/null; echo \"g rc=\$?\"")
+    assert_eq "$sh/cd in a function, a sourced file, again in a function" "f rc=1
+f: $WORK/cdz/a
+sourced: $WORK/cdz/a
+HERE=$WORK/cdz/real
+g rc=1" "$out"
+
+    echo "[$sh] cd in a snippet run at the prompt goes to zoxide; in a function it is builtin cd"
+    mkdir -p "$WORK/cdz/cfg/den"
+    printf 'j\tcd proj\n' > "$WORK/cdz/cfg/den/snippets"
+    out=$(XDG_CONFIG_HOME="$WORK/cdz/cfg" cdz_run "source '$SNIPPET_SH'; snippet run j 2>/dev/null; f() { snippet run j; }; f 2>/dev/null; echo \"f rc=\$?\"")
+    assert_eq "$sh/snippet run: typed; in a function: builtin cd" "zoxide proj
+f rc=1" "$out"
+
+    echo "[$sh] functions.sh sourced without _helpers.sh: cd is builtin cd, with no error"
+    out=$(cd "$WORK/cdz" && "$sh" -c "source '$FUNCTIONS_SH' && __zoxide_z() { echo zoxide; }; cd a && pwd" 2>&1)
+    assert_eq "$sh/cd without _den_typed" "$WORK/cdz/a" "$out"
+
+    echo "[$sh] cd with the wrappers off is builtin cd"
+    out=$(cdz_run "_DEN_WRAPPERS=0; cd proj 2>/dev/null; echo rc=\$?; cd a && pwd")
+    assert_eq "$sh/wrappers off" "rc=1
+$WORK/cdz/a" "$out"
+
+    # The real zoxide, where installed, with a database of its own: one entry
+    # whose path holds "p" and "link" is what `cd -P link` used to jump to.
+    if command -v zoxide >/dev/null 2>&1; then
+        mkdir -p "$WORK/cdz/my-proj/linkage" "$WORK/cdz/zo"
+        out=$(cd "$WORK/cdz" && _ZO_DATA_DIR="$WORK/cdz/zo" "$sh" -c "zoxide add '$WORK/cdz/my-proj/linkage' && source '$HELPERS_SH' && source '$FUNCTIONS_SH' && eval \"\$(zoxide init $sh --no-cmd)\" && x=\$(cd -P link && pwd); echo \"P=\$x\"; f() { cd linkage 2>/dev/null; echo \"f rc=\$?\"; }; f" 2>&1)
+        assert_eq "$sh/real zoxide: cd -P link, and cd in a function, stay builtin" "P=$WORK/cdz/real
+f rc=1" "$out"
+    else
+        echo "  SKIP: $sh/real zoxide (not installed)"
+    fi
+    rm -rf "$WORK/cdz"
+}
+
+cd_zoxide_cases bash
 
 # bash has no chpwd: the recorder runs from PROMPT_COMMAND, which is a string
 # or (bash 5.1+) an array, and must be joined once without breaking either.
@@ -1826,6 +2008,18 @@ assert_eq "zsh/back OLDPWD" "/tmp" "$actual"
 
 dirhist_posix_cases zsh
 
+# zsh kept the EXIT trap (one set in a function is the function's own), but
+# INT, TERM and HUP traps and TRAPINT-style functions were deleted.
+echo "[zsh] y keeps the caller's INT, TERM and HUP traps and TRAP functions"
+setup_ystub
+out=$(dh_run zsh "PATH='$DH/ybin':\$PATH; export YAZI_CWD='$DH/a'; trap 'echo user-exit' EXIT; trap 'echo user-hup' HUP; trap 'echo user-term' TERM; TRAPINT() { echo user-int; }; trap > '$DH/traps.before'; y; pwd; trap > '$DH/traps.after'; $TRAPS_SAME; if functions TRAPINT >/dev/null; then echo TRAPINT kept; else echo TRAPINT gone; fi")
+assert_eq "zsh/y moves, keeps the traps and TRAPINT, and the EXIT trap still runs" "$DH/a
+traps kept
+TRAPINT kept
+user-exit" "$out"
+
+cd_zoxide_cases zsh
+
 echo "[zsh] chpwd hook"
 out=$(zsh -c "source '$FUNCTIONS_SH' && source '$FUNCTIONS_SH' && print -r -- \${(j:,:)chpwd_functions}")
 assert_eq "zsh/chpwd hook added once" "_den_dh_record" "$out"
@@ -1836,6 +2030,37 @@ assert_eq "zsh/builtin cd, pushd, mkcd recorded" "  3  ~/start
   2  ~/a
   1  ~/b
   *  ~/c" "$out"
+
+# reload saves this session's history before it restarts zsh. It used `fc -W`,
+# which rewrites $HISTFILE from this session's own list: a line another session
+# saved after this one started is not in that list, so it was erased. An
+# interactive zsh reads the lines below from stdin and records each in its
+# history; `fc -R` loads the file as zsh does after ~/.zshrc, the append stands
+# in for another session that exits, and the restarted zsh is a stub that ends
+# the run. zoxide and starship are left off PATH, so nothing is cached.
+echo "[zsh] init.zsh: reload keeps the lines other sessions saved"
+ZR="$WORK/zreload"
+rm -rf "$ZR"
+mkdir -p "$ZR/home/.config/shell" "$ZR/bin"
+cp "$DOTFILES"/shell/posix/*.sh "$DOTFILES/shell/zsh/init.zsh" "$ZR/home/.config/shell/"
+printf '#!/bin/sh\nexit 0\n' > "$ZR/bin/zsh"
+chmod +x "$ZR/bin/zsh"
+printf 'old1\nold2\n' > "$ZR/home/.zsh_history"
+zr_path=$(path_without zoxide starship)
+(cd "$ZR/home" && HOME="$ZR/home" XDG_CACHE_HOME="$ZR/home/.cache" PATH="$zr_path" \
+    zsh -f -i >/dev/null 2>&1 <<EOF
+. ~/.config/shell/init.zsh
+fc -R
+echo from-A
+print -r -- from-B >> ~/.zsh_history
+hash zsh='$ZR/bin/zsh'
+reload
+EOF
+)
+out=$(grep -c -x -e old1 -e old2 -e from-B -e 'echo from-A' "$ZR/home/.zsh_history")
+assert_eq "zsh/reload keeps old1, old2 and the other session's from-B, adds echo from-A once" "4" "$out"
+assert_eq "zsh/reload keeps the other session's line" "from-B" "$(grep -x from-B "$ZR/home/.zsh_history")"
+rm -rf "$ZR"
 
 # =============================================================================
 # PowerShell tests
@@ -3348,6 +3573,89 @@ out=$(pwsh_bin=$(command -v pwsh); nozo_path=$(path_without zoxide)
 assert_eq "pwsh/init.ps1 prompt without zoxide shows no error" "zoxide: False
 stub:True>
 new errors: 0" "$out"
+
+# init.ps1's history handler keeps again/sagain out of the history and hands
+# every other line to the handler PSReadLine had: on PSReadLine 2.2+ the default
+# one, which answers MemoryOnly (kept out of the history file) for a line that
+# looks like it holds a secret. Loading init.ps1 a second time keeps that
+# handler, not den's own. PSReadLine loads first, as in an interactive session.
+echo "[pwsh] init.ps1's history handler keeps PSReadLine's secret filter"
+HIST_PS1="$TESTTMP/history_handler.ps1"
+cat > "$HIST_PS1" <<'PS1'
+param([string]$Den)
+Import-Module PSReadLine
+if ((Get-Module PSReadLine).Version -lt [version]'2.2') { 'SKIP'; return }
+$pre = (Get-PSReadLineOption).AddToHistoryHandler
+. (Join-Path $Den 'init.ps1')
+. (Join-Path $Den 'init.ps1')
+$h = (Get-PSReadLineOption).AddToHistoryHandler
+foreach ($l in '$env:GITHUB_TOKEN = "ghp_probe"', '$password = "hunter2"',
+    'ConvertTo-SecureString "p" -AsPlainText -Force', 'Get-Date', 'again 2', '  sagain') {
+    "$($h.Invoke($l))"
+}
+"kept: $([object]::ReferenceEquals($pre, $global:_DenPrevHistoryHandler))"
+PS1
+out=$(cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+    pwsh -NoProfile -NonInteractive -File "$HIST_PS1" "$DOTFILES/shell/pwsh" 2>/dev/null | tr -d '\r')
+if [ "$out" = SKIP ]; then
+    echo "  SKIP: pwsh/init.ps1 history handler (PSReadLine before 2.2 has no secret filter)"
+else
+    assert_eq "pwsh/init.ps1 history handler keeps secrets out of the file and drops again" "MemoryOnly
+MemoryOnly
+MemoryOnly
+MemoryAndFile
+False
+False
+kept: True" "$out"
+fi
+
+# A line that runs proxy add with a url that holds a password is kept in memory
+# only (out of the history file), whether the handler before den's is
+# PSReadLine's default one or a user's own; a line that handler leaves out stays
+# out, and a proxy line without a password, or a line that only names proxy and
+# add, gets that handler's answer.
+echo "[pwsh] init.ps1's history handler keeps a proxy password out of the file"
+HIST_PROXY_PS1="$TESTTMP/history_proxy.ps1"
+cat > "$HIST_PROXY_PS1" <<'PS1'
+param([string]$Den, [string]$User)
+Import-Module PSReadLine
+if ((Get-Module PSReadLine).Version -lt [version]'2.2') { 'SKIP'; return }
+if ($User) {
+    Set-PSReadLineOption -AddToHistoryHandler { param($l) if ($l -match 'mine') { return $false }; return $true }
+}
+. (Join-Path $Den 'init.ps1')
+$h = (Get-PSReadLineOption).AddToHistoryHandler
+foreach ($l in "proxy add c 'http://al:S3cr3t@p.corp:8080'", 'Proxy  Add c al:pw@p:1',
+    "proxy add mine 'http://al:pw@p:1'", 'proxy add u http://bob@p:1', 'proxy add h http://p:3128 .corp',
+    "cd ~/proxy; git add .; git commit -m 'fix: x'; git push git@github.com:me/proxy.git", 'echo mine', 'again') {
+    "$($h.Invoke($l))"
+}
+PS1
+for who in default user; do
+    out=$(cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+        pwsh -NoProfile -NonInteractive -File "$HIST_PROXY_PS1" "$DOTFILES/shell/pwsh" "$([ "$who" = user ] && echo 1)" 2>/dev/null | tr -d '\r')
+    if [ "$out" = SKIP ]; then
+        echo "  SKIP: pwsh/init.ps1 history handler and proxy passwords (PSReadLine before 2.2)"
+    elif [ "$who" = default ]; then
+        assert_eq "pwsh/init.ps1 history handler, PSReadLine's default before it: a proxy password is kept in memory only" "MemoryOnly
+MemoryOnly
+MemoryOnly
+MemoryAndFile
+MemoryAndFile
+MemoryAndFile
+MemoryAndFile
+False" "$out"
+    else
+        assert_eq "pwsh/init.ps1 history handler, the user's before it: a proxy password is kept in memory only" "MemoryOnly
+MemoryOnly
+False
+True
+True
+True
+False
+False" "$out"
+    fi
+done
 
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention

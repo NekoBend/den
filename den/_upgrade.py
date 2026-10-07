@@ -14,21 +14,38 @@ path: a checkout that ships uv.exe or den.cmd at its root must not be what
 uv's own tool bin dir (`uv tool dir --bin`), the one the upgrade just
 replaced, and falls back to PATH (cwd entries dropped) only when uv cannot
 name that dir.
+
+What --refresh may replace is decided BEFORE the upgrade, by this process,
+which still has the old bundled content (on disk in the tool venv until uv
+replaces it): every deployed file in each tool dir -- skills in either
+flavor, parent prompts in either profile, the shell files -- is compared byte
+for byte with what this version deploys, and the matches are den's own,
+unedited. The new den gets that list, with each file's SHA-256 as it was then,
+as a temporary plan file (`den install skills|shell --refresh-plan FILE`, see
+_install._install_refresh) and replaces only those, and only while they still
+hold those bytes: a file edited while uv ran is no longer den's. Everything
+else stays and is listed. A parent prompt that matches neither profile
+(hand-written, or edited) is not refreshed at all, and a tool dir without
+den's skills is not created. The plan also lists each file this version
+deploys into what is refreshed (a skill dir that is there, the shell files)
+that is missing from disk, so the new den does not bring back a file the user
+deleted, while it still adds the files that are new in its version. And it
+says whether den's optional shell files (the extras, the ~/.local/bin helpers)
+are on disk, so the shell is refreshed the way it was installed. No state is
+kept between runs.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from ._exe import find_tool, resolve_tool
-
-_REFRESH_STEPS = (
-    ("install", "skills", "--with-parent"),
-    ("install", "shell"),
-)
 
 
 def _windows() -> bool:
@@ -72,13 +89,216 @@ def _upgraded_den(uv: str) -> str | None:
     return find_tool("den", "den upgrade")
 
 
-def _refresh_steps(*, force: bool) -> tuple[tuple[str, ...], ...]:
-    """The redeploy commands. `den install` decides "this file is den's" by
-    comparing bytes, and after an upgrade EVERY file the new version changed
-    differs -- indistinguishable from a local edit. So a plain --refresh keeps
-    them all (silently, when stdin is not a tty) and deploys nothing. --force
-    is how a scripted refresh says "the deployed copy is den's, replace it"."""
-    return tuple((*step, "--force") if force else step for step in _REFRESH_STEPS)
+class _Matcher:
+    """A stager (see _install._Stager) that records which staged destinations
+    already hold exactly the staged bytes, i.e. are this den's own output, each
+    with the SHA-256 of those bytes: the new den replaces it only while it still
+    holds them (see _install._Writer). `absent` collects the destinations with
+    nothing at all on disk."""
+
+    def __init__(self) -> None:
+        self.matched: dict[Path, str] = {}
+        self.absent: set[Path] = set()
+
+    def stage(self, dest: Path, content: bytes) -> None:
+        try:
+            if not os.path.lexists(dest):
+                self.absent.add(dest)
+            elif dest.is_file() and dest.read_bytes() == content:
+                self.matched[dest] = hashlib.sha256(content).hexdigest()
+        except OSError:
+            pass  # unreadable: not provably den's
+
+
+class _Dests:
+    """A stager that only records the staged destinations."""
+
+    def __init__(self) -> None:
+        self.dests: set[Path] = set()
+
+    def stage(self, dest: Path, content: bytes) -> None:
+        self.dests.add(dest)
+
+
+def _shell_options() -> tuple[bool, bool, set[Path]]:
+    """(extras, posix bin, missing): whether any of den's optional shell files
+    is on disk, so the refresh installs the shell the way it was installed, and
+    which of the files a refresh with those options deploys are not on disk.
+    Without the two flags it ran a plain `install shell`: every extras file a
+    --no-extras install left out appeared, and den's own ~/.local/bin helpers
+    were never refreshed (no --bin and no terminal to ask)."""
+    from ._shell import _stage_shell_files
+
+    staged = {}
+    for extras, posix_bin in ((False, False), (True, False), (False, True)):
+        stager = _Dests()
+        _stage_shell_files(
+            stager, extras=extras, dry_run=False, announce=False, posix_bin=posix_bin
+        )
+        staged[extras, posix_bin] = stager.dests
+    core = staged[False, False]
+    extras_found = any(p.is_file() for p in staged[True, False] - core)
+    bin_found = any(p.is_file() for p in staged[False, True] - core)
+    deployed = core.union(
+        staged[True, False] if extras_found else (),
+        staged[False, True] if bin_found else (),
+    )
+    missing = {p for p in deployed if not os.path.lexists(p)}
+    return extras_found, bin_found, missing
+
+
+def _scan_skills(
+    target: Path, names: list[str], den_free: set[str]
+) -> tuple[dict, dict[Path, str], set[Path]] | None:
+    """(plan entry, den's unedited files, the files of its skills that are
+    missing) for one skills dir, or None when no deployed file there is
+    byte-identical to this den's: den never deployed there (or every file was
+    edited), and the refresh must not create it."""
+    from ._install import _install_skill
+
+    present = [n for n in names if (target / n).is_dir()]
+    aware, free = _Matcher(), _Matcher()
+    for name in present:
+        _install_skill(name, target, aware)
+        if name in den_free:
+            _install_skill(name, target, free, no_den_cli=True)
+    owned = aware.matched | free.matched
+    if not owned:
+        return None
+    # Which flavor was deployed: only the --no-den-cli skills differ between
+    # the two, so only their files say anything.
+    free_dirs = {target / n for n in den_free}
+    aware_only = {
+        p for p in aware.matched.keys() - free.matched if free_dirs & set(p.parents)
+    }
+    no_den_cli = bool(free.matched.keys() - aware.matched) and not aware_only
+    # One flavor can bundle files the other does not, so the missing files of a
+    # --no-den-cli skill are those of the flavor the refresh deploys.
+    absent = {
+        p for p in aware.absent if not (no_den_cli and free_dirs & set(p.parents))
+    }
+    if no_den_cli:
+        absent |= free.absent
+    entry = {"target": str(target), "names": present, "no_den_cli": no_den_cli}
+    return entry, owned, absent
+
+
+def _parent_profile(parent: Path, parent_file: str) -> tuple[str, str] | None:
+    """(the profile whose parent prompt `parent` holds byte for byte, the
+    SHA-256 of those bytes), or None."""
+    from ._install import _parent_source
+
+    on_disk = parent.read_bytes()
+    for profile in ("frontier", "weak"):
+        src = _parent_source(parent_file, profile)
+        if src.is_file() and src.read_bytes() == on_disk:
+            return profile, hashlib.sha256(on_disk).hexdigest()
+    return None
+
+
+def _scan_shell(owned: dict[Path, str], absent: set[Path]) -> dict:
+    """The plan's shell fields. Adds den's unedited shell files to `owned` and,
+    when there are any (the shell is refreshed), the missing ones to `absent`."""
+    from ._shell import _stage_shell_files
+
+    shell = _Matcher()
+    _stage_shell_files(
+        shell, extras=True, dry_run=False, announce=False, posix_bin=True
+    )
+    owned.update(shell.matched)
+    extras, posix_bin, missing = _shell_options()
+    if shell.matched:
+        absent |= missing
+    return {
+        "shell": bool(shell.matched),
+        "shell_extras": extras,
+        "shell_bin": posix_bin,
+    }
+
+
+def _refresh_plan() -> tuple[dict, list[Path]]:
+    """(the refresh plan, parent prompts left alone). Must run before the
+    upgrade: it reads THIS version's bundled content. See the module docstring;
+    the plan's shape is _install.load_refresh_plan's."""
+    from ._install import _PLAN_VERSION, _TOOLS, _skill_names, _tool_paths
+    from ._uninstall import _den_free_skills
+
+    names = _skill_names()
+    den_free = _den_free_skills()
+    owned: dict[Path, str] = {}
+    absent: set[Path] = set()
+    skills: list[dict] = []
+    parents: list[dict] = []
+    left_alone: list[Path] = []
+    seen: set[Path] = set()
+    for tool in _TOOLS:
+        target, parent_dir, parent_file = _tool_paths(tool)
+        if target not in seen:
+            seen.add(target)
+            scanned = _scan_skills(target, names, den_free)
+            if scanned is not None:
+                skills.append(scanned[0])
+                owned.update(scanned[1])
+                absent |= scanned[2]
+        parent = parent_dir / parent_file
+        if parent in seen or not parent.is_file():
+            continue
+        seen.add(parent)
+        matched = _parent_profile(parent, parent_file)
+        if matched is None:
+            left_alone.append(parent)
+            continue
+        owned[parent] = matched[1]
+        parents.append(
+            {"path": str(parent), "file": parent_file, "profile": matched[0]}
+        )
+    shell = _scan_shell(owned, absent)
+    return {
+        "den_refresh_plan": _PLAN_VERSION,
+        "known_skills": names,
+        "skills": skills,
+        "parents": parents,
+        **shell,
+        "owned": {str(p): owned[p] for p in sorted(owned)},
+        "absent": sorted(str(p) for p in absent),
+    }, left_alone
+
+
+def _refresh_steps(plan: dict, plan_file: str, *, force: bool) -> list[tuple[str, ...]]:
+    """The redeploy commands for the new den: skills (and parents) when den's
+    were found anywhere, shell when den's shell files were. --force also
+    replaces the files the plan does not prove are den's, each backed up to
+    <file>.den.bak first."""
+    extra = ("--force",) if force else ()
+    steps: list[tuple[str, ...]] = []
+    if plan["skills"] or plan["parents"]:
+        steps.append(("install", "skills", "--refresh-plan", plan_file, *extra))
+    if plan["shell"]:
+        steps.append(("install", "shell", "--refresh-plan", plan_file, *extra))
+    return steps
+
+
+def _describe(plan: dict, left_alone: list[Path]) -> None:
+    """The dry-run's account of the plan, one line each."""
+    for entry in plan["skills"]:
+        found = len(entry["names"])
+        print(f"[dry-run] would refresh skills in {entry['target']} ({found} found)")
+    for entry in plan["parents"]:
+        print(f"[dry-run] would refresh {entry['path']} ({entry['profile']} parent)")
+    if plan["shell"]:
+        extras = "with" if plan["shell_extras"] else "without"
+        helpers = "with" if plan["shell_bin"] else "without"
+        print(
+            f"[dry-run] would refresh the shell files ({extras} the extras,"
+            f" {helpers} the ~/.local/bin helpers)"
+        )
+    if not plan["skills"] and not plan["parents"] and not plan["shell"]:
+        print("[dry-run] nothing to refresh: no deployed den files found")
+    for parent in left_alone:
+        print(
+            f"[dry-run] would leave {parent} alone: it matches neither parent den"
+            " deploys (hand-written or edited)"
+        )
 
 
 def _usage() -> None:
@@ -88,15 +308,17 @@ def _usage() -> None:
         "\n"
         "Upgrade den itself (runs `uv tool upgrade den`).\n"
         "\n"
-        "  --refresh  after upgrading, redeploy the bundled content by running\n"
-        "             `den install skills --with-parent` and `den install shell`\n"
-        "             with the new binary\n"
-        "  --force    pass --force to those redeploy steps, overwriting deployed\n"
-        "             files that differ. After an upgrade every file the new\n"
-        "             version changed differs, so a non-interactive --refresh\n"
-        "             without it keeps them all and deploys nothing (it then\n"
-        "             exits non-zero rather than reporting success).\n"
-        "  --dry-run  print the commands without running anything"
+        "  --refresh  after upgrading, redeploy with the new binary: the skills\n"
+        "             in every tool dir that has den's, the parent prompts den\n"
+        "             deployed (in the same profile), and the shell files. Only\n"
+        "             files still exactly as the old version deployed them are\n"
+        "             replaced; edited ones are kept and listed, deleted ones\n"
+        "             stay deleted, and a parent prompt not exactly as den\n"
+        "             deployed it (edited or hand-written) is never touched.\n"
+        "  --force    also replace the kept skill and shell files, copying\n"
+        "             each to <file>.den.bak first, and create the deleted\n"
+        "             ones (never a parent prompt)\n"
+        "  --dry-run  print what would be refreshed without running anything"
     )
 
 
@@ -124,7 +346,6 @@ def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag
             " redeployed without it.",
             file=sys.stderr,
         )
-    steps = _refresh_steps(force=force)
 
     uv, refusal = resolve_tool("uv")
     if refusal:
@@ -141,11 +362,23 @@ def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag
         )
         return 1
 
+    # Before the upgrade: only this process can tell which deployed files are
+    # its own (it reads the bundled content uv is about to replace).
+    plan: dict = {}
+    left_alone: list[Path] = []
+    if refresh:
+        try:
+            plan, left_alone = _refresh_plan()
+        except (OSError, ValueError) as exc:
+            print(f"den upgrade: cannot plan the refresh: {exc}", file=sys.stderr)
+            return 1
+
     upgrade_args = ["tool", "upgrade", "den"]
     if dry_run:
         print(f"[dry-run] would run: uv {' '.join(upgrade_args)}")
         if refresh:
-            for step in steps:
+            _describe(plan, left_alone)
+            for step in _refresh_steps(plan, "<plan>", force=force):
                 print(f"[dry-run] would run: den {' '.join(step)}")
         return 0
 
@@ -176,28 +409,41 @@ def main(  # ruff: ignore[too-many-return-statements, too-many-branches]  # flag
     den = _upgraded_den(uv)
     if not den:
         print(
-            "den upgrade: `den` not found on PATH after the upgrade; run"
-            " `den install skills --with-parent` and `den install shell`"
-            " manually.",
+            "den upgrade: `den` not found on PATH after the upgrade; redeploy"
+            " manually with `den install skills` and `den install shell`.",
             file=sys.stderr,
         )
         return 1
-    for step in steps:
-        proc = subprocess.run([den, *step])
-        if proc.returncode != 0:
-            # Not "nothing was deployed": an install step exits non-zero when it
-            # KEPT even one modified file, having deployed the rest, and a later
-            # step fails only after every earlier one already succeeded.
-            print(
-                f"den upgrade: `den {' '.join(step)}` exited"
-                f" {proc.returncode}; the refresh did not complete. Some files"
-                " may already be deployed."
-                + (
-                    ""
-                    if force
-                    else " Re-run `den upgrade --refresh --force` to deploy the rest."
-                ),
-                file=sys.stderr,
-            )
-            return proc.returncode
+    return _run_refresh(den, plan, left_alone, force=force)
+
+
+def _run_refresh(den: str, plan: dict, left_alone: list[Path], *, force: bool) -> int:
+    """Hand the plan to the upgraded `den` and run its redeploy steps. Only
+    stdlib from here on: the den package on disk is the NEW version now, and an
+    import would mix it into this old process."""
+    with tempfile.TemporaryDirectory(prefix="den-refresh-") as td:
+        plan_file = Path(td) / "plan.json"
+        plan_file.write_text(json.dumps(plan), encoding="utf-8")
+        steps = _refresh_steps(plan, str(plan_file), force=force)
+        if not steps:
+            print("den upgrade: nothing to refresh (no deployed den files found)")
+        for step in steps:
+            proc = subprocess.run([den, *step])
+            if proc.returncode != 0:
+                # Not "nothing was deployed": a step fails after deploying what
+                # it could, and a later step fails only after every earlier one
+                # already succeeded.
+                print(
+                    f"den upgrade: `den {' '.join(step[:2])}` exited"
+                    f" {proc.returncode}; the refresh did not complete. Some"
+                    " files may already be deployed.",
+                    file=sys.stderr,
+                )
+                return proc.returncode
+    for parent in left_alone:
+        print(
+            f"den upgrade: left {parent} alone: it matches neither parent den"
+            " deploys (hand-written or edited)",
+            file=sys.stderr,
+        )
     return 0

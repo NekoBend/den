@@ -123,4 +123,5 @@ with a bare `-Severity Error`: with no `-Settings` the analyzer picks up a
 `PSScriptAnalyzerSettings.psd1` sitting next to the file it is checking, and
 that file's `CustomRulePath` is `Import-Module`d - checked-out content
 running as you. `find-references.py` resolves `function` / `filter` /
-`class` / `enum` definitions with no pwsh dependency.
+`class` / `enum` definitions, ignoring case as PowerShell does, with no pwsh
+dependency.

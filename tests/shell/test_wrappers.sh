@@ -787,6 +787,68 @@ actual=$(PATH="$WORK/lsdstub:$PATH" run_pwsh "$WRAPPERS_PS1_DESKTOP" "\$env:_DEN
 assert_eq "pwsh/lt on 5.1 with lsd still runs lsd" "stub lsd --tree src" "$actual"
 
 # =============================================================================
+# Where the wrappers run the modern tool (stand-in modern tools)
+# =============================================================================
+# Typed at the prompt, a wrapper named after its native command (ls, cat,
+# grep, find) runs the modern tool; in a function (a user's own included) or a
+# sourced file it runs the native command that code was written for, as
+# builtin cd replaces den's zoxide cd there. eval, $(...), `again` (stubbed here) and `snippet run` / `snippet
+# pick` at the prompt count as typed; `bash -c` / `zsh -c` count as the prompt. The modern stand-ins print their
+# name and arguments. den's own names (la, ll, lla, lt, llt, ripgrep) and the
+# w names mean nothing else, so they always run the modern tool.
+echo ""
+echo "================================================"
+echo "  Testing where the wrappers run the modern tool"
+echo "================================================"
+printf 'apple\nbanana\n' > "$WORK/typed.txt"
+printf '%s\n' "grep banana typed.txt" "ls -d ." > "$WORK/typed_src.sh"
+# snippet.sh with a store of one snippet, and an fzf stand-in that picks the
+# first line.
+SNIPPET_SH="$DOTFILES/shell/posix/snippet.sh"
+SNIP_BIN="$TESTTMP/snipbin"
+mkdir -p "$SNIP_BIN" "$WORK/snipcfg/den"
+printf '#!/bin/sh\nhead -n 1\n' > "$SNIP_BIN/fzf"
+chmod +x "$SNIP_BIN/fzf"
+printf 'g\tgrep banana typed.txt\n' > "$WORK/snipcfg/den/snippets"
+for _sh in bash zsh; do
+    _run="run_${_sh}_i"
+    echo "[$_sh] typed at the prompt: the modern tool, also through eval, \$(...) and again"
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK'; grep banana typed.txt; eval 'cat typed.txt'; x=\$(find .); echo \"\$x\"; again() { eval \"\$1\"; }; again 'ls -d .'")
+    assert_eq "$_sh/typed: rg, bat, fd, lsd" "modern rg banana typed.txt
+modern bat --style=plain --paging=never typed.txt
+modern fd .
+modern lsd -d ." "$actual"
+
+    echo "[$_sh] in a function or a sourced file: the native command"
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK'; f() { grep banana typed.txt; cat typed.txt; ls -d .; find typed.txt; }; f; . ./typed_src.sh; again() { eval \"\$1\"; }; g() { again 'grep apple typed.txt'; }; g")
+    assert_eq "$_sh/function, sourced file, again in a function: native" "banana
+apple
+banana
+.
+typed.txt
+banana
+.
+apple" "$actual"
+
+    echo "[$_sh] snippet run and pick at the prompt count as typed; in a function they do not"
+    actual=$(PATH="$SNIP_BIN:$MODERN_STANDINS:$PATH" XDG_CONFIG_HOME="$WORK/snipcfg" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" ". '$SNIPPET_SH'; cd '$WORK'; snippet run g; snippet pick; f() { snippet run g; }; f")
+    assert_eq "$_sh/snippet run, pick: modern; in a function: native" "modern rg banana typed.txt
+modern rg banana typed.txt
+banana" "$actual"
+
+    echo "[$_sh] in a function, den's own names and the w names stay modern"
+    actual=$(PATH="$MODERN_STANDINS:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "f() { la a; ll b; lla c; lt x; llt v; ripgrep y; grepw z; lsw w; }; f")
+    assert_eq "$_sh/function: la, ll, lla, lt, llt, ripgrep, grepw, lsw modern" "modern lsd -a a
+modern lsd -l b
+modern lsd -la c
+modern lsd --tree x
+modern lsd -l --tree v
+modern rg y
+modern rg z
+modern lsd w" "$actual"
+done
+
+# =============================================================================
 # Wrapper notice of the real wrappers (stub modern tools)
 # =============================================================================
 # The fallback tests above run without the modern tools; here stub lsd/bat on
@@ -836,6 +898,10 @@ for _sh in bash zsh; do
     echo "[$_sh] w-suffix names print no notice"
     actual=$("$_run" "$WRAPPERS_SH" "lsw >/dev/null; catw /dev/null")
     assert_eq "$_sh/notice none for lsw catw" "" "$actual"
+
+    echo "[$_sh] a wrapper a function runs prints no notice (it runs the native command)"
+    actual=$("$_run" "$WRAPPERS_SH" "f() { ls >/dev/null; cat /dev/null; }; f")
+    assert_eq "$_sh/notice none for ls cat in a function" "" "$actual"
 done
 
 echo "[pwsh] real wrappers print the notice; w-suffix names do not"

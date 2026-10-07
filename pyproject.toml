@@ -74,10 +74,6 @@ ignore = [
 # _ui.py IS the optional-dependency fallback layer: questionary and rich are
 # probed and any failure degrades to plain stdin prompts on purpose.
 "den/_ui.py" = ["BLE001", "S110"]
-# The deployed skill scripts are standalone (no den import), and this one
-# still starts git by bare name; the change that gives the skill scripts their
-# own resolver drops this entry.
-"agents/src/shared/scripts/check-broken-refs.py" = ["S607"]
 
 [build-system]
 requires = ["hatchling"]

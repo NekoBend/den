@@ -3,7 +3,8 @@
 `docker/ubuntu/Dockerfile` builds the development container this repo is worked
 on in: Ubuntu 26.04 with an unprivileged `dev` user, the language toolchains,
 the coding-agent CLIs, and den with its shell setup, skills and parent prompts.
-The build clones den from GitHub, so it reads nothing from the checkout.
+The build fetches den's `main` branch from GitHub, so it reads nothing from the
+checkout.
 
 ## What the image contains
 
@@ -16,10 +17,11 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, broot, du-dust, eza, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, nvm + Node, acpx (plus its Claude skill), and the claude, codex, grok, muse and antigravity (`agy`) CLIs |
 | `utilities` | gh, bubblewrap, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; rsync built from source; rclone |
-| `workspace` | den (`uv tool install`), then `den install shell --force --bin --zsh-plugins` and `den install skills --tool claude --tool codex --with-parent --force`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
+| `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins` and `den install skills --tool claude --tool codex --with-parent --force`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
-User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`, `~/.nvm`),
-and the image puts all of them on `PATH`.
+User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
+`~/.nvm/current/bin`). They are on `dev`'s `PATH`, not the image's: see
+[Run](#run).
 
 PowerShell and opencode are left out on purpose; install them in the container
 when you need them.
@@ -38,12 +40,23 @@ docker buildx build --load -t den-dev -f docker/ubuntu/Dockerfile docker/ubuntu
 
 The context directory is never read, so any small directory works. To give
 `dev` your host IDs at build time, so the container never has to remap them,
-add `--build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)"`.
+add `--build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)"`. Do this
+when your UID or GID is not 1000 (macOS, LDAP and second accounts): remapping
+at run time re-owns everything in `/home/dev`, and on overlayfs that copies
+about 2 GB into each new container before the shell starts.
 
 Downloads and compile outputs for cargo, npm and uv go to BuildKit cache
 mounts, so a rebuild reuses them. Most installers fetch the latest release, and
 layer caching keeps whichever release was fetched first. Add `--no-cache` when
 you want every tool refreshed.
+
+den is the exception: each build resolves den's `main` to a commit, so a
+rebuild after `main` moves redoes the `workspace` stage and nothing before it.
+To redo that stage when `main` has not moved, for example to pick up new
+releases of den's Python dependencies or of the stage's apt packages (tzdata,
+GNU coreutils), add `--no-cache-filter workspace`; the Rust tools are not
+recompiled. The zsh plugins den installs are pinned to commits in den itself,
+so they change only when `main` does.
 
 ### Build ARGs
 
@@ -88,8 +101,8 @@ prints a warning that shows this command.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it and re-owns the files in `/home/dev` that had the old IDs. |
-| `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. |
+| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs den-dev`). On overlayfs the re-owning copies about 2 GB into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
+| `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. |
 
 On a root start, the entrypoint also makes `dev` the owner of `/workspace`
@@ -97,6 +110,49 @@ when nothing is mounted there. Changing IDs needs the root start: do not pass
 a non-root `--user` to `docker run`. With a non-root `--user`, the entrypoint
 rejects `FIX_WORKSPACE_OWNERSHIP=1` and refuses to start unless the IDs
 already match.
+
+### PATH and HOME in `docker exec`
+
+`docker exec` starts every process, root's included, with the image's
+environment. Its `PATH` holds only root-owned system directories, so a
+command that a root exec looks up by name never comes from a directory `dev`
+can write. `dev`'s tool directories (`~/.nvm/current/bin`, `~/.local/bin`,
+`~/.cargo/bin`) are added by the entrypoint and, for users other than root,
+by `/etc/zsh/zshenv`, which every zsh reads, and `/etc/bash.bashrc`, which
+only an interactive bash reads. So `docker exec -it --user dev den-dev zsh`
+works as it is, but a `dev` command run without a shell needs zsh (`zsh -c`
+or `zsh -lc`) or its full path; `bash -c` and `sh -c` do not add them:
+
+```sh
+docker exec --user dev den-dev zsh -lc 'claude --version'
+docker exec --user dev den-dev /home/dev/.local/bin/claude --version
+```
+
+A root zsh, an interactive root bash and a root login shell (`bash -l`,
+`sh -l`) also get `HOME=/root` back instead of the image's `/home/dev`, so
+they read root's startup files, not `dev`'s, and a root bash saves its history
+to `/root/.bash_history`.
+
+A root command run without a shell, or through `bash -c` or `sh -c`, keeps
+`HOME=/home/dev`, and tools then read files `dev` can write as root's
+configuration: dpkg reads `~/.dpkg.cfg`, `python3` (which package scripts
+run, for example through `py3compile`) runs `.pth` files from the user
+site-packages under `~/.local`, and git reads `~/.gitconfig`. Run root
+administration from a root shell (`docker exec -it den-dev zsh`), or pass
+`-e HOME=/root`:
+
+```sh
+docker exec -e HOME=/root den-dev apt-get install -y <package>
+```
+
+### zsh completion
+
+For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`: den's
+`init.zsh` runs `compinit` itself, so the extra full `compinit` that Ubuntu's
+`/etc/zsh/zshrc` runs before den's would only add about 12 ms to every
+shell. den's `compinit -C` reuses `~/.zcompdump` as it is, so after you add
+completion functions (an apt package, a new tool), delete `~/.zcompdump` and
+start a new shell. A new container starts without one.
 
 ## Keeping state across rebuilds
 

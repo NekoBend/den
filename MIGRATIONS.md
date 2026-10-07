@@ -127,6 +127,20 @@ Get-ChildItem ~/.claude/skills, ~/.agents/skills, ~/.copilot/skills, `
   ~/.codex/skills -Recurse -Include go.md, java.md, csharp.md | Remove-Item
 ```
 
+## 6. claude hooks moved to `.claude/settings.local.json` (2026-10)
+
+den used to write its claude hook commands, which pin this machine's
+absolute `.den` path, into the committed `.claude/settings.json`. They now
+go to Claude Code's personal `.claude/settings.local.json`. Nothing is
+orphaned (`den hook list` and `den uninstall hook` still read the old
+file), but the old entries stay in the shared file until you re-run the
+install in each workspace that has them, which moves them and keeps
+`settings.local.json` out of git:
+
+```sh
+den install hook --tool claude
+```
+
 ## Why there is no `den prune`
 
 Deliberate: a prune command needs a durable record of everything den has

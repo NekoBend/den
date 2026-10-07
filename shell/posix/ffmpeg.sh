@@ -144,6 +144,15 @@ togif() {
     _filters="fps=${_fps},scale=${_w}:-1:flags=lanczos"
     _palette="$(mktemp "${TMPDIR:-/tmp}/palette.XXXXXX.png")" || return 1
     # NOTE: trap, chmod 600 and -- are required — do not remove.
+    # The palette trap is togif's own: afterwards the caller's EXIT, INT,
+    # TERM and HUP traps come back, not the defaults. zsh puts them back
+    # itself when togif returns (local_traps); bash keeps them to eval.
+    _tg_traps=
+    if [ -n "${ZSH_VERSION-}" ]; then
+      setopt local_options local_traps
+    else
+      _tg_traps=$(trap -p EXIT INT TERM HUP)
+    fi
     trap 'rm -f -- "$_palette"' EXIT INT TERM HUP
     chmod 600 -- "$_palette" 2>/dev/null
     ffmpeg -hide_banner -loglevel error -y -i "$_in" \
@@ -152,6 +161,8 @@ togif() {
            -lavfi "${_filters} [x]; [x][1:v] paletteuse" -- "$_out"
     _rc=$?
     trap - EXIT INT TERM HUP
+    eval "$_tg_traps"
+    unset _tg_traps
     rm -f -- "$_palette"
     return "$_rc"
   fi
