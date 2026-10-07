@@ -3329,6 +3329,51 @@ False
 kept: True" "$out"
 fi
 
+# A line that runs proxy add with a url that holds a password is kept in memory
+# only (out of the history file), whether the handler before den's is
+# PSReadLine's default one or a user's own; a line that handler leaves out stays
+# out, and a proxy line without a password gets that handler's answer.
+echo "[pwsh] init.ps1's history handler keeps a proxy password out of the file"
+HIST_PROXY_PS1="$TESTTMP/history_proxy.ps1"
+cat > "$HIST_PROXY_PS1" <<'PS1'
+param([string]$Den, [string]$User)
+Import-Module PSReadLine
+if ((Get-Module PSReadLine).Version -lt [version]'2.2') { 'SKIP'; return }
+if ($User) {
+    Set-PSReadLineOption -AddToHistoryHandler { param($l) if ($l -match 'mine') { return $false }; return $true }
+}
+. (Join-Path $Den 'init.ps1')
+$h = (Get-PSReadLineOption).AddToHistoryHandler
+foreach ($l in "proxy add c 'http://al:S3cr3t@p.corp:8080'", 'Proxy  Add c al:pw@p:1',
+    "proxy add mine 'http://al:pw@p:1'", 'proxy add u http://bob@p:1', 'proxy add h http://p:3128 .corp',
+    'echo mine', 'again') {
+    "$($h.Invoke($l))"
+}
+PS1
+for who in default user; do
+    out=$(cd "$DH/start" && HOME="$DH" XDG_DATA_HOME="$DH/.local/share" PATH="$DH/stbin:$PATH" \
+        pwsh -NoProfile -NonInteractive -File "$HIST_PROXY_PS1" "$DOTFILES/shell/pwsh" "$([ "$who" = user ] && echo 1)" 2>/dev/null | tr -d '\r')
+    if [ "$out" = SKIP ]; then
+        echo "  SKIP: pwsh/init.ps1 history handler and proxy passwords (PSReadLine before 2.2)"
+    elif [ "$who" = default ]; then
+        assert_eq "pwsh/init.ps1 history handler, PSReadLine's default before it: a proxy password is kept in memory only" "MemoryOnly
+MemoryOnly
+MemoryOnly
+MemoryAndFile
+MemoryAndFile
+MemoryAndFile
+False" "$out"
+    else
+        assert_eq "pwsh/init.ps1 history handler, the user's before it: a proxy password is kept in memory only" "MemoryOnly
+MemoryOnly
+False
+True
+True
+False
+False" "$out"
+    fi
+done
+
 # =============================================================================
 # Stderr format tests — Write-Error double-prefix prevention
 # =============================================================================

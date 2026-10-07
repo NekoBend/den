@@ -388,6 +388,54 @@ env=$SECRET_URL" "$actual"
     else
         echo "  SKIP: pwsh/proxy unreadable store (running as root)"
     fi
+
+    # A real PSReadLine session, with init.ps1 loaded and the history file in
+    # WORK: pwsh reads its lines from a terminal, which a private tmux server
+    # (its socket in TESTTMP) gives it. PATH holds pwsh's directory and the
+    # system ones only. Without tmux the case is skipped; test_functions.sh checks
+    # the answers of init.ps1's history handler either way.
+    if command -v tmux >/dev/null 2>&1; then
+        echo "[pwsh] a password in proxy add keeps the line out of PSReadLine's history file"
+        reset_conf
+        rm -rf "${HIST_DIR:?}"
+        mkdir -p "$HIST_DIR"
+        PS_HIST="$HIST_DIR/pwsh_history.txt"
+        TMUX_SOCK="$TESTTMP/tmux.sock"
+        ptmux() { tmux -S "$TMUX_SOCK" -f /dev/null "$@"; }
+        # until <seconds> <command>... - run the command every 0.1s until it succeeds.
+        until_ok() {
+            local n=$(($1 * 10))
+            shift
+            while [ "$n" -gt 0 ]; do
+                "$@" && return 0
+                sleep 0.1
+                n=$((n - 1))
+            done
+            return 1
+        }
+        pane_has() { ptmux capture-pane -p 2>/dev/null | grep -qF -- "$1"; }
+        hist_has() { grep -qxF -- "$1" "$PS_HIST" 2>/dev/null; }
+        env -i HOME="$HIST_DIR" PATH="$(dirname "$(command -v pwsh)"):/usr/bin:/bin" TERM=xterm \
+            XDG_CONFIG_HOME="$XDG_CONFIG_HOME" XDG_DATA_HOME="$HIST_DIR/data" \
+            tmux -S "$TMUX_SOCK" -f /dev/null new-session -d -x 200 -y 50 \
+            "pwsh -NoLogo -NoProfile -NoExit -Command \". '$DOTFILES/shell/pwsh/init.ps1'; Set-PSReadLineOption -HistorySavePath '$PS_HIST'; function global:prompt { 'READY> ' }\""
+        if until_ok 60 pane_has 'READY>'; then
+            for line in "$SECRET_LINE" 'proxy add u http://bob@p:1' "'history-done'"; do
+                ptmux send-keys -l "$line"
+                ptmux send-keys Enter
+            done
+            until_ok 30 hist_has "'history-done'"
+            assert_eq "pwsh/history: only the line with a password is left out" "proxy add u http://bob@p:1
+'history-done'" "$(cat "$PS_HIST" 2>&1)"
+            ptmux send-keys -l exit
+            ptmux send-keys Enter
+        else
+            assert_eq "pwsh/history: the session started" "READY>" "$(ptmux capture-pane -p 2>&1)"
+        fi
+        ptmux kill-server 2>/dev/null
+    else
+        echo "  SKIP: pwsh/history in a real PSReadLine session (tmux not installed)"
+    fi
 else
     echo "pwsh not found; skipping pwsh proxy tests"
 fi

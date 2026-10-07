@@ -7,7 +7,9 @@
 # it only defines these functions and that variable, so (like cheat.ps1) it is not
 # gated. A url may carry a password (http://user:password@host:port): the store is
 # written by _DenWritePrivate (_helpers.ps1, which init.ps1 loads first), 0600 in a
-# 0700 directory off Windows, and add/on/ls/status print it as user:***@host.
+# 0700 directory off Windows, and add/on/ls/status print it as user:***@host. The
+# line that typed such a url stays out of PSReadLine's history file: init.ps1's
+# history handler asks _ProxySecretLine.
 
 # The variable exists from load on, empty until `proxy on`: a caller's Set-StrictMode
 # makes reading one that was never set an error. Tested rather than assigned, so a
@@ -49,6 +51,19 @@ function _ProxyShow([string]$Url) {
     $colon = $rest.IndexOf(':')
     if ($at -lt 0 -or $colon -lt 0 -or $colon -gt $at) { return $Url }
     $pre + $rest.Substring(0, $colon) + ':***' + $rest.Substring($at)
+}
+
+# _ProxySecretLine <line> - whether a command line runs proxy add with a url that
+# holds a password, as _ProxyShow finds one: in the text after "proxy" and then
+# "add", once every :// is taken out, a : comes before the last @. It reads the
+# text only, so it errs toward yes, as proxy.sh's _proxy_secret_line does: a line
+# kept out of the history file for nothing costs less than a password in it.
+function _ProxySecretLine([string]$Line) {
+    $m = [regex]::Match($Line, 'proxy.*?add', 'IgnoreCase, Singleline')
+    if (-not $m.Success) { return $false }
+    $t = $Line.Substring($m.Index + $m.Length).Replace('://', '')
+    $at = $t.LastIndexOf('@')
+    $at -gt 0 -and $t.Substring(0, $at).Contains(':')
 }
 
 function _ProxyFields([string]$Line) {
