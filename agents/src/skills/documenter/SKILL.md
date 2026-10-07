@@ -98,198 +98,42 @@ determine and need confirmed.
 
 ## Mode: guide
 
-### Step G0: Pick the format and the destination
+Read shared/reference/doc-guide.md now,
+and follow its Steps G0 to G4 in order;
+at Step G2 it sends you to shared/reference/doc-genres.md.
+Before you write, also read shared/reference/writing.md.
 
-Markdown by default. Choose HTML when the document's own structure is what
-makes it hard to read as plain text:
+These rules hold even before you open those files:
 
-- a specification, or anything with numbered requirements that get
-  cross-referenced
-- a summary that has to hold several dimensions at once (comparison tables,
-  a matrix, results per case)
-- anything carrying a diagram, or where layout is part of the meaning
-
-Markdown stays right for a README, an API reference, CONTRIBUTING, and any
-file the user said lives in the repository: anything reviewed, versioned, or
-edited there stays Markdown, since its diffs must show content, not markup.
-Anything an agent re-reads as working state (memory files, imprints, context
-payloads) stays plain minimal text with no markup that multiplies its token
-cost; that rule wins even inside a repository, so a committed memory or
-context file stays minimal Markdown or plain text, never styled markup. Do
-not infer repository residence from the
-working directory - code files sitting nearby are not a signal that this
-document gets committed. When the request carries numbered requirements or a
-per-case table and the user did not say where the file goes, choose HTML.
-
-When you pick HTML, write ONE self-contained file: styles inline, no external
-fonts, scripts, or images, readable by opening it in a browser with no
-server. Say which format you chose and why in one line, so the user can ask
-for the other one.
-
-When the destination is a Confluence page:
-
-1. Read shared/reference/confluence.md.
-2. Use the edition and the route the user named.
-   When the user named none,
-   assume Data Center and its page editor,
-   and say so on an ASSUMED: line.
-3. Write the first draft in Markdown,
-   so the user can check the content before it goes into Confluence.
-4. When the user says the draft is fine,
-   write the same content again in the Confluence storage format
-   (XHTML with ac: macros).
-   Change no content in this step; only the format changes.
-   Tell the user to paste it through the Source Editor:
-   the <> icon in the editor toolbar
-   (built into Data Center 10.2.3 and later,
-   a Marketplace app on earlier versions).
-   When the editor has no <> icon,
-   give Confluence wiki markup for Insert > Markup instead.
-
-This two-step flow is for Confluence pages only.
-The storage format is not the self-contained HTML file described above;
-do not mix the two.
-
-### Step G1: Pin the reader, the goal, and the scope
-
-Write down three things before you write the document:
-
-- the reader: their role, and how much they already know about the topic
-- the goal: what the reader can do, decide, or understand after reading
-- the scope: what the document covers, and what it does not cover
-
-Put the reader and the scope near the top of the document itself.
-When two kinds of readers need different things,
-write one document or one clearly separated section for each.
-Ask when the reader or the goal is unclear.
-
-### Step G2: Pick the genre and outline
-
-Pick one genre from the table below.
-One document has one genre:
-do not put a procedure inside a concept explanation,
-and do not put background inside a how-to.
-Outline the sections in the table's order.
-Write each heading so it states the point of its section:
-reading only the title and the headings in order
-must give the reader the conclusion and the flow.
-
-| Genre | Sections in order | Check before sending |
-|---|---|---|
-| README | what it is; install; quickstart; common tasks; where to get help | every command runs |
-| how-to | goal; prerequisites; numbered steps; result; if it fails | each step is one action |
-| tutorial | what the reader builds; prerequisites; steps, each with a visible result; next steps | a newcomer can finish it |
-| concept explanation | the idea in one sentence; how it works, from a concrete example to the general rule; why it matters; limits; related topics | no procedure inside |
-| design doc | background; goals and non-goals; proposed design; alternatives considered; risks; open questions | every alternative says why it was not chosen |
-| proposal | the request or the recommendation; background; options with their cost; the recommended option and why; what the reader is asked to do | the request is in the first paragraph |
-| report | the conclusion; findings with numbers and their sources; analysis; next steps | every number traces to a source |
-| runbook | when to use it; impact; checks; steps to mitigate; steps to resolve; who to escalate to | each step names its expected result |
-| meeting minutes | date and attendees; decisions, each with its reason; action items, each with one owner and a due date; open questions | no owner or date the notes do not contain |
-| decision record | context; the decision in one sentence; options considered; consequences; status | the decision is one sentence |
-| slide outline | title; one message per slide, written as a full sentence; 3 to 5 supporting points per slide; speaker notes | the slide messages alone tell the story |
-
-When the request is to revise a draft,
-keep the draft's genre and section order
-unless the user asks to restructure it.
-
-### Step G3: Write the sections
-
-Read shared/reference/writing.md and follow it.
-When the document is in Japanese,
-also read shared/reference/japanese-style.md,
-and write the whole document in です・ます
-unless the user asks for another style.
-
-Put the conclusion, the recommendation, or the request
-in the first paragraph,
-then the reasons and the details.
-Mark anything the source does not support
-as a proposal, a plan, or an open question (Source rule).
-
-When the request is to revise a draft:
-keep every claim, number, name, and date the draft contains,
-and change only how it is written.
-Do not add a fact or a claim.
-If a sentence is unclear in meaning, not only in wording,
-ask instead of guessing what it meant.
-
-### Step G4: Reader check
-
-Read the document as the reader from Step G1 and check:
-
-- the title and the headings alone give the conclusion and the flow
-- the conclusion or the request is in the first paragraph
-- every term is defined at its first use, and one idea keeps one term
-- every number, date, name, owner, and due date matches the source
-- a procedure works when followed from the first step, with nothing assumed but unstated
-- the row's check in the genre table holds
+- Markdown, unless the document's structure needs HTML;
+  a file that lives in a repository stays Markdown.
+- For a Confluence page, read shared/reference/confluence.md,
+  give a Markdown draft first,
+  and write the storage format only after the user says the draft is fine,
+  changing no content in that step.
+- For a Japanese document, read shared/reference/japanese-style.md,
+  and write it in です・ます from start to end
+  unless the user asks for another style.
+- Put the conclusion, the recommendation, or the request
+  in the first paragraph.
+- A revision keeps every claim, number, name, and date,
+  adds no fact, and lists what changed.
 
 ## Mode: translate
 
-### Step T1: Pin the brief
+Read shared/reference/translation.md now,
+and follow its Steps T1 to T4 in order.
 
-Before translating, settle:
+These rules hold even before you open that file:
 
-- the source language and the target language
-- who reads the translation, and where it is used
-  (an internal reference, a published document, a UI)
-- the register: a Japanese translation uses です・ます
-  unless the user asks for another style;
-  an English translation keeps the source's level of formality
-- a glossary or an earlier translation to follow, if the user has one
-
-Ask when the target language or the reader is unclear.
-
-### Step T2: Mark what stays as it is
-
-Before translating, mark these so they carry over unchanged and in place:
-code, commands, identifiers, file paths, URLs,
-placeholders such as {name}, %s, and $VAR,
-markup and its tags,
-UI labels that must match the product,
-and proper nouns that have no established form in the target language.
-When a name has an established form in the target language,
-such as an organization's official English name,
-use that form.
-
-### Step T3: Translate the meaning
-
-Read the whole paragraph before you translate its first sentence.
-Translate what the text means, not its word order.
-You may split a long sentence or join short ones
-when the target language reads more naturally that way;
-keep every piece of information.
-Write the result the way a native writer of the target language
-would write the same document.
-Read shared/reference/translation.md for the rules of each direction,
-and for numbers, dates, units, and names.
-Into Japanese, also read shared/reference/japanese-style.md.
-Keep the headings, lists, tables, and emphasis in the same structure.
-
-When a sentence can be read two ways and the context does not decide it,
-ask.
-When you cannot ask,
-translate the more likely reading,
-and add a translator's note that gives the other reading.
-
-### Step T4: Check against the source
-
-After the whole draft is done, as a separate step,
-compare it with the source:
-
-- every sentence of the source is translated, and nothing is added
-- every number, date, unit, name, URL, code span, and placeholder
-  matches the source
-- each term is translated the same way everywhere
-- the register is the same from start to end
-
-### Checking an existing translation
-
-When the user asks to check a translation,
-compare it with the source by the checks in Step T4.
-Report each problem with its location, the source text,
-the translated text, what is wrong, and a fix.
-Rewrite the whole translation only when the user asks for it.
+- Render all of the source, and add nothing.
+- Code, commands, identifiers, paths, URLs, placeholders, and markup
+  stay unchanged and in place.
+- Into Japanese, read shared/reference/japanese-style.md,
+  and write in です・ます unless the user asks for another style.
+- When a sentence can be read two ways, ask,
+  or translate the more likely reading and add a translator's note.
+- Check the result against the source as a separate pass.
 
 ## Output format
 
@@ -311,32 +155,8 @@ Rewrite the whole translation only when the user asks for it.
 
     **Could not determine:** <behaviors needing confirmation, or "none">
 
-### guide mode
-
-The document itself, with section headings in reading order. End with:
-
-    **Assumes:** <prerequisites or environment the reader must already have>
-
-For a Confluence page, start the reply with one line that names the format
-(the Markdown draft, the storage format, or wiki markup)
-and how it goes into the page.
-
-For a revised draft, after the document, list what you changed:
-
-    **Changed:**
-    - <what changed, and why>   (one line each)
-
-### translate mode
-
-The translation as one block, apart from your own comments.
-After it, when there are any:
-
-    **Translator's notes:**
-    1. <location>: <the other reading, or the choice you made and why>
-
-For a check of an existing translation:
-
-    | Location | Source | Translation | Problem | Fix |
+guide and translate mode: use the output format
+in the reference file your mode told you to read.
 
 ### JSON output
 
@@ -360,21 +180,9 @@ If reference:
 - [ ] I listed anything I could not determine from the code.
 
 If guide:
-- [ ] I chose the format on the document's structure and said which and why;
-      for Confluence, I gave the Markdown draft first,
-      and the storage format only after the user said the draft is fine.
-- [ ] The reader, the goal, and the scope are pinned and stated near the top.
-- [ ] The document has one genre, its sections follow the table,
-      every heading states its point, and the row's check holds.
-- [ ] The conclusion or the request is in the first paragraph.
-- [ ] A Japanese document is in です・ます from start to end
-      (unless the user asked for another style).
-- [ ] For a revision, every claim, number, name, and date is kept,
-      and I listed what I changed.
+- [ ] I read doc-guide.md, followed Steps G0 to G4, and ran its checklist.
+- [ ] For Confluence, the storage format came only after the user approved the Markdown draft.
 
 If translate:
-- [ ] The translation is in the target language.
-- [ ] Nothing is added or dropped; I ran Step T4 as a separate step.
-- [ ] Code, paths, URLs, placeholders, and markup are unchanged and in place.
-- [ ] Each term is translated the same way, and the register stays the same.
-- [ ] Each ambiguity is asked about or given a translator's note.
+- [ ] I read translation.md, followed Steps T1 to T4, and ran its checklist.
+- [ ] Nothing is added or dropped, and the non-translatables are unchanged.
