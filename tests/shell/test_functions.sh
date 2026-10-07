@@ -3332,7 +3332,8 @@ fi
 # A line that runs proxy add with a url that holds a password is kept in memory
 # only (out of the history file), whether the handler before den's is
 # PSReadLine's default one or a user's own; a line that handler leaves out stays
-# out, and a proxy line without a password gets that handler's answer.
+# out, and a proxy line without a password, or a line that only names proxy and
+# add, gets that handler's answer.
 echo "[pwsh] init.ps1's history handler keeps a proxy password out of the file"
 HIST_PROXY_PS1="$TESTTMP/history_proxy.ps1"
 cat > "$HIST_PROXY_PS1" <<'PS1'
@@ -3346,7 +3347,7 @@ if ($User) {
 $h = (Get-PSReadLineOption).AddToHistoryHandler
 foreach ($l in "proxy add c 'http://al:S3cr3t@p.corp:8080'", 'Proxy  Add c al:pw@p:1',
     "proxy add mine 'http://al:pw@p:1'", 'proxy add u http://bob@p:1', 'proxy add h http://p:3128 .corp',
-    'echo mine', 'again') {
+    "cd ~/proxy; git add .; git commit -m 'fix: x'; git push git@github.com:me/proxy.git", 'echo mine', 'again') {
     "$($h.Invoke($l))"
 }
 PS1
@@ -3362,11 +3363,13 @@ MemoryOnly
 MemoryAndFile
 MemoryAndFile
 MemoryAndFile
+MemoryAndFile
 False" "$out"
     else
         assert_eq "pwsh/init.ps1 history handler, the user's before it: a proxy password is kept in memory only" "MemoryOnly
 MemoryOnly
 False
+True
 True
 True
 False

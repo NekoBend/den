@@ -54,14 +54,20 @@ function _ProxyShow([string]$Url) {
 }
 
 # _ProxySecretLine <line> - whether a command line runs proxy add with a url that
-# holds a password, as _ProxyShow finds one: in the text after "proxy" and then
-# "add", once every :// is taken out, a : comes before the last @. It reads the
-# text only, so it errs toward yes, as proxy.sh's _proxy_secret_line does: a line
-# kept out of the history file for nothing costs less than a password in it.
+# holds a password, as _ProxyShow finds one. With the quotes and backticks taken
+# out of the line, the word proxy (first, or after a character that is not part of
+# a name or a path: not after a letter, a digit or one of _ . : $ / \ -, so
+# $wc.Proxy and C:\bin\proxy are not it), in any case, is followed by blanks and
+# the word add; in the text after add, once every :// is taken out, a : comes
+# before the last @. It reads the text only, so it errs toward yes, as proxy.sh's
+# _proxy_secret_line does: a line kept out of the history file for nothing costs
+# less than a password in it.
 function _ProxySecretLine([string]$Line) {
-    $m = [regex]::Match($Line, 'proxy.*?add', 'IgnoreCase, Singleline')
+    # ' " and ` with the typographic quotes PowerShell takes too (U+2018-U+201E).
+    $l = $Line -replace '[''"`\u2018-\u201E]', ''
+    $m = [regex]::Match($l, '(?<![\w.:$/\\-])proxy\s+add\s', 'IgnoreCase')
     if (-not $m.Success) { return $false }
-    $t = $Line.Substring($m.Index + $m.Length).Replace('://', '')
+    $t = $l.Substring($m.Index + $m.Length).Replace('://', '')
     $at = $t.LastIndexOf('@')
     $at -gt 0 -and $t.Substring(0, $at).Contains(':')
 }

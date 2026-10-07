@@ -214,13 +214,17 @@ that is a symlink stays one: `add` and `rm` write through it in both shells.
 
 The line that typed such a url (`proxy add corp http://al:S3cr3t@p.corp:8080`)
 stays out of the shell's history file; a `proxy add` line without a password
-is saved as usual. den finds the line by its text (`proxy`, then `add`, then a
-`user:password@` url), so on zsh and pwsh a line that only looks like one
-(`echo proxy add c http://al:pw@p`) is left out too, and in every shell
-`proxy add` behind an alias is not seen. Each shell's own settings still apply:
-`HISTIGNORE` / `HISTCONTROL`, `HISTORY_IGNORE` and a `zshaddhistory` of your
-own, and an `AddToHistoryHandler` set before init.ps1 (den's handler chains to
-it, and a line it leaves out stays out).
+is saved as usual. den finds the line by its text, with the quotes left out:
+the word `proxy` (not part of a name or a path such as `~/proxy`, `myproxy` or
+`$wc.Proxy`; on pwsh in upper or lower case), blanks, the word `add`, and
+after it a `:` before the last `@` once each `://` is taken out. So on zsh and
+pwsh a line that only looks like one (`echo proxy add c http://al:pw@p`) is
+left out too, and in every shell `proxy add` behind an alias is not seen. den
+changes no history setting, so the ones in effect still apply: `HISTIGNORE` /
+`HISTCONTROL` (init.bash sets both as it loads, so a value set before it is
+replaced), `HISTORY_IGNORE` and a `zshaddhistory` of your own, and an
+`AddToHistoryHandler` set before init.ps1 (den's handler chains to it, and a
+line it leaves out stays out).
 
 - **bash**: `proxy add` takes the line out of the history list (`history -d`)
   before bash writes `$HISTFILE` (at exit, or from a `history -a` in

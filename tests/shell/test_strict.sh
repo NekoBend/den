@@ -881,6 +881,7 @@ Case 'proxy, unknown command' { proxy bogus }
 Case '_ProxySecretLine, a password' { _ProxySecretLine "proxy add c 'http://al:pw@127.0.0.1:9'" }
 Case '_ProxySecretLine, a user only' { _ProxySecretLine 'proxy add c http://al@127.0.0.1:9' }
 Case '_ProxySecretLine, no proxy add' { _ProxySecretLine 'Get-Date' }
+Case '_ProxySecretLine, a path named proxy' { _ProxySecretLine "cd ~/proxy; git add .; git commit -m 'fix: x'; git push git@h:me/proxy.git" }
 
 # ===== snippet.ps1 =====
 Case 'snippet help' { snippet help }

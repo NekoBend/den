@@ -245,6 +245,56 @@ echo "================================================"
 echo "  Testing proxy add and the history file"
 echo "================================================"
 
+# Which lines den takes for a proxy add with a password: with the quotes left
+# out, the word proxy, blanks, the word add, and after it a : before the last @.
+# A proxy that is part of a name or a path (~/proxy, myproxy, $wc.Proxy), an
+# add that is the start of a longer word, or an @ only before the add is not
+# one. Each case is "<bash and zsh> <pwsh>" and the line; pwsh takes any case,
+# and a \ before proxy is a path there.
+SECRET_CASES="$TESTTMP/secret_cases"
+: > "$SECRET_CASES"
+secret_case() { printf '%s\t%s\n' "$1" "$2" >> "$SECRET_CASES"; }
+secret_case 'yes yes' "$SECRET_LINE"
+secret_case 'yes yes' 'proxy  add c al:pw@p:1'
+secret_case 'yes yes' "proxy${TAB}add${TAB}c http://al:pw@p"
+secret_case 'yes yes' 'cd /tmp && proxy add c http://al:pw@p'
+secret_case 'yes yes' 'x;proxy add c http://al:pw@p:1 && echo y'
+secret_case 'yes yes' '(proxy add c "http://al:pw@p")'
+secret_case 'yes yes' "'proxy' add \"c\" http://al:pw@p"
+secret_case 'yes yes' 'echo proxy add c http://al:pw@p'
+secret_case 'yes no' '\proxy add c http://al:pw@p'
+secret_case 'no yes' 'Proxy ADD c http://al:pw@p'
+secret_case 'no no' "cd ~/proxy && git add . && git commit -m 'fix: typo' && git push git@github.com:me/proxy.git"
+secret_case 'no no' "cd /tmp; : proxy; : add; : 'fix: x'; echo git@github.com"
+secret_case 'no no' 'proxy address al:pw@p'
+secret_case 'no no' 'myproxy add c http://al:pw@p'
+secret_case 'no no' 'git-proxy add c http://al:pw@p'
+secret_case 'no no' 'proxyproxy add c http://al:pw@p'
+secret_case 'no no' 'echo a:b@c; proxy add h p:3128'
+secret_case 'no no' 'proxy add u http://bob@p:1'
+secret_case 'no no' 'proxy add h http://p:3128 .corp'
+secret_case 'no no' '$wc.Proxy.Address = $env:PROXY; Invoke-RestMethod @params'
+cut -f2- "$SECRET_CASES" > "$SECRET_CASES.lines"
+# secret_want <column> - each case's line with the answer in that column.
+secret_want() {
+    local want line
+    while IFS="$TAB" read -r want line; do
+        if [ "$1" = 1 ]; then want=${want% *}; else want=${want#* }; fi
+        printf '%s: %s\n' "$want" "$line"
+    done < "$SECRET_CASES"
+}
+
+for sh in bash zsh; do
+    command -v "$sh" >/dev/null 2>&1 || continue
+    echo "[$sh] _proxy_secret_line takes only proxy add with a password for one"
+    actual=$("run_$sh" "$PROXY_SH" "while IFS= read -r l; do if _proxy_secret_line \"\$l\"; then a=yes; else a=no; fi; printf '%s: %s\n' \"\$a\" \"\$l\"; done < '$SECRET_CASES.lines'" | tr -d '\r')
+    assert_eq "$sh/_proxy_secret_line: which lines hold a proxy add password" "$(secret_want 1)" "$actual"
+done
+
+# A line that names proxy and add without running proxy add. (zsh writes a
+# leading : as \:, so it starts with echo.)
+NOT_SECRET_LINE="echo cd ~/proxy && echo git add . && echo git commit -m 'fix: typo' && echo git push git@github.com:me/proxy.git"
+
 reset_conf
 echo "[bash] a password in proxy add keeps the line out of HISTFILE, under den's HISTCONTROL and a HISTTIMEFORMAT"
 actual=$(hist_bash "HISTCONTROL=ignoreboth; HISTTIMEFORMAT='%F %T '" "${HIST_LINES[@]}")
@@ -263,6 +313,15 @@ actual=$(hist_bash 'HISTCONTROL=ignoreboth' 'echo before' " $SECRET_LINE" 'echo 
 assert_eq "bash/history: the entry before an ignored line stays" "echo before
 echo after" "$actual"
 
+# The same when that entry names proxy and add, a : and an @, without running
+# proxy add: it is not taken for the line that ran it.
+reset_conf
+echo "[bash] the entry before an ignored line stays when it only names proxy and add"
+actual=$(hist_bash 'HISTCONTROL=ignoreboth' 'echo before' "$NOT_SECRET_LINE" " $SECRET_LINE" 'echo after')
+assert_eq "bash/history: an entry that only names proxy and add stays" "echo before
+$NOT_SECRET_LINE
+echo after" "$actual"
+
 echo "[bash] the user's HISTIGNORE is left as it was and still applies"
 actual=$(hist_bash "HISTIGNORE='echo mine'" 'echo mine' "$SECRET_LINE" 'echo "HI=$HISTIGNORE"')
 assert_eq "bash/history: HISTIGNORE still applies" "echo \"HI=\$HISTIGNORE\"" "$actual"
@@ -279,6 +338,13 @@ if command -v zsh >/dev/null 2>&1; then
     echo "[zsh] a password in proxy add keeps the line out of HISTFILE"
     actual=$(hist_zsh '' "${HIST_LINES[@]}")
     assert_eq "zsh/history: only the line with a password is left out" "$HIST_KEPT" "$actual"
+
+    reset_conf
+    echo "[zsh] a line that only names proxy and add, a : and an @ is saved"
+    actual=$(hist_zsh '' 'echo before' "$NOT_SECRET_LINE" 'echo after')
+    assert_eq "zsh/history: a line that only names proxy and add is saved" "echo before
+$NOT_SECRET_LINE
+echo after" "$actual"
 
     # reload runs fc -W, which writes a line a zshaddhistory hook kept in memory
     # only (status 2); fc -A does the same.
@@ -388,6 +454,10 @@ env=$SECRET_URL" "$actual"
     else
         echo "  SKIP: pwsh/proxy unreadable store (running as root)"
     fi
+
+    echo "[pwsh] _ProxySecretLine takes only proxy add with a password for one"
+    actual=$(run_pwsh "$PROXY_PS1" "Get-Content -LiteralPath '$SECRET_CASES.lines' | ForEach-Object { '{0}: {1}' -f \$(if (_ProxySecretLine \$_) { 'yes' } else { 'no' }), \$_ }" | tr -d '\r')
+    assert_eq "pwsh/_ProxySecretLine: which lines hold a proxy add password" "$(secret_want 2)" "$actual"
 
     # A real PSReadLine session, with init.ps1 loaded and the history file in
     # WORK: pwsh reads its lines from a terminal, which a private tmux server

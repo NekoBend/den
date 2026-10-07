@@ -39,27 +39,65 @@ _proxy_show() {
 }
 
 # _proxy_secret_line <line> - true when a command line runs proxy add with a
-# url that holds a password, as _proxy_show finds one: in the text after
-# "proxy" and then "add", once every :// is taken out, a : comes before the
-# last @. It reads the text only, so it errs toward true: a line it keeps out
-# of the history for nothing costs less than a password in the history file.
+# url that holds a password, as _proxy_show finds one. With the quotes taken
+# out of the line, the word proxy (first, or after a character that is not
+# part of a name or a path: not after a letter, a digit or one of _ . / : $ -,
+# so ~/proxy and myproxy are not it) is followed by blanks and the word add;
+# in the text after add, once every :// is taken out, there is an @ and a :
+# before the last one. It reads the text only, so it errs toward true: a line
+# it keeps out of the history for nothing costs less than a password in the
+# history file.
 _proxy_secret_line() {
     case $1 in
         *proxy*add*@*) ;;
         *) return 1 ;;
     esac
-    _psl_t=${1#*proxy*add}
+    _psl_t=$1
     while :; do
         case $_psl_t in
-            *://*) _psl_t="${_psl_t%%://*}${_psl_t#*://}" ;;
+            *\'*) _psl_t=${_psl_t%%\'*}${_psl_t#*\'} ;;
+            *\"*) _psl_t=${_psl_t%%\"*}${_psl_t#*\"} ;;
             *) break ;;
         esac
     done
-    _psl_t=${_psl_t%@*}
-    case $_psl_t in
-        *:*) unset _psl_t; return 0 ;;
+    # Each proxy in turn. The y put back in front of the text after one is
+    # the character before the next, when the two touch (proxyproxy).
+    _psl_t=" $_psl_t" _psl_at=''
+    while [ -z "$_psl_at" ]; do
+        case $_psl_t in
+            *proxy*) ;;
+            *) break ;;
+        esac
+        _psl_p=${_psl_t%%proxy*}
+        _psl_t=y${_psl_t#*proxy}
+        case $_psl_p in
+            *[A-Za-z0-9_./:\$-]) continue ;;
+        esac
+        _psl_r=${_psl_t#y}
+        case $_psl_r in
+            [[:space:]\\]*) ;;
+            *) continue ;;
+        esac
+        while :; do
+            case $_psl_r in
+                [[:space:]\\]*) _psl_r=${_psl_r#?} ;;
+                *) break ;;
+            esac
+        done
+        case $_psl_r in
+            add[[:space:]\\]*) _psl_at=${_psl_r#add} ;;
+        esac
+    done
+    while :; do
+        case $_psl_at in
+            *://*) _psl_at="${_psl_at%%://*}${_psl_at#*://}" ;;
+            *) break ;;
+        esac
+    done
+    case $_psl_at in
+        *:*@*) unset _psl_t _psl_p _psl_r _psl_at; return 0 ;;
     esac
-    unset _psl_t
+    unset _psl_t _psl_p _psl_r _psl_at
     return 1
 }
 
