@@ -411,6 +411,13 @@ jobs:
           if /i not "%CD%"=="%T%\d!e" exit /b 1
           if not "%_DEN_DIRNAV%"=="dropback:1" exit /b 1
           echo cmd back/fwd shims: ok
+      - name: cmd shims run their tool or fallback and pass arguments through
+        # tests/shell/cmd_shims.cmd runs the shims against stand-in tools it
+        # builds, and exits 1 when a check fails.
+        shell: cmd
+        run: |
+          call tests\shell\cmd_shims.cmd
+          if errorlevel 1 exit /b 1
       - name: cmd dg.cmd hashes, checks, compares and verifies files
         # dg.cmd (certutil) runs nowhere else: the Linux jobs have no cmd.
         # The fixture bytes are fixed, so every digest below is a constant

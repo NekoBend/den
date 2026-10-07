@@ -2,11 +2,29 @@
 settings.set("clink.logo", "none")
 settings.set("prompt.spacing", "sparse")  -- cmd.exe adds its own newline + starship add_newline = 2 lines; sparse normalizes to 1
 
--- ===== Add bin/ to PATH (wrapper scripts for cmd aliases) =====
+-- ===== den's command shims: Clink aliases, never on PATH =====
+-- The shims in bin_dir (ls.cmd, find.cmd, python.cmd, ...) are reached only
+-- through the aliases defined below. An alias (a doskey macro) expands only
+-- where a command starts on a line typed at the Clink prompt: at the start of
+-- the line, or after | or & (Clink's doskey.enhanced, on by default). Batch
+-- files, `cmd /c`, child processes and starship's own probes therefore keep
+-- seeing Windows' commands: System32 find.exe, the real python. den's own
+-- commands (mkcd, dg, back, ...) do not exist there either. bin_dir used to be
+-- put on PATH; a cmd started from such an older session inherits that entry,
+-- so take it off again.
 local bin_dir = os.getenv("LOCALAPPDATA") .. "\\clink\\bin"
-local current_path = os.getenv("PATH") or ""
-if not current_path:find(bin_dir, 1, true) then
-    os.setenv("PATH", bin_dir .. ";" .. current_path)
+do
+    local kept, dropped = {}, false
+    for dir in (os.getenv("PATH") or ""):gmatch("[^;]+") do
+        if dir:gsub('"', ""):gsub("[\\/]+$", ""):lower() == bin_dir:lower() then
+            dropped = true
+        else
+            kept[#kept + 1] = dir
+        end
+    end
+    if dropped then
+        os.setenv("PATH", table.concat(kept, ";"))
+    end
 end
 
 -- ===== Spawn helpers (never resolve a command from the current directory) =====
@@ -52,109 +70,297 @@ local system_root = os.getenv("SystemRoot") or os.getenv("windir") or "C:\\Windo
 local doskey_exe = system_root .. "\\System32\\doskey.exe"
 local powershell_exe = system_root .. "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
 
--- doskey <macro> — define one doskey macro through the System32 binary.
-local function doskey(macro)
-    os.execute(cmd_line(doskey_exe, macro))
+-- den's aliases, in the order they are defined: { name, macro text } pairs.
+local den_aliases = {}
+local function alias(name, text)
+    den_aliases[#den_aliases + 1] = { name, text }
 end
 
+-- The macro text that runs bin_dir\<file>.cmd with <args> ($* = every argument
+-- typed after the alias). The path is quoted and its "$" doubled, since doskey
+-- reads "$" as the start of a macro code.
+local function shim(file, args)
+    local path = (bin_dir .. "\\" .. file .. ".cmd"):gsub("%$", "$$")
+    return '"' .. path .. '" ' .. (args or "$*")
+end
+
+-- Define every alias in den_aliases. Clink 1.6.11+ sets them in this process
+-- (os.setalias); older Clink loads them all with one `doskey /macrofile` run,
+-- and Clink before 1.1.42 (no os.createtmpfile) runs doskey once per alias.
+-- Starting a cmd + doskey pair per alias made each new window wait for dozens.
+-- os.createtmpfile opens the file in text mode, so "\n" is written as CRLF.
+-- The file holds bin_dir as UTF-8, and doskey may read it in another code
+-- page, so a bin_dir outside ASCII (a user name in Japanese) takes the
+-- per-alias route: Clink runs the C runtime in UTF-8, so os.execute hands
+-- that path to cmd intact.
+local function define_aliases()
+    if os.setalias then
+        for _, a in ipairs(den_aliases) do
+            os.setalias(a[1], a[2])
+        end
+        return
+    end
+    local f, name
+    if os.createtmpfile and not bin_dir:find("[\128-\255]") then
+        f, name = os.createtmpfile("den-aliases", ".txt")
+    end
+    if f then
+        for _, a in ipairs(den_aliases) do
+            f:write(a[1], "=", a[2], "\n")
+        end
+        f:close()
+        os.execute(cmd_line(doskey_exe, '/macrofile="' .. name .. '"'))
+        os.remove(name)
+        return
+    end
+    for _, a in ipairs(den_aliases) do
+        os.execute(cmd_line(doskey_exe, a[1] .. "=" .. a[2]))
+    end
+end
+
+-- ===== Aliases =====
+-- Defined here, before anything below can fail, so a Lua error in the
+-- hardware, zoxide or again setup still leaves den's commands in place.
+-- One per shim in bin_dir, named after it (back.cmd -> back, tgl-hw.cmd ->
+-- tgl-hw), except path.cmd: `path` is a cmd builtin that also sets PATH
+-- (`path C:\tools;%PATH%`), and an alias would take that over as well, so
+-- typed `path` stays cmd's own.
+for _, name in ipairs({
+    "again", "back", "cat", "dg", "digest", "find", "fwd", "grep", "head", "la",
+    "ll", "lla", "llt", "ls", "lt", "mkcd", "pip", "python", "python3",
+    "tail", "tgl-hw", "tgl-uv", "tgl-wr", "toggle-hwinfo", "toggle-uv",
+    "toggle-wrapper", "touch", "up", "uv", "wc", "which",
+}) do
+    alias(name, shim(name))
+end
+
+-- Navigation. A macro never expands another macro, so .1-.9 run up.cmd by path.
+alias("..", "cd ..")
+for n = 1, 9 do
+    alias("." .. n, shim("up", tostring(n)))
+end
+alias("c", "cls")
+
+-- Git
+alias("g", "git $*")
+alias("ga", "git add $*")
+alias("gaa", "git add --all")
+alias("gb", "git branch $*")
+alias("gc", "git commit $*")
+alias("gcm", "git commit -m $*")
+alias("gco", "git checkout $*")
+alias("gd", "git diff $*")
+alias("gds", "git diff --staged $*")
+alias("gf", "git fetch --all --prune")
+alias("gl", "git log --oneline --graph $*")
+alias("gpl", "git pull $*")
+alias("gps", "git push $*")
+alias("gst", "git status -sb")
+alias("gsw", "git switch $*")
+
+-- Docker
+alias("d", "docker $*")
+alias("dc", "docker compose $*")
+alias("dcb", "docker compose build $*")
+alias("dcd", "docker compose down $*")
+alias("dce", "docker compose exec $*")
+alias("dcl", "docker compose logs $*")
+alias("dcu", "docker compose up $*")
+alias("di", "docker images $*")
+alias("dps", "docker ps $*")
+alias("dri", "docker run -it $*")
+alias("drir", "docker run -it --rm $*")
+
+-- Editor
+alias("code", "code-insiders $*")
+alias("gu", "gitui $*")
+
+define_aliases()
+
 -- ===== Hardware info (for starship) =====
--- Uses env var caching — skips detection if STARSHIP_* vars are already set
--- (e.g. inherited from parent process or previous clink session).
-local has_hw_cache = (os.getenv("STARSHIP_CPU_INTEL") or os.getenv("STARSHIP_CPU_AMD")
-    or os.getenv("STARSHIP_GPU_NVIDIA") or os.getenv("STARSHIP_GPU_AMD") or os.getenv("STARSHIP_GPU_INTEL"))
+-- Only starship shows these, so none of this runs without starship on PATH.
+-- STARSHIP_* values inherited from the parent process are used as they are.
+-- Otherwise they come from the cache file den's pwsh hwinfo.ps1 keeps, which
+-- cmd shares: %LOCALAPPDATA%\shell-cache\hwinfo-cache.<COMPUTERNAME>.ps1,
+-- lines of `$env:STARSHIP_X = '<value>'`, read here as text against exactly
+-- that pattern and never run. Only when there is none does Windows PowerShell
+-- detect them, with hwinfo.ps1's own detection and naming (hw_detect below),
+-- and the result is written back the way hwinfo.ps1 writes it.
+-- A detection that recognizes no name (Windows on ARM) is written too, as one
+-- comment line, so the next window does not detect again. pwsh's
+-- refresh-hwinfo deletes the file.
+local starship_exe = find_on_path("starship")
+local hw_vars = { "STARSHIP_CPU_INTEL", "STARSHIP_CPU_AMD", "STARSHIP_GPU_NVIDIA",
+    "STARSHIP_GPU_AMD", "STARSHIP_GPU_INTEL" }
+local hw_cache = os.getenv("LOCALAPPDATA") .. "\\shell-cache\\hwinfo-cache."
+    .. (os.getenv("COMPUTERNAME") or "") .. ".ps1"
+local hw_none = "# den: no CPU or GPU name it recognizes"
 
-if not has_hw_cache then
-    -- Uses PowerShell for CIM queries (WMIC deprecated on Win11)
-    local h = io.popen(cmd_line(powershell_exe, '-NoProfile -NoLogo -Command "'
-        .. '$cpu=(Get-CimInstance Win32_Processor).Name.Trim();'
-        .. "$gpu='';"
-        .. 'if(Get-Command nvidia-smi -EA 0){'
-        .. '$gpu=(nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null|Select -First 1).Trim()};'
-        .. 'if(-not $gpu){'
-        .. '$gpu=(Get-CimInstance Win32_VideoController|Select -First 1).Name.Trim()};'
-        .. 'Write-Host $cpu;Write-Host $gpu"'))
-    if h then
-        local cpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
-        local gpu_raw = (h:read("*l") or ""):gsub("%s+$", "")
-        h:close()
+local function hw_known(name)
+    for _, v in ipairs(hw_vars) do
+        if v == name then
+            return true
+        end
+    end
+    return false
+end
 
-        if cpu_raw ~= "" then
-            local cpu_short = cpu_raw
-                :gsub(".*Core%(TM%)%s*", "")
-                :gsub(".*Ryzen%s*", "Ryzen ")
-                :gsub("%s+", " ")
-                :match("^%s*(.-)%s*$")
-            if cpu_raw:find("Intel") then
-                os.setenv("STARSHIP_CPU_INTEL", cpu_short)
-            elseif cpu_raw:find("AMD") then
-                os.setenv("STARSHIP_CPU_AMD", cpu_short)
+local function hw_any()
+    for _, v in ipairs(hw_vars) do
+        if os.getenv(v) then
+            return true
+        end
+    end
+    return false
+end
+
+-- What hwinfo.ps1 accepts in a value: printable ASCII, 1 to 100 characters.
+local function hw_printable(s)
+    return #s > 0 and #s <= 100 and not s:find("[^ -~]")
+end
+
+-- Set the values the cache file holds. False, with nothing set, when there is
+-- no file or a line in it is not one den writes.
+local function hw_read_cache()
+    local f = io.open(hw_cache, "rb")
+    if not f then
+        return false
+    end
+    local text = (f:read("*a") or ""):gsub("^\239\187\191", "")  -- 5.1 writes a BOM
+    f:close()
+    local vals, known = {}, false
+    for line in text:gmatch("[^\r\n]+") do
+        if line == hw_none then
+            known = true
+        else
+            local name, val = line:match("^%$env:(STARSHIP_[%u_]+) = '(.*)'$")
+            -- Inside the quotes, a ' only ever comes doubled.
+            if not name or val:gsub("''", ""):find("'") then
+                return false
+            end
+            val = val:gsub("''", "'")
+            if not hw_known(name) or not hw_printable(val) then
+                return false
+            end
+            vals[name] = val
+            known = true
+        end
+    end
+    if not known then
+        return false
+    end
+    for name, val in pairs(vals) do
+        os.setenv(name, val)
+    end
+    return true
+end
+
+-- Write the values set now, as hwinfo.ps1 does (' doubled inside the quotes),
+-- through a temporary file renamed into place.
+local function hw_write_cache()
+    local lines = {}
+    for _, v in ipairs(hw_vars) do
+        local val = os.getenv(v)
+        if val then
+            if not hw_printable(val) then
+                return
+            end
+            lines[#lines + 1] = "$env:" .. v .. " = '" .. (val:gsub("'", "''")) .. "'"
+        end
+    end
+    if #lines == 0 then
+        lines[1] = hw_none
+    end
+    local dir = hw_cache:match("^(.*)\\")
+    if not os.isdir(dir) and os.mkdir then
+        os.mkdir(dir)
+    end
+    local tmp = hw_cache .. ".tmp." .. (os.getpid and os.getpid() or os.time())
+    local f = io.open(tmp, "wb")
+    if not f then
+        return
+    end
+    local ok = f:write(table.concat(lines, "\n") .. "\n")
+    f:close()
+    local unlink, move = os.unlink or os.remove, os.move or os.rename
+    if ok then
+        unlink(hw_cache)
+        if move(tmp, hw_cache) then
+            return
+        end
+    end
+    unlink(tmp)
+end
+
+-- hwinfo.ps1's detection as one Windows PowerShell command, its -replace
+-- chains copied as they are: both shells read and write the same cache file,
+-- so they must name the hardware alike. The CPU name comes from the registry,
+-- the GPU's from nvidia-smi or else the first video controller. It prints a
+-- STARSHIP_X=<name> line for each one it recognizes, then "ok" once it got
+-- through; a failure part way leaves only the lines printed before it.
+local hw_detect = table.concat({
+    [[try{]],
+    [[$c=(Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction Stop).ProcessorNameString.Trim();]],
+    [[$s=($c -replace '\(R\)' -replace '\(TM\)' -replace '\d+\w+ Gen ' -replace 'Genuine ' -replace 'Intel ' -replace 'AMD ' -replace 'Core ' -replace ' CPU.*$' -replace ' \d+-Core Processor' -replace '\s+', ' ').Trim();]],
+    [[if($c -match 'Intel'){'STARSHIP_CPU_INTEL='+$s}elseif($c -match 'AMD'){'STARSHIP_CPU_AMD='+$s};]],
+    [[$g='';if(Get-Command nvidia-smi -ErrorAction SilentlyContinue){$g=nvidia-smi --query-gpu=gpu_name --format=csv,noheader 2>$null|Select-Object -First 1;if($g){$g=$g.Trim()}};]],
+    [[if(-not $g){$g=(Get-CimInstance Win32_VideoController -ErrorAction Stop|Select-Object -First 1).Name.Trim()};]],
+    [[$t=($g -replace 'NVIDIA\s+GeForce\s*' -replace 'AMD\s+' -replace 'Intel\(R\)\s*' -replace '\s+', ' ').Trim();]],
+    [[if($g -match 'NVIDIA'){'STARSHIP_GPU_NVIDIA='+$t}elseif($g -match 'AMD|Radeon'){'STARSHIP_GPU_AMD='+$t}elseif($g -match 'Intel'){'STARSHIP_GPU_INTEL='+$t};]],
+    [['ok'}catch{}]],
+})
+
+if starship_exe then
+    if not hw_any() and not hw_read_cache() then
+        local h = io.popen(cmd_line(powershell_exe, '-NoProfile -NoLogo -Command "' .. hw_detect .. '"'))
+        if h then
+            local out = h:read("*a") or ""
+            h:close()
+            local found, ran = false, false
+            for line in out:gmatch("[^\r\n]+") do
+                local name, val = line:match("^(STARSHIP_[%u_]+)=(.-)%s*$")
+                if name and hw_known(name) and val ~= "" then
+                    os.setenv(name, val)
+                    found = true
+                elseif line:match("^ok%s*$") then
+                    ran = true
+                end
+            end
+            if found or ran then
+                hw_write_cache()
             end
         end
+    end
 
-        if gpu_raw ~= "" then
-            local gpu_short = gpu_raw
-                :gsub("NVIDIA%s+GeForce%s*", "")
-                :gsub("AMD%s+", "")
-                :gsub("Intel%(R%)%s*", "")
-                :gsub("%s+", " ")
-                :match("^%s*(.-)%s*$")
-            if gpu_raw:find("NVIDIA") then
-                os.setenv("STARSHIP_GPU_NVIDIA", gpu_short)
-            elseif gpu_raw:find("AMD") or gpu_raw:find("Radeon") then
-                os.setenv("STARSHIP_GPU_AMD", gpu_short)
-            elseif gpu_raw:find("Intel") then
-                os.setenv("STARSHIP_GPU_INTEL", gpu_short)
+    -- toggle-hwinfo leaves _DEN_HWINFO_HIDDEN=1 in the environment, so a child
+    -- cmd inherits its OFF, and the cache brings the values back: hide them
+    -- again as toggle-hwinfo does, or its next call would take the ON branch
+    -- and change nothing. Parity with hwinfo.ps1 and hwinfo.sh.
+    if os.getenv("_DEN_HWINFO_HIDDEN") == "1" then
+        for _, v in ipairs(hw_vars) do
+            local val = os.getenv(v)
+            if val then
+                os.setenv("_DEN_SAVED_" .. v:sub(#"STARSHIP_" + 1), val)
+                os.setenv(v, nil)
             end
         end
     end
 end
 
--- ===== Navigation (doskey - simple aliases) =====
-doskey('..=cd ..')
-doskey('.1=up 1')
-doskey('.2=up 2')
-doskey('.3=up 3')
-doskey('.4=up 4')
-doskey('.5=up 5')
-doskey('.6=up 6')
-doskey('.7=up 7')
-doskey('.8=up 8')
-doskey('.9=up 9')
-doskey('c=cls')
+-- ===== zoxide =====
+-- zoxide has no cmd init (`zoxide init cmd` is an error), so den does what
+-- zoxide's own init does elsewhere: the directory-history filter below runs
+-- `zoxide add` for each directory you move to, and a line that is just
+-- `z ...` / `zi ...` (or zd / zdi, the names the other shells use) becomes a
+-- `cd /d` to the directory `zoxide query` picks.
+local zoxide_exe = find_on_path("zoxide")
 
--- ===== Git =====
-doskey('g=git $*')
-doskey('ga=git add $*')
-doskey('gaa=git add --all')
-doskey('gb=git branch $*')
-doskey('gc=git commit $*')
-doskey('gcm=git commit -m $*')
-doskey('gco=git checkout $*')
-doskey('gd=git diff $*')
-doskey('gds=git diff --staged $*')
-doskey('gf=git fetch --all --prune')
-doskey('gl=git log --oneline --graph $*')
-doskey('gpl=git pull $*')
-doskey('gps=git push $*')
-doskey('gst=git status -sb')
-doskey('gsw=git switch $*')
-
--- ===== Docker =====
-doskey('d=docker $*')
-doskey('dc=docker compose $*')
-doskey('dcb=docker compose build $*')
-doskey('dcd=docker compose down $*')
-doskey('dce=docker compose exec $*')
-doskey('dcl=docker compose logs $*')
-doskey('dcu=docker compose up $*')
-doskey('di=docker images $*')
-doskey('dps=docker ps $*')
-doskey('dri=docker run -it $*')
-doskey('drir=docker run -it --rm $*')
-
--- ===== Editor =====
-doskey('code=code-insiders $*')
-doskey('gu=gitui $*')
+-- One argument for a program's command line, in double quotes. A trailing
+-- backslash is doubled, or it would escape the closing quote (C:\ would
+-- arrive as C:"). The text holds no double quote: words lose theirs.
+local function quote_arg(s)
+    return '"' .. (s:gsub("(\\+)$", "%1%1")) .. '"'
+end
 
 -- ===== Directory history for back / fwd (and _OLDPWD) =====
 -- Browser-style history for this cmd session. It lives in two environment
@@ -253,27 +459,174 @@ function dirhist_filter:filter(prompt)
     if cur ~= _prev_dir then
         os.setenv("_OLDPWD", _prev_dir)
         _prev_dir = cur
+        if zoxide_exe then
+            os.execute(cmd_line(zoxide_exe, "add -- " .. quote_arg(cur)))
+        end
     end
     return nil  -- don't modify prompt
 end
 
--- ===== Zoxide (smart cd) =====
-local zoxide_exe = find_on_path("zoxide")
-if zoxide_exe then
-    local zh = io.popen(cmd_line(zoxide_exe, "init cmd 2>nul"))
-    if zh then
-        local zoxide_init = zh:read("*a")
-        zh:close()
-        if zoxide_init and zoxide_init ~= "" then
-            load(zoxide_init)()
-            doskey('zd=z $*')
-            doskey('zdi=zi $*')
+-- ===== z / zi / zd / zdi =====
+-- Split a typed line into words as cmd quotes them: blanks separate, double
+-- quotes group and are dropped. nil when an & | < > or ^ stands outside
+-- quotes: a line with more than one command is left to cmd.
+local function split_words(line)
+    local words, word, quoted, inword = {}, {}, false, false
+    for c in line:gmatch(".") do
+        if c == '"' then
+            quoted, inword = not quoted, true
+        elseif not quoted and c:match("%s") then
+            if inword then
+                words[#words + 1] = table.concat(word)
+                word, inword = {}, false
+            end
+        elseif not quoted and c:match("[&|<>^]") then
+            return nil
+        else
+            word[#word + 1] = c
+            inword = true
         end
     end
+    if inword then
+        words[#words + 1] = table.concat(word)
+    end
+    return words
+end
+
+-- The directory `zoxide query <opts> -- <words>` picks, or nil when it finds
+-- none or its picker is cancelled (zoxide says why on stderr).
+local function zoxide_query(opts, words)
+    local args = { "query" }
+    for _, o in ipairs(opts) do
+        args[#args + 1] = o
+    end
+    args[#args + 1] = "--"
+    for _, w in ipairs(words) do
+        args[#args + 1] = quote_arg(w)
+    end
+    local h = io.popen(cmd_line(zoxide_exe, table.concat(args, " ")))
+    if not h then
+        return nil
+    end
+    local dir = (h:read("*l") or ""):gsub("%s+$", "")
+    h:close()
+    return dir ~= "" and dir or nil
+end
+
+-- As zoxide's z: no words go home, `-` to the previous directory, one word
+-- that names a directory straight there, anything else to zoxide's best
+-- match other than here. zi picks interactively (fzf). No pick leaves a
+-- command that only sets ERRORLEVEL 1 (`verify other`).
+local function zoxide_filter(line)
+    local words = split_words(line)
+    local cmd = words and words[1] and words[1]:lower()
+    if cmd ~= "z" and cmd ~= "zd" and cmd ~= "zi" and cmd ~= "zdi" then
+        return nil
+    end
+    table.remove(words, 1)
+    local dir
+    if cmd == "zi" or cmd == "zdi" then
+        dir = zoxide_query({ "--interactive" }, words)
+    elseif #words == 0 then
+        dir = os.getenv("USERPROFILE")
+    elseif #words == 1 and words[1] == "-" then
+        dir = os.getenv("_OLDPWD")
+        if not dir then
+            io.stderr:write("zoxide: _OLDPWD is not set\n")
+        end
+    elseif #words == 1 and os.isdir(words[1]) then
+        dir = words[1]
+    else
+        dir = zoxide_query({ "--exclude", quote_arg(os.getcwd()) }, words)
+    end
+    if not dir then
+        return "verify other 2>nul"
+    end
+    return 'cd /d "' .. dir .. '"'
+end
+
+if zoxide_exe and clink.onfilterinput then
+    clink.onfilterinput(zoxide_filter)
+end
+
+-- ===== again [N]: re-run a command from Clink's history =====
+-- cmd's own history (doskey /history) stays empty under Clink, which keeps
+-- its own. A line that is just `again [N]` is caught here (Clink has already
+-- added it to its history): the Nth previous command, skipping again lines,
+-- goes to again.cmd in _DEN_AGAIN (or a message in _DEN_AGAIN_ERR), and
+-- again.cmd asks before it sets _DEN_AGAIN_RUN=1. The next edit prompt then
+-- hands that command to cmd as its input line, so it runs as if typed, den's
+-- aliases included. Needs Clink 1.3.18 (onprovideline, history access); on an
+-- older Clink the again alias reaches again.cmd alone, which says so.
+-- A child cmd inherits these from its parent; this session starts without.
+os.setenv("_DEN_AGAIN", nil)
+os.setenv("_DEN_AGAIN_ERR", nil)
+os.setenv("_DEN_AGAIN_RUN", nil)
+
+-- The first word of a line, lower-cased, without cmd's echo-off "@".
+local function first_word(line)
+    local w = line:match("^%s*@?(%S+)")
+    return w and w:lower()
+end
+
+local function again_filter(line)
+    if first_word(line) ~= "again" then
+        return nil
+    end
+    local arg = line:match("^%s*@?%S+%s*(.-)%s*$")
+    local n = arg == "" and 1 or (arg:match("^[1-9]%d?%d?%d?$") and tonumber(arg))
+    os.setenv("_DEN_AGAIN", nil)
+    os.setenv("_DEN_AGAIN_RUN", nil)
+    os.setenv("_DEN_AGAIN_ERR", nil)
+    if not n then
+        os.setenv("_DEN_AGAIN_ERR", "usage: again [N]  (N=positive integer, default 1)")
+    else
+        local want = n
+        -- Walk back a page at a time: any number of again lines may sit in
+        -- between, and each one is skipped rather than counted.
+        local last = rl.gethistorycount()
+        local found
+        while last >= 1 and not found do
+            local first = math.max(1, last - 199)
+            local items = rl.gethistoryitems(first, last) or {}
+            for i = #items, 1, -1 do
+                local w = first_word(items[i].line or "")
+                if w and w ~= "again" then
+                    n = n - 1
+                    if n == 0 then
+                        found = items[i].line
+                        break
+                    end
+                end
+            end
+            last = first - 1
+        end
+        if found then
+            os.setenv("_DEN_AGAIN", found)
+        else
+            os.setenv("_DEN_AGAIN_ERR", "again: no command at position " .. want .. " in history")
+        end
+    end
+    return '"' .. bin_dir .. '\\again.cmd"'
+end
+
+local function again_provide()
+    local cmd, run = os.getenv("_DEN_AGAIN"), os.getenv("_DEN_AGAIN_RUN")
+    os.setenv("_DEN_AGAIN", nil)
+    os.setenv("_DEN_AGAIN_RUN", nil)
+    os.setenv("_DEN_AGAIN_ERR", nil)
+    if run == "1" and cmd and cmd ~= "" then
+        return cmd
+    end
+    return nil
+end
+
+if clink.onfilterinput and clink.onprovideline and rl and rl.gethistoryitems then
+    clink.onfilterinput(again_filter)
+    clink.onprovideline(again_provide)
 end
 
 -- ===== Starship =====
-local starship_exe = find_on_path("starship")
 if starship_exe then
     local sh = io.popen(cmd_line(starship_exe, "init cmd 2>nul"))
     if sh then
