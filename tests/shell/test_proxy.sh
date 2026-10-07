@@ -195,6 +195,120 @@ else
     echo "zsh not found; skipping zsh proxy tests"
 fi
 
+# =============================================================================
+# History: a line that runs proxy add with a url that holds a password stays out
+# of the history file; one without a password is saved as usual. Each case types
+# its lines into a real interactive shell (bash -i, zsh -i) that reads them from
+# a pipe, with HOME and HISTFILE in WORK, and reads the file the shell wrote.
+# =============================================================================
+HIST_DIR="$WORK/hist"
+HIST_OUT="$HIST_DIR/out"
+HIST_RC="$TESTTMP/hist_bashrc"
+HIST_ZDOT="$TESTTMP/hist_zdot"
+SECRET_LINE="proxy add c '$SECRET_URL'"
+HIST_LINES=('echo before' "$SECRET_LINE" 'proxy add u http://bob@p:1' 'proxy add h p:3128 .corp' 'echo after')
+HIST_KEPT='echo before
+proxy add u http://bob@p:1
+proxy add h p:3128 .corp
+echo after'
+
+# hist_bash <setup> <line>... - type the lines into bash -i, with <setup> run
+# before proxy.sh loads; print the history file without its time stamp lines.
+# What the shell printed is in HIST_OUT.
+hist_bash() {
+    local setup=$1 hf="$HIST_DIR/bash_history"
+    shift
+    rm -rf "${HIST_DIR:?}"
+    mkdir -p "$HIST_DIR"
+    printf '%s\n' "HISTFILE='$hf'" "$setup" ". '$DOTFILES/shell/posix/_helpers.sh'" ". '$PROXY_SH_GUARDED'" > "$HIST_RC"
+    printf '%s\n' "$@" | env -i HOME="$HIST_DIR" PATH="$PATH" TERM=dumb XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+        bash --rcfile "$HIST_RC" -i > "$HIST_OUT" 2>&1
+    grep -v '^#[0-9]' "$hf"
+}
+
+# hist_zsh <setup> <line>... - the same with zsh -i (no global rc files), with
+# proxy.sh loaded twice, as a reload of the config would.
+hist_zsh() {
+    local setup=$1 hf="$HIST_DIR/zsh_history"
+    shift
+    rm -rf "${HIST_DIR:?}"
+    mkdir -p "$HIST_DIR" "$HIST_ZDOT"
+    printf '%s\n' 'setopt no_global_rcs' > "$HIST_ZDOT/.zshenv"
+    printf '%s\n' "HISTFILE='$hf'; HISTSIZE=100; SAVEHIST=100" "$setup" ". '$DOTFILES/shell/posix/_helpers.sh'" \
+        ". '$PROXY_SH_GUARDED'" ". '$PROXY_SH_GUARDED'" > "$HIST_ZDOT/.zshrc"
+    printf '%s\n' "$@" | env -i HOME="$HIST_DIR" PATH="$PATH" TERM=dumb ZDOTDIR="$HIST_ZDOT" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+        zsh -i > "$HIST_OUT" 2>&1
+    cat "$hf"
+}
+
+echo "================================================"
+echo "  Testing proxy add and the history file"
+echo "================================================"
+
+reset_conf
+echo "[bash] a password in proxy add keeps the line out of HISTFILE, under den's HISTCONTROL and a HISTTIMEFORMAT"
+actual=$(hist_bash "HISTCONTROL=ignoreboth; HISTTIMEFORMAT='%F %T '" "${HIST_LINES[@]}")
+assert_eq "bash/history: only the line with a password is left out" "$HIST_KEPT" "$actual"
+
+reset_conf
+echo "[bash] the same with a history -a in PROMPT_COMMAND and histappend"
+actual=$(hist_bash "PROMPT_COMMAND='history -a'; shopt -s histappend" "${HIST_LINES[@]}")
+assert_eq "bash/history: history -a in PROMPT_COMMAND writes no password" "$HIST_KEPT" "$actual"
+
+# The line with a leading space is not saved (ignorespace); the entry before it
+# holds no password, so it stays.
+reset_conf
+echo "[bash] a line HISTCONTROL left out does not cost the line before it"
+actual=$(hist_bash 'HISTCONTROL=ignoreboth' 'echo before' " $SECRET_LINE" 'echo after')
+assert_eq "bash/history: the entry before an ignored line stays" "echo before
+echo after" "$actual"
+
+echo "[bash] the user's HISTIGNORE is left as it was and still applies"
+actual=$(hist_bash "HISTIGNORE='echo mine'" 'echo mine' "$SECRET_LINE" 'echo "HI=$HISTIGNORE"')
+assert_eq "bash/history: HISTIGNORE still applies" "echo \"HI=\$HISTIGNORE\"" "$actual"
+assert_contains "bash/history: HISTIGNORE unchanged" "HI=echo mine" "$(cat "$HIST_OUT")"
+
+# A subshell has a copy of the history list: the line stays, and proxy says how
+# to take it out.
+echo "[bash] proxy add in a pipe says how to take the line out"
+hist_bash '' 'echo before' "$SECRET_LINE 2>&1 | cat" > /dev/null
+assert_contains "bash/history: subshell hint" "it ran in a subshell; run: history -d 2" "$(cat "$HIST_OUT")"
+
+if command -v zsh >/dev/null 2>&1; then
+    reset_conf
+    echo "[zsh] a password in proxy add keeps the line out of HISTFILE"
+    actual=$(hist_zsh '' "${HIST_LINES[@]}")
+    assert_eq "zsh/history: only the line with a password is left out" "$HIST_KEPT" "$actual"
+
+    # reload runs fc -W, which writes a line a zshaddhistory hook kept in memory
+    # only (status 2); fc -A does the same.
+    for w in 'fc -W' 'fc -A'; do
+        reset_conf
+        echo "[zsh] $w (reload runs fc -W) writes no password"
+        actual=$(hist_zsh '' "${HIST_LINES[@]}" "$w")
+        assert_not_contains "zsh/history: $w writes no password" "S3cr" "$actual"
+        assert_contains "zsh/history: $w keeps the line without one" "proxy add u http://bob@p:1" "$actual"
+    done
+
+    for opt in inc_append_history share_history; do
+        reset_conf
+        echo "[zsh] the same under setopt $opt"
+        actual=$(hist_zsh "setopt $opt" "${HIST_LINES[@]}")
+        assert_eq "zsh/history: $opt writes no password" "$HIST_KEPT" "$actual"
+    done
+
+    # den's hook goes next to a zshaddhistory function of the user's own, which
+    # still leaves its lines out, as HISTORY_IGNORE does; loading proxy.sh twice
+    # adds the hook once.
+    reset_conf
+    echo "[zsh] the user's zshaddhistory and HISTORY_IGNORE still apply"
+    actual=$(hist_zsh "zshaddhistory() { case \$1 in *mine*) return 1 ;; esac; return 0; }; HISTORY_IGNORE='echo theirs'" \
+        'echo mine' 'echo theirs' "$SECRET_LINE" 'proxy add u http://bob@p:1' 'echo "hooks=${#zshaddhistory_functions}"')
+    assert_eq "zsh/history: the user's hook and HISTORY_IGNORE still apply" "proxy add u http://bob@p:1
+echo \"hooks=\${#zshaddhistory_functions}\"" "$actual"
+    assert_contains "zsh/history: den's hook added once" "hooks=1" "$(cat "$HIST_OUT")"
+fi
+
 # pwsh port: same proxy.conf store + same no_proxy loopback logic. on/off/status
 # chain inside ONE run_pwsh (env vars only live in that pwsh session). proxy status
 # prints to stdout; add/on/off messages go to stderr (not captured here).

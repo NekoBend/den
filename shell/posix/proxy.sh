@@ -12,7 +12,9 @@
 # A url may carry a password (http://user:password@host:port): the store is
 # 0600 in a 0700 directory, and add/on/ls/status print it as user:***@host. A
 # store that is a symlink is written through, as pwsh does (_den_put, in
-# _helpers.sh, which init.bash and init.zsh load first).
+# _helpers.sh, which init.bash and init.zsh load first). The line that typed
+# such a url stays out of the history file ($HISTFILE): see _proxy_forget and
+# _proxy_histhook below.
 
 # Skip in non-interactive shells
 case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
@@ -35,6 +37,84 @@ _proxy_show() {
     fi
     unset _psh_pre _psh_rest _psh_info
 }
+
+# _proxy_secret_line <line> - true when a command line runs proxy add with a
+# url that holds a password, as _proxy_show finds one: in the text after
+# "proxy" and then "add", once every :// is taken out, a : comes before the
+# last @. It reads the text only, so it errs toward true: a line it keeps out
+# of the history for nothing costs less than a password in the history file.
+_proxy_secret_line() {
+    case $1 in
+        *proxy*add*@*) ;;
+        *) return 1 ;;
+    esac
+    _psl_t=${1#*proxy*add}
+    while :; do
+        case $_psl_t in
+            *://*) _psl_t="${_psl_t%%://*}${_psl_t#*://}" ;;
+            *) break ;;
+        esac
+    done
+    _psl_t=${_psl_t%@*}
+    case $_psl_t in
+        *:*) unset _psl_t; return 0 ;;
+    esac
+    unset _psl_t
+    return 1
+}
+
+# _proxy_forget <add arguments> - bash: when one of the arguments is a url
+# that holds a password, take the line that ran proxy add out of the history
+# list, before bash writes the list to $HISTFILE (at exit, or by a
+# `history -a` in PROMPT_COMMAND, which runs after the command). Only an
+# entry that _proxy_secret_line finds goes: when HISTCONTROL or HISTIGNORE
+# kept this line out (a leading space, a duplicate), the last entry is an
+# older line, and it stays unless it holds such a url too. A subshell (a pipe,
+# $(...)) has a copy of the list, so there the command to run is printed.
+# What bash wrote before the command ran (a `history -a` from PS0 or a DEBUG
+# trap) stays. zsh keeps the line out in _proxy_histhook, below.
+_proxy_forget() {
+    [ -n "${BASH_VERSION-}" ] || return 0
+    _pf_pw=0
+    for _pf_a in "$@"; do
+        if [ "$(_proxy_show "$_pf_a")" != "$_pf_a" ]; then
+            _pf_pw=1
+            break
+        fi
+    done
+    if [ "$_pf_pw" -eq 1 ]; then
+        # No HISTTIMEFORMAT: a time stamp holds a : of its own.
+        _pf_h=$(HISTTIMEFORMAT='' history 1)
+        if _proxy_secret_line "$_pf_h"; then
+            _pf_n=${_pf_h#"${_pf_h%%[0-9]*}"}
+            _pf_n=${_pf_n%%[!0-9]*}
+            # shellcheck disable=SC3028  # BASHPID: this function runs only in bash
+            if [ -z "$_pf_n" ]; then
+                :
+            elif [ "${BASHPID:-$$}" = "$$" ]; then
+                history -d "$_pf_n"
+            else
+                echo "proxy: this line, password and all, stays in the shell history: it ran in a subshell; run: history -d $_pf_n" >&2
+            fi
+        fi
+    fi
+    unset _pf_pw _pf_a _pf_h _pf_n
+}
+
+# _proxy_histhook <line> - zsh's zshaddhistory hook: a line that
+# _proxy_secret_line finds is not saved. 1, not 2 (saved in memory only):
+# fc -W, which reload runs, and fc -A write a line a hook answered with 2 to
+# $HISTFILE too. It lingers until the next line runs, so it can be edited
+# again at once. add-zsh-hook adds it next to the user's own hooks.
+_proxy_histhook() {
+    if _proxy_secret_line "$1"; then
+        return 1
+    fi
+    return 0
+}
+if [ -n "${ZSH_VERSION-}" ]; then
+    autoload -Uz add-zsh-hook && add-zsh-hook zshaddhistory _proxy_histhook
+fi
 
 _proxy_usage() {
     printf '%s\n' \
@@ -239,7 +319,7 @@ _proxy_status() {
 # proxy — register named proxy profiles and toggle them on/off (env vars only).
 proxy() {
     case "${1:-status}" in
-        add)            shift; _proxy_add "$@" ;;
+        add)            shift; _proxy_forget "$@"; _proxy_add "$@" ;;
         rm)             shift; _proxy_rm "$@" ;;
         ls)             _proxy_ls ;;
         on)             shift; _proxy_on "$@" ;;
