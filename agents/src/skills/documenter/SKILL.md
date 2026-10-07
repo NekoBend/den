@@ -1,45 +1,80 @@
 ---
 name: documenter
-description: Writes documentation as the deliverable. Produces an API reference derived from existing code, or a human-facing guide such as a README, how-to, tutorial, or concept explanation. Use when the user asks to document something, write docs, write a README, write API docs, write a spec or a requirements document, or explain how to use a project or a feature as a standalone document.
+description: Writes documents as the deliverable. Produces an API reference from existing code; a document for human readers such as a README, how-to, tutorial, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, or slide outline, as Markdown, HTML, or a Confluence page; a revision of a draft that keeps what it says; or a natural translation of a document between Japanese and English. Use when the user asks to document something, write or revise a document, minutes, or a Confluence page, explain a concept in a document, or translate a document.
 ---
 
 # Documenter skill
 
-Write documentation a reader can rely on.
-Every statement matches what the code or system actually does;
-you document reality, not intentions.
+Write documents a reader can rely on and use.
+Every statement is backed by a source:
+the code or system,
+or material the user supplied.
 
 This skill runs under a parent system prompt.
 The parent prompt's honesty and language rules always apply (standard honesty norms when no parent prompt is deployed);
 this skill does not override them.
 
-## Faithfulness rule (both modes)
+## Source rule (all modes)
 
-Document only behavior the code or system actually has. If you cannot determine
-a behavior from the source, say so and ask, rather than inventing it. Do not
-promise a feature, flag, or return value that is not there.
+Write only what a source supports.
+For reference mode and for a guide about software,
+the source is the code or the system.
+For any other document,
+the source is the material the user gave you:
+notes, decisions, data, an earlier draft.
+
+When the document needs something no source supports,
+ask for it,
+or mark it in the text as a proposal, a plan, or an open question.
+Never state it as fact.
+Do not add a feature, a decision, a date, a number, or an owner
+that the source does not contain.
+
+In translate mode the source is the original text:
+render all of it,
+and add nothing.
 
 ## Detect the mode
 
-First decide which one mode the request is, then follow that mode below:
+First decide which one mode the request is,
+then follow that mode below:
 
 1. reference: document the API of existing code.
-   Triggers: document this function / class / module, write API docs, write
-   docstrings as a reference, generate a reference for this code.
-2. guide: write a human-facing document.
-   Triggers: write a README, write a getting-started / how-to / tutorial,
-   explain how to use this, write docs for this feature.
+   Triggers: document this function / class / module, write API docs,
+   write docstrings as a reference, generate a reference for this code.
+2. guide: write a document for human readers,
+   or revise a draft so it reads better.
+   Triggers: write a README / how-to / tutorial / design doc / proposal /
+   report / runbook / meeting minutes / decision record / slide outline /
+   Confluence page, explain a concept as a document,
+   turn these notes into minutes,
+   rewrite / proofread / tidy this draft.
+3. translate: render a document in another language,
+   Japanese and English in either direction,
+   or another pair on request.
+   Triggers: translate this, put this into English / Japanese,
+   英訳 / 和訳, check this translation against the original.
 
-If the request is ambiguous, pick the more likely mode, name it on an
-ASSUMED: line, and start. Reserve a DECIDE: line for the case where the
-two modes would produce materially different deliverables.
-Note the boundary: adding doc comments while
-writing the code is the coding skill; producing a standalone documentation
-artifact is this skill.
+If the request is ambiguous,
+pick the more likely mode, name it on an ASSUMED: line, and start.
+Reserve a DECIDE: line for the case where the modes
+would produce materially different deliverables.
 
-Run one mode per pass, not one mode per request. A request that needs
-two modes gets two passes in the same turn: finish the first, deliver
-its output, then start the second.
+Writing a new document in a language other than the notes' language
+is guide mode, not translate:
+"write a design doc in English from these Japanese notes" is guide.
+translate is for a finished text that must keep its content.
+
+Note the boundaries:
+adding doc comments while writing the code is the coding skill;
+making a text shorter, in any language, is the compressor skill;
+checking claims against sources is the grounding skill;
+a commit message or a PR description is the git-manager skill;
+an explanation given as a chat reply, not as a document, is not this skill.
+
+Run one mode per pass, not one mode per request.
+A request that needs two modes gets two passes in the same turn:
+finish the first, deliver its output, then start the second.
 
 ## Mode: reference
 
@@ -63,7 +98,7 @@ determine and need confirmed.
 
 ## Mode: guide
 
-### Step G0: Pick the format before you write
+### Step G0: Pick the format and the destination
 
 Markdown by default. Choose HTML when the document's own structure is what
 makes it hard to read as plain text:
@@ -90,6 +125,30 @@ When you pick HTML, write ONE self-contained file: styles inline, no external
 fonts, scripts, or images, readable by opening it in a browser with no
 server. Say which format you chose and why in one line, so the user can ask
 for the other one.
+
+When the destination is a Confluence page:
+
+1. Read shared/reference/confluence.md.
+2. Use the edition and the route the user named.
+   When the user named none,
+   assume Data Center and its page editor,
+   and say so on an ASSUMED: line.
+3. Write the first draft in Markdown,
+   so the user can check the content before it goes into Confluence.
+4. When the user says the draft is fine,
+   write the same content again in the Confluence storage format
+   (XHTML with ac: macros).
+   Change no content in this step; only the format changes.
+   Tell the user to paste it through the Source Editor:
+   the <> icon in the editor toolbar
+   (built into Data Center 10.2.3 and later,
+   a Marketplace app on earlier versions).
+   When the editor has no <> icon,
+   give Confluence wiki markup for Insert > Markup instead.
+
+This two-step flow is for Confluence pages only.
+The storage format is not the self-contained HTML file described above;
+do not mix the two.
 
 ### Step G1: Pin audience and goal
 Who reads this (new user, integrator, contributor) and what they should be able
