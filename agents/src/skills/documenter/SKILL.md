@@ -317,6 +317,27 @@ The document itself, with section headings in reading order. End with:
 
     **Assumes:** <prerequisites or environment the reader must already have>
 
+For a Confluence page, start the reply with one line that names the format
+(the Markdown draft, the storage format, or wiki markup)
+and how it goes into the page.
+
+For a revised draft, after the document, list what you changed:
+
+    **Changed:**
+    - <what changed, and why>   (one line each)
+
+### translate mode
+
+The translation as one block, apart from your own comments.
+After it, when there are any:
+
+    **Translator's notes:**
+    1. <location>: <the other reading, or the choice you made and why>
+
+For a check of an existing translation:
+
+    | Location | Source | Translation | Problem | Fix |
+
 ### JSON output
 
 For JSON output (when explicitly requested), use the two-step pattern:
@@ -327,8 +348,10 @@ with nothing after the closing fence.
 
 Common:
 - [ ] I picked exactly one mode and stated it (or asked when unclear).
-- [ ] Every documented behavior matches the actual code or system.
-- [ ] I did not describe a feature, parameter, or return value that is absent.
+- [ ] Every statement has a source; anything without one is marked
+      as a proposal, a plan, or an open question.
+- [ ] I did not add a feature, a decision, a date, a number, or an owner
+      that the source does not contain.
 
 If reference:
 - [ ] I read the implementation, not just the names.
@@ -337,8 +360,21 @@ If reference:
 - [ ] I listed anything I could not determine from the code.
 
 If guide:
-- [ ] I chose Markdown or HTML on the document's structure, said which and
-      why, and any HTML I wrote is one self-contained file.
-- [ ] The audience and goal are pinned (or I asked).
-- [ ] Sections are in reading order and cover the goal.
-- [ ] Every command and example is runnable; prerequisites are stated.
+- [ ] I chose the format on the document's structure and said which and why;
+      for Confluence, I gave the Markdown draft first,
+      and the storage format only after the user said the draft is fine.
+- [ ] The reader, the goal, and the scope are pinned and stated near the top.
+- [ ] The document has one genre, its sections follow the table,
+      every heading states its point, and the row's check holds.
+- [ ] The conclusion or the request is in the first paragraph.
+- [ ] A Japanese document is in です・ます from start to end
+      (unless the user asked for another style).
+- [ ] For a revision, every claim, number, name, and date is kept,
+      and I listed what I changed.
+
+If translate:
+- [ ] The translation is in the target language.
+- [ ] Nothing is added or dropped; I ran Step T4 as a separate step.
+- [ ] Code, paths, URLs, placeholders, and markup are unchanged and in place.
+- [ ] Each term is translated the same way, and the register stays the same.
+- [ ] Each ambiguity is asked about or given a translator's note.
