@@ -673,6 +673,43 @@ after the loop
 a
 after Get-Content -Wait" "$actual"
 
+# The stop reads PowerShell internals; where one is missing (a later PowerShell
+# may rename it), head reads what comes after the Nth and drops it, as it did
+# before. The error its lookup caught was left in $Error, one per call, though
+# nothing had gone wrong for the caller. Each copy below renames one name head
+# looks up, so the copy cannot find it; every head call must still pass the
+# first N on, read all 10 (the stop is off), and leave $Error empty, also under
+# Set-StrictMode -Version Latest, which fails an empty lookup on its own.
+echo "[pwsh] head without the internals it stops with"
+fallback_ps='function _CoreutilsBin { }'
+fallback_expected=""
+fallback_k=0
+for name in "'System.Management.Automation.ExecutionContext'" "'CurrentCommandProcessor'" \
+        "'Command'" "'ManageInvocationException'" "StopUpstreamCommandsException'"; do
+    label=${name//\'/}; label=${label##*.}
+    fallback_k=$((fallback_k + 1))
+    copy="$TESTTMP/coreutils_without_$fallback_k.ps1"
+    content=$(cat "$COREUTILS_PS1_STRIPPED")
+    renamed=${content//"$name"/"${name%\'}Gone'"}
+    # A copy that renames nothing would test the stop, not the fallback.
+    shown=$label
+    [ "$renamed" != "$content" ] || shown="$label (not found in head)"
+    printf '%s\n' "$renamed" > "$copy" || abort_suite "cannot write $copy"
+    fallback_ps+="
+    . '$copy'
+    \$Error.Clear()
+    \$global:made = 0
+    \$out = 1..10 | ForEach-Object { \$global:made++; \$_ } | head -n 2
+    \$again = 1..10 | head -n 2
+    \$strict = & { Set-StrictMode -Version Latest; 1..10 | head -n 2 }
+    '$shown: ' + (@(\$out) -join ',') + ' made ' + \$global:made + ', again ' + (@(\$again) -join ',') + ', strict ' + (@(\$strict) -join ',') + ', errors ' + \$Error.Count"
+    fallback_expected+="${fallback_expected:+
+}$label: 1,2 made 10, again 1,2, strict 1,2, errors 0"
+done
+actual=$(pwsh -NoProfile -NonInteractive -Command "$fallback_ps" 2>/dev/null | clean)
+assert_eq "pwsh/head without the stop's internals reads to the end, \$Error empty" \
+    "$fallback_expected" "$actual"
+
 # With microsoft/coreutils, head/tail/wc/... handed it `$input`, collected in
 # full, and with nothing piped in an empty pipe for stdin. A stub stands in for
 # coreutils (see make_stamp_stub in helpers.sh).

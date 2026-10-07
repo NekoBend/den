@@ -111,7 +111,7 @@ function env {
 # command after head gets its end: `head -n 2 | Measure-Object` printed nothing.
 # The internals are the same in PowerShell's first open-source release, in 6.0
 # and in 7.6; where one is missing, head reads what comes after the Nth and
-# drops it, as it did before.
+# drops it, as it did before, and leaves nothing in $Error.
 # With coreutils, head is a program, and the commands before it run to their end
 # after it exits, as they do before any program (pwsh 7.6 on Linux).
 function head {
@@ -156,7 +156,13 @@ function head {
         if ($null -ne $manage) {
           $__stop = @{ Processor = $proc; Manage = $manage; Exception = [Activator]::CreateInstance($type, @($cmd)) }
         }
-      } catch { $__stop = $null }
+      } catch {
+        # A caught error is still added to $Error; take this one back out, since
+        # nothing went wrong for the caller.
+        $__stop = $null
+        if ($Error.Count -gt 0 -and $Error[0] -is [System.Management.Automation.ErrorRecord] -and
+          [object]::ReferenceEquals($Error[0].Exception, $_.Exception)) { $Error.RemoveAt(0) }
+      }
     }
   }
   process {
