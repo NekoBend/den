@@ -37,6 +37,15 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   `lt`, `llt`, `ripgrep`) replace nothing and run `lsd` / `rg` anywhere. `cd`
   with an option (`-P`, `-L`, ...) is always `builtin cd`, since zoxide would
   read the option as a keyword to search for.
+- In **cmd**, they are Clink aliases (doskey macros) for the shims in
+  `%LOCALAPPDATA%\clink\bin`, which den does not put on `PATH`. Clink expands an
+  alias only where a command starts on a line typed at its prompt: at the start
+  of the line, or after `|` or `&` (Clink's `doskey.enhanced`, on by default),
+  not after `if`, `for ... do`, `start` or `cmd /c`. So a batch file, `cmd /c`,
+  any other program and starship's own probes get Windows' commands (System32
+  `find.exe`, the real `python`), and den's own commands (`mkcd`, `dg`, `back`,
+  `touch`, `head`, ...) do not exist there either. That is one difference from
+  pwsh, where a script can call them.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
   uv redirects obey `_DEN_UV_OVERRIDE` (`toggle-uv`). The `toggle-*` commands are
   pure flips on bash/zsh/pwsh (arguments are ignored); the cmd shims also accept
@@ -63,9 +72,14 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
 | `c` | clear the screen | ✓ | ✓ | ✓ |
 
 den initializes zoxide with `--no-cmd` in bash/zsh/pwsh, so bare `z` / `zi` do not
-exist there — you jump through den's toggle-aware `cd` / `cdi` or the always-on
-`zd` / `zdi`. Only cmd runs `zoxide init cmd` without `--no-cmd`, so there `z` / `zi`
-work directly (with `zd` / `zdi` as doskey aliases for them).
+exist there: you jump through den's toggle-aware `cd` / `cdi` or the always-on
+`zd` / `zdi`. zoxide has no cmd init, so on cmd den's `starship.lua` does that
+work: it tells zoxide each directory you move to (`zoxide add`), and a line that
+is just `z ...` / `zi ...` (or `zd ...` / `zdi ...`, the same) becomes a `cd /d` to
+the directory `zoxide query` picks. As with zoxide's own `z`, `z` alone goes to
+`%USERPROFILE%`, `z -` to the previous directory and `z <existing dir>` straight
+there. This needs zoxide on `PATH` when cmd starts and Clink 1.2.16 or newer, and
+works only on a line of its own (`z foo & dir` is left to cmd).
 
 `back` / `fwd` work like a browser's back and forward buttons over this shell
 session's directory history (kept in memory, never written to disk):
@@ -101,7 +115,7 @@ $ back -l
   record at once when typed, not when a script or a function runs them, so a
   script counts only by where it ends up); cmd the Clink prompt filter in
   `starship.lua`, which keeps the lists in `_DEN_DIRBACK` / `_DEN_DIRFWD`
-  (`_OLDPWD` is still set too).
+  (`_OLDPWD` is still set too) and tells zoxide about each move.
 - On PowerShell the prompt recorder wraps the `prompt` function when den's line
   in `$PROFILE` runs, after the starship prompt den sets up there. The wrapper
   also runs zoxide's prompt hook, which starship's prompt setup drops; that is
@@ -167,6 +181,14 @@ pwsh prints `[den] ls -> lsd  (off: tgl-wr)`. `_DEN_WRAPPER_LOG=0` silences the
 line without changing what runs; `_DEN_WRAPPERS=0` turns the wrappers off, as
 `tgl-wr` does. cmd prints no line.
 
+On cmd, a wrapper runs the modern tool whenever `PATH` has it and ends with
+the tool's exit code; the native command runs only when the tool is missing or
+the wrappers are off. A `grep` with no match therefore exits 1 instead of
+running `findstr` too, and a `cat` or `ls` with one bad operand prints once.
+`find` is the exception: as before, `find.exe` also runs when `fd` exits
+non-zero, which is how a DOS-style `find "text" file.txt` typed at the prompt
+still answers.
+
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `ls` | `lsd` → native `ls` / `dir` | ✓ | ✓ | ✓ |
@@ -196,10 +218,14 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `head` / `tail` | first / last N lines | native | ✓ | ✓ (positional) |
 | `wc` | line / word / char counts | native | ✓ | ✓ (positional) |
 | `which` | locate a command on PATH | native | ✓ | ✓ |
-| `touch` | create / update-timestamp a file | native | ✓ | ✓ |
+| `touch` | create each file, or update its timestamp | native | ✓ | ✓ |
 | `df` | disk free space | native | ✓ | — |
 | `env` | print env / run with VAR=val overrides | native | ✓ | — |
 | `split` | split a file into chunks | native | ✓ | — |
+
+cmd's `wc` reads the file once: lines are line feeds (blank lines count, a last
+line without one does not, as in GNU `wc -l`), words runs of non-blanks, and
+characters the text's length with its line ends.
 
 ## File utilities
 
@@ -213,8 +239,12 @@ tools. The cmd shims are positional-only (no GNU flags, no pipe input).
 | `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
 | `extract <archive...>` / `xt` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
 | `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
-| `path` | print `$PATH`, one entry per line | ✓ | ✓ | ✓ |
+| `path` | print `$PATH`, one entry per line | ✓ | ✓ | native |
 | `ports` | list listening TCP ports | ✓ | ✓ | — |
+
+On cmd, `path` stays cmd's own command: it prints `PATH=...` on one line, and
+with arguments sets `PATH` (`path C:\tools;%PATH%`). den defines no alias over
+it, since the alias would take over the setting form too.
 
 `extract` and `archive` pick the format from the extension without regard to
 case (`PHOTOS.ZIP`, `DATA.TAR.GZ`). A single compressed file is still named by
@@ -261,9 +291,10 @@ The `python` / `pip` family transparently routes through `uv` (unless uv is abse
 or `_DEN_UV_OVERRIDE=0`, which a reload or a child shell started after `toggle-uv`
 keeps). Inside an active venv on bash/zsh/pwsh, `pip` / `pip3` use the venv's own
 pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they run
-`uv pip`, which installs into that venv. The cmd `pip` shim runs the first
-`pip.exe` on `PATH` inside a venv. `python` / `python3` / `py` still run through
-`uv run --python <venv version>`. Flip the redirect with `toggle-uv`.
+`uv pip`, which installs into that venv; `python` / `python3` / `py` still run
+through `uv run --python <venv version>`. Inside a venv on cmd, the `pip` shim
+runs the first `pip.exe` on `PATH`, and `python3` the venv's `python.exe` (a
+Windows venv has no `python3.exe`). Flip the redirect with `toggle-uv`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
@@ -277,6 +308,12 @@ pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they ru
 | `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.
+
+On cmd, `uv` injects `--python` only when `_DEN_VENV_PYTHON` (the venv's version)
+comes from a bash/zsh or pwsh session where `va` ran and that started this cmd:
+cmd has no `va`, and a venv activated in cmd (`activate.bat`) leaves `uv run` as
+typed. The arguments after `run` reach uv unchanged, quoted `&` `|` `<` `>` and
+`=` `,` `;` `!` included.
 
 `va` refuses a venv it cannot trust and prints the command to source it yourself:
 one whose `bin/` (`Scripts/`) or activate script git tracks, or is a symlink, one
@@ -346,11 +383,19 @@ see shell/README.md for what each shell can and cannot catch.
 | `toggle-hwinfo` / `tgl-hw` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
 | `refresh-hwinfo` | clear the per-boot hardware cache so it re-detects | ✓ | ✓ | — |
 
+On cmd the CPU/GPU names come from the cache file pwsh's hwinfo keeps,
+`%LOCALAPPDATA%\shell-cache\hwinfo-cache.<COMPUTERNAME>.ps1`, which cmd reads as
+text and never runs. Only without it does a new cmd window detect them (through
+Windows PowerShell, the way pwsh's hwinfo does, so both shells show the same
+names) and write the file for the next one, a "nothing recognized" result
+included; without starship nothing is detected. cmd has no `refresh-hwinfo`:
+pwsh's, or deleting that file, makes the next window detect again.
+
 ## History, session, editor
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `again [N]` | re-run the Nth previous command after a confirm | ✓ | ✓ | ✓ (N=1) |
+| `again [N]` | re-run the Nth previous command after a confirm | ✓ | ✓ | ✓ |
 | `sagain [N]` | `again` with sudo | ✓ | ✓ | — |
 | `reload` | clear den's shell caches and restart the shell to load the config (`exec` on bash/zsh; a new pwsh on pwsh, see below) | ✓ | ✓ | — |
 | `code` | launch VS Code (prefers code-insiders) | ✓ | ✓ | ✓ |
@@ -358,6 +403,11 @@ see shell/README.md for what each shell can and cannot catch.
 
 On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 `code`); posix/pwsh fall back.
+
+On cmd, `again` reads Clink's history (cmd's own `doskey /history` stays empty
+under Clink) and needs Clink 1.3.18 or newer. Type it on a line of its own:
+after the confirm, the command becomes the next input line, so it runs as if
+typed, aliases included.
 
 On pwsh, `reload` cannot replace the running process, so it starts the same
 pwsh with the arguments this session was launched with, in the current

@@ -106,6 +106,130 @@ def test_cmd_digest_forwards_to_dg():
     assert dg.count(b"\n") == dg.count(b"\r\n"), "dg.cmd must use CRLF line endings"
 
 
+def _cmd_code(name: str) -> list[str]:
+    """A cmd shim's lines without blank lines and rem comments."""
+    lines = (_CMD_BIN / f"{name}.cmd").read_text(encoding="utf-8").splitlines()
+    return [
+        ln.strip()
+        for ln in lines
+        if ln.strip() and not ln.strip().lower().startswith("rem ")
+    ]
+
+
+# The wrapper shims and the modern tool each one prefers. find.cmd is not
+# here: it keeps running find.exe after a failing fd (see its own test).
+_CMD_WRAPPERS = {
+    "ls": "lsd",
+    "la": "lsd",
+    "ll": "lsd",
+    "lla": "lsd",
+    "lt": "lsd",
+    "llt": "lsd",
+    "cat": "bat",
+    "grep": "rg",
+}
+
+
+def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
+    # cmd reads `where rg && (rg %*) || (findstr %*)` as `(A && B) || C`, so a
+    # tool that was there but exited non-zero (rg with no match, bat or lsd
+    # with one bad operand) ran the fallback with the same arguments: grep
+    # then waited on findstr reading the console, cat and ls printed twice.
+    # cmd cannot run here; this pins the shape: the tool is looked up on PATH
+    # only, the branch is on whether it was found, and the shim ends with the
+    # exit code of whichever ran.
+    for name, tool in _CMD_WRAPPERS.items():
+        code = _cmd_code(name)
+        joined = "\n".join(code)
+        assert not any("&&" in ln and "||" in ln for ln in code), name
+        assert f"where.exe $PATH:{tool}.exe" in joined, name
+        assert 'if defined _t "%_t%" ' in joined, name
+        assert "if not defined _t " in joined, name
+        assert code[-1] == "exit /b %errorlevel%", name
+
+
+def test_cmd_find_still_falls_back_to_find_exe_after_fd_fails():
+    # A DOS-style `find "text" file.txt` or `find /c /v "" file.txt` typed at
+    # the prompt makes fd exit non-zero (it reads file.txt as a search path),
+    # and the find.exe run after it is what answered. That stays as it was
+    # (what `find` should mean on cmd is not decided); only the lookup moved
+    # to System32's where.exe and fd's absolute path.
+    code = _cmd_code("find")
+    find_exe = "%SystemRoot%\\System32\\find.exe %*"
+    assert "where.exe $PATH:fd.exe" in "\n".join(code)
+    assert f'if defined _t "%_t%" %* || {find_exe}' in code
+    assert f"if not defined _t {find_exe}" in code
+    assert code[-1] == "exit /b %errorlevel%"
+
+
+def test_cmd_shims_call_where_and_powershell_by_system32_path():
+    # cmd looks a bare command name up in the current directory first, with
+    # every PATHEXT extension: a where.js (ramda ships one) or a committed
+    # where.bat ran in place of where.exe whenever ls, grep, cat or which did
+    # their lookup, and a powershell.bat in place of head, tail, wc and path.
+    bare = re.compile(r"(?i)(?<![\\\w.$:-])(where|powershell)(\.exe)?(?=[\s\"']|$)")
+    found = [
+        f"{f.name}: {ln}"
+        for f in sorted(_CMD_BIN.glob("*.cmd"))
+        for ln in _cmd_code(f.stem)
+        if bare.search(ln)
+    ]
+    assert not found, found
+
+
+def test_cmd_uv_passes_the_run_arguments_through_as_typed():
+    # uv.cmd rebuilt the arguments after `run` with `set "_args=!_args! %1"`
+    # and shift, under delayed expansion: %1 splits on = , ; as well as
+    # blanks, ! was dropped, the loop stopped at an empty "", and a quoted
+    # & | < > closed the set command's quote and ran as cmd syntax. The
+    # Windows CI job runs the shim; this pins the shape it relies on: the
+    # raw argument text, cut after `run`, goes to uv.exe through delayed
+    # expansion (after cmd has parsed the line), and CRLF keeps its goto
+    # label findable in a file this size.
+    raw = (_CMD_BIN / "uv.cmd").read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n"), "uv.cmd must use CRLF line endings"
+    code = _cmd_code("uv")
+    assert not [ln for ln in code if ln.lower().split()[0] == "shift"]
+    assert "set _raw=%*" in code
+    assert 'set "_rest=!_raw:*run=!"' in code
+    assert 'uv.exe run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code
+
+
+def test_cmd_touch_handles_every_operand():
+    # touch.cmd read only %~1: `touch a.txt b.txt c.txt` made a.txt, skipped
+    # the rest without a word and exited 0. It now loops over the operands
+    # with shift, and with no operand prints its usage and exits 1.
+    code = _cmd_code("touch")
+    assert ":next" in code
+    assert "shift" in code
+    assert "goto next" in code
+    assert 'if "%~1"=="" exit /b %_rc%' in code
+    assert ">&2 echo usage: touch ^<file^>..." in code
+
+
+def test_cmd_python3_in_a_venv_runs_the_venvs_python():
+    # A Windows venv has python.exe and pythonw.exe but no python3.exe, so the
+    # venv branch's `python3.exe %*` skipped the venv and found another Python
+    # or the Microsoft Store stub (exit 9009). It runs the venv's python.exe
+    # when the venv has one, and python3.exe only otherwise.
+    code = _cmd_code("python3")
+    venv_python = '"%VIRTUAL_ENV%\\Scripts\\python.exe"'
+    i = code.index(":system")
+    assert code[i + 1] == f"if defined VIRTUAL_ENV if exist {venv_python} goto :venv"
+    assert code[i + 2] == "python3.exe %*"
+    assert code[code.index(":venv") + 1] == f"{venv_python} %*"
+
+
+def test_cmd_shims_with_labels_keep_them_findable():
+    # cmd reads a batch file in 512-byte blocks when it looks for a label,
+    # and with LF-only line endings it can miss one: a shim that jumps to a
+    # label stays under 512 bytes or keeps CRLF line endings (as dg.cmd).
+    for name in ("pip", "python", "python3", "touch", "uv"):
+        raw = (_CMD_BIN / f"{name}.cmd").read_bytes()
+        crlf = raw.count(b"\n") == raw.count(b"\r\n")
+        assert len(raw) < 512 or crlf, f"{name}.cmd: {len(raw)} bytes, LF only"
+
+
 def test_cmd_short_toggle_shims_call_their_long_names():
     # cmd cannot run here, so this pins the shape that makes the short names
     # work: CALL (a bare name would end the shim there) of the long shim by

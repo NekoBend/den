@@ -139,7 +139,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 |---------|--------------|
 | `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF; on bash/zsh zoxide only for a `cd` typed at the prompt with no option |
 | `cdi` | zoxide interactive pick |
-| `zd` / `zdi` | always zoxide (ignore the toggle) |
+| `zd` / `zdi` | always zoxide (ignore the toggle); cmd also has `z` / `zi`, each on a line of its own |
 | `back [N]` / `fwd [N]` | go N entries back / forward in this session's directory history, browser-style (default 1) |
 | `back -l` / `back -i` | list the history / pick an entry with fzf (no `-i` on cmd); see COMMANDS.md |
 | `up [N]`, `.1`..`.9` | go up N directories (`..` = up 1; no `.1`..`.9` on pwsh, which reads `.1` as the number 0.1) |
@@ -382,7 +382,8 @@ shell/
     bin/          standalone POSIX executables (fixids: fast, filtered,
                   parallel chown -- a faster fixuid; self-documented, -h)
   pwsh/        PowerShell port (init.ps1 entry; coreutils.ps1 reimplements UNIX tools)
-  cmd/         Windows CMD command shims (cmd/bin/*.cmd) + starship.lua
+  cmd/         Windows CMD command shims (cmd/bin/*.cmd, typed through the Clink
+               aliases starship.lua defines; never on PATH) + starship.lua
   bash/init.bash   entry point sourced from ~/.bashrc
   zsh/init.zsh     entry point sourced from ~/.zshrc
   starship/starship.toml   prompt configuration
