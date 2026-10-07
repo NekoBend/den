@@ -13,7 +13,7 @@ both every turn. checkpoint runs first so the previous turn's direct edits to
 memory.md are captured before this turn proceeds.
 
 Hooks install per WORKSPACE: `install` writes each tool's project-level hook
-config (e.g. .claude/settings.json, .clinerules/hooks/) under the current
+config (e.g. .claude/settings.local.json, .clinerules/hooks/) under the current
 directory and seeds <cwd>/.den/imprint.md, so hook + imprint + memory all share
 one .den scope. Run it once inside each workspace you want imprinting in.
 
@@ -35,7 +35,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -43,20 +45,25 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+from ._exe import find_tool
 from ._memory import (
     _CLINERULES_IMPRINT,
     _CLINERULES_MEMORY,
     _clinerules_dir,
     _do_checkpoint,
     _find_den_dir,
+    _first_line,
+    _foreign_history,
     _history_dir,
     _memory_path,
     _read_guarded_text,
     _read_text_or_empty,
+    _snap_stamp,
     _snapshots,
     _symlink_component,
     _write_guarded,
     mirror_to_clinerules,
+    utf8_stdout,
 )
 from ._memory import (
     main as _memory_main,
@@ -99,7 +106,15 @@ These directives apply every turn. Do not let them fall out of context.
 # output contract has been checked against the real CLI.
 _TOOLS: dict[str, dict] = {
     "claude": {
-        "config": ".claude/settings.json",
+        # Claude Code's personal, uncommitted settings file: the commands pin
+        # this machine's absolute .den path, which must not travel with the
+        # repo (on the other OS of a WSL/Windows pair it is not even absolute).
+        # install keeps it out of git (_git_exclude).
+        "config": ".claude/settings.local.json",
+        # The shared, committed file earlier dens wrote to. install moves den's
+        # entries out of it; list and remove read it too.
+        "legacy_config": ".claude/settings.json",
+        "git_exclude": True,
         "emit": "claude",
         "format": "settings_json",
         "events": {
@@ -266,15 +281,29 @@ _EMITTERS = {
 # --------------------------------------------------------------------------- #
 
 
-def _cmd_run(argv: list[str]) -> int:
-    event, tool, den_dir_arg = _parse_run_args(argv)
-    if event is None or tool is None:
-        return 2
+def _cmd_run(argv: list[str]) -> int:  # ruff: ignore[too-many-return-statements]  # one exit per skip
+    """The per-event worker. It FAILS OPEN: every problem -- a bad argument, a
+    --den-dir that is not absolute here (a command written on the other OS of a
+    WSL/Windows pair), an event or tool this den version does not know, an error
+    while reading memory -- is one line on stderr, the tool's empty response on
+    stdout, and exit 0. Never 2: Claude Code treats exit 2 as "block", which
+    erases every prompt and keeps Stop from stopping, and a hook that can only
+    imprint must never take the session down with it."""
+    event, tool, den_dir_arg, problem = _parse_run_args(argv)
+    spec = _TOOLS.get(tool) if tool else None
+    emit = _EMITTERS.get(spec.get("emit", "")) if spec else None
+    native = spec["events"].get(event, event) if spec and event else ""
 
-    spec = _TOOLS.get(tool)
+    def skip(reason: str) -> int:
+        print(f"den hook run: {reason}; nothing injected", file=sys.stderr)
+        if emit is not None:
+            emit(native, "")
+        return 0
+
+    if problem:
+        return skip(problem)
     if spec is None:
-        print(f"den hook run: unknown tool '{tool}'", file=sys.stderr)
-        return 2
+        return skip(f"unknown tool '{tool}'")
     if spec.get("format") == "clinerules":
         print(
             f"den hook run: '{tool}' delivers via .clinerules rule files, not a "
@@ -283,52 +312,65 @@ def _cmd_run(argv: list[str]) -> int:
         )
         return 0
     if event not in spec["events"]:
-        print(f"den hook run: tool '{tool}' has no event '{event}'", file=sys.stderr)
-        return 2
+        return skip(f"tool '{tool}' has no event '{event}'")
 
-    # Prefer the den dir pinned at install time (--den-dir): it binds the hook to
-    # the workspace the user explicitly set up, so a checked-out repo cannot get
-    # its own ancestor/nested .den injected. Fall back to the cwd-ancestor walk
-    # only for hooks installed before pinning existed (backward compat).
-    if den_dir_arg:
-        den_dir = Path(den_dir_arg).expanduser()
-        if not den_dir.is_absolute():
-            # install always bakes an ABSOLUTE path; a relative --den-dir resolves
-            # against the agent's cwd, which is exactly the cwd-dependence pinning
-            # exists to remove (a repo could ship a hook with --den-dir .den).
-            # Refuse rather than silently re-open the injection vector.
-            print(
-                f"den hook run: --den-dir must be absolute, got '{den_dir_arg}'",
-                file=sys.stderr,
-            )
-            return 2
-    else:
-        den_dir = _find_den_dir(Path.cwd())
-
-    # Always checkpoint: captures the previous turn's direct edits to memory.md.
-    # Cheap and content-gated, so unconditional is fine on every event.
-    _do_checkpoint(den_dir)
+    try:
+        # Guarded too: `~nouser` makes expanduser raise RuntimeError, and a
+        # deleted working directory makes Path.cwd raise FileNotFoundError.
+        den_dir = _run_den_dir(den_dir_arg)
+    except Exception as exc:  # ruff: ignore[blind-except]  # fail open, see above
+        return skip(f"{type(exc).__name__}: {exc}")
+    if den_dir is None:
+        return skip(f"--den-dir must be absolute, got '{den_dir_arg}'")
 
     # Inject only on inject-events; other events still get an (empty) response
     # because some tools (cline, copilot) require valid JSON on every hook.
     # copilot's per-turn (userPromptSubmitted) is notification-only, so do not
     # compose for it -- it injects only at session-start.
     inject = event in _INJECT_EVENTS and not (tool == "copilot" and event == "per-turn")
-    text = _compose(den_dir) if inject else ""
-    emit = _EMITTERS.get(spec["emit"])
+    try:
+        # Always checkpoint: captures the previous turn's direct edits to
+        # memory.md. Cheap and content-gated, so unconditional is fine on every
+        # event. The mirror keeps cline-cli's .clinerules copy current with
+        # those edits (a no-op unless cline-cli is installed here).
+        _do_checkpoint(den_dir)
+        mirror_to_clinerules(den_dir)
+        text = _compose(den_dir) if inject else ""
+    except Exception as exc:  # ruff: ignore[blind-except]  # fail open, see above
+        return skip(f"{type(exc).__name__}: {exc}")
     if emit is None:
         # Fallback for tools whose emitter is not implemented yet: plain stdout.
         if text:
             sys.stdout.write(text + "\n")
     else:
-        emit(spec["events"][event], text)
+        emit(native, text)
 
     return 0
 
 
+def _run_den_dir(den_dir_arg: str | None) -> Path | None:
+    """The .den dir a hook run works on, or None for a --den-dir that is not
+    absolute.
+
+    The den dir pinned at install time (--den-dir) wins: it binds the hook to
+    the workspace the user explicitly set up, so a checked-out repo cannot get
+    its own ancestor/nested .den injected. The cwd-ancestor walk is only for
+    hooks installed before pinning existed (backward compat)."""
+    if not den_dir_arg:
+        return _find_den_dir(Path.cwd())
+    den_dir = Path(den_dir_arg).expanduser()
+    # install always bakes an ABSOLUTE path; a relative --den-dir resolves
+    # against the agent's cwd, which is exactly the cwd-dependence pinning
+    # exists to remove (a repo could ship a hook with --den-dir .den). Refuse
+    # rather than silently re-open the injection vector.
+    return den_dir if den_dir.is_absolute() else None
+
+
 def _parse_run_args(
     argv: list[str],
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """(event, tool, den_dir, problem). Whatever parsed is returned even when
+    there is a problem, so the caller can still answer the tool it names."""
     event = tool = den_dir = None
     i = 0
     while i < len(argv):
@@ -342,12 +384,10 @@ def _parse_run_args(
             den_dir = argv[i + 1]
             i += 2
         else:
-            print(f"den hook run: unexpected arg '{argv[i]}'", file=sys.stderr)
-            return None, None, None
+            return event, tool, den_dir, f"unexpected arg '{argv[i]}'"
     if event is None or tool is None:
-        print("den hook run: --event and --tool are required", file=sys.stderr)
-        return None, None, None
-    return event, tool, den_dir
+        return event, tool, den_dir, "--event and --tool are required"
+    return event, tool, den_dir, None
 
 
 # --------------------------------------------------------------------------- #
@@ -420,8 +460,21 @@ def _run_command(
     agent's cwd ancestors, which a checked-out repo could plant to inject its own
     imprint every turn (see _cmd_run). The path is quoted for its target language."""
     d = str(den_dir)
-    quoted = "'" + d.replace("'", "''") + "'" if powershell else shlex.quote(d)
+    quoted = _ps_quote(d) if powershell else shlex.quote(d)
     return f"den hook run --event {generic} --tool {tool} --den-dir {quoted}"
+
+
+# Every character PowerShell accepts as a single quote: ASCII ' and U+2018..U+201B
+# (what CodeGeneration.EscapeSingleQuotedStringContent doubles). Doubling only the
+# ASCII one let a directory named like x<U+2019>;<code>;<U+2019>y end the string
+# early, and the rest of the name then ran as code in the cline .ps1 hook on
+# every prompt.
+_PS_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
+
+
+def _ps_quote(text: str) -> str:
+    """`text` as a PowerShell single-quoted string literal."""
+    return "'" + "".join(c + c if c in _PS_SINGLE_QUOTES else c for c in text) + "'"
 
 
 def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
@@ -564,7 +617,10 @@ def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
     data = _read_json(config)
     if "hooks" not in data:
         return True
-    data["hooks"] = _strip_den_hooks(data["hooks"])
+    cleaned = _strip_den_hooks(data["hooks"])
+    if cleaned == data["hooks"]:
+        return True  # nothing of den's: leave the file byte-identical
+    data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -646,7 +702,16 @@ def _cline_script_name(native: str) -> str:
 
 
 def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    config.mkdir(parents=True, exist_ok=True)
+    try:
+        config.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        # A regular file on the way: typically cline's classic single-file
+        # `.clinerules`, which has no room for a hooks/ dir. Leave it alone.
+        print(
+            f"{_ERR_INSTALL}: refusing {config}: it or a parent is not a directory",
+            file=sys.stderr,
+        )
+        return False
     for generic, native in spec["events"].items():
         script = config / _cline_script_name(native)
         if script.is_symlink():
@@ -666,9 +731,11 @@ def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
         cmd = _run_command(tool, generic, den_dir, powershell=_is_windows())
         if _is_windows():
             # PowerShell hook: Cline runs <Event>.ps1 and reads its stdout JSON.
+            # With a BOM: Windows PowerShell 5.1 reads a BOM-less script in the
+            # ANSI code page, which garbles a non-ASCII workspace path.
             script.write_text(
                 f"# {_MARKER} (den-managed; do not edit)\n{cmd}\n",
-                encoding="utf-8",
+                encoding="utf-8-sig",
             )
         else:
             script.write_text(
@@ -718,6 +785,9 @@ def _remove_cline(tool: str, spec: dict, config: Path) -> bool:
 _CLINERULES_RULE_HEADER = (
     "<!-- den-managed. Edit .den/imprint.md, then re-run "
     "`den install hook --tool cline-cli`. -->\n\n"
+    "cline reads den's memory from .clinerules/den-memory.md, a copy of "
+    ".den/memory.md. After you edit .den/memory.md directly, run "
+    "`den hook memory checkpoint` so the copy is refreshed.\n\n"
 )
 
 
@@ -790,8 +860,20 @@ def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> b
     return True
 
 
+def _single_file_clinerules(den_dir: Path) -> bool:
+    """True when `.clinerules` is a regular file: cline's classic single-file
+    rules format, so cline-cli (which needs the directory) is not installed
+    here. list and remove take that as "nothing of den's" and stay quiet; only
+    install, which would have to replace the file, refuses it."""
+    rules = _clinerules_dir(den_dir)
+    return not rules.is_symlink() and rules.is_file()
+
+
 def _list_clinerules(tool: str, spec: dict, config: Path) -> list[str]:
-    targets = _clinerules_targets(_find_den_dir(Path.cwd()))
+    den_dir = _find_den_dir(Path.cwd())
+    if _single_file_clinerules(den_dir):
+        return []
+    targets = _clinerules_targets(den_dir)
     if targets is None:
         return []
     return [f"{tool}  {p.name}  {p}" for p in targets if p.is_file()]
@@ -802,13 +884,169 @@ def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
     # path _resolve_config vetted is not the one being unlinked here. Derive and
     # guard the real one, or the unlinks follow a planted link out of the
     # workspace and destroy someone else's files.
-    targets = _clinerules_targets(_find_den_dir(Path.cwd()))
+    den_dir = _find_den_dir(Path.cwd())
+    if _single_file_clinerules(den_dir):
+        return True
+    targets = _clinerules_targets(den_dir)
     if targets is None:
         return False
     for path in targets:
         if path.is_file():
             path.unlink()
     return True
+
+
+# --- a tool's earlier config location, and keeping a local file out of git --- #
+
+
+def _legacy_config(spec: dict, override: str | None) -> Path | None:
+    """The workspace file earlier dens wrote this tool's hooks to, when that has
+    moved since (claude: .claude/settings.json -> settings.local.json), or None.
+    An explicit --config names the one file to use, so it has no legacy file."""
+    name = spec.get("legacy_config")
+    return None if override or not name else Path.cwd() / name
+
+
+def _legacy_lines(tool: str, spec: dict, override: str | None) -> list[str]:
+    """`den hook list` lines for den's entries still in the legacy file. Read
+    through a symlink too: reading is harmless, and only stripping is refused."""
+    legacy = _legacy_config(spec, override)
+    if legacy is None or not legacy.is_file():
+        return []
+    lines = _FORMATS[spec["format"]][1](tool, spec, legacy.resolve())
+    if _symlink_component(Path.cwd(), legacy) is not None:
+        note = (
+            f"(in {spec['legacy_config']}, a symlink den will not edit;"
+            " remove it there by hand)"
+        )
+    else:
+        note = f"(in {spec['legacy_config']}; re-run den install hook to move it)"
+    return [f"{line}  {note}" for line in lines]
+
+
+def _strip_legacy(
+    tool: str, spec: dict, override: str | None, prefix: str, moved_to: Path | None
+) -> bool:
+    """Remove den's entries from the legacy file, leaving everything else in it.
+
+    True when nothing of den's is (left) there, and a file without den entries
+    stays byte-identical. False (one line on stderr) when den's entries are
+    there but the path reaches a symlink: a repo can ship
+    `.claude/settings.json` -> ~/.claude/settings.json, and stripping through it
+    would rewrite the user's global settings. A symlinked file WITHOUT den's
+    entries (or a dangling link) is not den's file any more and passes quietly;
+    reading through the link to find that out writes nothing.
+    """
+    legacy = _legacy_config(spec, override)
+    if legacy is None or not (legacy.is_file() or legacy.is_symlink()):
+        return True
+    _install, list_fn, remove_fn = _FORMATS[spec["format"]]
+    if _symlink_component(Path.cwd(), legacy) is not None:
+        if not legacy.is_file() or not list_fn(tool, spec, legacy.resolve()):
+            return True
+        _leaves_workspace(legacy, prefix)  # says why on stderr
+        return False
+    legacy = legacy.resolve()
+    if not list_fn(tool, spec, legacy):
+        return True
+    if not remove_fn(tool, spec, legacy):
+        return False
+    done = f"moved them to {moved_to}" if moved_to else "removed them"
+    print(f"{prefix}: {legacy} held den's {tool} hooks; {done}", file=sys.stderr)
+    return True
+
+
+def _git(git: str, cwd: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only git query in the workspace. core.fsmonitor is forced off:
+    it is the repository-config setting that runs a command on reads, and the
+    workspace may be an extracted archive with a .git/config of its own."""
+    try:
+        return subprocess.run(
+            [git, "-c", "core.fsmonitor=false", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _git_ignored(git: str, path: Path) -> bool | None:
+    """Whether git ignores `path`; None outside a work tree or when git fails."""
+    out = _git(git, path.parent, "check-ignore", "-q", "--", str(path))
+    if out is None or out.returncode not in {0, 1}:
+        return None
+    return out.returncode == 0
+
+
+def _git_exclude(path: Path) -> None:
+    """Keep a machine-local hook file out of commits: add it to the repository's
+    info/exclude unless git already ignores it. Silent without git or outside a
+    work tree; otherwise one line on stderr saying what happened."""
+    git = find_tool("git", _ERR_INSTALL)
+    if git is None or _git_ignored(git, path) is not False:
+        return
+    top = _git(git, path.parent, "rev-parse", "--show-toplevel")
+    excl = _git(git, path.parent, "rev-parse", "--git-path", "info/exclude")
+    if not top or not excl or top.returncode or excl.returncode:
+        return
+    top_dir = Path(top.stdout.strip()).resolve()
+    try:
+        rel = path.resolve().relative_to(top_dir)
+    except ValueError:
+        return
+    exclude = Path(excl.stdout.strip())
+    if not exclude.is_absolute():
+        # git prints it relative to the -C dir; normpath only drops the `..`
+        # (resolve() would also follow a symlinked exclude file, refused below)
+        exclude = Path(os.path.normpath(path.parent / exclude))
+    # Anchored to the repo root, with gitignore's glob characters escaped so a
+    # directory named `[ws]` matches itself.
+    pattern = "/" + re.sub(r"([\\*?\[])", r"\\\1", rel.as_posix())
+    try:
+        # Inside the work tree every component counts: an extracted archive can
+        # ship .git/info itself as a link. Outside it (a linked worktree's
+        # common dir) the layout is the user's, and only the file is checked.
+        bad = _symlink_component(top_dir, exclude)
+        if bad is None and exclude.is_symlink():
+            bad = exclude
+        if bad is not None:
+            print(
+                f"{_ERR_INSTALL}: not editing {exclude}: {bad} is a symlink",
+                file=sys.stderr,
+            )
+            return
+        text = (
+            exclude.read_text(encoding="utf-8", errors="replace")
+            if exclude.is_file()
+            else ""
+        )
+        if pattern not in text.splitlines():
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            sep = "" if not text or text.endswith("\n") else "\n"
+            with exclude.open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(f"{sep}{pattern}\n")
+    except OSError as exc:
+        print(
+            f"{_ERR_INSTALL}: cannot add {pattern} to {exclude}: {exc}", file=sys.stderr
+        )
+        return
+    if _git_ignored(git, path):
+        print(
+            f"{_ERR_INSTALL}: added {pattern} to {exclude} (its hook commands "
+            "carry this machine's paths)",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"{_ERR_INSTALL}: {path} is still not ignored by git (tracked, or "
+            "re-included by a .gitignore rule); keep it out of commits, its hook "
+            "commands carry this machine's paths",
+            file=sys.stderr,
+        )
 
 
 # format -> (install, list, remove)
@@ -874,34 +1112,72 @@ def _surface_existing_memory(den_dir: Path) -> None:
     `_compose` injects .den/memory.md every turn exactly like the imprint, and
     install pins whatever .den/ is already here -- so a memory.md (and history)
     that came with a checked-out repo is instruction injection the user has never
-    seen. First line, size and snapshot count is enough to make them look.
+    seen. `restore` can bring any snapshot back into memory.md, so each one's
+    first line is shown too, and files in history/ den does not take for
+    snapshots are named (it never reads them).
     """
     mem = _memory_path(den_dir)
     text = _read_text_or_empty(den_dir, mem, _ERR_INSTALL, errors="replace")
-    snaps = len(_snapshots(den_dir))
-    if not text.strip() and not snaps:
-        return
-    print(
-        f"{_ERR_INSTALL}: using the existing memory at {mem} "
-        f"({len(text.encode('utf-8'))} bytes, {snaps} snapshot(s) in "
-        f"{_history_dir(den_dir)}) -- it is injected every turn:",
-        file=sys.stderr,
-    )
-    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-    if first:
-        print(f"  | {_safe_for_terminal(first)[:80]}", file=sys.stderr)
+    snaps = _snapshots(den_dir)
+    foreign = _foreign_history(den_dir)
+    if text.strip() or snaps:
+        print(
+            f"{_ERR_INSTALL}: using the existing memory at {mem} "
+            f"({len(text.encode('utf-8'))} bytes, {len(snaps)} snapshot(s) in "
+            f"{_history_dir(den_dir)}) -- it is injected every turn:",
+            file=sys.stderr,
+        )
+        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        if first:
+            print(f"  | {_safe_for_terminal(first)[:80]}", file=sys.stderr)
+        for i, snap in enumerate(snaps, start=1):
+            line = _safe_for_terminal(_first_line(snap))
+            print(f"  #{i} {_snap_stamp(snap)} | {line}", file=sys.stderr)
+    if foreign:
+        print(
+            f"{_ERR_INSTALL}: ignoring {len(foreign)} file(s) in "
+            f"{_history_dir(den_dir)} that are not den snapshots: "
+            + ", ".join(_safe_for_terminal(n) for n in foreign),
+            file=sys.stderr,
+        )
+
+
+# cline (the extension's per-turn hook) and cline-cli (the .clinerules rule files)
+# both reach the VS Code extension, which then gets the imprint and memory twice.
+_CLINE_PAIR = ("cline", "cline-cli")
+_CLINE_PAIR_REASON = (
+    "cline (the VS Code extension's per-turn hook) and cline-cli (.clinerules "
+    "rule files) together make the extension load the imprint and memory twice; "
+    "install one of them"
+)
+
+
+def _both_clines(tools: list[str]) -> bool:
+    return all(t in tools for t in _CLINE_PAIR)
+
+
+def _install_all_tools() -> list[str]:
+    """What `den install hook --all-tools` installs: every verified tool, with
+    cline standing for both cline flavors (see _CLINE_PAIR). An unverified tool
+    is not "all" of anything installable, so it is not attempted either."""
+    return [t for t, s in _TOOLS.items() if s["verified"] and t != "cline-cli"]
 
 
 def _pick_tools_interactive() -> list[str] | None:
     """Ask which tools to install hooks for (checkbox). Returns --tool flags,
-    or None if nothing was selected."""
+    or None if nothing was selected. Asks again when both cline flavors are
+    picked."""
     from . import _ui
 
     _ui.say("den hook install -- per-turn imprint hooks in this workspace.")
-    chosen = _ui.select(
-        "Which tools? (space to toggle, enter to confirm)",
-        [(t, t == "claude") for t, s in _TOOLS.items() if s["verified"]],
-    )
+    while True:
+        chosen = _ui.select(
+            "Which tools? (space to toggle, enter to confirm)",
+            [(t, t == "claude") for t, s in _TOOLS.items() if s["verified"]],
+        )
+        if not _both_clines(chosen):
+            break
+        _ui.say(f"  {_CLINE_PAIR_REASON}.", style="yellow")
     if not chosen:
         _ui.say("  (none selected; nothing to install)")
         return None
@@ -921,8 +1197,11 @@ def _cmd_install(argv: list[str]) -> int:
             return 0
         argv = picked + list(argv)
 
-    tools, override = _parse_tool_args(argv)
+    tools, override = _parse_tool_args(argv, all_tools=_install_all_tools())
     if tools is None:
+        return 2
+    if _both_clines(tools):
+        print(f"{_ERR_INSTALL}: {_CLINE_PAIR_REASON}.", file=sys.stderr)
         return 2
 
     den_dir = _find_den_dir(Path.cwd())
@@ -939,9 +1218,10 @@ def _cmd_install(argv: list[str]) -> int:
         spec = _TOOLS[tool]
         handlers = _FORMATS.get(spec.get("format", ""))
         if not spec["verified"] or handlers is None:
+            verified = ", ".join(t for t, s in _TOOLS.items() if s["verified"])
             print(
                 f"den hook install: '{tool}' is not verified yet; skipping. "
-                f"Verified: claude, copilot, cline.",
+                f"Verified: {verified}.",
                 file=sys.stderr,
             )
             rc = 1
@@ -957,6 +1237,11 @@ def _cmd_install(argv: list[str]) -> int:
             f"installed {tool} hooks -> {_display_config(spec, config)}",
             file=sys.stderr,
         )
+        # Written first, so the hooks keep working if the old file is refused.
+        if not _strip_legacy(tool, spec, override, _ERR_INSTALL, config):
+            rc = 1
+        if spec.get("git_exclude") and override is None:
+            _git_exclude(config)
     return rc
 
 
@@ -973,6 +1258,8 @@ def _cmd_list(argv: list[str]) -> int:
         if config is None:
             continue
         for line in handlers[1](tool, spec, config):
+            print(line)
+        for line in _legacy_lines(tool, spec, override):
             print(line)
     return 0
 
@@ -998,6 +1285,8 @@ def _cmd_remove(argv: list[str]) -> int:
             f"removed den hooks from {tool} -> {_display_config(spec, config)}",
             file=sys.stderr,
         )
+        if not _strip_legacy(tool, spec, override, _ERR_HOOK, None):
+            rc = 1
     return rc
 
 
@@ -1010,8 +1299,13 @@ def _cmd_imprint(argv: list[str]) -> int:
 
 
 def _parse_tool_args(
-    argv: list[str], *, default_all: bool = False
+    argv: list[str], *, default_all: bool = False, all_tools: list[str] | None = None
 ) -> tuple[list[str] | None, str | None]:
+    """(tools, --config) from argv. --all-tools adds `all_tools` (install's
+    installable set), else every tool den knows, so list and remove still reach
+    whatever an explicit --tool installed. It adds to the --tool list rather
+    than replacing it, so the flags' order cannot drop a tool the user named
+    (`--tool cline-cli --all-tools` reaches install's cline pair refusal)."""
     tools: list[str] = []
     override: str | None = None
     i = 0
@@ -1021,10 +1315,12 @@ def _parse_tool_args(
             if name not in _TOOLS:
                 print(f"den hook: unknown tool '{name}'", file=sys.stderr)
                 return None, None
-            tools.append(name)
+            if name not in tools:
+                tools.append(name)
             i += 2
         elif argv[i] == "--all-tools":
-            tools = list(_TOOLS)
+            every = list(_TOOLS) if all_tools is None else all_tools
+            tools += [t for t in every if t not in tools]
             i += 1
         elif argv[i] == "--config" and i + 1 < len(argv):
             override = argv[i + 1]
@@ -1083,6 +1379,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"den hook: unknown subcommand '{cmd}'", file=sys.stderr)
         _usage()
         return 2
+    utf8_stdout()  # imprint, memory and list print UTF-8 text
     return handler(rest)
 
 

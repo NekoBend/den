@@ -1,7 +1,14 @@
 """Tests for den hook (den/_hook.py)."""
 
+import base64
 import json
+import os
 import shlex
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
 
 from den import _hook
 from den._hook import main as hook_main
@@ -24,6 +31,12 @@ def _seed(proj, imprint=None, memory=None):
         (d / "imprint.md").write_text(imprint)
     if memory is not None:
         (d / "memory.md").write_text(memory)
+
+
+def _den_group(tool, event="per-turn", den_dir="/old/proj/.den"):
+    """A hook group as an earlier den wrote it into a settings file."""
+    cmd = f"den hook run --event {event} --tool {tool} --den-dir {den_dir}"
+    return {"hooks": [{"type": "command", "command": cmd}]}
 
 
 # --------------------------------------------------------------------------- #
@@ -99,14 +112,105 @@ def test_run_falls_back_to_ancestor_walk_without_pin(tmp_path, monkeypatch, caps
 
 def test_run_refuses_relative_den_dir(tmp_path, monkeypatch, capsys):
     # a relative --den-dir resolves against cwd, re-opening the injection vector
-    # a repo could plant (`--den-dir .den`). Must be refused, not used.
+    # a repo could plant (`--den-dir .den`). Must be refused, not used -- and the
+    # refusal must not block the turn (see the fail-open tests below).
     _seed(tmp_path, imprint="PLANTED\n")
     monkeypatch.chdir(tmp_path)
     rc = hook_main(
         ["run", "--event", "per-turn", "--tool", "claude", "--den-dir", ".den"]
     )
-    assert rc == 2
-    assert "must be absolute" in capsys.readouterr().err
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "must be absolute" in out.err
+    assert "PLANTED" not in out.out
+    assert not (tmp_path / ".den" / "history").exists(), "nothing ran on it"
+
+
+# --------------------------------------------------------------------------- #
+# run fails open: exit 2 is Claude Code's "block" (the prompt is erased, Stop
+# cannot stop), so no problem in den may ever surface as 2. A failing run says so
+# in one stderr line, answers with the tool's empty response, and exits 0.
+# --------------------------------------------------------------------------- #
+
+_EMPTY_RESPONSE = {"claude": "", "copilot": "{}", "cline": '{"cancel": false}'}
+
+
+@pytest.mark.parametrize("tool", sorted(_EMPTY_RESPONSE))
+def test_run_with_another_os_den_dir_fails_open(tmp_path, monkeypatch, capsys, tool):
+    """The finding's repro: a hook command committed on Windows names a C:\\ path,
+    which is not absolute on POSIX (and a /home path is not on Windows)."""
+    monkeypatch.chdir(tmp_path)
+    foreign = "/home/me/proj/.den" if os.name == "nt" else "C:\\Users\\me\\proj\\.den"
+    argv = ["run", "--event", "per-turn", "--tool", tool, "--den-dir", foreign]
+    assert hook_main(argv) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == _EMPTY_RESPONSE[tool]
+    assert len(out.err.strip().splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--tool", "claude"],
+        ["run", "--event", "per-turn"],
+        ["run", "--event", "nope", "--tool", "claude"],
+        ["run", "--event", "per-turn", "--tool", "nope"],
+        ["run", "--event", "per-turn", "--tool", "claude", "--bogus"],
+    ],
+)
+def test_run_argument_problems_fail_open(tmp_path, monkeypatch, capsys, argv):
+    # version skew (an event or tool the installed den no longer has) and a
+    # hand-edited command both land here
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(argv) == 0
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert len(out.err.strip().splitlines()) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ~user lookup, removable cwd")
+@pytest.mark.parametrize("tool", sorted(_EMPTY_RESPONSE))
+@pytest.mark.parametrize("where", ["unknown-user", "gone-cwd"])
+def test_run_fails_open_when_the_den_dir_cannot_be_found(
+    tmp_path, monkeypatch, capsys, tool, where
+):
+    """Finding the .den dir happened before the fail-open guard: `~nouser`
+    raised RuntimeError in expanduser and a deleted cwd FileNotFoundError, both
+    as a traceback and exit 1 instead of the tool's empty response."""
+    argv = ["run", "--event", "per-turn", "--tool", tool]
+    if where == "unknown-user":
+        monkeypatch.chdir(tmp_path)
+        argv += ["--den-dir", "~den-test-no-such-user/.den"]
+    else:
+        gone = tmp_path / "gone"
+        gone.mkdir()
+        monkeypatch.chdir(gone)
+        gone.rmdir()
+    assert hook_main(argv) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == _EMPTY_RESPONSE[tool]
+    assert len(out.err.strip().splitlines()) == 1
+
+
+def test_run_unknown_event_still_answers_cline_with_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["run", "--event", "nope", "--tool", "cline"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"cancel": False}
+
+
+def test_run_survives_an_unexpected_error(tmp_path, monkeypatch, capsys):
+    _seed(tmp_path, imprint="IMP\n")
+    monkeypatch.chdir(tmp_path)
+
+    def _boom(_den_dir):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(_hook, "_do_checkpoint", _boom)
+    assert hook_main(["run", "--event", "per-turn", "--tool", "cline"]) == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {"cancel": False}
+    assert "Permission denied" in out.err
+    assert len(out.err.strip().splitlines()) == 1
 
 
 def test_install_backs_up_malformed_json(tmp_path, monkeypatch):
@@ -162,17 +266,6 @@ def test_run_post_tool_checkpoints_without_output(tmp_path, monkeypatch, capsys)
     assert hook_main(["run", "--event", "post-tool", "--tool", "claude"]) == 0
     assert capsys.readouterr().out == ""
     assert (tmp_path / ".den" / "history").is_dir()
-
-
-def test_run_requires_event_and_tool(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    assert hook_main(["run", "--tool", "claude"]) == 2
-    assert hook_main(["run", "--event", "per-turn"]) == 2
-
-
-def test_run_rejects_unknown_event(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    assert hook_main(["run", "--event", "nope", "--tool", "claude"]) == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -248,15 +341,82 @@ def test_install_refuses_unverified_tool(tmp_path, monkeypatch):
     assert not cfg.exists()
 
 
+def test_install_all_tools_installs_every_verified_tool_and_exits_0(
+    tmp_path, monkeypatch, capsys
+):
+    """--all-tools used to include the unverified codex, so it always ended with
+    exit 1, and both cline flavors, which the extension then double-delivers."""
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--all-tools"]) == 0
+    err = capsys.readouterr().err
+    assert "not verified" not in err
+    hooks = tmp_path / ".clinerules" / "hooks"
+    assert (hooks / _hook._cline_script_name("UserPromptSubmit")).is_file()
+    assert (tmp_path / ".github" / "hooks" / "den.json").is_file()
+    assert not (tmp_path / ".clinerules" / "den-imprint.md").exists(), "no cline-cli"
+
+
+def test_install_refuses_cline_together_with_cline_cli(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = hook_main(["install", "--tool", "cline", "--tool", "cline-cli"])
+    assert rc == 2
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "cline-cli" in err[0]
+    assert not (tmp_path / ".clinerules").exists()
+    assert not (tmp_path / ".den").exists(), "nothing written"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["--all-tools", "--tool", "cline-cli"], ["--tool", "cline-cli", "--all-tools"]],
+)
+def test_install_all_tools_plus_cline_cli_is_refused_in_either_order(
+    tmp_path, monkeypatch, capsys, argv
+):
+    """--all-tools after --tool replaced the list, so the cline-cli named first
+    was silently swapped for cline instead of being refused."""
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", *argv]) == 2
+    assert "cline-cli" in capsys.readouterr().err
+    assert not (tmp_path / ".den").exists(), "nothing written"
+
+
+def test_install_picker_refuses_cline_together_with_cline_cli(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    answers = iter([["cline", "cline-cli"], ["cline-cli"]])
+    monkeypatch.setattr("den._ui.select", lambda *a, **k: next(answers))
+    assert hook_main(["install"]) == 0
+    assert "cline-cli" in capsys.readouterr().out, "the refusal was explained"
+    assert (tmp_path / ".clinerules" / "den-imprint.md").is_file()
+    assert not (tmp_path / ".clinerules" / "hooks").exists()
+
+
+def test_remove_all_tools_still_covers_cline_cli(tmp_path, monkeypatch):
+    # --all-tools leaves cline-cli out of an INSTALL only; remove must still
+    # find what an explicit --tool cline-cli installed.
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline-cli"]) == 0
+    assert hook_main(["remove", "--all-tools"]) == 0
+    assert not (tmp_path / ".clinerules" / "den-imprint.md").exists()
+
+
 def test_gemini_tool_is_retired(tmp_path, monkeypatch, capsys):
     # gemini-cli hit upstream EOL; its successor (Antigravity) reads the
     # cross-tool files den already deploys, so the tool entry is gone and
-    # both install and run treat it as unknown.
+    # both install and run treat it as unknown. run fails open (exit 0, one
+    # stderr line), so a leftover gemini hook config never blocks anything.
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "settings.json"
     assert hook_main(["install", "--tool", "gemini", "--config", str(cfg)]) != 0
     assert not cfg.exists()
-    assert hook_main(["run", "--event", "per-turn", "--tool", "gemini"]) != 0
+    capsys.readouterr()
+    assert hook_main(["run", "--event", "per-turn", "--tool", "gemini"]) == 0
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "unknown tool 'gemini'" in out.err
 
 
 def test_remove_strips_den_keeps_foreign(tmp_path, monkeypatch):
@@ -386,6 +546,80 @@ def test_install_cline_windows_writes_ps1(tmp_path, monkeypatch):
     assert not (hooks_dir / "UserPromptSubmit").exists()  # no extensionless on Windows
 
 
+# PowerShell closes a single-quoted string at any of these, not only at ASCII '.
+_PS_QUOTES = "'\u2018\u2019\u201a\u201b"
+
+
+def test_powershell_quoting_doubles_every_single_quote_character():
+    """PowerShell treats U+2018..U+201B as single quotes too, so doubling only
+    ASCII ' let a directory name close the string and run the rest as code."""
+    den_dir = Path(f"C:/w/a{_PS_QUOTES}b/.den")
+    cmd = _hook._run_command("cline", "per-turn", den_dir, powershell=True)
+    quoted = cmd.split(" --den-dir ", 1)[1]
+    # str(den_dir) has backslashes on Windows and slashes elsewhere.
+    doubled = "".join(ch * 2 if ch in _PS_QUOTES else ch for ch in str(den_dir))
+    assert quoted == f"'{doubled}'"
+
+
+def _powershell() -> str | None:
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+@pytest.mark.skipif(_powershell() is None, reason="needs PowerShell")
+def test_powershell_hook_script_passes_a_typographic_quote_path_intact(
+    tmp_path, monkeypatch
+):
+    """The finding's repro: a workspace named x<U+2019>;Write-Output INJECTED;<U+2019>y
+    made the cline .ps1 hook run `Write-Output INJECTED` on every prompt."""
+    proj = tmp_path / "x\u2019;Write-Output INJECTED;\u2019y"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(_hook, "_is_windows", lambda: True)
+    hooks_dir = tmp_path / "clinehooks"
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    script = hooks_dir / "UserPromptSubmit.ps1"
+    pwsh = _powershell()
+    assert pwsh is not None
+    # Each argument goes out as base64 of its UTF-8 bytes: pwsh writes a pipe in
+    # [Console]::OutputEncoding (an OEM code page on Windows), which best-fits
+    # U+2019 to ASCII ' and would fail the comparison while the quoting is right.
+    probe = (
+        "function den { foreach ($a in $args) { 'ARG:' + "
+        "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($a)) } }; "
+        f". '{script}'"
+    )
+    out = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.splitlines()
+    assert "INJECTED" not in lines, "the path ran as code"
+    want = base64.b64encode(str(proj.resolve() / ".den").encode("utf-8")).decode()
+    assert f"ARG:{want}" in lines
+
+
+def test_cline_ps1_hook_is_written_as_utf8_with_a_bom(tmp_path, monkeypatch):
+    """Windows PowerShell 5.1 reads a BOM-less script in the ANSI code page, so a
+    non-ASCII workspace path arrived as mojibake."""
+    proj = tmp_path / "\u3086\u3046\u3053"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(_hook, "_is_windows", lambda: True)
+    hooks_dir = tmp_path / "clinehooks"
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    raw = (hooks_dir / "UserPromptSubmit.ps1").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert str(proj.resolve() / ".den").encode("utf-8") in raw
+    # still recognized as den's own on the next install and on remove
+    assert hook_main(["install", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    assert hook_main(["remove", "--tool", "cline", "--config", str(hooks_dir)]) == 0
+    assert not (hooks_dir / "UserPromptSubmit.ps1").exists()
+
+
 def test_remove_cline_windows_deletes_ps1(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_hook, "_is_windows", lambda: True)
@@ -400,7 +634,7 @@ def test_install_is_workspace_local(tmp_path, monkeypatch):
     """install with no --config writes project-level config under cwd + seeds .den."""
     monkeypatch.chdir(tmp_path)
     assert hook_main(["install", "--tool", "claude"]) == 0
-    assert (tmp_path / ".claude" / "settings.json").is_file()
+    assert (tmp_path / ".claude" / "settings.local.json").is_file()
     assert (tmp_path / ".den" / "imprint.md").is_file()
 
 
@@ -442,7 +676,7 @@ def test_install_interactive_picks_tools(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("den._ui.select", lambda *a, **k: ["claude", "cline"])
     assert hook_main(["install"]) == 0
-    assert (tmp_path / ".claude" / "settings.json").is_file()
+    assert (tmp_path / ".claude" / "settings.local.json").is_file()
     assert (tmp_path / ".clinerules" / "hooks").is_dir()
     assert not (tmp_path / ".gemini").exists()
 
@@ -454,6 +688,177 @@ def test_install_interactive_none_selected_installs_nothing(tmp_path, monkeypatc
     assert hook_main(["install"]) == 0
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".den").exists()  # not even seeded
+
+
+# --------------------------------------------------------------------------- #
+# claude: the personal .claude/settings.local.json, never the committed
+# settings.json (the commands pin this machine's absolute .den path)
+# --------------------------------------------------------------------------- #
+
+
+def _git() -> str:
+    git = shutil.which("git")
+    assert git is not None and Path(git).is_absolute()
+    return git
+
+
+def _git_repo(path):
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run([_git(), "init", "-q", str(path)], check=True)
+    return path
+
+
+def _ignored(repo, rel) -> bool:
+    out = subprocess.run(
+        [_git(), "-C", str(repo), "check-ignore", "-q", "--", rel], check=False
+    )
+    return out.returncode == 0
+
+
+def test_install_claude_writes_settings_local_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    local = tmp_path / ".claude" / "settings.local.json"
+    assert "UserPromptSubmit" in json.loads(local.read_text())["hooks"]
+    assert not (tmp_path / ".claude" / "settings.json").exists()
+
+
+def test_install_moves_den_entries_out_of_settings_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    foreign = {"hooks": [{"type": "command", "command": "echo mine"}]}
+    shared.write_text(
+        json.dumps(
+            {
+                "theme": "dark",
+                "hooks": {
+                    "UserPromptSubmit": [_den_group("claude"), foreign],
+                    "Stop": [_den_group("claude", "stop")],
+                },
+            }
+        )
+    )
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert json.loads(shared.read_text()) == {
+        "theme": "dark",
+        "hooks": {"UserPromptSubmit": [foreign]},
+    }
+    local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    pinned = str(tmp_path.resolve() / ".den")
+    cmds = [h["command"] for g in local["hooks"]["Stop"] for h in g["hooks"]]
+    assert len(cmds) == 1 and cmds[0].endswith(shlex.quote(pinned))
+
+
+def test_install_leaves_a_settings_json_without_den_entries_byte_identical(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    raw = b'{"theme":"dark",  "hooks": {"Stop": []}}'
+    shared.write_bytes(raw)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert shared.read_bytes() == raw
+
+
+def test_install_leaves_an_unmergeable_settings_json_alone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    shared.write_text("not json {{{ den hook run")
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert shared.read_text() == "not json {{{ den hook run"
+    assert not (tmp_path / ".claude" / "settings.json.den.bak").exists()
+
+
+def test_list_and_remove_read_both_claude_files(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.write_text(
+        json.dumps({"hooks": {"SessionStart": [_den_group("claude", "x")]}})
+    )
+    capsys.readouterr()
+    assert hook_main(["list", "--tool", "claude"]) == 0
+    out = capsys.readouterr().out
+    assert "--event x" in out and "settings.json" in out
+    assert "--event per-turn" in out
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    assert json.loads(shared.read_text()) == {}
+    local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    assert "hooks" not in local
+
+
+def test_explicit_config_is_the_only_file_touched(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    raw = json.dumps({"hooks": {"Stop": [_den_group("claude", "stop")]}})
+    shared.write_text(raw)
+    cfg = tmp_path / "elsewhere.json"
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert hook_main(["remove", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert shared.read_text() == raw
+
+
+def test_install_excludes_settings_local_json_from_git(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    assert not _ignored(repo, ".claude/settings.local.json")
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert _ignored(repo, ".claude/settings.local.json")
+    exclude = repo / ".git" / "info" / "exclude"
+    assert "/.claude/settings.local.json" in exclude.read_text().splitlines()
+    # idempotent: a second install adds nothing
+    before = exclude.read_text()
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert exclude.read_text() == before
+
+
+def test_install_excludes_from_a_workspace_below_the_repo_root(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path / "repo")
+    ws = repo / "sub dir" / "[ws]"
+    ws.mkdir(parents=True)
+    monkeypatch.chdir(ws)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert _ignored(repo, "sub dir/[ws]/.claude/settings.local.json")
+    assert not _ignored(repo, "sub dir/w/.claude/settings.local.json")
+
+
+def test_install_leaves_exclude_alone_when_git_already_ignores_it(
+    tmp_path, monkeypatch
+):
+    repo = _git_repo(tmp_path / "repo")
+    (repo / ".gitignore").write_text(".claude/settings.local.json\n")
+    exclude = repo / ".git" / "info" / "exclude"
+    before = exclude.read_bytes() if exclude.is_file() else None
+    monkeypatch.chdir(repo)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert (exclude.read_bytes() if exclude.is_file() else None) == before
+
+
+def test_install_does_not_write_exclude_through_a_symlinked_git_info(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    """An extracted archive can ship .git/info as a link to another directory;
+    only the exclude file itself was checked, so den appended there."""
+    repo = _git_repo(tmp_path / "repo")
+    info = repo / ".git" / "info"
+    shutil.rmtree(info, ignore_errors=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink(outside, info)
+    monkeypatch.chdir(repo)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert not (outside / "exclude").exists()
+    assert "is a symlink" in capsys.readouterr().err
+
+
+def test_install_outside_a_git_repo_writes_no_exclude(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert not (tmp_path / ".git").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -567,16 +972,71 @@ def test_install_refuses_symlinked_config_dir(tmp_path, monkeypatch, capsys, sym
     assert "is a symlink" in capsys.readouterr().err
 
 
-def test_install_refuses_symlinked_config_file(tmp_path, monkeypatch, symlink):
+@pytest.mark.parametrize("name", ["settings.local.json", "settings.json"])
+def test_install_refuses_symlinked_config_file(tmp_path, monkeypatch, symlink, name):
+    # settings.local.json is the file den writes; settings.json is the one it
+    # moves its old entries out of, which would write through the link just
+    # the same.
     settings = tmp_path / "home" / "settings.json"
     settings.parent.mkdir(parents=True)
-    settings.write_text('{"theme": "dark"}\n')
+    hooks = {"UserPromptSubmit": [_den_group("claude")]}
+    settings.write_text(json.dumps({"theme": "dark", "hooks": hooks}))
+    before = settings.read_bytes()
     proj = tmp_path / "repo"
     (proj / ".claude").mkdir(parents=True)
-    symlink(settings, proj / ".claude" / "settings.json")
+    symlink(settings, proj / ".claude" / name)
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 1
-    assert json.loads(settings.read_text()) == {"theme": "dark"}
+    assert settings.read_bytes() == before
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_symlinked_settings_json_without_den_entries_is_not_refused(
+    tmp_path, monkeypatch, capsys, symlink, dangling
+):
+    """den no longer writes .claude/settings.json, so a repo linking it to a
+    shared file (or to nothing) is none of den's business unless den's old
+    entries are there to move: install, list and remove all succeed quietly."""
+    shared = tmp_path / "config" / "claude.json"
+    shared.parent.mkdir()
+    if not dangling:
+        shared.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]}}))
+    proj = tmp_path / "repo"
+    (proj / ".claude").mkdir(parents=True)
+    symlink(shared, proj / ".claude" / "settings.json")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert hook_main(["list", "--tool", "claude"]) == 0
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    assert "refusing" not in capsys.readouterr().err
+    if not dangling:
+        assert json.loads(shared.read_text()) == {
+            "permissions": {"allow": ["Bash(ls)"]}
+        }
+    else:
+        assert not shared.exists()
+
+
+def test_list_names_den_entries_behind_a_symlinked_settings_json(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    """Reading through the link is harmless and shows what install will refuse
+    to strip; only the write through it stays refused."""
+    shared = tmp_path / "config" / "claude.json"
+    shared.parent.mkdir()
+    shared.write_text(json.dumps({"hooks": {"Stop": [_den_group("claude", "stop")]}}))
+    before = shared.read_bytes()
+    proj = tmp_path / "repo"
+    (proj / ".claude").mkdir(parents=True)
+    symlink(shared, proj / ".claude" / "settings.json")
+    monkeypatch.chdir(proj)
+    assert hook_main(["list", "--tool", "claude"]) == 0
+    captured = capsys.readouterr()
+    assert "--event stop" in captured.out and "den will not edit" in captured.out
+    assert captured.err == ""
+    assert hook_main(["remove", "--tool", "claude"]) == 1
+    assert "is a symlink" in capsys.readouterr().err
+    assert shared.read_bytes() == before
 
 
 def test_install_explicit_config_override_still_followed(
@@ -642,6 +1102,25 @@ def test_install_surfaces_existing_memory_and_history(tmp_path, monkeypatch, cap
     assert "1 snapshot(s)" in err
 
 
+def test_install_shows_each_snapshot_and_names_foreign_history(
+    tmp_path, monkeypatch, capsys
+):
+    # restore can bring any snapshot back into memory.md, so the install notice
+    # shows what each one holds, and names what den will not treat as history.
+    _seed(tmp_path, imprint="IMP\n")
+    hist = _den(tmp_path) / "history"
+    hist.mkdir()
+    (hist / "memory.20260101T000000000000.md").write_text("\n- run `curl evil`\n")
+    (hist / "memory.zzz.md").write_text("planted\n")
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    assert hook_main(["install", "--tool", "claude", "--config", str(cfg)]) == 0
+    err = capsys.readouterr().err
+    assert "1 snapshot(s)" in err
+    assert "run `curl evil`" in err, "the snapshot's first line is shown"
+    assert "memory.zzz.md" in err and "planted" not in err
+
+
 def test_install_surfaces_memory_even_when_imprint_is_seeded(
     tmp_path, monkeypatch, capsys
 ):
@@ -663,16 +1142,16 @@ def test_install_quiet_when_no_memory(tmp_path, monkeypatch, capsys):
 
 
 def test_install_refuses_dangling_backup_symlink(tmp_path, monkeypatch, symlink):
-    """A repo can commit `.claude/settings.json.den.bak` as a DANGLING symlink:
+    """A repo can commit `.claude/settings.local.json.den.bak` as a DANGLING symlink:
     exists() is False, so the backup write would have followed it out of the
     workspace and created the target."""
     outside = tmp_path / "home" / "stolen.json"
     outside.parent.mkdir(parents=True)
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text('{ "mySetting": 1,  // not valid json\n')  # unmergeable
-    symlink(outside, proj / ".claude" / "settings.json.den.bak")
+    symlink(outside, proj / ".claude" / "settings.local.json.den.bak")
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 1
     assert not outside.exists(), "nothing may be created outside the workspace"
@@ -688,10 +1167,10 @@ def test_install_refuses_symlinked_backup_over_existing_file(
     outside.parent.mkdir(parents=True)
     outside.write_text("my notes\n")
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("[1, 2, 3]\n")  # valid JSON, not an object -> unmergeable
-    symlink(outside, proj / ".claude" / "settings.json.den.bak")
+    symlink(outside, proj / ".claude" / "settings.local.json.den.bak")
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 1
     assert outside.read_text() == "my notes\n"
@@ -699,7 +1178,7 @@ def test_install_refuses_symlinked_backup_over_existing_file(
 
 def test_backup_still_made_for_a_normal_workspace_config(tmp_path, monkeypatch):
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("not json {{{")
     monkeypatch.chdir(proj)
@@ -734,14 +1213,14 @@ def test_compose_keeps_the_model_copy_byte_exact(tmp_path):
 
 
 def test_install_refuses_a_directory_at_the_backup_path(tmp_path, monkeypatch, capsys):
-    """A repo can ship `.claude/settings.json.den.bak/` as a directory. It
+    """A repo can ship `.claude/settings.local.json.den.bak/` as a directory. It
     preserves nothing, so it must not count as "already backed up" and let the
     unmergeable config be overwritten."""
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("not json {{{")
-    (proj / ".claude" / "settings.json.den.bak").mkdir()
+    (proj / ".claude" / "settings.local.json.den.bak").mkdir()
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 1
     assert cfg.read_text() == "not json {{{", "the config was not overwritten"
@@ -752,10 +1231,10 @@ def test_install_accepts_an_existing_file_backup(tmp_path, monkeypatch):
     # A real backup from an earlier run is still respected: install proceeds and
     # does not clobber it with the (already overwritten) config.
     proj = tmp_path / "repo"
-    cfg = proj / ".claude" / "settings.json"
+    cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("not json {{{")
-    bak = proj / ".claude" / "settings.json.den.bak"
+    bak = proj / ".claude" / "settings.local.json.den.bak"
     bak.write_text("the original, from an earlier install\n")
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 0
@@ -946,7 +1425,7 @@ def test_install_survives_a_directory_at_the_imprint_path(
     (proj / ".den" / "imprint.md").mkdir(parents=True)
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 0, "hooks still install"
-    assert (proj / ".claude" / "settings.json").is_file()
+    assert (proj / ".claude" / "settings.local.json").is_file()
     assert (proj / ".den" / "imprint.md").is_dir(), "left as we found it"
     assert "not a regular file" in capsys.readouterr().err
 
@@ -977,18 +1456,47 @@ def test_install_cline_cli_refuses_a_file_at_clinerules(tmp_path, monkeypatch, c
     assert "not a directory" in capsys.readouterr().err
 
 
-def test_remove_and_list_cline_cli_refuse_a_file_at_clinerules(
+def test_remove_and_list_treat_a_single_file_clinerules_as_not_installed(
     tmp_path, monkeypatch, capsys
 ):
+    """A regular FILE at .clinerules is cline's classic single-file rules format,
+    not something a repo planted: cline-cli is simply not installed there, so
+    list and remove say nothing and succeed, and the file is left alone."""
     proj = tmp_path / "repo"
     (proj / ".den").mkdir(parents=True)
-    (proj / ".clinerules").write_text("not a directory\n")
+    (proj / ".clinerules").write_text("Use tabs.\n")
     monkeypatch.chdir(proj)
-    assert hook_main(["remove", "--tool", "cline-cli"]) == 1
+    assert hook_main(["remove", "--tool", "cline-cli"]) == 0
     assert hook_main(["list", "--tool", "cline-cli"]) == 0
     out = capsys.readouterr()
     assert out.out == "", "nothing reported as den-managed"
-    assert (proj / ".clinerules").read_text() == "not a directory\n"
+    assert "refusing" not in out.err
+    assert (proj / ".clinerules").read_text() == "Use tabs.\n"
+
+
+def test_uninstall_hook_succeeds_beside_a_single_file_clinerules(
+    tmp_path, monkeypatch, capsys
+):
+    """The finding's repro: `den uninstall hook` (every tool) exited 1 because the
+    never-installed cline-cli refused the classic .clinerules file."""
+    from den._uninstall import main as uninstall_main
+
+    (tmp_path / ".clinerules").write_text("Use tabs.\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert uninstall_main(["hook"]) == 0
+    assert "refusing" not in capsys.readouterr().err
+    assert (tmp_path / ".clinerules").read_text() == "Use tabs.\n"
+
+
+def test_install_cline_refuses_a_single_file_clinerules(tmp_path, monkeypatch, capsys):
+    """The extension's hooks go in .clinerules/hooks/; with .clinerules a FILE the
+    mkdir raised NotADirectoryError straight out of `den install hook`."""
+    (tmp_path / ".clinerules").write_text("Use tabs.\n")
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "cline"]) == 1
+    assert "not a directory" in capsys.readouterr().err
+    assert (tmp_path / ".clinerules").read_text() == "Use tabs.\n"
 
 
 def test_install_cline_cli_refuses_a_directory_at_a_rule_file(

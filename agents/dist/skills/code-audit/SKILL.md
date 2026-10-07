@@ -90,7 +90,10 @@ and fold the results into the relevant dimension:
   (blast radius of a changed symbol: correctness)
 - shared/scripts/check-broken-refs.py
   (after a rename or removal, confirms no dangling reference remains:
-  correctness)
+  correctness). Its default base, HEAD, covers uncommitted edits only.
+  For changes already committed (a branch, a pull request), pass
+  `--base "$(git merge-base <base-branch> HEAD)"`,
+  and name the base you used under **Ran:**.
 
 If a check or script cannot run (no toolchain, code only pasted in chat),
 say so and review by reading.

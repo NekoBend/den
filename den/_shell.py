@@ -35,7 +35,14 @@ from pathlib import Path
 
 from ._content import shell_dir
 from ._exe import find_tool, resolve_tool
-from ._install import _chmod_no_follow, _Stager, _Writer
+from ._install import (
+    _chmod_no_follow,
+    _refresh_plan_arg,
+    _Stager,
+    _Writer,
+    read_refresh_plan,
+    refresh_writer,
+)
 
 _COMMENT = "# ===== den ====="
 _PWSH_PROFILE = "Microsoft.PowerShell_profile.ps1"
@@ -351,11 +358,42 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     return True
 
 
-def install_shell(  # ruff: ignore[too-many-locals]  # one local per flag
+def _plan_and_args(argv: list[str]) -> tuple[dict | None, list[str]] | None:
+    """(the plan, the other args) for --refresh-plan FILE, with which `den
+    upgrade --refresh` hands over the deployed files the den before the upgrade
+    proved were its own and unedited (only those are replaced without asking,
+    see _install._install_refresh) and whether the extras and the ~/.local/bin
+    helpers were installed. (None, argv) without the flag; None (one line on
+    stderr) when the plan is missing or unusable, or comes with a flag it
+    decides itself."""
+    split = _refresh_plan_arg(argv, "den install shell")
+    if split is None:
+        return None
+    plan_path, rest = split
+    if plan_path is None:
+        return None, rest
+    decided = [a for a in rest if a in {"--no-extras", "--bin", "--no-bin"}]
+    if decided:
+        print(
+            f"den install shell: --refresh-plan decides {' '.join(decided)} itself",
+            file=sys.stderr,
+        )
+        return None
+    plan = read_refresh_plan(plan_path, "den install shell")
+    if plan is None:
+        return None
+    return plan, rest
+
+
+def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one per flag and step
     argv: list[str],
 ) -> int:
+    parsed = _plan_and_args(argv)
+    if parsed is None:
+        return 2
+    plan, argv = parsed
     dry_run = "--dry-run" in argv
-    extras = "--no-extras" not in argv
+    extras = "--no-extras" not in argv if plan is None else plan["shell_extras"]
     force = "--force" in argv
     want_coreutils = "--coreutils" in argv
     skip_coreutils = "--no-coreutils" in argv
@@ -378,8 +416,11 @@ def install_shell(  # ruff: ignore[too-many-locals]  # one local per flag
             return 2
 
     home = Path.home()
-    writer = _Writer(force=force)
-    install_bin = _decide_posix_bin(want=want_bin, skip=skip_bin)
+    writer = _Writer(force=force) if plan is None else refresh_writer(plan, force=force)
+    if plan is None:
+        install_bin = _decide_posix_bin(want=want_bin, skip=skip_bin)
+    else:  # installed the way it was: never asks, never adds what was left out
+        install_bin = plan["shell_bin"] and not _windows()
     _posix_dir, pwsh_dir = _stage_shell_files(
         writer,
         extras=extras,
@@ -419,8 +460,10 @@ def install_shell(  # ruff: ignore[too-many-locals]  # one local per flag
         want=want_coreutils, skip=skip_coreutils, dry_run=dry_run
     )
     # A non-interactive run that kept differing files deployed nothing for them;
-    # report that with the exit code so `den upgrade --refresh` cannot call a
-    # refresh that landed none of the new version's files a success.
+    # report that with the exit code so a script (or the refresh of a den that
+    # predates --refresh-plan) cannot call a run that landed none of the new
+    # version's files a success. With a plan the kept files are on purpose, and
+    # _Writer.commit does not count them.
     rc = rc or (1 if skipped else 0)
 
     # coreutils installs a PSConsoleHostReadLine rewriter into the profile that

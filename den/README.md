@@ -38,9 +38,12 @@ den verify <file.py...>               format/lint/typecheck each file, config-fa
 `den install` never silently clobbers local edits: files that already exist and
 differ from the bundled version are listed and you are asked once before
 overwriting (default no, so your changes are kept). Pass `--force` to overwrite
-without asking; non-interactive runs skip the changed files and exit non-zero,
+without asking; each file it overwrites is first copied to `<file>.den.bak`
+(`.den.bak.1`, `.2`, ... when an earlier backup holds something else; the copy
+keeps the file's permissions minus execute).
+Non-interactive runs skip the changed files and exit non-zero,
 so a scripted install cannot mistake a full skip for success. `den install hook`
-into a tool's settings.json merges (it preserves foreign hooks and other keys).
+into a tool's settings file merges (it preserves foreign hooks and other keys).
 
 ### Parent profiles (frontier / weak)
 
@@ -106,19 +109,46 @@ reaches disk on `den install ...` - so after an upgrade your deployed skills
 and shell files are still the old version's until redeployed. Two ways:
 
 ```
-den upgrade --refresh    # upgrade, then redeploy skills (--with-parent) + shell
+den upgrade --refresh    # upgrade, then redeploy what den had deployed
 den upgrade              # upgrade only; prints a reminder to redeploy
 ```
 
-`--refresh` runs `den install skills --with-parent` and `den install shell` as
-subprocesses of the *new* binary (the running process still has the old package
-imported, so an in-process redeploy would ship stale content). den keeps no
-record of what it deployed last time, so a file the new version changed is
-indistinguishable from one you edited: without `--force` an interactive run
-asks once, and a non-interactive one keeps every such file and exits non-zero
-rather than reporting a refresh that deployed nothing. Use
-`den upgrade --refresh --force` from a script or cron. `--dry-run` prints the
-commands without running anything.
+`--refresh` redeploys only what den can prove it wrote. Before running uv, the
+running (old) den compares every deployed file in each tool dir (`~/.claude`,
+`~/.agents`, `~/.copilot`, the cline Rules dir, `~/.codex`) and the shell files
+byte for byte with its own bundled content, both skill flavors and both parent
+profiles. After the upgrade the *new* binary (the running process still has the
+old package imported) redeploys:
+
+- the skills in each tool dir that holds den's skills, in the flavor found
+  there (`--no-den-cli` or not); a skill you deleted stays deleted, a skill the
+  new version added arrives, and the same holds for a file within a skill;
+- each parent prompt that matched a profile, in that same profile; a parent
+  that matches neither (hand-written, or edited) is left alone and named, even
+  with `--force`;
+- the shell files, when den's were found, as they were installed: the extras
+  only when some were on disk (a `--no-extras` install stays without), and
+  den's `~/.local/bin` helpers only when some were there (`--bin`); a shell
+  file you deleted stays deleted.
+
+A file still exactly as the old den deployed it is replaced; that is checked
+again right before the write, so an edit made while uv runs counts as yours.
+Any other file that differs (your edit, or a file from an earlier version
+whose update was skipped back then) is kept and listed, and the refresh still
+exits 0. A file the old den deploys that is missing (deleted, or never
+deployed because an earlier update was skipped) is not created and is listed
+too. `--force` replaces or creates those as well, copying each existing one
+to `<file>.den.bak` first (a parent prompt edited while uv ran is kept even
+then). den still records nothing between runs: the lists of files, with a
+SHA-256 of each one den wrote, are a temporary hand-over from the old binary
+to the new one (`den install skills|shell --refresh-plan FILE`). Skills
+deployed with `--target` are not refreshed; re-run that install. `--dry-run`
+shows what would be refreshed without running anything.
+
+The refresh is driven by the den you upgrade *from*. Upgrading from a den
+older than this behavior still runs that den's refresh (`den install skills
+--with-parent` into `~/.claude` and `~/.agents`, frontier profile); for that
+one upgrade, run `den upgrade` without `--refresh` and redeploy by hand.
 
 Windows caveat: `den upgrade` runs from the very tool venv uv replaces, and
 Windows locks running executables. If uv reports a file-in-use error there,
@@ -187,9 +217,19 @@ so direct edits are captured and any bad overwrite is recoverable.
 | `diff [n]` | diff `memory.md` against the n-th newest snapshot |
 | `path` | print the resolved `memory.md` path |
 
+Memory is UTF-8 text whatever the locale: `show`, `log`, `diff` and
+`den hook imprint` write UTF-8, and `save`/`add` read stdin (and `save --file`
+its file) as UTF-8 (a leading BOM is dropped), also on a Windows console set to
+an ANSI code page. Input that is not UTF-8 is refused with exit 2 and nothing is
+written.
+
 The `.den/` directory is resolved by walking up from the current directory to the
 nearest existing `.den/`, falling back to `<cwd>/.den`. History keeps the last 20
-snapshots.
+snapshots. Only files named the way den names them (`memory.<UTC stamp>.md`,
+with a stamp that is not in the future) are snapshots: anything else in
+`.den/history/`, such as a `memory.zzz.md` a cloned repo shipped to sort first,
+is never listed, restored, rotated or deleted, and `den install hook` names it
+along with the first line of every real snapshot.
 
 den never follows a symlink at or under `.den/` (memory, imprint, history,
 the board files, and the `.clinerules` mirror): a cloned repository ships the
@@ -206,6 +246,13 @@ the hooks never block a tool call. Each turn the tool runs `den hook run`, which
 1. injects `.den/imprint.md` (static, human-owned directives) plus
    `den hook memory show` (agent-owned memory) as additional context, and
 2. checkpoints memory, capturing the previous turn's direct edits.
+
+`den hook run` fails open for every tool: an argument it does not know (an
+event or tool from another den version), a pinned `--den-dir` that is not
+absolute on this OS (a command written on the other side of a WSL/Windows
+pair), or an error while reading memory is one line on stderr, the tool's
+empty response, and exit 0 with nothing injected. It never exits 2, which
+Claude Code treats as blocking the prompt.
 
 Two files, two owners:
 
@@ -230,18 +277,38 @@ seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope
 foreign hooks untouched. Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
 
-The workspace-relative config (`.claude/settings.json` and the other per-tool
-paths below) must stay in the workspace: `den install hook` refuses it when any
-path component is a symlink, so a checked-out repo cannot redirect the install
-into your global settings. An explicit `--config PATH` is taken as given.
+`--all-tools` installs every verified tool: claude, copilot and cline (the
+extension). cline-cli is installed only when named, and naming it together
+with cline (or with `--all-tools`, which adds to any `--tool`) is refused
+(exit 2), in the interactive picker too, because the
+extension would then load the imprint and memory twice (see below). For
+`list` and `uninstall hook`, `--all-tools` still covers every tool.
+
+The workspace-relative config (`.claude/settings.local.json` and the other
+per-tool paths below) must stay in the workspace: `den install hook` refuses it
+when any path component is a symlink, so a checked-out repo cannot redirect the
+install into your global settings. An explicit `--config PATH` is taken as given.
+
+Each hook command pins this machine's absolute `.den` path, so claude's hooks go
+to `.claude/settings.local.json`, Claude Code's personal file, not the shared
+`.claude/settings.json` you commit. `den install hook` moves den's entries out
+of `.claude/settings.json` (an earlier den wrote them there; everything else in
+the file is kept, and a file without den entries is not touched; a symlinked
+one is never edited: `list` shows den's entries there, and install and
+`uninstall hook` exit 1 until you remove them by hand), `list` and
+`uninstall hook` read both files, and inside a git work tree install adds
+`settings.local.json` to `.git/info/exclude` unless git already ignores it.
+copilot (`.github/hooks/den.json`) and cline (`.clinerules/hooks/`) have no
+personal counterpart; there, a command from another machine just fails open.
 The install also reports a pre-existing `.den/memory.md` (size, first line,
-snapshot count) next to the imprint, because both are injected every turn.
+snapshot count, and each snapshot's first line, since `restore` can bring any of
+them back) next to the imprint, because both are injected every turn.
 
 ### Per-tool support
 
 | Tool | Per-turn inject | Mechanism | Workspace config |
 |------|-----------------|-----------|------------------|
-| claude | yes | `hookSpecificOutput.additionalContext` | `.claude/settings.json` |
+| claude | yes | `hookSpecificOutput.additionalContext` | `.claude/settings.local.json` |
 | cline | yes (extension) | `contextModification` (script per event) | `.clinerules/hooks/` |
 | cline-cli | session-start | `.clinerules/*.md` rule files (no hook) | `.clinerules/` |
 | copilot | session-start only | `additionalContext` (`userPromptSubmitted` is notify-only) | `.github/hooks/den.json` |
@@ -256,11 +323,15 @@ on `tool_call` are applied, and `context`/`contextModification` are parsed then
 ignored). So for the CLI, den does not install a hook; instead it writes the
 imprint and memory as **`.clinerules/` rule files** (`den-imprint.md`,
 `den-memory.md`), which cline loads as always-on context at session start. `den
-memory` keeps `den-memory.md` in sync, but only when cline-cli is installed here
+memory` keeps `den-memory.md` in sync (`save`, `add`, `clear`, `restore`,
+`checkpoint`, and every `den hook run` in the workspace refresh it), so a direct
+edit to `.den/memory.md` reaches cline-cli at the next of those; the imprint rule
+tells the agent to run `den hook memory checkpoint` after one. The mirror runs
+only when cline-cli is installed here
 (detected by the `den-imprint.md` marker) -- so the extension's own
 `.clinerules/hooks/` does not trigger a memory mirror. That gate is what keeps the
 extension from double-delivering memory (it would otherwise inject via the hook
-AND read the `.clinerules` rule); do not install both for the extension.
+AND read the `.clinerules` rule), and it is why den refuses to install both.
 
 For `cline` (extension), `install` writes one script per event, named for the
 platform Cline expects: extensionless `<Event>` (executable bash) on macOS/Linux,
