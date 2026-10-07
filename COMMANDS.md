@@ -311,12 +311,17 @@ succeeded, so a failed run leaves no truncated archive.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets | ✓ | ✓ | — |
+| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets; `save <name> '<command>'` stores it as typed, `save <name> <word...>` quotes each word again where it needs it (see shell/README.md) | ✓ | ✓ | — |
 | `cheat [name\|ls]` | browse den's bundled cheatsheets (fzf + bat) | ✓ | ✓ | — |
-| `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars) | ✓ | ✓ | — |
+| `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars); a password in a url prints as `user:***@host`, and the `proxy add` line that typed it stays out of the history file | ✓ | ✓ | — |
 
 Cheatsheets are deployed by `den install cheatsheets`; snippets and proxy profiles
-live under `$XDG_CONFIG_HOME`.
+live in `$XDG_CONFIG_HOME/den`, which den keeps `0700` with both files `0600`
+on Linux and macOS (a proxy url may hold a password, a snippet a token).
+A `proxy add` line whose url holds a password is kept out of the shell's
+history file: bash takes it out of the history list when it runs, zsh does not
+save it (a `zshaddhistory` hook), and pwsh keeps it in PSReadLine's memory only;
+see shell/README.md for what each shell can and cannot catch.
 
 ## Hardware / prompt
 
