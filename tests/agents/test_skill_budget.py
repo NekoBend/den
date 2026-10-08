@@ -29,51 +29,11 @@ _FRONTMATTER = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$")
 
 VARIANTS = ("den", "den-free", "dist")  # installed, installed --no-den-cli, dist
 
-# Files over a cap today, as '<variant>:<skill>/<path>:<metric>'. It exists so
-# CI stays green while later changes shrink these files one by one, and it may
-# only shrink: a file that goes over a cap fails its test, and so does an
-# entry whose file fits again, so delete the entry once the file fits (and
-# lower the count in test_known_over_entries_are_well_formed with it).
-KNOWN_OVER: frozenset[str] = frozenset(
-    {
-        "den:code-audit/shared/reference/rust.md:raw",
-        "den:code-audit/shared/reference/rust.md:read-tool",
-        "den:code-audit/shared/reference/shell.md:raw",
-        "den:code-audit/shared/reference/shell.md:read-tool",
-        "den:coding/examples/rust.md:raw",
-        "den:coding/examples/rust.md:read-tool",
-        "den:coding/examples/shell.md:raw",
-        "den:coding/examples/shell.md:read-tool",
-        "den:coding/shared/reference/rust.md:raw",
-        "den:coding/shared/reference/rust.md:read-tool",
-        "den:coding/shared/reference/shell.md:raw",
-        "den:coding/shared/reference/shell.md:read-tool",
-        "den-free:code-audit/shared/reference/rust.md:raw",
-        "den-free:code-audit/shared/reference/rust.md:read-tool",
-        "den-free:code-audit/shared/reference/shell.md:raw",
-        "den-free:code-audit/shared/reference/shell.md:read-tool",
-        "den-free:coding/examples/rust.md:raw",
-        "den-free:coding/examples/rust.md:read-tool",
-        "den-free:coding/examples/shell.md:raw",
-        "den-free:coding/examples/shell.md:read-tool",
-        "den-free:coding/shared/reference/rust.md:raw",
-        "den-free:coding/shared/reference/rust.md:read-tool",
-        "den-free:coding/shared/reference/shell.md:raw",
-        "den-free:coding/shared/reference/shell.md:read-tool",
-        "dist:code-audit/shared/reference/rust.md:raw",
-        "dist:code-audit/shared/reference/rust.md:read-tool",
-        "dist:code-audit/shared/reference/shell.md:raw",
-        "dist:code-audit/shared/reference/shell.md:read-tool",
-        "dist:coding/examples/rust.md:raw",
-        "dist:coding/examples/rust.md:read-tool",
-        "dist:coding/examples/shell.md:raw",
-        "dist:coding/examples/shell.md:read-tool",
-        "dist:coding/shared/reference/rust.md:raw",
-        "dist:coding/shared/reference/rust.md:read-tool",
-        "dist:coding/shared/reference/shell.md:raw",
-        "dist:coding/shared/reference/shell.md:read-tool",
-    }
-)
+# Files over a cap, as '<variant>:<skill>/<path>:<metric>'. It let CI stay
+# green while the 2026-10 size reduction shrank 117 offenders one change at a
+# time, and it is empty now. It may only shrink: a file that goes over a cap
+# fails its test, and so does an entry whose file fits again.
+KNOWN_OVER: frozenset[str] = frozenset()
 
 
 def _u16(text: str) -> int:
@@ -218,7 +178,7 @@ def _entry(entry: str) -> tuple[str, str, str]:
 def test_known_over_entries_are_well_formed():
     """An entry no test measures (a misspelt variant, a metric its file's kind
     never gets) is never reported as fitting again, so it would stay forever."""
-    assert len(KNOWN_OVER) <= 36  # may only go down: lower it as entries go
+    assert len(KNOWN_OVER) <= 0  # may only go down: it is empty
     bad = []
     for entry in sorted(KNOWN_OVER):
         variant, rel, metric = _entry(entry)
