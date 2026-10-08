@@ -5,7 +5,7 @@ description: Writes code that does not exist yet. Implements a function, class, 
 
 # Coding skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
+Paths under `shared/`, `examples/` and `reference/` in this skill are relative to the skill's own directory.
 
 Produce code artifacts that are complete, typed, idiomatic for the target
 language, and ready to drop in.

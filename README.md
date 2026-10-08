@@ -53,9 +53,12 @@ shared resources, parent prompts, shell sources, cheatsheets) into the wheel, so
 Python implementation replaces the old bash + PowerShell installers.
 
 - `den install skills` deploys each skill as a self-contained unit (the skill
-  plus only the shared resources it references, with `shared/...` paths
-  rewritten to absolute paths under the skill). `--tool`, `--all-tools`,
-  `--target`, `--with-parent`, `--codex-config`, `--dry-run`, `--no-den-cli`.
+  plus only the shared resources it references, followed from file to file,
+  with `shared/...` paths and skill-local `examples/<file>.md` and
+  `reference/<file>.md` paths rewritten to absolute paths under the skill; a
+  reference that names nothing the skill ships fails the install). `--tool`,
+  `--all-tools`, `--target`, `--with-parent`, `--codex-config`, `--dry-run`,
+  `--no-den-cli`.
 - `den install shell` deploys the bash/zsh config to `~/.config/shell`, the
   PowerShell config to the profile dir, starship, and (on Windows) the cmd/Clink
   shims, then wires the relevant rc files idempotently.

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from den import _install
 from den._install import main as install_main
 
 
@@ -29,6 +30,14 @@ def test_install_skills_rewrites_to_absolute(tmp_path):
     assert "../shared/" not in text  # no leftover relative refs
     # rewrite uses forward-slash absolute paths (correct on Windows too)
     assert coding.resolve().as_posix() in text
+    assert f"{coding.resolve().as_posix()}/examples/testing.md" in text
+    for md in coding.rglob("*.md"):
+        left = [
+            m.group(0)
+            for m in _install._PATH_RE.finditer(md.read_text(encoding="utf-8"))
+            if m.group("local")
+        ]
+        assert not left, f"{md.relative_to(coding)}: relative {left}"
 
 
 def test_install_profile_weak_deploys_router_parent(tmp_path):
@@ -577,3 +586,411 @@ def test_install_tool_dir_still_follows_a_dotfiles_symlink(
     assert install_main(["skills", "--tool", "claude", "--with-parent"]) == 0
     assert (dotfiles / "CLAUDE.md").is_file()
     assert (dotfiles / "skills" / "coding" / "SKILL.md").is_file()
+
+
+# ---- skill-local paths and shared references ----
+
+
+def _fake_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    skill_md: str | bytes,
+    shared: dict[str, str] | None = None,
+    local: dict[str, str | bytes] | None = None,
+) -> Path:
+    """Point den._install at a content tree holding one skill, `demo`: its
+    SKILL.md, its other files (`local`, by path under the skill) and the
+    shared/reference files (`shared`, by file name). Every file is written as
+    bytes, so its line endings are exactly the ones given."""
+    content = tmp_path / "content"
+    files = {"SKILL.md": skill_md, **(local or {})}
+    for rel, text in files.items():
+        path = content / "skills" / "demo" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
+    ref = content / "shared" / "reference"
+    ref.mkdir(parents=True)
+    for name, text in (shared or {}).items():
+        (ref / name).write_bytes(text.encode("utf-8"))
+    monkeypatch.setattr(_install, "skills_dir", lambda: content / "skills")
+    monkeypatch.setattr(_install, "shared_dir", lambda: content / "shared")
+    return content
+
+
+def test_install_rewrites_skill_local_refs_to_absolute(tmp_path, monkeypatch):
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "Read reference/rubric.md, then compare against examples/<language>.md.\n",
+        local={"reference/rubric.md": "r\n", "examples/python.md": "p\n"},
+    )
+    target = tmp_path / "target"
+    assert install_main(["skills", "--target", str(target)]) == 0
+    demo = target / "skills" / "demo"
+    text = (demo / "SKILL.md").read_text(encoding="utf-8")
+    root = demo.resolve().as_posix()
+    assert text == (
+        f"Read {root}/reference/rubric.md, then compare against"
+        f" {root}/examples/<language>.md.\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("Read reference/severity-rubric.md:", "Read /R/reference/severity-rubric.md:"),
+        ("`examples/testing.md`", "`/R/examples/testing.md`"),
+        ("examples/<language>.md", "/R/examples/<language>.md"),
+        (
+            "reference/dimensions/<dimension>.md.",
+            "/R/reference/dimensions/<dimension>.md.",
+        ),
+        ("(./examples/a.md)", "(/R/examples/a.md)"),
+        ("[link](examples/a.md)", "[link](/R/examples/a.md)"),
+        ("はreference/x.mdを読む", "は/R/reference/x.mdを読む"),
+        ("../../shared/reference/python.md", "/R/shared/reference/python.md"),
+        ("shared/scripts/run-checks.sh", "/R/shared/scripts/run-checks.sh"),
+        # left alone: not a skill-local path, or not written from the skill root
+        ("docs/reference/api.md", "docs/reference/api.md"),
+        ("the reference/guide split", "the reference/guide split"),
+        ("examples/a.mdx", "examples/a.mdx"),
+        ("my-examples/a.md", "my-examples/a.md"),
+        ("../examples/a.md", "../examples/a.md"),
+        # only a sentence-ending period may follow the .md
+        ("examples/a.md.bak", "examples/a.md.bak"),
+        ("examples/a.md-old", "examples/a.md-old"),
+        ("examples/a.md/b", "examples/a.md/b"),
+    ],
+)
+def test_local_ref_rewrite_edge_cases(before, after):
+    assert _install._rewrite(before, "/R/") == after
+    # A relative copy keeps every local path as written; shared/ loses its ../
+    relative = _install._rewrite(before, "")
+    if "shared/" in before:
+        assert relative == after.replace("/R/", "")
+    else:
+        assert relative == before
+
+
+def test_materialize_follows_shared_refs_transitively(tmp_path, monkeypatch):
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "Read ../../shared/reference/a.md.\n",
+        shared={
+            "a.md": "Then read shared/reference/b.md.\n",
+            "b.md": "Back to shared/reference/a.md.\n",  # a cycle ends
+            "unused.md": "nobody names this\n",
+        },
+    )
+    work = tmp_path / "work"
+    _install._materialize("demo", work, "/R/demo/")
+    bundled = sorted(p.name for p in (work / "shared" / "reference").iterdir())
+    assert bundled == ["a.md", "b.md"]
+    a = (work / "shared" / "reference" / "a.md").read_text(encoding="utf-8")
+    assert a == "Then read /R/demo/shared/reference/b.md.\n"
+
+
+def test_materialize_fails_on_a_missing_shared_file(tmp_path, monkeypatch):
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "Read shared/reference/a.md.\n",
+        shared={"a.md": "Then read shared/reference/gone.md.\n"},
+    )
+    with pytest.raises(
+        ValueError, match=r"^demo: shared/reference/gone\.md does not exist$"
+    ):
+        _install._materialize("demo", tmp_path / "work", "/R/demo/")
+
+
+@pytest.mark.parametrize(
+    ("skill_md", "broken"),
+    [
+        # _REF_RE never matched a nested name, so it was dropped in silence
+        ("Read shared/reference/sub/x.md.\n", "SKILL.md: shared/reference/sub/x.md"),
+        ("Read shared/scripts/gone.py.\n", "SKILL.md: shared/scripts/gone.py"),
+        ("Compare against examples/nope.md.\n", "SKILL.md: examples/nope.md"),
+        ("Read reference/<topic>.md.\n", "SKILL.md: reference/<topic>.md"),
+        # a placeholder passes only as shared/reference/<name>.md
+        (
+            "Read shared/reference/<language>/x.md.\n",
+            "SKILL.md: shared/reference/<language>",
+        ),
+        (
+            "Read shared/reference/<language>.txt.\n",
+            "SKILL.md: shared/reference/<language>.txt",
+        ),
+        ("Run shared/scripts/<tool>.py.\n", "SKILL.md: shared/scripts/<tool>.py"),
+    ],
+    ids=[
+        "nested-shared",
+        "missing-script",
+        "missing-local",
+        "placeholder-no-dir",
+        "placeholder-dir",
+        "placeholder-not-md",
+        "placeholder-script",
+    ],
+)
+def test_materialize_fails_on_a_reference_to_nothing(
+    tmp_path, monkeypatch, skill_md, broken
+):
+    _fake_content(tmp_path, monkeypatch, skill_md)
+    (tmp_path / "content" / "shared" / "scripts").mkdir()
+    with pytest.raises(ValueError, match="name nothing the skill ships") as exc:
+        _install._materialize("demo", tmp_path / "work", "/R/demo/")
+    assert str(exc.value).splitlines()[1:] == [f"  {broken}"]
+
+
+def test_a_file_named_after_a_md_path_is_not_that_path(tmp_path, monkeypatch):
+    """'examples/a.md.bak' was read as examples/a.md: reported missing when
+    only a.md.bak shipped, and passed unchecked next to an a.md."""
+    skill_md = "Restore examples/a.md.bak, or keep examples/a.md-old.\n"
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        skill_md,
+        local={"examples/a.md.bak": "bak\n", "examples/a.md-old": "old\n"},
+    )
+    work = tmp_path / "work"
+    assert _install._materialize("demo", work, "/R/demo/") == 0
+    assert (work / "SKILL.md").read_text(encoding="utf-8") == skill_md
+
+
+@pytest.mark.parametrize(
+    ("skill_md", "shipped"),
+    [
+        ("Read <code>shared/reference/a.md</code>.\n", "reference/a.md"),
+        ("Read shared/reference/a.md<br>then stop.\n", "reference/a.md"),
+        ("Run <code>shared/scripts/x.py</code>.\n", "scripts/x.py"),
+    ],
+    ids=["code-tag", "br-tag", "script-in-code-tag"],
+)
+def test_a_tag_right_after_a_shared_path_is_not_part_of_its_name(
+    tmp_path, monkeypatch, skill_md, shipped
+):
+    """The name ran on into the tag ('a.md</code>'), so a reference to a file
+    that ships was reported as naming nothing."""
+    _fake_content(tmp_path, monkeypatch, skill_md, shared={"a.md": "a\n"})
+    scripts = tmp_path / "content" / "shared" / "scripts"
+    scripts.mkdir()
+    (scripts / "x.py").write_text("print()\n", encoding="utf-8")
+    work = tmp_path / "work"
+    assert _install._materialize("demo", work, "/R/demo/") == 1
+    assert (work / "shared" / shipped).is_file()
+    assert f"/R/demo/shared/{shipped}<" in (work / "SKILL.md").read_text("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("path", "local"),
+    [
+        ("examples/foo.bar.md", {"examples/foo.bar.md": "x\n"}),
+        ("examples/<lang2>.md", {"examples/python.md": "x\n"}),
+        ("reference/<d>/x.md", {"reference/sub/x.md": "x\n"}),
+        ("examples/a.MD", {"examples/a.MD": "x\n"}),
+        ("reference/<d>/x.py", {"reference/sub/x.py": "x\n"}),
+    ],
+    ids=["dotted-name", "digit-placeholder", "placeholder-dir", "upper-md", "non-md"],
+)
+def test_materialize_fails_on_an_unrecognized_local_path(
+    tmp_path, monkeypatch, path, local
+):
+    """A path the rewrite does not take ships relative and unchecked, even
+    when the file it means is there."""
+    _fake_content(tmp_path, monkeypatch, f"Read {path} first.\n", local=local)
+    with pytest.raises(ValueError, match="name nothing the skill ships") as exc:
+        _install._materialize("demo", tmp_path / "work", "/R/demo/")
+    assert str(exc.value).splitlines()[1:] == [
+        f"  SKILL.md: {path} - not a recognized skill-local path"
+        " (use [A-Za-z0-9_-] names and .md)"
+    ]
+
+
+def test_prose_that_only_resembles_a_local_path_passes(tmp_path, monkeypatch):
+    skill_md = (
+        "Keep the reference/guide split; see docs/reference/api.md and"
+        " examples/run.sh.\n"
+    )
+    _fake_content(tmp_path, monkeypatch, skill_md)
+    work = tmp_path / "work"
+    assert _install._materialize("demo", work, "/R/demo/") == 0
+    assert (work / "SKILL.md").read_text(encoding="utf-8") == skill_md
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "examples/とreference/a.mdを読む",
+        "examples/ディレクトリとreference/a.mdを読む",
+        "examples/run.sh,reference/a.md",
+        "(examples/|reference/a.md)",
+    ],
+    ids=["japanese", "japanese-word", "comma", "alternation"],
+)
+def test_a_mention_that_runs_into_a_local_path_passes(tmp_path, monkeypatch, prose):
+    """No space between a directory mention and a real path is not an
+    unrecognized path: the real one is still checked and rewritten."""
+    _fake_content(tmp_path, monkeypatch, f"{prose}\n", local={"reference/a.md": "a\n"})
+    work = tmp_path / "work"
+    assert _install._materialize("demo", work, "/R/demo/") == 1
+    assert "/R/demo/reference/a.md" in (work / "SKILL.md").read_text("utf-8")
+
+
+def test_materialize_fails_on_a_parent_relative_local_ref(tmp_path, monkeypatch):
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "Read examples/a.md.\n",
+        local={"examples/a.md": "See ../examples/b.md.\n", "examples/b.md": "b\n"},
+    )
+    with pytest.raises(ValueError, match="name nothing the skill ships") as exc:
+        _install._materialize("demo", tmp_path / "work", "/R/demo/")
+    assert str(exc.value).splitlines()[1:] == [
+        "  examples/a.md: ../examples/ - write skill-local paths from the skill root"
+    ]
+
+
+def test_install_reports_a_broken_reference_and_writes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    _fake_content(tmp_path, monkeypatch, "Compare against examples/nope.md.\n")
+    target = tmp_path / "target"
+    assert install_main(["skills", "--target", str(target), "--with-parent"]) == 2
+    assert not target.exists()
+    err = capsys.readouterr().err
+    assert err.startswith("den install skills: demo: references that name nothing")
+    assert err.endswith("SKILL.md: examples/nope.md (nothing was written)\n")
+
+
+def test_interactive_install_reports_a_broken_reference(tmp_path, monkeypatch, capsys):
+    """The interactive flow called _install_skills past main's handler, so the
+    same broken reference ended in a traceback."""
+    from den import _ui
+
+    _fake_content(tmp_path, monkeypatch, "Compare against examples/nope.md.\n")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    # shell?N skills?Y -> select [claude] -> parent?N cheatsheets?N
+    answers = iter([False, True, False, False])
+    monkeypatch.setattr(_ui, "confirm", lambda *a, **k: next(answers))
+    monkeypatch.setattr(_ui, "select", lambda *a, **k: ["claude"])
+    assert _install._interactive() == 2
+    assert not home.exists()
+    err = capsys.readouterr().err
+    assert err.startswith("den install skills: demo: references that name nothing")
+    assert err.endswith("(nothing was written)\n")
+
+
+@pytest.mark.parametrize(
+    ("eol", "no_den_cli"),
+    [(b"\n", False), (b"\r\n", False), (b"\n", True)],
+    ids=["lf", "crlf", "lf-no-den-cli"],
+)
+def test_rewrite_keeps_the_source_line_endings(tmp_path, monkeypatch, eol, no_den_cli):
+    """write_text turned every LF into CRLF on Windows; bytes in, bytes out
+    keeps what the source has on every platform. With no_den_cli the table's
+    writes (SKILL.md, and a shared file it has a key for) must keep LF too."""
+    from den import _portable
+
+    lines = [b"Read examples/a.md.", b"Then shared/reference/b.md.", b""]
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        eol.join(lines),
+        shared={"b.md": "b, as written\nend\n"},
+        local={"examples/a.md": "a\n"},
+    )
+    edit = {"from": "as written", "to": "as edited"}
+    monkeypatch.setattr(_portable, "table", lambda: {"shared/reference/b.md": [edit]})
+    work = tmp_path / "work"
+    assert _install._materialize("demo", work, "/R/demo/", no_den_cli=no_den_cli) == 1
+    out = (work / "SKILL.md").read_bytes()
+    assert out == eol.join(
+        [b"Read /R/demo/examples/a.md.", b"Then /R/demo/shared/reference/b.md.", b""]
+    )
+    b = (work / "shared" / "reference" / "b.md").read_bytes()
+    assert b == (b"b, as edited\nend\n" if no_den_cli else b"b, as written\nend\n")
+
+
+def test_no_den_cli_leaves_files_the_table_does_not_edit_byte_identical(
+    tmp_path, monkeypatch
+):
+    """den uninstall stages the --no-den-cli copy only for skills with a table
+    and otherwise compares against the den-aware bytes, so a den-free install
+    must not rewrite an unedited SKILL.md. A CRLF checkout (Windows CI) showed
+    it did: six SKILL.md files were kept as 'files you changed'."""
+    from den import _portable
+
+    _fake_content(tmp_path, monkeypatch, b"# Demo\r\n\r\nNo paths here.\r\n")
+    monkeypatch.setattr(_portable, "table", dict)
+    den = tmp_path / "den"
+    free = tmp_path / "free"
+    _install._materialize("demo", den, "/R/demo/")
+    _install._materialize("demo", free, "/R/demo/", no_den_cli=True)
+    assert (free / "SKILL.md").read_bytes() == (den / "SKILL.md").read_bytes()
+
+
+def test_no_den_cli_edit_keeps_crlf(tmp_path, monkeypatch):
+    from den import _portable
+
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        b"# Demo\r\n\r\nSay hi.\r\nThen shared/reference/b.md.\r\n",
+        shared={"b.md": "b, as written\r\nend\r\n"},
+    )
+    monkeypatch.setattr(
+        _portable,
+        "table",
+        lambda: {
+            "demo": [{"from": "Say hi.\nThen", "to": "Then"}],
+            "shared/reference/b.md": [{"from": "as written\nend", "to": "edited"}],
+        },
+    )
+    work = tmp_path / "work"
+    _install._materialize("demo", work, "/R/demo/", no_den_cli=True)
+    assert (work / "SKILL.md").read_bytes() == (
+        b"# Demo\r\n\r\nThen /R/demo/shared/reference/b.md.\r\n"
+    )
+    assert (work / "shared" / "reference" / "b.md").read_bytes() == b"b, edited\r\n"
+
+
+# ---- the den-free build (den/_portable.py) on the same fixture tree ----
+
+
+def test_dist_preamble_keeps_lf(tmp_path, monkeypatch):
+    """_add_preamble wrote without newline="", so on Windows each SKILL.md
+    that gets the note came out CRLF and --check called it stale."""
+    from den import _portable
+
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "# Demo\n\nRead examples/a.md.\n",
+        local={"examples/a.md": "a\n"},
+    )
+    out = tmp_path / "out"
+    _portable.build_tree(out)
+    text = (out / "demo" / "SKILL.md").read_bytes()
+    assert (
+        text
+        == b"# Demo\n\n" + _portable._PREAMBLE.encode() + b"\nRead examples/a.md.\n"
+    )
+
+
+def test_dist_build_skips_a_md_that_is_not_utf8(tmp_path, monkeypatch):
+    """_materialize skips such a file; the preamble check read it and raised."""
+    from den import _portable
+
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "# Demo\n\nNo paths here.\n",
+        local={"examples/blob.md": b"\xff\xfe\x00binary"},
+    )
+    out = tmp_path / "out"
+    _portable.build_tree(out)
+    assert (out / "demo" / "SKILL.md").read_bytes() == b"# Demo\n\nNo paths here.\n"
+    assert (out / "demo" / "examples" / "blob.md").read_bytes() == b"\xff\xfe\x00binary"

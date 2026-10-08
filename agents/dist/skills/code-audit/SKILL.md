@@ -5,7 +5,7 @@ description: Reviews code that already exists and returns findings rated blocker
 
 # Code audit skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
+Paths under `shared/`, `examples/` and `reference/` in this skill are relative to the skill's own directory.
 
 Review code that already exists and return findings the author can act on.
 Every finding names a location, states the problem, explains why it matters,

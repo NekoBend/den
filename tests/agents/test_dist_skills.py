@@ -1,7 +1,8 @@
 """agents/dist/skills/ holds den-free copies of the skills, generated from
 agents/src/ by den/_portable.py: den CLI mentions substituted away through
-agents/src/no-den-cli.toml, shared/ resources bundled per skill, shared/
-references relative to the skill. These tests keep the committed copy honest."""
+agents/src/no-den-cli.toml, shared/ resources bundled per skill, shared/ and
+skill-local references relative to the skill. These tests keep the committed
+copy honest."""
 
 from __future__ import annotations
 
@@ -11,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from den import _portable
-from den._install import _skill_names
+from den import _install, _portable
+from den._install import _PATH_RE, _skill_names
 from den._install import main as install_main
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +47,31 @@ def test_shared_refs_resolve_inside_each_skill(tmp_path):
             for m in SHARED_REF.finditer(md.read_text(encoding="utf-8")):
                 target = skill / "shared" / m.group(1) / m.group(2).rstrip(".")
                 assert target.exists(), f"{md.relative_to(tmp_path)}: {m.group(0)}"
+
+
+def test_local_refs_resolve_inside_each_skill(tmp_path):
+    _portable.build_tree(tmp_path)
+    for skill in (p for p in tmp_path.iterdir() if p.is_dir()):
+        for md in skill.rglob("*.md"):
+            for m in _PATH_RE.finditer(md.read_text(encoding="utf-8")):
+                local = m.group("local")
+                if local is None:
+                    continue
+                if "<" in local:  # a placeholder names a file in that directory
+                    target = skill / local.rpartition("/")[0]
+                    assert target.is_dir(), f"{md.relative_to(tmp_path)}: {local}"
+                else:
+                    target = skill / local
+                    assert target.is_file(), f"{md.relative_to(tmp_path)}: {local}"
+
+
+def test_dist_keeps_skill_local_paths_relative(tmp_path):
+    """The den-free copy is copied by hand to a place unknown at build time."""
+    _portable.build_tree(tmp_path)
+    text = (tmp_path / "coding" / "SKILL.md").read_text(encoding="utf-8")
+    assert "against examples/testing.md" in text
+    assert "/home" not in text
+    assert tmp_path.as_posix() not in text
 
 
 def test_anchor_drift_fails_the_build(monkeypatch):
@@ -84,6 +110,7 @@ def test_install_flag_applies_the_table(tmp_path):
     text = (tmp_path / "skills" / "coding" / "SKILL.md").read_text(encoding="utf-8")
     assert DEN_CLI.search(text) is None
     assert f"{tmp_path.resolve().as_posix()}/skills/coding/shared/scripts/" in text
+    assert f"{tmp_path.resolve().as_posix()}/skills/coding/examples/testing.md" in text
 
 
 def test_check_catches_content_and_mode_drift(tmp_path):
@@ -103,12 +130,39 @@ def test_check_catches_content_and_mode_drift(tmp_path):
     assert any(str(d).startswith("differs") for d in _portable._differences(a, b))
 
 
-def test_preamble_only_where_shared_ships(tmp_path):
+def test_preamble_only_where_relative_paths_ship(tmp_path):
     _portable.build_tree(tmp_path)
     note = "relative to the skill's own directory"
     for skill in (p for p in tmp_path.iterdir() if p.is_dir()):
         text = (skill / "SKILL.md").read_text(encoding="utf-8")
-        assert (note in text) == (skill / "shared").is_dir(), skill.name
+        relative = any(
+            _PATH_RE.search(md.read_text(encoding="utf-8"))
+            for md in skill.rglob("*.md")
+        )
+        assert (note in text) == relative, skill.name
+
+
+def test_preamble_follows_a_skill_local_path_alone(tmp_path, monkeypatch):
+    """The note used to depend on a bundled shared/ directory; a skill that
+    names only examples/x.md ships a relative path too and needs it. Every
+    skill in the tree today that names a skill-local path also bundles
+    shared/, so this one is made up for the purpose."""
+    content = tmp_path / "content"
+    demo = content / "skills" / "demo"
+    (demo / "examples").mkdir(parents=True)
+    (demo / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: d\n---\n\n# Demo\n\nRead examples/x.md.\n",
+        encoding="utf-8",
+    )
+    (demo / "examples" / "x.md").write_text("x\n", encoding="utf-8")
+    (content / "shared" / "reference").mkdir(parents=True)
+    monkeypatch.setattr(_install, "skills_dir", lambda: content / "skills")
+    monkeypatch.setattr(_install, "shared_dir", lambda: content / "shared")
+    out = tmp_path / "out"
+    _portable.build_tree(out)
+    assert not (out / "demo" / "shared").exists()
+    text = (out / "demo" / "SKILL.md").read_text(encoding="utf-8")
+    assert "# Demo\n\n" + _portable._PREAMBLE + "\nRead examples/x.md." in text
 
 
 DEN_WORD = re.compile(r"\bden('s)?\b")

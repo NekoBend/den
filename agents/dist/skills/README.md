@@ -6,7 +6,7 @@ tool reads skills from (for example `~/.claude/skills/<name>/`) and it works
 without den installed. Compared with the source skills: the `den verify`
 shortcut mentions, the den board paragraphs and the pointer to den's
 cheatsheets are removed (each skill names its checks tool-by-tool), and
-`shared/` paths are relative to the skill.
+`shared/`, `examples/` and `reference/` paths are relative to the skill.
 
 Each skill restates a short set of rules for a run with no parent prompt.
 den's parent prompts (`agents/dist/parents/`) hold the full set, so place one

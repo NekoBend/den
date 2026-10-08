@@ -40,7 +40,7 @@ agents/
     skills/<name>/          # the 9 skills
       SKILL.md              # name + description frontmatter + body
       examples/             # worked examples (one shape per file)
-      reference/            # only code-audit (dimension + rubric files)
+      reference/            # skill-only reference files (code-audit's dimensions + rubric)
     shared/
       reference/*.md        # per-language + architecture / testing / schema-design,
                             # plus documenter's doc-guide / doc-genres / writing /
@@ -121,18 +121,22 @@ stale) through the substitution table `src/no-den-cli.toml`: the `den verify`
 shortcut mentions, the den board paragraphs and the pointer to den's
 cheatsheets are removed (the skills name
 their checks tool-by-tool), the shared resources each skill references are bundled inside
-it, and `shared/` paths are relative to the skill (the copy says so on its
-first line). den users get the same text with
-`den install skills --no-den-cli`.
+it, and `shared/`, `examples/` and `reference/` paths are relative to the skill
+(the copy says so on its first line). den users get the same text, with
+absolute paths, from `den install skills --no-den-cli`.
 
 ## Install
 
 `den install skills` deploys the skills (one cross-platform implementation).
 Each skill installs as a SELF-CONTAINED unit: it copies a skill, then copies
 only the `shared/` resources that skill references into the skill's own
-`shared/`, and rewrites every `shared/...` reference to an ABSOLUTE path under
-that skill (weak models resolve absolute paths reliably; relative ones are
-ambiguous). No top-level `shared/` tree is created in the target.
+`shared/`, following a shared file that names another one, and rewrites every
+`shared/...` reference and every skill-local `examples/<file>.md` or
+`reference/<file>.md` path to an ABSOLUTE path under that skill (weak models
+resolve absolute paths reliably; relative ones are ambiguous). Other
+skill-local paths, such as a script's, stay as written. No top-level `shared/`
+tree is created in the target. A reference that names nothing the skill ships
+fails the install (exit 2, nothing written) and the den-free build.
 
 ```
 den install skills --all-tools                        # every tool's correct dirs
@@ -151,7 +155,18 @@ Convention (do not need source-tree resolvability): a `shared/...` reference is
 written either bare (in prose citations) or as `../../shared/...` (in actionable
 SKILL.md steps). The installer rewrites BOTH forms to an absolute path under the
 skill, so nested example files do not need to resolve as filesystem paths in the
-source tree.
+source tree. A shared reference names one flat file
+(`shared/reference/<name>.md`), and the installer follows references from one
+shared file to another, so a shared file may point at further shared files.
+A skill-local path (`examples/<file>.md`, `reference/<file>.md`) is written
+from the skill root in every file of the skill, never with `../`, and is
+rewritten to an absolute path on install; the den-free copy keeps it relative.
+A user-project path in an example needs a leading directory
+(`docs/reference/api.md`), or it is read as a skill-local path. Any of these
+that names a file the skill does not ship fails the build, and so does text
+that looks like a skill-local path but that the rewrite cannot take (a
+dotted or non-ASCII name, a glob such as `examples/*.md`, a `<placeholder>`
+with a digit or in a directory, or `.MD`).
 
 ## Conventions
 
@@ -166,6 +181,13 @@ source tree.
   minimum for a run with no parent. It is a fallback, not a substitute:
   deploy with `--with-parent` (or ensure `AGENTS.md` / `CLAUDE.md` is
   present) so the full rules apply.
+- Every file a model reads from a skill fits Cline's 8,000-character
+  tool-result cap: SKILL.md both as the skills tool returns it and as a
+  line-numbered file read, every other file as a line-numbered read. Files
+  other than SKILL.md also stay within 6,000 raw characters.
+  `tests/agents/test_skill_budget.py` checks the installed, den-free and
+  `dist/` copies; its `KNOWN_OVER` list of files still over a cap may only
+  shrink.
 
 ## Tests
 

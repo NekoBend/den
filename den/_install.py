@@ -1,10 +1,15 @@
 """den install - deploy skills (and parent prompts) into agent tool dirs.
 
 Installs each skill as a SELF-CONTAINED unit: the skill's files plus the shared
-resources it references (shared/reference/*.md and, if any script is used, the
-whole shared/scripts/ set) are copied under <target>/skills/<name>/shared/, and
-every shared/... reference is rewritten to an ABSOLUTE path under that skill's
-own shared/.
+resources it references (shared/reference/*.md, followed from file to file, and,
+if any script is used, the whole shared/scripts/ set) are copied under
+<target>/skills/<name>/shared/. Every shared/... reference, and every
+skill-local examples/<file>.md or reference/<file>.md path (written from the
+skill root, never with ../), is rewritten to an ABSOLUTE path under that skill;
+other skill-local paths (a script, a .json file) stay as written. A reference
+that names nothing the skill ships, or text that looks like a skill-local .md
+path but that the rewrite cannot take, fails the install before anything is
+written.
 
   den install skills [--tool TOOL]... [--all-tools] [--target DIR]...
                      [--with-parent] [--no-den-cli] [--profile weak|frontier]
@@ -133,7 +138,35 @@ def _parent_source(parent_file: str, profile: str) -> Path:
 
 
 _REF_RE = re.compile(r"shared/reference/([A-Za-z0-9_-]+)\.md")
-_REWRITE_RE = re.compile(r"(?:\.\./)*shared/(reference|scripts)/")
+# Every path a skill's text points at, in one pattern so a path the rewrite
+# inserts is never scanned again: a shared/ prefix (`kind`), or a skill-local
+# file written from the skill root (`local`). The boundaries are ASCII on
+# purpose: \w and \b count Japanese as word characters, so 'reference/x.mdを読む'
+# would not match with them, and 'docs/reference/api.md' must not match at all.
+_PATH_RE = re.compile(
+    r"(?:\.\./)*shared/(?P<kind>reference|scripts)/"
+    r"|(?<![A-Za-z0-9_/.-])(?:\./)?"
+    r"(?P<local>(?:examples|reference)/(?:[A-Za-z0-9_-]+/)*"
+    r"(?:[A-Za-z0-9_-]+|<[A-Za-z][A-Za-z_-]*>)\.md)"
+    # a sentence-ending period may follow, not '.bak', '-old' or '/more'
+    r"(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])"
+)
+# What follows shared/<kind>/: a placeholder or a plain name. Neither takes in
+# a '<' behind the name, so 'shared/reference/a.md</code>' names a.md.
+_SHARED_NAME_RE = re.compile(r"<[A-Za-z][A-Za-z_-]*>[A-Za-z0-9_.-]*|[A-Za-z0-9_./-]*")
+# Text that looks like a skill-local path but is not a `local` match above (a
+# dotted or non-ASCII name, '.MD', a placeholder with a digit or in a directory):
+# a path ending in .md, or one with a <placeholder> directory.
+_LOOSE_LOCAL_RE = re.compile(
+    r"""(?<![A-Za-z0-9_/.-])(?:\./)?(?:examples|reference)/
+    (?:[^\s"'`()\[\]{}]*?\.[Mm][Dd](?![A-Za-z0-9_/-]|\.[A-Za-z0-9])
+    |[^\s"'`()\[\]{}]*?<[^\s"'`()\[\]{}/<>]+>[^\s"'`()\[\]{}/<>]*/
+    [^\s"'`()\[\]{}<>]*)""",
+    re.VERBOSE,
+)
+_FLAT_MD_RE = re.compile(r"[A-Za-z0-9_-]+\.md")
+_PLACEHOLDER_MD_RE = re.compile(r"<[A-Za-z][A-Za-z_-]*>\.md")
+_UP_LOCAL_RE = re.compile(r"(?:\.\./)+(?:examples|reference)/")
 _EXCLUDE = {"__pycache__", ".pytest_cache", "tests"}
 
 
@@ -458,81 +491,182 @@ class _Writer:
             )
 
 
-def _materialize(  # ruff: ignore[too-many-branches]  # one branch per shared-resource kind
-    name: str, work: Path, ref_prefix: str, *, no_den_cli: bool = False
-) -> int:
-    """Copy skill `name` to `work` as a self-contained unit: the shared/
-    resources it references are copied inside it and every shared/ reference
-    is rewritten to `ref_prefix` + kind + '/'. With no_den_cli the substitution
-    table (agents/src/no-den-cli.toml) is applied to SKILL.md and to the
-    bundled shared/ files it names before any reference is rewritten,
-    removing every mention of den's own CLI and cheatsheets. Returns the
-    number of rewritten .md files."""
-    src = skills_dir() / name
-    rewritten = 0
-    shutil.copytree(src, work, ignore=_ignore)
-    if no_den_cli:
-        from ._portable import strip_den_cli
+def _rewrite(text: str, root: str) -> str:
+    """`text` with every shared/ prefix turned into `root` + 'shared/<kind>/'
+    and every skill-local path into `root` + the path. `root` is the skill's
+    absolute directory with a trailing '/', or '' for a copy whose paths stay
+    relative to the skill (its local paths are then left as written)."""
 
-        skill_md = work / "SKILL.md"
-        skill_md.write_text(
-            strip_den_cli(name, skill_md.read_text(encoding="utf-8")),
-            encoding="utf-8",
+    def one(m: re.Match[str]) -> str:
+        if m.group("kind"):
+            return f"{root}shared/{m.group('kind')}/"
+        return f"{root}{m.group('local')}" if root else m.group(0)
+
+    return _PATH_RE.sub(one, text)
+
+
+def _shared_closure(texts: list[str], ref_dir: Path) -> tuple[list[str], bool]:
+    """(the shared/reference names `texts` reach, whether any text names
+    shared/scripts/). A shared file that names another one brings it along,
+    so the names are followed from file to file; a placeholder
+    (shared/reference/<language>.md) reaches every file in `ref_dir`.
+    ValueError when a reached name has no file there."""
+    names: set[str] = set()
+    need_scripts = False
+    pending = list(texts)
+    while pending:
+        text = pending.pop()
+        need_scripts = need_scripts or "shared/scripts/" in text
+        found = set(_REF_RE.findall(text))
+        if "shared/reference/<" in text:
+            found.update(md.stem for md in ref_dir.glob("*.md"))
+        for ref in sorted(found - names):  # a name already seen ends a cycle
+            path = ref_dir / f"{ref}.md"
+            if not path.is_file():
+                msg = f"shared/reference/{ref}.md does not exist"
+                raise ValueError(msg)
+            names.add(ref)
+            pending.append(path.read_text(encoding="utf-8", errors="ignore"))
+    return sorted(names), need_scripts
+
+
+def _broken_refs(work: Path) -> list[str]:
+    """Each path in the .md files of skill copy `work` that names nothing the
+    copy holds, as '<file>: <path>'. A shared/reference name must be one flat
+    file, and a skill-local path must be written from the skill root. Text
+    that looks like a skill-local .md path but that _PATH_RE does not take
+    is reported too: it would ship relative and unchecked."""
+    broken: list[str] = []
+    for md in sorted(work.rglob("*.md")):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        rel = md.relative_to(work).as_posix()
+        local_spans: set[tuple[int, int]] = set()
+        for m in _PATH_RE.finditer(text):
+            kind, local = m.group("kind"), m.group("local")
+            if local:
+                local_spans.add(m.span())
+            if kind:
+                after = _SHARED_NAME_RE.match(text, m.end())
+                name = after.group(0).rstrip(".") if after else ""
+                ref = f"shared/{kind}/{name}"
+                if name.startswith("<"):
+                    # a placeholder (_shared_closure bundled every file), only
+                    # in the one form a file can fill: shared/reference/<x>.md
+                    ok = (
+                        kind == "reference"
+                        and bool(_PLACEHOLDER_MD_RE.fullmatch(name))
+                        and not text.startswith("/", m.end() + len(name))
+                    )
+                elif kind == "reference":
+                    ok = bool(_FLAT_MD_RE.fullmatch(name)) and (work / ref).is_file()
+                else:
+                    ok = not name or (work / ref).exists()
+            else:
+                ref = local
+                if "<" in local:
+                    ok = (work / local.rpartition("/")[0]).is_dir()
+                else:
+                    ok = (work / local).is_file()
+            if not ok:
+                broken.append(f"{rel}: {ref}")
+        broken.extend(
+            f"{rel}: {m.group(0)} - not a recognized skill-local path"
+            " (use [A-Za-z0-9_-] names and .md)"
+            for m in _LOOSE_LOCAL_RE.finditer(text)
+            # Overlapping a real match means the loose match only ran into it
+            # (Japanese prose puts no space before the next path).
+            if not any(s < m.end() and m.start() < e for s, e in local_spans)
         )
+        broken.extend(
+            f"{rel}: {m.group(0)} - write skill-local paths from the skill root"
+            for m in _UP_LOCAL_RE.finditer(text)
+        )
+    return broken
 
-    if True:  # scan the copied skill (before shared/ is added) for what it references
-        blob = ""
-        for p in work.rglob("*"):
-            if p.is_file():
-                blob += p.read_text(encoding="utf-8", errors="ignore")
-        need_scripts = "shared/scripts/" in blob
-        need_all_refs = "shared/reference/<" in blob
-        ref_files = sorted(set(_REF_RE.findall(blob)))
 
-        sh = shared_dir()
-        ref_dest = work / "shared" / "reference"
-        if need_all_refs:
-            ref_dest.mkdir(parents=True, exist_ok=True)
-            for md in (sh / "reference").glob("*.md"):
-                shutil.copy2(md, ref_dest / md.name)
-        elif ref_files:
-            ref_dest.mkdir(parents=True, exist_ok=True)
-            for rf in ref_files:
-                srcf = sh / "reference" / f"{rf}.md"
-                if srcf.is_file():
-                    shutil.copy2(srcf, ref_dest / f"{rf}.md")
-        if need_scripts:
-            shutil.copytree(sh / "scripts", work / "shared" / "scripts", ignore=_ignore)
-        if no_den_cli:  # before the rewrite below, so anchors match the source text
-            from ._portable import strip_shared
+def _materialize(name: str, work: Path, root: str, *, no_den_cli: bool = False) -> int:
+    """Copy skill `name` to `work` as a self-contained unit: the
+    shared/reference files it names, and the ones those files name in turn,
+    are copied inside it, plus all of shared/scripts/ when any script is
+    named. Every shared/ prefix is then rewritten to `root` + 'shared/<kind>/'
+    and every skill-local examples/ or reference/ path to `root` + the path,
+    where `root` is the skill's absolute directory with a trailing '/', or ''
+    to keep the paths relative to the skill. With no_den_cli the substitution
+    table (agents/src/no-den-cli.toml) is applied to SKILL.md and to the
+    bundled shared/ files it names before any path is rewritten, removing
+    every mention of den's own CLI and cheatsheets. A file the table edits
+    keeps its line endings, and one it leaves unchanged is not rewritten, so
+    it stays byte-identical to the den-aware copy. The references are
+    followed through the shared files' text before the table edits it, so a
+    shared file named only in a passage the table strips still ships.
+    ValueError when a path names nothing the copy ships. Returns the number
+    of rewritten .md files."""
+    shutil.copytree(skills_dir() / name, work, ignore=_ignore)
+    if no_den_cli:
+        from ._portable import edit_in_place
 
-            strip_shared(work)
+        edit_in_place(work / "SKILL.md", name)
 
-        # Rewrite shared/... refs to their destination under the skill itself.
-        for md in work.rglob("*.md"):
-            try:
-                orig = md.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue  # not a text .md (binary asset); leave it untouched
-            new = _REWRITE_RE.sub(lambda m: f"{ref_prefix}{m.group(1)}/", orig)
-            if new != orig:
-                md.write_text(new, encoding="utf-8")
-                rewritten += 1
+    # What the copied skill references, before shared/ is added to it.
+    texts = [
+        p.read_text(encoding="utf-8", errors="ignore")
+        for p in sorted(work.rglob("*"))
+        if p.is_file()
+    ]
+    ref_dir = shared_dir() / "reference"
+    try:
+        refs, need_scripts = _shared_closure(texts, ref_dir)
+    except ValueError as exc:
+        raise ValueError(f"{name}: {exc}") from exc
+    ref_dest = work / "shared" / "reference"
+    if refs:
+        ref_dest.mkdir(parents=True, exist_ok=True)
+    for ref in refs:
+        shutil.copy2(ref_dir / f"{ref}.md", ref_dest / f"{ref}.md")
+    if need_scripts:
+        shutil.copytree(
+            shared_dir() / "scripts", work / "shared" / "scripts", ignore=_ignore
+        )
+    if no_den_cli:  # before the rewrite below, so anchors match the source text
+        from ._portable import strip_shared
+
+        strip_shared(work)
+
+    broken = _broken_refs(work)  # what ships, before any path is rewritten
+    if broken:
+        lines = "\n".join(f"  {b}" for b in broken)
+        msg = f"{name}: references that name nothing the skill ships:\n{lines}"
+        raise ValueError(msg)
+
+    # Bytes in, bytes out: write_text would turn every LF into CRLF on Windows.
+    rewritten = 0
+    for md in work.rglob("*.md"):
+        orig = md.read_bytes()
+        try:
+            text = orig.decode("utf-8")
+        except UnicodeDecodeError:
+            continue  # not a text .md (binary asset); leave it untouched
+        new = _rewrite(text, root).encode("utf-8")
+        if new != orig:
+            md.write_bytes(new)
+            rewritten += 1
     return rewritten
 
 
 def _install_skill(
     name: str, skills_target: Path, writer: _Stager, *, no_den_cli: bool = False
 ) -> str:
-    """Build the self-contained skill in a temp dir (rewriting shared/ refs to
-    its FINAL absolute location), then stage every file for the writer."""
+    """Build the self-contained skill in a temp dir (rewriting its shared/ and
+    skill-local paths to its FINAL absolute location), then stage every file
+    for the writer. A ValueError from _materialize leaves this skill unstaged."""
     final = skills_target / name
     abs_final = final.resolve().as_posix()
     with tempfile.TemporaryDirectory() as td:
         work = Path(td) / name
-        rewritten = _materialize(
-            name, work, f"{abs_final}/shared/", no_den_cli=no_den_cli
-        )
+        rewritten = _materialize(name, work, f"{abs_final}/", no_den_cli=no_den_cli)
         for f in sorted(work.rglob("*")):
             if f.is_file():
                 writer.stage(final / f.relative_to(work), f.read_bytes())
@@ -786,24 +920,32 @@ def _refresh_plan_arg(
 
 
 def _install_skills_cmd(argv: list[str]) -> int:
-    """`den install skills`: the refresh hand-over, or an ordinary install."""
+    """`den install skills`, and the skills step of the interactive
+    `den install`: the refresh hand-over, or an ordinary install. Both build
+    and stage every skill before the first write, so a ValueError from
+    _materialize (a reference that names nothing a skill ships) ends the run
+    with one message and exit 2, nothing written."""
     split = _refresh_plan_arg(argv, "den install skills")
     if split is None:
         return 2
     plan_path, argv = split
-    if plan_path is None:
-        return _install_skills(argv)
     extra = [a for a in argv if a not in {"--force", "--dry-run"}]
-    if extra:
+    if plan_path is not None and extra:
         print(
             "den install skills: --refresh-plan takes only --force and"
             f" --dry-run, not {' '.join(extra)}",
             file=sys.stderr,
         )
         return 2
-    return _install_refresh(
-        plan_path, force="--force" in argv, dry_run="--dry-run" in argv
-    )
+    try:
+        if plan_path is None:
+            return _install_skills(argv)
+        return _install_refresh(
+            plan_path, force="--force" in argv, dry_run="--dry-run" in argv
+        )
+    except ValueError as exc:
+        print(f"den install skills: {exc} (nothing was written)", file=sys.stderr)
+        return 2
 
 
 def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  # per-target staging
@@ -953,7 +1095,7 @@ def _interactive() -> int:
         ):
             flags += ["--profile", "weak"]
         if flags:
-            rc |= _install_skills(flags)
+            rc |= _install_skills_cmd(flags)
 
     if _ui.confirm("Install the offline cheatsheets?", default=False):
         rc |= _install_cheatsheets([])
