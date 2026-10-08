@@ -15,13 +15,13 @@ This file holds sections 1, 2, 4, and 9.
 
 - shared/reference/python-types.md (sections 5, 6, 13, and 14): read it now as well.
 - shared/reference/python-idioms.md (sections 7, 10, 11, and 12): read it now as well.
-- shared/reference/python-tools.md (sections 3, 15, and 16): read it when you pick a checker,
-  write or review tests, or manage dependencies.
+- shared/reference/python-tools.md (sections 3, 15, and 16): read it now as well.
+- shared/reference/python-entry-point.md (sections 18 and 21): read it now as well.
 - shared/reference/python-io.md (sections 8, 17, and 20): read it when the code is async,
-  runs a child process, or waits on a network peer, a lock, a queue, or a thread.
-- shared/reference/python-entry-point.md (sections 18 and 21): read it when the code has a program's entry point,
-  logs, or shows progress.
-- shared/reference/python-progress.md (section 19): read it when the code shows progress over many items.
+  runs a child process, makes an HTTP request or another network call,
+  or waits on a lock, a queue, or a thread.
+- shared/reference/python-progress.md (section 19): read it when the code loops over many items
+  (files, records, URLs) or runs long enough that a user waits on it.
 
 "section N" in any of these files means the section with that number;
 this list names the file that holds it.
