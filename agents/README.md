@@ -42,7 +42,9 @@ agents/
       examples/             # worked examples (one shape per file)
       reference/            # only code-audit (dimension + rubric files)
     shared/
-      reference/*.md        # per-language + architecture / testing / schema-design
+      reference/*.md        # per-language + architecture / testing / schema-design,
+                            # plus documenter's writing, genre, Japanese style,
+                            # Confluence, and translation references
       scripts/              # verification scripts (used by coding, code-audit)
         *.py, run-checks.sh
   dist/                     # generated: never hand-edited, CI checks it
@@ -82,12 +84,14 @@ frontier parent also adds `<moves_demo>`) are present.
 | grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. |
 | compressor | summarize / compress | Summarize text, or compress a prompt/context to fewer tokens while preserving every directive. |
 | prompt-engineering | author / improve | Write a new prompt from a goal, or diagnose and rewrite an existing one. |
-| documenter | reference / guide | API reference from code, or a human guide (README/how-to/tutorial). |
+| documenter | reference / guide / translate | reference: an API reference from code. guide: a document for human readers (README, how-to, tutorial, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, slide outline) as Markdown, HTML, or a Confluence page, or a revision of a draft that keeps what it says. translate: a natural translation of a document between Japanese and English, or a check of a translation against its source. Uses `shared/reference/` writing, genre, Japanese style, Confluence, and translation references. |
 | git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. |
 
 `coding` and `code-audit` are the heavy skills (they use `shared/reference/`
-and `shared/scripts/`). The other seven are light: `SKILL.md` plus examples,
-no shared dependencies.
+and `shared/scripts/`). `documenter` uses `shared/reference/` only: its guide
+and translate steps and their style rules live there, and install copies them
+with the skill. The other six are light: `SKILL.md` plus examples, no shared
+dependencies.
 
 ## Generated parent prompts
 

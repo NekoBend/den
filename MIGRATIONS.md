@@ -103,6 +103,13 @@ examples) were removed; the translation rules survive as
 `agents/src/shared/reference/translation.md`, a repo-only note that no skill
 references, so it is never deployed.
 
+Update (2026-10): translation is back as documenter's translate mode
+(natural Japanese/English translation of documents), so
+`shared/reference/translation.md` now deploys with documenter, under
+`<skills dir>/documenter/shared/reference/`. The cleanup below still
+applies: its `translate` paths are the old skill's directories, and no
+command in it touches documenter's copy.
+
 Deployed machines keep the old copies:
 
 ```sh
