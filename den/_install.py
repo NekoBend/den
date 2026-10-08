@@ -165,6 +165,7 @@ _LOOSE_LOCAL_RE = re.compile(
     re.VERBOSE,
 )
 _FLAT_MD_RE = re.compile(r"[A-Za-z0-9_-]+\.md")
+_PLACEHOLDER_MD_RE = re.compile(r"<[A-Za-z][A-Za-z_-]*>\.md")
 _UP_LOCAL_RE = re.compile(r"(?:\.\./)+(?:examples|reference)/")
 _EXCLUDE = {"__pycache__", ".pytest_cache", "tests"}
 
@@ -552,7 +553,13 @@ def _broken_refs(work: Path) -> list[str]:
                 name = after.group(0).rstrip(".") if after else ""
                 ref = f"shared/{kind}/{name}"
                 if name.startswith("<"):
-                    ok = True  # a placeholder; _shared_closure bundled them all
+                    # a placeholder (_shared_closure bundled every file), only
+                    # in the one form a file can fill: shared/reference/<x>.md
+                    ok = (
+                        kind == "reference"
+                        and bool(_PLACEHOLDER_MD_RE.fullmatch(name))
+                        and not text.startswith("/", m.end() + len(name))
+                    )
                 elif kind == "reference":
                     ok = bool(_FLAT_MD_RE.fullmatch(name)) and (work / ref).is_file()
                 else:
@@ -590,23 +597,18 @@ def _materialize(name: str, work: Path, root: str, *, no_den_cli: bool = False) 
     to keep the paths relative to the skill. With no_den_cli the substitution
     table (agents/src/no-den-cli.toml) is applied to SKILL.md and to the
     bundled shared/ files it names before any path is rewritten, removing
-    every mention of den's own CLI and cheatsheets. The files the table edits
-    are read with universal newlines and written LF (a CRLF source comes out
-    LF); every other file keeps its bytes' line endings. The references are
+    every mention of den's own CLI and cheatsheets. A file the table edits
+    keeps its line endings, and one it leaves unchanged is not rewritten, so
+    it stays byte-identical to the den-aware copy. The references are
     followed through the shared files' text before the table edits it, so a
     shared file named only in a passage the table strips still ships.
     ValueError when a path names nothing the copy ships. Returns the number
     of rewritten .md files."""
     shutil.copytree(skills_dir() / name, work, ignore=_ignore)
     if no_den_cli:
-        from ._portable import strip_den_cli
+        from ._portable import edit_in_place
 
-        skill_md = work / "SKILL.md"
-        skill_md.write_text(
-            strip_den_cli(name, skill_md.read_text(encoding="utf-8")),
-            encoding="utf-8",
-            newline="",  # keep LF on Windows too
-        )
+        edit_in_place(work / "SKILL.md", name)
 
     # What the copied skill references, before shared/ is added to it.
     texts = [

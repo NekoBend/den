@@ -72,6 +72,23 @@ def strip_den_cli(name: str, text: str) -> str:
     return text
 
 
+def edit_in_place(path: Path, key: str) -> None:
+    """Apply table `key` to `path`, keeping the file's own line endings.
+
+    The anchors are written with LF, so the text is matched with LF and written
+    back in the source's style; a file the table leaves unchanged is not
+    rewritten at all, so its bytes stay those of the den-aware copy (den
+    uninstall recognizes a file only by its bytes)."""
+    raw = path.read_bytes()
+    text = raw.decode("utf-8")
+    crlf = b"\r\n" in raw
+    plain = text.replace("\r\n", "\n") if crlf else text
+    new = strip_den_cli(key, plain)
+    if new == plain:
+        return
+    path.write_bytes((new.replace("\n", "\r\n") if crlf else new).encode("utf-8"))
+
+
 def strip_shared(work: Path) -> None:
     """Apply the `shared/...` tables to the shared files bundled in skill copy `work`.
 
@@ -81,8 +98,7 @@ def strip_shared(work: Path) -> None:
     for key in table():
         target = work / key
         if key.startswith("shared/") and target.is_file():
-            text = target.read_text(encoding="utf-8")
-            target.write_text(strip_den_cli(key, text), encoding="utf-8", newline="")
+            edit_in_place(target, key)
 
 
 def _add_preamble(skill_md: Path) -> None:

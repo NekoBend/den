@@ -712,8 +712,26 @@ def test_materialize_fails_on_a_missing_shared_file(tmp_path, monkeypatch):
         ("Read shared/scripts/gone.py.\n", "SKILL.md: shared/scripts/gone.py"),
         ("Compare against examples/nope.md.\n", "SKILL.md: examples/nope.md"),
         ("Read reference/<topic>.md.\n", "SKILL.md: reference/<topic>.md"),
+        # a placeholder passes only as shared/reference/<name>.md
+        (
+            "Read shared/reference/<language>/x.md.\n",
+            "SKILL.md: shared/reference/<language>",
+        ),
+        (
+            "Read shared/reference/<language>.txt.\n",
+            "SKILL.md: shared/reference/<language>.txt",
+        ),
+        ("Run shared/scripts/<tool>.py.\n", "SKILL.md: shared/scripts/<tool>.py"),
     ],
-    ids=["nested-shared", "missing-script", "missing-local", "placeholder-no-dir"],
+    ids=[
+        "nested-shared",
+        "missing-script",
+        "missing-local",
+        "placeholder-no-dir",
+        "placeholder-dir",
+        "placeholder-not-md",
+        "placeholder-script",
+    ],
 )
 def test_materialize_fails_on_a_reference_to_nothing(
     tmp_path, monkeypatch, skill_md, broken
@@ -894,6 +912,49 @@ def test_rewrite_keeps_the_source_line_endings(tmp_path, monkeypatch, eol, no_de
     )
     b = (work / "shared" / "reference" / "b.md").read_bytes()
     assert b == (b"b, as edited\nend\n" if no_den_cli else b"b, as written\nend\n")
+
+
+def test_no_den_cli_leaves_files_the_table_does_not_edit_byte_identical(
+    tmp_path, monkeypatch
+):
+    """den uninstall stages the --no-den-cli copy only for skills with a table
+    and otherwise compares against the den-aware bytes, so a den-free install
+    must not rewrite an unedited SKILL.md. A CRLF checkout (Windows CI) showed
+    it did: six SKILL.md files were kept as 'files you changed'."""
+    from den import _portable
+
+    _fake_content(tmp_path, monkeypatch, b"# Demo\r\n\r\nNo paths here.\r\n")
+    monkeypatch.setattr(_portable, "table", dict)
+    den = tmp_path / "den"
+    free = tmp_path / "free"
+    _install._materialize("demo", den, "/R/demo/")
+    _install._materialize("demo", free, "/R/demo/", no_den_cli=True)
+    assert (free / "SKILL.md").read_bytes() == (den / "SKILL.md").read_bytes()
+
+
+def test_no_den_cli_edit_keeps_crlf(tmp_path, monkeypatch):
+    from den import _portable
+
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        b"# Demo\r\n\r\nSay hi.\r\nThen shared/reference/b.md.\r\n",
+        shared={"b.md": "b, as written\r\nend\r\n"},
+    )
+    monkeypatch.setattr(
+        _portable,
+        "table",
+        lambda: {
+            "demo": [{"from": "Say hi.\nThen", "to": "Then"}],
+            "shared/reference/b.md": [{"from": "as written\nend", "to": "edited"}],
+        },
+    )
+    work = tmp_path / "work"
+    _install._materialize("demo", work, "/R/demo/", no_den_cli=True)
+    assert (work / "SKILL.md").read_bytes() == (
+        b"# Demo\r\n\r\nThen /R/demo/shared/reference/b.md.\r\n"
+    )
+    assert (work / "shared" / "reference" / "b.md").read_bytes() == b"b, edited\r\n"
 
 
 # ---- the den-free build (den/_portable.py) on the same fixture tree ----
