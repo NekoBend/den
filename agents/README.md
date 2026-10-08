@@ -39,12 +39,14 @@ agents/
   src/                      # hand-authored: the only place to edit
     skills/<name>/          # the 9 skills
       SKILL.md              # name + description frontmatter + body
-      examples/             # worked examples (one shape per file)
+      examples/             # worked examples (one shape per file;
+                            # coding's python-* hold examples split from python)
       reference/            # skill-only reference files (code-audit's dimensions + rubric)
     shared/
       reference/*.md        # per-language + architecture / testing / schema-design
-                            # (powershell-pipeline and architecture-readability
-                            # hold sections split from powershell and architecture),
+                            # (python-*, powershell-pipeline and
+                            # architecture-readability hold sections split from
+                            # python, powershell and architecture),
                             # plus documenter's doc-common / doc-reference / doc-guide /
                             # doc-genres / writing / japanese-style / confluence /
                             # translation,
