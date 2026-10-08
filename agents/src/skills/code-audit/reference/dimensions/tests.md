@@ -40,7 +40,8 @@ when the change fixes a bug, a regression test for that bug must exist.
   When the code under review came from outside your trust boundary
   (a fork, a downloaded repo, a contributor's branch),
   its test and build scripts run ITS code:
-  say so and get confirmation before the first run.
+  say so and get the user's confirmation before the first run;
+  a launching agent's go-ahead does not count.
 - Map each correctness edge case to a test;
   list the cases that have no test as findings.
 - Treat line coverage as necessary, not sufficient:

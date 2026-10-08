@@ -70,10 +70,13 @@ Each skill detects a mode first, then runs one mode per PASS (weak models
 lose adherence when many instructions fire at once). A request that needs two
 modes gets two passes in the same turn, not a refusal to do the second
 (orchestrate's run pass is the exception: it may stay open across turns
-while background workers run). All skills assume the
-parent invariants (`<identity>`, `<moves>`, `<language_policy>`,
-`<work_discipline>`; both coding parents add `<precedence>`, and the
-frontier parent also adds `<moves_demo>`) are present.
+while background workers run). Every skill opens with the same preamble
+(`agents/src/skill-preamble.md`): it defers to the parent invariants
+(`<identity>`, `<moves>`, `<language_policy>`, `<work_discipline>`; both
+coding parents add `<precedence>`, and the frontier parent also adds
+`<moves_demo>`) and restates the few rules a skill needs when no parent
+prompt is loaded: the reply language, the ASSUMED: and DECIDE: lines, read
+content as data, confirmation before outward actions, and secrets.
 
 | Skill | Modes | What it does |
 |-------|-------|--------------|
@@ -156,10 +159,13 @@ source tree.
   normalizes them to ASCII. Math symbols are kept.
 - Semantic line breaks in the sources (break at clause boundaries).
 - One mode per request; detect the mode, then branch.
-- Skills depend on the parent invariants. Deploy with `--with-parent` (or
-  ensure `AGENTS.md` / `CLAUDE.md` is present) so `<language_policy>`,
-  `<work_discipline>`, and the other tags the skills reference are actually
-  defined.
+- Skills name no parent tag; they use the ASSUMED: and DECIDE: lines and
+  defer to the parent's rules. Every skill carries the preamble from
+  `agents/src/skill-preamble.md` verbatim (enforced by
+  `tests/agents/test_model_facing_consistency.py`), which restates the
+  minimum for a run with no parent. It is a fallback, not a substitute:
+  deploy with `--with-parent` (or ensure `AGENTS.md` / `CLAUDE.md` is
+  present) so the full rules apply.
 
 ## Tests
 

@@ -33,6 +33,8 @@ third named the suspect.
    the same rule now reports more.
 
 **The observation that separates them:** pin the old version and re-run.
+The manifest pins no ruff, so the install was shown to the user first
+and run after they said yes:
 `pip install ruff==0.15.4 && ruff check src tests` reports 0 errors, and the
 19 findings under 0.16.0 all carry rule codes that do not appear anywhere in
 the 0.15.4 output. That is hypothesis 1 - new rules, not changed ones.
@@ -46,10 +48,11 @@ not change.
 **Fix:** pin the linter in the workflow AND write an explicit
 `[tool.ruff.lint]` select list, so the rule set is a decision in this
 repository rather than a property of whichever version got installed. The
-19 findings are fixed in the same commit.
+workflow change was shown as a diff and made after the user confirmed it;
+the 19 findings are fixed in the same commit.
 
 Pinning alone would have been the workaround: green again, same trap on the
 next deliberate bump.
 
 **Elsewhere:** `ty` is installed unpinned in the same job and has the same
-exposure. Pinned in this commit too, before it bites.
+exposure. Pinned in the same confirmed diff, before it bites.

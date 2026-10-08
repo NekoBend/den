@@ -1,8 +1,8 @@
 """Repo-level consistency gates over the model-facing prompt content.
 
-Both tests exist because an outside review found the invariants they assert
-were held only by the private generator's discipline, with nothing in THIS
-repository able to catch a violation:
+The first two tests exist because an outside review found the invariants they
+assert were held only by the private generator's discipline, with nothing in
+THIS repository able to catch a violation:
 
 - The weak router's <skill_catalog> is a generated artifact; a skill rename
   with no dist rebuild would leave it dispatching to a directory that does
@@ -11,6 +11,9 @@ repository able to catch a violation:
 - The no-em-dash rule is stated for every model-facing file, but CI's
   character lint globs agents/dist/ only, so a hand-edited skill could ship
   the banned characters unchecked.
+
+The preamble tests keep the rules every skill carries for a run with no parent
+prompt identical across the nine skills and worded like the parents' DECIDE.
 """
 
 from __future__ import annotations
@@ -61,3 +64,36 @@ def test_no_banned_dashes_in_any_model_facing_markdown() -> None:
                     line = text[: text.index(ch)].count("\n") + 1
                     offenders.append(f"{f.relative_to(AGENTS)}:{line} {name}")
     assert not offenders, offenders
+
+
+def test_every_skill_carries_the_preamble_verbatim() -> None:
+    # One copy per skill, byte for byte: an edit to one skill's copy would let
+    # skills disagree on the rules they apply when no parent prompt is loaded.
+    preamble = (AGENTS / "src" / "skill-preamble.md").read_text(encoding="utf-8")
+    skills = sorted((AGENTS / "src" / "skills").glob("*/SKILL.md"))
+    assert skills
+    wrong = [
+        p.parent.name
+        for p in skills
+        if p.read_text(encoding="utf-8").count(preamble) != 1
+    ]
+    assert not wrong, f"preamble missing or edited in: {wrong}"
+
+
+def test_preamble_decide_wording_matches_every_parent() -> None:
+    # The parents wrap lines differently, so whitespace is collapsed first.
+    def flat(text: str) -> str:
+        return " ".join(text.split())
+
+    preamble = flat((AGENTS / "src" / "skill-preamble.md").read_text(encoding="utf-8"))
+    parents = sorted((AGENTS / "dist" / "parents").rglob("*.md"))
+    assert parents
+    for phrase in (
+        "the options, what each costs, and your recommendation",
+        "the work it gates does not start",
+    ):
+        assert phrase in preamble, phrase
+        for parent in parents:
+            assert phrase in flat(parent.read_text(encoding="utf-8")), (
+                f"{parent.relative_to(AGENTS)} lost: {phrase}"
+            )
