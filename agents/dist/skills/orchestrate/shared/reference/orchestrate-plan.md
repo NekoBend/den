@@ -1,7 +1,8 @@
 # orchestrate: plan mode
 
 Steps P1 to P4 of orchestrate's plan mode,
-then the model guide that Step P3 uses and the core principle behind Step P1.
+then the model guide that Step P3 uses, the core principle behind Step P1,
+and the output format.
 orchestrate's SKILL.md sends you here when the mode is plan.
 
 ### Step P1: Decide whether to divide at all
@@ -77,3 +78,15 @@ run costs several times the tokens of an equivalent single-agent run
 for equivalent tasks). Work
 that fits in a handful of tool calls is done directly, never
 delegated.
+
+## Output format
+
+    **Launched:** <who, on what, engine, read-only or not - one or
+                   two lines total>
+    **Returned:** <one-line conclusion per worker>
+    **Verified:** <which claims were checked against which artifacts,
+                   and which failed the check>
+    **Adopted / rejected:** <what survived, what did not, and why>
+    **Changed:** <what is different on disk or in the plan>
+
+Drop the lines a single-mode pass did not reach.

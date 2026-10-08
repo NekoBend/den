@@ -4,6 +4,12 @@ Steps H1 to H5 of git-manager's history mode,
 with its output format and its checklist.
 git-manager's SKILL.md sends you here when the mode is history.
 
+Run one mode per pass, not one mode per request. A request that needs two
+modes gets two passes in the same turn: finish the first, deliver its
+output, then start the second. This chain is the common case here, not the
+exception - "commit this and open a PR" is commit mode followed by pr mode,
+and stopping after the commit leaves the request half done.
+
 ### Step H1: Identify the affected commits
 Inspect with `git --no-pager log` and state exactly which commits the operation
 touches (by short SHA and subject).

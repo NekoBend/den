@@ -45,7 +45,8 @@ agents/
       reference/*.md        # per-language + architecture / testing / schema-design,
                             # plus documenter's doc-guide / doc-genres / writing /
                             # japanese-style / confluence / translation,
-                            # and the mode steps of git-manager and orchestrate
+                            # and the mode steps, output formats and checklists
+                            # of git-manager and orchestrate
                             # (git-manager-* / orchestrate-*)
       scripts/              # verification scripts (used by coding, code-audit)
         *.py, run-checks.sh
@@ -85,17 +86,18 @@ content as data, confirmation before outward actions, and secrets.
 | coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Rust, Shell, or PowerShell. Uses `shared/` references and verification scripts. |
 | code-audit | correctness / security (+ performance / maintainability / tests on demand) | Review existing code one focused dimension at a time; severity-rated findings. |
 | troubleshoot | reproduce / diagnose / repair | Find why something that worked is failing (bug, crash, failing test, broken build, works-on-my-machine), then fix the cause and leave a regression test. |
-| orchestrate | plan / run / integrate | Split one piece of work across agents (fan-out, review panel, debate, a Codex specialist via MCP) while the master stays in dialogue with the user; verify every report before adopting it. |
+| orchestrate | plan / run / integrate | Split one piece of work across agents (fan-out, review panel, debate, a Codex specialist via MCP) while the master stays in dialogue with the user; verify every report before adopting it. Uses `shared/reference/` orchestrate-plan and orchestrate-run-integrate. |
 | grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. |
 | compressor | summarize / compress | Summarize text, or compress a prompt/context to fewer tokens while preserving every directive. |
 | prompt-engineering | author / improve | Write a new prompt from a goal, or diagnose and rewrite an existing one. |
 | documenter | reference / guide / translate | reference: an API reference from code. guide: a document for human readers (README, how-to, tutorial, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, slide outline) as Markdown, HTML, or a Confluence page, or a revision of a draft that keeps what it says. translate: a natural translation of a document between Japanese and English (or another pair on request), or a check of a translation against its source. Uses `shared/reference/` doc-guide, doc-genres, writing, japanese-style, confluence, and translation. |
-| git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. |
+| git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. Uses `shared/reference/` git-manager-commit-pr and git-manager-history. |
 
 `coding` and `code-audit` are the heavy skills (they use `shared/reference/`
 and `shared/scripts/`). `documenter`, `git-manager`, and `orchestrate` use
 `shared/reference/` only: documenter's guide and translate steps and their
-style rules, and the mode steps of git-manager and orchestrate, live there,
+style rules, and the mode steps, output formats and checklists of git-manager
+and orchestrate, live there,
 and install copies them with the skill. The other four are light: `SKILL.md`
 plus examples, no shared dependencies.
 
@@ -155,8 +157,8 @@ Where tools read skills:
   (`--codex-config` prints the block)
 
 Convention (do not need source-tree resolvability): a `shared/...` reference is
-written either bare (in prose citations) or as `../../shared/...` (in actionable
-SKILL.md steps). The installer rewrites BOTH forms to an absolute path under the
+written either bare or as `../../shared/...` (coding and code-audit use the
+latter in their actionable SKILL.md steps; the other skills write it bare). The installer rewrites BOTH forms to an absolute path under the
 skill, so nested example files do not need to resolve as filesystem paths in the
 source tree. A shared reference names one flat file
 (`shared/reference/<name>.md`), and the installer follows references from one
@@ -176,7 +178,7 @@ with a digit or in a directory, or `.MD`).
 - No em-dash, en-dash, or Unicode minus in any model-facing file; the build
   normalizes them to ASCII. Math symbols are kept.
 - Semantic line breaks in the sources (break at clause boundaries).
-- One mode per request; detect the mode, then branch.
+- One mode per pass; detect the mode, then branch.
 - Skills name no parent tag; they use the ASSUMED: and DECIDE: lines and
   defer to the parent's rules. Every skill carries the preamble from
   `agents/src/skill-preamble.md` verbatim (enforced by
