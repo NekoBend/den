@@ -6,8 +6,12 @@ den cannot use them as-is. This module builds copies that stand alone: every
 den CLI mention is replaced or removed through the substitution table in
 agents/src/no-den-cli.toml (each anchor must match exactly once, so a source
 edit that strands an anchor fails the build instead of shipping stale text),
-the shared/ resources each skill references are copied inside it, and every
-shared/ reference becomes a path relative to the skill's own directory.
+the shared/ resources each skill references are copied inside it (following
+the shared files that name other shared files), and every shared/ reference
+becomes a path relative to the skill's own directory. Skill-local examples/ and
+reference/ paths are written from the skill root and stay as written here;
+`den install skills` makes them absolute. A reference that names nothing the
+copy ships fails the build.
 
   python3 -m den._portable            regenerate agents/dist/skills/
   python3 -m den._portable --check    exit 1 if the committed copy is stale
@@ -28,11 +32,12 @@ import tomllib
 from pathlib import Path
 
 from ._content import content_root
-from ._install import _materialize, _skill_names
+from ._install import _PATH_RE, _materialize, _skill_names
 
 _TABLE = "no-den-cli.toml"
 _PREAMBLE = (
-    "Paths under `shared/` in this skill are relative to the skill's own directory.\n"
+    "Paths under `shared/`, `examples/` and `reference/` in this skill are relative"
+    " to the skill's own directory.\n"
 )
 _DIST_README = """# den-free skill copies
 
@@ -42,7 +47,7 @@ tool reads skills from (for example `~/.claude/skills/<name>/`) and it works
 without den installed. Compared with the source skills: the `den verify`
 shortcut mentions, the den board paragraphs and the pointer to den's
 cheatsheets are removed (each skill names its checks tool-by-tool), and
-`shared/` paths are relative to the skill.
+`shared/`, `examples/` and `reference/` paths are relative to the skill.
 
 Each skill restates a short set of rules for a run with no parent prompt.
 den's parent prompts (`agents/dist/parents/`) hold the full set, so place one
@@ -77,7 +82,7 @@ def strip_shared(work: Path) -> None:
         target = work / key
         if key.startswith("shared/") and target.is_file():
             text = target.read_text(encoding="utf-8")
-            target.write_text(strip_den_cli(key, text), encoding="utf-8")
+            target.write_text(strip_den_cli(key, text), encoding="utf-8", newline="")
 
 
 def _add_preamble(skill_md: Path) -> None:
@@ -140,8 +145,11 @@ def build_tree(out: Path, *, whole: bool = False) -> None:
     for name in _skill_names():
         work = out / name
         _remove(work)
-        _materialize(name, work, "shared/", no_den_cli=True)
-        if (work / "shared").is_dir():  # the note is only true when shared/ ships
+        _materialize(name, work, "", no_den_cli=True)
+        # The note is only true where a relative path ships.
+        if any(
+            _PATH_RE.search(md.read_text(encoding="utf-8")) for md in work.rglob("*.md")
+        ):
             _add_preamble(work / "SKILL.md")
 
 

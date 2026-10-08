@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from den import _install
 from den._install import main as install_main
 
 
@@ -29,6 +30,14 @@ def test_install_skills_rewrites_to_absolute(tmp_path):
     assert "../shared/" not in text  # no leftover relative refs
     # rewrite uses forward-slash absolute paths (correct on Windows too)
     assert coding.resolve().as_posix() in text
+    assert f"{coding.resolve().as_posix()}/examples/testing.md" in text
+    for md in coding.rglob("*.md"):
+        left = [
+            m.group(0)
+            for m in _install._PATH_RE.finditer(md.read_text(encoding="utf-8"))
+            if m.group("local")
+        ]
+        assert not left, f"{md.relative_to(coding)}: relative {left}"
 
 
 def test_install_profile_weak_deploys_router_parent(tmp_path):
@@ -577,3 +586,182 @@ def test_install_tool_dir_still_follows_a_dotfiles_symlink(
     assert install_main(["skills", "--tool", "claude", "--with-parent"]) == 0
     assert (dotfiles / "CLAUDE.md").is_file()
     assert (dotfiles / "skills" / "coding" / "SKILL.md").is_file()
+
+
+# ---- skill-local paths and shared references ----
+
+
+def _fake_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    skill_md: str | bytes,
+    shared: dict[str, str] | None = None,
+    local: dict[str, str] | None = None,
+) -> Path:
+    """Point den._install at a content tree holding one skill, `demo`: its
+    SKILL.md, its other files (`local`, by path under the skill) and the
+    shared/reference files (`shared`, by file name). Every file is written as
+    bytes, so its line endings are exactly the ones given."""
+    content = tmp_path / "content"
+    files = {"SKILL.md": skill_md, **(local or {})}
+    for rel, text in files.items():
+        path = content / "skills" / "demo" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
+    ref = content / "shared" / "reference"
+    ref.mkdir(parents=True)
+    for name, text in (shared or {}).items():
+        (ref / name).write_bytes(text.encode("utf-8"))
+    monkeypatch.setattr(_install, "skills_dir", lambda: content / "skills")
+    monkeypatch.setattr(_install, "shared_dir", lambda: content / "shared")
+    return content
+
+
+def test_install_rewrites_skill_local_refs_to_absolute(tmp_path, monkeypatch):
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "Read reference/rubric.md, then compare against examples/<language>.md.\n",
+        local={"reference/rubric.md": "r\n", "examples/python.md": "p\n"},
+    )
+    target = tmp_path / "target"
+    assert install_main(["skills", "--target", str(target)]) == 0
+    demo = target / "skills" / "demo"
+    text = (demo / "SKILL.md").read_text(encoding="utf-8")
+    root = demo.resolve().as_posix()
+    assert text == (
+        f"Read {root}/reference/rubric.md, then compare against"
+        f" {root}/examples/<language>.md.\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("Read reference/severity-rubric.md:", "Read /R/reference/severity-rubric.md:"),
+        ("`examples/testing.md`", "`/R/examples/testing.md`"),
+        ("examples/<language>.md", "/R/examples/<language>.md"),
+        (
+            "reference/dimensions/<dimension>.md.",
+            "/R/reference/dimensions/<dimension>.md.",
+        ),
+        ("(./examples/a.md)", "(/R/examples/a.md)"),
+        ("[link](examples/a.md)", "[link](/R/examples/a.md)"),
+        ("はreference/x.mdを読む", "は/R/reference/x.mdを読む"),
+        ("../../shared/reference/python.md", "/R/shared/reference/python.md"),
+        ("shared/scripts/run-checks.sh", "/R/shared/scripts/run-checks.sh"),
+        # left alone: not a skill-local path, or not written from the skill root
+        ("docs/reference/api.md", "docs/reference/api.md"),
+        ("the reference/guide split", "the reference/guide split"),
+        ("examples/a.mdx", "examples/a.mdx"),
+        ("my-examples/a.md", "my-examples/a.md"),
+        ("../examples/a.md", "../examples/a.md"),
+    ],
+)
+def test_local_ref_rewrite_edge_cases(before, after):
+    assert _install._rewrite(before, "/R/") == after
+    # A relative copy keeps every local path as written; shared/ loses its ../
+    relative = _install._rewrite(before, "")
+    if "shared/" in before:
+        assert relative == after.replace("/R/", "")
+    else:
+        assert relative == before
+
+
+def test_materialize_follows_shared_refs_transitively(tmp_path, monkeypatch):
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "Read ../../shared/reference/a.md.\n",
+        shared={
+            "a.md": "Then read shared/reference/b.md.\n",
+            "b.md": "Back to shared/reference/a.md.\n",  # a cycle ends
+            "unused.md": "nobody names this\n",
+        },
+    )
+    work = tmp_path / "work"
+    _install._materialize("demo", work, "/R/demo/")
+    bundled = sorted(p.name for p in (work / "shared" / "reference").iterdir())
+    assert bundled == ["a.md", "b.md"]
+    a = (work / "shared" / "reference" / "a.md").read_text(encoding="utf-8")
+    assert a == "Then read /R/demo/shared/reference/b.md.\n"
+
+
+def test_materialize_fails_on_a_missing_shared_file(tmp_path, monkeypatch):
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "Read shared/reference/a.md.\n",
+        shared={"a.md": "Then read shared/reference/gone.md.\n"},
+    )
+    with pytest.raises(
+        ValueError, match=r"^demo: shared/reference/gone\.md does not exist$"
+    ):
+        _install._materialize("demo", tmp_path / "work", "/R/demo/")
+
+
+@pytest.mark.parametrize(
+    ("skill_md", "broken"),
+    [
+        # _REF_RE never matched a nested name, so it was dropped in silence
+        ("Read shared/reference/sub/x.md.\n", "SKILL.md: shared/reference/sub/x.md"),
+        ("Read shared/scripts/gone.py.\n", "SKILL.md: shared/scripts/gone.py"),
+        ("Compare against examples/nope.md.\n", "SKILL.md: examples/nope.md"),
+        ("Read reference/<topic>.md.\n", "SKILL.md: reference/<topic>.md"),
+    ],
+    ids=["nested-shared", "missing-script", "missing-local", "placeholder-no-dir"],
+)
+def test_materialize_fails_on_a_reference_to_nothing(
+    tmp_path, monkeypatch, skill_md, broken
+):
+    _fake_content(tmp_path, monkeypatch, skill_md)
+    (tmp_path / "content" / "shared" / "scripts").mkdir()
+    with pytest.raises(ValueError, match="name nothing the skill ships") as exc:
+        _install._materialize("demo", tmp_path / "work", "/R/demo/")
+    assert str(exc.value).splitlines()[1:] == [f"  {broken}"]
+
+
+def test_materialize_fails_on_a_parent_relative_local_ref(tmp_path, monkeypatch):
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        "Read examples/a.md.\n",
+        local={"examples/a.md": "See ../examples/b.md.\n", "examples/b.md": "b\n"},
+    )
+    with pytest.raises(ValueError, match="name nothing the skill ships") as exc:
+        _install._materialize("demo", tmp_path / "work", "/R/demo/")
+    assert str(exc.value).splitlines()[1:] == [
+        "  examples/a.md: ../examples/ - write skill-local paths from the skill root"
+    ]
+
+
+def test_install_reports_a_broken_reference_and_writes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    _fake_content(tmp_path, monkeypatch, "Compare against examples/nope.md.\n")
+    target = tmp_path / "target"
+    assert install_main(["skills", "--target", str(target), "--with-parent"]) == 2
+    assert not target.exists()
+    err = capsys.readouterr().err
+    assert err.startswith("den install skills: demo: references that name nothing")
+    assert "SKILL.md: examples/nope.md" in err
+
+
+@pytest.mark.parametrize("eol", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_rewrite_keeps_the_source_line_endings(tmp_path, monkeypatch, eol):
+    """write_text turned every LF into CRLF on Windows; bytes in, bytes out
+    keeps what the source has on every platform."""
+    lines = [b"Read examples/a.md.", b"Then shared/reference/b.md.", b""]
+    _fake_content(
+        tmp_path,
+        monkeypatch,
+        eol.join(lines),
+        shared={"b.md": "b\n"},
+        local={"examples/a.md": "a\n"},
+    )
+    work = tmp_path / "work"
+    assert _install._materialize("demo", work, "/R/demo/") == 1
+    out = (work / "SKILL.md").read_bytes()
+    assert out == eol.join(
+        [b"Read /R/demo/examples/a.md.", b"Then /R/demo/shared/reference/b.md.", b""]
+    )

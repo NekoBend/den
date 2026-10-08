@@ -5,7 +5,7 @@ description: Writes documents as the deliverable. Produces an API reference from
 
 # Documenter skill
 
-Paths under `shared/` in this skill are relative to the skill's own directory.
+Paths under `shared/`, `examples/` and `reference/` in this skill are relative to the skill's own directory.
 
 Write documents a reader can rely on and use.
 Every statement is backed by a source:
