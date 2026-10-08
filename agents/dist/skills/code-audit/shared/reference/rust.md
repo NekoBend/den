@@ -18,7 +18,8 @@ This file holds sections 1, 3, 4, 6, 7, and 13.
   or contains `unsafe` code or an `extern` block.
 - shared/reference/rust-modules.md (section 9): read it when the code creates a crate, a workspace,
   a module, or a file under `tests/`,
-  or when a source file is longer than about 500 lines.
+  or when a source file is longer than about 500 lines,
+  or when the code adds a `pub` item to a module.
 
 "section N" in any of these files means the section with that number;
 this list names the file that holds it.
