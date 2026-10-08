@@ -5,11 +5,17 @@ source "$SCRIPT_DIR/helpers.sh"
 
 COREUTILS_PS1="$DOTFILES/shell/pwsh/coreutils.ps1"
 
-# Strip the `_DenInteractive` guard for non-interactive testing. In TESTTMP,
-# out of reach of the fixture resets that wipe WORK.
+# Strip the `_DenInteractive` guard for non-interactive testing, and stand in
+# for Windows: coreutils.ps1 defines its commands only where _OnWindows is true,
+# and these tests run on Linux. They load it without _helpers.ps1, so a no-op
+# stands in for _DenAddClean too (the coreutils cases at the end load both). In
+# TESTTMP, out of reach of the fixture resets that wipe WORK.
 COREUTILS_PS1_STRIPPED="$TESTTMP/coreutils_stripped.ps1"
-grep -v '_DenInteractive' "$COREUTILS_PS1" > "$COREUTILS_PS1_STRIPPED" ||
-    abort_suite "cannot write $COREUTILS_PS1_STRIPPED"
+{
+    echo 'function _OnWindows { $true }'
+    echo 'function _DenAddClean { }'
+    grep -v '_DenInteractive' "$COREUTILS_PS1"
+} > "$COREUTILS_PS1_STRIPPED" || abort_suite "cannot write $COREUTILS_PS1_STRIPPED"
 
 # =============================================================================
 # PowerShell tests
@@ -557,6 +563,230 @@ echo "[pwsh] which usage stderr"
 err=$(run_pwsh_stderr_oneline "$COREUTILS_PS1_STRIPPED" "which")
 assert_contains "pwsh/which stderr has message" "usage:" "$err"
 assert_not_contains "pwsh/which no double prefix" "which: which:" "$err"
+
+# =============================================================================
+# Windows only
+# =============================================================================
+# These fill a gap Windows has. On Linux and macOS pwsh they replaced the real
+# tools with PowerShell versions 100-240 times slower (wc -l on a 1M-line file:
+# 1352 ms against 12 ms) that read fewer flags. $IsWindows is a constant, set
+# with -Force to stand in for Windows.
+GAP_FILLERS="'df', 'env', 'head', 'split', 'tail', 'touch', 'wc', 'which'"
+echo "[pwsh] df, env, head, split, tail, touch, wc, which are den's on Windows only"
+actual=$(run_pwsh "$DOTFILES/shell/pwsh/_helpers.ps1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    . '$COREUTILS_PS1'
+    'off Windows: ' + @(Get-Command $GAP_FILLERS -CommandType Function -ErrorAction SilentlyContinue).Count
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    . '$COREUTILS_PS1'
+    'on Windows: ' + @(Get-Command $GAP_FILLERS -CommandType Function -ErrorAction SilentlyContinue).Count
+" 2>&1 | clean)
+assert_eq "pwsh/gap-fillers off and on Windows" "off Windows: 0
+on Windows: 8" "$actual"
+
+# df took every argument for a drive to filter by, so `df -h` printed nothing.
+echo "[pwsh] df -h lists the drives as df does"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "@(df -h | Out-String -Stream | Where-Object { \$_.Trim() }).Count -ge 3" 2>/dev/null | clean)
+assert_eq "pwsh/df -h is not a drive filter" "True" "$actual"
+
+# =============================================================================
+# Piped input streams
+# =============================================================================
+# head and tail collected all their input before they looked at it, so
+# `seq 2000000 | head -n 3` took 1.2 s and nothing came out of an endless
+# producer. The time each line comes out is measured downstream.
+echo "[pwsh] head and tail -n +N pass piped lines on as they come"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    \$t0 = [DateTime]::UtcNow
+    $STREAM_PRODUCER | head -n 1 | ForEach-Object { if (([DateTime]::UtcNow - \$t0).TotalMilliseconds -lt 1000) { 'head: at once' } else { 'head: late' } }
+    \$t0 = [DateTime]::UtcNow
+    $STREAM_PRODUCER | tail -n +1 | Select-Object -First 1 | ForEach-Object { if (([DateTime]::UtcNow - \$t0).TotalMilliseconds -lt 1000) { 'tail: at once' } else { 'tail: late' } }
+    1..5 | head -n -2
+    1..5 | tail -n 2
+" 2>/dev/null | clean)
+assert_eq "pwsh/head and tail stream; -n -N and -n N still hold back" "head: at once
+tail: at once
+1
+2
+3
+4
+5" "$actual"
+
+# head passed the first N piped objects on and then read every object after
+# them, and dropped it: the commands before it did all their work (head -n 1
+# took all 10 of a producer's objects), and one that never ends never let it
+# return. It now stops them once the Nth is out, as Select-Object -First does.
+# A counter in each producer tells how many objects it made: N exactly, as for
+# Select-Object -First N, since head stops on the Nth and does not wait for one
+# more. The producers are a cmdlet, a script block and a function, which pass
+# the stop up in different ways; the commands after head still get their end
+# (Measure-Object counts what head passed on), and -n -N still reads to the end.
+# The stop leaves nothing in $Error; _CoreutilsBin, which the stripped copy
+# does not define (an error per call), says here that coreutils is absent.
+echo "[pwsh] head stops the commands before it once the Nth piped object is out"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$Error.Clear()
+    function Get-Made { \$global:made = 0; 1..10 | ForEach-Object { \$global:made++; \$_ } }
+    \$global:made = 0
+    \$out = 1..10 | ForEach-Object { \$global:made++; \$_ } | head -n 1
+    'cmdlet, head -n 1: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    \$global:made = 0
+    \$out = 1..10 | ForEach-Object { \$global:made++; \$_ } | head -n 3
+    'cmdlet, head -n 3: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    \$global:made = 0
+    \$out = & { foreach (\$i in 1..10) { \$global:made++; \$i } } | head -2
+    'script block, head -2: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    \$out = Get-Made | head -n 3
+    'function, head -n 3: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    \$global:made = 0
+    'head -n 3 | Measure-Object: ' + (1..10 | ForEach-Object { \$global:made++; \$_ } | head -n 3 | Measure-Object).Count + ' made ' + \$global:made
+    \$global:made = 0
+    \$out = 1..10 | ForEach-Object { \$global:made++; \$_ } | head -n -2
+    'head -n -2: ' + (@(\$out) -join ',') + ' made ' + \$global:made
+    'errors: ' + \$Error.Count
+" 2>/dev/null | clean)
+assert_eq "pwsh/head stops the producer at the Nth object" "cmdlet, head -n 1: 1 made 1
+cmdlet, head -n 3: 1,2,3 made 3
+script block, head -2: 1,2 made 2
+function, head -n 3: 1,2,3 made 3
+head -n 3 | Measure-Object: 3 made 3
+head -n -2: 1,2,3,4,5,6,7,8 made 10
+errors: 0" "$actual"
+
+# A producer that never ends: head waited on it for ever. The line runs under
+# a timeout, since without the stop it hangs rather than fails.
+echo "[pwsh] head returns from a producer that never ends"
+printf 'a\nb\n' > "$WORK/wait.log"
+raw=$(timeout 30 pwsh -NoProfile -NonInteractive -Command "
+    . '$COREUTILS_PS1_STRIPPED'
+    & { while (\$true) { 'tick'; Start-Sleep -Milliseconds 50 } } | head -n 2
+    'after the loop'
+    Get-Content -LiteralPath '$WORK/wait.log' -Wait | head -n 1
+    'after Get-Content -Wait'
+" 2>/dev/null)
+assert_eq "pwsh/head returns from an endless producer (timeout: 124)" "0" "$?"
+actual=$(printf '%s\n' "$raw" | clean)
+assert_eq "pwsh/head output from an endless producer" "tick
+tick
+after the loop
+a
+after Get-Content -Wait" "$actual"
+
+# The stop reads PowerShell internals; where one is missing (a later PowerShell
+# may rename it), head reads what comes after the Nth and drops it, as it did
+# before. The error its lookup caught was left in $Error, one per call, though
+# nothing had gone wrong for the caller. Each copy below renames one name head
+# looks up, so the copy cannot find it; every head call must still pass the
+# first N on, read all 10 (the stop is off), and leave $Error empty, also under
+# Set-StrictMode -Version Latest, which fails an empty lookup on its own.
+echo "[pwsh] head without the internals it stops with"
+fallback_ps='function _CoreutilsBin { }'
+fallback_expected=""
+fallback_k=0
+for name in "'System.Management.Automation.ExecutionContext'" "'CurrentCommandProcessor'" \
+        "'Command'" "'ManageInvocationException'" "StopUpstreamCommandsException'"; do
+    label=${name//\'/}; label=${label##*.}
+    fallback_k=$((fallback_k + 1))
+    copy="$TESTTMP/coreutils_without_$fallback_k.ps1"
+    content=$(cat "$COREUTILS_PS1_STRIPPED")
+    renamed=${content//"$name"/"${name%\'}Gone'"}
+    # A copy that renames nothing would test the stop, not the fallback.
+    shown=$label
+    [ "$renamed" != "$content" ] || shown="$label (not found in head)"
+    printf '%s\n' "$renamed" > "$copy" || abort_suite "cannot write $copy"
+    fallback_ps+="
+    . '$copy'
+    \$Error.Clear()
+    \$global:made = 0
+    \$out = 1..10 | ForEach-Object { \$global:made++; \$_ } | head -n 2
+    \$again = 1..10 | head -n 2
+    \$strict = & { Set-StrictMode -Version Latest; 1..10 | head -n 2 }
+    '$shown: ' + (@(\$out) -join ',') + ' made ' + \$global:made + ', again ' + (@(\$again) -join ',') + ', strict ' + (@(\$strict) -join ',') + ', errors ' + \$Error.Count"
+    fallback_expected+="${fallback_expected:+
+}$label: 1,2 made 10, again 1,2, strict 1,2, errors 0"
+done
+actual=$(pwsh -NoProfile -NonInteractive -Command "$fallback_ps" 2>/dev/null | clean)
+assert_eq "pwsh/head without the stop's internals reads to the end, \$Error empty" \
+    "$fallback_expected" "$actual"
+
+# With microsoft/coreutils, head/tail/wc/... handed it `$input`, collected in
+# full, and with nothing piped in an empty pipe for stdin. A stub stands in for
+# coreutils (see make_stamp_stub in helpers.sh).
+CU_STAMP="$TESTTMP/coreutils-stamp"
+make_stamp_stub "$CU_STAMP" || abort_suite "cannot write $CU_STAMP"
+CU_SETUP="
+    \$env:_DEN_FORCE_INTERACTIVE = '1'; \$env:_DEN_COREUTILS = '$CU_STAMP'
+    Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+    . '$COREUTILS_PS1'
+"
+for cmd in head tail wc split env; do
+    echo "[pwsh] $cmd with coreutils streams piped input, and gets no pipe with none"
+    actual=$(run_pwsh "$DOTFILES/shell/pwsh/_helpers.ps1" "$CU_SETUP; $STREAM_PRODUCER | $cmd" < /dev/null 2>&1 | clean)
+    assert_streams "pwsh/$cmd with coreutils streams" "$actual"
+    actual=$(run_pwsh "$DOTFILES/shell/pwsh/_helpers.ps1" "$CU_SETUP; $cmd" < /dev/null 2>&1 | clean)
+    assert_eq "pwsh/$cmd with coreutils, no stdin pipe" "stdin: not a pipe" "$actual"
+done
+
+# At the end of a line typed at the prompt, coreutils writes to the console
+# itself; through the steppable pipeline its stdout was a pipe there, and what
+# it printed showed up only when the next line went in, or at the end. The stub
+# prints as rg does (see make_tty_stub in helpers.sh); each line is timed when it
+# reaches the terminal. One session, one line of statements (typed, as at the
+# prompt), one pipeline per command.
+CU_TTY="$TESTTMP/coreutils-tty"
+make_tty_stub "$CU_TTY" || abort_suite "cannot write $CU_TTY"
+echo "[pwsh] head, tail, wc, split and env with coreutils at the end of a typed line write to the terminal as it prints"
+actual=$(run_pty_stamped env _DEN_FORCE_INTERACTIVE=1 _DEN_COREUTILS="$CU_TTY" pwsh -NoProfile -NonInteractive -Command "\
+. '$DOTFILES/shell/pwsh/_helpers.ps1'; Set-Variable -Name IsWindows -Value \$true -Scope Global -Force; \
+. '$COREUTILS_PS1'; $STREAM_PRODUCER | head; 'next'; $STREAM_PRODUCER | tail; 'next'; \
+$STREAM_PRODUCER | wc; 'next'; $STREAM_PRODUCER | split; 'next'; $STREAM_PRODUCER | env" 2>&1)
+i=0
+for cmd in head tail wc split env; do
+    i=$((i + 1))
+    part=$(printf '%s\n' "$actual" | awk -v want="$i" '/ next$/ { n++; next } n + 1 == want')
+    assert_streams "pwsh/$cmd with coreutils at the end of a typed line writes to the terminal" "$part"
+done
+
+# A line that stops before its end left coreutils waiting on its stdin until
+# PowerShell exited: through Select-Object -First further down, or a host
+# stopping the line (as for Ctrl+C), which only the clean block that
+# coreutils.ps1 adds on PowerShell 7.3 and later reaches. See make_pid_stub and
+# make_stub_state_ps1 in helpers.sh.
+CU_PID="$TESTTMP/coreutils-pid"
+make_pid_stub "$CU_PID" || abort_suite "cannot write $CU_PID"
+CU_STATE_PS1="$TESTTMP/cu-stub-state.ps1"
+make_stub_state_ps1 "$CU_STATE_PS1" || abort_suite "cannot write $CU_STATE_PS1"
+CU_PID_SETUP="$TESTTMP/cu-pid-setup.ps1"
+cat > "$CU_PID_SETUP" <<PS1 || abort_suite "cannot write $CU_PID_SETUP"
+. '$DOTFILES/shell/pwsh/_helpers.ps1'
+\$env:_DEN_FORCE_INTERACTIVE = '1'; \$env:_DEN_COREUTILS = '$CU_PID'
+Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+. '$COREUTILS_PS1'
+PS1
+echo "[pwsh] head, tail, wc, split and env with coreutils leave nothing behind when a line stops early"
+actual=$(run_pwsh "$CU_PID_SETUP" "
+    . '$CU_STATE_PS1'
+    foreach (\$c in 'head', 'tail', 'wc', 'split', 'env') {
+        \$env:PIDSTUB_FILE = '$TESTTMP/cu-sel-' + \$c + '.pid'
+        \$null = 1..5000 | ForEach-Object { \"l\$_\" } | & \$c | Select-Object -First 1
+        \"\$c | Select-Object -First 1: \" + (Get-StubState \$env:PIDSTUB_FILE)
+    }
+    \$env:PIDSTUB_FILE = '$TESTTMP/cu-stop-head.pid'
+    'head, stopped: ' + (Test-StubStopped \". '$CU_PID_SETUP'\" \"& { 'l1'; Start-Sleep 60 } | head\")
+    foreach (\$c in 'env', 'head', 'split', 'tail', 'wc') { \"\$c has a clean block: \" + (Test-CleanBlock \$c) }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/coreutils left running after a line stopped early" "head | Select-Object -First 1: gone
+tail | Select-Object -First 1: gone
+wc | Select-Object -First 1: gone
+split | Select-Object -First 1: gone
+env | Select-Object -First 1: gone
+head, stopped: gone
+env has a clean block: True
+head has a clean block: True
+split has a clean block: True
+tail has a clean block: True
+wc has a clean block: True" "$actual"
 
 # =============================================================================
 # Summary

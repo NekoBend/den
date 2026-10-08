@@ -315,8 +315,9 @@ fi
 # pwsh port: same store (XDG_CONFIG_HOME), same TAB format. Messages go to the
 # process stderr (bash's $(...) captures stdout only), so data reads stay clean.
 if command -v pwsh >/dev/null 2>&1; then
-    # snippet.ps1 writes its store with _DenWritePrivate from _helpers.ps1, which
-    # init.ps1 loads first; this file loads both in that order.
+    # snippet.ps1 writes its store with _DenWritePrivate and replays through
+    # _DenReplay, both from _helpers.ps1, which init.ps1 loads first; this file
+    # loads both in that order.
     SNIPPET_PS1="$TESTTMP/snippet_test.ps1"
     printf ". '%s'\n. '%s'\n" "$DOTFILES/shell/pwsh/_helpers.ps1" "$DOTFILES/shell/pwsh/snippet.ps1" > "$SNIPPET_PS1" ||
         abort_suite "cannot write $SNIPPET_PS1"
@@ -469,6 +470,24 @@ flag=True rest=z" "$actual"
     echo "[pwsh] unknown command fails with usage"
     actual=$(run_pwsh "$SNIPPET_PS1" "snippet frobnicate" 2>&1 | tr -d '\r')
     assert_contains "pwsh/snippet unknown cmd" "unknown command" "$actual"
+
+    # snippet run replays its line as typed when snippet is typed: gl there is
+    # den's git log, as it was when the line was saved. Run from a script, the
+    # line gets what gl means in a script, Get-Location. den loads as $PROFILE
+    # loads it, with a stub git (see run_pwsh_den in helpers.sh).
+    echo "[pwsh] snippet run replays as typed; a script's snippet run gets the cmdlet"
+    SNIP_BIN="$WORK/snip-bin"
+    mkdir -p "$SNIP_BIN"
+    printf '#!/bin/sh\necho "STUB-GIT $*"\n' > "$SNIP_BIN/git"
+    chmod +x "$SNIP_BIN/git"
+    printf '%s\n' '"script: $((snippet run where).GetType().Name)"' > "$WORK/runsnip.ps1"
+    actual=$(run_pwsh_den "\$env:PATH = '$SNIP_BIN:/usr/bin:/bin'" "
+        snippet save where gl
+        snippet run where
+        & '$WORK/runsnip.ps1'
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet run typed, then from a script" "STUB-GIT log --oneline --graph
+script: PathInfo" "$actual"
 else
     echo "pwsh not found; skipping pwsh snippet tests"
 fi

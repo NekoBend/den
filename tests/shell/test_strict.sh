@@ -206,6 +206,12 @@ foreach ($_StrictN in $_StrictFunctions + $_StrictAliases) {
 }
 $global:_StrictSkip = @{}
 $global:_StrictDone = $false
+# The cases run as a user's script does, and there a den command that took over
+# an earlier one (ls, cat, cd, gc, ...) runs that earlier one instead (see
+# _DenScopeOverrides). Its records are set aside so that the cases reach den's own
+# versions; the cases for the lookup hook put them back.
+$global:_StrictOverrides = $global:_DenOverrides
+$global:_DenOverrides = @{}
 try { & $env:STRICT_CASES } catch { $_StrictOut.Add("CRASH $($_.Exception.Message)") }
 Get-PSBreakpoint | Remove-PSBreakpoint
 if (-not $global:_StrictDone) { $_StrictOut.Add('CRASH the case script stopped before its end') }
@@ -330,12 +336,33 @@ Case '_ResolveCmd, not found' { _ResolveCmd 'nonexistent-strict' 'App'; _Resolve
 Case '_CoreutilsBin' { _CoreutilsBin }
 Case '_CoreutilsBin, disabled' { $env:_DEN_COREUTILS = '0'; try { _CoreutilsBin } finally { Remove-Item Env:\_DEN_COREUTILS } }
 Case 'New-Wrapper' { New-Wrapper 'strict-w1' 'bat' '' 'cat' '' ''; strict-w1 a.txt }
+Case 'New-Wrapper, piped' { 'x', 'y' | strict-w1 }
 Case 'New-Wrapper, native' { New-Wrapper 'strict-w2' 'nonexistent-strict' '' 'cat' '' ''; strict-w2 a.txt }
+Case 'New-Wrapper, native, piped' { 'x' | strict-w2 }
 Case 'New-Wrapper, fallback' { New-Wrapper 'strict-w3' 'nonexistent-strict' '' 'find' '' '"fallback"'; strict-w3 }
+Case 'New-Wrapper, fallback, piped' { 'x' | strict-w3 }
 Case 'New-Wrapper, no fallback' { New-Wrapper 'strict-w4' 'nonexistent-strict' '' '' '' ''; strict-w4 }
 Case 'New-WrapperSuffix' { New-WrapperSuffix 'strict-s1' 'bat' ''; strict-s1 a.txt }
+Case 'New-WrapperSuffix, piped' { 'x' | strict-s1 }
 Case 'New-WrapperSuffix, not installed' { New-WrapperSuffix 'strict-s2' 'nonexistent-strict' ''; strict-s2 }
-Case 'New-CoreutilsWrapper' { New-CoreutilsWrapper 'strict-c1' 'cp' 'Copy-Item @Args'; strict-c1 a.txt a-copy.txt }
+Case 'New-WrapperSuffix, not installed, piped' { 'x' | strict-s2 }
+Case 'New-CoreutilsWrapper' { New-CoreutilsWrapper 'strict-c1' 'cp' 'Copy-Item'; strict-c1 a.txt a-copy.txt }
+Case 'New-CoreutilsWrapper, piped' { Get-Item -LiteralPath a.txt | strict-c1 -Destination a-copy2.txt }
+# A line stopped further down runs the wrapper's clean block (PowerShell 7.3+).
+Case 'New-Wrapper, piped, stopped early' { 1..50 | ForEach-Object { "l$_" } | strict-w2 | Select-Object -First 1 }
+Case '_DenSpClean' { _DenSpClean }
+Case '_DenSpStop' {
+    $StrictSp = { & cat }.GetSteppablePipeline()
+    $StrictSp.Begin($true)
+    $null = $StrictSp.Process('x')
+    _DenSpStop $StrictSp
+    _DenSpStop $null
+}
+Case '_DenAddClean' {
+    function global:strict-ac { begin { $__sp = $null } end { 'ac' } }
+    _DenAddClean 'strict-ac', 'nonexistent-strict'
+    strict-ac
+}
 Case 'toggle-wrapper' { toggle-wrapper; toggle-wrapper }
 Case 'tgl-wr' { tgl-wr; tgl-wr }
 Case '_DenTrustedCacheOwner' {
@@ -762,8 +789,11 @@ Case 'va, a world-writable activate script' { va writable }
 Case 'va, not a venv' { va sub }
 Case 'vv' { vv made-venv }
 Case 'vva' { vva made-venv2; vd }
-Case 'toggle-uv' { toggle-uv; toggle-uv }
-Case 'tgl-uv' { tgl-uv; tgl-uv }
+# toggle-uv's ON records python, pip and uv (see _DenRecordOverrides) into the
+# table the driver emptied: it is emptied again, so that the cases after it still
+# reach den's own versions.
+Case 'toggle-uv' { try { toggle-uv; toggle-uv } finally { $global:_DenOverrides = @{} } }
+Case 'tgl-uv' { try { tgl-uv; tgl-uv } finally { $global:_DenOverrides = @{} } }
 Use-StrictPath 'modern', 'fzf', 'bin', 'sys'
 Case 'uv, no uv' { uv --version }
 Case 'pip, no uv' { pip list }
@@ -773,9 +803,9 @@ Case 'python3, no uv' { python3 -V }
 Case 'py, no uv' { py -V }
 Case 'vv, no uv' { vv }
 Case 'vva, no uv' { vva }
-Case 'toggle-uv, no uv' { toggle-uv; toggle-uv }
+Case 'toggle-uv, no uv' { try { toggle-uv; toggle-uv } finally { $global:_DenOverrides = @{} } }
 Use-StrictPath
-Case 'toggle-uv, back on' { toggle-uv }
+Case 'toggle-uv, back on' { try { toggle-uv } finally { $global:_DenOverrides = @{} } }
 
 # ===== ffmpeg.ps1 =====
 foreach ($StrictF in 'tomp4:mp4', 'towebm:webm', 'tomp3:mp3', 'towav:wav', 'toflac:flac') {
@@ -911,10 +941,53 @@ Case 'snippet remove, no such snippet' { snippet remove nope }
 Case 'snippet rm, no name' { snippet rm }
 Case 'snippet, unknown command' { snippet bogus }
 
+# ===== den's commands from a script: the lookup hook =====
+# With the records back (the driver set them aside), each call below goes through
+# _DenLookupHook: a name den took over runs the command it meant before (an
+# alias's cmdlet, an application on the PATH), a name den added runs den's.
+function Invoke-WithOverrides([scriptblock]$StrictBody) {
+    $global:_DenOverrides = $global:_StrictOverrides
+    try { & $StrictBody } finally { $global:_DenOverrides = @{} }
+}
+Case 'a script calls gc, gcm, gl, gps, gu' {
+    Invoke-WithOverrides { gc a.txt; $null = gcm Get-Date; gl; $null = gps -Id $PID; 'b', 'a', 'a' | Sort-Object | gu }
+}
+Case 'a script calls cat, ls, grep, find' { Invoke-WithOverrides { cat a.txt; 'x' | cat; ls; grep alpha a.txt; find . -name a.txt } }
+Case 'a script calls cd' { Invoke-WithOverrides { cd sub; cd -LiteralPath ..; cd missing-strict } }
+Case 'a script calls a command den added' { Invoke-WithOverrides { mkcd made-by-mkcd; up } }
+Case 'a script runs a line replayed as typed' { Invoke-WithOverrides { _DenReplay 'gl; cd sub' $true } }
+Case '_DenTyped' { _DenTyped 'Runspace'; _DenTyped 'Internal'; _DenTyped 'Internal' 1 }
+Case '_DenReplay' { _DenReplay "Write-Output 'replayed'" $true; _DenReplay "Write-Output 'replayed'" $false }
+Case '_DenHadApp' {
+    _DenHadApp 'cat' @{ Kind = 'App'; Value = $null }
+    _DenHadApp 'nonexistent-strict' @{ Kind = 'App'; Value = $null }
+    _DenHadApp 'cat' @{ Kind = 'App'; Value = $true }
+}
+Case '_DenLookup' {
+    $StrictLookup = [pscustomobject]@{ CommandOrigin = 'Internal'; Command = $null; CommandScriptBlock = $null }
+    Invoke-WithOverrides {
+        $StrictLookup.Command = Get-Item -LiteralPath Function:\gl
+        _DenLookup 'gl' $StrictLookup
+        $StrictLookup.Command = Get-Item -LiteralPath Function:\Case
+        _DenLookup 'gl' $StrictLookup
+        _DenLookup 'nonexistent-strict' $StrictLookup
+    }
+}
+# It records again into the table it finds, which the driver emptied: put that back.
+Case '_DenScopeOverrides' { try { _DenScopeOverrides } finally { $global:_DenOverrides = @{} } }
+Case '_DenRecordOverrides' {
+    try {
+        _DenRecordOverrides (@((Get-Item -LiteralPath Function:\gl), (Get-Item -LiteralPath Function:\mkcd)) +
+            @(Get-ChildItem -Path Alias: | Where-Object { $_.ModuleName } | Select-Object -First 1))
+        _DenRecordOverrides $null
+    } finally { $global:_DenOverrides = @{} }
+}
+
 # ===== every den function and alias again, with no argument =====
 # Not reload (its case is last), nor the toggles: a toggle has no other form, and
-# the cases above run each one twice, so its switch ends where it began.
-$StrictNoArgSkip = 'reload', 'toggle-wrapper', 'tgl-wr', 'toggle-uv', 'tgl-uv', 'toggle-hwinfo', 'tgl-hw'
+# the cases above run each one twice, so its switch ends where it began. Nor
+# _DenScopeOverrides, which would fill the records the driver set aside.
+$StrictNoArgSkip = 'reload', 'toggle-wrapper', 'tgl-wr', 'toggle-uv', 'tgl-uv', 'toggle-hwinfo', 'tgl-hw', '_DenScopeOverrides'
 foreach ($StrictFn in $global:_StrictFunctions + $global:_StrictAliases) {
     if ($StrictNoArgSkip -contains $StrictFn -or $global:_StrictSkip.ContainsKey($StrictFn)) { continue }
     Case "$StrictFn, no argument" ([scriptblock]::Create("& '$StrictFn'"))
@@ -996,10 +1069,13 @@ run_strict "$DOTFILES/shell/pwsh" "$REPORT"
 assert_eq "pwsh/strict run reached its end" "" "$(report_lines "$REPORT" CRASH)"
 # One name from each file, so a load that defined nothing cannot pass the rest.
 missing=""
-for name in _ResolveCmd cat wc dg gst toggle-hwinfo uv tomp4 pcp cheat proxy snippet reload prompt digest; do
+# coreutils.ps1 defines its commands on Windows only (the Windows run checks wc).
+for name in _ResolveCmd cat dg gst toggle-hwinfo uv tomp4 pcp cheat proxy snippet reload prompt digest; do
     report_lines "$REPORT" FUNCTION ALIAS | grep -qx "\(FUNCTION\|ALIAS\) $name" || missing="$missing $name"
 done
 assert_eq "pwsh/strict inventory holds a function from every file" "" "$missing"
+assert_eq "pwsh/strict inventory holds no Windows gap-filler off Windows" "" \
+    "$(report_lines "$REPORT" FUNCTION | grep -xE 'FUNCTION (df|env|head|split|tail|touch|wc|which)' || true)"
 echo "  inventory: $(report_lines "$REPORT" FUNCTION | wc -l) functions, $(report_lines "$REPORT" ALIAS | wc -l) aliases"
 report_lines "$REPORT" SKIPPED | sed 's/^/  /'
 assert_eq "pwsh/strict no strict-mode error in den" "" "$(report_lines "$REPORT" VIOLATION)"
@@ -1018,6 +1094,8 @@ assert_eq "pwsh/strict no strict-mode error in den, as pwsh 7 on Windows" "" \
     "$(report_lines "$WINDOWS_REPORT" VIOLATION)"
 assert_eq "pwsh/strict every den function is called, as pwsh 7 on Windows" "" \
     "$(report_lines "$WINDOWS_REPORT" UNCOVERED)"
+assert_eq "pwsh/strict inventory holds coreutils.ps1, as pwsh 7 on Windows" "FUNCTION wc" \
+    "$(report_lines "$WINDOWS_REPORT" FUNCTION | grep -x 'FUNCTION wc' || true)"
 
 echo "[pwsh] den's functions under Set-StrictMode, as Windows PowerShell 5.1"
 DESKTOP_DEN="$S/pwsh-desktop"

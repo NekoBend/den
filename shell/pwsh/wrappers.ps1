@@ -7,7 +7,9 @@ if (-not (_DenInteractive)) { return }
 # Drop the built-in aliases that would otherwise outrank our same-named wrapper
 # FUNCTIONS (alias beats function in command resolution). On Windows `ls` and
 # `cat` are aliases (Get-ChildItem / Get-Content); -EA SilentlyContinue makes
-# this a no-op where they do not exist (e.g. Linux/macOS).
+# this a no-op where they do not exist (e.g. Linux/macOS). Only a command typed
+# at the prompt gets the wrapper: a script still gets Get-ChildItem's and
+# Get-Content's objects (see _DenScopeOverrides in _helpers.ps1).
 foreach ($a in 'ls', 'cat') { Remove-Item "alias:$a" -Force -ErrorAction SilentlyContinue }
 
 # Guard: ensure _helpers.ps1 is loaded
@@ -108,10 +110,12 @@ New-WrapperSuffix 'grepw' 'rg'  ''
 New-WrapperSuffix 'lsw'   'lsd' ''
 
 # ===== Destructive coreutils: microsoft/coreutils on Windows, else PS builtin =====
-# Windows-only. On Linux/macOS `cp`/`mv`/`rm`/`mkdir`/`rmdir` keep their stock
-# PowerShell-alias behavior (the builtin cmdlets). With microsoft/coreutils installed
-# these gain real Unix flags (`rm -rf`, `cp -r`, ...); without it they fall back to
-# the same builtin cmdlet, so this never changes the no-coreutils Windows baseline.
+# Windows-only. On Linux/macOS `cp`/`mv`/`rm`/`mkdir`/`rmdir` keep their native
+# commands. With microsoft/coreutils installed, these gain real Unix flags when typed
+# at the prompt (`rm -rf`, `cp -r`, ...); without it they run the builtin cmdlet with
+# the same arguments and pipeline input (`Get-ChildItem *.log | rm`). A script calls
+# the stock alias's cmdlet (or Windows' mkdir function) either way, as on a stock
+# Windows pwsh (see _DenScopeOverrides).
 if ($PSVersionTable.PSEdition -eq 'Core' -and $IsWindows) {
     # cp/mv/rm/rmdir are built-in PowerShell ALIASES on Windows (-> Copy-Item /
     # Move-Item / Remove-Item), and an alias outranks a function in command
@@ -121,9 +125,9 @@ if ($PSVersionTable.PSEdition -eq 'Core' -and $IsWindows) {
     foreach ($a in 'cp', 'mv', 'rm', 'rmdir') {
         Remove-Item "alias:$a" -Force -ErrorAction SilentlyContinue
     }
-    New-CoreutilsWrapper 'cp'    'cp'    'Copy-Item @Args'
-    New-CoreutilsWrapper 'mv'    'mv'    'Move-Item @Args'
-    New-CoreutilsWrapper 'rm'    'rm'    'Remove-Item @Args'
-    New-CoreutilsWrapper 'mkdir' 'mkdir' 'New-Item -ItemType Directory @Args'
-    New-CoreutilsWrapper 'rmdir' 'rmdir' 'Remove-Item @Args'
+    New-CoreutilsWrapper 'cp'    'cp'    'Copy-Item'
+    New-CoreutilsWrapper 'mv'    'mv'    'Move-Item'
+    New-CoreutilsWrapper 'rm'    'rm'    'Remove-Item'
+    New-CoreutilsWrapper 'mkdir' 'mkdir' 'New-Item -ItemType Directory'
+    New-CoreutilsWrapper 'rmdir' 'rmdir' 'Remove-Item'
 }

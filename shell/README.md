@@ -63,8 +63,9 @@ Commands like `ls`, `cat`, `grep`, `find` dispatch through tiers, in order:
 On Windows the pwsh side also routes the no-modern-tool commands through
 microsoft/coreutils when it is installed: `head`, `tail`, `wc`, `touch`,
 `split`, `df`, `env`, and the destructive `cp`, `mv`, `rm`, `mkdir`, `rmdir`
-(each falls back to the PowerShell builtin when coreutils is absent, so the
-no-coreutils baseline is unchanged). Install it with `den install shell
+(each falls back to the PowerShell builtin when coreutils is absent, with the
+same arguments and piped input, so `Get-ChildItem *.log | rm` works as with the
+stock alias). Install it with `den install shell
 --coreutils` (or answer yes when `den install shell` asks; it is admin/all-user
 only). microsoft/coreutils also inlines a `PSConsoleHostReadLine` rewriter into
 your PowerShell profile that retargets typed `ls`/`cat`/... to coreutils before
@@ -77,7 +78,28 @@ wrappers resolve the binary at its fixed install path
 point them elsewhere with `_DEN_COREUTILS=<path>`, or disable the tier with
 `_DEN_COREUTILS=0`. The tier is Windows + pwsh 7 only (Windows PowerShell 5.1
 skips it); on Linux/macOS these commands keep their native / PowerShell-builtin
-behavior.
+behavior, and den does not define `head`, `tail`, `wc`, `touch`, `split`, `df`,
+`env` or `which` there at all.
+
+On PowerShell, a den command that took over a name the session already had
+(`ls`, `cat`, `grep`, `cd`, `rm`, `gc`, `python`, ...) is den's only when typed
+at the prompt. A script, a module, a function or a script block run from the
+session gets what the name meant before den loaded, with the same arguments and
+pipeline input: on Windows a script's `ls dist | Remove-Item` gets
+`Get-ChildItem`'s objects, and its `rm -Recurse` is `Remove-Item`'s. Names den
+adds, such as `ll`, `la`, `lt` and the w-suffix wrappers, work in scripts too
+(COMMANDS.md, "How to read this").
+
+Piped input reaches the tool a wrapper picks as it arrives. At the end of a line
+typed at the prompt the tool writes to the console itself, as when it runs bare:
+`Get-Content -Wait log | grep x` prints each match as rg finds it, in rg's
+colors. Further down a line, PowerShell passes on what the tool printed as it
+does for any program, when the next object goes in and at the end. With nothing
+piped in, the tool's stdin stays the console's. On PowerShell 7.3 and later, a
+line that stops early (`| Select-Object -First 1`, or a host's stop) also ends
+the tool; Windows PowerShell 5.1 and pwsh 7.0 to 7.2 have no clean block, so
+there a line that a host stops while the tool waits for input can leave the tool
+running until PowerShell exits.
 
 Because the modern tools take different flags and produce different output than
 the native commands, a command written for the native tool can misbehave when a
@@ -137,7 +159,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 ### Navigation
 | Command | What it does |
 |---------|--------------|
-| `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF; on bash/zsh zoxide only for a `cd` typed at the prompt with no option |
+| `cd` | zoxide jump when wrappers are ON, `builtin cd` when OFF; zoxide only for a `cd` typed at the prompt with no option, in every shell (an option such as bash's `-P` or pwsh's `-Path` / `-LiteralPath` goes to plain cd) |
 | `cdi` | zoxide interactive pick |
 | `zd` / `zdi` | always zoxide (ignore the toggle); cmd also has `z` / `zi`, each on a line of its own |
 | `back [N]` / `fwd [N]` | go N entries back / forward in this session's directory history, browser-style (default 1) |
