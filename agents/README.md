@@ -131,9 +131,10 @@ absolute paths, from `den install skills --no-den-cli`.
 Each skill installs as a SELF-CONTAINED unit: it copies a skill, then copies
 only the `shared/` resources that skill references into the skill's own
 `shared/`, following a shared file that names another one, and rewrites every
-`shared/...` reference and every skill-local `examples/...` or
-`reference/...` path to an ABSOLUTE path under that skill (weak models resolve
-absolute paths reliably; relative ones are ambiguous). No top-level `shared/`
+`shared/...` reference and every skill-local `examples/<file>.md` or
+`reference/<file>.md` path to an ABSOLUTE path under that skill (weak models
+resolve absolute paths reliably; relative ones are ambiguous). Other
+skill-local paths, such as a script's, stay as written. No top-level `shared/`
 tree is created in the target. A reference that names nothing the skill ships
 fails the install (exit 2, nothing written) and the den-free build.
 
@@ -162,7 +163,10 @@ from the skill root in every file of the skill, never with `../`, and is
 rewritten to an absolute path on install; the den-free copy keeps it relative.
 A user-project path in an example needs a leading directory
 (`docs/reference/api.md`), or it is read as a skill-local path. Any of these
-that names a file the skill does not ship fails the build.
+that names a file the skill does not ship fails the build, and so does text
+that looks like a skill-local `.md` path but that the rewrite cannot take (a
+dotted or non-ASCII name, a `<placeholder>` with a digit or in a directory,
+or `.MD`).
 
 ## Conventions
 

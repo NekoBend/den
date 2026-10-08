@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from den import _portable
+from den import _install, _portable
 from den._install import _PATH_RE, _skill_names
 from den._install import main as install_main
 
@@ -140,6 +140,29 @@ def test_preamble_only_where_relative_paths_ship(tmp_path):
             for md in skill.rglob("*.md")
         )
         assert (note in text) == relative, skill.name
+
+
+def test_preamble_follows_a_skill_local_path_alone(tmp_path, monkeypatch):
+    """The note used to depend on a bundled shared/ directory; a skill that
+    names only examples/x.md ships a relative path too and needs it. Every
+    skill in the tree today that names a skill-local path also bundles
+    shared/, so this one is made up for the purpose."""
+    content = tmp_path / "content"
+    demo = content / "skills" / "demo"
+    (demo / "examples").mkdir(parents=True)
+    (demo / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: d\n---\n\n# Demo\n\nRead examples/x.md.\n",
+        encoding="utf-8",
+    )
+    (demo / "examples" / "x.md").write_text("x\n", encoding="utf-8")
+    (content / "shared" / "reference").mkdir(parents=True)
+    monkeypatch.setattr(_install, "skills_dir", lambda: content / "skills")
+    monkeypatch.setattr(_install, "shared_dir", lambda: content / "shared")
+    out = tmp_path / "out"
+    _portable.build_tree(out)
+    assert not (out / "demo" / "shared").exists()
+    text = (out / "demo" / "SKILL.md").read_text(encoding="utf-8")
+    assert "# Demo\n\n" + _portable._PREAMBLE + "\nRead examples/x.md." in text
 
 
 DEN_WORD = re.compile(r"\bden('s)?\b")

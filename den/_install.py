@@ -4,9 +4,12 @@ Installs each skill as a SELF-CONTAINED unit: the skill's files plus the shared
 resources it references (shared/reference/*.md, followed from file to file, and,
 if any script is used, the whole shared/scripts/ set) are copied under
 <target>/skills/<name>/shared/. Every shared/... reference, and every
-skill-local examples/ or reference/ path (written from the skill root, never
-with ../), is rewritten to an ABSOLUTE path under that skill. A reference that
-names nothing the skill ships fails the install before anything is written.
+skill-local examples/<file>.md or reference/<file>.md path (written from the
+skill root, never with ../), is rewritten to an ABSOLUTE path under that skill;
+other skill-local paths (a script, a .json file) stay as written. A reference
+that names nothing the skill ships, or text that looks like a skill-local .md
+path but that the rewrite cannot take, fails the install before anything is
+written.
 
   den install skills [--tool TOOL]... [--all-tools] [--target DIR]...
                      [--with-parent] [--no-den-cli] [--profile weak|frontier]
@@ -145,9 +148,22 @@ _PATH_RE = re.compile(
     r"|(?<![A-Za-z0-9_/.-])(?:\./)?"
     r"(?P<local>(?:examples|reference)/(?:[A-Za-z0-9_-]+/)*"
     r"(?:[A-Za-z0-9_-]+|<[A-Za-z][A-Za-z_-]*>)\.md)"
-    r"(?![A-Za-z0-9_])"
+    # a sentence-ending period may follow, not '.bak', '-old' or '/more'
+    r"(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])"
 )
-_SHARED_NAME_RE = re.compile(r"[A-Za-z0-9_.<>/-]*")  # what follows shared/<kind>/
+# What follows shared/<kind>/: a placeholder or a plain name. Neither takes in
+# a '<' behind the name, so 'shared/reference/a.md</code>' names a.md.
+_SHARED_NAME_RE = re.compile(r"<[A-Za-z][A-Za-z_-]*>[A-Za-z0-9_.-]*|[A-Za-z0-9_./-]*")
+# Text that looks like a skill-local path but is not a `local` match above (a
+# dotted or non-ASCII name, '.MD', a placeholder with a digit or in a directory):
+# a path ending in .md, or one with a <placeholder> directory.
+_LOOSE_LOCAL_RE = re.compile(
+    r"""(?<![A-Za-z0-9_/.-])(?:\./)?(?:examples|reference)/
+    (?:[^\s"'`()\[\]{}]*?\.[Mm][Dd](?![A-Za-z0-9_/-]|\.[A-Za-z0-9])
+    |[^\s"'`()\[\]{}]*?<[^\s"'`()\[\]{}/<>]+>[^\s"'`()\[\]{}/<>]*/
+    [^\s"'`()\[\]{}<>]*)""",
+    re.VERBOSE,
+)
 _FLAT_MD_RE = re.compile(r"[A-Za-z0-9_-]+\.md")
 _UP_LOCAL_RE = re.compile(r"(?:\.\./)+(?:examples|reference)/")
 _EXCLUDE = {"__pycache__", ".pytest_cache", "tests"}
@@ -516,7 +532,9 @@ def _shared_closure(texts: list[str], ref_dir: Path) -> tuple[list[str], bool]:
 def _broken_refs(work: Path) -> list[str]:
     """Each path in the .md files of skill copy `work` that names nothing the
     copy holds, as '<file>: <path>'. A shared/reference name must be one flat
-    file, and a skill-local path must be written from the skill root."""
+    file, and a skill-local path must be written from the skill root. Text
+    that looks like a skill-local .md path but that _PATH_RE does not take
+    is reported too: it would ship relative and unchecked."""
     broken: list[str] = []
     for md in sorted(work.rglob("*.md")):
         try:
@@ -524,8 +542,11 @@ def _broken_refs(work: Path) -> list[str]:
         except UnicodeDecodeError:
             continue
         rel = md.relative_to(work).as_posix()
+        local_spans: set[tuple[int, int]] = set()
         for m in _PATH_RE.finditer(text):
             kind, local = m.group("kind"), m.group("local")
+            if local:
+                local_spans.add(m.span())
             if kind:
                 after = _SHARED_NAME_RE.match(text, m.end())
                 name = after.group(0).rstrip(".") if after else ""
@@ -545,6 +566,12 @@ def _broken_refs(work: Path) -> list[str]:
             if not ok:
                 broken.append(f"{rel}: {ref}")
         broken.extend(
+            f"{rel}: {m.group(0)} - not a recognized skill-local path"
+            " (use [A-Za-z0-9_-] names and .md)"
+            for m in _LOOSE_LOCAL_RE.finditer(text)
+            if m.span() not in local_spans
+        )
+        broken.extend(
             f"{rel}: {m.group(0)} - write skill-local paths from the skill root"
             for m in _UP_LOCAL_RE.finditer(text)
         )
@@ -561,8 +588,13 @@ def _materialize(name: str, work: Path, root: str, *, no_den_cli: bool = False) 
     to keep the paths relative to the skill. With no_den_cli the substitution
     table (agents/src/no-den-cli.toml) is applied to SKILL.md and to the
     bundled shared/ files it names before any path is rewritten, removing
-    every mention of den's own CLI and cheatsheets. ValueError when a path
-    names nothing the copy ships. Returns the number of rewritten .md files."""
+    every mention of den's own CLI and cheatsheets. The files the table edits
+    are read with universal newlines and written LF (a CRLF source comes out
+    LF); every other file keeps its bytes' line endings. The references are
+    followed through the shared files' text before the table edits it, so a
+    shared file named only in a passage the table strips still ships.
+    ValueError when a path names nothing the copy ships. Returns the number
+    of rewritten .md files."""
     shutil.copytree(skills_dir() / name, work, ignore=_ignore)
     if no_den_cli:
         from ._portable import strip_den_cli
@@ -884,24 +916,32 @@ def _refresh_plan_arg(
 
 
 def _install_skills_cmd(argv: list[str]) -> int:
-    """`den install skills`: the refresh hand-over, or an ordinary install."""
+    """`den install skills`, and the skills step of the interactive
+    `den install`: the refresh hand-over, or an ordinary install. Both build
+    and stage every skill before the first write, so a ValueError from
+    _materialize (a reference that names nothing a skill ships) ends the run
+    with one message and exit 2, nothing written."""
     split = _refresh_plan_arg(argv, "den install skills")
     if split is None:
         return 2
     plan_path, argv = split
-    if plan_path is None:
-        return _install_skills(argv)
     extra = [a for a in argv if a not in {"--force", "--dry-run"}]
-    if extra:
+    if plan_path is not None and extra:
         print(
             "den install skills: --refresh-plan takes only --force and"
             f" --dry-run, not {' '.join(extra)}",
             file=sys.stderr,
         )
         return 2
-    return _install_refresh(
-        plan_path, force="--force" in argv, dry_run="--dry-run" in argv
-    )
+    try:
+        if plan_path is None:
+            return _install_skills(argv)
+        return _install_refresh(
+            plan_path, force="--force" in argv, dry_run="--dry-run" in argv
+        )
+    except ValueError as exc:
+        print(f"den install skills: {exc} (nothing was written)", file=sys.stderr)
+        return 2
 
 
 def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  # per-target staging
@@ -1051,7 +1091,7 @@ def _interactive() -> int:
         ):
             flags += ["--profile", "weak"]
         if flags:
-            rc |= _install_skills(flags)
+            rc |= _install_skills_cmd(flags)
 
     if _ui.confirm("Install the offline cheatsheets?", default=False):
         rc |= _install_cheatsheets([])
@@ -1149,11 +1189,7 @@ def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-
         _usage()
         return 0
     if target == "skills":
-        try:
-            return _install_skills_cmd(rest)
-        except ValueError as exc:  # a broken reference, found before any write
-            print(f"den install skills: {exc}", file=sys.stderr)
-            return 2
+        return _install_skills_cmd(rest)
     if target == "shell":
         from ._shell import install_shell
 

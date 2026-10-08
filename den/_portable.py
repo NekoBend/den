@@ -91,7 +91,20 @@ def _add_preamble(skill_md: Path) -> None:
         if line.startswith("# "):
             lines[i : i + 1] = [line, "", _PREAMBLE.rstrip("\n")]
             break
-    skill_md.write_text("\n".join(lines), encoding="utf-8")
+    skill_md.write_text("\n".join(lines), encoding="utf-8", newline="")
+
+
+def _ships_a_relative_path(work: Path) -> bool:
+    """Whether a .md file in skill copy `work` holds a shared/ or skill-local
+    path. A .md that is not UTF-8 is skipped, as _materialize skips it."""
+    for md in work.rglob("*.md"):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if _PATH_RE.search(text):
+            return True
+    return False
 
 
 def _replaceable(out: Path) -> bool:
@@ -146,10 +159,7 @@ def build_tree(out: Path, *, whole: bool = False) -> None:
         work = out / name
         _remove(work)
         _materialize(name, work, "", no_den_cli=True)
-        # The note is only true where a relative path ships.
-        if any(
-            _PATH_RE.search(md.read_text(encoding="utf-8")) for md in work.rglob("*.md")
-        ):
+        if _ships_a_relative_path(work):  # the note is only true there
             _add_preamble(work / "SKILL.md")
 
 
