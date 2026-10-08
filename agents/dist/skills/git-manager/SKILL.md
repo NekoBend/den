@@ -140,8 +140,10 @@ independent changes, propose splitting them and stage each group separately.
 ### Step C3: Write the message from the diff
 Base the message on the staged diff (`git --no-pager diff --staged`): describe
 the net change the commit introduces, per "Describe the diff, not the journey"
-above. Match the repository's existing convention (read recent
-`git --no-pager log`). Default to a concise imperative subject (around 50
+above. Match the repository's existing convention for the format (read recent
+`git --no-pager log`). Write the message in English
+unless the user or the repository's instruction file (CLAUDE.md, AGENTS.md)
+asks for another language. Default to a concise imperative subject (around 50
 characters) plus, when the change touches control flow or a public contract,
 a body explaining WHY.
 

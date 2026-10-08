@@ -113,6 +113,9 @@ If WRITING NEW code, skip 3a-3d.
       Validate inputs at module / API boundaries, not between trusted helpers.
 
 ### Step 4: Verify with the toolchain
+Code from outside your trust boundary (a fork, a downloaded repo)
+runs its own code in a check (cargo clippy runs build.rs):
+get the user's yes before the first run.
 Run against the file you produced. Prefer the project's own configured
 checks (a lint script in its manifest, a Makefile target); otherwise run
 the language's standard tools:

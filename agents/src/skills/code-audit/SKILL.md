@@ -90,7 +90,10 @@ State which dimensions you are running before you start.
 
 When the code is on disk and the language toolchain is available,
 run the checks and scripts below against the files under review
-and fold the results into the relevant dimension:
+and fold the results into the relevant dimension.
+Code from outside your trust boundary (a fork, a downloaded repo)
+runs its own code in a check (cargo clippy runs build.rs):
+get the user's yes before the first run.
 
 - the language's standard checks on each file under review
   (Python: ruff format --check, ruff check, ty check; TypeScript:

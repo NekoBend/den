@@ -62,7 +62,10 @@ would produce materially different deliverables.
 Run one mode per pass, not one mode per request. A request that needs two
 modes gets two passes in the same turn: finish the first, deliver its
 output, then start the second. reproduce into diagnose into repair is the
-normal chain here, not an exception.
+normal chain here, not an exception,
+unless the user only asked why:
+then the cause is the deliverable,
+and the repair waits on a DECIDE: line.
 
 ## Mode: reproduce
 

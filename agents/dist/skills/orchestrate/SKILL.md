@@ -163,7 +163,7 @@ worker telemetry.
 ### Step I1: Verify before adopting
 For each returned report, check every claim the result rests on against
 the artifact it names (rule 3). What cannot be checked is carried as the
-worker's claim, labeled, never as fact.
+worker's claim, marked as not verified, never as fact.
 
 ### Step I2: Reconcile conflicts
 Contradictions between reports get the debate treatment (rule 4).
