@@ -87,13 +87,34 @@ Each Supported or Contradicted label MUST carry both:
 
 ## Mode: verify
 
-Read shared/reference/grounding-verify.md now,
-and follow its Steps V1 to V4 in order.
+### Step V1: Extract the atomic claims
+Break the user's text into separate, checkable factual claims.
+Split compound sentences. List the claims before checking.
+Opinions and value judgments are not factual claims; mark them out of scope.
+
+### Step V2: Identify the sources
+Use provided sources first. If the user authorized retrieval and a tool is
+available, retrieve. If neither covers a claim, it is Not enough information.
+Do not fill the gap from memory.
+
+### Step V3: Check each claim
+For each claim, find the supporting or contradicting span, assign one label,
+and record the source id plus the quoted span. One claim may need several
+sources.
+
+### Step V4: Report
+Give the per-claim label and evidence, then an overall verdict for the passage
+(how many supported, contradicted, not enough information).
 
 ## Mode: ground
 
 Read shared/reference/grounding-ground.md now,
-and follow its Steps G1 to G4 in order.
+and follow its Steps G1 to G3 in order;
+then run Step G4 below.
+
+### Step G4: State the gaps
+List explicitly what the question asked that the context could not answer.
+Offer retrieval only if the user authorized it.
 
 ## Output format
 

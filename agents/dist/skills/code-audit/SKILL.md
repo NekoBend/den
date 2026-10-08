@@ -159,3 +159,7 @@ State the verdict explicitly.
 After Step 6, read shared/reference/code-audit-output.md,
 write the review in that format,
 and run the self-check at its end before you send the review.
+
+## Self-check (run before sending)
+
+Run the self-check at the end of code-audit-output.md before you send the review.

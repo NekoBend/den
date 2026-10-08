@@ -1,6 +1,7 @@
 # grounding: ground mode
 
-Steps G1 to G4 of grounding's ground mode.
+Steps G1 to G3 of grounding's ground mode,
+whose Step G4 stays in SKILL.md.
 grounding's SKILL.md sends you here when the mode is ground.
 
 ### Step G1: Read the provided context
@@ -16,7 +17,3 @@ say so explicitly. Do not answer it from outside knowledge.
 Write the answer using only supported statements.
 Attach a citation (passage id plus quoted span) to each statement.
 Stay within what the context supports; do not extrapolate.
-
-### Step G4: State the gaps
-List explicitly what the question asked that the context could not answer.
-Offer retrieval only if the user authorized it.
