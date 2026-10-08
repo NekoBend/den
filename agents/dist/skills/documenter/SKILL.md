@@ -1,45 +1,82 @@
 ---
 name: documenter
-description: Writes documentation as the deliverable. Produces an API reference derived from existing code, or a human-facing guide such as a README, how-to, tutorial, or concept explanation. Use when the user asks to document something, write docs, write a README, write API docs, write a spec or a requirements document, or explain how to use a project or a feature as a standalone document.
+description: Writes documents as the deliverable. Produces an API reference from existing code; a document for human readers such as a README, how-to, tutorial, spec, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, or slide outline, as Markdown, HTML, or a Confluence page; a revision of a draft that keeps what it says; or a natural translation of a document between Japanese and English. Use when the user asks to document something, write or revise a document, minutes, or a Confluence page, explain a concept in a document, or translate a document.
 ---
 
 # Documenter skill
 
-Write documentation a reader can rely on.
-Every statement matches what the code or system actually does;
-you document reality, not intentions.
+Paths under `shared/` in this skill are relative to the skill's own directory.
+
+Write documents a reader can rely on and use.
+Every statement is backed by a source:
+the code or system,
+or material the user supplied.
 
 This skill runs under a parent system prompt.
 The parent prompt's honesty and language rules always apply (standard honesty norms when no parent prompt is deployed);
 this skill does not override them.
 
-## Faithfulness rule (both modes)
+## Source rule (all modes)
 
-Document only behavior the code or system actually has. If you cannot determine
-a behavior from the source, say so and ask, rather than inventing it. Do not
-promise a feature, flag, or return value that is not there.
+Write only what a source supports.
+For reference mode and for a guide about software,
+the source is the code or the system.
+For any other document,
+the source is the material the user gave you:
+notes, decisions, data, an earlier draft.
+
+When the document needs something no source supports,
+ask for it,
+or mark it in the text as a proposal, a plan, or an open question.
+Never state it as fact.
+Do not add a feature, a decision, a date, a number, or an owner
+that the source does not contain.
+
+In translate mode the source is the original text:
+render all of it,
+and add nothing.
 
 ## Detect the mode
 
-First decide which one mode the request is, then follow that mode below:
+First decide which one mode the request is,
+then follow that mode below:
 
 1. reference: document the API of existing code.
-   Triggers: document this function / class / module, write API docs, write
-   docstrings as a reference, generate a reference for this code.
-2. guide: write a human-facing document.
-   Triggers: write a README, write a getting-started / how-to / tutorial,
-   explain how to use this, write docs for this feature.
+   Triggers: document this function / class / module, write API docs,
+   write docstrings as a reference, generate a reference for this code.
+2. guide: write a document for human readers,
+   or revise a draft so it reads better.
+   Triggers: write a README / how-to / tutorial / design doc / proposal /
+   report / runbook / meeting minutes / decision record / slide outline /
+   Confluence page, explain a concept as a document,
+   turn these notes into minutes,
+   rewrite / proofread / tidy this draft.
+3. translate: render a document in another language,
+   Japanese and English in either direction,
+   or another pair on request.
+   Triggers: translate this, put this into English / Japanese,
+   英訳 / 和訳, check this translation against the original.
 
-If the request is ambiguous, pick the more likely mode, name it on an
-ASSUMED: line, and start. Reserve a DECIDE: line for the case where the
-two modes would produce materially different deliverables.
-Note the boundary: adding doc comments while
-writing the code is the coding skill; producing a standalone documentation
-artifact is this skill.
+If the request is ambiguous,
+pick the more likely mode, name it on an ASSUMED: line, and start.
+Reserve a DECIDE: line for the case where the modes
+would produce materially different deliverables.
 
-Run one mode per pass, not one mode per request. A request that needs
-two modes gets two passes in the same turn: finish the first, deliver
-its output, then start the second.
+Writing a new document in a language other than the notes' language
+is guide mode, not translate:
+"write a design doc in English from these Japanese notes" is guide.
+translate is for a finished text that must keep its content.
+
+Note the boundaries:
+adding doc comments while writing the code is the coding skill;
+making a text shorter, in any language, is the compressor skill;
+checking claims against sources is the grounding skill;
+a commit message or a PR description is the git-manager skill;
+an explanation given as a chat reply, not as a document, is not this skill.
+
+Run one mode per pass, not one mode per request.
+A request that needs two modes gets two passes in the same turn:
+finish the first, deliver its output, then start the second.
 
 ## Mode: reference
 
@@ -63,52 +100,42 @@ determine and need confirmed.
 
 ## Mode: guide
 
-### Step G0: Pick the format before you write
+Read shared/reference/doc-guide.md now,
+and follow its Steps G0 to G4 in order;
+at Step G2 it sends you to shared/reference/doc-genres.md.
+Before you write, also read shared/reference/writing.md.
 
-Markdown by default. Choose HTML when the document's own structure is what
-makes it hard to read as plain text:
+These rules hold even before you open those files:
 
-- a specification, or anything with numbered requirements that get
-  cross-referenced
-- a summary that has to hold several dimensions at once (comparison tables,
-  a matrix, results per case)
-- anything carrying a diagram, or where layout is part of the meaning
+- Markdown, unless the document's structure needs HTML;
+  a file that lives in a repository stays Markdown.
+- For a Confluence page, read shared/reference/confluence.md,
+  give a Markdown draft first,
+  and write the storage format only after the user says the draft is fine,
+  changing no content in that step.
+- For a Japanese document, read shared/reference/japanese-style.md,
+  and write it in です・ます from start to end
+  unless the user asks for another style.
+- Put the conclusion, the recommendation, or the request
+  in the first paragraph.
+- A revision keeps every claim, number, name, and date,
+  adds no fact, and lists what changed.
 
-Markdown stays right for a README, an API reference, CONTRIBUTING, and any
-file the user said lives in the repository: anything reviewed, versioned, or
-edited there stays Markdown, since its diffs must show content, not markup.
-Anything an agent re-reads as working state (memory files, imprints, context
-payloads) stays plain minimal text with no markup that multiplies its token
-cost; that rule wins even inside a repository, so a committed memory or
-context file stays minimal Markdown or plain text, never styled markup. Do
-not infer repository residence from the
-working directory - code files sitting nearby are not a signal that this
-document gets committed. When the request carries numbered requirements or a
-per-case table and the user did not say where the file goes, choose HTML.
+## Mode: translate
 
-When you pick HTML, write ONE self-contained file: styles inline, no external
-fonts, scripts, or images, readable by opening it in a browser with no
-server. Say which format you chose and why in one line, so the user can ask
-for the other one.
+Read shared/reference/translation.md now,
+and follow its Steps T1 to T4 in order.
 
-### Step G1: Pin audience and goal
-Who reads this (new user, integrator, contributor) and what they should be able
-to DO after reading. Pin the scope (README vs quickstart vs tutorial vs concept
-explanation). Ask if unclear.
+These rules hold even before you open that file:
 
-### Step G2: Outline
-List the sections in reading order (for example: what it is, prerequisites,
-install, quickstart, common tasks, gotchas). Confirm the outline covers the
-goal before writing the body.
-
-### Step G3: Write the sections
-Concrete and task-oriented. Include runnable commands or code where the reader
-needs to act. Every claim matches the actual system; do not describe features
-that do not exist.
-
-### Step G4: Walkthrough check
-A reader following the steps in order would succeed: no missing prerequisite,
-every command and example is runnable, nothing assumed but unstated.
+- Render all of the source, and add nothing.
+- Code, commands, identifiers, paths, URLs, placeholders, and markup
+  stay unchanged and in place.
+- Into Japanese, read shared/reference/japanese-style.md,
+  and write in です・ます unless the user asks for another style.
+- When a sentence can be read two ways, ask,
+  or translate the more likely reading and add a translator's note.
+- Check the result against the source as a separate pass.
 
 ## Output format
 
@@ -130,11 +157,8 @@ every command and example is runnable, nothing assumed but unstated.
 
     **Could not determine:** <behaviors needing confirmation, or "none">
 
-### guide mode
-
-The document itself, with section headings in reading order. End with:
-
-    **Assumes:** <prerequisites or environment the reader must already have>
+guide and translate mode: use the output format
+in the reference file your mode told you to read.
 
 ### JSON output
 
@@ -146,8 +170,10 @@ with nothing after the closing fence.
 
 Common:
 - [ ] I picked exactly one mode and stated it (or asked when unclear).
-- [ ] Every documented behavior matches the actual code or system.
-- [ ] I did not describe a feature, parameter, or return value that is absent.
+- [ ] Every statement has a source; anything without one is marked
+      as a proposal, a plan, or an open question.
+- [ ] I did not add a feature, a decision, a date, a number, or an owner
+      that the source does not contain.
 
 If reference:
 - [ ] I read the implementation, not just the names.
@@ -156,8 +182,9 @@ If reference:
 - [ ] I listed anything I could not determine from the code.
 
 If guide:
-- [ ] I chose Markdown or HTML on the document's structure, said which and
-      why, and any HTML I wrote is one self-contained file.
-- [ ] The audience and goal are pinned (or I asked).
-- [ ] Sections are in reading order and cover the goal.
-- [ ] Every command and example is runnable; prerequisites are stated.
+- [ ] I read doc-guide.md, followed Steps G0 to G4, and ran its checklist.
+- [ ] For Confluence, the storage format came only after the user approved the Markdown draft.
+
+If translate:
+- [ ] I read translation.md, followed Steps T1 to T4, and ran its checklist.
+- [ ] Nothing is added or dropped, and the non-translatables are unchanged.
