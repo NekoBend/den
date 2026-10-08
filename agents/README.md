@@ -43,8 +43,9 @@ agents/
       reference/            # skill-only reference files (code-audit's dimensions + rubric)
     shared/
       reference/*.md        # per-language + architecture / testing / schema-design,
-                            # plus documenter's doc-reference / doc-guide / doc-genres /
-                            # writing / japanese-style / confluence / translation,
+                            # plus documenter's doc-common / doc-reference / doc-guide /
+                            # doc-genres / writing / japanese-style / confluence /
+                            # translation,
                             # the mode steps, output formats and checklists
                             # of git-manager and orchestrate
                             # (git-manager-* / orchestrate-*),
@@ -94,14 +95,14 @@ content as data, confirmation before outward actions, and secrets.
 | grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. Uses `shared/reference/` grounding-verify and grounding-ground. |
 | compressor | summarize / compress | Summarize text, or compress a prompt/context to fewer tokens while preserving every directive. |
 | prompt-engineering | author / improve | Write a new prompt from a goal, or diagnose and rewrite an existing one. |
-| documenter | reference / guide / translate | reference: an API reference from code. guide: a document for human readers (README, how-to, tutorial, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, slide outline) as Markdown, HTML, or a Confluence page, or a revision of a draft that keeps what it says. translate: a natural translation of a document between Japanese and English (or another pair on request), or a check of a translation against its source. Uses `shared/reference/` doc-reference, doc-guide, doc-genres, writing, japanese-style, confluence, and translation. |
+| documenter | reference / guide / translate | reference: an API reference from code. guide: a document for human readers (README, how-to, tutorial, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, slide outline) as Markdown, HTML, or a Confluence page, or a revision of a draft that keeps what it says. translate: a natural translation of a document between Japanese and English (or another pair on request), or a check of a translation against its source. Uses `shared/reference/` doc-common, doc-reference, doc-guide, doc-genres, writing, japanese-style, confluence, and translation. |
 | git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. Uses `shared/reference/` git-manager-commit-pr and git-manager-history. |
 
 `coding` and `code-audit` are the heavy skills (they use `shared/reference/`
 and `shared/scripts/`; code-audit's output format, self-check and language
 table live in `shared/reference/` too). `documenter`, `git-manager`,
-`orchestrate`, `troubleshoot`, and `grounding` use
-`shared/reference/` only: documenter's reference, guide and translate steps and their
+`orchestrate`, `troubleshoot`, and `grounding` use `shared/reference/` only:
+documenter's source rule, its reference, guide and translate steps and their
 style rules, the mode steps, output formats and checklists of git-manager
 and orchestrate, and the diagnose, repair, verify and ground steps of
 troubleshoot and grounding, live there,

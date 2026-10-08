@@ -65,7 +65,6 @@ KNOWN_OVER: frozenset[str] = frozenset(
         "den:coding/shared/reference/shell.md:read-tool",
         "den:coding/shared/reference/typescript.md:raw",
         "den:coding/shared/reference/typescript.md:read-tool",
-        "den:documenter/SKILL.md:read-tool",
         "den-free:code-audit/shared/reference/powershell.md:raw",
         "den-free:code-audit/shared/reference/python.md:raw",
         "den-free:code-audit/shared/reference/python.md:read-tool",
@@ -95,7 +94,6 @@ KNOWN_OVER: frozenset[str] = frozenset(
         "den-free:coding/shared/reference/shell.md:read-tool",
         "den-free:coding/shared/reference/typescript.md:raw",
         "den-free:coding/shared/reference/typescript.md:read-tool",
-        "den-free:documenter/SKILL.md:read-tool",
         "dist:code-audit/shared/reference/powershell.md:raw",
         "dist:code-audit/shared/reference/python.md:raw",
         "dist:code-audit/shared/reference/python.md:read-tool",
@@ -125,7 +123,6 @@ KNOWN_OVER: frozenset[str] = frozenset(
         "dist:coding/shared/reference/shell.md:read-tool",
         "dist:coding/shared/reference/typescript.md:raw",
         "dist:coding/shared/reference/typescript.md:read-tool",
-        "dist:documenter/SKILL.md:read-tool",
     }
 )
 
@@ -272,7 +269,7 @@ def _entry(entry: str) -> tuple[str, str, str]:
 def test_known_over_entries_are_well_formed():
     """An entry no test measures (a misspelt variant, a metric its file's kind
     never gets) is never reported as fitting again, so it would stay forever."""
-    assert len(KNOWN_OVER) <= 90  # may only go down: lower it as entries go
+    assert len(KNOWN_OVER) <= 87  # may only go down: lower it as entries go
     bad = []
     for entry in sorted(KNOWN_OVER):
         variant, rel, metric = _entry(entry)

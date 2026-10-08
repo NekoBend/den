@@ -34,23 +34,8 @@ These rules hold even when no parent prompt is loaded:
 
 ## Source rule (all modes)
 
-Write only what a source supports.
-For reference mode and for a guide about software,
-the source is the code or the system.
-For any other document,
-the source is the material the user gave you:
-notes, decisions, data, an earlier draft.
-
-When the document needs something no source supports,
-ask for it,
-or mark it in the text as a proposal, a plan, or an open question.
-Never state it as fact.
-Do not add a feature, a decision, a date, a number, or an owner
-that the source does not contain.
-
-In translate mode the source is the original text:
-render all of it,
-and add nothing.
+Read shared/reference/doc-common.md now,
+and follow its source rule in every mode.
 
 ## Detect the mode
 
@@ -146,11 +131,8 @@ in doc-reference.md.
 guide and translate mode: use the output format
 in the reference file your mode told you to read.
 
-### JSON output
-
-For JSON output (when explicitly requested), use the two-step pattern:
-a short reasoning block first, then a single fenced ```json``` block
-with nothing after the closing fence.
+JSON output (when explicitly requested): use the format
+in doc-common.md.
 
 ## Self-check (run before sending)
 
