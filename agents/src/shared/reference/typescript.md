@@ -16,14 +16,7 @@ This file holds sections 1, 2, 3, and 4.
 
 - shared/reference/typescript-types.md (sections 5, 6, 7, and 13): read it now as well.
 - shared/reference/typescript-patterns.md (sections 9, 10, and 11): read it now as well.
-- shared/reference/typescript-runtime.md (sections 8, 12, and 14): read it when the code is async,
-  makes an HTTP request or another network call, or waits on a timer;
-  when it takes in data from outside the program
-  (an HTTP request or response body, a JSON or config file, environment variables,
-  command-line arguments, a queue message) or handles a value typed `unknown` or `any`;
-  when it calls an API that exists only in a browser, only in Node.js, or only in a worker
-  (`window`, `document`, `process`, `Buffer`, `fs`);
-  or when the task creates or changes `tsconfig.json` or `package.json`.
+- shared/reference/typescript-runtime.md (sections 8, 12, and 14): read it now as well.
 
 "section N" in any of these files means the section with that number;
 this list names the file that holds it.
