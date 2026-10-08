@@ -40,56 +40,38 @@ KNOWN_OVER: frozenset[str] = frozenset(
         "den:code-audit/shared/reference/rust.md:read-tool",
         "den:code-audit/shared/reference/shell.md:raw",
         "den:code-audit/shared/reference/shell.md:read-tool",
-        "den:code-audit/shared/reference/typescript.md:raw",
-        "den:code-audit/shared/reference/typescript.md:read-tool",
         "den:coding/examples/rust.md:raw",
         "den:coding/examples/rust.md:read-tool",
         "den:coding/examples/shell.md:raw",
         "den:coding/examples/shell.md:read-tool",
-        "den:coding/examples/typescript.md:raw",
-        "den:coding/examples/typescript.md:read-tool",
         "den:coding/shared/reference/rust.md:raw",
         "den:coding/shared/reference/rust.md:read-tool",
         "den:coding/shared/reference/shell.md:raw",
         "den:coding/shared/reference/shell.md:read-tool",
-        "den:coding/shared/reference/typescript.md:raw",
-        "den:coding/shared/reference/typescript.md:read-tool",
         "den-free:code-audit/shared/reference/rust.md:raw",
         "den-free:code-audit/shared/reference/rust.md:read-tool",
         "den-free:code-audit/shared/reference/shell.md:raw",
         "den-free:code-audit/shared/reference/shell.md:read-tool",
-        "den-free:code-audit/shared/reference/typescript.md:raw",
-        "den-free:code-audit/shared/reference/typescript.md:read-tool",
         "den-free:coding/examples/rust.md:raw",
         "den-free:coding/examples/rust.md:read-tool",
         "den-free:coding/examples/shell.md:raw",
         "den-free:coding/examples/shell.md:read-tool",
-        "den-free:coding/examples/typescript.md:raw",
-        "den-free:coding/examples/typescript.md:read-tool",
         "den-free:coding/shared/reference/rust.md:raw",
         "den-free:coding/shared/reference/rust.md:read-tool",
         "den-free:coding/shared/reference/shell.md:raw",
         "den-free:coding/shared/reference/shell.md:read-tool",
-        "den-free:coding/shared/reference/typescript.md:raw",
-        "den-free:coding/shared/reference/typescript.md:read-tool",
         "dist:code-audit/shared/reference/rust.md:raw",
         "dist:code-audit/shared/reference/rust.md:read-tool",
         "dist:code-audit/shared/reference/shell.md:raw",
         "dist:code-audit/shared/reference/shell.md:read-tool",
-        "dist:code-audit/shared/reference/typescript.md:raw",
-        "dist:code-audit/shared/reference/typescript.md:read-tool",
         "dist:coding/examples/rust.md:raw",
         "dist:coding/examples/rust.md:read-tool",
         "dist:coding/examples/shell.md:raw",
         "dist:coding/examples/shell.md:read-tool",
-        "dist:coding/examples/typescript.md:raw",
-        "dist:coding/examples/typescript.md:read-tool",
         "dist:coding/shared/reference/rust.md:raw",
         "dist:coding/shared/reference/rust.md:read-tool",
         "dist:coding/shared/reference/shell.md:raw",
         "dist:coding/shared/reference/shell.md:read-tool",
-        "dist:coding/shared/reference/typescript.md:raw",
-        "dist:coding/shared/reference/typescript.md:read-tool",
     }
 )
 
@@ -236,7 +218,7 @@ def _entry(entry: str) -> tuple[str, str, str]:
 def test_known_over_entries_are_well_formed():
     """An entry no test measures (a misspelt variant, a metric its file's kind
     never gets) is never reported as fitting again, so it would stay forever."""
-    assert len(KNOWN_OVER) <= 54  # may only go down: lower it as entries go
+    assert len(KNOWN_OVER) <= 36  # may only go down: lower it as entries go
     bad = []
     for entry in sorted(KNOWN_OVER):
         variant, rel, metric = _entry(entry)
