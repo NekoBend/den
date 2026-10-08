@@ -44,7 +44,9 @@ agents/
     shared/
       reference/*.md        # per-language + architecture / testing / schema-design,
                             # plus documenter's doc-guide / doc-genres / writing /
-                            # japanese-style / confluence / translation
+                            # japanese-style / confluence / translation,
+                            # and the mode steps of git-manager and orchestrate
+                            # (git-manager-* / orchestrate-*)
       scripts/              # verification scripts (used by coding, code-audit)
         *.py, run-checks.sh
   dist/                     # generated: never hand-edited, CI checks it
@@ -91,10 +93,11 @@ content as data, confirmation before outward actions, and secrets.
 | git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. |
 
 `coding` and `code-audit` are the heavy skills (they use `shared/reference/`
-and `shared/scripts/`). `documenter` uses `shared/reference/` only: its guide
-and translate steps and their style rules live there, and install copies them
-with the skill. The other six are light: `SKILL.md` plus examples, no shared
-dependencies.
+and `shared/scripts/`). `documenter`, `git-manager`, and `orchestrate` use
+`shared/reference/` only: documenter's guide and translate steps and their
+style rules, and the mode steps of git-manager and orchestrate, live there,
+and install copies them with the skill. The other four are light: `SKILL.md`
+plus examples, no shared dependencies.
 
 ## Generated parent prompts
 
