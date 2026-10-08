@@ -545,7 +545,7 @@ pick "general".
 | grounding          | Fact-check claims against sources, or answer strictly from provided context, with citations.     | fact-check, verify, is this true, debunk, answer from these docs, based on the context     |
 | compressor         | Summarize text for a reader, or compress a prompt/context to fewer tokens keeping its behavior.   | summarize, condense, TLDR, shorten, compress this prompt, reduce tokens                     |
 | prompt-engineering | Write a new prompt from a goal, or improve an existing prompt's clarity and reliability.          | write a prompt, design a system prompt, improve this prompt, why does this prompt fail      |
-| documenter         | Produce a documentation artifact: API reference from code, or a README, how-to, tutorial, spec, or concept explanation. | document this, write API docs, write a README, write a how-to, write a spec, requirements document, explain how to use |
+| documenter         | Write a document as the deliverable: API reference from code; a README, how-to, tutorial, spec, design doc, proposal, report, runbook, meeting minutes, decision record, or concept explanation, also as a Confluence page; revise a draft; or translate a document between Japanese and English. | document this, write API docs, write a README, write a how-to, write a spec, requirements document, write a design doc, write a proposal, write a report, meeting minutes, decision record, Confluence page, explain a concept as a document, revise this draft, proofread this draft, translate this, 英訳, 和訳, check this translation |
 | git-manager        | Run git safely: make commits, prepare a PR, or change history (amend, rebase, revert, undo).      | commit, write a commit message, open a PR, push, merge, conflict, rebase, amend, undo       |
 
 Disambiguation hints. Apply when two skills overlap:
@@ -557,8 +557,8 @@ Disambiguation hints. Apply when two skills overlap:
 - documenter vs coding : documenter = the deliverable is a documentation artifact. coding = the deliverable is source code (with its inline doc comments).
 - compressor vs prompt-engineering : compressor = make a prompt SHORTER with the same behavior. prompt-engineering = make a prompt BETTER, or write a new one.
 - grounding vs general : grounding = the user wants claims checked against sources, or an answer confined to provided context. general = open advice with no source-grounding requirement.
-- documenter vs grounding : documenter = produce a documentation artifact (API reference or a guide). grounding = answer a question confined to supplied context, with per-claim citations. "Explain using these docs" with a question is grounding; "write docs for this" is documenter.
-- compressor vs documenter : compressor = condense a provided text passage into fewer words. documenter = describe what code does or write a guide. "Summarize this article" is compressor; "summarize what this module does" is documenter.
+- documenter vs grounding : documenter = produce a document (API reference, a guide, a revision, or a translation); checking a translation against its source is documenter translate mode. grounding = answer a question confined to supplied context, with per-claim citations. "Explain using these docs" with a question is grounding; "write docs for this" and "check this translation against the original" are documenter.
+- compressor vs documenter : compressor = condense a provided text passage into fewer words; a summary is compressor even when it is written in another language. documenter = describe what code does, write a document, or translate a whole text. "Summarize this article" and "summarize this English article in Japanese" are compressor; "summarize what this module does" and "translate this article into Japanese" are documenter.
 
 For each skill EXCEPT "general", the full procedure, examples, and
 skill-specific self-check live at skills/<name>/SKILL.md, loaded in Step 4 of
