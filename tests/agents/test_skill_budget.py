@@ -15,6 +15,11 @@ import pytest
 
 from den import _install
 
+try:
+    import yaml
+except ImportError:  # optional locally; CI installs it
+    yaml = None
+
 ROOT = Path(__file__).resolve().parents[2]
 CAP = 8_000  # Cline's default tool-result cap (message-builder.ts:28)
 RAW_CAP = 6_000  # a file's own length; also keeps it under Copilot CLI's 20KB read
@@ -22,10 +27,13 @@ HOME = "/home/abcdefghijklmnop"
 # Cline's frontmatter split (user-instruction-config-loader.ts).
 _FRONTMATTER = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$")
 
+VARIANTS = ("den", "den-free", "dist")  # installed, installed --no-den-cli, dist
+
 # Files over a cap today, as '<variant>:<skill>/<path>:<metric>'. It exists so
 # CI stays green while later changes shrink these files one by one, and it may
 # only shrink: a file that goes over a cap fails its test, and so does an
-# entry whose file fits again, so delete the entry once the file fits.
+# entry whose file fits again, so delete the entry once the file fits (and
+# lower the count in test_known_over_entries_are_well_formed with it).
 KNOWN_OVER: frozenset[str] = frozenset(
     {
         "den:code-audit/SKILL.md:skills-tool",
@@ -156,12 +164,20 @@ def _u16(text: str) -> int:
 
 def _plain(fm: str, key: str) -> str:
     """The value of `key:` in frontmatter `fm`, which must be a plain one-line
-    scalar so the line's text is the value YAML gives Cline."""
+    scalar so the line's text is the value YAML gives Cline. With pyyaml at
+    hand, YAML's own reading must equal the line too."""
     m = re.search(rf"^{key}:[ \t]*(.*)$", fm, re.MULTILINE)
     assert m, f"no {key}: line in the frontmatter"
     value = m.group(1).strip()
     assert value, f"{key}: is empty or not on one line"
     assert value[0] not in "\"'|>&*!%@`[{", f"{key}: is not a plain scalar"
+    # YAML folds an indented next line into the value, which the line misses
+    assert not re.match(r"(?:[ \t]*\r?\n)+[ \t]+\S", fm[m.end() :]), (
+        f"{key}: continues on an indented line; write it on one line"
+    )
+    if yaml is not None:
+        parsed = yaml.safe_load(fm)[key]
+        assert parsed == value, f"{key}: YAML reads {parsed!r}, the line {value!r}"
     return value
 
 
@@ -225,8 +241,9 @@ def _check(variant: str, base: Path, *, skill_md: bool, metrics: tuple[str, ...]
 
     new = sorted(over[k] for k in over.keys() - KNOWN_OVER)
     assert not new, (
-        "over Cline's tool-result cap; shrink or split these files"
-        " (KNOWN_OVER may only shrink):\n" + "\n".join(new)
+        "over a size cap (Cline's 8,000-character tool-result cap, or den's"
+        " 6,000 raw cap); shrink or split these files (KNOWN_OVER may only"
+        " shrink):\n" + "\n".join(new)
     )
     fits = sorted(e for e in KNOWN_OVER if in_scope(e) and e not in over)
     assert not fits, (
@@ -255,6 +272,62 @@ def test_formulas_match_cline():
     assert read_tool_result("a\nb\n") == "1 | a\n2 | b"
     assert read_tool_result("x\n" * 10).startswith(" 1 | x")
     assert _u16("\U0001f600") == 2  # a character outside the BMP counts twice
+
+
+def test_plain_refuses_a_value_that_continues_on_the_next_line():
+    """YAML folds the indented line into the description, so the first line
+    alone would undercount what Cline shows."""
+    folded = "---\nname: n\ndescription: first line\n  and a second one\n---\n\nb\n"
+    with pytest.raises(AssertionError, match="continues on an indented line"):
+        skills_tool_result(folded)
+
+
+@pytest.mark.skipif(yaml is None, reason="needs pyyaml")
+def test_plain_refuses_a_line_yaml_reads_differently():
+    commented = "---\nname: n\ndescription: d # a YAML comment\n---\n\nbody\n"
+    with pytest.raises(AssertionError, match="YAML reads"):
+        skills_tool_result(commented)
+
+
+def _entry(entry: str) -> tuple[str, str, str]:
+    """A KNOWN_OVER entry's (variant, <skill>/<path>, metric)."""
+    variant, _, rest = entry.partition(":")
+    rel, _, metric = rest.rpartition(":")
+    return variant, rel, metric
+
+
+def test_known_over_entries_are_well_formed():
+    """An entry no test measures (a misspelt variant, a metric its file's kind
+    never gets) is never reported as fitting again, so it would stay forever."""
+    assert len(KNOWN_OVER) <= 117  # may only go down: lower it as entries go
+    bad = []
+    for entry in sorted(KNOWN_OVER):
+        variant, rel, metric = _entry(entry)
+        skill_md = rel.partition("/")[2] == "SKILL.md"
+        metrics = ("skills-tool", "read-tool") if skill_md else ("raw", "read-tool")
+        if variant not in VARIANTS or "/" not in rel or metric not in metrics:
+            bad.append(entry)
+    assert not bad, "malformed KNOWN_OVER entries:\n" + "\n".join(bad)
+
+
+def _unbuilt(variant: str, base: Path) -> list[str]:
+    """The `variant` entries of KNOWN_OVER whose file is not under `base`."""
+    return sorted(
+        entry
+        for entry in KNOWN_OVER
+        if _entry(entry)[0] == variant and not (base / _entry(entry)[1]).is_file()
+    )
+
+
+def test_known_over_entries_name_installed_files(installed):
+    variant, base = installed
+    missing = _unbuilt(variant, base)
+    assert not missing, "no such file in this build:\n" + "\n".join(missing)
+
+
+def test_known_over_entries_name_dist_files():
+    missing = _unbuilt("dist", DIST)
+    assert not missing, "no such file in agents/dist/skills:\n" + "\n".join(missing)
 
 
 def test_installed_skill_md_fits_the_skills_tool_cap(installed):

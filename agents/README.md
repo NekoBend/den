@@ -181,6 +181,13 @@ or `.MD`).
   minimum for a run with no parent. It is a fallback, not a substitute:
   deploy with `--with-parent` (or ensure `AGENTS.md` / `CLAUDE.md` is
   present) so the full rules apply.
+- Every file a model reads from a skill fits Cline's 8,000-character
+  tool-result cap: SKILL.md both as the skills tool returns it and as a
+  line-numbered file read, every other file as a line-numbered read. Files
+  other than SKILL.md also stay within 6,000 raw characters.
+  `tests/agents/test_skill_budget.py` checks the installed, den-free and
+  `dist/` copies; its `KNOWN_OVER` list of files still over a cap may only
+  shrink.
 
 ## Tests
 
