@@ -1,13 +1,9 @@
 # coding: schema mode
 
 Steps S1 to S3 of coding's schema mode,
-whose Steps S4 and S5 stay in SKILL.md,
 with its output format and its checklist.
+Steps S4 and S5 stay in SKILL.md.
 coding's SKILL.md sends you here when the mode is schema.
-
-Produce code artifacts that are complete, typed, idiomatic for the target
-language, and ready to drop in.
-No sketches, no "you would add error handling here" placeholders.
 
 ### Step S1: Gather the model
 Entities, fields and their types, relationships, constraints,

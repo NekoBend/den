@@ -1,13 +1,9 @@
 # coding: implement mode
 
 Steps 1 to 3 of coding's implement mode,
-whose Steps 4 and 5 stay in SKILL.md,
 with its output format and its checklist.
+Steps 4 and 5 stay in SKILL.md.
 coding's SKILL.md sends you here when the mode is implement.
-
-Produce code artifacts that are complete, typed, idiomatic for the target
-language, and ready to drop in.
-No sketches, no "you would add error handling here" placeholders.
 
 ### Step 1: Pin requirements
 Restate inputs, outputs, and failure modes in your own words.

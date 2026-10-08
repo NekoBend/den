@@ -7,6 +7,10 @@ description: Writes code that does not exist yet. Implements a function, class, 
 
 Paths under `shared/`, `examples/` and `reference/` in this skill are relative to the skill's own directory.
 
+Produce code artifacts that are complete, typed, idiomatic for the target
+language, and ready to drop in.
+No sketches, no "you would add error handling here" placeholders.
+
 This skill runs under a parent system prompt,
 whose honesty, language, and work rules this skill does not override.
 These rules hold even when no parent prompt is loaded:
@@ -64,7 +68,7 @@ Pick the language in this order:
    recommendation. Do not guess.
 
 | Language | Reference (read when working in this language) |
-|------------|------------------------------------------------|
+|---|---|
 | Python | shared/reference/python.md |
 | TypeScript | shared/reference/typescript.md |
 | Rust | shared/reference/rust.md |
@@ -154,4 +158,4 @@ Common:
 - [ ] I named the target language and read its reference,
       plus the mode reference (testing.md or schema-design.md) when relevant.
 
-Then run the checklist at the end of the mode file you read.
+Then run the checklist at the end of each mode file you read.

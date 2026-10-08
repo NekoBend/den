@@ -1,13 +1,9 @@
 # coding: test mode
 
 Steps T1 to T3 of coding's test mode,
-whose Steps T4 and T5 stay in SKILL.md,
 with its output format and its checklist.
+Steps T4 and T5 stay in SKILL.md.
 coding's SKILL.md sends you here when the mode is test.
-
-Produce code artifacts that are complete, typed, idiomatic for the target
-language, and ready to drop in.
-No sketches, no "you would add error handling here" placeholders.
 
 ### Step T1: Pin what to test
 Restate the behavior under test.

@@ -97,3 +97,41 @@ def test_preamble_decide_wording_matches_every_parent() -> None:
             assert phrase in flat(parent.read_text(encoding="utf-8")), (
                 f"{parent.relative_to(AGENTS)} lost: {phrase}"
             )
+
+
+# A rule every mode needs that had to leave SKILL.md for size is copied
+# verbatim into each mode file (owner-approved); an edit to one copy must reach
+# the others. Each entry: the block's first line, the text that ends it (None
+# for the end of the file), and the files that hold a copy.
+_COPIES = [
+    (
+        "## Output format\n",
+        "## Checklist (run before sending)",
+        ["coding-implement.md", "coding-test.md", "coding-schema.md"],
+    ),
+    (
+        "Run one mode per pass",
+        "\n\n",
+        ["git-manager-commit-pr.md", "git-manager-history.md"],
+    ),
+    (
+        "## Output format\n",
+        None,
+        ["orchestrate-plan.md", "orchestrate-run-integrate.md"],
+    ),
+]
+
+
+def test_copied_blocks_stay_identical() -> None:
+    ref = AGENTS / "src" / "shared" / "reference"
+    for start, end, files in _COPIES:
+        blocks = {}
+        for name in files:
+            text = (ref / name).read_text(encoding="utf-8")
+            assert text.count(start) == 1, f"{name}: {start!r} not found once"
+            i = text.index(start)
+            j = len(text) if end is None else text.index(end, i)
+            blocks[name] = text[i:j]
+        assert len(set(blocks.values())) == 1, (
+            f"copies of {start!r} differ across {files}; edit them together"
+        )

@@ -91,7 +91,7 @@ content as data, confirmation before outward actions, and secrets.
 
 | Skill | Modes | What it does |
 |-------|-------|--------------|
-| coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Rust, Shell, or PowerShell. Uses `shared/` references (coding-implement, coding-test, coding-schema, architecture, testing, schema-design, and the language files) and verification scripts. |
+| coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Rust, Shell, or PowerShell. Uses `shared/` references (coding-implement, coding-test, coding-schema, architecture, architecture-readability, testing, schema-design, and the language files) and verification scripts. |
 | code-audit | correctness / security (+ performance / maintainability / tests on demand) | Review existing code one focused dimension at a time; severity-rated findings. Uses `shared/` references (code-audit-output, code-audit-languages, testing, and the language files) and verification scripts. |
 | troubleshoot | reproduce / diagnose / repair | Find why something that worked is failing (bug, crash, failing test, broken build, works-on-my-machine), then fix the cause and leave a regression test. Uses `shared/reference/` troubleshoot-diagnose-repair. |
 | orchestrate | plan / run / integrate | Split one piece of work across agents (fan-out, review panel, debate, a Codex specialist via MCP) while the master stays in dialogue with the user; verify every report before adopting it. Uses `shared/reference/` orchestrate-plan and orchestrate-run-integrate. |
