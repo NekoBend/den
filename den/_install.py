@@ -894,9 +894,10 @@ def _install_skills(argv: list[str]) -> int:  # ruff: ignore[too-many-locals]  #
 
     if not dry_run and not with_parent and processed:
         print(
-            "\nNote: skills reference a parent prompt (<honesty_contract>, "
-            "<language_policy>, <work_discipline>). Re-run with --with-parent "
-            "to install it into each tool's location."
+            "\nNote: skills defer to a parent prompt (<identity>, <moves>, "
+            "<language_policy>, <work_discipline>) and carry only a short "
+            "fallback of their own. Re-run with --with-parent to install it "
+            "into each tool's location."
         )
     # A non-interactive run that kept differing files deployed nothing for them.
     # Say so with the exit code: a script (or the refresh of a den that predates
