@@ -6,6 +6,15 @@ several, and defers to an explicit project choice when one exists.
 Boundary: `shell.md` owns POSIX sh/bash; this file owns PowerShell; the
 legacy cmd shims are compatibility surface, not a target for new code.
 
+## Where each section lives
+
+This file holds sections 1, 2, 3, 4, 7, and 8.
+
+- shared/reference/powershell-pipeline.md (sections 5 and 6): read it now as well.
+
+"section N" in any of these files means the section with that number;
+this list names the file that holds it.
+
 ## 1. Target runtime: pwsh 7+
 
 **Rule:** New scripts target PowerShell 7 or later and state it with
@@ -68,35 +77,6 @@ strict mode turns them into failures at the fault line.
 - Terminating vs non-terminating matters: cmdlet failures obey
   `$ErrorActionPreference`; add `-ErrorAction Stop` on the calls whose
   failure must be caught even if a caller relaxed the preference.
-
-## 5. Functions return objects
-
-**Rule:** Functions emit objects (`[PSCustomObject]@{...}`), never
-formatted text. `Format-*` appears only at the end of an interactive
-pipeline. `Write-Host` is for user-facing interactive text only;
-library code communicates through the pipeline, `Write-Verbose`,
-`Write-Warning`, and errors.
-
-**Why:** the pipeline is typed; a function that emits strings has
-discarded the structure every downstream consumer needs.
-
-- Advanced functions: `[CmdletBinding()]` plus a typed `param()` block
-  with validation attributes (`[ValidateNotNullOrEmpty()]`,
-  `[ValidateSet(...)]`) instead of hand-rolled `if` checks.
-- Anything destructive declares `SupportsShouldProcess` and gates on
-  `$PSCmdlet.ShouldProcess(...)`, so `-WhatIf` / `-Confirm` work.
-
-## 6. Pipeline and comparison traps
-
-- PowerShell unrolls single-element results: wrap in `@(...)` whenever
-  `.Count` or array semantics matter.
-- Comparison operators are case-INSENSITIVE by default (`-eq`, `-like`,
-  `-match`); use the `c`-prefixed forms (`-ceq`) when case matters.
-- `-eq` against an array FILTERS it (returns matching elements) rather
-  than testing equality; put the scalar on the left, or test `.Count`.
-- `$null` comparisons put `$null` on the LEFT (`$null -eq $x`), because
-  the array-filter rule above makes `$x -eq $null` wrong for arrays
-  (the analyzer flags the wrong order at Warning severity).
 
 ## 7. Strings and injection
 

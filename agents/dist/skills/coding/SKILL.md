@@ -7,10 +7,6 @@ description: Writes code that does not exist yet. Implements a function, class, 
 
 Paths under `shared/`, `examples/` and `reference/` in this skill are relative to the skill's own directory.
 
-Produce code artifacts that are complete, typed, idiomatic for the target
-language, and ready to drop in.
-No sketches, no "you would add error handling here" placeholders.
-
 This skill runs under a parent system prompt,
 whose honesty, language, and work rules this skill does not override.
 These rules hold even when no parent prompt is loaded:
@@ -67,13 +63,13 @@ Pick the language in this order:
 4. If none of the above resolves it: DECIDE: line, options and a
    recommendation. Do not guess.
 
-| Language   | Reference (read when working in this language) |
+| Language | Reference (read when working in this language) |
 |------------|------------------------------------------------|
-| Python     | shared/reference/python.md               |
-| TypeScript | shared/reference/typescript.md           |
-| Rust       | shared/reference/rust.md                 |
-| Shell      | shared/reference/shell.md                |
-| PowerShell | shared/reference/powershell.md           |
+| Python | shared/reference/python.md |
+| TypeScript | shared/reference/typescript.md |
+| Rust | shared/reference/rust.md |
+| Shell | shared/reference/shell.md |
+| PowerShell | shared/reference/powershell.md |
 
 ### Read the relevant references
 
@@ -93,35 +89,9 @@ get the user's yes before the first run, in every mode.
 
 ## Mode: implement
 
-### Step 1: Pin requirements
-Restate inputs, outputs, and failure modes in your own words.
-If anything is ambiguous (types, error contract, scope, language version),
-ask, following the parent's clarification order (investigate, then
-DECIDE:, then ASSUMED:).
-
-### Step 2: Identify edge cases
-List them BEFORE coding:
-empty input, single element, max size; null / None / nil;
-negative, zero, overflow; unicode, multibyte; concurrent access if relevant.
-
-### Step 3: Implement
-If MODIFYING existing code (rename, change signature, refactor):
-
-  3a. Run shared/scripts/find-references.py --uses <symbol>
-      for any symbol whose name or signature you will change;
-      list every reference site.
-  3b. If the count is 3 or more, or the change crosses packages,
-      surface it first, following the parent's clarification order
-      (investigate, then DECIDE:, then ASSUMED:).
-  3c. Change the target file AND every reference site. No dangling references.
-  3d. Run shared/scripts/check-broken-refs.py;
-      fix every broken_ref hit or explain why it is intentional;
-      re-run until zero.
-
-If WRITING NEW code, skip 3a-3d.
-
-  3e. Types first, then logic, then doc comment.
-      Validate inputs at module / API boundaries, not between trusted helpers.
+Read shared/reference/coding-implement.md now,
+and follow its Steps 1 to 3 in order;
+then run Steps 4 and 5 below.
 
 ### Step 4: Verify with the toolchain
 Run against the file you produced. Prefer the project's own configured
@@ -147,20 +117,9 @@ Adapt the shape, do not copy the wording.
 
 ## Mode: test
 
-### Step T1: Pin what to test
-Restate the behavior under test.
-List the cases that MUST be covered:
-the normal case, the edge cases (empty, single, max, null, zero, negative,
-boundary), and each error path in the code's contract.
-
-### Step T2: Choose the framework
-Pick the language's test framework
-(see shared/reference/testing.md and the per-language reference).
-
-### Step T3: Write the tests
-One behavior per test, clear names, deterministic, independent.
-Assert observable behavior, not implementation detail.
-Cover every case from T1, including negative and error-path tests.
+Read shared/reference/coding-test.md now,
+and follow its Steps T1 to T3 in order;
+then run Steps T4 and T5 below.
 
 ### Step T4: Run them
 Execute the suite; report the exact command and its result.
@@ -171,21 +130,9 @@ Also run the language's checks (Step 4) on the test file itself.
 
 ## Mode: schema
 
-### Step S1: Gather the model
-Entities, fields and their types, relationships, constraints,
-and which fields are required vs optional.
-Ask if the domain is unclear. Do not invent entities.
-
-### Step S2: Choose the form
-Database DDL, JSON Schema, language types, or an API contract,
-based on where the schema is used
-(see shared/reference/schema-design.md).
-
-### Step S3: Design
-Apply normalization vs denormalization deliberately.
-Express constraints (keys, uniqueness, nullability, ranges).
-Plan for evolution (versioning or migration).
-State where the schema is validated at the boundary.
+Read shared/reference/coding-schema.md now,
+and follow its Steps S1 to S3 in order;
+then run Steps S4 and S5 below.
 
 ### Step S4: Verify
 For a code schema (types, ORM models):
@@ -197,22 +144,8 @@ validate with a tool if one exists, otherwise state it was reviewed by reading.
 
 ## Output format
 
-The artifact first, explanation second:
-
-    ```<language or format>
-    <complete artifact: code, tests, or schema>
-    ```
-
-    **Usage / Run:** <implement: one invocation; test: the command to run the
-    suite; schema: how to apply or migrate it>
-
-    **Design notes:** <include only when you made a non-default choice (a
-    library, an algorithm, an error contract); otherwise omit this line>
-
-For JSON output (when explicitly requested),
-use the two-step pattern:
-a short reasoning block first, then a single fenced ```json``` block
-with nothing after the closing fence.
+implement, test, and schema mode: use the output format
+in the reference file your mode told you to read.
 
 ## Self-check (run before sending)
 
@@ -221,26 +154,4 @@ Common:
 - [ ] I named the target language and read its reference,
       plus the mode reference (testing.md or schema-design.md) when relevant.
 
-If implement:
-- [ ] I listed edge cases and each is handled or explicitly out of scope.
-- [ ] If I modified existing code, I ran find-references.py before
-      and check-broken-refs.py after (zero remaining, or each explained).
-- [ ] I ran the language's checks (or stated why they did not run).
-- [ ] Every public API has a doc comment.
-- [ ] No untyped escape hatch (any / Any / object / interface{}) without a
-      documented exception, and no catch-all handler outside the entry point.
-- [ ] Code matches examples/<language>.md.
-
-If test:
-- [ ] I listed the cases to cover and each has a test.
-- [ ] Negative and error paths are tested.
-- [ ] Tests are deterministic and independent.
-- [ ] I ran the suite (or stated why I could not).
-- [ ] Tests match examples/testing.md.
-
-If schema:
-- [ ] Entities and constraints are captured (or I asked).
-- [ ] I chose the schema form deliberately for where it is used.
-- [ ] Constraints and nullability are explicit; evolution is considered.
-- [ ] I validated the schema (or stated it was reviewed by reading).
-- [ ] Schema matches examples/schema.md.
+Then run the checklist at the end of the mode file you read.
