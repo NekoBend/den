@@ -586,6 +586,16 @@ Category   : a
 Skill      : compressor
 Rationale  : "shorter, same behavior" is the compressor-vs-prompt-engineering hint, so this is compressor, not prompt-engineering.
 
+User request: "Translate this design doc into English."
+Category   : a
+Skill      : documenter
+Rationale  : "translate this" matches a documenter trigger, and the documenter-vs-coding hint applies because the text is a document, not source code.
+
+User request: "Summarize this meeting into minutes with the decisions and action items."
+Category   : a
+Skill      : documenter
+Rationale  : minutes with decisions and action items are a documenter deliverable even though the request says "summarize", by the compressor-vs-documenter hint.
+
 User request: "Why does this function return None sometimes? Here is the code."
 Category   : a
 Skill      : troubleshoot

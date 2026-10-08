@@ -1,6 +1,6 @@
 ---
 name: documenter
-description: Writes documents as the deliverable. Produces an API reference from existing code; a document for human readers such as a README, how-to, tutorial, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, or slide outline, as Markdown, HTML, or a Confluence page; a revision of a draft that keeps what it says; or a natural translation of a document between Japanese and English. Use when the user asks to document something, write or revise a document, minutes, or a Confluence page, explain a concept in a document, or translate a document.
+description: Writes documents as the deliverable. Produces an API reference from existing code; a document for human readers such as a README, how-to, tutorial, spec, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, or slide outline, as Markdown, HTML, or a Confluence page; a revision of a draft that keeps what it says; or a natural translation of a document between Japanese and English. Use when the user asks to document something, write or revise a document, minutes, or a Confluence page, explain a concept in a document, or translate a document.
 ---
 
 # Documenter skill

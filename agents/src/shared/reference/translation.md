@@ -39,7 +39,7 @@ when the target language reads more naturally that way;
 keep every piece of information.
 Write the result the way a native writer of the target language
 would write the same document.
-Read shared/reference/translation.md for the rules of each direction,
+Read the Rules of translation section below for the rules of each direction,
 and for numbers, dates, units, and names.
 Into Japanese, also read shared/reference/japanese-style.md.
 Keep the headings, lists, tables, and emphasis in the same structure.
