@@ -91,25 +91,58 @@ For a check of an existing translation:
 
 ## Rules of translation
 
-### Faithfulness
+The translation goes into the target language,
+even when the conversation around it is in another language;
+your own comments stay in the user's language.
+Translate what the text says, not what a better text would say:
+report an error in the source in a translator's note
+instead of fixing it in the translation.
 
-Preserve meaning exactly: nothing added, nothing dropped, register and
-formatting kept. Translate what the text says, not what a better text would
-have said.
+### English into Japanese
 
-### Non-translatables
+- Drop "you", "we", and "I" when the Japanese reads naturally without them.
+  When a subject is needed, name the role, such as ユーザー or 管理者.
+- Do not keep a thing as the doer of an action:
+  "The tool detects the device" becomes デバイスが検出されます.
+- Translate a modal verb by what it does:
+  a requirement (must, should) as 〜する必要があります,
+  a possibility (may) as 〜する場合があります.
+- Prefer a verb to a noun followed by 実行します or 行います.
+- Translate "please" by its function,
+  not word for word into every sentence.
 
-Code, identifiers, URLs, placeholders (`{name}`, `%s`, `$VAR`), and markup
-carry over verbatim, in position. Mark them before translating so they are
-not converted by accident.
+### Japanese into English
 
-### Output language
+- Supply the subject and the object the Japanese leaves out
+  when English needs them.
+- Put the subject, the verb, and the object near the start of the sentence.
+- Write plain English as shared/reference/writing.md describes;
+  do not turn ください into "please",
+  and do not carry Japanese politeness over as extra formality.
+- Explain or rewrite an idiom or a culture-bound reference
+  for a reader who does not know it.
 
-The translated content goes into the requested target language even when the
-surrounding conversation is in another language.
+### Terms and names
 
-### Review of a translation
+- Use a term from the user's glossary or an earlier translation first,
+  then the standard term of the field,
+  and keep one term for one idea in the whole document.
+- Use an organization's official name in the target language
+  when it has one.
+- Write a person's name in the order and the spelling the person uses;
+  ask when you do not know them.
+- For a Japanese place name, romanize the proper part
+  and translate the generic part: 日比谷公園 becomes Hibiya Park.
 
-Check meaning preservation (nothing added or dropped), placeholder and markup
-integrity, and register consistency against the SOURCE text, and flag any
-term you were unsure about rather than silently guessing.
+### Numbers, dates, and units
+
+- Convert 万, 億, and 兆 explicitly, and check each result again:
+  1万 is 10,000, 1億 is 100 million, and 1兆 is 1 trillion.
+- Keep every boundary exact:
+  以上 is "or more", 以下 is "or less",
+  超える is "more than", and 未満 is "less than".
+- In English, give a Japanese era year as the Gregorian year.
+  In Japanese, write a date as 2026年10月8日,
+  and add an era year only when the user asks for it.
+- Keep every value as it is and change only its format.
+  Convert a currency or a unit only when the user asks.
