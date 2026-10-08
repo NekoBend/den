@@ -104,9 +104,12 @@ instead of fixing it in the translation.
   When a subject is needed, name the role, such as ユーザー or 管理者.
 - Do not keep a thing as the doer of an action:
   "The tool detects the device" becomes デバイスが検出されます.
-- Translate a modal verb by what it does:
-  a requirement (must, should) as 〜する必要があります,
-  a possibility (may) as 〜する場合があります.
+- Translate a modal verb by what it does in the sentence,
+  and keep its strength:
+  a requirement (must) as 〜する必要があります,
+  a recommendation (should) as 〜することをお勧めします,
+  a permission (may, can) as 〜できます,
+  a possibility (may, might) as 〜する場合があります.
 - Prefer a verb to a noun followed by 実行します or 行います.
 - Translate "please" by its function,
   not word for word into every sentence.

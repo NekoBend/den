@@ -45,11 +45,13 @@ When the destination is a Confluence page:
    write the same content again in the Confluence storage format
    (XHTML with ac: macros).
    Change no content in this step; only the format changes.
-   Tell the user to paste it through the Source Editor:
+   Tell the user to paste it into a source editor
+   that edits the storage format:
    the <> icon in the editor toolbar
    (built into Data Center 10.2.3 and later,
-   a Marketplace app on earlier versions).
-   When the editor has no <> icon,
+   a Marketplace app on earlier versions),
+   or an Open in source editor button.
+   When the page has no source editor,
    give Confluence wiki markup for Insert > Markup instead.
 
 This two-step flow is for Confluence pages only.

@@ -19,6 +19,7 @@ must give the reader the conclusion and the flow.
 | how-to | goal; prerequisites; numbered steps; result; if it fails | each step is one action |
 | tutorial | what the reader builds; prerequisites; steps, each with a visible result; next steps | a newcomer can finish it |
 | concept explanation | the idea in one sentence; how it works, from a concrete example to the general rule; why it matters; limits; related topics | no procedure inside |
+| spec | purpose and scope; terms; requirements, each with its own number and one testable statement; constraints; out of scope; open questions | each requirement has a number and a way to check it |
 | design doc | background; goals and non-goals; proposed design; alternatives considered; risks; open questions | every alternative says why it was not chosen |
 | proposal | the request or the recommendation; background; options with their cost; the recommended option and why; what the reader is asked to do | the request is in the first paragraph |
 | report | the conclusion; findings with numbers and their sources; analysis; next steps | every number traces to a source |

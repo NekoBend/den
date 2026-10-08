@@ -8,8 +8,8 @@ and follows it again when it writes the storage format or the wiki markup.
 
 | Edition and route | Format to write |
 |---|---|
-| Data Center, editor with the <> icon (Source Editor) | storage format |
-| Data Center, editor without the <> icon | wiki markup, through Insert > Markup |
+| Data Center, a source editor (the <> icon or Open in source editor) | storage format |
+| Data Center, no source editor | wiki markup, through Insert > Markup |
 | Data Center, REST API | storage format |
 | Cloud, REST API | storage format |
 | Cloud, Atlassian's MCP server | the body format the tool's schema names, following the server's content format guide; storage format when it offers one |
@@ -84,7 +84,7 @@ The storage format is XML, so:
 
 ## Wiki markup (Data Center, Insert > Markup)
 
-Use it only when the editor has no <> icon.
+Use it only when the page has no source editor.
 Write each paragraph on one line, because a single newline becomes a line break,
 and leave a blank line between blocks.
 Inside Japanese text, an effect always touches other characters,
@@ -159,6 +159,9 @@ h2. ToDo
 - To update, read the current page first,
   keep its structure and its macros,
   and change only what the user asked for.
+  Keep every task's `ac:task-id` as it is,
+  and give a task you add an `ac:task-id` that no other task on the page has:
+  two tasks with the same ID check and uncheck together.
   Through the REST API, read it in the storage format,
   `GET /rest/api/content/{id}?expand=body.storage` on Data Center,
   `GET /wiki/api/v2/pages/{id}?body-format=storage` on Cloud,
