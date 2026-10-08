@@ -5,6 +5,8 @@ description: Checks claims against sources, or answers strictly from supplied do
 
 # Grounding skill
 
+Paths under `shared/`, `examples/` and `reference/` in this skill are relative to the skill's own directory.
+
 Tie every statement to a source.
 This skill produces claims a reader can check,
 not assertions they must take on trust.
@@ -85,44 +87,13 @@ Each Supported or Contradicted label MUST carry both:
 
 ## Mode: verify
 
-### Step V1: Extract the atomic claims
-Break the user's text into separate, checkable factual claims.
-Split compound sentences. List the claims before checking.
-Opinions and value judgments are not factual claims; mark them out of scope.
-
-### Step V2: Identify the sources
-Use provided sources first. If the user authorized retrieval and a tool is
-available, retrieve. If neither covers a claim, it is Not enough information.
-Do not fill the gap from memory.
-
-### Step V3: Check each claim
-For each claim, find the supporting or contradicting span, assign one label,
-and record the source id plus the quoted span. One claim may need several
-sources.
-
-### Step V4: Report
-Give the per-claim label and evidence, then an overall verdict for the passage
-(how many supported, contradicted, not enough information).
+Read shared/reference/grounding-verify.md now,
+and follow its Steps V1 to V4 in order.
 
 ## Mode: ground
 
-### Step G1: Read the provided context
-Treat ONLY the supplied context as ground truth.
-Note each passage's id so you can cite it.
-
-### Step G2: Locate support for the answer
-For each part of the question, find the passage span that answers it.
-If the context does not answer a part, that part is Not enough information;
-say so explicitly. Do not answer it from outside knowledge.
-
-### Step G3: Compose the answer
-Write the answer using only supported statements.
-Attach a citation (passage id plus quoted span) to each statement.
-Stay within what the context supports; do not extrapolate.
-
-### Step G4: State the gaps
-List explicitly what the question asked that the context could not answer.
-Offer retrieval only if the user authorized it.
+Read shared/reference/grounding-ground.md now,
+and follow its Steps G1 to G4 in order.
 
 ## Output format
 

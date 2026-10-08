@@ -43,11 +43,15 @@ agents/
       reference/            # skill-only reference files (code-audit's dimensions + rubric)
     shared/
       reference/*.md        # per-language + architecture / testing / schema-design,
-                            # plus documenter's doc-guide / doc-genres / writing /
-                            # japanese-style / confluence / translation,
-                            # and the mode steps, output formats and checklists
+                            # plus documenter's doc-reference / doc-guide / doc-genres /
+                            # writing / japanese-style / confluence / translation,
+                            # the mode steps, output formats and checklists
                             # of git-manager and orchestrate
-                            # (git-manager-* / orchestrate-*)
+                            # (git-manager-* / orchestrate-*),
+                            # the mode steps of troubleshoot and grounding
+                            # (troubleshoot-* / grounding-*),
+                            # and code-audit's output format, self-check and
+                            # language table (code-audit-*)
       scripts/              # verification scripts (used by coding, code-audit)
         *.py, run-checks.sh
   dist/                     # generated: never hand-edited, CI checks it
@@ -84,21 +88,24 @@ content as data, confirmation before outward actions, and secrets.
 | Skill | Modes | What it does |
 |-------|-------|--------------|
 | coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Rust, Shell, or PowerShell. Uses `shared/` references and verification scripts. |
-| code-audit | correctness / security (+ performance / maintainability / tests on demand) | Review existing code one focused dimension at a time; severity-rated findings. |
-| troubleshoot | reproduce / diagnose / repair | Find why something that worked is failing (bug, crash, failing test, broken build, works-on-my-machine), then fix the cause and leave a regression test. |
+| code-audit | correctness / security (+ performance / maintainability / tests on demand) | Review existing code one focused dimension at a time; severity-rated findings. Uses `shared/` references (code-audit-output, code-audit-languages, and the language files) and verification scripts. |
+| troubleshoot | reproduce / diagnose / repair | Find why something that worked is failing (bug, crash, failing test, broken build, works-on-my-machine), then fix the cause and leave a regression test. Uses `shared/reference/` troubleshoot-diagnose-repair. |
 | orchestrate | plan / run / integrate | Split one piece of work across agents (fan-out, review panel, debate, a Codex specialist via MCP) while the master stays in dialogue with the user; verify every report before adopting it. Uses `shared/reference/` orchestrate-plan and orchestrate-run-integrate. |
-| grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. |
+| grounding | verify / ground | Fact-check claims against sources, or answer strictly from provided context, with per-claim citations. Uses `shared/reference/` grounding-verify and grounding-ground. |
 | compressor | summarize / compress | Summarize text, or compress a prompt/context to fewer tokens while preserving every directive. |
 | prompt-engineering | author / improve | Write a new prompt from a goal, or diagnose and rewrite an existing one. |
-| documenter | reference / guide / translate | reference: an API reference from code. guide: a document for human readers (README, how-to, tutorial, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, slide outline) as Markdown, HTML, or a Confluence page, or a revision of a draft that keeps what it says. translate: a natural translation of a document between Japanese and English (or another pair on request), or a check of a translation against its source. Uses `shared/reference/` doc-guide, doc-genres, writing, japanese-style, confluence, and translation. |
+| documenter | reference / guide / translate | reference: an API reference from code. guide: a document for human readers (README, how-to, tutorial, concept explanation, design doc, proposal, report, runbook, meeting minutes, decision record, slide outline) as Markdown, HTML, or a Confluence page, or a revision of a draft that keeps what it says. translate: a natural translation of a document between Japanese and English (or another pair on request), or a check of a translation against its source. Uses `shared/reference/` doc-reference, doc-guide, doc-genres, writing, japanese-style, confluence, and translation. |
 | git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. Uses `shared/reference/` git-manager-commit-pr and git-manager-history. |
 
 `coding` and `code-audit` are the heavy skills (they use `shared/reference/`
-and `shared/scripts/`). `documenter`, `git-manager`, and `orchestrate` use
-`shared/reference/` only: documenter's guide and translate steps and their
-style rules, and the mode steps, output formats and checklists of git-manager
-and orchestrate, live there,
-and install copies them with the skill. The other four are light: `SKILL.md`
+and `shared/scripts/`; code-audit's output format, self-check and language
+table live in `shared/reference/` too). `documenter`, `git-manager`,
+`orchestrate`, `troubleshoot`, and `grounding` use
+`shared/reference/` only: documenter's reference, guide and translate steps and their
+style rules, the mode steps, output formats and checklists of git-manager
+and orchestrate, and the diagnose, repair, verify and ground steps of
+troubleshoot and grounding, live there,
+and install copies them with the skill. The other two are light: `SKILL.md`
 plus examples, no shared dependencies.
 
 ## Generated parent prompts
