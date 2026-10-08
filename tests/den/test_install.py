@@ -800,6 +800,25 @@ def test_prose_that_only_resembles_a_local_path_passes(tmp_path, monkeypatch):
     assert (work / "SKILL.md").read_text(encoding="utf-8") == skill_md
 
 
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "examples/とreference/a.mdを読む",
+        "examples/ディレクトリとreference/a.mdを読む",
+        "examples/run.sh,reference/a.md",
+        "(examples/|reference/a.md)",
+    ],
+    ids=["japanese", "japanese-word", "comma", "alternation"],
+)
+def test_a_mention_that_runs_into_a_local_path_passes(tmp_path, monkeypatch, prose):
+    """No space between a directory mention and a real path is not an
+    unrecognized path: the real one is still checked and rewritten."""
+    _fake_content(tmp_path, monkeypatch, f"{prose}\n", local={"reference/a.md": "a\n"})
+    work = tmp_path / "work"
+    assert _install._materialize("demo", work, "/R/demo/") == 1
+    assert "/R/demo/reference/a.md" in (work / "SKILL.md").read_text("utf-8")
+
+
 def test_materialize_fails_on_a_parent_relative_local_ref(tmp_path, monkeypatch):
     _fake_content(
         tmp_path,

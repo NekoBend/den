@@ -569,7 +569,9 @@ def _broken_refs(work: Path) -> list[str]:
             f"{rel}: {m.group(0)} - not a recognized skill-local path"
             " (use [A-Za-z0-9_-] names and .md)"
             for m in _LOOSE_LOCAL_RE.finditer(text)
-            if m.span() not in local_spans
+            # Overlapping a real match means the loose match only ran into it
+            # (Japanese prose puts no space before the next path).
+            if not any(s < m.end() and m.start() < e for s, e in local_spans)
         )
         broken.extend(
             f"{rel}: {m.group(0)} - write skill-local paths from the skill root"

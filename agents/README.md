@@ -164,9 +164,9 @@ rewritten to an absolute path on install; the den-free copy keeps it relative.
 A user-project path in an example needs a leading directory
 (`docs/reference/api.md`), or it is read as a skill-local path. Any of these
 that names a file the skill does not ship fails the build, and so does text
-that looks like a skill-local `.md` path but that the rewrite cannot take (a
-dotted or non-ASCII name, a `<placeholder>` with a digit or in a directory,
-or `.MD`).
+that looks like a skill-local path but that the rewrite cannot take (a
+dotted or non-ASCII name, a glob such as `examples/*.md`, a `<placeholder>`
+with a digit or in a directory, or `.MD`).
 
 ## Conventions
 
