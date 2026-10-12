@@ -5,6 +5,8 @@ description: Checks claims against sources, or answers strictly from supplied do
 
 # Grounding skill
 
+Paths under `shared/`, `examples/` and `reference/` in this skill are relative to the skill's own directory.
+
 Tie every statement to a source.
 This skill produces claims a reader can check,
 not assertions they must take on trust.
@@ -106,19 +108,9 @@ Give the per-claim label and evidence, then an overall verdict for the passage
 
 ## Mode: ground
 
-### Step G1: Read the provided context
-Treat ONLY the supplied context as ground truth.
-Note each passage's id so you can cite it.
-
-### Step G2: Locate support for the answer
-For each part of the question, find the passage span that answers it.
-If the context does not answer a part, that part is Not enough information;
-say so explicitly. Do not answer it from outside knowledge.
-
-### Step G3: Compose the answer
-Write the answer using only supported statements.
-Attach a citation (passage id plus quoted span) to each statement.
-Stay within what the context supports; do not extrapolate.
+Read shared/reference/grounding-ground.md now,
+and follow its Steps G1 to G3 in order;
+then run Step G4 below.
 
 ### Step G4: State the gaps
 List explicitly what the question asked that the context could not answer.
