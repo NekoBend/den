@@ -69,11 +69,7 @@ KNOWN_OVER: frozenset[str] = frozenset(
         "den:coding/shared/reference/typescript.md:read-tool",
         "den:documenter/SKILL.md:skills-tool",
         "den:documenter/SKILL.md:read-tool",
-        "den:git-manager/SKILL.md:skills-tool",
-        "den:git-manager/SKILL.md:read-tool",
         "den:grounding/SKILL.md:read-tool",
-        "den:orchestrate/SKILL.md:skills-tool",
-        "den:orchestrate/SKILL.md:read-tool",
         "den:troubleshoot/SKILL.md:skills-tool",
         "den:troubleshoot/SKILL.md:read-tool",
         "den-free:code-audit/SKILL.md:skills-tool",
@@ -109,11 +105,7 @@ KNOWN_OVER: frozenset[str] = frozenset(
         "den-free:coding/shared/reference/typescript.md:read-tool",
         "den-free:documenter/SKILL.md:skills-tool",
         "den-free:documenter/SKILL.md:read-tool",
-        "den-free:git-manager/SKILL.md:skills-tool",
-        "den-free:git-manager/SKILL.md:read-tool",
         "den-free:grounding/SKILL.md:read-tool",
-        "den-free:orchestrate/SKILL.md:skills-tool",
-        "den-free:orchestrate/SKILL.md:read-tool",
         "den-free:troubleshoot/SKILL.md:read-tool",
         "dist:code-audit/SKILL.md:read-tool",
         "dist:code-audit/shared/reference/powershell.md:raw",
@@ -147,11 +139,7 @@ KNOWN_OVER: frozenset[str] = frozenset(
         "dist:coding/shared/reference/typescript.md:read-tool",
         "dist:documenter/SKILL.md:skills-tool",
         "dist:documenter/SKILL.md:read-tool",
-        "dist:git-manager/SKILL.md:skills-tool",
-        "dist:git-manager/SKILL.md:read-tool",
         "dist:grounding/SKILL.md:read-tool",
-        "dist:orchestrate/SKILL.md:skills-tool",
-        "dist:orchestrate/SKILL.md:read-tool",
         "dist:troubleshoot/SKILL.md:read-tool",
     }
 )
@@ -299,7 +287,7 @@ def _entry(entry: str) -> tuple[str, str, str]:
 def test_known_over_entries_are_well_formed():
     """An entry no test measures (a misspelt variant, a metric its file's kind
     never gets) is never reported as fitting again, so it would stay forever."""
-    assert len(KNOWN_OVER) <= 117  # may only go down: lower it as entries go
+    assert len(KNOWN_OVER) <= 105  # may only go down: lower it as entries go
     bad = []
     for entry in sorted(KNOWN_OVER):
         variant, rel, metric = _entry(entry)

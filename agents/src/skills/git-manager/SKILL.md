@@ -71,37 +71,14 @@ These override convenience. Apply them every time.
 
 ## Branching model (default: GitHub Flow)
 
-The default workflow is GitHub Flow. Follow it unless the user specifies a
-different model or branch; explicit user instructions take precedence.
-
-1. The default branch (main or master) stays deployable. Do not commit new work
-   directly to it.
-2. Start each piece of work on a short-lived branch created from the current
-   default branch, with a descriptive name. Match the repo's existing naming if
-   one is visible (`git --no-pager branch -a`); otherwise use a clear
-   `type/short-description` form such as `feature/add-retry` or `fix/null-header`.
-3. Commit your work to that branch (commit mode).
-4. Open a pull request from the branch into the base for review (pr mode).
-5. After approval, the branch is merged through the pull request (per the repo's
-   convention); then delete the merged branch.
-6. Keep a branch focused on one logical change.
+The steps of the branching model are in shared/reference/git-manager-commit-pr.md,
+which commit mode and pr mode read.
+Outside those two modes, read that file before you create a branch.
 
 Creating or switching branches is a safe, additive operation and needs no
 confirmation. Deleting a branch that holds unmerged commits is destructive: use
 `git branch -d` (which refuses to drop unmerged work) and confirm before any
 `-D` force-delete.
-
-## Describe the diff, not the journey (commit and pr)
-
-A commit message or PR description states the NET change that is actually in the
-code, read from the diff. It does not narrate the editing process from the
-conversation or work history.
-
-Worked danger: during the work you added function B, then later replaced B with
-C. The committed code contains A and C; B never lands. The message must describe
-A and C. It must NOT say "changed B to C", because a reader inspecting the code
-finds no B and is confused by a step that is not in the tree. Describe the
-destination, not the path you took to it.
 
 ## Detect the mode
 
@@ -120,97 +97,26 @@ If the request is ambiguous, pick the more likely mode, name it on an
 ASSUMED: line, and start. Reserve a DECIDE: line for the case where the
 two modes would produce materially different deliverables.
 
-Run one mode per pass, not one mode per request. A request that needs two
-modes gets two passes in the same turn: finish the first, deliver its
-output, then start the second. This chain is the common case here, not the
-exception - "commit this and open a PR" is commit mode followed by pr mode,
-and stopping after the commit leaves the request half done.
-
 ## Mode: commit
 
-### Step C0: Be on the right branch
-If you are on the default branch (main or master) and starting new work, create
-a feature branch first per the Branching model, unless the user told you to
-commit on the current branch. If already on a feature branch, continue on it.
-
-### Step C1: Inspect
-Run `git --no-pager status`, `git --no-pager diff`, and
-`git --no-pager diff --staged` to see every change.
-
-### Step C2: Group into logical commits
-Do not mix unrelated changes in one commit. If the working tree holds several
-independent changes, propose splitting them and stage each group separately.
-
-### Step C3: Write the message from the diff
-Base the message on the staged diff (`git --no-pager diff --staged`): describe
-the net change the commit introduces, per "Describe the diff, not the journey"
-above. Match the repository's existing convention for the format (read recent
-`git --no-pager log`). Write the message in English
-unless the user or the repository's instruction file (CLAUDE.md, AGENTS.md)
-asks for another language. Default to a concise imperative subject (around 50
-characters) plus, when the change touches control flow or a public contract,
-a body explaining WHY.
-
-### Step C4: Commit
-Stage the intended files (do not `git add -A` blindly; stage what you mean) and
-commit with the message passed via `-m` (repeat `-m` for a body) or `-F`, never
-by opening an editor. Show the result with `git --no-pager show --stat HEAD`.
+Read shared/reference/git-manager-commit-pr.md now,
+and follow its Steps C0 to C4 in order.
 
 ## Mode: pr
 
-### Step P1: Inspect the branch
-Identify the base branch and run `git --no-pager log <base>..HEAD` and
-`git --no-pager diff <base>...HEAD` to see exactly what the PR would contain.
-
-### Step P2: Summarize the change
-Group the commits into a coherent summary of what changed and why, from the
-diff (not the work history).
-
-### Step P3: Write the PR text
-A clear title and a description with: summary, the notable changes, how it was
-tested, and anything reviewers should watch for.
-
-### Step P4: Create it (only if asked)
-Confirm the remote and base branch first. The branch must be pushed before the
-PR; pushing is a remote-affecting step under the safety rules. Use the platform
-CLI if available (for example `gh pr create`), and show the command before
-running it.
+Read shared/reference/git-manager-commit-pr.md now,
+unless you already read it for commit mode in this turn,
+and follow its Steps P1 to P4 in order.
 
 ## Mode: history
 
-### Step H1: Identify the affected commits
-Inspect with `git --no-pager log` and state exactly which commits the operation
-touches (by short SHA and subject).
-
-### Step H2: Determine if the history is published
-Check whether the target commits were already pushed or shared. Rewriting
-published history needs a force-push and explicit confirmation; flag it as
-rewriting shared history.
-
-### Step H3: Present the plan
-Show the exact commands and the before/after, plus a reversible alternative when
-one exists (for example `git revert` instead of `git reset` to undo a pushed
-commit). For "add these changes into an earlier commit", the standard path is:
-stage the change, `git commit --fixup=<sha>`, then autosquash non-interactively
-(for example `git -c sequence.editor=: rebase --autosquash -i <sha>~1`). This
-rewrites history, so it is gated by Step H4.
-
-### Step H4: Confirm, then execute
-Get explicit confirmation for any destructive or history-rewriting step before
-running it.
-
-### Step H5: Verify and give a recovery path
-Show the resulting `git --no-pager log` / `git --no-pager status`, and tell the
-user how to undo it (`git reflog`, then reset to the prior ref) if they want to
-revert.
+Read shared/reference/git-manager-history.md now,
+and follow its Steps H1 to H5 in order.
 
 ## Output format
 
-For commit and pr: show the commands you ran, the commit message or PR text in a
-fenced block, and the resulting state.
-
-For history: the plan first (commands + effect + alternative), then, after
-confirmation, the result and the recovery path.
+commit, pr, and history mode: use the output format
+in the reference file your mode told you to read.
 
 For JSON output (when explicitly requested), use the two-step pattern:
 a short reasoning block first, then a single fenced ```json``` block
@@ -227,18 +133,4 @@ Common:
       command without showing it and getting confirmation.
 - [ ] I reported the actual result, including any command that failed.
 
-If commit:
-- [ ] New work went onto a feature branch, not directly onto the default branch
-      (unless the user directed otherwise).
-- [ ] Unrelated changes are in separate commits, not one blob.
-- [ ] The message is derived from `git --no-pager diff --staged`, passed via
-      `-m`/`-F`, and matches the repo's convention.
-
-If pr:
-- [ ] The summary reflects `<base>..HEAD`, not the work history.
-- [ ] The description covers changes, testing, and reviewer notes.
-
-If history:
-- [ ] I checked whether the history was published before rewriting it.
-- [ ] I used a non-interactive path (no blocking editor or pager).
-- [ ] I offered a reversible alternative and a recovery path (reflog).
+Then run the checklist at the end of the mode file you read.
