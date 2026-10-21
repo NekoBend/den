@@ -47,7 +47,7 @@ to = ")"
 
 # The cheatsheets ship with den (`den install cheatsheets`); without den the
 # directory the bullet names does not exist.
-[["shared/reference/python.md"]]
+[["shared/reference/python-progress.md"]]
 from = """- With den's cheatsheets installed (`den install cheatsheets`),
   copyable functions for every execution model are the files under
   `${XDG_DATA_HOME:-$HOME/.local/share}/den/cheatsheets/python/progress/`;
@@ -57,7 +57,7 @@ from = """- With den's cheatsheets installed (`den install cheatsheets`),
 """
 to = ""
 
-[["shared/reference/python.md"]]
+[["shared/reference/python-entry-point.md"]]
 from = """- With den's cheatsheets installed (`den install cheatsheets`),
   structured JSON output, file rotation and per-request context are in
   `${XDG_DATA_HOME:-$HOME/.local/share}/den/cheatsheets/python/logging-config.py`.
