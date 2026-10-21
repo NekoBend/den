@@ -8,7 +8,9 @@ enough detail to be reproduced.
 
 ## 1. Does the `## Self-check` block earn its lines?
 
-Every skill ends with a self-check list. The question was whether that
+Every skill ends with a self-check list (since the 2026-10 size reduction,
+code-audit's SKILL.md points to it in shared/reference/code-audit-output.md;
+the list itself is unchanged). The question was whether that
 block changes behavior at all, and in which direction, per model tier.
 
 **Design.** A/B, one variable: the code-audit skill with its
