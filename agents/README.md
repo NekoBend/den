@@ -40,13 +40,14 @@ agents/
     skills/<name>/          # the 9 skills
       SKILL.md              # name + description frontmatter + body
       examples/             # worked examples (one shape per file;
-                            # coding's python-* hold examples split from python)
+                            # coding's python-* and typescript-* hold examples
+                            # split from python and typescript)
       reference/            # skill-only reference files (code-audit's dimensions + rubric)
     shared/
       reference/*.md        # per-language + architecture / testing / schema-design
-                            # (python-*, powershell-pipeline and
+                            # (python-*, typescript-*, powershell-pipeline and
                             # architecture-readability hold sections split from
-                            # python, powershell and architecture),
+                            # python, typescript, powershell and architecture),
                             # plus documenter's doc-common / doc-reference / doc-guide /
                             # doc-genres / writing / japanese-style / confluence /
                             # translation,
