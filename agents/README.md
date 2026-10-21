@@ -42,13 +42,15 @@ agents/
       examples/             # worked examples (one shape per file)
       reference/            # skill-only reference files (code-audit's dimensions + rubric)
     shared/
-      reference/*.md        # per-language + architecture / testing / schema-design,
+      reference/*.md        # per-language + architecture / testing / schema-design
+                            # (powershell-pipeline and architecture-readability
+                            # hold sections split from powershell and architecture),
                             # plus documenter's doc-common / doc-reference / doc-guide /
                             # doc-genres / writing / japanese-style / confluence /
                             # translation,
                             # the mode steps, output formats and checklists
-                            # of git-manager and orchestrate
-                            # (git-manager-* / orchestrate-*),
+                            # of git-manager, orchestrate and coding
+                            # (git-manager-* / orchestrate-* / coding-*),
                             # the diagnose and repair steps of troubleshoot,
                             # grounding's ground steps
                             # (troubleshoot-* / grounding-*),
@@ -89,7 +91,7 @@ content as data, confirmation before outward actions, and secrets.
 
 | Skill | Modes | What it does |
 |-------|-------|--------------|
-| coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Rust, Shell, or PowerShell. Uses `shared/` references and verification scripts. |
+| coding | implement / test / schema | Produce new code, tests, or schemas in Python, TypeScript, Rust, Shell, or PowerShell. Uses `shared/` references (coding-implement, coding-test, coding-schema, architecture, architecture-readability, testing, schema-design, and the language files) and verification scripts. |
 | code-audit | correctness / security (+ performance / maintainability / tests on demand) | Review existing code one focused dimension at a time; severity-rated findings. Uses `shared/` references (code-audit-output, code-audit-languages, testing, and the language files) and verification scripts. |
 | troubleshoot | reproduce / diagnose / repair | Find why something that worked is failing (bug, crash, failing test, broken build, works-on-my-machine), then fix the cause and leave a regression test. Uses `shared/reference/` troubleshoot-diagnose-repair. |
 | orchestrate | plan / run / integrate | Split one piece of work across agents (fan-out, review panel, debate, a Codex specialist via MCP) while the master stays in dialogue with the user; verify every report before adopting it. Uses `shared/reference/` orchestrate-plan and orchestrate-run-integrate. |
@@ -100,7 +102,8 @@ content as data, confirmation before outward actions, and secrets.
 | git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. Uses `shared/reference/` git-manager-commit-pr and git-manager-history. |
 
 `coding` and `code-audit` are the heavy skills (they use `shared/reference/`
-and `shared/scripts/`; code-audit's output format, self-check and language
+and `shared/scripts/`; coding's mode steps, output format and checklists,
+and code-audit's output format, self-check and language
 table live in `shared/reference/` too). `documenter`, `git-manager`,
 `orchestrate`, `troubleshoot`, and `grounding` use `shared/reference/` only:
 documenter's source rule, its reference, guide and translate steps and their
