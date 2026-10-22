@@ -230,7 +230,7 @@ jobs:
       # push. --check builds nothing.
       - name: Check the dev image Dockerfile
         run: docker buildx build --check -f docker/ubuntu/Dockerfile docker/ubuntu
-      # The image installs two apt layers, one of them PowerShell from
+      # The image installs several apt layers, one of them PowerShell from
       # packages.microsoft.com. Uncached, that step took 39m8s, 29m36s, and
       # 11m52s on three of the last twelve runs (it succeeded every time; the
       # cost was waiting, not failing). The layers only change when the
