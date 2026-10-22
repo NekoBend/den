@@ -946,7 +946,8 @@ function Test-CacheSafe([string]$Path, [ref]$Reason) {
 # made again whenever the key differs: the tool upgraded or downgraded in place,
 # moved (starship's full init runs starship by the path it had), or run with other
 # arguments. A symlinked tool (a package manager's link) is keyed by the file the
-# link leads to, where .NET can follow it (pwsh 7.2+). Each PowerShell edition has
+# link leads to, where .NET can follow it (pwsh 7.2+), and a scoop shim also by the
+# program its .shim file names (before the arguments). Each PowerShell edition has
 # its own cache, <tool>-<suffix>.<Core|Desktop>.ps1: Windows PowerShell 5.1 keys a
 # symlinked tool on the link, so with one file between them, a user who opens both
 # made it again (ran the tool) at every switch. Commits the cache only on success +
@@ -969,7 +970,25 @@ function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix 
             if ($target -and $target.Exists) { $item = $target }
         } catch { $null = $_ }
     }
-    $key = '# den-cache {0}|{1}|{2}|{3}' -f $item.FullName, $item.Length, $item.LastWriteTimeUtc.Ticks, ($InvokeArgs -join ' ')
+    # A scoop shim, <name>.exe, is one small program scoop copies for every tool and
+    # leaves as it is when the tool upgrades; the <name>.shim beside it names the
+    # program it runs (`path = "..."`). starship's full init, printed fresh at every
+    # start before den cached it, would then stay cached across an upgrade, so the
+    # file that program is (its path, length and mtime) is part of the key too.
+    $shim = ''
+    $shimFile = [IO.Path]::ChangeExtension($item.FullName, '.shim')
+    if ([IO.File]::Exists($shimFile)) {
+        try {
+            foreach ($line in [IO.File]::ReadAllLines($shimFile)) {
+                if ($line -match '^\s*path\s*=\s*(.+?)\s*$') {
+                    $runs = [IO.FileInfo]::new([IO.Path]::Combine($item.DirectoryName, $Matches[1].Trim('"')))
+                    $shim = '{0}|{1}|{2}|' -f $runs.FullName, $runs.Length, $runs.LastWriteTimeUtc.Ticks
+                    break
+                }
+            }
+        } catch { $shim = '' }
+    }
+    $key = '# den-cache {0}|{1}|{2}|{3}{4}' -f $item.FullName, $item.Length, $item.LastWriteTimeUtc.Ticks, $shim, ($InvokeArgs -join ' ')
     # The key is read from a regular file only, never through a symlink (whose
     # target could be a device that never ends a line): a symlinked cache is made
     # again, and the move below replaces the link, not the file it points to.

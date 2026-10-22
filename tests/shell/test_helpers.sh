@@ -815,6 +815,26 @@ for edition in Core Desktop; do
     assert_eq "pwsh/Initialize-Cache BOM, $edition" "efbbbf" \
         "$(head -c 3 "$XDG_DATA_HOME/shell-cache/pwshkeytool-init.$edition.ps1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
 done
+# A scoop shim, <name>.exe, is one small program scoop copies for every tool and
+# leaves as it is when the tool upgrades; it runs the program its <name>.shim
+# names. The stand-in shim here runs app/real, which then upgrades.
+echo "[pwsh] Initialize-Cache: made again when the program a scoop shim runs changes"
+mkdir -p "$PK/shim" "$PK/app"
+printf '#!/bin/sh\nexec "%s/app/real" "$@"\n' "$PK" > "$PK/shim/pwshkeytool"
+chmod +x "$PK/shim/pwshkeytool"
+touch -d 2020-01-01 "$PK/shim/pwshkeytool"
+printf 'path = "%s/app/real"\n' "$PK" > "$PK/shim/pwshkeytool.shim"
+make_key_tool "$PK/app/real" v1
+pk "$PK/shim" "'init', 'powershell'" > /dev/null
+: > "$PK/runs"
+# Older scoop wrote the path without quotes; an args line may follow.
+printf 'path = %s/app/real\nargs = --quiet\n' "$PK" > "$PK/shim/pwshkeytool.shim"
+actual=$(pk "$PK/shim" "'init', 'powershell'")
+assert_eq "pwsh/Initialize-Cache scoop shim, nothing changed: from the cache" "key=v1:init powershell" "$actual"
+assert_eq "pwsh/Initialize-Cache scoop shim, nothing changed: no run" "" "$(cat "$PK/runs")"
+make_key_tool "$PK/app/real" v2 2020-02-02
+actual=$(pk "$PK/shim" "'init', 'powershell'")
+assert_eq "pwsh/Initialize-Cache scoop shim: the program it runs upgraded" "key=v2:init powershell" "$actual"
 rm -f "$PK_CACHE"
 
 # --- _DenFindApp: Get-Command -CommandType Application's first answer, without it ---
