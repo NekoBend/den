@@ -85,6 +85,10 @@ with production adoptions at Coinbase, Discord, Slack, Vercel, and Astro.
 One binary replaces ESLint + Prettier + import-sort
 with consistent formatting and 491 lint rules.
 **Run order:** `biome check --apply` then `tsc --noEmit`.
+`tsc` checks the project, not one file:
+run it as `tsc --noEmit -p <dir>` with the directory of the nearest `tsconfig.json`,
+because a file argument makes tsc ignore `tsconfig.json` (before TypeScript 6.0)
+or stop with error TS5112 (6.0 and later).
 
 ## 4. Naming
 

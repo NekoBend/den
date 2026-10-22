@@ -103,10 +103,10 @@ the language's standard tools:
   Python      ruff format --check, ruff check, ty check
               (with den installed, `den verify <file>` runs all three
               with the project's own config and venv)
-  TypeScript  prettier --check, eslint, tsc --noEmit
+  TypeScript  prettier --check, eslint, tsc --noEmit -p <tsconfig dir>
   Rust        cargo fmt --check, cargo clippy
-  Shell       shellcheck, shfmt -d
-  PowerShell  Invoke-ScriptAnalyzer
+  Shell       shellcheck, shfmt -d -i 2 -ci -s (no flags with an .editorconfig)
+  PowerShell  Invoke-ScriptAnalyzer -Settings @{Severity='Error'}
 
 When you modified existing files, also run
 ../../shared/scripts/check-broken-refs.py.

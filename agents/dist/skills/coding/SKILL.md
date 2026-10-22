@@ -103,10 +103,10 @@ checks (a lint script in its manifest, a Makefile target); otherwise run
 the language's standard tools:
 
   Python      ruff format --check, ruff check, ty check
-  TypeScript  prettier --check, eslint, tsc --noEmit
+  TypeScript  prettier --check, eslint, tsc --noEmit -p <tsconfig dir>
   Rust        cargo fmt --check, cargo clippy
-  Shell       shellcheck, shfmt -d
-  PowerShell  Invoke-ScriptAnalyzer
+  Shell       shellcheck, shfmt -d -i 2 -ci -s (no flags with an .editorconfig)
+  PowerShell  Invoke-ScriptAnalyzer -Settings @{Severity='Error'}
 
 When you modified existing files, also run
 shared/scripts/check-broken-refs.py.

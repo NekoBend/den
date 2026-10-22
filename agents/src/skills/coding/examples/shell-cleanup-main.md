@@ -89,5 +89,6 @@ Each is a real bug class that ships when the rule is forgotten.
   Single-bracket test subjects unquoted variables to word splitting and lacks `&&`, `||`, and `=~`.
   Prefer `[[ ]]` in Bash (shell-structure.md section 11).
 - **`eval` on user input.**
-  Passing user-controlled data to `eval` is arbitrary command execution.
-  Use namerefs (`declare -n`) for indirection instead (shell-security.md section 14).
+  Passing user-controlled data to `eval` is arbitrary command execution,
+  and so is a nameref (`declare -n`), `printf -v`, or `${!name}` on an unchecked input name.
+  Key an associative array by the input instead (shell-security.md section 14).
