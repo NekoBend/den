@@ -104,7 +104,7 @@ name what will run and get the user's yes before the first run.
 
 - the language's standard checks on each file under review
   (Python: ruff format --check, ruff check, ty check; TypeScript:
-  prettier --check, eslint, tsc --noEmit -p <tsconfig dir>;
+  prettier --check, eslint, tsc --noEmit -p <file's tsconfig>;
   Rust: cargo fmt --check, cargo clippy; Shell: shellcheck;
   PowerShell: Invoke-ScriptAnalyzer -Settings @{Severity='Error'})
 - shared/scripts/find-references.py --uses <symbol>

@@ -34,9 +34,12 @@ passed=0
 failed=0
 skipped=0
 
-# Capture tool output to a temp file so we can prefix it cleanly.
-tmp_out=$(mktemp 2>/dev/null || mktemp -t run-checks)
-trap 'rm -f "$tmp_out"' EXIT
+# Capture tool output to a temp file so we can prefix it cleanly. tsc's
+# .tsbuildinfo goes to the same temp directory.
+tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t run-checks)
+[ -n "$tmp_dir" ] || { echo "mktemp failed" >&2; exit 2; }
+tmp_out="$tmp_dir/out"
+trap 'rm -rf "$tmp_dir"' EXIT
 
 # run_tool <label> <command...>
 # Runs the command if the first token is on PATH, otherwise records SKIPPED.
@@ -103,6 +106,23 @@ _abs_dir() {
   (CDPATH='' cd -P -- "$(dirname -- "$1")" && pwd -P)
 }
 
+# _rel_path <dir> <path>
+# <path> relative to <dir>, both absolute: how tsc run from <dir> names it.
+_rel_path() {
+  local from="$1" up=""
+  while [ "$from" != / ]; do
+    case "$2" in
+      "$from"/*)
+        printf '%s%s\n' "$up" "${2#"$from"/}"
+        return 0
+        ;;
+    esac
+    from=$(dirname -- "$from")
+    up="../$up"
+  done
+  printf '%s%s\n' "$up" "${2#/}"
+}
+
 # _py_has_ruff_config <file>
 # Walk up from the file the way ruff itself discovers config (nearest
 # .ruff.toml / ruff.toml / pyproject.toml with [tool.ruff] wins). When a
@@ -121,14 +141,15 @@ _py_has_ruff_config() {
   done
 }
 
-# _tsc_verdict <file relative to the tsconfig.json directory> <tsc exit code>
-# Reads the output of 'tsc --pretty false --explainFiles' on stdin. tsc prints
-# each diagnostic as 'path(line,col): error TS<n>: message', with indented
-# continuation lines, and then --explainFiles names every file of the program
-# at column 0, both relative to the tsconfig.json directory. Prints the
-# verdict (FAIL, PASS, UNLISTED or STOPPED) and the number of errors in other
-# files on the first line, then the lines to show: the file's own
-# diagnostics for FAIL, the first lines of the other errors for STOPPED.
+# _tsc_verdict <file relative to the config's directory> <tsc exit code>
+# Reads the output of 'tsc --pretty false --explainFiles' run from the
+# config's directory on stdin. tsc prints each diagnostic as
+# 'path(line,col): error TS<n>: message', with indented continuation lines,
+# and then --explainFiles names every file of the program at column 0, both
+# relative to that directory. Prints the verdict (FAIL, PASS, UNLISTED or
+# STOPPED) and the number of errors in other files on the first line, then
+# the lines to show: the file's own diagnostics for FAIL, the first lines of
+# the other errors for STOPPED.
 _tsc_verdict() {
   TSC_REL="$1" TSC_RC="$2" awk '
     BEGIN { rel = ENVIRON["TSC_REL"]; rc = ENVIRON["TSC_RC"] + 0 }
@@ -155,23 +176,26 @@ _tsc_verdict() {
       code = substr($0, RSTART, RLENGTH)
       sub(/^.*TS/, "", code)
       code += 0
-      # so does an error in the config (tsconfig.json)
+      # so may an error in the config (an option tsc rejects)
       if (substr($0, 1, RSTART - 1) ~ /\.json$/) stopped = 1
-      # TS2xxx, TS7xxx and the unused-name errors come from the type
-      # checker, so it ran
+      # TS2xxx, TS7xxx, the override and possibly-null errors and the
+      # unused-name errors come from the type checker, so it ran
       if ((code >= 2000 && code < 3000) || (code >= 7000 && code < 8000) ||
+          (code >= 4112 && code <= 4117) || (code >= 18046 && code <= 18050) ||
           code == 6133 || code == 6138 || code == 6192 || code == 6196 ||
           code == 6198 || code == 6199 || code == 6205) checked = 1
       next
     }
+    NF { files++ }
     { kind = "" }
     END {
       # without a type-checker error, an error elsewhere (a syntax error)
-      # means tsc stopped before type-checking this file
+      # means tsc may have stopped before type-checking this file. A file
+      # the program leaves out is UNLISTED whatever else failed, unless tsc
+      # failed without listing any file.
       if (n) verdict = "FAIL"
-      else if (rc != 0 && (stopped || !checked)) verdict = "STOPPED"
-      else if (!listed) verdict = "UNLISTED"
-      else verdict = "PASS"
+      else if (listed) verdict = (rc != 0 && (stopped || !checked)) ? "STOPPED" : "PASS"
+      else verdict = (files || rc == 0) ? "UNLISTED" : "STOPPED"
       print verdict, others + 0
       if (verdict == "FAIL") for (i = 1; i <= n; i++) print mine[i]
       if (verdict == "STOPPED") for (i = 1; i <= m; i++) print other[i]
@@ -179,45 +203,165 @@ _tsc_verdict() {
   '
 }
 
+# _tsc_in <dir> <argument>...
+# Runs tsc from <dir>, its output in $tmp_out.
+_tsc_in() {
+  (CDPATH='' cd -- "$1" && shift && tsc "$@") >"$tmp_out" 2>&1
+}
+
+# _tsconfig_facts
+# Reads 'tsc --showConfig' on stdin: the config as tsc resolves it (extends
+# applied), as JSON indented four spaces a level. Prints 'checkJs' when it is
+# on, 'buildinfo' when it sets incremental, composite or a tsBuildInfoFile,
+# and 'ref <path>' for each reference as written, with tsc's
+# backslash-to-slash.
+_tsconfig_facts() {
+  awk '
+    { sub(/\r$/, "") }
+    /^    "references": \[/ { refs = 1; next }
+    refs && /^    [^ ]/ { refs = 0 }
+    refs && /^            "path": "/ {
+      p = $0
+      sub(/^            "path": "/, "", p)
+      sub(/",?$/, "", p)
+      gsub(/\\\\/, "/", p)
+      print "ref " p
+      next
+    }
+    /^        "checkJs": true,?$/ { print "checkJs" }
+    /^        "(incremental|composite)": true,?$/ { print "buildinfo" }
+    /^        "tsBuildInfoFile": / { print "buildinfo" }
+  '
+}
+
+# _ts_js_unchecked <file> <name to show> <checkJs: 1 or empty>
+# Prints why tsc reports no type errors in a JavaScript file of the program,
+# or nothing when it does: under checkJs or a // @ts-check comment, and with
+# no // @ts-nocheck. tsc honours both comments only before the first
+# statement; here @ts-check counts only in the comment lines that open the
+# file and @ts-nocheck counts anywhere, so a miss can cost a PASS, never
+# give one.
+_ts_js_unchecked() {
+  if grep -qiE '^[[:space:]]*///?[[:space:]]*@ts-nocheck([[:space:]:].*)?$' "$1"; then
+    echo "$2 has a // @ts-nocheck comment: tsc reports no type errors in it"
+  elif [ -z "$3" ] && ! awk '
+      NR == 1 && /^#!/ { next }
+      !/^[ \t]*(\/\/.*)?\r?$/ { exit }
+      tolower($0) ~ /^[ \t]*\/\/\/?[ \t]*@ts-check([ \t:\r].*)?$/ { found = 1; exit }
+      END { exit !found }
+    ' "$1"; then
+    echo "allowJs without checkJs: tsc reports no type errors in JavaScript ($2)"
+  fi
+}
+
+# _in_list <needle> <item>...: true when <needle> is one of the items.
+_in_list() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
 # _ts_typecheck <file> <extension>
 # tsc checks a project, not a file: given a file, TypeScript before 6.0
 # ignores tsconfig.json (paths, jsx, lib, strict) and 6.0 and later stop with
 # TS5112. So the nearest tsconfig.json above the file is checked as a
 # project from its own directory, and only this file's diagnostics FAIL.
-# A syntax error in another file or an error in the config stops tsc before
-# it type-checks anything, so those end in SKIPPED, never in PASS. With no
-# tsconfig.json, a .ts/.tsx file is checked alone from its own directory,
-# and JavaScript is SKIPPED: tsc reads it only in a project with allowJs or
-# checkJs.
+# When that program leaves the file out, the configs it references are tried
+# in turn (a solution-style tsconfig.json has "files": [] and only lists
+# references, so its own program is empty). Errors that may have stopped tsc
+# before it type-checked anything (a syntax error in another file, an error
+# in the config) end in SKIPPED, never in PASS, and so does JavaScript that
+# tsc reads but does not type-check: it reports type errors in JavaScript
+# only under checkJs or a // @ts-check comment. With no tsconfig.json, a
+# .ts/.tsx file is checked alone from its own directory, and JavaScript is
+# SKIPPED.
+#
+# tsc writes a .tsbuildinfo next to the config (or where tsBuildInfoFile
+# says) when the config has incremental or composite, so the check sends it
+# to the temp directory. A tsBuildInfoFile without either is an error
+# outside 'tsc -b' (create-vite's tsconfig.app.json sets one), so
+# --incremental comes along.
 _ts_typecheck() {
-  local dir base conf rel rc shown out verdict others
+  local dir path conf cfg cdir name rel rc shown out verdict others facts
+  local ref target i why queue first first_rel
   if ! command -v tsc >/dev/null 2>&1; then
     skip "typecheck" "tsc not installed"
     return 0
   fi
   dir=$(_abs_dir "$1")
-  base=$(basename -- "$1")
+  path="${dir%/}/$(basename -- "$1")"
   if ! conf=$(_find_up "$dir" tsconfig.json); then
     case "$2" in
       ts|tsx)
-        (cd -- "$dir" && tsc --noEmit "./$base") >"$tmp_out" 2>&1
+        _tsc_in "$dir" --noEmit "./${path##*/}"
         report "typecheck" "$?" "tsc --noEmit $1 (no tsconfig.json above it)"
         ;;
       *)
-        skip "typecheck" "no tsconfig.json above $1; tsc checks JavaScript only in a project with allowJs or checkJs"
+        skip "typecheck" "no tsconfig.json above $1; JavaScript is type-checked only through one, under checkJs or // @ts-check"
         ;;
     esac
     return 0
   fi
-  rel="${dir#"$conf"}"
-  rel="${rel#/}"
-  rel="${rel:+$rel/}$base"
-  shown="tsc --noEmit --pretty false --explainFiles -p $conf"
-  (cd -- "$conf" && tsc --noEmit --pretty false --explainFiles -p .) >"$tmp_out" 2>&1
-  rc=$?
-  out=$(_tsc_verdict "$rel" "$rc" <"$tmp_out")
-  verdict=$(printf '%s\n' "$out" | sed -n '1s/ .*//p')
+  first="${conf%/}/tsconfig.json"
+  first_rel=$(_rel_path "$conf" "$path")
+  queue=("$first")
+  i=0
+  while [ "$i" -lt "${#queue[@]}" ] && [ "$i" -lt 8 ]; do
+    cfg="${queue[$i]}"
+    i=$((i + 1))
+    cdir="${cfg%/*}"
+    cdir="${cdir:-/}"
+    name="${cfg##*/}"
+    rel=$(_rel_path "$cdir" "$path")
+    if ! _tsc_in "$cdir" --showConfig -p "./$name"; then
+      skip "typecheck" "tsc --showConfig -p $cfg reports errors in the config, so $rel was not checked (first lines below)"
+      head -n 10 "$tmp_out" | sed 's/^/             /'
+      return 0
+    fi
+    facts=$(_tsconfig_facts <"$tmp_out")
+    case "$facts" in
+      *buildinfo*) _tsc_in "$cdir" --noEmit --pretty false --explainFiles --incremental --tsBuildInfoFile "$tmp_dir/$i.tsbuildinfo" -p "./$name" ;;
+      *) _tsc_in "$cdir" --noEmit --pretty false --explainFiles -p "./$name" ;;
+    esac
+    rc=$?
+    out=$(_tsc_verdict "$rel" "$rc" <"$tmp_out")
+    verdict=$(printf '%s\n' "$out" | sed -n '1s/ .*//p')
+    [ "$verdict" = UNLISTED ] || break
+    # A reference names a config file, or a directory holding tsconfig.json,
+    # relative to the referencing config.
+    while IFS= read -r ref; do
+      case "$ref" in
+        "") continue ;;
+        /*) target="$ref" ;;
+        *) target="$cdir/$ref" ;;
+      esac
+      case "$target" in
+        *.json) ;;
+        *) target="${target%/}/tsconfig.json" ;;
+      esac
+      [ -f "$target" ] || continue
+      target="$(_abs_dir "$target")/${target##*/}"
+      _in_list "$target" "${queue[@]}" || queue+=("$target")
+    done <<EOF
+$(printf '%s\n' "$facts" | sed -n 's/^ref //p')
+EOF
+  done
+  shown="tsc --noEmit --pretty false --explainFiles -p $cfg"
   others=$(printf '%s\n' "$out" | sed -n '1s/.* //p')
+  if [ "$verdict" = PASS ]; then
+    case "$2" in
+      js|jsx|mjs|cjs)
+        why=$(_ts_js_unchecked "$1" "$rel" "$(printf '%s\n' "$facts" | sed -n 's/^checkJs$/1/p')")
+        if [ -n "$why" ]; then
+          skip "typecheck" "$why"
+          return 0
+        fi
+        ;;
+    esac
+  fi
   case "$verdict" in
     FAIL)
       printf '[%-9s] FAIL (%d) %s\n' "typecheck" "$rc" "$shown"
@@ -230,10 +374,11 @@ _ts_typecheck() {
       passed=$((passed + 1))
       ;;
     UNLISTED)
-      skip "typecheck" "$rel is not in the program of $conf/tsconfig.json (its include, exclude and files decide; JavaScript also needs allowJs or checkJs)"
+      [ "$i" -gt 1 ] && first="$first or of the configs it references ($((i - 1)) checked)"
+      skip "typecheck" "$first_rel is not in the program of $first (include, exclude and files decide; JavaScript also needs allowJs)"
       ;;
     *)
-      skip "typecheck" "tsc stopped before type-checking $rel: errors in other files or in the config (first lines below)"
+      skip "typecheck" "tsc -p $cfg may have stopped before type-checking $rel: errors in other files or in the config (first lines below)"
       if [ "$(printf '%s\n' "$out" | sed -n '$=')" -gt 1 ]; then
         printf '%s\n' "$out" | sed -e '1d' -e 's/^/             /'
       else

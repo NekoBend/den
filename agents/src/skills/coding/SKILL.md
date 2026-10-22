@@ -103,7 +103,7 @@ the language's standard tools:
   Python      ruff format --check, ruff check, ty check
               (with den installed, `den verify <file>` runs all three
               with the project's own config and venv)
-  TypeScript  prettier --check, eslint, tsc --noEmit -p <tsconfig dir>
+  TypeScript  prettier --check, eslint, tsc --noEmit -p <file's tsconfig>
   Rust        cargo fmt --check, cargo clippy
   Shell       shellcheck, shfmt -d -i 2 -ci -s (only -d with an .editorconfig)
   PowerShell  Invoke-ScriptAnalyzer -Settings @{Severity='Error'}

@@ -7,7 +7,9 @@
 
 setup() {
   SCRIPT="${BATS_TEST_DIRNAME}/../../agents/src/shared/scripts/run-checks.sh"
-  WORK="$(mktemp -d)"
+  # the physical path: the script cd -P's before it runs tsc, and the stubs
+  # record that directory (macOS's /var is a symlink to /private/var)
+  WORK="$(cd -P -- "$(mktemp -d)" && pwd -P)"
 }
 
 teardown() {
@@ -39,6 +41,57 @@ printf 'cwd=%s argv=%s\n' "\$PWD" "\$*" >> "$WORK/$1.log"
 exit "\$(cat "$WORK/$1.rc" 2>/dev/null || echo 0)"
 EOF
   chmod +x "$WORK/bin/$1"
+}
+
+# _stub_tsc: a fake tsc in $WORK/bin that logs like _stub. Given -p ./<name>,
+# a --showConfig run prints $WORK/<name>.show (an empty config without one)
+# and exits with the number in $WORK/<name>.show.rc; any other run prints
+# $WORK/<name>.out, else $WORK/tsc.out, and exits with the number in
+# $WORK/<name>.rc, else $WORK/tsc.rc (0 without either). Like tsc, it writes
+# the --tsBuildInfoFile it is given, and logs 'wrote <path>'.
+_stub_tsc() {
+  mkdir -p "$WORK/bin"
+  {
+    printf '#!/usr/bin/env bash\nW=%q\n' "$WORK"
+    cat <<'EOF'
+printf 'cwd=%s argv=%s\n' "$PWD" "$*" >> "$W/tsc.log"
+show=0 name=tsc
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --showConfig) show=1 ;;
+    --tsBuildInfoFile) shift; : > "$1" && printf 'wrote %s\n' "$1" >> "$W/tsc.log" ;;
+    -p) shift; name=${1##*/} ;;
+  esac
+  shift
+done
+if [ "$show" = 1 ]; then
+  if [ -f "$W/$name.show" ]; then cat "$W/$name.show"; else printf '{\n    "compilerOptions": {}\n}\n'; fi
+  exit "$(cat "$W/$name.show.rc" 2>/dev/null || echo 0)"
+fi
+out="$W/$name.out" rc="$W/$name.rc"
+[ -f "$out" ] || out="$W/tsc.out"
+[ -f "$rc" ] || rc="$W/tsc.rc"
+[ -f "$out" ] && cat "$out"
+exit "$(cat "$rc" 2>/dev/null || echo 0)"
+EOF
+  } > "$WORK/bin/tsc"
+  chmod +x "$WORK/bin/tsc"
+}
+
+# _show <file> <compilerOptions line>...: write a 'tsc --showConfig' result,
+# JSON indented four spaces a level as tsc prints it, with those options.
+_show() {
+  local f="$1" sep="" opt
+  shift
+  {
+    printf '{\n    "compilerOptions": {'
+    for opt in "$@"; do
+      printf '%s\n        %s' "$sep" "$opt"
+      sep=","
+    done
+    [ "$#" -gt 0 ] && printf '\n    '
+    printf '}\n}\n'
+  } > "$f"
 }
 
 # _run_stubbed <file>: run the script with the stubs and the system
@@ -209,17 +262,18 @@ EOF
   # regression: 'tsc --noEmit <file>' ignored tsconfig.json before TS 6.0
   # and fails with TS5112 from 6.0 on
   _ts_project
-  _stub tsc
+  _stub_tsc
   printf 'src/a.ts\n' > "$WORK/tsc.out"
   _run_stubbed "$WORK/proj/src/a.ts"
-  [[ "$output" == *"[typecheck] PASS"* ]]
-  grep -qx "cwd=$WORK/proj argv=--noEmit --pretty false --explainFiles -p ." "$WORK/tsc.log"
+  [[ "$output" == *"[typecheck] PASS      tsc --noEmit --pretty false --explainFiles -p $WORK/proj/tsconfig.json"* ]]
+  grep -qx "cwd=$WORK/proj argv=--showConfig -p ./tsconfig.json" "$WORK/tsc.log"
+  grep -qx "cwd=$WORK/proj argv=--noEmit --pretty false --explainFiles -p ./tsconfig.json" "$WORK/tsc.log"
 }
 
 @test "TypeScript: errors in other files do not fail this file (stub tsc)" {
   _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
   _ts_project
-  _stub tsc
+  _stub_tsc
   printf '%s\n' \
     "src/b.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'." \
     "src/a.ts" "  Matched by include pattern '**/*' in 'tsconfig.json'" "src/b.ts" \
@@ -236,29 +290,156 @@ EOF
 @test "TypeScript: a syntax error elsewhere or a config error is SKIPPED, never PASS (stub tsc)" {
   _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
   # tsc type-checks nothing while any file has a syntax error or the config
-  # has one, so this file's own type errors would not be reported
+  # has an option error, so this file's own type errors would not be reported
   _ts_project
-  _stub tsc
+  _stub_tsc
   printf '1\n' > "$WORK/tsc.rc"
   printf '%s\n' "src/b.ts(1,9): error TS1005: ';' expected." "src/a.ts" "src/b.ts" > "$WORK/tsc.out"
   _run_stubbed "$WORK/proj/src/a.ts"
-  [[ "$output" == *"[typecheck] SKIPPED   tsc stopped before type-checking src/a.ts"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   tsc -p $WORK/proj/tsconfig.json may have stopped before type-checking src/a.ts"* ]]
   [[ "$output" == *"src/b.ts(1,9): error TS1005"* ]]
   printf '%s\n' "tsconfig.json(3,5): error TS5101: Option 'baseUrl' is deprecated." "src/a.ts" > "$WORK/tsc.out"
   _run_stubbed "$WORK/proj/src/a.ts"
-  [[ "$output" == *"[typecheck] SKIPPED   tsc stopped before type-checking src/a.ts"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   tsc -p $WORK/proj/tsconfig.json may have stopped before type-checking src/a.ts"* ]]
+}
+
+@test "TypeScript: a config tsc cannot parse is SKIPPED before any check runs (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  # tsc --showConfig fails on what it cannot parse, an empty program
+  # included (TS18003), and the check never runs
+  _ts_project
+  _stub_tsc
+  printf '%s\n' "error TS18003: No inputs were found in config file '$WORK/proj/tsconfig.json'." > "$WORK/tsconfig.json.show"
+  printf '1\n' > "$WORK/tsconfig.json.show.rc"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   tsc --showConfig -p $WORK/proj/tsconfig.json reports errors in the config, so src/a.ts was not checked"* ]]
+  [[ "$output" == *"             error TS18003: No inputs were found"* ]]
+  [ "$(wc -l < "$WORK/tsc.log")" -eq 1 ]
+}
+
+@test "TypeScript: other files' checker errors outside TS2xxx/TS7xxx still mean tsc checked (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  _ts_project
+  _stub_tsc
+  printf '2\n' > "$WORK/tsc.rc"
+  for err in "TS18048: 'x' is possibly 'undefined'." "TS4114: This member must have an 'override' modifier because it overrides a member in the base class 'B'."; do
+    printf '%s\n' "src/b.ts(1,1): error $err" "src/a.ts" "src/b.ts" > "$WORK/tsc.out"
+    _run_stubbed "$WORK/proj/src/a.ts"
+    [[ "$output" == *"[typecheck] PASS"*"not counted: 1"* ]]
+  done
 }
 
 @test "TypeScript: a file the tsconfig.json program leaves out is SKIPPED (stub tsc)" {
   _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
   _ts_project
   printf 'export const c = 3;\n' > "$WORK/proj/src/c.js"
-  _stub tsc
+  _stub_tsc
   printf 'src/b.ts\n' > "$WORK/tsc.out"
   _run_stubbed "$WORK/proj/src/a.ts"
-  [[ "$output" == *"[typecheck] SKIPPED   src/a.ts is not in the program"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   src/a.ts is not in the program of $WORK/proj/tsconfig.json ("* ]]
   _run_stubbed "$WORK/proj/src/c.js"
-  [[ "$output" == *"[typecheck] SKIPPED   src/c.js is not in the program"*"allowJs or checkJs"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   src/c.js is not in the program"*"JavaScript also needs allowJs)"* ]]
+  # left out while other files fail is still left out, not a stop
+  printf '%s\n' "src/b.ts(1,9): error TS1005: ';' expected." "src/b.ts" > "$WORK/tsc.out"
+  printf '1\n' > "$WORK/tsc.rc"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   src/a.ts is not in the program"* ]]
+}
+
+@test "TypeScript: a solution-style tsconfig.json hands the file to the referenced config that lists it (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  # regression: create-vite's tsconfig.json has "files": [] and references
+  # only, so 'tsc -p' on it checked nothing, exited 0, and every file was
+  # SKIPPED as not in the program
+  mkdir -p "$WORK/app/src"
+  printf '{ "files": [], "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }] }\n' > "$WORK/app/tsconfig.json"
+  printf '{ "include": ["src"], "references": [{ "path": "." }] }\n' > "$WORK/app/tsconfig.app.json"
+  printf '{ "include": ["vite.config.ts"] }\n' > "$WORK/app/tsconfig.node.json"
+  printf 'export const ok = 1;\n' > "$WORK/app/src/ok.ts"
+  printf 'export const bad: number = "x";\n' > "$WORK/app/src/bad.ts"
+  printf 'export default {};\n' > "$WORK/app/vite.config.ts"
+  printf 'export const lost = 1;\n' > "$WORK/app/lost.ts"
+  _stub_tsc
+  printf '%s\n' '{' '    "compilerOptions": {},' '    "references": [' \
+    '        {' '            "path": "./tsconfig.app.json"' '        },' \
+    '        {' '            "path": "./tsconfig.node.json"' '        }' \
+    '    ],' '    "files": []' '}' > "$WORK/tsconfig.json.show"
+  # the app config points back at the solution: a cycle the walk must stop
+  printf '%s\n' '{' '    "compilerOptions": {},' '    "references": [' \
+    '        {' '            "path": "."' '        }' '    ]' '}' > "$WORK/tsconfig.app.json.show"
+  : > "$WORK/tsconfig.json.out"
+  printf '%s\n' "src/bad.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'." \
+    "src/bad.ts" "src/ok.ts" > "$WORK/tsconfig.app.json.out"
+  printf '2\n' > "$WORK/tsconfig.app.json.rc"
+  printf 'vite.config.ts\n' > "$WORK/tsconfig.node.json.out"
+  _run_stubbed "$WORK/app/src/ok.ts"
+  [[ "$output" == *"[typecheck] PASS      tsc --noEmit --pretty false --explainFiles -p $WORK/app/tsconfig.app.json (errors in other files, not counted: 1)"* ]]
+  _run_stubbed "$WORK/app/src/bad.ts"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[typecheck] FAIL (2) tsc --noEmit --pretty false --explainFiles -p $WORK/app/tsconfig.app.json"* ]]
+  [[ "$output" == *"             src/bad.ts(1,14): error TS2322"* ]]
+  _run_stubbed "$WORK/app/vite.config.ts"
+  [[ "$output" == *"[typecheck] PASS      tsc --noEmit --pretty false --explainFiles -p $WORK/app/tsconfig.node.json"* ]]
+  : > "$WORK/tsc.log"
+  _run_stubbed "$WORK/app/lost.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   lost.ts is not in the program of $WORK/app/tsconfig.json or of the configs it references (2 checked)"* ]]
+  [ "$(grep -c -- '--explainFiles -p ./tsconfig.json$' "$WORK/tsc.log")" -eq 1 ]
+  [ "$(grep -c -- '--explainFiles' "$WORK/tsc.log")" -eq 3 ]
+}
+
+@test "TypeScript: JavaScript is type-checked only under checkJs or // @ts-check (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  # regression: with allowJs alone, tsc lists a .js file in the program but
+  # reports no type errors in it, and the file got PASS
+  _ts_project
+  printf 'export const c = 3;\n' > "$WORK/proj/src/c.js"
+  printf '#!/usr/bin/env node\n// @ts-check\nexport const d = 4;\n' > "$WORK/proj/src/d.js"
+  printf '// @ts-nocheck\nexport const e = 5;\n' > "$WORK/proj/src/e.js"
+  printf 'export const f = 6;\n// @ts-check\n' > "$WORK/proj/src/f.js"
+  _stub_tsc
+  printf '%s\n' src/a.ts src/b.ts src/c.js src/d.js src/e.js src/f.js > "$WORK/tsc.out"
+  _show "$WORK/tsconfig.json.show" '"allowJs": true'
+  _run_stubbed "$WORK/proj/src/c.js"
+  [[ "$output" == *"[typecheck] SKIPPED   allowJs without checkJs: tsc reports no type errors in JavaScript (src/c.js)"* ]]
+  _run_stubbed "$WORK/proj/src/d.js"
+  [[ "$output" == *"[typecheck] PASS"* ]]
+  _run_stubbed "$WORK/proj/src/f.js"
+  [[ "$output" == *"[typecheck] SKIPPED   allowJs without checkJs"* ]]
+  _show "$WORK/tsconfig.json.show" '"allowJs": true' '"checkJs": true'
+  _run_stubbed "$WORK/proj/src/c.js"
+  [[ "$output" == *"[typecheck] PASS"* ]]
+  _run_stubbed "$WORK/proj/src/e.js"
+  [[ "$output" == *"[typecheck] SKIPPED   src/e.js has a // @ts-nocheck comment: tsc reports no type errors in it"* ]]
+  # tsc still reports a JavaScript file's syntax errors, and they FAIL
+  _show "$WORK/tsconfig.json.show" '"allowJs": true'
+  printf '%s\n' "src/c.js(1,14): error TS1005: ',' expected." src/a.ts src/c.js > "$WORK/tsc.out"
+  printf '1\n' > "$WORK/tsc.rc"
+  _run_stubbed "$WORK/proj/src/c.js"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[typecheck] FAIL (1)"* ]]
+}
+
+@test "TypeScript: an incremental config writes its .tsbuildinfo to a temp dir, not the tree (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  _ts_project
+  _stub_tsc
+  printf 'src/a.ts\n' > "$WORK/tsc.out"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [ "$(grep -c -- '--tsBuildInfoFile' "$WORK/tsc.log")" -eq 0 ]
+  # create-vite's tsconfig.app.json sets tsBuildInfoFile alone, which tsc
+  # rejects outside 'tsc -b' unless --incremental comes along
+  for opt in '"incremental": true' '"composite": true' '"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo"'; do
+    : > "$WORK/tsc.log"
+    _show "$WORK/tsconfig.json.show" "$opt"
+    _run_stubbed "$WORK/proj/src/a.ts"
+    [[ "$output" == *"[typecheck] PASS"* ]]
+    grep -q -- '--explainFiles --incremental --tsBuildInfoFile ' "$WORK/tsc.log"
+    info=$(sed -n 's/^wrote //p' "$WORK/tsc.log")
+    [ -n "$info" ]
+    [[ "$info" != "$WORK/"* ]]
+    [ ! -e "$info" ]
+    [ ! -e "$(dirname "$info")" ]
+  done
 }
 
 @test "TypeScript: a path with parentheses matches its own diagnostics (stub tsc)" {
@@ -266,7 +447,7 @@ EOF
   _ts_project
   mkdir -p "$WORK/proj/app/(auth)"
   printf 'export const p = 1;\n' > "$WORK/proj/app/(auth)/page.tsx"
-  _stub tsc
+  _stub_tsc
   printf '%s\n' \
     "app/(auth)/page.tsx(1,14): error TS2322: Type 'string' is not assignable to type 'number'." \
     "  The expected type comes from this declaration." \
@@ -284,12 +465,12 @@ EOF
   mkdir -p "$WORK/loose"
   printf 'export const x = 1;\n' > "$WORK/loose/x.ts"
   printf 'export const y = 1;\n' > "$WORK/loose/y.js"
-  _stub tsc
+  _stub_tsc
   _run_stubbed "$WORK/loose/x.ts"
   [[ "$output" == *"[typecheck] PASS      tsc --noEmit $WORK/loose/x.ts (no tsconfig.json above it)"* ]]
   grep -qx "cwd=$WORK/loose argv=--noEmit ./x.ts" "$WORK/tsc.log"
   _run_stubbed "$WORK/loose/y.js"
-  [[ "$output" == *"[typecheck] SKIPPED   no tsconfig.json above"*"allowJs or checkJs"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   no tsconfig.json above"*"under checkJs or // @ts-check"* ]]
   [ "$(wc -l < "$WORK/tsc.log")" -eq 1 ]
 }
 
@@ -325,22 +506,62 @@ EOF
   printf 'export const n: number = "x";\n' > "$WORK/proj/src/typed.ts"
   printf 'export const = ;\n' > "$WORK/proj/src/broken.ts"
   run "$SCRIPT" "$WORK/proj/src/typed.ts"
-  [[ "$output" == *"[typecheck] SKIPPED   tsc stopped before type-checking src/typed.ts"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   tsc -p $WORK/proj/tsconfig.json may have stopped before type-checking src/typed.ts"* ]]
 }
 
 @test "TypeScript (tsc): JavaScript is type-checked only in a project that takes it" {
   command -v tsc >/dev/null 2>&1 || skip "tsc not installed"
   _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
-  mkdir -p "$WORK/plain/src" "$WORK/checked/src"
+  mkdir -p "$WORK/plain/src" "$WORK/loose/src" "$WORK/checked/src"
   printf '{ "compilerOptions": { "noEmit": true }, "include": ["src"] }\n' > "$WORK/plain/tsconfig.json"
+  printf '{ "compilerOptions": { "allowJs": true, "noEmit": true }, "include": ["src"] }\n' > "$WORK/loose/tsconfig.json"
   printf '{ "compilerOptions": { "allowJs": true, "checkJs": true, "noEmit": true }, "include": ["src"] }\n' > "$WORK/checked/tsconfig.json"
   printf '/** @type {number} */\nexport const n = "x";\n' > "$WORK/plain/src/a.js"
+  # a .ts file keeps the program from being empty: on an empty one tsc
+  # stops with TS18003 instead of leaving a.js out
+  printf 'export const b = 1;\n' > "$WORK/plain/src/b.ts"
+  cp "$WORK/plain/src/a.js" "$WORK/loose/src/a.js"
   cp "$WORK/plain/src/a.js" "$WORK/checked/src/a.js"
   run "$SCRIPT" "$WORK/plain/src/a.js"
   [[ "$output" == *"[typecheck] SKIPPED   src/a.js is not in the program"* ]]
+  run "$SCRIPT" "$WORK/loose/src/a.js"
+  [[ "$output" == *"[typecheck] SKIPPED   allowJs without checkJs"* ]]
+  { printf '// @ts-check\n'; cat "$WORK/plain/src/a.js"; } > "$WORK/loose/src/a.js"
+  run "$SCRIPT" "$WORK/loose/src/a.js"
+  [[ "$output" == *"[typecheck] FAIL"* ]]
+  [[ "$output" == *"src/a.js(3,14): error TS2322"* ]]
   run "$SCRIPT" "$WORK/checked/src/a.js"
   [[ "$output" == *"[typecheck] FAIL"* ]]
   [[ "$output" == *"src/a.js(2,14): error TS2322"* ]]
+}
+
+@test "TypeScript (tsc): a create-vite tree is checked through its referenced configs, and no .tsbuildinfo lands in it" {
+  command -v tsc >/dev/null 2>&1 || skip "tsc not installed"
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  mkdir -p "$WORK/app/src"
+  printf '{ "files": [], "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }] }\n' > "$WORK/app/tsconfig.json"
+  cat > "$WORK/app/tsconfig.app.json" <<'EOF'
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
+EOF
+  printf '{ "compilerOptions": { "incremental": true, "strict": true, "noEmit": true }, "include": ["vite.config.ts"] }\n' > "$WORK/app/tsconfig.node.json"
+  printf 'export const ok: number = 1;\n' > "$WORK/app/src/ok.ts"
+  printf 'export const bad: number = "x";\n' > "$WORK/app/src/bad.ts"
+  printf 'export default {};\n' > "$WORK/app/vite.config.ts"
+  run "$SCRIPT" "$WORK/app/src/ok.ts"
+  [[ "$output" == *"[typecheck] PASS"*"-p $WORK/app/tsconfig.app.json (errors in other files, not counted: 1)"* ]]
+  run "$SCRIPT" "$WORK/app/src/bad.ts"
+  [[ "$output" == *"[typecheck] FAIL"*"-p $WORK/app/tsconfig.app.json"* ]]
+  [[ "$output" == *"src/bad.ts(1,14): error TS2322"* ]]
+  run "$SCRIPT" "$WORK/app/vite.config.ts"
+  [[ "$output" == *"[typecheck] PASS"*"-p $WORK/app/tsconfig.node.json"* ]]
+  [ -z "$(find "$WORK/app" -name '*.tsbuildinfo')" ]
 }
 
 @test "Rust (rustfmt): async fn in an edition-2021 crate passes" {

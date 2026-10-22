@@ -89,6 +89,9 @@ with consistent formatting and 491 lint rules.
 run it as `tsc --noEmit -p <dir>` with the directory of the nearest `tsconfig.json`,
 because a file argument makes tsc ignore `tsconfig.json` (before TypeScript 6.0)
 or stop with error TS5112 (6.0 and later).
+A `tsconfig.json` that only lists `references` (with `"files": []`) checks nothing with `-p` and exits 0,
+so `-p` must get the referenced config whose `include` covers the file (such as `tsconfig.app.json`).
+Fix tsc's errors in files you changed; name the others, do not fix them.
 
 ## 4. Naming
 
