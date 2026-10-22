@@ -719,8 +719,9 @@ cmd_code() {
 echo "[cmd] python, python3, pip and uv run no program by a bare name"
 # cmd looks a bare name up in the current directory before PATH, so a
 # python.exe, pip.exe or uv.exe kept at the top of a clone ran instead. In
-# quotes it is still bare: "python.exe" %* runs that one too.
-bare_re='(^|[[:space:]&|("])(python3?|pip3?|uv)\.exe'
+# quotes it is still bare: "python.exe" %* runs that one too, and so do a for /f
+# command string ('uv.exe python find') and a line that starts with @.
+bare_re="(^|[[:space:]&|(\"'@])(python3?|pip3?|uv)\.exe"
 bare=""
 for f in python python3 pip uv; do
     hits=$(cmd_code "$f" | grep -E "$bare_re" || true)
@@ -728,14 +729,13 @@ for f in python python3 pip uv; do
 "
 done
 assert_eq "cmd/python shims: no bare python.exe, pip.exe or uv.exe" "" "$bare"
-# The check itself: a bare name, quoted or not, is caught; a full path and
-# where.exe's $PATH: lookup are not.
-caught=$(printf '%s\n' 'python.exe %*' '"python.exe" %*' 'call "uv.exe" run' '(pip3.exe list)' \
-    '"%VIRTUAL_ENV%\Scripts\python.exe" %*' "where.exe \$PATH:uv.exe" | grep -E "$bare_re" || true)
-assert_eq "cmd/python shims: the bare-name check catches a quoted name" 'python.exe %*
-"python.exe" %*
-call "uv.exe" run
-(pip3.exe list)' "$caught"
+# The check itself: a bare name in each of those forms is caught; a full path
+# and where.exe's $PATH: lookup are not.
+must_catch=('python.exe %*' '"python.exe" %*' 'call "uv.exe" run' '(pip3.exe list)' \
+    "for /f \"delims=\" %%p in ('uv.exe python find') do set x=%%p" '@python.exe %*')
+caught=$(printf '%s\n' "${must_catch[@]}" '"%VIRTUAL_ENV%\Scripts\python.exe" %*' "where.exe \$PATH:uv.exe" |
+    grep -E "$bare_re" || true)
+assert_eq "cmd/python shims: the bare-name check catches each bare form" "$(printf '%s\n' "${must_catch[@]}")" "$caught"
 
 echo "[cmd] python3.cmd is python.cmd under another name"
 cmp -s "$CMD_BIN/python.cmd" "$CMD_BIN/python3.cmd" && same=yes || same=no
