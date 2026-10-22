@@ -135,7 +135,9 @@ Ways to get the native command:
 - **Silence the notice** (without changing behavior): `_DEN_WRAPPER_LOG=0`.
 
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
-tool, ignoring the toggle, and print no notice.
+tool, ignoring the toggle, and print no notice. cmd has only `findw`, and no
+`find` wrapper: typed `find` there stays Windows' `find.exe`, which reads piped
+text (`netstat -ano | find "8080"`) where `fd` reads none.
 
 On bash/zsh a wrapper that replaces a native command (`ls`, `cat`, `grep`,
 `find`) runs the modern tool only when typed at the prompt (`eval` and `$(...)`

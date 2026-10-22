@@ -24,6 +24,14 @@ echo "FFPROBE $*"
 MOCK
 chmod +x "$WORK/ffprobe"
 
+# A stand-in for Windows' clipboard command clip.exe, which Git Bash and pwsh
+# find on PATH: it reports what was piped into it.
+cat > "$WORK/clip" << 'MOCK'
+#!/bin/sh
+echo "CLIPBOARD $(cat)"
+MOCK
+chmod +x "$WORK/clip"
+
 # POSIX: prepend mock PATH before sourcing ffmpeg.sh
 FFMPEG_SH_SOURCE="$TESTTMP/ffmpeg_source.sh"
 make_noninteractive_source_copy "$FFMPEG_SH_GUARDED" "$FFMPEG_SH_SOURCE"
@@ -66,12 +74,12 @@ actual=$(run_bash "$FFMPEG_SH_TEST" 'tomp4 input.avi out.mp4 -c:v libx265')
 assert_contains "bash/tomp4 out+ovr file" "out.mp4" "$actual"
 assert_contains "bash/tomp4 out+ovr codec" "-c:v libx265" "$actual"
 
-echo "[bash] clip auto output"
-actual=$(run_bash "$FFMPEG_SH_TEST" 'clip input.mp4 00:01:00 00:02:00')
-assert_contains "bash/clip output" "input_clip.mp4" "$actual"
-assert_contains "bash/clip start" "-ss 00:01:00" "$actual"
-assert_contains "bash/clip end" "-to 00:02:00" "$actual"
-assert_contains "bash/clip copy" "-c copy" "$actual"
+echo "[bash] mclip auto output"
+actual=$(run_bash "$FFMPEG_SH_TEST" 'mclip input.mp4 00:01:00 00:02:00')
+assert_contains "bash/mclip output" "input_clip.mp4" "$actual"
+assert_contains "bash/mclip start" "-ss 00:01:00" "$actual"
+assert_contains "bash/mclip end" "-to 00:02:00" "$actual"
+assert_contains "bash/mclip copy" "-c copy" "$actual"
 
 echo "[bash] togif defaults"
 actual=$(run_bash "$FFMPEG_SH_TEST" 'togif input.mp4')
@@ -137,9 +145,9 @@ assert_eq "zsh/togif keeps the traps and TRAPINT, and the EXIT trap still runs" 
 TRAPINT kept
 user-exit" "$actual"
 
-echo "[zsh] clip auto output"
-actual=$(run_zsh "$FFMPEG_SH_TEST" 'clip input.mp4 00:01:00 00:02:00')
-assert_contains "zsh/clip output" "input_clip.mp4" "$actual"
+echo "[zsh] mclip auto output"
+actual=$(run_zsh "$FFMPEG_SH_TEST" 'mclip input.mp4 00:01:00 00:02:00')
+assert_contains "zsh/mclip output" "input_clip.mp4" "$actual"
 
 # =============================================================================
 # PowerShell tests
@@ -170,15 +178,15 @@ assert_eq "bash/minfo options applied to each call" "2" "$(printf '%s\n' "$actua
 err=$(run_bash "$FFMPEG_SH_TEST" 'minfo -show_streams' 2>&1 >/dev/null || true)
 assert_contains "bash/minfo no input is a usage error" "usage: minfo" "$err"
 
-# clip and thumbnail put -ss (and -to) AFTER -i, an output option: ffmpeg
+# mclip and thumbnail put -ss (and -to) AFTER -i, an output option: ffmpeg
 # decoded every frame up to the timestamp (read every packet, with -c copy)
 # and threw it away. Input seeking must come before -i, both together.
 for sh in bash zsh; do
-    echo "[$sh] clip and thumbnail seek on the input"
-    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'clip input.mp4 00:01:00 00:02:00')
-    assert_contains "$sh/clip seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c copy input_clip.mp4" "$actual"
-    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'clip input.mp4 00:01:00 00:02:00 out.mp4 -c:v libx264')
-    assert_contains "$sh/clip override seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c:v libx264 out.mp4" "$actual"
+    echo "[$sh] mclip and thumbnail seek on the input"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'mclip input.mp4 00:01:00 00:02:00')
+    assert_contains "$sh/mclip seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c copy input_clip.mp4" "$actual"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'mclip input.mp4 00:01:00 00:02:00 out.mp4 -c:v libx264')
+    assert_contains "$sh/mclip override seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c:v libx264 out.mp4" "$actual"
     actual=$("run_$sh" "$FFMPEG_SH_TEST" 'thumbnail input.mp4 00:00:30')
     assert_contains "$sh/thumbnail seeks before -i" "-ss 00:00:30 -i input.mp4 -frames:v 1 input.jpg" "$actual"
     # The documented override example: without -frames:v 1 ffmpeg wrote every
@@ -205,13 +213,20 @@ FFPROBE -hide_banner -v error -select_streams v:0 -i b.mp4" "$actual"
     assert_contains "$sh/tomp3 SONG.Mp3 accepted" "-b:a 192k SONG.Mp3" "$actual"
     err=$("run_$sh" "$FFMPEG_SH_TEST" 'tomp4 a.avi B.AVI' 2>&1 >/dev/null || true)
     assert_contains "$sh/tomp4 still refuses B.AVI" "does not end in .mp4" "$err"
+
+    # The video cutter was a function named clip, which took Windows'
+    # clipboard command over (clip.exe is on Git Bash's PATH): `... | clip`
+    # ran ffmpeg with no input file and copied nothing. It is mclip now.
+    echo "[$sh] clip is the clipboard command on PATH, not den's"
+    actual=$("run_$sh" "$FFMPEG_SH_TEST" 'echo copied | clip' 2>&1 || true)
+    assert_eq "$sh/piped clip reaches the clip program" "CLIPBOARD copied" "$actual"
 done
 
-echo "[pwsh] clip and thumbnail seek on the input"
-actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'clip input.mp4 00:01:00 00:02:00' | tr -d '\r')
-assert_contains "pwsh/clip seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c copy" "$actual"
-actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'clip input.mp4 00:01:00 00:02:00 out.mp4 -crf 18' | tr -d '\r')
-assert_contains "pwsh/clip override seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -crf 18 out.mp4" "$actual"
+echo "[pwsh] mclip and thumbnail seek on the input"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'mclip input.mp4 00:01:00 00:02:00' | tr -d '\r')
+assert_contains "pwsh/mclip seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c copy" "$actual"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'mclip input.mp4 00:01:00 00:02:00 out.mp4 -crf 18' | tr -d '\r')
+assert_contains "pwsh/mclip override seeks before -i" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -crf 18 out.mp4" "$actual"
 actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'thumbnail input.mp4 00:00:30' | tr -d '\r')
 assert_contains "pwsh/thumbnail seeks before -i" "-ss 00:00:30 -i input.mp4 -frames:v 1 input.jpg" "$actual"
 actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'thumbnail input.mp4 00:00:30 -vf scale=1920:-1' | tr -d '\r')
@@ -229,10 +244,20 @@ actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 input.avi -crf 18' | tr -d '\r')
 assert_contains "pwsh/tomp4 override crf" "-crf 18" "$actual"
 assert_not_contains "pwsh/tomp4 no default" "-c:v libx264" "$actual"
 
-echo "[pwsh] clip auto output"
-actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'clip input.mp4 00:01:00 00:02:00' | tr -d '\r')
-assert_contains "pwsh/clip output" "input_clip.mp4" "$actual"
-assert_contains "pwsh/clip copy" "-c copy" "$actual"
+echo "[pwsh] mclip auto output"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'mclip input.mp4 00:01:00 00:02:00' | tr -d '\r')
+assert_contains "pwsh/mclip output" "input_clip.mp4" "$actual"
+assert_contains "pwsh/mclip copy" "-c copy" "$actual"
+
+# den loaded as a profile loads it, the line typed at the prompt: a typed
+# `... | clip` ran den's video cutter in place of clip.exe. A script already
+# got clip.exe (_DenScopeOverrides); a typed line now does too.
+echo "[pwsh] a typed clip is the clipboard command on PATH, and mclip cuts"
+FFMPEG_DEN_PATH="\$env:PATH = '$WORK:/usr/bin:/bin'"
+actual=$(run_pwsh_den "$FFMPEG_DEN_PATH" "'copied' | clip" 2>&1 | tr -d '\r' || true)
+assert_eq "pwsh/typed piped clip reaches the clip program" "CLIPBOARD copied" "$actual"
+actual=$(run_pwsh_den "$FFMPEG_DEN_PATH" 'mclip input.mp4 00:01:00 00:02:00' 2>&1 | tr -d '\r' || true)
+assert_eq "pwsh/typed mclip cuts" "FFMPEG -hide_banner -loglevel error -y -ss 00:01:00 -to 00:02:00 -i input.mp4 -c copy input_clip.mp4" "$actual"
 
 echo "[pwsh] togif custom params"
 actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'togif input.mp4 out.gif 15 640' | tr -d '\r')

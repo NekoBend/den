@@ -208,13 +208,13 @@ out=$(run_lua aliases '
 H.boot{ env = { PATH = "C:\\Windows\\system32;C:\\tools", STARSHIP_CPU_INTEL = "stub" } }
 print("PATH=" .. H.env.PATH)
 print("execs=" .. #H.execs .. " popens=" .. #H.popens)
-for _, n in ipairs({ "ls", "find", "python", "again", ".3", "..", "g", "code" }) do
+for _, n in ipairs({ "ls", "findw", "python", "again", ".3", "..", "g", "code" }) do
     print(n .. "=" .. H.show(H.aliases[n]))
 end')
 assert_eq "cmd/aliases: in-process, by absolute path, PATH untouched" 'PATH=C:\Windows\system32;C:\tools
 execs=0 popens=0
 ls="C:\L\clink\bin\ls.cmd" $*
-find="C:\L\clink\bin\find.cmd" $*
+findw="C:\L\clink\bin\findw.cmd" $*
 python="C:\L\clink\bin\python.cmd" $*
 again="C:\L\clink\bin\again.cmd" $*
 .3="C:\L\clink\bin\up.cmd" 3
@@ -243,6 +243,18 @@ out=$(run_lua alias_path '
 H.boot{ env = { STARSHIP_CPU_INTEL = "stub" } }
 print("path=" .. H.show(H.aliases.path))')
 assert_eq "cmd/aliases: no alias over the path builtin" 'path=nil' "$out"
+
+# find was an alias for find.cmd, which ran fd whenever PATH had it. Clink
+# expands an alias after a | as well, so `netstat -ano | find "8080"` ran fd,
+# which reads no piped input and exits 0 without a match. Typed find is
+# find.exe again, at the start of a line and after a |; fd is findw.
+echo "[cmd] typed find stays find.exe (no alias), and fd is findw"
+out=$(run_lua alias_find '
+H.boot{ env = { STARSHIP_CPU_INTEL = "stub" } }
+print("find=" .. H.show(H.aliases.find))
+print("findw=" .. H.show(H.aliases.findw))')
+assert_eq "cmd/aliases: no alias over find.exe, findw runs findw.cmd" 'find=nil
+findw="C:\L\clink\bin\findw.cmd" $*' "$out"
 
 echo "[cmd] the shim folder an older den put on PATH is taken off again"
 out=$(run_lua path_strip '

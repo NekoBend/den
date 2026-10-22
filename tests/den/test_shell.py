@@ -71,7 +71,7 @@ def test_cmd_core_shims_present():
         "ls",
         "cat",
         "grep",
-        "find",
+        "findw",
         "la",
         "ll",  # wrappers
         "up",
@@ -116,8 +116,8 @@ def _cmd_code(name: str) -> list[str]:
     ]
 
 
-# The wrapper shims and the modern tool each one prefers. find.cmd is not
-# here: it keeps running find.exe after a failing fd (see its own test).
+# The wrapper shims and the modern tool each one prefers. findw.cmd is not
+# here: it has no native fallback and ignores the toggle (see its own test).
 _CMD_WRAPPERS = {
     "ls": "lsd",
     "la": "lsd",
@@ -148,18 +148,25 @@ def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
         assert code[-1] == "exit /b %errorlevel%", name
 
 
-def test_cmd_find_still_falls_back_to_find_exe_after_fd_fails():
-    # A DOS-style `find "text" file.txt` or `find /c /v "" file.txt` typed at
-    # the prompt makes fd exit non-zero (it reads file.txt as a search path),
-    # and the find.exe run after it is what answered. That stays as it was
-    # (what `find` should mean on cmd is not decided); only the lookup moved
-    # to System32's where.exe and fd's absolute path.
-    code = _cmd_code("find")
-    find_exe = "%SystemRoot%\\System32\\find.exe %*"
-    assert "where.exe $PATH:fd.exe" in "\n".join(code)
-    assert f'if defined _t "%_t%" %* || {find_exe}' in code
-    assert f"if not defined _t {find_exe}" in code
-    assert code[-1] == "exit /b %errorlevel%"
+def test_cmd_find_is_find_exe_and_fd_is_findw():
+    # find.cmd ran fd whenever PATH had it, and Clink expands an alias after
+    # a | too: `netstat -ano | find "8080"` ran fd, which reads no piped input
+    # and exits 0 without a match. cmd's find is find.exe again (no shim, so
+    # no alias), and findw runs fd as on bash/zsh and pwsh: whatever the
+    # toggle, with fd's exit code, and never find.exe after it. Without fd it
+    # says so and exits 1, as _wsfx does.
+    assert not (_CMD_BIN / "find.cmd").exists()
+    code = _cmd_code("findw")
+    joined = "\n".join(code)
+    assert "_DEN_WRAPPERS" not in joined
+    assert "find.exe" not in joined.lower()
+    assert "%SystemRoot%\\System32\\where.exe $PATH:fd.exe" in joined
+    assert code[code.index("if not defined _t (") + 1 :][:3] == [
+        ">&2 echo findw: fd is not installed.",
+        "exit /b 1",
+        ")",
+    ]
+    assert code[-2:] == ['"%_t%" %*', "exit /b %errorlevel%"]
 
 
 def test_cmd_shims_call_where_and_powershell_by_system32_path():

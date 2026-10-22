@@ -160,11 +160,13 @@ function minfo {
     foreach ($In in $pos) { ffprobe -hide_banner @extra -i $In }
 }
 
-# clip <input> <start> <end> [output] [-ffmpeg overrides] — Cut video segment.
-#   clip input.mp4 00:01:00 00:02:00                   → copy codec
-#   clip input.mp4 00:01:00 00:02:00 -c:v libx264      → re-encode
-#   clip input.mp4 00:01:00 00:02:00 out.mp4 -c:v h264 → custom output + override
-function clip {
+# mclip <input> <start> <end> [output] [-ffmpeg overrides] - Cut video segment.
+#   mclip input.mp4 00:01:00 00:02:00                   → copy codec
+#   mclip input.mp4 00:01:00 00:02:00 -c:v libx264      → re-encode
+#   mclip input.mp4 00:01:00 00:02:00 out.mp4 -c:v h264 → custom output + override
+# Not `clip`: that is Windows' clipboard command (clip.exe), and a function of
+# that name took a typed `... | clip` over.
+function mclip {
     $pos, $extra = _SplitPosExtra @args
     $In    = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Start = if ($pos.Count -gt 1) { $pos[1] } else { $null }
@@ -224,7 +226,7 @@ function thumbnail {
     $Out  = if ($pos.Count -gt 2) { $pos[2] } else { [IO.Path]::ChangeExtension($In, '.jpg') }
     if (-not (_AssertNoExtraPos 'thumbnail' $pos 3)) { return }
     # -ss before -i seeks the input instead of decoding every frame up to the
-    # time (clip says more). -frames:v 1 comes first in the override form too:
+    # time (mclip says more). -frames:v 1 comes first in the override form too:
     # without it ffmpeg writes every remaining frame to the one image file and
     # exits with an error; an override that sets -frames:v itself still wins.
     ffmpeg -hide_banner -loglevel error -y -ss $Time -i $In -frames:v 1 @extra $Out

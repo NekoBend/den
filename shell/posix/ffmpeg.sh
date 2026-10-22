@@ -211,11 +211,13 @@ _minfo_one() {
   return "$_mrc"
 }
 
-# clip <input> <start> <end> [output] [-ffmpeg overrides] — Cut video segment.
-#   clip input.mp4 00:01:00 00:02:00                   → copy codec
-#   clip input.mp4 00:01:00 00:02:00 -c:v libx264      → re-encode
-#   clip input.mp4 00:01:00 00:02:00 out.mp4 -c:v h264 → custom output + override
-clip() {
+# mclip <input> <start> <end> [output] [-ffmpeg overrides] - Cut video segment.
+#   mclip input.mp4 00:01:00 00:02:00                   → copy codec
+#   mclip input.mp4 00:01:00 00:02:00 -c:v libx264      → re-encode
+#   mclip input.mp4 00:01:00 00:02:00 out.mp4 -c:v h264 → custom output + override
+# Not `clip`: that is Windows' clipboard command (clip.exe), on Git Bash's PATH
+# too, and a function of that name took `... | clip` over.
+mclip() {
   _in="$1"; shift
   _ss="$1"; shift
   _to="$1"; shift
@@ -266,7 +268,7 @@ thumbnail() {
   [ -z "$_out" ] && _out="${_in%.*}.jpg"
   _ff_no_extra thumbnail "$@" || return 1
   # -ss before -i seeks the input instead of decoding every frame up to the
-  # time (clip says more). -frames:v 1 comes first in the override form too:
+  # time (mclip says more). -frames:v 1 comes first in the override form too:
   # without it ffmpeg writes every remaining frame to the one image file and
   # exits with an error; an override that sets -frames:v itself still wins.
   ffmpeg -hide_banner -loglevel error -y -ss "$_t" -i "$_in" -frames:v 1 "$@" "$_out"

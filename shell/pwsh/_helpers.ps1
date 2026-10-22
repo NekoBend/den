@@ -362,7 +362,7 @@ function _CoreutilsBin {
 # ========== den's commands at the prompt only ==========
 
 # A command den defines in place of one the session already had (ls, cat, cd, rm,
-# gc, gps, python, uv, clip, ...) runs den's version only when it is typed at the
+# gc, gps, python, uv, ...) runs den's version only when it is typed at the
 # prompt of an interactive session (CommandOrigin Runspace), or run directly by a
 # line that a typed `again` or `snippet` replays. Called from anywhere else (a
 # script, a module, a function, a script block such as ForEach-Object's, a

@@ -22,7 +22,7 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   `fixids` executable (below), which lives on `PATH` and runs from any context.
 - In **pwsh**, a command den defines in place of one the session already had when
   den loaded (`ls`, `cat`, `cd`, `rm`, `cp`, `mv`, `mkdir`, `gc`, `gcm`, `gl`, `gps`,
-  `gu`, `python`, `pip`, `uv`, `clip`, ...) is den's only when typed at the prompt of
+  `gu`, `python`, `pip`, `uv`, ...) is den's only when typed at the prompt of
   an interactive session, or in a line that a typed `again`, `snippet run` or
   `snippet pick` replays. Anywhere else (a script or a module run from the session,
   a function, a script block such as `ForEach-Object`'s, a `pwsh -File` or
@@ -58,8 +58,8 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   alias only where a command starts on a line typed at its prompt: at the start
   of the line, or after `|` or `&` (Clink's `doskey.enhanced`, on by default),
   not after `if`, `for ... do`, `start` or `cmd /c`. So a batch file, `cmd /c`,
-  any other program and starship's own probes get Windows' commands (System32
-  `find.exe`, the real `python`), and den's own commands (`mkcd`, `dg`, `back`,
+  any other program and starship's own probes get Windows' commands (the real
+  `python`, `pip` and `uv`), and den's own commands (`mkcd`, `dg`, `back`,
   `touch`, `head`, ...) do not exist there either. That is one difference from
   pwsh, where a script can call them.
 - Modern-tool wrappers obey the `_DEN_WRAPPERS` toggle (`toggle-wrapper`) and the
@@ -201,9 +201,11 @@ On cmd, a wrapper runs the modern tool whenever `PATH` has it and ends with
 the tool's exit code; the native command runs only when the tool is missing or
 the wrappers are off. A `grep` with no match therefore exits 1 instead of
 running `findstr` too, and a `cat` or `ls` with one bad operand prints once.
-`find` is the exception: as before, `find.exe` also runs when `fd` exits
-non-zero, which is how a DOS-style `find "text" file.txt` typed at the prompt
-still answers.
+cmd has no `find` wrapper: Clink expands an alias after a `|` too, and
+`netstat -ano | find "8080"` needs Windows' `find.exe`, which reads the piped
+text; `fd` ignores it, looks for file names instead and exits 0 when none
+match. Typed `find` is always `find.exe`; `findw` runs `fd`, whatever the
+toggle, and without `fd` says so and exits 1.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
@@ -212,9 +214,9 @@ still answers.
 | `lt` / `llt` | tree / long tree | ✓ | ✓ | ✓ |
 | `cat` | `bat` → native `cat` / `type` | ✓ | ✓ | ✓ |
 | `grep` | `rg` → native `grep` / `findstr` | ✓ | ✓ | ✓ |
-| `find` | `fd` → native `find` | ✓ | ✓ | ✓ |
+| `find` | `fd` → native `find` | ✓ | ✓ | native (`find.exe`) |
 | `ripgrep` | `rg` passthrough (no fallback) | ✓ | ✓ | — |
-| `catw` / `findw` / `grepw` / `lsw` | always bat / fd / rg / lsd | ✓ | ✓ | — |
+| `catw` / `findw` / `grepw` / `lsw` | always bat / fd / rg / lsd | ✓ | ✓ | `findw` only |
 | `toggle-wrapper` / `tgl-wr` | flip the wrappers on/off (`_DEN_WRAPPERS`) | ✓ | ✓ | ✓ |
 
 On Windows PowerShell 5.1, `lt` / `llt` need `lsd`: without it (or with the
@@ -352,7 +354,7 @@ Loads only when ffmpeg is installed. pwsh has the same set; cmd has none.
 | `tomp3` / `towav` / `toflac` | convert audio to mp3 / wav / flac; same argument shape and one-input rule as `tomp4` | ✓ | ✓ | — |
 | `togif` | convert to GIF (2-pass palette) | ✓ | ✓ | — |
 | `minfo <file...> [ffprobe args]` | media info via ffprobe, one report per file; the options from the first `-` word on go to every ffprobe call as given (`-of json`) | ✓ | ✓ | — |
-| `clip` | cut a video segment (stream copy by default); seeks in the input, so a late cut starts at once | ✓ | ✓ | — |
+| `mclip` | cut a video segment (stream copy by default); seeks in the input, so a late cut starts at once. Not named `clip`, which stays Windows' clipboard command | ✓ | ✓ | — |
 | `strip-audio` | remove the audio track | ✓ | ✓ | — |
 | `thumbnail` | extract a single frame as an image; seeks in the input, and ffmpeg args still yield one frame | ✓ | ✓ | — |
 
