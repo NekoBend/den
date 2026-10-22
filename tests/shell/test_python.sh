@@ -558,6 +558,44 @@ mock-uv run -- python -c 2
 mock-uv run -- python -c 3" "$actual"
 done
 
+# A session that loaded the python.ps1 from before the helpers existed (main at
+# 8e5eeba) keeps that file's toggle-uv, whose list names none of them. Its ON
+# dot-sources the updated file inside itself and copies only the names on its
+# list to global scope, so a helper defined there ended with the call, and
+# python could not find _DenPyRun. The old file comes from git: the test image
+# has no .git, so there this is skipped.
+OLD_PY_PS1_COMMIT=8e5eeba21fd73828f96c232f0d3250f442c4aebc
+OLD_PY_DIR="$WORK/old-python-ps1"
+mkdir -p "$OLD_PY_DIR"
+echo "[pwsh] toggle-uv OFF then ON in a session that loaded 8e5eeba's python.ps1, after an update in place: python, python3 and py run"
+if git -C "$DOTFILES" show "$OLD_PY_PS1_COMMIT:shell/pwsh/python.ps1" > "$OLD_PY_DIR/python.ps1" 2>/dev/null; then
+    {
+        echo "\$env:PATH = '$WORK' + [IO.Path]::PathSeparator + \$env:PATH"
+        echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
+        echo ". '$OLD_PY_DIR/python.ps1'"
+    } > "$OLD_PY_DIR/session.ps1"
+    actual=$(run_pwsh "$OLD_PY_DIR/session.ps1" "
+        $PS_SET_PROFILE
+        Set-Location -LiteralPath '$NOPROJ'
+        \$oldToggle = (Get-Command toggle-uv).Definition
+        python -c 0 6>\$null
+        Copy-Item -LiteralPath '$PYTHON_PS1' -Destination '$OLD_PY_DIR/python.ps1' -Force
+        toggle-uv *>\$null
+        toggle-uv *>\$null
+        python -c 1 6>\$null
+        python3 -c 2 6>\$null
+        py -c 3 6>\$null
+        \"TOGGLE-UV FROM 8e5eeba=[\$((Get-Command toggle-uv).Definition -ceq \$oldToggle)]\"
+    " 2>&1 | tr -d '\r') || true
+    assert_eq "pwsh/toggle-uv ON after an update from 8e5eeba's python.ps1" "mock-uv run -- python -c 0
+mock-uv run -- python -c 1
+mock-uv run -- python -c 2
+mock-uv run -- python -c 3
+TOGGLE-UV FROM 8e5eeba=[True]" "$actual"
+else
+    echo "  SKIP: pwsh/toggle-uv ON after an update from 8e5eeba's python.ps1 (no git, or no commit $OLD_PY_PS1_COMMIT, at $DOTFILES)"
+fi
+
 echo "[pwsh] toggle-uv OFF removes every override, also after an ON"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     $PS_SET_PROFILE

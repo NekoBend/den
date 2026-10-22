@@ -65,13 +65,19 @@ function pip3 {
   & uv pip @Args
 }
 
+# The three helpers python, python3 and py call are defined global:. toggle-uv
+# ON dot-sources this file inside itself and copies to global scope only the
+# names on its own list, and a session that loaded an older python.ps1 runs that
+# file's toggle-uv, whose list may not have them: a plain definition then ended
+# with the call, and python found no _DenPyRun.
+
 # _DenPyMarker - the pyproject.toml, .venv or pyvenv.cfg that uv run would find
 # from here: the first one in the current directory or a directory above it
 # ($null when there is none). uv takes a directory that holds a pyvenv.cfg for a
 # venv, whatever its name, and runs the python in it. Windows hands uv the
 # directory as PowerShell has it; Linux and macOS resolve its symbolic links
 # first, so there a linked directory's target is searched as well.
-function _DenPyMarker {
+function global:_DenPyMarker {
   $starts = [System.Collections.Generic.List[string]]::new()
   $starts.Add($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath)
   for ($i = 0; $i -lt $starts.Count -and $i -lt 16; $i++) {
@@ -99,7 +105,7 @@ function _DenPyMarker {
 # there is none. --system skips the .venv here, and --no-config the
 # .python-version, uv.toml and pyproject.toml here: a .python-version may name a
 # program in the repository, which uv would run to ask its version.
-function _DenPyExe {
+function global:_DenPyExe {
   if ($env:VIRTUAL_ENV) {
     foreach ($rel in 'Scripts/python.exe', 'bin/python') {
       $path = Join-Path $env:VIRTUAL_ENV $rel
@@ -129,7 +135,7 @@ function _DenPyExe {
 # Returns @{ Exe; Args }, or @{ Error } for the caller to write under its own
 # name; the caller reads them as ['Error'], since reading a missing key as
 # .Error is an error under a caller's Set-StrictMode.
-function _DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
+function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
   $PyArgs = @($PyArgs)
   $uv = _ResolveCmd 'uv' 'App'
   if (-not $uv) {
@@ -350,10 +356,12 @@ function vva {
 # toggle-uv → flip uv python/pip override on/off
 function toggle-uv {
   # The overrides and the helpers python, python3 and py call, as posix
-  # toggle-uv unsets them: ON copies each from the file it reads, so after den
-  # install updated python.ps1 in place python runs with that file's helpers,
-  # not the ones this session loaded before. A new helper goes here and in the
-  # list above.
+  # toggle-uv unsets them. ON copies each from the file it reads, and the file
+  # defines the helpers global: itself, so after den install updated python.ps1
+  # in place python runs with that file's helpers, not the ones this session
+  # loaded before. That holds also in a session whose toggle-uv came from an
+  # older python.ps1, whose list names no helper. A new helper goes here and in
+  # the list above, and is defined global: too.
   $overrides = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun'
   if ($env:_DEN_UV_OVERRIDE -ne '0') {
     foreach ($name in $overrides) { Remove-Item "Function:\$name" -ErrorAction SilentlyContinue }
