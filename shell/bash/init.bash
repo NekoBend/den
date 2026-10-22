@@ -8,12 +8,16 @@ case $- in *i*) ;; *) return;; esac
 # line in ~/.bashrc, or in the environment) is kept. HISTCONTROL gets den's
 # ignoreboth only when it is unset; HISTIGNORE gets each of den's again/sagain
 # patterns it does not hold yet, so loading this file again (~/.bashrc sourced
-# again, or reload with HISTIGNORE exported) adds none of them twice.
+# again, or reload with HISTIGNORE exported) adds none of them twice. A
+# pattern counts as held only first or after a ':' with no '\' before it:
+# bash does not split HISTIGNORE at '\:', so 'foo\:again' holds no again. (In
+# 'foo\\:again' the '\' itself is escaped and again is held; den still adds
+# one copy of it, which changes nothing.)
 HISTCONTROL=${HISTCONTROL-ignoreboth}; shopt -s histappend
 HISTSIZE=8192; HISTFILESIZE=8192
 for _den_hi in again 'again *' sagain 'sagain *'; do
     case ":${HISTIGNORE-}:" in
-        *":$_den_hi:"*) ;;
+        ":$_den_hi:"*|*[!\\]":$_den_hi:"*) ;;
         *) HISTIGNORE="${HISTIGNORE:+$HISTIGNORE:}$_den_hi" ;;
     esac
 done

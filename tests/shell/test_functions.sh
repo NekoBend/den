@@ -1571,6 +1571,22 @@ assert_eq "bash/init.bash: loaded twice, it adds the patterns once" \
     "ignoreboth|ls:again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=ls; . ~/.config/shell/init.bash')"
 assert_eq "bash/init.bash: values from the environment are kept" \
     "erasedups|ls:again:again *:sagain:sagain *" "$(hb_run : HISTCONTROL=erasedups HISTIGNORE=ls)"
+# bash does not split HISTIGNORE at a ':' with a '\' before it: 'foo\:again' is
+# one pattern, and den's again is not in it. Without an escaped ':', a pattern
+# first, after a ':' or after a trailing ':' gives what it gave before.
+assert_eq "bash/init.bash: an again after an escaped ':' is not held, den's is added" \
+    'ignoreboth|foo\:again:again:again *:sagain:sagain *' "$(hb_run "HISTIGNORE='foo\\:again'")"
+assert_eq "bash/init.bash: after an escaped ':' and loaded twice, it adds the patterns once" \
+    'ignoreboth|foo\:again:again:again *:sagain:sagain *' \
+    "$(hb_run "HISTIGNORE='foo\\:again'; . ~/.config/shell/init.bash")"
+assert_eq "bash/init.bash: den's patterns go after a HISTIGNORE of ls" \
+    "ignoreboth|ls:again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=ls')"
+assert_eq "bash/init.bash: an again first in HISTIGNORE is held" \
+    "ignoreboth|again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=again')"
+assert_eq "bash/init.bash: an again after a ':' is held" \
+    "ignoreboth|ls:again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=ls:again')"
+assert_eq "bash/init.bash: a trailing ':' is kept, den's patterns after it" \
+    "ignoreboth|ls::again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=ls:')"
 # reload execs $BASH, which reads ~/.bashrc and so loads init.bash again; an
 # exported HISTIGNORE comes back holding den's patterns already. $BASH is a
 # script that starts an interactive bash on the fixture's ~/.bashrc (not the
