@@ -1401,7 +1401,7 @@ pip=1" "$(printf '%s\n' "$actual" | tail -n +2)"
             python -c 'print(3)'
             python3 -c 'print(4)'
             py -c 'print(5)'
-        " 2>/dev/null | tr -d '\r')
+        " 2>/dev/null | tr -d '\r') || true
         assert_eq "$sh/python, python3 and py below a pyvenv.cfg" "3
 4
 5" "$actual"
@@ -1438,7 +1438,7 @@ pip done" "$(printf '%s\n' "$actual" | tail -n +2)"
         python -c 'print(3)' 3>\$null
         python3 -c 'print(4)' 3>\$null
         py -c 'print(5)' 3>\$null
-    " 2>/dev/null | tr -d '\r')
+    " 2>/dev/null | tr -d '\r') || true
     assert_eq "pwsh/python, python3 and py below a pyvenv.cfg" "3
 4
 5" "$actual"
