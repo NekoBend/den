@@ -226,6 +226,25 @@ hist_bash() {
     grep -v '^#[0-9]' "$hf"
 }
 
+# hist_init_bash <setup> <line>... - hist_bash with den's init.bash loading
+# proxy.sh, as ~/.bashrc does, from copies in HOME/.config/shell; <setup> is
+# what ~/.bashrc runs above den's line. zoxide and starship are stubs that print
+# no init, so init.bash loads nothing else.
+hist_init_bash() {
+    local setup=$1 hf="$HIST_DIR/bash_history"
+    shift
+    rm -rf "${HIST_DIR:?}"
+    mkdir -p "$HIST_DIR/.config/shell" "$HIST_DIR/stubs"
+    cp "$DOTFILES"/shell/posix/*.sh "$DOTFILES/shell/bash/init.bash" "$HIST_DIR/.config/shell/"
+    printf '#!/bin/sh\n' > "$HIST_DIR/stubs/zoxide"
+    printf '#!/bin/sh\n' > "$HIST_DIR/stubs/starship"
+    chmod +x "$HIST_DIR/stubs/zoxide" "$HIST_DIR/stubs/starship"
+    printf '%s\n' "HISTFILE='$hf'" "$setup" '. ~/.config/shell/init.bash' > "$HIST_RC"
+    printf '%s\n' "$@" | env -i HOME="$HIST_DIR" PATH="$HIST_DIR/stubs:$PATH" TERM=dumb XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+        XDG_CACHE_HOME="$HIST_DIR/.cache" bash --rcfile "$HIST_RC" -i > "$HIST_OUT" 2>&1
+    grep -v '^#[0-9]' "$hf"
+}
+
 # hist_zsh <setup> <line>... - the same with zsh -i (no global rc files), with
 # proxy.sh loaded twice, as a reload of the config would.
 hist_zsh() {
@@ -326,6 +345,18 @@ echo "[bash] the user's HISTIGNORE is left as it was and still applies"
 actual=$(hist_bash "HISTIGNORE='echo mine'" 'echo mine' "$SECRET_LINE" 'echo "HI=$HISTIGNORE"')
 assert_eq "bash/history: HISTIGNORE still applies" "echo \"HI=\$HISTIGNORE\"" "$actual"
 assert_contains "bash/history: HISTIGNORE unchanged" "HI=echo mine" "$(cat "$HIST_OUT")"
+
+# init.bash keeps a HISTCONTROL and a HISTIGNORE set above den's line (it used
+# to replace both with its own). Under the user's ignoredups a line typed with a
+# leading space is saved, so proxy add takes such a line out itself; the user's
+# HISTIGNORE and den's again patterns, added to it, keep their lines out.
+reset_conf
+echo "[bash] init.bash keeps the user's HISTCONTROL and HISTIGNORE, and a password still stays out"
+actual=$(hist_init_bash "HISTCONTROL=ignoredups; HISTIGNORE='echo mine'" \
+    'echo before' ' echo spaced' 'echo mine' 'again 0' " $SECRET_LINE" "$SECRET_LINE" 'echo after')
+assert_eq "bash/history: under init.bash, the user's settings, den's again pattern and proxy add all apply" "echo before
+ echo spaced
+echo after" "$actual"
 
 # A subshell has a copy of the history list: the line stays, and proxy says how
 # to take it out.

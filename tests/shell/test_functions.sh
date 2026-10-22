@@ -1535,6 +1535,60 @@ else
     echo "  SKIP: bash/init.bash real zoxide and starship (not both installed)"
 fi
 
+# init.bash keeps a HISTCONTROL and a HISTIGNORE set before it runs (above
+# den's line in ~/.bashrc, or in the environment); it used to assign both, and
+# the user's values were lost. HISTCONTROL gets den's ignoreboth only when it is
+# unset, and HISTIGNORE each of den's again/sagain patterns it lacks, after the
+# user's own and once, however often init.bash loads. hb_run runs <setup> (the
+# lines above den's line), then init.bash, in an interactive bash that gets
+# only the environment it is given (env -i: an exported HISTCONTROL of the
+# caller's would pass for the user's), and prints "HISTCONTROL|HISTIGNORE".
+echo "[bash] init.bash: a HISTCONTROL and a HISTIGNORE set before it are kept"
+HB="$WORK/hbinit"
+rm -rf "$HB"
+mkdir -p "$HB/home/.config/shell"
+cp "$DOTFILES"/shell/posix/*.sh "$DOTFILES/shell/bash/init.bash" "$HB/home/.config/shell/"
+hb_path=$(path_without zoxide starship)
+hb_bash=$(command -v bash)
+# hb_run <setup> [NAME=value...] - the NAME=value pairs go into the environment
+hb_run() {
+    local setup=$1
+    shift
+    (cd "$HB/home" && env -i HOME="$HB/home" PATH="$hb_path" TERM=dumb XDG_CACHE_HOME="$HB/home/.cache" \
+        XDG_CONFIG_HOME="$HB/home/.config" "$@" "$hb_bash" --norc -i -c \
+        "$setup; . ~/.config/shell/init.bash; printf '%s|%s\n' \"\${HISTCONTROL-unset}\" \"\${HISTIGNORE-unset}\"" \
+        2>/dev/null </dev/null)
+}
+assert_eq "bash/init.bash: with nothing set, den's ignoreboth and again patterns" \
+    "ignoreboth|again:again *:sagain:sagain *" "$(hb_run :)"
+assert_eq "bash/init.bash: the user's HISTCONTROL and HISTIGNORE kept, den's patterns after them" \
+    "ignoredups|ls:bg:again:again *:sagain:sagain *" "$(hb_run "HISTCONTROL=ignoredups; HISTIGNORE='ls:bg'")"
+assert_eq "bash/init.bash: an empty HISTCONTROL is kept" \
+    "|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=')"
+assert_eq "bash/init.bash: only the again patterns HISTIGNORE lacks are added" \
+    "ignoreboth|sagain *:ls:again:again *:sagain" "$(hb_run "HISTIGNORE='sagain *:ls:again'")"
+assert_eq "bash/init.bash: loaded twice, it adds the patterns once" \
+    "ignoreboth|ls:again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=ls; . ~/.config/shell/init.bash')"
+assert_eq "bash/init.bash: values from the environment are kept" \
+    "erasedups|ls:again:again *:sagain:sagain *" "$(hb_run : HISTCONTROL=erasedups HISTIGNORE=ls)"
+# reload execs $BASH, which reads ~/.bashrc and so loads init.bash again; an
+# exported HISTIGNORE comes back holding den's patterns already. $BASH is a
+# script that starts an interactive bash on the fixture's ~/.bashrc (not the
+# system's bash.bashrc) and prints HISTIGNORE there.
+printf '%s\n' '. ~/.config/shell/init.bash' > "$HB/home/.bashrc"
+cat > "$HB/rebash" <<EOF
+#!/bin/sh
+exec '$hb_bash' --rcfile "\$HOME/.bashrc" -i -c 'printf "after reload: %s\n" "\$HISTIGNORE"'
+EOF
+chmod +x "$HB/rebash"
+out=$(cd "$HB/home" && env -i HOME="$HB/home" PATH="$hb_path" TERM=dumb XDG_CACHE_HOME="$HB/home/.cache" \
+    XDG_CONFIG_HOME="$HB/home/.config" HISTIGNORE=ls "$hb_bash" --rcfile "$HB/home/.bashrc" -i -c \
+    "printf 'loaded: %s\n' \"\$HISTIGNORE\"; BASH='$HB/rebash'; reload" 2>/dev/null </dev/null)
+assert_eq "bash/init.bash: reload keeps an exported HISTIGNORE and adds den's patterns once" \
+    "loaded: ls:again:again *:sagain:sagain *
+after reload: ls:again:again *:sagain:sagain *" "$out"
+rm -rf "$HB"
+
 # =============================================================================
 # Zsh tests
 # =============================================================================

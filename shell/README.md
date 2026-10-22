@@ -256,8 +256,9 @@ after it a `:` before the last `@` once each `://` is taken out. So on zsh and
 pwsh a line that only looks like one (`echo proxy add c http://al:pw@p`) is
 left out too, and in every shell `proxy add` behind an alias is not seen. den
 changes no history setting, so the ones in effect still apply: `HISTIGNORE` /
-`HISTCONTROL` (init.bash sets both as it loads, so a value set before it is
-replaced), `HISTORY_IGNORE` and a `zshaddhistory` of your own, and an
+`HISTCONTROL` (init.bash keeps a value set before it; see Load flow and caches,
+below), `HISTORY_IGNORE` (init.zsh sets it as it loads, so a value set before
+it is replaced) and a `zshaddhistory` of your own, and an
 `AddToHistoryHandler` set before init.ps1 (den's handler chains to it, and a
 line it leaves out stays out).
 
@@ -427,6 +428,14 @@ itself).
 (wrappers, functions, aliases, hwinfo, python, ffmpeg, parallel) -> cached init
 of zoxide and starship. zsh and PowerShell mirror this.
 
+- History: init.bash sets `HISTSIZE` / `HISTFILESIZE` to 8192, replacing
+  values set before it, and turns on `histappend`. A `HISTCONTROL` set before
+  it (above den's line in `~/.bashrc`, or in the environment), an empty one
+  included, is kept; only without one does it set `ignoreboth`. To
+  `HISTIGNORE` it adds the patterns that keep `again` / `sagain` lines out of
+  the history, after yours, each once however often it loads. init.zsh sets
+  `HISTFILE`, `HISTSIZE` / `SAVEHIST` (8192) and `HISTORY_IGNORE` (the
+  `again` / `sagain` pattern) as it loads, replacing values set before it.
 - `~/.cache/shell/` holds the zoxide/starship init caches. They regenerate when
   the tool binary is newer than the cache, and are sourced only if they are a
   regular file owned by you (symlink and owner guarded).

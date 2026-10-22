@@ -4,9 +4,20 @@
 case $- in *i*) ;; *) return;; esac
 [[ -z "$BASH_VERSION" ]] && return
 
-HISTCONTROL=ignoreboth; shopt -s histappend
+# A HISTCONTROL or HISTIGNORE already set when this file runs (above den's
+# line in ~/.bashrc, or in the environment) is kept. HISTCONTROL gets den's
+# ignoreboth only when it is unset; HISTIGNORE gets each of den's again/sagain
+# patterns it does not hold yet, so loading this file again (~/.bashrc sourced
+# again, or reload with HISTIGNORE exported) adds none of them twice.
+HISTCONTROL=${HISTCONTROL-ignoreboth}; shopt -s histappend
 HISTSIZE=8192; HISTFILESIZE=8192
-HISTIGNORE="again:again *:sagain:sagain *"
+for _den_hi in again 'again *' sagain 'sagain *'; do
+    case ":${HISTIGNORE-}:" in
+        *":$_den_hi:"*) ;;
+        *) HISTIGNORE="${HISTIGNORE:+$HISTIGNORE:}$_den_hi" ;;
+    esac
+done
+unset _den_hi
 
 # ============================================================================
 # Custom configuration
