@@ -179,9 +179,10 @@ function py {
 # toggle-uv leaves _DEN_UV_OVERRIDE in the environment, so a reload (a new pwsh)
 # or a child pwsh inherits its OFF: drop the overrides again, as toggle-uv left
 # them, or its next call would take the OFF branch again and change nothing.
-# toggle-uv's ON sets it to 1 before it reads this file. Parity with python.sh.
+# toggle-uv's ON sets it to 1 before it reads this file. Parity with python.sh,
+# down to the helpers python, python3 and py call: the same names as toggle-uv.
 if ($env:_DEN_UV_OVERRIDE -eq '0') {
-  foreach ($_uvOverride in 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage') {
+  foreach ($_uvOverride in 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun') {
     Remove-Item "Function:\$_uvOverride" -ErrorAction SilentlyContinue
   }
   Remove-Variable _uvOverride -ErrorAction SilentlyContinue
@@ -348,7 +349,12 @@ function vva {
 
 # toggle-uv → flip uv python/pip override on/off
 function toggle-uv {
-  $overrides = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage'
+  # The overrides and the helpers python, python3 and py call, as posix
+  # toggle-uv unsets them: ON copies each from the file it reads, so after den
+  # install updated python.ps1 in place python runs with that file's helpers,
+  # not the ones this session loaded before. A new helper goes here and in the
+  # list above.
+  $overrides = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun'
   if ($env:_DEN_UV_OVERRIDE -ne '0') {
     foreach ($name in $overrides) { Remove-Item "Function:\$name" -ErrorAction SilentlyContinue }
     $env:_DEN_UV_OVERRIDE = '0'

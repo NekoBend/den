@@ -517,7 +517,7 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     $PS_SET_PROFILE
     toggle-uv *>\$null
     toggle-uv *>\$null
-    \$missing = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage' |
+    \$missing = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun' |
         Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
     \"ENV=[\$env:_DEN_UV_OVERRIDE] MISSING=[\$(\$missing -join ',')]\"
 " | tr -d '\r')
@@ -534,10 +534,34 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
 " 2>/dev/null | tr -d '\r')
 assert_eq "pwsh/toggle-uv ON pip goes to uv pip" "mock-uv pip install rich" "$actual"
 
+# den install rewrites python.ps1 in place, so the helpers python, python3 and
+# py call can be older in a session than in the file, or missing from it. ON
+# copies them from the file it reads, with python.
+echo "[pwsh] toggle-uv OFF then ON after an update in place: python, python3 and py run"
+for helpers in older missing; do
+    case $helpers in
+        older) setup="Set-Item \"Function:global:\$n\" { throw 'a helper from before the update ran' }" ;;
+        *) setup="Remove-Item \"Function:\$n\"" ;;
+    esac
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        $PS_SET_PROFILE
+        Set-Location -LiteralPath '$NOPROJ'
+        foreach (\$n in '_DenPyMarker', '_DenPyExe', '_DenPyRun') { $setup }
+        toggle-uv *>\$null
+        toggle-uv *>\$null
+        python -c 1 6>\$null
+        python3 -c 2 6>\$null
+        py -c 3 6>\$null
+    " 2>&1 | tr -d '\r') || true
+    assert_eq "pwsh/toggle-uv ON after an update, helpers $helpers" "mock-uv run -- python -c 1
+mock-uv run -- python -c 2
+mock-uv run -- python -c 3" "$actual"
+done
+
 echo "[pwsh] toggle-uv OFF removes every override, also after an ON"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     $PS_SET_PROFILE
-    \$names = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage'
+    \$names = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun'
     toggle-uv *>\$null
     \$left1 = \$names | Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
     toggle-uv *>\$null
@@ -575,7 +599,7 @@ echo "[pwsh] _DEN_UV_OVERRIDE=0 at load: no overrides, and one toggle-uv turns t
 actual=$(_DEN_UV_OVERRIDE=0 pwsh -NoProfile -NonInteractive -Command "
     . '$PYTHON_PS1_COMBINED'
     $PS_SET_PROFILE
-    \$left = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage' |
+    \$left = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun' |
         Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
     \$missing = 'va', 'vd', 'vv', 'vva', 'toggle-uv', 'tgl-uv' |
         Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
