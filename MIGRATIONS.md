@@ -25,6 +25,16 @@ find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
      \( -name go.md -o -name java.md -o -name csharp.md \) 2>/dev/null
 ```
 
+On Windows, also check for the cmd shim that section 8 deletes:
+
+```bat
+dir "%LOCALAPPDATA%\clink\bin\find.cmd"
+```
+
+```powershell
+Test-Path "$env:LOCALAPPDATA\clink\bin\find.cmd"
+```
+
 ## 1. `code-review` renamed to `code-audit` (2026-08, #57)
 
 The skill was renamed because `code-review` collided with Claude Code's
