@@ -315,6 +315,28 @@ def test_uninstall_shell_round_trip(tmp_path, monkeypatch):
     assert (tmp_path / ".config").is_dir()  # boundary never removed
 
 
+def test_uninstall_shell_takes_the_zshenv_line_back(tmp_path, monkeypatch):
+    from den import _shell
+    from den._shell import install_shell
+    from den._uninstall import _uninstall_shell
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(
+        _shell.shutil, "which", lambda name, path=None: "/x/zsh" if name == "zsh" else None
+    )
+    assert install_shell(["--no-extras", "--no-bin"]) == 0
+    assert (tmp_path / ".zshenv").read_text() == (
+        "# ===== den =====\nskip_global_compinit=1\n"
+    )
+    assert _uninstall_shell(["--yes"]) == 0
+    assert not (tmp_path / ".zshenv").exists()  # den created it: removed
+    # A ~/.zshenv of the user's own keeps everything but den's block.
+    (tmp_path / ".zshenv").write_text("export EDITOR=vi\n")
+    assert install_shell(["--no-extras", "--no-bin"]) == 0
+    assert _uninstall_shell(["--yes"]) == 0
+    assert (tmp_path / ".zshenv").read_text() == "export EDITOR=vi\n"
+
+
 def test_uninstall_shell_non_tty_refuses_without_yes(tmp_path, monkeypatch):
     from den._shell import install_shell
     from den._uninstall import _uninstall_shell

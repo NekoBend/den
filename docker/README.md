@@ -159,9 +159,10 @@ shell, and runs `dev`'s two forms above against it.
 For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`: den's
 `init.zsh` runs `compinit` itself, so the extra full `compinit` that Ubuntu's
 `/etc/zsh/zshrc` runs before den's would only add about 12 ms to every
-shell. den's `compinit -C` reuses `~/.zcompdump` as it is, so after you add
-completion functions (an apt package, a new tool), delete `~/.zcompdump` and
-start a new shell. A new container starts without one.
+shell. den's `compinit -C` reuses `~/.zcompdump` as it is while the dump is
+less than a day old; an older one gets the full `compinit`, which takes in
+completion functions added since (an apt package, a new tool). To have them at
+once, run `reload`, which deletes the dump. A new container starts without one.
 
 ## Keeping state across rebuilds
 

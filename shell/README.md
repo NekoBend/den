@@ -17,7 +17,9 @@ den install shell --no-extras # skip the optional helper modules
 ```
 
 It copies the config into `~/.config/shell/` (POSIX) or the `$PROFILE` dir
-(PowerShell) and adds a source line to your `~/.bashrc` / `~/.zshrc`.
+(PowerShell) and adds a source line to your `~/.bashrc` / `~/.zshrc`. For zsh
+it also adds `skip_global_compinit=1` to `~/.zshenv` (see zsh completion
+below); `den uninstall shell` takes each of these blocks out again.
 
 ### zsh plugins
 
@@ -36,6 +38,22 @@ release tag and is deleted if HEAD does not match the pinned commit. Without
 the flag nothing is fetched -- code sourced at shell startup is opt-in.
 Pre-existing clones are left untouched (the pin applies to new clones only).
 `init.zsh` guards each source, so a missing plugin just turns that feature off.
+
+### zsh completion
+
+`init.zsh` runs `compinit` once per shell, and not at all when completion is
+already set up (`compdef` exists) by the time it loads: your `~/.zshrc` ran it
+first, or Ubuntu's `/etc/zsh/zshrc` did. Ubuntu runs a full `compinit` there
+unless `skip_global_compinit` is set, so every shell ran two; the
+`skip_global_compinit=1` that `den install shell` adds to `~/.zshenv` (read
+before `/etc/zsh/zshrc`) leaves only den's.
+
+While `~/.zcompdump` is less than a day old, `compinit -C` loads it as it is:
+no security audit, and no look for completion functions added since. A missing
+or older dump gets the full `compinit`, which finds them (an apt package, a new
+tool) and rewrites the dump when they changed; the dump is then dated today, so
+the shells of the next day take `-C` again. `reload` deletes the dump, so the
+new shell picks new completion functions up at once.
 
 ## The wrapper system
 

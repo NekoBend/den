@@ -84,6 +84,10 @@ _BASH_LINE = (
     '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
 )
 _ZSH_LINE = '[ -f "$HOME/.config/shell/init.zsh" ] && . "$HOME/.config/shell/init.zsh"'
+# For ~/.zshenv, which zsh reads before /etc/zsh/zshrc: Ubuntu's runs a full
+# compinit of its own unless this is set, and init.zsh runs compinit itself (a
+# day-old dump aside, the quick -C one), so the global one is only extra work.
+_ZSHENV_LINE = "skip_global_compinit=1"
 _PWSH_LINE = '. "$PSScriptRoot\\init.ps1"'
 
 
@@ -451,6 +455,7 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
         _wire(home / ".bashrc", _BASH_LINE, dry_run=dry_run)
     if shutil.which("zsh") or (home / ".zshrc").is_file():
         _wire(home / ".zshrc", _ZSH_LINE, dry_run=dry_run)
+        _wire(home / ".zshenv", _ZSHENV_LINE, dry_run=dry_run)
     if _windows() or shutil.which("pwsh"):
         _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run=dry_run)
 

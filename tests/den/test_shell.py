@@ -432,6 +432,31 @@ def test_install_shell_wiring_is_idempotent(tmp_path, monkeypatch):
     assert bashrc.count("# ===== den =====") == 1  # den block added once
 
 
+def test_install_shell_turns_off_ubuntus_global_compinit_in_zshenv(
+    tmp_path, monkeypatch
+):
+    # Ubuntu's /etc/zsh/zshrc runs a full compinit before ~/.zshrc unless
+    # ~/.zshenv, read before it, sets skip_global_compinit; init.zsh runs one
+    # itself, so every interactive zsh ran two.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(_shell.shutil, "which", _stub_which({"zsh"}))
+    (tmp_path / ".zshenv").write_text("export EDITOR=vi\n")
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 0
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 0
+    assert (tmp_path / ".zshenv").read_text() == (
+        "export EDITOR=vi\n\n# ===== den =====\nskip_global_compinit=1\n"
+    )
+    assert _shell._ZSH_LINE in (tmp_path / ".zshrc").read_text()
+
+
+def test_install_shell_leaves_zshenv_alone_without_zsh(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(_shell.shutil, "which", _stub_which(set()))
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 0
+    assert not (tmp_path / ".zshenv").exists()
+    assert not (tmp_path / ".zshrc").exists()
+
+
 # ---- _wire keeps the rc file's own encoding and line ending ----
 
 

@@ -431,6 +431,10 @@ under Clink) and needs Clink 1.3.18 or newer. Type it on a line of its own:
 after the confirm, the command becomes the next input line, so it runs as if
 typed, aliases included.
 
+On zsh, `reload` also deletes the completion dump (`~/.zcompdump`), so the new
+shell's `compinit` takes in completion functions installed since; without it,
+that happens once the dump is a day old (see shell/README.md).
+
 On pwsh, `reload` cannot replace the running process, so it starts the same
 pwsh with the arguments this session was launched with, in the current
 directory and environment, waits for it, and exits with its exit code; leaving

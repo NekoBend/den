@@ -396,6 +396,7 @@ def _uninstall_shell(argv: list[str]) -> int:
         _PWSH_LINE,
         _PWSH_PROFILE,
         _ZSH_LINE,
+        _ZSHENV_LINE,
         _localappdata,
         _stage_shell_files,
         _windows,
@@ -416,6 +417,7 @@ def _uninstall_shell(argv: list[str]) -> int:
         remover.boundary(_localappdata())
     remover.unwire(home / ".bashrc", _BASH_LINE)
     remover.unwire(home / ".zshrc", _ZSH_LINE)
+    remover.unwire(home / ".zshenv", _ZSHENV_LINE)
     remover.unwire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE)
     return remover.commit(assume_yes=assume_yes, dry_run=dry_run)
 
