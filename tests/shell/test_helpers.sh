@@ -779,6 +779,12 @@ pk "$PK/l" "'init', 'powershell'" > /dev/null
 make_key_tool "$PK/t/pwshkeytool" u 2018-01-01
 actual=$(pk "$PK/l" "'init', 'powershell'")
 assert_eq "pwsh/Initialize-Cache update behind a symlink" "key=u:init powershell" "$actual"
+# PowerShell's -ne ignores case, so a key that differed only in case (a path or
+# an argument; both are case-sensitive on Linux) counted as the same.
+echo "[pwsh] Initialize-Cache: made again when the arguments differ only in case"
+pk "$PK/a" "'init', 'powershell', '--x'" > /dev/null
+actual=$(pk "$PK/a" "'init', 'powershell', '--X'")
+assert_eq "pwsh/Initialize-Cache arguments in another case" "key=a:init powershell --X" "$actual"
 rm -f "$PK_CACHE"
 
 # --- _DenFindApp: Get-Command -CommandType Application's first answer, without it ---

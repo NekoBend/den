@@ -979,7 +979,9 @@ function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix 
         } catch { $have = $null }
     }
 
-    if ($have -ne $key) {
+    # -cne: a path or an argument that differs only in case is another key (Linux
+    # file names, and arguments, are case-sensitive); -ne ignores case.
+    if ($have -cne $key) {
         # Commit only when the command printed something. An empty run would write a
         # cache whose key matches, so it would never be made again and the tool would
         # stay broken until it changed. (Non-empty output is the signal;
