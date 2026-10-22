@@ -17,8 +17,11 @@
 # prompt, and is stopped when it has not ended after -Seconds. Its producer counts
 # the objects it makes: N when head stops it, all of them when head falls back.
 # When head did not stop it, the script says whether head fell back and lists the
-# internals head looks up as this PowerShell has them. Exit code 0 when every
-# check passes, 1 otherwise.
+# internals head looks up as this PowerShell has them. A coreutils.ps1 that does
+# not define head (one that does not parse, say) stops the script before the
+# checks, with its load errors: head would otherwise be any head on PATH, which
+# reads all its input as the fallback does. Exit code 0 when every check passes,
+# 1 otherwise.
 # This file must stay ASCII and parse on Windows PowerShell 5.1.
 param(
     # The coreutils.ps1 to test; by default the one in this checkout.
@@ -42,11 +45,15 @@ $source = (@('function _OnWindows { $true }', 'function _DenAddClean { }') +
     @($lines | Where-Object { $_ -notmatch '_DenInteractive' })) -join "`n"
 
 # Every check is this prelude, its line, and one output line per $Error entry
-# after it, so a check also fails when head leaves an error behind.
+# after it, so a check also fails when head leaves an error behind. A load that
+# did not define head ends the line with the load errors on one line before
+# $Error.Clear() erases them (a ParseException ends only its own statement).
+# Get-Command's -ErrorAction Ignore keeps its own error out of $Error.
 $prelude = @'
 param($Source)
 . ([scriptblock]::Create($Source))
 function _CoreutilsBin { }
+if (-not (Get-Command head -CommandType Function -ErrorAction Ignore)) { throw ('coreutils.ps1 did not define head: ' + ((@($Error) | ForEach-Object { "$_" }) -join '; ' -replace '\s+', ' ')) }
 $Error.Clear()
 
 '@
@@ -156,6 +163,14 @@ $out = @(& { while ($true) { 'tick'; Start-Sleep -Milliseconds 50 } } | head -n 
         Want = @('tick, then the next line')
     }
 )
+
+# The prelude alone gives no output when coreutils.ps1 loads. When it does not,
+# no check can tell the stop from the fallback, so the script stops here.
+$load = @(Invoke-Line '' $Seconds)
+if ($load.Count -gt 0) {
+    '::error::head_stop: coreutils.ps1 did not load on {0}, so no check ran: {1}' -f $version, ($load -join ' ')
+    exit 1
+}
 
 $total = 0
 $failed = 0
