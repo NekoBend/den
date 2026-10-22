@@ -395,7 +395,8 @@ extra, installed with `den install shell`):
   generated PowerShell completion script (the subcommand varies per tool) is
   cached under LocalAppData (via the shared `Initialize-Cache`, validated by
   `Test-CacheSafe`) and sourced, so `docker run <Tab>` etc. complete. Each is
-  skipped when the tool is absent.
+  skipped when the tool is absent. `uv`'s (about 750 KB) and `rustup`'s are
+  sourced at the first Tab after the command, not at startup.
 - **git** branch/remote completion comes from `posh-git`, but only when it is
   already installed (it is a heavy module, so it is never force-installed or
   imported when absent).
@@ -405,9 +406,13 @@ Add a tool by dropping one
 line in `completion.ps1` (adjust the subcommand: `gh` uses `completion -s`, `uv`
 uses `generate-shell-completion`, `rustup` uses `completions`). The dot-source
 must stay at the file's top level (global scope), not inside a function, or some
-completers (docker's) silently fail. Note that the completers are sourced eagerly
-at startup, so a very large one (e.g. `kubectl`, `helm`) adds measurable startup
-time each session.
+completers (docker's) silently fail. A script sourced this way costs startup
+time in every session, a very large one (e.g. `kubectl`, `helm`) measurably.
+One that only registers a self-contained `Register-ArgumentCompleter -Native`
+script block (clap's, as `uv`'s and `rustup`'s) can wait for the first Tab
+instead: `if ($_c) { _DenLazyCompleter '<tool>' $_c }`. Cobra's (`docker`'s,
+`gh`'s) cannot: their completer calls helper functions the script defines,
+which need the global scope.
 
 ## Layout
 

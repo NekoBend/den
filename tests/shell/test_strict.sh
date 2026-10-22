@@ -869,6 +869,21 @@ Case 'ptar .tar' { ptar pt.tar a.txt }
 Case 'ptar, unsupported format' { ptar pt.zip a.txt }
 Case 'ptar, no tar' { Use-StrictPath 'bin'; try { ptar pt2.tar a.txt } finally { Use-StrictPath } }
 
+# ===== completion.ps1 =====
+# A stand-in completer, then the first Tab (it loads the completion script, whose
+# completer it registers and hands the Tab to) and a second one (that completer's).
+Case '_DenLazyCompleter' {
+    Set-Content -LiteralPath lazy.ps1 -Value ("Register-ArgumentCompleter -Native -CommandName 'denstrict-lazy' " +
+        "-ScriptBlock { param(`$w, `$c, `$p) 'lazy-done' }")
+    _DenLazyCompleter 'denstrict-lazy' (Join-Path $env:STRICT_PLAY 'lazy.ps1')
+    $null = TabExpansion2 -inputScript 'denstrict-lazy x' -cursorColumn 16
+    $null = TabExpansion2 -inputScript 'denstrict-lazy x' -cursorColumn 16
+}
+Case '_DenLazyCompleter, no cache' {
+    _DenLazyCompleter 'denstrict-lazy2' (Join-Path $env:STRICT_PLAY 'missing.ps1')
+    $null = TabExpansion2 -inputScript 'denstrict-lazy2 x' -cursorColumn 17
+}
+
 # ===== cheat.ps1 =====
 Case 'cheat, none installed' { cheat }
 $StrictCheat = Join-Path $env:XDG_DATA_HOME 'den/cheatsheets'
@@ -1072,7 +1087,7 @@ assert_eq "pwsh/strict run reached its end" "" "$(report_lines "$REPORT" CRASH)"
 # One name from each file, so a load that defined nothing cannot pass the rest.
 missing=""
 # coreutils.ps1 defines its commands on Windows only (the Windows run checks wc).
-for name in _ResolveCmd cat dg gst toggle-hwinfo uv tomp4 pcp cheat proxy snippet reload prompt digest; do
+for name in _ResolveCmd cat dg gst toggle-hwinfo uv tomp4 pcp _DenLazyCompleter cheat proxy snippet reload prompt digest; do
     report_lines "$REPORT" FUNCTION ALIAS | grep -qx "\(FUNCTION\|ALIAS\) $name" || missing="$missing $name"
 done
 assert_eq "pwsh/strict inventory holds a function from every file" "" "$missing"

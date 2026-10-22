@@ -2,8 +2,8 @@
 # test_completion.sh — Tests for Tab completion: init.zsh's compinit (zsh) and
 # completion.ps1 (pwsh). The completion itself needs a real terminal, so the zsh
 # tests watch which compinit runs and what happens to ~/.zcompdump, and the pwsh
-# test is a load smoke test; the rest is PSScriptAnalyzer (CI) plus manual
-# verification on Windows.
+# tests ask TabExpansion2, which is what PSReadLine's Tab calls; the rest is
+# PSScriptAnalyzer (CI) plus manual verification on Windows.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -126,6 +126,83 @@ fi
 echo "[pwsh] completion.ps1 sources cleanly"
 actual=$(run_pwsh "$HELPERS_PS1" "\$env:_DEN_FORCE_INTERACTIVE='1'; . '$COMPLETION_PS1'; 'SOURCED-OK'" | tr -d '\r')
 assert_eq "pwsh/completion sources cleanly" "SOURCED-OK" "$actual"
+
+# uv's completion script is about 750 KB, and completion.ps1 dot-sourced it at
+# every start (about 60 ms) for a Tab that may never come. Now a stand-in
+# completer loads it at the first Tab after uv, which it then completes, and the
+# script's own completer takes the Tabs after; rustup's, clap's too, the same.
+# The stub uv and rustup print a completion script in clap's form that counts
+# its loads and completes alpha.
+LZ="$WORK/lazy"
+mkdir -p "$LZ/bin" "$LZ/cwd"
+for t in uv rustup; do
+    cat > "$LZ/bin/$t" <<EOF
+#!/bin/sh
+case "\$*" in
+    'generate-shell-completion powershell'|'completions powershell') ;;
+    *) exit 0 ;;
+esac
+cat <<'PS1'
+using namespace System.Management.Automation
+\$global:DenLazyLoads['$t']++
+Register-ArgumentCompleter -Native -CommandName '$t' -ScriptBlock {
+    param(\$wordToComplete, \$commandAst, \$cursorPosition)
+    [CompletionResult]::new('alpha', 'alpha', [CompletionResultType]::ParameterValue, 'alpha')
+}
+PS1
+EOF
+    chmod +x "$LZ/bin/$t"
+done
+# lazy_run <commands> - completion.ps1 loaded with the stubs first on PATH (and
+# their caches made), then the commands, in an empty directory: a Tab that no
+# completer answers falls back to the file names there.
+lazy_run() {
+    (cd "$LZ/cwd" && run_pwsh "$HELPERS_PS1" "
+        \$env:_DEN_FORCE_INTERACTIVE = '1'
+        \$env:PATH = '$LZ/bin:' + \$env:PATH
+        \$global:DenLazyLoads = @{ uv = 0; rustup = 0 }
+        . '$COMPLETION_PS1'
+        $1
+    " 2>&1 | tr -d '\r')
+}
+TAB_UV="(TabExpansion2 -inputScript 'uv al' -cursorColumn 5).CompletionMatches.CompletionText -join ','"
+TAB_RUSTUP="(TabExpansion2 -inputScript 'rustup al' -cursorColumn 9).CompletionMatches.CompletionText -join ','"
+LOADS="'uv=' + \$global:DenLazyLoads['uv'] + ' rustup=' + \$global:DenLazyLoads['rustup']"
+
+echo "[pwsh] uv's and rustup's completion scripts load at the first Tab, not at startup"
+actual=$(lazy_run "
+    'start: ' + ($LOADS)
+    'tab uv: ' + ($TAB_UV) + ' ' + ($LOADS)
+    'tab uv: ' + ($TAB_UV) + ' ' + ($LOADS)
+    'tab rustup: ' + ($TAB_RUSTUP) + ' ' + ($LOADS)
+")
+assert_eq "pwsh/lazy completion" "start: uv=0 rustup=0
+tab uv: alpha uv=1 rustup=0
+tab uv: alpha uv=1 rustup=0
+tab rustup: alpha uv=1 rustup=1" "$actual"
+
+echo "[pwsh] the first Tab under Set-StrictMode"
+actual=$(lazy_run "
+    Set-StrictMode -Version Latest
+    \$Error.Clear()
+    'tab uv: ' + ($TAB_UV)
+    'errors: ' + \$Error.Count
+")
+assert_eq "pwsh/lazy completion under strict mode" "tab uv: alpha
+errors: 0" "$actual"
+
+# The cache is checked again at that Tab, as at startup: a file swapped for a
+# symlink since then is not loaded.
+echo "[pwsh] a cache that is no longer safe at the first Tab is not loaded"
+actual=$(lazy_run "
+    \$c = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache/uv-completion.ps1'
+    Move-Item -LiteralPath \$c -Destination \"\$c.real\"
+    \$null = New-Item -ItemType SymbolicLink -Path \$c -Target \"\$c.real\"
+    'tab uv: [' + ($TAB_UV) + '] ' + ($LOADS)
+    Remove-Item -LiteralPath \$c
+    Move-Item -LiteralPath \"\$c.real\" -Destination \$c
+")
+assert_eq "pwsh/lazy completion refuses a swapped cache" "tab uv: [] uv=0 rustup=0" "$actual"
 
 print_summary "test_completion"
 [ "$FAIL" -eq 0 ]
