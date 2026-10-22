@@ -1589,8 +1589,10 @@ assert_eq "bash/init.bash: a trailing ':' is kept, den's patterns after it" \
     "ignoreboth|ls::again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=ls:')"
 # reload execs $BASH, which reads ~/.bashrc and so loads init.bash again; an
 # exported HISTIGNORE comes back holding den's patterns already. $BASH is a
-# script that starts an interactive bash on the fixture's ~/.bashrc (not the
-# system's bash.bashrc) and prints HISTIGNORE there.
+# script that starts an interactive bash on the fixture's ~/.bashrc and prints
+# HISTIGNORE there. (--rcfile does not skip the system bashrc: Debian's and
+# Ubuntu's bash still runs /etc/bash.bashrc first, and only --norc skips it.
+# The stock one sets no HISTIGNORE.)
 printf '%s\n' '. ~/.config/shell/init.bash' > "$HB/home/.bashrc"
 cat > "$HB/rebash" <<EOF
 #!/bin/sh
