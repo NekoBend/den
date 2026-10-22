@@ -148,6 +148,16 @@ install in each workspace that has them, which moves them and keeps
 den install hook --tool claude
 ```
 
+## 7. `clip` renamed to `mclip` (2026-10)
+
+den's video cutter was named `clip`, which is also Windows' clipboard
+command (`clip.exe`): in pwsh and Git Bash, a typed `... | clip` ran the
+cutter and copied nothing. It is `mclip` now, on bash/zsh and pwsh, with the
+same arguments, and `clip` is the system's again. Type `mclip` where you
+typed `clip` to cut a video. Nothing is left on disk, but a shell that loaded
+the older den keeps its `clip` until you replace it (a new terminal,
+`exec "$SHELL"` on bash/zsh, `reload` on pwsh).
+
 ## Why there is no `den prune`
 
 Deliberate: a prune command needs a durable record of everything den has

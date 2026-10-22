@@ -22,7 +22,7 @@ and, for the `den` CLI, [`den/README.md`](den/README.md).
   `fixids` executable (below), which lives on `PATH` and runs from any context.
 - In **pwsh**, a command den defines in place of one the session already had when
   den loaded (`ls`, `cat`, `cd`, `rm`, `cp`, `mv`, `mkdir`, `gc`, `gcm`, `gl`, `gps`,
-  `gu`, `python`, `pip`, `uv`, `clip`, ...) is den's only when typed at the prompt of
+  `gu`, `python`, `pip`, `uv`, ...) is den's only when typed at the prompt of
   an interactive session, or in a line that a typed `again`, `snippet run` or
   `snippet pick` replays. Anywhere else (a script or a module run from the session,
   a function, a script block such as `ForEach-Object`'s, a `pwsh -File` or
@@ -352,7 +352,7 @@ Loads only when ffmpeg is installed. pwsh has the same set; cmd has none.
 | `tomp3` / `towav` / `toflac` | convert audio to mp3 / wav / flac; same argument shape and one-input rule as `tomp4` | ✓ | ✓ | — |
 | `togif` | convert to GIF (2-pass palette) | ✓ | ✓ | — |
 | `minfo <file...> [ffprobe args]` | media info via ffprobe, one report per file; the options from the first `-` word on go to every ffprobe call as given (`-of json`) | ✓ | ✓ | — |
-| `clip` | cut a video segment (stream copy by default); seeks in the input, so a late cut starts at once | ✓ | ✓ | — |
+| `mclip` | cut a video segment (stream copy by default); seeks in the input, so a late cut starts at once. Not named `clip`, which stays Windows' clipboard command | ✓ | ✓ | — |
 | `strip-audio` | remove the audio track | ✓ | ✓ | — |
 | `thumbnail` | extract a single frame as an image; seeks in the input, and ffmpeg args still yield one frame | ✓ | ✓ | — |
 

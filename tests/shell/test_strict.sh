@@ -823,10 +823,10 @@ Case 'togif, a second input' { togif media.avi other.avi }
 Case 'minfo' { minfo }
 Case 'minfo <in>' { minfo media.avi }
 Case 'minfo <in> <in> <options>' { minfo media.avi other.avi -show_streams }
-Case 'clip' { clip }
-Case 'clip <in>' { clip media.avi }
-Case 'clip <in> <start> <end>' { clip media.avi 0 1 }
-Case 'clip <in> <start> <end> <out> <options>' { clip media.avi 0 1 out.avi -c:v x }
+Case 'mclip' { mclip }
+Case 'mclip <in>' { mclip media.avi }
+Case 'mclip <in> <start> <end>' { mclip media.avi 0 1 }
+Case 'mclip <in> <start> <end> <out> <options>' { mclip media.avi 0 1 out.avi -c:v x }
 Case 'strip-audio' { strip-audio }
 Case 'strip-audio <in>' { strip-audio media.avi }
 Case 'strip-audio <in> <out> <options>' { strip-audio media.avi out.avi -c:v x }
