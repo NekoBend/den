@@ -23,10 +23,10 @@ echo pip %* → uv pip %* >&2
 exit /b
 :refuse
 if "%~1"=="" goto refuse_bare
->&2 echo pip: no venv is active; activate one (.venv\Scripts\activate), or type uv pip %* directly
+>&2 echo pip: no venv is active; activate a venv you made (its Scripts\activate), or type uv pip %* directly
 exit /b 1
 :refuse_bare
->&2 echo pip: no venv is active; activate one (.venv\Scripts\activate), or type uv pip directly
+>&2 echo pip: no venv is active; activate a venv you made (its Scripts\activate), or type uv pip directly
 exit /b 1
 :plain
 for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:pip.exe 2^>nul') do if not defined _pip set "_pip=%%p"

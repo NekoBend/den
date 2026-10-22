@@ -265,7 +265,7 @@ call "%BIN%\python.cmd" -c x >"%O%" 2>&1
 call :expect %errorlevel% 1 "python: no python to run, an error and nothing runs"
 set "FAKE_FIND_SYSTEM=%T%\sys\python.exe"
 set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
->"%W%" echo pip: no venv is active; activate one (.venv\Scripts\activate), or type uv pip install foo directly
+>"%W%" echo pip: no venv is active; activate a venv you made (its Scripts\activate), or type uv pip install foo directly
 call "%BIN%\pip.cmd" install foo >"%O%" 2>&1
 call :expect %errorlevel% 1 "pip: no venv, nothing runs"
 set "VIRTUAL_ENV=%T%\venv"

@@ -753,6 +753,12 @@ refuse=$(cmd_code pip | sed -n '/^if not defined VIRTUAL_ENV goto refuse$/p')
 after=$(cmd_code pip | sed -n '/^:refuse$/,/^:plain$/p' | grep -c -E '%_uv%|%_pip%' || true)
 assert_eq "cmd/pip: no venv goes to the refusal, which runs nothing" "if not defined VIRTUAL_ENV goto refuse 0" "$refuse $after"
 
+echo "[cmd] pip's refusal names no .venv of the current directory"
+# It refuses for a clone that commits a .venv, whose .venv\Scripts\activate is
+# then the clone's own batch file: the message must not send the user there.
+named=$(tr -d '\r' < "$CMD_BIN/pip.cmd" | sed -n '/^:refuse$/,/^:plain$/p' | grep -i -F '.venv' || true)
+assert_eq "cmd/pip: the refusal names no .venv" "" "$named"
+
 # =============================================================================
 # The PowerShell the head / tail / wc shims run
 # =============================================================================

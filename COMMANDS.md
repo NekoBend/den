@@ -327,8 +327,8 @@ keeps), except where uv would build or run code that came with a clone:
   `vva`, has no pip). With no venv active they run nothing and say so, since
   `uv pip` would pick the `.venv` in or above the current directory itself and
   run its python: activate one with `va`, which refuses a venv that came with
-  the clone (cmd has no `va`: run the venv's `Scripts\activate`), or type
-  `uv pip` yourself.
+  the clone (cmd has no `va`: run the `Scripts\activate` of a venv you made),
+  or type `uv pip` yourself.
 
 Inside a venv `va` activated on bash/zsh/pwsh, `python` / `python3` / `py` run
 through `uv run --python <venv version>` outside a project. Inside a venv on cmd,
