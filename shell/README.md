@@ -484,9 +484,11 @@ of zoxide and starship. zsh and PowerShell mirror this.
 - PowerShell keeps its caches (zoxide's init, starship's full init, the
   completion scripts) under LocalAppData's `shell-cache`, keyed the same way:
   the tool's file (the one a symlink leads to), its length and modification
-  time, and the arguments. It finds each tool by walking `$env:PATH` itself
-  (`_DenFindApp`), not through `Get-Command`, whose lookups took tens of
-  milliseconds of every start.
+  time, and the arguments. Each PowerShell edition keeps its own,
+  `<tool>-<suffix>.Core.ps1` (pwsh 7) and `<tool>-<suffix>.Desktop.ps1`
+  (Windows PowerShell 5.1), both UTF-8 with a BOM. It finds each tool by
+  walking `$env:PATH` itself (`_DenFindApp`), not through `Get-Command`, whose
+  lookups took tens of milliseconds of every start.
 - `reload` clears the caches and restarts the shell, which rebuilds them.
   bash/zsh `exec` a new shell. pwsh cannot, so it starts the same pwsh with
   the same launch arguments (less `-WorkingDirectory`: it stays in the current

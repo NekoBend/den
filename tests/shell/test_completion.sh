@@ -232,7 +232,7 @@ errors: 0" "$actual"
 # symlink since then is not loaded.
 echo "[pwsh] a cache that is no longer safe at the first Tab is not loaded"
 actual=$(lazy_run "
-    \$c = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache/uv-completion.ps1'
+    \$c = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache/uv-completion.Core.ps1'
     Move-Item -LiteralPath \$c -Destination \"\$c.real\"
     \$null = New-Item -ItemType SymbolicLink -Path \$c -Target \"\$c.real\"
     'tab uv: [' + ($TAB_UV) + '] ' + ($LOADS)

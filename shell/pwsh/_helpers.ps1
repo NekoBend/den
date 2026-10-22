@@ -946,8 +946,11 @@ function Test-CacheSafe([string]$Path, [ref]$Reason) {
 # made again whenever the key differs: the tool upgraded or downgraded in place,
 # moved (starship's full init runs starship by the path it had), or run with other
 # arguments. A symlinked tool (a package manager's link) is keyed by the file the
-# link leads to, where .NET can follow it (pwsh 7.2+). Commits the cache only on
-# success + non-empty output, and validates with Test-CacheSafe.
+# link leads to, where .NET can follow it (pwsh 7.2+). Each PowerShell edition has
+# its own cache, <tool>-<suffix>.<Core|Desktop>.ps1: Windows PowerShell 5.1 keys a
+# symlinked tool on the link, so with one file between them, a user who opens both
+# made it again (ran the tool) at every switch. Commits the cache only on success +
+# non-empty output, and validates with Test-CacheSafe.
 function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix = 'init') {
     $toolPath = _DenFindApp $Tool
     if (-not $toolPath) { return }
@@ -957,7 +960,7 @@ function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix 
         New-Item -ItemType Directory -Path $_cd -Force | Out-Null
     }
 
-    $_cf = Join-Path $_cd "$Tool-$Suffix.ps1"
+    $_cf = Join-Path $_cd "$Tool-$Suffix.$($PSVersionTable.PSEdition).ps1"
     $item = [IO.FileInfo]::new($toolPath)
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
         # Windows PowerShell 5.1's .NET has no ResolveLinkTarget: the link's own.
@@ -990,7 +993,10 @@ function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix 
         if ($out) {
             $tmpCache = $_cf + '.tmp.' + [guid]::NewGuid().ToString('N')
             try {
-                @($key) + @($out) | Set-Content -LiteralPath $tmpCache -Encoding UTF8
+                # UTF-8 with a BOM in both editions: Windows PowerShell 5.1 reads a .ps1
+                # without one in the ANSI code page, and Set-Content -Encoding UTF8
+                # writes one only there.
+                [IO.File]::WriteAllLines($tmpCache, [string[]](@($key) + @($out)), [Text.UTF8Encoding]::new($true))
                 Move-Item -LiteralPath $tmpCache -Destination $_cf -Force
             } finally {
                 if (Test-Path -LiteralPath $tmpCache -PathType Leaf) {

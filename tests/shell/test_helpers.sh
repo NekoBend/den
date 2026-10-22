@@ -695,13 +695,13 @@ printf "%s\n" "\$env:PWSH_CACHE_TEST = 'v1:$2'"
 EOF
 chmod +x "$WORK/pwsh_icbin/pwshcachetool"
 run_pwsh "$HELPERS_PS1" "
-    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.Core.ps1') -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\PWSH_CACHE_TEST -ErrorAction SilentlyContinue
 " >/dev/null 2>&1
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/pwsh_icbin:' + \$env:PATH
     [void](Initialize-Cache 'pwshcachetool' @('init', 'powershell'))
-    \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1'
+    \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.Core.ps1'
     Get-Content -Raw -LiteralPath \$cacheFile
 " 2>/dev/null | tr -d '\r')
 assert_contains "pwsh/Initialize-Cache initial" "v1:powershell" "$actual"
@@ -714,12 +714,12 @@ chmod +x "$WORK/pwsh_icbin/pwshcachetool"
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/pwsh_icbin:' + \$env:PATH
     [void](Initialize-Cache 'pwshcachetool' @('init', 'powershell'))
-    \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1'
+    \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.Core.ps1'
     Get-Content -Raw -LiteralPath \$cacheFile
 " 2>/dev/null | tr -d '\r')
 assert_contains "pwsh/Initialize-Cache regenerated" "v2:powershell" "$actual"
 run_pwsh "$HELPERS_PS1" "
-    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.Core.ps1') -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\PWSH_CACHE_TEST -ErrorAction SilentlyContinue
 " >/dev/null 2>&1
 
@@ -753,7 +753,7 @@ pk() {
         \"key=\$env:PWSH_KEY\"
     " 2>&1 | tr -d '\r'
 }
-PK_CACHE="$XDG_DATA_HOME/shell-cache/pwshkeytool-init.ps1"
+PK_CACHE="$XDG_DATA_HOME/shell-cache/pwshkeytool-init.Core.ps1"
 rm -f "$PK_CACHE"
 echo "[pwsh] Initialize-Cache: made again when the arguments change"
 pk "$PK/a" "'init', 'powershell'" > /dev/null
@@ -764,7 +764,7 @@ actual=$(pk "$PK/b" "'init', 'powershell', '--print-full-init'")
 assert_eq "pwsh/Initialize-Cache moved tool" "key=b:init powershell --print-full-init" "$actual"
 assert_match "pwsh/Initialize-Cache key line" \
     "^# den-cache $PK/b/pwshkeytool\\|[0-9]+\\|[0-9]+\\|init powershell --print-full-init\$" \
-    "$(head -n 1 "$PK_CACHE" | tr -d '\r')"
+    "$(head -n 1 "$PK_CACHE" | sed '1s/^\xEF\xBB\xBF//' | tr -d '\r')"
 echo "[pwsh] Initialize-Cache: not made again when nothing changed"
 : > "$PK/runs"
 actual=$(pk "$PK/b" "'init', 'powershell', '--print-full-init'")
@@ -785,6 +785,36 @@ echo "[pwsh] Initialize-Cache: made again when the arguments differ only in case
 pk "$PK/a" "'init', 'powershell', '--x'" > /dev/null
 actual=$(pk "$PK/a" "'init', 'powershell', '--X'")
 assert_eq "pwsh/Initialize-Cache arguments in another case" "key=a:init powershell --X" "$actual"
+# Windows PowerShell 5.1 has no ResolveLinkTarget, so it keys a symlinked tool on
+# the link, and pwsh 7.2+ on the file the link leads to. With one cache between
+# them, a user who opened both made it again (ran the tool) at every switch; each
+# edition has its own now. The stand-in for 5.1 is _helpers.ps1 with the edition
+# read as Desktop and no ResolveLinkTarget (and _OnWindows false, as off Windows).
+echo "[pwsh] Initialize-Cache: a cache for each PowerShell edition, so they do not take turns"
+PK_DESKTOP="$TESTTMP/_helpers_desktop_cache.ps1"
+sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g; s/ResolveLinkTarget/NoResolveLinkTarget/g" \
+    "$HELPERS_PS1" > "$PK_DESKTOP" || abort_suite "cannot write $PK_DESKTOP"
+# pk_path <helpers> - the cache path Initialize-Cache returns for the symlinked
+# tool, with <helpers> loaded
+pk_path() {
+    run_pwsh "$1" "
+        function global:_OnWindows { \$false }
+        \$env:PATH = '$PK/l:' + \$env:PATH
+        Initialize-Cache 'pwshkeytool' @('init', 'powershell', '--e')
+    " 2>&1 | tr -d '\r' | sed "s|$XDG_DATA_HOME|XDG|"
+}
+: > "$PK/runs"
+actual="$(pk_path "$HELPERS_PS1") $(pk_path "$PK_DESKTOP") $(pk_path "$HELPERS_PS1") $(pk_path "$PK_DESKTOP")"
+assert_eq "pwsh/Initialize-Cache cache names, pwsh 7 then 5.1, twice" \
+    "XDG/shell-cache/pwshkeytool-init.Core.ps1 XDG/shell-cache/pwshkeytool-init.Desktop.ps1 XDG/shell-cache/pwshkeytool-init.Core.ps1 XDG/shell-cache/pwshkeytool-init.Desktop.ps1" \
+    "$actual"
+assert_eq "pwsh/Initialize-Cache a cache per edition: the tool ran once for each" "run
+run" "$(cat "$PK/runs")"
+echo "[pwsh] Initialize-Cache: both editions write the cache with a BOM"
+for edition in Core Desktop; do
+    assert_eq "pwsh/Initialize-Cache BOM, $edition" "efbbbf" \
+        "$(head -c 3 "$XDG_DATA_HOME/shell-cache/pwshkeytool-init.$edition.ps1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+done
 rm -f "$PK_CACHE"
 
 # --- _DenFindApp: Get-Command -CommandType Application's first answer, without it ---
@@ -986,7 +1016,7 @@ iclink() {
     run_pwsh "$HELPERS_PS1" "
         \$cacheDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache'
         [void](New-Item -ItemType Directory -Path \$cacheDir -Force)
-        \$cacheFile = Join-Path \$cacheDir 'pwshcachelink-init.ps1'
+        \$cacheFile = Join-Path \$cacheDir 'pwshcachelink-init.Core.ps1'
         Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
         [void](New-Item -ItemType SymbolicLink -Path \$cacheFile -Target '$WORK/pwsh_iclink/target.ps1')
         \$env:PATH = '$WORK/pwsh_iclink:' + \$env:PATH
@@ -1008,7 +1038,7 @@ assert_contains "pwsh/Initialize-Cache warning names remedy" "delete it to regen
 echo "[pwsh] Initialize-Cache replaces a symlinked cache it can make again, not the file it points to"
 printf '#!/bin/sh\nprintf "%%s\\n" "\\$env:PWSH_CACHE_LINK = '"'"'regenerated'"'"'"\n' > "$WORK/pwsh_iclink/pwshcachelink"
 actual=$(iclink | sed "s|$XDG_DATA_HOME|XDG|")
-assert_eq "pwsh/Initialize-Cache symlinked cache made again" "out: XDG/shell-cache/pwshcachelink-init.ps1
+assert_eq "pwsh/Initialize-Cache symlinked cache made again" "out: XDG/shell-cache/pwshcachelink-init.Core.ps1
 link: False
 target: \$env:PWSH_CACHE_LINK = 'linked'" "$actual"
 
