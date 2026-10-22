@@ -105,7 +105,7 @@ the language's standard tools:
   Python      ruff format --check, ruff check, ty check
   TypeScript  prettier --check, eslint, tsc --noEmit -p <tsconfig dir>
   Rust        cargo fmt --check, cargo clippy
-  Shell       shellcheck, shfmt -d -i 2 -ci -s (no flags with an .editorconfig)
+  Shell       shellcheck, shfmt -d -i 2 -ci -s (only -d with an .editorconfig)
   PowerShell  Invoke-ScriptAnalyzer -Settings @{Severity='Error'}
 
 When you modified existing files, also run
