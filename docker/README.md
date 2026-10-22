@@ -20,8 +20,9 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins` and `den install skills --tool claude --tool codex --with-parent --force`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
 User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
-`~/.nvm/current/bin`). They are on `dev`'s `PATH`, not the image's: see
-[Run](#run).
+`~/.nvm/current/bin`). They are on `dev`'s `PATH`, not the image's, and the
+image's `HOME` is `/root`: see
+[PATH and HOME in `docker exec`](#path-and-home-in-docker-exec).
 
 PowerShell and opencode are left out on purpose; install them in the container
 when you need them.
@@ -114,36 +115,40 @@ already match.
 ### PATH and HOME in `docker exec`
 
 `docker exec` starts every process, root's included, with the image's
-environment. Its `PATH` holds only root-owned system directories, so a
-command that a root exec looks up by name never comes from a directory `dev`
-can write. `dev`'s tool directories (`~/.nvm/current/bin`, `~/.local/bin`,
-`~/.cargo/bin`) are added by the entrypoint and, for users other than root,
-by `/etc/zsh/zshenv`, which every zsh reads, and `/etc/bash.bashrc`, which
-only an interactive bash reads. So `docker exec -it --user dev den-dev zsh`
-works as it is, but a `dev` command run without a shell needs zsh (`zsh -c`
-or `zsh -lc`) or its full path; `bash -c` and `sh -c` do not add them:
+environment: `HOME=/root` and a `PATH` that holds only root-owned system
+directories. A root command, run with or without a shell, therefore reads
+its configuration from `/root`, not from files `dev` can write (dpkg's
+`~/.dpkg.cfg`, git's `~/.gitconfig`, or the `.pth` files in the Python user
+site-packages under `~/.local`, which `python3` runs when package scripts
+start it, for example through `py3compile`), and a command it looks up by
+name never comes from a directory `dev` can write. Root execs start in
+`/workspace`, which `dev` owns, and `python3 -c` or `-m` imports from the
+current directory first, so pass `-w /` when root runs Python there. The
+image keeps no package lists, so update them first:
+
+```sh
+docker exec den-dev sh -c 'apt-get update && apt-get install -y <package>'
+```
+
+`dev` gets its home and its tool directories (`~/.nvm/current/bin`,
+`~/.local/bin`, `~/.cargo/bin`) back from the entrypoint and from the shell
+startup files: `/etc/zsh/zshenv`, which every zsh reads, and
+`/etc/bash.bashrc`, which only an interactive bash reads, set both, and
+`/etc/profile.d/00-container-home.sh`, which login shells (`bash -l`,
+`sh -l`) read, sets the home. So `docker exec -it --user dev den-dev zsh`
+works as it is. A `dev` command run without a shell, or through `bash -c` or
+`sh -c`, keeps `HOME=/root`, which `dev` cannot read, and the system `PATH`.
+Run it through zsh (`zsh -c` or `zsh -lc`), or pass `dev`'s home and the
+command's full path:
 
 ```sh
 docker exec --user dev den-dev zsh -lc 'claude --version'
-docker exec --user dev den-dev /home/dev/.local/bin/claude --version
+docker exec --user dev -e HOME=/home/dev den-dev /home/dev/.local/bin/claude --version
 ```
 
-A root zsh, an interactive root bash and a root login shell (`bash -l`,
-`sh -l`) also get `HOME=/root` back instead of the image's `/home/dev`, so
-they read root's startup files, not `dev`'s, and a root bash saves its history
-to `/root/.bash_history`.
-
-A root command run without a shell, or through `bash -c` or `sh -c`, keeps
-`HOME=/home/dev`, and tools then read files `dev` can write as root's
-configuration: dpkg reads `~/.dpkg.cfg`, `python3` (which package scripts
-run, for example through `py3compile`) runs `.pth` files from the user
-site-packages under `~/.local`, and git reads `~/.gitconfig`. Run root
-administration from a root shell (`docker exec -it den-dev zsh`), or pass
-`-e HOME=/root`:
-
-```sh
-docker exec -e HOME=/root den-dev apt-get install -y <package>
-```
+`.github/workflows/docker-dev-image.yml` builds the image when `docker/`
+changes, checks the `HOME` and `PATH` that root gets with and without a
+shell, and runs `dev`'s two forms above against it.
 
 ### zsh completion
 

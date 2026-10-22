@@ -1,13 +1,14 @@
 """docker/ubuntu/Dockerfile: what the dev image gives root and dev.
 
-CI never builds this image (ci.yml only runs `docker buildx build --check` on
-it), so these tests read the Dockerfile instead. They evaluate the ENV that
-every `docker exec` starts with, check how den is fetched, and run the scripts
-the image installs (the entrypoint, the /etc/zsh/zshenv and /etc/bash.bashrc
-blocks and the /etc/profile.d script) in a scratch directory. Commands that
-would change accounts or files are stubs there, and the effective UID is read
-from FAKE_EUID so the root branches run without root. The script tests are
-skipped on native Windows and where the shell they need is missing.
+.github/workflows/docker-dev-image.yml builds this image and checks it with
+docker, but only when docker/ changes. These tests run on every push and read
+the Dockerfile instead. They evaluate the ENV that every `docker exec` starts
+with, check how den is fetched, and run the scripts the image installs (the
+entrypoint, the /etc/zsh/zshenv and /etc/bash.bashrc blocks and the
+/etc/profile.d script) in a scratch directory. Commands that would change
+accounts or files are stubs there, and the effective UID is read from
+FAKE_EUID so the root branches run without root. The script tests are skipped
+on native Windows and where the shell they need is missing.
 """
 
 import re
@@ -15,11 +16,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import yaml
 
-DOCKERFILE = Path(__file__).resolve().parents[2] / "docker" / "ubuntu" / "Dockerfile"
+ROOT = Path(__file__).resolve().parents[2]
+DOCKERFILE = ROOT / "docker" / "ubuntu" / "Dockerfile"
+WORKFLOW = ROOT / ".github" / "workflows" / "docker-dev-image.yml"
 SYSTEM_DIRS = (
     "/usr/local/sbin",
     "/usr/local/bin",
@@ -68,26 +73,32 @@ def _expand(value: str, env: dict[str, str], args: dict[str, str]) -> str:
     return re.sub(r"\$\{(\w+)\}|\$(\w+)", lookup, value)
 
 
-def _stages() -> list[tuple[str, dict[str, str], dict[str, str]]]:
-    """(name, ENV, build args) for each stage, after its last instruction.
+def _walk() -> Iterator[tuple[str, str, str, dict[str, str], dict[str, str]]]:
+    """(stage, KEYWORD, USER, ENV, build args) after each instruction of a stage.
 
-    A stage built FROM another stage starts with that stage's ENV and build
-    args; the Ubuntu base image starts with the system PATH, scratch with
-    nothing. ENV wins over a build arg of the same name, as in Docker.
+    A stage built FROM another stage starts with that stage's USER, ENV and
+    build args; the Ubuntu base image starts as root with the system PATH,
+    scratch with nothing. ENV wins over a build arg of the same name, as in
+    Docker.
     """
-    stages: list[tuple[str, dict[str, str], dict[str, str]]] = []
+    finals: dict[str, tuple[str, dict[str, str], dict[str, str]]] = {}
+    stage = ""
+    user = ""
     env: dict[str, str] = {}
     args: dict[str, str] = {}
     for keyword, rest in _instructions():
         if keyword == "FROM":
             base, *alias = rest.split()
-            by_name = {name: (e, a) for name, e, a in stages}
-            if base in by_name:
-                env, args = dict(by_name[base][0]), dict(by_name[base][1])
+            if base in finals:
+                user, base_env, base_args = finals[base]
+                env, args = dict(base_env), dict(base_args)
             else:
+                user = "root"
                 env, args = ({} if base == "scratch" else {"PATH": SYSTEM_PATH}), {}
-            stages.append((alias[-1] if alias else base, env, args))
-        elif keyword == "ARG" and stages:
+            stage = alias[-1] if alias else base
+        elif not stage:
+            continue
+        elif keyword == "ARG":
             for item in shlex.split(rest):
                 name, _, default = item.partition("=")
                 args[name] = _expand(default, env, args)
@@ -95,7 +106,27 @@ def _stages() -> list[tuple[str, dict[str, str], dict[str, str]]]:
             for item in shlex.split(_expand(rest, env, args)):
                 name, _, value = item.partition("=")
                 env[name] = value
-    return stages
+        elif keyword == "USER":
+            user = _expand(rest, env, args)
+        finals[stage] = (user, env, args)
+        yield stage, keyword, user, dict(env), dict(args)
+
+
+def _stages() -> list[tuple[str, dict[str, str], dict[str, str]]]:
+    """(name, ENV, build args) for each stage, after its last instruction."""
+    finals: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
+    for stage, _, _, env, args in _walk():
+        finals[stage] = (env, args)
+    return [(name, env, args) for name, (env, args) in finals.items()]
+
+
+def _run_steps() -> list[tuple[str, str, dict[str, str], dict[str, str]]]:
+    """(stage, USER, ENV, build args) that each RUN executes with."""
+    return [
+        (stage, user, env, args)
+        for stage, keyword, user, env, args in _walk()
+        if keyword == "RUN"
+    ]
 
 
 def _appended_block(target: str) -> str:
@@ -154,6 +185,48 @@ def test_a_root_exec_path_holds_only_system_directories():
     assert all(entry in SYSTEM_DIRS for entry in entries), env["PATH"]
 
 
+def test_a_root_exec_home_is_roots():
+    # With the image's HOME=/home/dev, a root exec without a shell (or through
+    # bash -c or sh -c) read files dev can write as root's configuration:
+    # ~/.dpkg.cfg, ~/.gitconfig, and the .pth files in the Python user
+    # site-packages, which python3 runs at startup (apt's scripts start it).
+    _, env, _ = _stages()[-1]
+    assert env["HOME"] == "/root"
+
+
+def test_build_steps_that_run_as_the_user_keep_its_home():
+    # rustup, cargo, the installers, nvm, npm and den write under the user's
+    # home, so ENV HOME=/root must come after the last of them.
+    as_user = [
+        (stage, env, args)
+        for stage, user, env, args in _run_steps()
+        if user.partition(":")[0] not in {"root", "0"}
+    ]
+    assert len(as_user) > 10, "the parser no longer sees the user's build steps"
+    for stage, env, args in as_user:
+        assert env["HOME"] == f"/home/{args['USERNAME']}", stage
+
+
+def test_root_build_steps_after_the_user_steps_use_roots_home():
+    # Once a step has run as the user (rustup, the installers, nvm, npm), the
+    # user's home may hold ~/.curlrc, ~/.dpkg.cfg or Python .pth files, which
+    # curl, dpkg's hooks and python3 read as root's configuration.
+    steps = _run_steps()
+    first_user = next(
+        i
+        for i, (_, user, _, _) in enumerate(steps)
+        if user.partition(":")[0] not in {"root", "0"}
+    )
+    as_root = [
+        (stage, env)
+        for stage, user, env, _ in steps[first_user:]
+        if user.partition(":")[0] in {"root", "0"}
+    ]
+    assert as_root, "the parser no longer sees a root step after the user's"
+    for stage, env in as_root:
+        assert env["HOME"] == "/root", stage
+
+
 def test_den_comes_from_a_git_source_of_main_mounted_into_the_install():
     # A RUN that cloned den was cached on its command text, so a rebuild after
     # main moved kept the first build's den. BuildKit resolves a git source's
@@ -204,8 +277,9 @@ def _source_block(
 ) -> list[str]:
     """Source the block twice in ``shell``.
 
-    Returns HOME, PATH, skip_global_compinit and HISTFILE. ``histfile`` stands
-    in for the HISTFILE bash sets from HOME before it reads its startup files.
+    Returns HOME, PATH, skip_global_compinit, HISTFILE and USER. ``histfile``
+    stands in for the HISTFILE bash sets from HOME before it reads its startup
+    files.
     """
     user_file = tmp_path / "container-user"
     user_file.write_text(f"{user}\n", encoding="utf-8")
@@ -224,11 +298,11 @@ def _source_block(
     # with -f, and in this image that file runs the very block under test.
     probe = (
         f"export HOME={shlex.quote(home)} PATH={SYSTEM_PATH}; "
-        "unset skip_global_compinit HISTFILE; "
+        "unset skip_global_compinit HISTFILE USER LOGNAME; "
         + (f"HISTFILE={shlex.quote(histfile)}; " if histfile else "")
         + f". {shlex.quote(str(block))}; . {shlex.quote(str(block))}; "
         'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}" '
-        '"${HISTFILE-unset}"'
+        '"${HISTFILE-unset}" "${USER-unset}"'
     )
     flags = {"zsh": ["-f"], "bash": ["--norc"], "sh": []}[shell]
     argv = [_tool(shell), *flags, "-c", probe]
@@ -257,6 +331,18 @@ def _zsh_username() -> str:
     return result.stdout.strip()
 
 
+def _login_name() -> str:
+    """The name ``id -un`` prints for this process, as the bash and sh blocks run it."""
+    result = subprocess.run(
+        [_tool("id"), "-un"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
 @_needs("zsh")
 def test_zshenv_gives_a_non_root_zsh_the_user_tool_directories_once(tmp_path):
     home = str(tmp_path / "home")
@@ -271,7 +357,30 @@ def test_zshenv_resets_a_root_zsh_and_adds_no_user_directories(tmp_path):
     out = _source_block(
         tmp_path, "zsh", "/etc/zsh/zshenv", euid=0, home="/home/dev", user="dev"
     )
-    assert out == ["/root", SYSTEM_PATH, "unset", "unset"]
+    assert out == ["/root", SYSTEM_PATH, "unset", "unset", "root"]
+
+
+@_needs("zsh")
+def test_zshenv_gives_the_container_user_its_home_back(tmp_path):
+    # docker exec --user dev keeps the image's HOME=/root, which dev cannot
+    # read. zsh finds ~/.zshenv, ~/.zshrc and the rest through the HOME this
+    # block sets, and the tool directories hang off it.
+    me = _zsh_username()
+    assert me
+    out = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home="/root", user=me
+    )
+    assert out == [f"/home/{me}", _user_path(f"/home/{me}"), "1", "unset", me]
+
+
+@_needs("zsh")
+def test_zshenv_gives_no_other_user_the_container_users_home(tmp_path):
+    me = _zsh_username()
+    out = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home="/root", user=f"{me}-other"
+    )
+    assert out[0] == "/root"
+    assert out[4] == "unset"
 
 
 @_needs("zsh")
@@ -324,7 +433,48 @@ def test_bashrc_moves_a_root_bash_history_out_of_the_user_home(tmp_path):
         user="dev",
         histfile="/home/dev/.bash_history",
     )
-    assert out == ["/root", SYSTEM_PATH, "unset", "/root/.bash_history"]
+    assert out == ["/root", SYSTEM_PATH, "unset", "/root/.bash_history", "root"]
+
+
+@_needs("bash", "id")
+def test_bashrc_gives_the_container_user_its_home_and_history_back(tmp_path):
+    # An interactive bash started by docker exec --user dev reads ~/.bashrc
+    # through the HOME this block sets, and had set HISTFILE from the image's
+    # HOME=/root, where dev cannot save it.
+    me = _login_name()
+    assert me
+    out = _source_block(
+        tmp_path,
+        "bash",
+        "/etc/bash.bashrc",
+        euid=1000,
+        home="/root",
+        user=me,
+        histfile="/root/.bash_history",
+    )
+    assert out == [
+        f"/home/{me}",
+        _user_path(f"/home/{me}"),
+        "unset",
+        f"/home/{me}/.bash_history",
+        me,
+    ]
+
+
+@_needs("bash", "id")
+def test_bashrc_gives_no_other_user_the_container_users_home(tmp_path):
+    me = _login_name()
+    out = _source_block(
+        tmp_path,
+        "bash",
+        "/etc/bash.bashrc",
+        euid=1000,
+        home="/root",
+        user=f"{me}-other",
+        histfile="/root/.bash_history",
+    )
+    assert out[0] == "/root"
+    assert out[3:] == ["/root/.bash_history", "unset"]
 
 
 @_needs("bash")
@@ -375,6 +525,30 @@ def test_profile_gives_a_root_login_shell_its_own_home(tmp_path, shell):
     assert out[:2] == ["/root", SYSTEM_PATH]
 
 
+@_needs("sh", "bash", "id")
+@pytest.mark.parametrize("shell", ["sh", "bash"])
+def test_profile_gives_the_container_users_login_shell_its_home_back(tmp_path, shell):
+    # bash -lc and sh -lc are not interactive, so only /etc/profile reaches
+    # them, and without its home dev's ~/.profile was never found.
+    me = _login_name()
+    assert me
+    out = _source_block(
+        tmp_path, shell, _profile_script(), euid=1000, home="/root", user=me
+    )
+    assert out[:2] == [f"/home/{me}", SYSTEM_PATH]
+    assert out[4] == me
+
+
+@_needs("sh", "id")
+def test_profile_gives_no_other_user_the_container_users_home(tmp_path):
+    me = _login_name()
+    out = _source_block(
+        tmp_path, "sh", _profile_script(), euid=1000, home="/root", user=f"{me}-other"
+    )
+    assert out[0] == "/root"
+    assert out[4] == "unset"
+
+
 @_needs("sh")
 def test_profile_leaves_a_non_root_login_shell_alone(tmp_path):
     home = str(tmp_path / "home")
@@ -393,7 +567,8 @@ def _run_entrypoint(
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
 
     The account is dev, 1000:1000, home /home/dev. setpriv prints its
-    arguments; the commands that change accounts or files only log theirs.
+    arguments and the HOME it got; the commands that change accounts or files
+    only log theirs.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -417,7 +592,7 @@ def _run_entrypoint(
     )
     for name in ("usermod", "groupadd", "find", "mountpoint", "gnuchown"):
         stub(name, f'echo "{name} $*" >> {shlex.quote(str(log))}')
-    stub("setpriv", 'printf "%s\\n" "$@"')
+    stub("setpriv", 'printf "%s\\n" "$@" "HOME=$HOME"')
     user_file = tmp_path / "container-user"
     user_file.write_text("dev\n", encoding="utf-8")
     system = "/usr/sbin:/usr/bin:/sbin:/bin"  # the entrypoint's own PATH
@@ -460,6 +635,16 @@ def test_entrypoint_started_as_the_user_adds_the_user_tool_directories(tmp_path)
 
 
 @_needs("sh", "env")
+@pytest.mark.parametrize("uid", [0, 1000])
+def test_entrypoint_gives_the_command_the_user_home(tmp_path, uid):
+    # The entrypoint starts with the image's HOME=/root, whether docker run
+    # starts it as root or with --user; the command it runs gets the user's.
+    result, _ = _run_entrypoint(tmp_path, uid=uid, env={"HOME": "/root"})
+    assert result.returncode == 0, result.stderr
+    assert "HOME=/home/dev" in result.stdout.splitlines()
+
+
+@_needs("sh", "env")
 def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
     # A UID other than the build's re-owns all of /home/dev, which overlayfs
     # copies into each new container (about 2 GB); the build args avoid it.
@@ -490,3 +675,59 @@ def test_test_helpers_see_the_whole_dockerfile():
     names = [name for name, _, _ in _stages()]
     assert names[0] == "system"
     assert names[-1] == "workspace"
+
+
+# --- the CI workflow that builds the image -------------------------------------
+
+
+def _workflow() -> dict:
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    # YAML 1.1 reads the bare key `on` as true; GitHub reads it as "on".
+    data["on"] = data.pop(True)
+    return data
+
+
+def test_the_image_workflow_runs_when_the_image_or_the_workflow_changes():
+    on = _workflow()["on"]
+    own = WORKFLOW.relative_to(ROOT).as_posix()
+    for event in ("push", "pull_request"):
+        assert {"docker/**", own} <= set(on[event]["paths"]), event
+    assert "workflow_dispatch" in on
+
+
+def _gha_scopes(step: dict) -> set[str]:
+    """The GitHub Actions cache scopes a build step reads or writes."""
+    scopes = set()
+    for key in ("cache-from", "cache-to"):
+        value = step.get("with", {}).get(key, "")
+        attrs = dict(part.split("=", 1) for part in value.split(",") if "=" in part)
+        if attrs.get("type") == "gha":
+            scopes.add(attrs.get("scope", "buildkit"))
+    return scopes
+
+
+def test_the_image_build_cache_has_a_scope_of_its_own():
+    # Builds of two images in one gha cache scope overwrite each other's cache
+    # (the default scope, buildkit, is what ci.yml's shell test image uses), so
+    # the next run of either would start cold.
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    build = next(step for step in steps if step.get("name") == "Build the dev image")
+    scopes = _gha_scopes(build)
+    assert len(scopes) == 1, scopes
+    for path in sorted(WORKFLOW.parent.glob("*.yml")):
+        if path == WORKFLOW:
+            continue
+        for job in yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"].values():
+            for step in job.get("steps", []):
+                shared = scopes & _gha_scopes(step)
+                assert not shared, f"{path.name}: {step.get('name')}"
+
+
+def test_the_image_workflow_budget_covers_its_steps():
+    # A job cancelled mid-build exports no layer cache, and the next run starts
+    # cold again, so the job's budget covers every step's.
+    job = _workflow()["jobs"]["dev-image"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    assert steps["Build the dev image"].get("timeout-minutes", 0) > 0
+    total = sum(step.get("timeout-minutes", 0) for step in job["steps"])
+    assert job["timeout-minutes"] >= total
