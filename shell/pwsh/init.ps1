@@ -137,7 +137,11 @@ function reload {
 
 # ===== Init tools (cached) =====
 # Dot-source the cached init HERE (global scope); Initialize-Cache returns the path.
-$_s = Initialize-Cache 'starship' @('init', 'powershell')
+# The full init, not `starship init powershell`'s one line, which ran starship at
+# every start to print the full init and then evaluated it. The full init makes
+# its session key (STARSHIP_SESSION_KEY) when it runs, not when it is printed, so
+# every session still gets its own.
+$_s = Initialize-Cache 'starship' @('init', 'powershell', '--print-full-init')
 if ($_s) { . $_s }
 Remove-Variable _s -ErrorAction SilentlyContinue
 

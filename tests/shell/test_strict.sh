@@ -333,6 +333,8 @@ Case '_DenLaunchIsRepl, another dash' { _DenLaunchIsRepl -Arguments @(([string][
 Case '_DenLaunchIsRepl, short arguments' { _DenLaunchIsRepl -Arguments @('', '-') }
 Case '_ResolveCmd' { _ResolveCmd 'cat' 'App'; _ResolveCmd 'Get-Date' }
 Case '_ResolveCmd, not found' { _ResolveCmd 'nonexistent-strict' 'App'; _ResolveCmd 'nonexistent-strict' }
+Case '_DenWindowsFiles' { _DenWindowsFiles }
+Case '_DenFindApp' { _DenFindApp 'cat'; _DenFindApp 'nonexistent-strict'; _DenFindApp '' }
 Case '_CoreutilsBin' { _CoreutilsBin }
 Case '_CoreutilsBin, disabled' { $env:_DEN_COREUTILS = '0'; try { _CoreutilsBin } finally { Remove-Item Env:\_DEN_COREUTILS } }
 Case 'New-Wrapper' { New-Wrapper 'strict-w1' 'bat' '' 'cat' '' ''; strict-w1 a.txt }

@@ -214,6 +214,68 @@ second=$(cat "$cache_file" 2>/dev/null)
 assert_contains "bash/_init_cache regenerated" "v2" "$second"
 rm -rf "$WORK/icbin" "$HOME_OVERRIDE"
 
+# --- _init_cache: a key line with the binary's path and the arguments ---
+# The cache was made again only when the binary was newer than it, so a cache
+# made with other arguments, or by a binary that has since moved (starship's
+# full init runs starship by the absolute path it had), stayed in use: the
+# binaries here are dated 2020, older than any cache. Its first line now holds
+# the binary's path and the arguments, and a cache whose line differs is made
+# again. A run that fails or prints nothing leaves no cache, whose key would
+# match, and no warning.
+ic_key_cases() {
+    local sh="$1" d="$WORK/ickey-$1" t out
+    rm -rf "$d"
+    mkdir -p "$d/a" "$d/b" "$d/home"
+    for t in a b; do
+        printf '#!/bin/sh\necho run >> "%s/runs"\necho "IC_RAN='"'"'%s:$*'"'"'"\n' "$d" "$t" > "$d/$t/kt"
+        printf '#!/bin/sh\necho "IC_FAIL=1"\nexit 3\n' > "$d/$t/ktfail"
+        printf '#!/bin/sh\nexit 0\n' > "$d/$t/ktnone"
+        chmod +x "$d/$t/kt" "$d/$t/ktfail" "$d/$t/ktnone"
+        touch -d '2020-01-01' "$d/$t/kt" "$d/$t/ktfail" "$d/$t/ktnone"
+    done
+    # ic <bin dir> <tool> [args...] - _init_cache <tool> <sh> [args...] in a new
+    # shell, then what the cache set, and anything the shell printed
+    ic() {
+        local bin="$1" tool="$2"
+        shift 2
+        HOME="$d/home" XDG_CACHE_HOME='' PATH="$bin:$PATH" "$sh" -c \
+            ". '$HELPERS_SH'; _init_cache $tool $sh $*; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1
+    }
+    echo "[$sh] _init_cache: made again when the arguments change"
+    ic "$d/a" kt --x > /dev/null
+    out=$(ic "$d/a" kt --y)
+    assert_eq "$sh/_init_cache other arguments" "ran=a:init $sh --y fail=" "$out"
+    echo "[$sh] _init_cache: made again when the binary moves"
+    out=$(ic "$d/b" kt --y)
+    assert_eq "$sh/_init_cache moved binary" "ran=b:init $sh --y fail=" "$out"
+    assert_eq "$sh/_init_cache key line" "# den-init-cache $d/b/kt init $sh --y" \
+        "$(head -n 1 "$d/home/.cache/shell/kt-init.$sh")"
+    echo "[$sh] _init_cache: not made again when nothing changed"
+    : > "$d/runs"
+    out=$(ic "$d/b" kt --y)
+    assert_eq "$sh/_init_cache same key: from the cache" "ran=b:init $sh --y fail=" "$out"
+    assert_eq "$sh/_init_cache same key: no run" "" "$(cat "$d/runs")"
+    echo "[$sh] _init_cache: a run that fails or prints nothing leaves no cache"
+    out=$(ic "$d/a" ktfail; ic "$d/a" ktnone)
+    assert_eq "$sh/_init_cache failed and empty runs: nothing set, no warning" "ran= fail=
+ran= fail=" "$out"
+    assert_not_exists "$sh/_init_cache failed run: no cache" "$d/home/.cache/shell/ktfail-init.$sh"
+    assert_not_exists "$sh/_init_cache empty run: no cache" "$d/home/.cache/shell/ktnone-init.$sh"
+    # The cache was written with `>`, which follows a symlink at the cache path
+    # and rewrote the file it pointed to.
+    echo "[$sh] _init_cache: a symlink at the cache path is replaced, not written through"
+    printf 'mine\n' > "$d/victim"
+    touch -d '2021-01-01' "$d/victim"
+    rm -f "$d/home/.cache/shell/kt-init.$sh"
+    ln -s "$d/victim" "$d/home/.cache/shell/kt-init.$sh"
+    touch "$d/a/kt"
+    out=$(ic "$d/a" kt --z)
+    assert_eq "$sh/_init_cache symlinked cache: made again and sourced" "ran=a:init $sh --z fail=" "$out"
+    assert_eq "$sh/_init_cache symlinked cache: its target untouched" "mine" "$(cat "$d/victim")"
+}
+ic_key_cases bash
+ic_key_cases zsh
+
 # =============================================================================
 # Zsh tests
 # =============================================================================
@@ -615,6 +677,153 @@ run_pwsh "$HELPERS_PS1" "
     Remove-Item Env:\PWSH_CACHE_TEST -ErrorAction SilentlyContinue
 " >/dev/null 2>&1
 
+# --- Initialize-Cache: a key line with the tool's file and the arguments ---
+# The cache was made again only when the tool was newer than it, so a cache made
+# with other arguments (init.ps1 now asks starship for its full init), by a tool
+# that has since moved (that init runs starship by the path it had), or before a
+# downgrade or an update behind a symlink stayed in use: the tools here are dated
+# 2020 and older. Its first line now holds the tool's file (the one a symlink
+# leads to), the file's length and mtime, and the arguments.
+PK="$WORK/pwsh_key"
+mkdir -p "$PK/a" "$PK/b" "$PK/l" "$PK/t"
+# make_key_tool <path> <tag> [date] - a tool that logs each run to $PK/runs and
+# prints `$env:PWSH_KEY = '<tag>:<its arguments>'`
+make_key_tool() {
+    printf '#!/bin/sh\necho run >> "%s/runs"\nprintf "%%s\\n" "\\$env:PWSH_KEY = '"'"'%s:$*'"'"'"\n' "$PK" "$2" > "$1"
+    chmod +x "$1"
+    touch -d "${3:-2020-01-01}" "$1"
+}
+make_key_tool "$PK/a/pwshkeytool" a
+make_key_tool "$PK/b/pwshkeytool" b
+make_key_tool "$PK/t/pwshkeytool" t
+ln -s "$PK/t/pwshkeytool" "$PK/l/pwshkeytool"
+# pk <bin dir> <PowerShell array items> - Initialize-Cache's cache, sourced in a
+# new pwsh, then what it set
+pk() {
+    run_pwsh "$HELPERS_PS1" "
+        \$env:PATH = '$1:' + \$env:PATH
+        \$c = Initialize-Cache 'pwshkeytool' @($2)
+        if (\$c) { . \$c }
+        \"key=\$env:PWSH_KEY\"
+    " 2>&1 | tr -d '\r'
+}
+PK_CACHE="$XDG_DATA_HOME/shell-cache/pwshkeytool-init.ps1"
+rm -f "$PK_CACHE"
+echo "[pwsh] Initialize-Cache: made again when the arguments change"
+pk "$PK/a" "'init', 'powershell'" > /dev/null
+actual=$(pk "$PK/a" "'init', 'powershell', '--print-full-init'")
+assert_eq "pwsh/Initialize-Cache other arguments" "key=a:init powershell --print-full-init" "$actual"
+echo "[pwsh] Initialize-Cache: made again when the tool moves"
+actual=$(pk "$PK/b" "'init', 'powershell', '--print-full-init'")
+assert_eq "pwsh/Initialize-Cache moved tool" "key=b:init powershell --print-full-init" "$actual"
+assert_match "pwsh/Initialize-Cache key line" \
+    "^# den-cache $PK/b/pwshkeytool\\|[0-9]+\\|[0-9]+\\|init powershell --print-full-init\$" \
+    "$(head -n 1 "$PK_CACHE" | tr -d '\r')"
+echo "[pwsh] Initialize-Cache: not made again when nothing changed"
+: > "$PK/runs"
+actual=$(pk "$PK/b" "'init', 'powershell', '--print-full-init'")
+assert_eq "pwsh/Initialize-Cache same key: from the cache" "key=b:init powershell --print-full-init" "$actual"
+assert_eq "pwsh/Initialize-Cache same key: no run" "" "$(cat "$PK/runs")"
+echo "[pwsh] Initialize-Cache: made again when the tool is replaced by an older one"
+make_key_tool "$PK/b/pwshkeytool" c 2019-01-01
+actual=$(pk "$PK/b" "'init', 'powershell', '--print-full-init'")
+assert_eq "pwsh/Initialize-Cache downgrade in place" "key=c:init powershell --print-full-init" "$actual"
+echo "[pwsh] Initialize-Cache: made again when the file a symlinked tool leads to changes"
+pk "$PK/l" "'init', 'powershell'" > /dev/null
+make_key_tool "$PK/t/pwshkeytool" u 2018-01-01
+actual=$(pk "$PK/l" "'init', 'powershell'")
+assert_eq "pwsh/Initialize-Cache update behind a symlink" "key=u:init powershell" "$actual"
+rm -f "$PK_CACHE"
+
+# --- _DenFindApp: Get-Command -CommandType Application's first answer, without it ---
+# Each lookup through PowerShell's command discovery took tens of milliseconds of
+# every start: Initialize-Cache's for zoxide, starship, docker, gh, uv and rustup,
+# and python.ps1's for uv. _DenFindApp answers as Get-Command does for a file
+# that is not executable, a directory of the name (skipped), the PATH order and an
+# empty PATH entry (not the current directory); a relative entry, which Get-Command
+# reads from the current location, it skips.
+echo "[pwsh] _DenFindApp finds what Get-Command -CommandType Application finds first"
+FA="$WORK/findapp"
+mkdir -p "$FA/a/isdir" "$FA/b" "$FA/c" "$FA/cwd" "$FA/rel/bin"
+printf '#!/bin/sh\n' > "$FA/a/plain"
+chmod +x "$FA/a/plain"
+printf 'x\n' > "$FA/a/noexec"
+printf 'x\n' | tee "$FA/b/isdir" "$FA/b/later" "$FA/c/later" "$FA/cwd/incwd" "$FA/rel/bin/inrel" > /dev/null
+actual=$(cd "$FA/cwd" && run_pwsh "$HELPERS_PS1" "
+    \$env:PATH = '$FA/a::$FA/b:../rel/bin:$FA/c'
+    foreach (\$n in 'plain', 'noexec', 'isdir', 'later', 'incwd', 'missing', 'inrel') {
+        \$g = Get-Command \$n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        '{0}: [{1}] [{2}]' -f \$n, (_DenFindApp \$n), \$(if (\$g) { \$g.Source })
+    }
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/_DenFindApp against Get-Command" "plain: [$FA/a/plain] [$FA/a/plain]
+noexec: [$FA/a/noexec] [$FA/a/noexec]
+isdir: [$FA/b/isdir] [$FA/b/isdir]
+later: [$FA/b/later] [$FA/b/later]
+incwd: [] []
+missing: [] []
+inrel: [] [$FA/rel/bin/inrel]" "$actual"
+
+# Windows, through its seam (_DenWindowsFiles): PATHEXT's extensions in PATHEXT's order
+# within each directory before the next one, the name as it is when it already
+# ends in one of them, no extensionless file (Windows cannot run one) and no .ps1
+# (a script, not a program), and a quoted PATH entry.
+echo "[pwsh] _DenFindApp on Windows: PATHEXT, a name's own extension, no script"
+FW="$WORK/findapp-win"
+mkdir -p "$FW/a" "$FW/b"
+: > "$FW/a/tool"
+: > "$FW/a/tool.ps1"
+: > "$FW/b/tool.cmd"
+: > "$FW/b/tool.exe"
+: > "$FW/a/code.cmd"
+: > "$FW/b/code.exe"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    function _DenWindowsFiles { \$true }
+    \$env:PATHEXT = '.com;.exe;.bat;.cmd;.ps1'
+    \$env:PATH = '\"$FW/a\":$FW/b'
+    foreach (\$n in 'tool', 'tool.cmd', 'code', 'tool.ps1') { '{0}: [{1}]' -f \$n, (_DenFindApp \$n) }
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/_DenFindApp on Windows" "tool: [$FW/b/tool.exe]
+tool.cmd: [$FW/b/tool.cmd]
+code: [$FW/a/code.cmd]
+tool.ps1: []" "$actual"
+
+# den's whole load, with Get-Command wrapped to note each call: it made seven
+# Application lookups (above), and makes none now.
+echo "[pwsh] loading den looks up no program through Get-Command"
+GH="$WORK/gcm-home"
+mkdir -p "$GH/.local/share" "$GH/.cache" "$GH/.config"
+actual=$(cd "$GH" && HOME="$GH" XDG_DATA_HOME="$GH/.local/share" XDG_CACHE_HOME="$GH/.cache" \
+    XDG_CONFIG_HOME="$GH/.config" _DEN_FORCE_INTERACTIVE=1 PATH="/usr/bin:/bin" \
+    pwsh -NoProfile -NonInteractive -Command "
+        \$global:DenGcm = [System.Collections.Generic.List[string]]::new()
+        function global:Get-Command { \$global:DenGcm.Add((\$args -join ' ')); Microsoft.PowerShell.Core\Get-Command @args }
+        . '$DOTFILES/shell/pwsh/init.ps1'
+        'lookups=[' + (@(\$global:DenGcm | Where-Object { \$_ -match 'Application' }) -join '; ') + ']'
+    " < /dev/null 2>&1 | tr -d '\r' | grep '^lookups=')
+assert_eq "pwsh/no Get-Command -CommandType Application at load" "lookups=[]" "$actual"
+
+# init.ps1 caches starship's full init, not `starship init powershell`'s one line,
+# which ran starship again at every start to print the full init.
+echo "[pwsh] init.ps1 caches starship's full init"
+SSH="$WORK/ss-home"
+mkdir -p "$SSH/bin" "$SSH/.local/share" "$SSH/.cache" "$SSH/.config"
+cat > "$SSH/bin/starship" <<'EOF'
+#!/bin/sh
+case "$*" in
+    'init powershell --print-full-init') echo "\$global:DenStarship = 'full'" ;;
+    'init powershell') echo "\$global:DenStarship = 'one line'" ;;
+esac
+EOF
+chmod +x "$SSH/bin/starship"
+actual=$(cd "$SSH" && HOME="$SSH" XDG_DATA_HOME="$SSH/.local/share" XDG_CACHE_HOME="$SSH/.cache" \
+    XDG_CONFIG_HOME="$SSH/.config" _DEN_FORCE_INTERACTIVE=1 PATH="$SSH/bin:/usr/bin:/bin" \
+    pwsh -NoProfile -NonInteractive -Command "
+        . '$DOTFILES/shell/pwsh/init.ps1'
+        'starship=' + \$global:DenStarship
+    " < /dev/null 2>&1 | tr -d '\r' | grep '^starship=')
+assert_eq "pwsh/init.ps1 sources starship's full init" "starship=full" "$actual"
+
 # --- _DenTrustedCacheOwner: the Windows cache-owner decision, by SID ---
 # Test-CacheSafe compares security identifiers, not account names: a file created
 # from an elevated session (or with UAC off) is owned by BUILTIN\Administrators
@@ -711,29 +920,45 @@ assert_contains "pwsh/Test-CacheSafe trusts user's own SID" "self=True asked=1" 
 
 # --- Initialize-Cache warning says WHY the cache was refused and how to fix it ---
 # A symlinked cache is refused on every OS (reparse point); the warning must carry
-# the reason (so a report from the field is diagnosable) and the remedy.
+# the reason (so a report from the field is diagnosable) and the remedy. The cache
+# is made again in its place when it can be (below); here the tool prints nothing.
 echo "[pwsh] Initialize-Cache refusal warning names the reason and remedy"
 mkdir -p "$WORK/pwsh_iclink"
-cat > "$WORK/pwsh_iclink/pwshcachelink" <<'EOF'
-#!/bin/sh
-printf "%s\n" "\$env:PWSH_CACHE_LINK = 'regenerated'"
-EOF
+printf '#!/bin/sh\nexit 0\n' > "$WORK/pwsh_iclink/pwshcachelink"
 chmod +x "$WORK/pwsh_iclink/pwshcachelink"
 printf "%s\n" "\$env:PWSH_CACHE_LINK = 'linked'" > "$WORK/pwsh_iclink/target.ps1"
-actual=$(run_pwsh "$HELPERS_PS1" "
-    \$cacheDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache'
-    [void](New-Item -ItemType Directory -Path \$cacheDir -Force)
-    \$cacheFile = Join-Path \$cacheDir 'pwshcachelink-init.ps1'
-    Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
-    [void](New-Item -ItemType SymbolicLink -Path \$cacheFile -Target '$WORK/pwsh_iclink/target.ps1')
-    \$env:PATH = '$WORK/pwsh_iclink:' + \$env:PATH
-    \$r = Initialize-Cache 'pwshcachelink' @('init', 'powershell') 3>&1
-    Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
-    \$r | ForEach-Object { 'out: ' + \$_ }
-" 2>/dev/null | tr -d '\r')
+# iclink - Initialize-Cache 'pwshcachelink' with a symlink to target.ps1 at the
+# cache path: its output (warnings included), then the cache's first line and
+# the target's
+iclink() {
+    run_pwsh "$HELPERS_PS1" "
+        \$cacheDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache'
+        [void](New-Item -ItemType Directory -Path \$cacheDir -Force)
+        \$cacheFile = Join-Path \$cacheDir 'pwshcachelink-init.ps1'
+        Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
+        [void](New-Item -ItemType SymbolicLink -Path \$cacheFile -Target '$WORK/pwsh_iclink/target.ps1')
+        \$env:PATH = '$WORK/pwsh_iclink:' + \$env:PATH
+        \$r = Initialize-Cache 'pwshcachelink' @('init', 'powershell') 3>&1
+        \$r | ForEach-Object { 'out: ' + \$_ }
+        'link: ' + [bool]((Get-Item -LiteralPath \$cacheFile -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)
+        'target: ' + (Get-Content -LiteralPath '$WORK/pwsh_iclink/target.ps1')
+        Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
+    " 2>/dev/null | tr -d '\r'
+}
+actual=$(iclink)
 assert_contains "pwsh/Initialize-Cache refuses symlinked cache" "refusing to source unsafe cache file" "$actual"
 assert_contains "pwsh/Initialize-Cache warning names reason" "reparse point" "$actual"
 assert_contains "pwsh/Initialize-Cache warning names remedy" "delete it to regenerate" "$actual"
+
+# The tool printing again: the new cache replaces the symlink. The cache was
+# never written through one, and a cache read through one could be a device
+# that never ends the key's line, so the key is not read from a symlink at all.
+echo "[pwsh] Initialize-Cache replaces a symlinked cache it can make again, not the file it points to"
+printf '#!/bin/sh\nprintf "%%s\\n" "\\$env:PWSH_CACHE_LINK = '"'"'regenerated'"'"'"\n' > "$WORK/pwsh_iclink/pwshcachelink"
+actual=$(iclink | sed "s|$XDG_DATA_HOME|XDG|")
+assert_eq "pwsh/Initialize-Cache symlinked cache made again" "out: XDG/shell-cache/pwshcachelink-init.ps1
+link: False
+target: \$env:PWSH_CACHE_LINK = 'linked'" "$actual"
 
 # --- _DenInteractive reads pwsh's real launch switches ---
 # _DenInteractive inspects [Environment]::GetCommandLineArgs(), so these cases

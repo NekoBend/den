@@ -459,9 +459,19 @@ of zoxide and starship. zsh and PowerShell mirror this.
   the history, after yours, each once however often it loads. init.zsh sets
   `HISTFILE`, `HISTSIZE` / `SAVEHIST` (8192) and `HISTORY_IGNORE` (the
   `again` / `sagain` pattern) as it loads, replacing values set before it.
-- `~/.cache/shell/` holds the zoxide/starship init caches. They regenerate when
-  the tool binary is newer than the cache, and are sourced only if they are a
-  regular file owned by you (symlink and owner guarded).
+- `~/.cache/shell/` holds the zoxide/starship init caches. Each one's first
+  line is a key, the binary's path and the arguments it was made with; a cache
+  is made again when that line differs (the tool moved: starship's full init
+  runs starship by the path it had; or init.bash/init.zsh changed the
+  arguments) or the binary is newer than the cache. A run that fails or prints
+  nothing is not cached. They are sourced only if they are a regular file owned
+  by you (symlink and owner guarded).
+- PowerShell keeps its caches (zoxide's init, starship's full init, the
+  completion scripts) under LocalAppData's `shell-cache`, keyed the same way:
+  the tool's file (the one a symlink leads to), its length and modification
+  time, and the arguments. It finds each tool by walking `$env:PATH` itself
+  (`_DenFindApp`), not through `Get-Command`, whose lookups took tens of
+  milliseconds of every start.
 - `reload` clears the caches and restarts the shell, which rebuilds them.
   bash/zsh `exec` a new shell. pwsh cannot, so it starts the same pwsh with
   the same launch arguments (less `-WorkingDirectory`: it stays in the current
