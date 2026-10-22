@@ -70,6 +70,16 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
+# tmux: test_proxy.sh runs pwsh with PSReadLine in a private tmux server, which
+# gives PSReadLine the terminal it reads its lines from, and skips that case
+# without tmux. A layer of its own, after PowerShell and lua5.4, so adding it
+# does not invalidate the cached layers above.
+# =============================================================================
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tmux && \
+    rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
 # Copy dotfiles and test suite
 # =============================================================================
 COPY shell/ /root/.dotfiles/shell/

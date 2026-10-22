@@ -391,7 +391,8 @@ actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$DOTFILES/sh
     actual="${actual}[scan exited $?]"
 assert_eq "pwsh/5.1-parsable syntax" "" "$actual"
 
-# tests/shell/relaunch_argv.ps1 runs under Windows PowerShell 5.1 in CI.
+# tests/shell/relaunch_argv.ps1 and tests/shell/head_stop.ps1 run under Windows
+# PowerShell 5.1 in CI.
 echo "[pwsh] no PowerShell 6/7-only syntax in tests/shell/*.ps1"
 actual=$(pwsh -NoProfile -NonInteractive -File "$PWSH_SYNTAX_SCAN" "$SCRIPT_DIR" | tr -d '\r') ||
     actual="${actual}[scan exited $?]"

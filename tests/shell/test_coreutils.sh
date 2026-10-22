@@ -710,6 +710,43 @@ actual=$(pwsh -NoProfile -NonInteractive -Command "$fallback_ps" 2>/dev/null | c
 assert_eq "pwsh/head without the stop's internals reads to the end, \$Error empty" \
     "$fallback_expected" "$actual"
 
+# head_stop.ps1 is the check the Windows CI job runs under Windows PowerShell 5.1
+# and pwsh 7, whose internals may not be the ones this pwsh has. Here it runs
+# under this pwsh, then against a copy whose head cannot find
+# ManageInvocationException: there it must name the fallback, stop the line with
+# the endless producer after -Seconds, and exit 1. Last, against a copy that does
+# not parse: head would then be the head on PATH, which reads all its input as
+# the fallback does, so the script must name the load failure instead, and exit 1.
+head_stop() { { pwsh -NoProfile -NonInteractive -File "$SCRIPT_DIR/head_stop.ps1" "$@" 2>&1; echo "RC=$?"; } | tr -d '\r'; }
+
+echo "[pwsh] head_stop.ps1 passes with den's coreutils.ps1"
+actual=$(head_stop -Coreutils "$COREUTILS_PS1")
+assert_contains "pwsh/head_stop.ps1 says the stop ran" "head_stop: the stop ran" "$actual"
+assert_match "pwsh/head_stop.ps1 all checks pass" 'head_stop: all [0-9]+ checks passed' "$actual"
+assert_contains "pwsh/head_stop.ps1 exits 0" "RC=0" "$actual"
+assert_not_contains "pwsh/head_stop.ps1 no errors" "::error::" "$actual"
+
+echo "[pwsh] head_stop.ps1 names the fallback when head cannot stop"
+HEAD_NOSTOP_PS1="$TESTTMP/coreutils_nostop.ps1"
+sed "s/'ManageInvocationException'/'ManageInvocationExceptionGone'/" "$COREUTILS_PS1" > "$HEAD_NOSTOP_PS1" ||
+    abort_suite "cannot write $HEAD_NOSTOP_PS1"
+actual=$(head_stop -Coreutils "$HEAD_NOSTOP_PS1" -Seconds 10)
+assert_contains "pwsh/head_stop.ps1 names the fallback" "::error::head_stop: FALLBACK on pwsh " "$actual"
+assert_contains "pwsh/head_stop.ps1 shows the producer made all 10" "! [0] got  <1 made 10>" "$actual"
+assert_contains "pwsh/head_stop.ps1 stops a line that does not end" "<(still running after 10 s, then stopped)>" "$actual"
+assert_contains "pwsh/head_stop.ps1 lists the internals" "CommandProcessorBase.ManageInvocationException: " "$actual"
+assert_contains "pwsh/head_stop.ps1 exits 1" "RC=1" "$actual"
+
+echo "[pwsh] head_stop.ps1 names a coreutils.ps1 that does not load, not the fallback"
+HEAD_BROKEN_PS1="$TESTTMP/coreutils_broken.ps1"
+{ cat "$COREUTILS_PS1" && echo 'function _HeadStopBroken {'; } > "$HEAD_BROKEN_PS1" ||
+    abort_suite "cannot write $HEAD_BROKEN_PS1"
+actual=$(head_stop -Coreutils "$HEAD_BROKEN_PS1" -Seconds 10)
+assert_match "pwsh/head_stop.ps1 names the load failure, with the parse error on its line" \
+    '^::error::head_stop: coreutils\.ps1 did not load cleanly on pwsh .*did not define head: .*function _HeadStopBroken \{' "$actual"
+assert_not_contains "pwsh/head_stop.ps1 does not call a load failure FALLBACK" "FALLBACK" "$actual"
+assert_contains "pwsh/head_stop.ps1 exits 1 when coreutils.ps1 does not load" "RC=1" "$actual"
+
 # With microsoft/coreutils, head/tail/wc/... handed it `$input`, collected in
 # full, and with nothing piped in an empty pipe for stdin. A stub stands in for
 # coreutils (see make_stamp_stub in helpers.sh).

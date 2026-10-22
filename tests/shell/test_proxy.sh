@@ -479,16 +479,29 @@ env=$SECRET_URL" "$actual"
 
     # A real PSReadLine session, with init.ps1 loaded and the history file in
     # WORK: pwsh reads its lines from a terminal, which a private tmux server
-    # (its socket in TESTTMP) gives it. PATH holds pwsh's directory and the
-    # system ones only. Without tmux the case is skipped; test_functions.sh checks
-    # the answers of init.ps1's history handler either way.
-    if command -v tmux >/dev/null 2>&1; then
+    # gives it. PATH holds pwsh's directory and the system ones only. The
+    # server's socket goes in a directory of its own that mktemp makes under
+    # /tmp, removed after the case: a socket path over 107 bytes (the AF_UNIX
+    # limit) cannot be bound, and TESTTMP/tmux.sock is that long under a TMPDIR
+    # of about 80 characters. Without tmux, or with a socket path still too
+    # long, the case is skipped; test_functions.sh checks the answers of
+    # init.ps1's history handler either way.
+    TMUX_DIR="" TMUX_SKIP=""
+    if ! command -v tmux >/dev/null 2>&1; then
+        TMUX_SKIP="tmux not installed"
+    elif ! TMUX_DIR=$(mktemp -d /tmp/den-tmux.XXXXXX) || [ ! -d "$TMUX_DIR" ]; then
+        TMUX_DIR="" TMUX_SKIP="mktemp -d under /tmp failed"
+    fi
+    TMUX_SOCK="$TMUX_DIR/tmux.sock"
+    if [ -z "$TMUX_SKIP" ] && [ "${#TMUX_SOCK}" -gt 107 ]; then
+        TMUX_SKIP="the tmux socket path is over the 107 bytes AF_UNIX allows: $TMUX_SOCK"
+    fi
+    if [ -z "$TMUX_SKIP" ]; then
         echo "[pwsh] a password in proxy add keeps the line out of PSReadLine's history file"
         reset_conf
         rm -rf "${HIST_DIR:?}"
         mkdir -p "$HIST_DIR"
         PS_HIST="$HIST_DIR/pwsh_history.txt"
-        TMUX_SOCK="$TESTTMP/tmux.sock"
         ptmux() { tmux -S "$TMUX_SOCK" -f /dev/null "$@"; }
         # until <seconds> <command>... - run the command every 0.1s until it succeeds.
         until_ok() {
@@ -522,8 +535,9 @@ env=$SECRET_URL" "$actual"
         fi
         ptmux kill-server 2>/dev/null
     else
-        echo "  SKIP: pwsh/history in a real PSReadLine session (tmux not installed)"
+        echo "  SKIP: pwsh/history in a real PSReadLine session ($TMUX_SKIP)"
     fi
+    [ -z "$TMUX_DIR" ] || rm -rf "$TMUX_DIR"
 else
     echo "pwsh not found; skipping pwsh proxy tests"
 fi

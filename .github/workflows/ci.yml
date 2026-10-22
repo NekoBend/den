@@ -230,7 +230,7 @@ jobs:
       # push. --check builds nothing.
       - name: Check the dev image Dockerfile
         run: docker buildx build --check -f docker/ubuntu/Dockerfile docker/ubuntu
-      # The image installs two apt layers, one of them PowerShell from
+      # The image installs several apt layers, one of them PowerShell from
       # packages.microsoft.com. Uncached, that step took 39m8s, 29m36s, and
       # 11m52s on three of the last twelve runs (it succeeded every time; the
       # cost was waiting, not failing). The layers only change when the
@@ -713,4 +713,32 @@ jobs:
         shell: pwsh
         run: |
           ./tests/shell/relaunch_argv.ps1
+          exit $LASTEXITCODE
+      - name: head stops the commands before it under Windows PowerShell 5.1
+        # head (shell/pwsh/coreutils.ps1) stops the commands before it once the
+        # Nth piped object is out, through PowerShell internals it looks up by
+        # reflection, and where one is missing reads the rest and drops it; the
+        # Linux tests see the stop on pwsh 7 only. head_stop.ps1 loads
+        # coreutils.ps1 as test_coreutils.sh does and checks that a producer
+        # makes only N objects, that a command after head gets its end, that the
+        # statements after the line run, and that a producer that never ends
+        # lets head return (a check still running after 30 s is stopped and
+        # fails). When head read its producer to the end, the script prints
+        # FALLBACK and the internals as this PowerShell has them. It exits 1
+        # when a check fails, or, running no check and naming what loading
+        # printed, when coreutils.ps1 does not load cleanly. Like the pwsh 7
+        # step below, it runs after a failed step too, so an earlier failure
+        # in this job does not hide either result.
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          ./tests/shell/head_stop.ps1
+          exit $LASTEXITCODE
+      - name: head stops the commands before it under pwsh 7
+        # The same under pwsh, and after a failed step too (the 5.1 one above,
+        # say), so that a run tells a 5.1-only problem from a Windows-wide one.
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          ./tests/shell/head_stop.ps1
           exit $LASTEXITCODE
