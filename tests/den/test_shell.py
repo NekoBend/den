@@ -218,13 +218,13 @@ def test_cmd_python3_in_a_venv_runs_the_venvs_python():
     # A Windows venv has python.exe and pythonw.exe but no python3.exe, so the
     # venv branch's `python3.exe %*` skipped the venv and found another Python
     # or the Microsoft Store stub (exit 9009). It runs the venv's python.exe
-    # when the venv has one, and python3.exe only otherwise.
+    # when the venv has one. python3.cmd is python.cmd under another name.
+    assert (_CMD_BIN / "python3.cmd").read_bytes() == (_CMD_BIN / "python.cmd").read_bytes()
     code = _cmd_code("python3")
-    venv_python = '"%VIRTUAL_ENV%\\Scripts\\python.exe"'
-    i = code.index(":system")
-    assert code[i + 1] == f"if defined VIRTUAL_ENV if exist {venv_python} goto :venv"
-    assert code[i + 2] == "python3.exe %*"
-    assert code[code.index(":venv") + 1] == f"{venv_python} %*"
+    venv_python = "%VIRTUAL_ENV%\\Scripts\\python.exe"
+    i = code.index(f'if defined VIRTUAL_ENV if exist "{venv_python}" set "_py={venv_python}"')
+    assert code[i + 1] == "if defined _py goto run"
+    assert code[code.index(":run") + 1] == '"%_py%" %*'
 
 
 def test_cmd_shims_with_labels_keep_them_findable():

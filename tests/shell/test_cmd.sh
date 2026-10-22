@@ -708,6 +708,52 @@ fi
 fi
 
 # =============================================================================
+# The python, python3 and pip shims (run for real by the Windows job:
+# tests/shell/cmd_shims.cmd)
+# =============================================================================
+# cmd_code <shim> - the shim's lines without CRs, rem comments and echo lines.
+cmd_code() {
+    tr -d '\r' < "$CMD_BIN/$1.cmd" | grep -v -i -E '^[[:space:]]*(rem( |$)|(>&2 )?echo[ (])' || true
+}
+
+echo "[cmd] python, python3 and pip run no program by a bare name"
+# cmd looks a bare name up in the current directory before PATH, so a
+# python.exe or pip.exe kept at the top of a clone ran instead.
+bare=""
+for f in python python3 pip; do
+    hits=$(cmd_code "$f" | grep -E '(^|[[:space:]&|(])(python3?|pip3?|uv)\.exe' || true)
+    [ -z "$hits" ] || bare="$bare$f.cmd: $hits
+"
+done
+assert_eq "cmd/python shims: no bare python.exe or pip.exe" "" "$bare"
+
+echo "[cmd] python3.cmd is python.cmd under another name"
+cmp -s "$CMD_BIN/python.cmd" "$CMD_BIN/python3.cmd" && same=yes || same=no
+assert_eq "cmd/python3.cmd is a copy of python.cmd" "yes" "$same"
+
+echo "[cmd] the python and pip shims keep CRLF line endings"
+# With LF only, cmd can miss a goto label that straddles a 512-byte block.
+lf=""
+for f in python python3 pip; do
+    [ "$(grep -c '' "$CMD_BIN/$f.cmd")" = "$(grep -c $'\r$' "$CMD_BIN/$f.cmd")" ] || lf="$lf $f.cmd"
+done
+assert_eq "cmd/python shims: CRLF" "" "$lf"
+
+echo "[cmd] python asks uv only for a system or uv-installed python, ignoring the config here"
+# --system skips the .venv in and above the current directory, and --no-config
+# the .python-version there, which may name a program uv would run.
+finds=$(cmd_code python | grep -o 'python find [-a-z ]*-python' || true)
+assert_eq "cmd/python: uv python find --system --no-config" "python find --system --no-config --no-managed-python
+python find --system --no-config --managed-python" "$finds"
+
+echo "[cmd] pip outside a venv runs nothing"
+# The no-venv branch ends before uv pip: `uv pip` would pick the .venv in or
+# above the current directory and run its python.
+refuse=$(cmd_code pip | sed -n '/^if not defined VIRTUAL_ENV goto refuse$/p')
+after=$(cmd_code pip | sed -n '/^:refuse$/,/^:plain$/p' | grep -c -E '%_uv%|%_pip%' || true)
+assert_eq "cmd/pip: no venv goes to the refusal, which runs nothing" "if not defined VIRTUAL_ENV goto refuse 0" "$refuse $after"
+
+# =============================================================================
 # The PowerShell the head / tail / wc shims run
 # =============================================================================
 # A shim hands powershell.exe -Command "<text>" with its arguments in _ARG1 /

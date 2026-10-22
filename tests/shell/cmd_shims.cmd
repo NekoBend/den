@@ -7,8 +7,10 @@ rem keep its exit code and run their fallback only without it; findw runs fd
 rem whatever the toggle, and says so without it; there is no find shim, so
 rem typed find is find.exe; no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
-rem unchanged; python3 runs a venv's python.exe; path lists PATH; again
-rem asks before it re-runs.
+rem unchanged; python3 runs a venv's python.exe; python and python3 run a
+rem python directly, not uv run, under a pyproject.toml or beside a .venv
+rem and for --version / -V; pip runs nothing outside a venv; path lists PATH;
+rem again asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -195,6 +197,102 @@ call "%BIN%\python3.cmd" -V >"%O%" 2>&1
 call :expect %errorlevel% 0 "python3: the venv's python.exe"
 set "VIRTUAL_ENV="
 set "_DEN_VENV_PYTHON="
+
+rem --- python and pip where uv would build or run a clone's code. FAKE_SELF
+rem makes each copy of the stand-in name its folder first; as uv it answers
+rem `uv python find --system --no-config` with FAKE_FIND_SYSTEM or
+rem FAKE_FIND_MANAGED. The line on stderr comes before python's output.
+mkdir "%T%\sys" "%T%\managed" "%T%\proj\sub" "%T%\vproj\.venv" || exit /b 1
+copy /y "%T%\tools\fake.exe" "%T%\sys\python.exe" >nul || exit /b 1
+copy /y "%T%\tools\fake.exe" "%T%\managed\python.exe" >nul || exit /b 1
+>"%T%\proj\pyproject.toml" echo [project]
+set "FAKE_SELF=1"
+set "FAKE_FIND_SYSTEM=%T%\sys\python.exe"
+set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
+cd /d "%T%\proj\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\proj\pyproject.toml
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: under a pyproject.toml, the system python and a line, not uv run"
+cd /d "%T%\vproj" || exit /b 1
+>"%W%" echo python3: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\vproj\.venv
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python3: beside a .venv, the system python and a line, not uv run"
+cd /d "%T%\work" || exit /b 1
+>"%W%" echo [@sys]
+>>"%W%" echo [--version]
+call "%BIN%\python.cmd" --version >"%O%" 2>&1
+call :expect %errorlevel% 0 "python --version: the system python, no line"
+>"%W%" echo [@sys]
+>>"%W%" echo [-V]
+call "%BIN%\python3.cmd" -V >"%O%" 2>&1
+call :expect %errorlevel% 0 "python3 -V: the system python, no line"
+rem stdout only: the line on stderr holds a non-ASCII arrow
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python: outside a project, uv run as before"
+cd /d "%T%\proj" || exit /b 1
+set "FAKE_FIND_SYSTEM="
+>"%W%" echo python: running %T%\managed\python.exe, not uv run: uv run would build or run code from %T%\proj\pyproject.toml
+>>"%W%" echo [@managed]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: no system python, one uv installed"
+set "FAKE_FIND_MANAGED="
+>"%W%" echo python: no Python found to run in place of uv run; uv python install installs one
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 1 "python: no python to run, an error and nothing runs"
+set "FAKE_FIND_SYSTEM=%T%\sys\python.exe"
+set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
+>"%W%" echo pip: no venv is active; activate one (.venv\Scripts\activate), or type uv pip install foo directly
+call "%BIN%\pip.cmd" install foo >"%O%" 2>&1
+call :expect %errorlevel% 1 "pip: no venv, nothing runs"
+set "VIRTUAL_ENV=%T%\venv"
+>"%W%" echo [@tools]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv pip"
+copy /y "%T%\tools\fake.exe" "%T%\venv\Scripts\pip.exe" >nul || exit /b 1
+>"%W%" echo [@Scripts]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>&1
+call :expect %errorlevel% 0 "pip: the venv's own pip.exe"
+del "%T%\venv\Scripts\pip.exe"
+set "VIRTUAL_ENV="
+
+rem --- no python.exe or pip.exe in the current directory runs
+cd /d "%T%\cwd" || exit /b 1
+for %%e in (python pip) do copy /y "%SystemRoot%\System32\hostname.exe" "%T%\cwd\%%e.exe" >nul
+copy /y "%T%\tools\fake.exe" "%T%\tools\python.exe" >nul || exit /b 1
+copy /y "%T%\tools\fake.exe" "%T%\tools\pip.exe" >nul || exit /b 1
+set "_DEN_UV_OVERRIDE=0"
+>"%W%" echo [@tools]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: python.exe from PATH, not the current directory"
+>"%W%" echo [@tools]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>&1
+call :expect %errorlevel% 0 "pip: pip.exe from PATH, not the current directory"
+set "_DEN_UV_OVERRIDE="
+del "%T%\tools\python.exe" "%T%\tools\pip.exe"
+set "FAKE_SELF="
+set "FAKE_FIND_SYSTEM="
+set "FAKE_FIND_MANAGED="
+cd /d "%T%\work" || exit /b 1
 
 rem --- path.cmd lists PATH (typed `path` stays cmd's own command)
 call "%BIN%\path.cmd" >"%O%" 2>&1

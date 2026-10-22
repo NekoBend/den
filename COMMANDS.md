@@ -324,13 +324,15 @@ keeps), except where uv would build or run code that came with a clone:
   `vva`, has no pip). With no venv active they run nothing and say so, since
   `uv pip` would pick the `.venv` in or above the current directory itself and
   run its python: activate one with `va`, which refuses a venv that came with
-  the clone, or type `uv pip` yourself.
+  the clone (cmd has no `va`: run the venv's `Scripts\activate`), or type
+  `uv pip` yourself.
 
 Inside a venv `va` activated on bash/zsh/pwsh, `python` / `python3` / `py` run
 through `uv run --python <venv version>` outside a project. Inside a venv on cmd,
-the `pip` shim runs the first `pip.exe` on `PATH`, and `python3` the venv's
-`python.exe` (a Windows venv has no `python3.exe`). Flip the redirects with
-`toggle-uv`.
+`python` and `python3` run the venv's `python.exe` (a Windows venv has no
+`python3.exe`). cmd's python, python3 and pip shims find each program they run
+on `PATH` (System32's `where.exe`) or by its full path, never in the current
+directory. Flip the redirects with `toggle-uv`.
 On pwsh the redirects apply to commands typed at the prompt; a script gets the
 `python`, `pip` and `uv` on `PATH` (see "How to read this"). `py`, which Linux
 and macOS do not have, stays den's in scripts there.
