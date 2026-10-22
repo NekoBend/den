@@ -322,7 +322,9 @@ def test_uninstall_shell_takes_the_zshenv_line_back(tmp_path, monkeypatch):
 
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr(
-        _shell.shutil, "which", lambda name, path=None: "/x/zsh" if name == "zsh" else None
+        _shell.shutil,
+        "which",
+        lambda name, path=None: "/x/zsh" if name == "zsh" else None,
     )
     assert install_shell(["--no-extras", "--no-bin"]) == 0
     assert (tmp_path / ".zshenv").read_text() == (
