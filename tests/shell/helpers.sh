@@ -148,6 +148,22 @@ run_pwsh_den() {
         " < /dev/null
 }
 
+# assert_pwsh_data_private <label> - pass when pwsh's LocalApplicationData is a
+# directory in this suite's temporary root (TEST_ROOT, below). Off Windows it is
+# XDG_DATA_HOME, which .NET answers only while the directory exists (an empty
+# string otherwise), and den's pwsh files keep their caches there: a suite whose
+# pwsh loads functions.ps1 (zoxide's init) or completion.ps1 sets XDG_DATA_HOME
+# to a directory of its own, or it writes the real ~/.local/share/shell-cache.
+assert_pwsh_data_private() {
+    local actual
+    actual=$(pwsh -NoProfile -NonInteractive -Command "[Environment]::GetFolderPath('LocalApplicationData')" 2>&1 |
+        tr -d '\r')
+    case "$actual" in
+        "$TEST_ROOT"/?*) assert_eq "$1" "in the suite's directory" "in the suite's directory" ;;
+        *) assert_eq "$1" "a directory in $TEST_ROOT" "$actual" ;;
+    esac
+}
+
 # ===== Streaming through pwsh functions =====
 
 # STREAM_PRODUCER is PowerShell that outputs "one", waits 1.5 s, then outputs

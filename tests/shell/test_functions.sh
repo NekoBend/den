@@ -26,6 +26,15 @@ FUNCTIONS_PS1_COMBINED="$TESTTMP/functions_combined.ps1"
 # Written by the Windows PowerShell 5.1 archive case.
 FUNCTIONS_PS1_DESKTOP="$TESTTMP/functions_desktop.ps1"
 
+# functions.ps1's Initialize-Cache 'zoxide' writes the zoxide init cache to
+# pwsh's LocalApplicationData, which is XDG_DATA_HOME off Windows, and zoxide
+# keeps its database there too: so a run never writes the real
+# ~/.local/share/shell-cache or ~/.local/share/zoxide. In TESTTMP, not WORK:
+# setup_fixtures empties WORK, and .NET answers an empty LocalApplicationData
+# for a directory that is gone (see assert_pwsh_data_private).
+export XDG_DATA_HOME="$TESTTMP/xdg"
+mkdir -p "$XDG_DATA_HOME"
+
 # =============================================================================
 # Helper: create a known test file for hash tests
 # =============================================================================
@@ -3897,6 +3906,9 @@ fwd 2 to a removed dir: back= fwd=C:\d|C:\f nav= oldpwd=C:\f
 fwd 2 after the drop: back=C:\start|C:\d fwd= nav= oldpwd=C:\start
 entries after 60 moves: 25' "$out"
 fi
+
+echo "[pwsh] the pwsh runs above kept their caches in this suite's directory"
+assert_pwsh_data_private "pwsh/LocalApplicationData in the suite's directory"
 
 # =============================================================================
 # Summary
