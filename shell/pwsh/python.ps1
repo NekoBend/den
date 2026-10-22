@@ -31,82 +31,147 @@ function Show-UvOnlyMessage {
   Write-Host "$($Original.TrimEnd()) → $($RedirectedTo.TrimEnd())" -ForegroundColor DarkYellow
 }
 
-# pip → uv pip (falls back to system pip; an active venv's own pip when it has one)
-# A venv made by uv (vv, vva) has no pip: a PATH lookup then found another
-# Python's pip, which installed there. uv pip installs into the active venv.
+# pip → the active venv's own pip when it has one, else uv pip, which installs
+# into the active venv: a venv made by uv (vv, vva) has no pip, and a PATH
+# lookup then found another Python's pip, which installed there. With no venv
+# active, pip runs nothing: uv pip would pick an environment itself, the .venv
+# in this directory or one above it, and run the python in it, which may be one
+# a cloned repository committed. va activates a venv after checking that it did
+# not come with the clone. Parity with posix python.sh.
 function pip {
-  if ($env:VIRTUAL_ENV) {
-    $venvPip = @('Scripts/pip.exe', 'bin/pip') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
-      Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-    if ($venvPip) { & $venvPip @Args; return }
-    if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
+  if (-not $env:VIRTUAL_ENV) {
+    Write-Error "no venv is active; activate one with va, or type $((@('uv', 'pip') + $Args) -join ' ') directly"
+    return
   }
-  if (_ResolveCmd 'uv' 'App') {
-    Show-UvOnlyMessage "pip $($Args -join ' ')" "uv pip $($Args -join ' ')"
-    & uv pip @Args
-  }
-  else {
-    & (_ResolveCmd 'pip' 'App') @Args
-  }
+  $venvPip = @('Scripts/pip.exe', 'bin/pip') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  if ($venvPip) { & $venvPip @Args; return }
+  if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
+  Show-UvOnlyMessage "pip $($Args -join ' ')" "uv pip $($Args -join ' ')"
+  & uv pip @Args
 }
 
-# pip3 → uv pip (falls back to system pip3; an active venv's own pip3 when it has one)
+# pip3 → the same, with an active venv's own pip3
 function pip3 {
+  if (-not $env:VIRTUAL_ENV) {
+    Write-Error "no venv is active; activate one with va, or type $((@('uv', 'pip') + $Args) -join ' ') directly"
+    return
+  }
+  $venvPip = @('Scripts/pip3.exe', 'bin/pip3') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  if ($venvPip) { & $venvPip @Args; return }
+  if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
+  Show-UvOnlyMessage "pip3 $($Args -join ' ')" "uv pip $($Args -join ' ')"
+  & uv pip @Args
+}
+
+# _DenPyMarker - the pyproject.toml or .venv that uv run would find from here: the
+# first one in the current directory or a directory above it ($null when there is
+# none). Windows hands uv the directory as PowerShell has it; Linux and macOS
+# resolve its symbolic links first, so there a linked directory's target is
+# searched as well.
+function _DenPyMarker {
+  $starts = [System.Collections.Generic.List[string]]::new()
+  $starts.Add($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath)
+  for ($i = 0; $i -lt $starts.Count -and $i -lt 16; $i++) {
+    $dir = $starts[$i]
+    while ($dir) {
+      foreach ($name in 'pyproject.toml', '.venv') {
+        $path = [System.IO.Path]::Combine($dir, $name)
+        if ([System.IO.File]::Exists($path) -or [System.IO.Directory]::Exists($path)) { return $path }
+      }
+      if (-not (_OnWindows)) {
+        # ResolveLinkTarget is .NET 6 (pwsh 7.2); before it, links are not followed.
+        try {
+          $target = [System.IO.DirectoryInfo]::new($dir).ResolveLinkTarget($true)
+          if ($target) { $starts.Add($target.FullName) }
+        } catch { $null = $_ }
+      }
+      $dir = [System.IO.Path]::GetDirectoryName($dir)
+    }
+  }
+  return $null
+}
+
+# _DenPyExe - the python to run in uv run's place: the active venv's, else the
+# system Python uv finds, else one uv installed (uv python install); $null when
+# there is none. --system skips the .venv here, and --no-config the
+# .python-version, uv.toml and pyproject.toml here: a .python-version may name a
+# program in the repository, which uv would run to ask its version.
+function _DenPyExe {
   if ($env:VIRTUAL_ENV) {
-    $venvPip = @('Scripts/pip3.exe', 'bin/pip3') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
-      Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-    if ($venvPip) { & $venvPip @Args; return }
-    if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
+    foreach ($rel in 'Scripts/python.exe', 'bin/python') {
+      $path = Join-Path $env:VIRTUAL_ENV $rel
+      if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
+    }
   }
-  if (_ResolveCmd 'uv' 'App') {
-    Show-UvOnlyMessage "pip3 $($Args -join ' ')" "uv pip $($Args -join ' ')"
-    & uv pip @Args
+  $uv = _ResolveCmd 'uv' 'App'
+  if (-not $uv) { return $null }
+  foreach ($kind in '--no-managed-python', '--managed-python') {
+    # uv prints the path, or nothing on stdout when it finds none.
+    $found = @(& $uv python find --system --no-config $kind 2>$null)
+    $path = if ($found.Count -ge 1) { [string]$found[0] } else { '' }
+    if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) { return $path }
   }
-  else {
-    & (_ResolveCmd 'pip3' 'App') @Args
-  }
+  return $null
 }
 
-# python → uv run python (uses venv version when active)
+# _DenPyRun <name> <args> - what python, python3 and py run: uv run python, with
+# the version of the venv va activated, and outside a venv a line that says so.
+# Not where uv run would build or run code that came with a clone: with a
+# pyproject.toml or a .venv in this directory or one above it, uv run builds that
+# project (its build backend is the repository's own code) or runs that .venv's
+# python, even for `python --version`. There, after a warning, the python
+# _DenPyExe names runs directly, as it does anywhere for --version and -V. With
+# uv gone since den loaded, the python on PATH. Parity with posix python.sh.
+# Returns @{ Exe; Args }, or @{ Error } for the caller to write under its own
+# name; the caller reads them as ['Error'], since reading a missing key as
+# .Error is an error under a caller's Set-StrictMode.
+function _DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
+  $PyArgs = @($PyArgs)
+  $uv = _ResolveCmd 'uv' 'App'
+  if (-not $uv) {
+    $exe = _ResolveCmd $(if ($Name -eq 'python3') { 'python3' } else { 'python' }) 'App'
+    if (-not $exe) { return @{ Error = 'no python on PATH, and uv is not on PATH either' } }
+    return @{ Exe = $exe; Args = $PyArgs }
+  }
+  $marker = _DenPyMarker
+  $probe = $PyArgs.Count -ge 1 -and ("$($PyArgs[0])" -ceq '--version' -or "$($PyArgs[0])" -ceq '-V')
+  if ($marker -or $probe) {
+    $exe = _DenPyExe
+    if (-not $exe) { return @{ Error = 'no Python found to run in place of uv run; uv python install installs one' } }
+    if ($marker) { Write-Warning "${Name}: running $exe, not uv run: uv run would build or run code from $marker" }
+    return @{ Exe = $exe; Args = $PyArgs }
+  }
+  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON) {
+    return @{ Exe = $uv; Args = @('run', '--python', $env:_DEN_VENV_PYTHON, '--', 'python') + $PyArgs }
+  }
+  Show-UvOnlyMessage "$Name $($PyArgs -join ' ')" "uv run -- python $($PyArgs -join ' ')"
+  return @{ Exe = $uv; Args = @('run', '--', 'python') + $PyArgs }
+}
+
+# python → _DenPyRun
 function python {
-  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
-    & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON -- python @Args
-  }
-  elseif (_ResolveCmd 'uv' 'App') {
-    Show-UvOnlyMessage "python $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
-    & (_ResolveCmd 'uv' 'App') run -- python @Args
-  }
-  else {
-    & (_ResolveCmd 'python' 'App') @Args
-  }
+  $run = _DenPyRun 'python' $Args
+  if ($run['Error']) { Write-Error $run['Error']; return }
+  $runArgs = $run['Args']
+  & $run['Exe'] @runArgs
 }
 
-# python3 → uv run python (uses venv version when active)
+# python3 → _DenPyRun
 function python3 {
-  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
-    & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON -- python @Args
-  }
-  elseif (_ResolveCmd 'uv' 'App') {
-    Show-UvOnlyMessage "python3 $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
-    & (_ResolveCmd 'uv' 'App') run -- python @Args
-  }
-  else {
-    & (_ResolveCmd 'python3' 'App') @Args
-  }
+  $run = _DenPyRun 'python3' $Args
+  if ($run['Error']) { Write-Error $run['Error']; return }
+  $runArgs = $run['Args']
+  & $run['Exe'] @runArgs
 }
 
-# py → uv run python (uses venv version when active)
+# py → _DenPyRun
 function py {
-  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and (_ResolveCmd 'uv' 'App')) {
-    & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON -- python @Args
-  }
-  elseif (_ResolveCmd 'uv' 'App') {
-    Show-UvOnlyMessage "py $($Args -join ' ')" "uv run -- python $($Args -join ' ')"
-    & (_ResolveCmd 'uv' 'App') run -- python @Args
-  }
-  else {
-    & (_ResolveCmd 'python' 'App') @Args
-  }
+  $run = _DenPyRun 'py' $Args
+  if ($run['Error']) { Write-Error $run['Error']; return }
+  $runArgs = $run['Args']
+  & $run['Exe'] @runArgs
 }
 
 # toggle-uv leaves _DEN_UV_OVERRIDE in the environment, so a reload (a new pwsh)

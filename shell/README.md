@@ -207,8 +207,8 @@ native PowerShell cmdlets, when you need object-accurate results.
 ### Python / uv
 | Command | What it does |
 |---------|--------------|
-| `py` `python` `python3` | `uv run python` (uses the active venv's version) |
-| `pip` `pip3` | `uv pip` (an active venv's own pip when it has one) |
+| `py` `python` `python3` | `uv run python` (uses the active venv's version); in a project (a `pyproject.toml` or `.venv` here or above, which uv run would build or run) and for `--version` / `-V`, a python directly |
+| `pip` `pip3` | an active venv's own pip, else `uv pip` into it; nothing with no venv active (`va` one, or type `uv pip`) |
 | `uv` | injects `--python` for `uv run` when a venv is active |
 | `va [DIR]` | activate a venv (default `.venv`) |
 | `vd` | deactivate |

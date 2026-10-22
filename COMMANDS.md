@@ -306,22 +306,39 @@ check at all (a missing file, or an algo that disagrees with the hash's length);
 
 ## Python and uv
 
-The `python` / `pip` family transparently routes through `uv` (unless uv is absent
-or `_DEN_UV_OVERRIDE=0`, which a reload or a child shell started after `toggle-uv`
-keeps). Inside an active venv on bash/zsh/pwsh, `pip` / `pip3` use the venv's own
-pip when it has one; a venv made by uv (`vv`, `vva`) has none, and there they run
-`uv pip`, which installs into that venv; `python` / `python3` / `py` still run
-through `uv run --python <venv version>`. Inside a venv on cmd, the `pip` shim
-runs the first `pip.exe` on `PATH`, and `python3` the venv's `python.exe` (a
-Windows venv has no `python3.exe`). Flip the redirect with `toggle-uv`.
+The `python` / `pip` family routes through `uv` (unless uv is absent or
+`_DEN_UV_OVERRIDE=0`, which a reload or a child shell started after `toggle-uv`
+keeps), except where uv would build or run code that came with a clone:
+
+- `python` / `python3` / `py` run `uv run -- python` and print a line that says
+  so. In a project, that is with a `pyproject.toml` or a `.venv` in the current
+  directory or one above it, `uv run` builds the project (its build backend is
+  the repository's own code; `python --version` did that too, and left a
+  `.venv` and a `uv.lock` behind) or runs that `.venv`'s python, which a clone
+  may have committed. There a python runs directly instead, after a warning
+  line: the active venv's, else the system Python uv finds, else one uv
+  installed (`uv python install`). Type `uv run python` to use the project.
+  `--version` and `-V` run that python directly anywhere, with no line.
+- `pip` / `pip3` run only inside an active venv: the venv's own pip when it has
+  one, else `uv pip`, which installs into that venv (a venv made by uv, `vv` /
+  `vva`, has no pip). With no venv active they run nothing and say so, since
+  `uv pip` would pick the `.venv` in or above the current directory itself and
+  run its python: activate one with `va`, which refuses a venv that came with
+  the clone, or type `uv pip` yourself.
+
+Inside a venv `va` activated on bash/zsh/pwsh, `python` / `python3` / `py` run
+through `uv run --python <venv version>` outside a project. Inside a venv on cmd,
+the `pip` shim runs the first `pip.exe` on `PATH`, and `python3` the venv's
+`python.exe` (a Windows venv has no `python3.exe`). Flip the redirects with
+`toggle-uv`.
 On pwsh the redirects apply to commands typed at the prompt; a script gets the
 `python`, `pip` and `uv` on `PATH` (see "How to read this"). `py`, which Linux
 and macOS do not have, stays den's in scripts there.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `python` / `python3` / `py` | `uv run -- python`, else system python | ✓ | ✓ | ✓ (no `py`) |
-| `pip` / `pip3` | `uv pip`, else system pip | ✓ | ✓ | ✓ (no `pip3`) |
+| `python` / `python3` / `py` | `uv run -- python`, but in a project (a `pyproject.toml` or `.venv` here or above) and for `--version` / `-V` a python directly; else system python | ✓ | ✓ | ✓ (no `py`) |
+| `pip` / `pip3` | in a venv its own pip, else `uv pip`; with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
 | `uv` | injects `--python` for `uv run` inside an active venv | ✓ | ✓ | ✓ |
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
