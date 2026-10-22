@@ -731,7 +731,9 @@ jobs:
           ./tests/shell/head_stop.ps1
           exit $LASTEXITCODE
       - name: head stops the commands before it under pwsh 7
-        # The same under pwsh.
+        # The same under pwsh, and after a failed step too (the 5.1 one above,
+        # say), so that a run tells a 5.1-only problem from a Windows-wide one.
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           ./tests/shell/head_stop.ps1
