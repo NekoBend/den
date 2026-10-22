@@ -14,6 +14,47 @@ teardown() {
   rm -rf "$WORK"
 }
 
+# _found_above <dir> <name>: true when <name> exists in a directory above
+# <dir>. A tsconfig.json, Cargo.toml, rustfmt config or .editorconfig above
+# the temp dir would change what the script runs, so those tests skip.
+_found_above() {
+  local d
+  d=$(dirname "$1")
+  while :; do
+    [ -e "$d/$2" ] && return 0
+    [ "$d" = "/" ] && return 1
+    d=$(dirname "$d")
+  done
+}
+
+# _stub <tool>: a fake <tool> in $WORK/bin that appends its working directory
+# and arguments to $WORK/<tool>.log, prints $WORK/<tool>.out when it exists,
+# and exits with the number in $WORK/<tool>.rc (0 without one).
+_stub() {
+  mkdir -p "$WORK/bin"
+  cat > "$WORK/bin/$1" <<EOF
+#!/usr/bin/env bash
+printf 'cwd=%s argv=%s\n' "\$PWD" "\$*" >> "$WORK/$1.log"
+[ -f "$WORK/$1.out" ] && cat "$WORK/$1.out"
+exit "\$(cat "$WORK/$1.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$WORK/bin/$1"
+}
+
+# _run_stubbed <file>: run the script with the stubs and the system
+# directories alone on PATH, so tools installed elsewhere stay out of it.
+_run_stubbed() {
+  run env PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$1"
+}
+
+# _ts_project: $WORK/proj with a tsconfig.json and src/a.ts, src/b.ts.
+_ts_project() {
+  mkdir -p "$WORK/proj/src"
+  printf '{}\n' > "$WORK/proj/tsconfig.json"
+  printf 'export const a = 1;\n' > "$WORK/proj/src/a.ts"
+  printf 'export const b = 2;\n' > "$WORK/proj/src/b.ts"
+}
+
 @test "no arguments: usage error, exit 2" {
   run "$SCRIPT"
   [ "$status" -eq 2 ]
@@ -161,4 +202,227 @@ EOF
   run "$SCRIPT" "$WORK/err.ps1"
   [ "$status" -eq 1 ]
   [[ "$output" == *"[lint     ] FAIL"* ]]
+}
+
+@test "TypeScript: tsc checks the nearest tsconfig.json project from its directory (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  # regression: 'tsc --noEmit <file>' ignored tsconfig.json before TS 6.0
+  # and fails with TS5112 from 6.0 on
+  _ts_project
+  _stub tsc
+  printf 'src/a.ts\n' > "$WORK/tsc.out"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] PASS"* ]]
+  grep -qx "cwd=$WORK/proj argv=--noEmit --pretty false --explainFiles -p ." "$WORK/tsc.log"
+}
+
+@test "TypeScript: errors in other files do not fail this file (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  _ts_project
+  _stub tsc
+  printf '%s\n' \
+    "src/b.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'." \
+    "src/a.ts" "  Matched by include pattern '**/*' in 'tsconfig.json'" "src/b.ts" \
+    > "$WORK/tsc.out"
+  printf '2\n' > "$WORK/tsc.rc"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] PASS"*"not counted: 1"* ]]
+  _run_stubbed "$WORK/proj/src/b.ts"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[typecheck] FAIL (2)"* ]]
+  [[ "$output" == *"src/b.ts(1,14): error TS2322"* ]]
+}
+
+@test "TypeScript: a syntax error elsewhere or a config error is SKIPPED, never PASS (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  # tsc type-checks nothing while any file has a syntax error or the config
+  # has one, so this file's own type errors would not be reported
+  _ts_project
+  _stub tsc
+  printf '1\n' > "$WORK/tsc.rc"
+  printf '%s\n' "src/b.ts(1,9): error TS1005: ';' expected." "src/a.ts" "src/b.ts" > "$WORK/tsc.out"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   tsc stopped before type-checking src/a.ts"* ]]
+  [[ "$output" == *"src/b.ts(1,9): error TS1005"* ]]
+  printf '%s\n' "tsconfig.json(3,5): error TS5101: Option 'baseUrl' is deprecated." "src/a.ts" > "$WORK/tsc.out"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   tsc stopped before type-checking src/a.ts"* ]]
+}
+
+@test "TypeScript: a file the tsconfig.json program leaves out is SKIPPED (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  _ts_project
+  printf 'export const c = 3;\n' > "$WORK/proj/src/c.js"
+  _stub tsc
+  printf 'src/b.ts\n' > "$WORK/tsc.out"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   src/a.ts is not in the program"* ]]
+  _run_stubbed "$WORK/proj/src/c.js"
+  [[ "$output" == *"[typecheck] SKIPPED   src/c.js is not in the program"*"allowJs or checkJs"* ]]
+}
+
+@test "TypeScript: a path with parentheses matches its own diagnostics (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  _ts_project
+  mkdir -p "$WORK/proj/app/(auth)"
+  printf 'export const p = 1;\n' > "$WORK/proj/app/(auth)/page.tsx"
+  _stub tsc
+  printf '%s\n' \
+    "app/(auth)/page.tsx(1,14): error TS2322: Type 'string' is not assignable to type 'number'." \
+    "  The expected type comes from this declaration." \
+    "app/(auth)/page.tsx" "src/a.ts" > "$WORK/tsc.out"
+  printf '2\n' > "$WORK/tsc.rc"
+  _run_stubbed "$WORK/proj/app/(auth)/page.tsx"
+  [[ "$output" == *"[typecheck] FAIL (2)"* ]]
+  [[ "$output" == *"  The expected type comes from this declaration."* ]]
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] PASS"*"not counted: 1"* ]]
+}
+
+@test "TypeScript: with no tsconfig.json, .ts is checked alone and JavaScript is SKIPPED (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  mkdir -p "$WORK/loose"
+  printf 'export const x = 1;\n' > "$WORK/loose/x.ts"
+  printf 'export const y = 1;\n' > "$WORK/loose/y.js"
+  _stub tsc
+  _run_stubbed "$WORK/loose/x.ts"
+  [[ "$output" == *"[typecheck] PASS      tsc --noEmit $WORK/loose/x.ts (no tsconfig.json above it)"* ]]
+  grep -qx "cwd=$WORK/loose argv=--noEmit ./x.ts" "$WORK/tsc.log"
+  _run_stubbed "$WORK/loose/y.js"
+  [[ "$output" == *"[typecheck] SKIPPED   no tsconfig.json above"*"allowJs or checkJs"* ]]
+  [ "$(wc -l < "$WORK/tsc.log")" -eq 1 ]
+}
+
+@test "TypeScript (tsc): tsconfig paths apply and another file's errors are not counted" {
+  command -v tsc >/dev/null 2>&1 || skip "tsc not installed"
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  mkdir -p "$WORK/proj/src/lib"
+  cat > "$WORK/proj/tsconfig.json" <<'EOF'
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "paths": { "@lib/*": ["./src/lib/*"] }
+  },
+  "include": ["src"]
+}
+EOF
+  printf 'export const value: number = 1;\n' > "$WORK/proj/src/lib/value.ts"
+  printf 'import { value } from "@lib/value";\nexport const doubled: number = value * 2;\n' > "$WORK/proj/src/ok.ts"
+  printf 'export const n: number = "x";\n' > "$WORK/proj/src/bad.ts"
+  run "$SCRIPT" "$WORK/proj/src/ok.ts"
+  [[ "$output" == *"[typecheck] PASS"*"not counted: 1"* ]]
+  run "$SCRIPT" "$WORK/proj/src/bad.ts"
+  [[ "$output" == *"[typecheck] FAIL"* ]]
+  [[ "$output" == *"src/bad.ts(1,14): error TS2322"* ]]
+}
+
+@test "TypeScript (tsc): a syntax error elsewhere hides this file's type errors, so SKIPPED" {
+  command -v tsc >/dev/null 2>&1 || skip "tsc not installed"
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  mkdir -p "$WORK/proj/src"
+  printf '{ "compilerOptions": { "strict": true, "noEmit": true }, "include": ["src"] }\n' > "$WORK/proj/tsconfig.json"
+  printf 'export const n: number = "x";\n' > "$WORK/proj/src/typed.ts"
+  printf 'export const = ;\n' > "$WORK/proj/src/broken.ts"
+  run "$SCRIPT" "$WORK/proj/src/typed.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   tsc stopped before type-checking src/typed.ts"* ]]
+}
+
+@test "TypeScript (tsc): JavaScript is type-checked only in a project that takes it" {
+  command -v tsc >/dev/null 2>&1 || skip "tsc not installed"
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  mkdir -p "$WORK/plain/src" "$WORK/checked/src"
+  printf '{ "compilerOptions": { "noEmit": true }, "include": ["src"] }\n' > "$WORK/plain/tsconfig.json"
+  printf '{ "compilerOptions": { "allowJs": true, "checkJs": true, "noEmit": true }, "include": ["src"] }\n' > "$WORK/checked/tsconfig.json"
+  printf '/** @type {number} */\nexport const n = "x";\n' > "$WORK/plain/src/a.js"
+  cp "$WORK/plain/src/a.js" "$WORK/checked/src/a.js"
+  run "$SCRIPT" "$WORK/plain/src/a.js"
+  [[ "$output" == *"[typecheck] SKIPPED   src/a.js is not in the program"* ]]
+  run "$SCRIPT" "$WORK/checked/src/a.js"
+  [[ "$output" == *"[typecheck] FAIL"* ]]
+  [[ "$output" == *"src/a.js(2,14): error TS2322"* ]]
+}
+
+@test "Rust (rustfmt): async fn in an edition-2021 crate passes" {
+  command -v rustfmt >/dev/null 2>&1 || skip "rustfmt not installed"
+  for f in Cargo.toml rustfmt.toml .rustfmt.toml; do
+    _found_above "$WORK" "$f" && skip "a $f above the temp dir"
+  done
+  # regression: rustfmt does not read Cargo.toml, so it parsed Rust 2015 and
+  # FAILed 'async fn' with E0670
+  mkdir -p "$WORK/crate/src"
+  printf '[package]\nname = "probe"\nversion = "0.1.0"\nedition = "2021"\n' > "$WORK/crate/Cargo.toml"
+  printf 'pub async fn fetch(x: u32) -> u32 {\n    x + 1\n}\n' > "$WORK/crate/src/lib.rs"
+  run "$SCRIPT" "$WORK/crate/src/lib.rs"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[format   ] PASS      rustfmt --check --edition 2021"* ]]
+}
+
+@test "Rust (rustfmt): an edition inherited from the workspace is passed" {
+  command -v rustfmt >/dev/null 2>&1 || skip "rustfmt not installed"
+  for f in Cargo.toml rustfmt.toml .rustfmt.toml; do
+    _found_above "$WORK" "$f" && skip "a $f above the temp dir"
+  done
+  mkdir -p "$WORK/ws/dotted/src" "$WORK/ws/inline/src"
+  printf '[workspace]\nmembers = ["dotted", "inline"]\n\n[workspace.package]\nedition = "2021"\n' > "$WORK/ws/Cargo.toml"
+  printf '[package]\nname = "dotted"\nversion = "0.1.0"\nedition.workspace = true\n' > "$WORK/ws/dotted/Cargo.toml"
+  printf '[package]\nname = "inline"\nversion = "0.1.0"\nedition = { workspace = true }\n' > "$WORK/ws/inline/Cargo.toml"
+  for m in dotted inline; do
+    printf 'pub async fn fetch(x: u32) -> u32 {\n    x + 1\n}\n' > "$WORK/ws/$m/src/lib.rs"
+    run "$SCRIPT" "$WORK/ws/$m/src/lib.rs"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"rustfmt --check --edition 2021"* ]]
+  done
+}
+
+@test "Rust (rustfmt): a rustfmt.toml that sets the edition is not overridden" {
+  command -v rustfmt >/dev/null 2>&1 || skip "rustfmt not installed"
+  for f in Cargo.toml rustfmt.toml .rustfmt.toml; do
+    _found_above "$WORK" "$f" && skip "a $f above the temp dir"
+  done
+  mkdir -p "$WORK/crate/src"
+  printf '[package]\nname = "probe"\nversion = "0.1.0"\nedition = "2021"\n' > "$WORK/crate/Cargo.toml"
+  printf 'edition = "2018"\n' > "$WORK/crate/rustfmt.toml"
+  printf 'pub async fn fetch(x: u32) -> u32 {\n    x + 1\n}\n' > "$WORK/crate/src/lib.rs"
+  run "$SCRIPT" "$WORK/crate/src/lib.rs"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[format   ] PASS      rustfmt --check $WORK/crate/src/lib.rs"* ]]
+}
+
+@test "Shell: shfmt gets -i 2 -ci -s when no .editorconfig is above the file (stub shfmt)" {
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  # regression: bare 'shfmt -d' indents with tabs, so every script written in
+  # shell.md's 2-space style FAILed
+  _stub shfmt
+  printf '#!/usr/bin/env bash\necho hi\n' > "$WORK/a.sh"
+  _run_stubbed "$WORK/a.sh"
+  [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s $WORK/a.sh"* ]]
+}
+
+@test "Shell: an .editorconfig makes shfmt run with no formatting flags (stub shfmt)" {
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  # a formatting flag makes shfmt ignore EditorConfig
+  _stub shfmt
+  mkdir -p "$WORK/proj/bin"
+  printf 'root = true\n\n[*.sh]\nindent_style = tab\n' > "$WORK/proj/.editorconfig"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$WORK/proj/bin/a.sh"
+  _run_stubbed "$WORK/proj/bin/a.sh"
+  [[ "$output" == *"[format   ] PASS      shfmt -d $WORK/proj/bin/a.sh"* ]]
+}
+
+@test "Shell (shfmt): 2-space indentation passes with no .editorconfig" {
+  command -v shfmt >/dev/null 2>&1 || skip "shfmt not installed"
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  printf '#!/usr/bin/env bash\ngreet() {\n  echo hi\n}\ngreet\n' > "$WORK/a.sh"
+  run "$SCRIPT" "$WORK/a.sh"
+  [[ "$output" == *"[format   ] PASS"* ]]
+}
+
+@test "Shell (shfmt): a tab-indent .editorconfig wins over the default flags" {
+  command -v shfmt >/dev/null 2>&1 || skip "shfmt not installed"
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  printf 'root = true\n\n[*.sh]\nindent_style = tab\n' > "$WORK/.editorconfig"
+  printf '#!/usr/bin/env bash\ngreet() {\n\techo hi\n}\ngreet\n' > "$WORK/a.sh"
+  run "$SCRIPT" "$WORK/a.sh"
+  [[ "$output" == *"[format   ] PASS"* ]]
 }
