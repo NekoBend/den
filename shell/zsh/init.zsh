@@ -19,13 +19,16 @@
 # does, without the security audit, which asks whether to use one that others
 # may write to; with no terminal to answer (zsh -i -c, as an editor's
 # environment probe runs it), compinit gave up, wrote no dump, and so asked
-# again at every start.
+# again at every start. The dump's age is tested through eval, under zsh's own
+# options: with SH_GLOB set (in ~/.zshrc, above den's line) the glob qualifier
+# is a parse error, and zsh stops reading this file there.
 autoload -Uz compinit
 if (( ! ${+functions[compdef]} )); then
     () {
-        setopt localoptions extendedglob
+        emulate -L zsh
+        setopt extendedglob
         local dump=${ZDOTDIR:-$HOME}/.zcompdump
-        if [[ -n $dump(#qN.mh-24) ]]; then
+        if eval '[[ -n $dump(#qN.mh-24) ]]'; then
             compinit -C
         else
             compinit -u && command touch -- "$dump" 2>/dev/null
@@ -75,8 +78,14 @@ unset _zp
 # ===== Reload =====
 reload() {
     # The completion dump too, so the new shell's compinit looks for new
-    # completion functions at once. (N): no init cache is no error.
-    rm -f "${XDG_CACHE_HOME:-$HOME/.cache}"/shell/*.zsh(N) "${ZDOTDIR:-$HOME}/.zcompdump"
+    # completion functions at once. NULL_GLOB, under zsh's own options: no init
+    # cache is no error. Not the (N) qualifier, which SH_GLOB makes a parse
+    # error where this file defines reload.
+    () {
+        emulate -L zsh
+        setopt nullglob
+        rm -f "${XDG_CACHE_HOME:-$HOME/.cache}"/shell/*.zsh "${ZDOTDIR:-$HOME}/.zcompdump"
+    }
     # Append only this session's unsaved lines, as init.bash's `history -a`
     # does. `fc -W` rewrote $HISTFILE from this session's list, which lacks
     # what other sessions saved after it started, so those lines were lost.

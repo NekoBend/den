@@ -117,6 +117,26 @@ chmod +x "$ZC/bin/zsh"
 out=$(zc_run "" "hash zsh='$ZC/bin/zsh'; [ -f ~/.zcompdump ] && echo dump-made; reload")
 assert_eq "zsh/reload: nothing printed" "dump-made" "$out"
 assert_not_exists "zsh/reload deleted the dump" "$ZC/home/.zcompdump"
+
+# SH_GLOB, set before den's line (in ~/.zshrc), made init.zsh's glob qualifiers
+# a parse error, and zsh stopped reading the file there: none of den's zsh setup
+# loaded. They are not in the text zsh parses as it reads the file now.
+echo "[zsh] init.zsh under SH_GLOB: read to its end, and its compinit and reload work"
+zc_reset
+mkdir -p "$ZC/bin" "$ZC/home/.cache/shell"
+printf '#!/bin/sh\nexit 0\n' > "$ZC/bin/zsh"
+chmod +x "$ZC/bin/zsh"
+touch -d '23 hours ago' "$ZC/home/.zcompdump"
+out=$(zc_run "setopt shglob; $ZC_LOGGER" "(( \${+functions[reload]} )) && echo read-to-the-end")
+assert_eq "zsh/SH_GLOB: init.zsh read to its end" "read-to-the-end" "$out"
+touch -d '25 hours ago' "$ZC/home/.zcompdump"
+: > "$ZC/home/.cache/shell/zctool-init.zsh"
+out=$(zc_run "setopt shglob; $ZC_LOGGER" "hash zsh='$ZC/bin/zsh'; reload")
+assert_eq "zsh/SH_GLOB: reload printed nothing" "" "$out"
+assert_eq "zsh/SH_GLOB: -C for a fresh dump, the full compinit for an old one" "compinit -C
+compinit -u" "$(cat "$ZC/compinit.log" 2>/dev/null)"
+assert_not_exists "zsh/SH_GLOB: reload deleted the init cache" "$ZC/home/.cache/shell/zctool-init.zsh"
+assert_not_exists "zsh/SH_GLOB: reload deleted the dump" "$ZC/home/.zcompdump"
 rm -rf "$ZC"
 
 # =============================================================================
