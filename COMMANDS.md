@@ -411,7 +411,10 @@ text and never runs. Only without it does a new cmd window detect them (through
 Windows PowerShell, the way pwsh's hwinfo does, so both shells show the same
 names) and write the file for the next one, a "nothing recognized" result
 included; without starship nothing is detected. cmd has no `refresh-hwinfo`:
-pwsh's, or deleting that file, makes the next window detect again.
+pwsh's, or deleting that file, makes the next window detect again. bash, zsh
+and pwsh cache a "nothing recognized" result too (pwsh with the line cmd
+writes), so no shell detects again at each start; their `refresh-hwinfo` makes
+the next shell try again.
 
 ## History, session, editor
 

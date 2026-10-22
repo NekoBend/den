@@ -380,6 +380,11 @@ exports `STARSHIP_CPU_*` / `STARSHIP_GPU_*`.
   `$XDG_RUNTIME_DIR/den-hwinfo.<machine-id>.sh` (mode 600); PowerShell
   caches under LocalAppData keyed by `$COMPUTERNAME`. This keeps a shared or
   synced `$HOME` from showing one machine's hardware on another.
+- A detection that recognizes no CPU or GPU name (Windows on ARM, say) is
+  cached too, so it does not run again at every start: the POSIX cache then
+  holds only its `_DEN_HWINFO_CACHED=1` end line, the PowerShell one the
+  comment line cmd writes for the same case. A shell that inherits
+  `STARSHIP_*` values reads no cache at all.
 - `toggle-hwinfo` (short: `tgl-hw`) shows/hides the info in the prompt.
 - `refresh-hwinfo` clears the cache so the next shell re-detects.
 

@@ -25,17 +25,26 @@ Remove-Variable _isPrintable -ErrorAction SilentlyContinue
 
 # Uses env var caching — skips detection if STARSHIP_* vars are already set
 # (e.g. nested shell, Windows Terminal tab inheritance).
+# A safe cache file that was sourced is a hit even when it sets nothing: a
+# detection that recognized no CPU or GPU name (Windows on ARM, say) writes one
+# comment line, the one cmd's starship.lua writes and reads, so the detection
+# (a registry read and a CIM query) does not run again at every start.
+# refresh-hwinfo deletes the file to detect again.
 if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
           $env:STARSHIP_GPU_NVIDIA -or $env:STARSHIP_GPU_AMD -or $env:STARSHIP_GPU_INTEL)) {
   $_hwCache = [IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'shell-cache', "hwinfo-cache.$env:COMPUTERNAME.ps1")
+  $_hwHit = $false
   if ((Test-Path -LiteralPath $_hwCache -PathType Leaf) -and
       (Get-Command Test-CacheSafe -ErrorAction SilentlyContinue) -and
       (Test-CacheSafe -Path $_hwCache)) {
     . $_hwCache
+    $_hwHit = $true
   }
 
-  if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
+  if (-not $_hwHit -and -not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
             $env:STARSHIP_GPU_NVIDIA -or $env:STARSHIP_GPU_AMD -or $env:STARSHIP_GPU_INTEL)) {
+    # Set once the detection got through: only then is "nothing recognized" an answer.
+    $_hwRan = $false
     if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
       try {
         $cpuName = (Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -Name ProcessorNameString -ErrorAction Stop).ProcessorNameString.Trim()
@@ -58,6 +67,7 @@ if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
         if ($gpuName -match 'NVIDIA') { $env:STARSHIP_GPU_NVIDIA = $gpuShort }
         elseif ($gpuName -match 'AMD|Radeon') { $env:STARSHIP_GPU_AMD = $gpuShort }
         elseif ($gpuName -match 'Intel') { $env:STARSHIP_GPU_INTEL = $gpuShort }
+        $_hwRan = $true
       } catch {}
       Remove-Variable cpuName, cpuShort, gpuName, gpuShort -ErrorAction SilentlyContinue
     }
@@ -70,6 +80,7 @@ if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
         $lines += "`$env:$v = '$escapedValue'"
       }
     }
+    if ($lines.Count -eq 0 -and $_hwRan) { $lines = @('# den: no CPU or GPU name it recognizes') }
 
     if ($lines.Count -gt 0) {
       $tmp = $_hwCache + '.tmp.' + [guid]::NewGuid().ToString('N')
@@ -148,4 +159,4 @@ function tgl-hw {
   toggle-hwinfo @Args
 }
 
-Remove-Variable _hwCache, _hwVars, cur, escapedValue, lines, tmp, v, val -ErrorAction SilentlyContinue
+Remove-Variable _hwCache, _hwHit, _hwRan, _hwVars, cur, escapedValue, lines, tmp, v, val -ErrorAction SilentlyContinue
