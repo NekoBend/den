@@ -66,6 +66,34 @@ def test_no_banned_dashes_in_any_model_facing_markdown() -> None:
     assert not offenders, offenders
 
 
+# A call that passes parameters but no -Settings (a bare -Severity Error)
+# loads the PSScriptAnalyzerSettings.psd1 next to the file it checks, and
+# that file's CustomRulePath is Import-Module'd: checked-out content runs as
+# you (powershell.md section 8). A name with no parameters is prose.
+_PSSA_CALL = re.compile(r"Invoke-ScriptAnalyzer(?P<args>[ \t]+-[^`\n]*)")
+
+
+def test_script_analyzer_calls_pass_settings() -> None:
+    calls: list[str] = []
+    bad: list[str] = []
+    for base in ("src/skills", "src/shared", "dist"):
+        directory = AGENTS / base
+        assert directory.is_dir(), f"no such directory: {directory}"
+        for f in sorted(directory.rglob("*")):
+            if f.suffix not in {".md", ".sh", ".py", ".ps1", ".psm1"}:
+                continue
+            text = f.read_text(encoding="utf-8")
+            for m in _PSSA_CALL.finditer(text):
+                line = text.count("\n", 0, m.start()) + 1
+                where = f"{f.relative_to(AGENTS)}:{line}"
+                calls.append(where)
+                args = m.group("args")
+                if "-Settings" not in args or re.search(r"-Severity\b", args):
+                    bad.append(f"{where}: Invoke-ScriptAnalyzer{args}")
+    assert calls, "no Invoke-ScriptAnalyzer call found; is the pattern stale?"
+    assert not bad, bad
+
+
 def test_every_skill_carries_the_preamble_verbatim() -> None:
     # One copy per skill, byte for byte: an edit to one skill's copy would let
     # skills disagree on the rules they apply when no parent prompt is loaded.

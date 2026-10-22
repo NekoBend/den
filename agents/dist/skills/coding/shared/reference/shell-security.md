@@ -29,10 +29,13 @@ leaves temporary files, held locks, and orphaned background processes behind.
 
 - Never use `eval` with user-supplied input.
   To store or look up a value under a name that comes from input,
-  key an associative array with it (`declare -A`, Bash 4.0+):
+  key an associative array with it (`declare -A` or `local -A`, Bash 4.0+;
+  without `-A` the subscript is arithmetic, and a key such as `x[$(cmd)]` runs `cmd`):
   `map[$key]=value`, `"${map[$key]}"` and `${map[$key]+set}` use the key as data.
-  `unset` expands the key a second time, so single-quote its argument (`unset 'map[$key]'`);
-  before Bash 5.2, `[[ -v ]]` and `(( ))` expand it twice too,
+  A builtin that takes the element as an argument expands the key a second time and runs code in it
+  (`unset`, `read`, `printf -v`, `declare`, `local`, `let`, `test -v`, `[ -v ]`, `wait -p`),
+  so single-quote the element: `unset 'map[$key]'`, `printf -v 'map[$key]' '%s' "$v"`.
+  Before Bash 5.2, `[[ -v ]]` and `(( ))` expand it twice too,
   so test with `${map[$key]+set}` and do arithmetic on a copy (`n=${map[$key]:-0}`).
 - A nameref (`declare -n`), `printf -v`, or `${!name}` runs code hidden in an array subscript
   inside the name (`x[$(cmd)]` runs `cmd`).
