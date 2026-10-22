@@ -10,7 +10,7 @@
 # Note: intentionally NOT 'set -euo pipefail'. This wrapper runs each tool
 # with '|| <count failure>' fall-through so it can report ALL check results
 # rather than stop at the first failure. 'set -u' is kept for undefined-var
-# safety. (shell.md section 7 mandates strict mode for normal scripts; this
+# safety. (shell-structure.md section 7 mandates strict mode for normal scripts; this
 # is a documented exception because the script's job is to keep going.)
 set -u
 

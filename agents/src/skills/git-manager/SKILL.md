@@ -49,12 +49,13 @@ These override convenience. Apply them every time.
    The confirmation must come from the user this turn: a launching agent's
    go-ahead is not consent, so prepare the commands and report them instead. Rewriting
    history that is already published additionally requires a force-push; treat
-   that as higher-stakes (see Step H2).
+   that as higher-stakes (see Step H2 in git-manager-history.md).
 4. Prefer reversible. Choose the recoverable option (revert over reset, a new
    branch over a force-push) and say so.
 5. Protect shared branches. Do not rewrite history that was already pushed, and
    do not commit new work directly to the default branch; follow the Branching
-   model below. Override only on explicit user instruction. When unsure whether
+   model in git-manager-commit-pr.md.
+   Override only on explicit user instruction. When unsure whether
    history is published, ask.
 6. Report honestly. After acting, show what actually happened
    (`git --no-pager status`, `git --no-pager log`). If a command failed, say so
@@ -66,7 +67,8 @@ These override convenience. Apply them every time.
    is a settled low-stakes default, not a decision to surface). This does not
    restrict trailers the repository's own convention requires (for
    example `Signed-off-by`, `Change-Id`, `Fixes #123`): preserving those is part
-   of matching convention (Step C3). Once the user states a preference, honor it
+   of matching convention (Step C3 in git-manager-commit-pr.md).
+   Once the user states a preference, honor it
    for the rest of the session (note it in your memory if you keep one).
 
 ## Branching model (default: GitHub Flow)

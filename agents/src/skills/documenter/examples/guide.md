@@ -1,7 +1,9 @@
 # Example: guide mode
 
 A worked README for a small CLI, written for a new user with the sections in
-reading order. This is the shape the guide mode of SKILL.md should produce.
+reading order.
+This is the shape the guide mode
+of shared/reference/doc-guide.md should produce.
 Adapt the shape, do not copy the wording.
 
 ## Input from the user
@@ -60,6 +62,6 @@ tally *.md
   they are on track (Step G3).
 - It documents only stated features. It does not invent flags like `--csv` or
   a config file that were never described; inventing them would violate the
-  Faithfulness rule.
+  Source rule in shared/reference/doc-common.md.
 - Prerequisites and the UTF-8 assumption are stated, so a reader who follows
   the steps will not hit an unstated requirement (Step G4).

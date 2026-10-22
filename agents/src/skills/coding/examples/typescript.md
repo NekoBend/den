@@ -1,9 +1,10 @@
 # TypeScript worked examples
 
-Worked examples demonstrating the rules in `shared/reference/typescript.md`.
+Worked examples demonstrating the rules in `shared/reference/typescript.md` and the files it lists.
 The shared domain is a small order-management system;
 each block is a fragment of that system illustrating two or three rules.
-Cross-references in the prose point to the corresponding `shared/reference/typescript.md` section.
+Cross-references in the prose point to the corresponding `shared/reference/typescript.md` section
+unless they name another reference file.
 
 Code in these blocks contains only natural comments
 (the kind a real developer writes for non-obvious WHY).
@@ -19,8 +20,8 @@ Compare your code against every file you read.
 
 ## 1. Domain types and errors
 
-This block demonstrates shared/reference/typescript.md section 5 (interface, type, readonly),
-section 7 (discriminated union exhaustiveness), and section 10 (domain errors).
+This block demonstrates shared/reference/typescript-types.md section 5 (interface, type, readonly),
+section 7 (discriminated union exhaustiveness), and typescript-patterns.md section 10 (domain errors).
 
 ```typescript
 export interface CustomerOrder {
@@ -59,21 +60,22 @@ export class InsufficientStockError extends Error {
 ```
 
 `CustomerOrder` is an `interface`
-because it describes an object shape that may be extended or implemented (reference section 5).
+because it describes an object shape that may be extended or implemented (typescript-types.md section 5).
 `OrderStatus` is a `type` alias
 because it is a union of literals that `interface` cannot express.
 All properties are `readonly`,
 mirroring `shared/reference/architecture.md` section 3 (immutability).
 
 `CustomerOrderNotFoundError` extends `Error` with an explicit `name` assignment
-so stack traces identify the class (reference section 10).
+so stack traces identify the class (typescript-patterns.md section 10).
 The `options?: ErrorOptions` parameter supports ES2022 `cause` chaining
 for preserving the underlying error when re-raising at a boundary.
 
 ## 2. Persistence with validation
 
 This block demonstrates shared/reference/typescript.md section 2 (TSDoc),
-section 12 (validation at boundaries with Zod), and section 9 (import type).
+typescript-runtime.md section 12 (validation at boundaries with Zod),
+and typescript-patterns.md section 9 (import type).
 
 ```typescript
 import type { CustomerOrder } from "./models";
@@ -135,15 +137,15 @@ export class CustomerOrderRepository {
 ```
 
 `import type { CustomerOrder }` keeps the type symbol out of the runtime bundle
-(reference section 9).
+(typescript-patterns.md section 9).
 The value import `CustomerOrderNotFoundError` remains a regular `import`
 because it is used at runtime.
 
 `CreateCustomerOrderRequestSchema` validates raw `unknown` input at the boundary;
 downstream code receives a typed `CreateCustomerOrderRequest` and trusts the fields
-(reference section 12).
+(typescript-runtime.md section 12).
 The `Schema` suffix separates the runtime validator from the inferred `type`.
 
-The `#store` field uses ES2022 private class fields (reference section 4, section 6).
+The `#store` field uses ES2022 private class fields (reference section 4, typescript-types.md section 6).
 The constructor copies `initial` defensively
 so the caller cannot mutate the internal map.

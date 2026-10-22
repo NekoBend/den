@@ -4,6 +4,7 @@ Steps P1 to P4 of orchestrate's plan mode,
 then the model guide that Step P3 uses, the core principle behind Step P1,
 and the output format.
 orchestrate's SKILL.md sends you here when the mode is plan.
+Rule numbers refer to the Six rules in orchestrate's SKILL.md.
 
 ### Step P1: Decide whether to divide at all
 Three tests, all required: the subtasks are independent (no shared

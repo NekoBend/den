@@ -1,9 +1,10 @@
 # Example: ground mode
 
 A worked retrieval-augmented answer: answer strictly from the provided context,
-cite each statement, and name the part the context cannot answer. This is the
-shape the ground mode of SKILL.md should produce. Adapt the shape, do not copy
-the wording.
+cite each statement, and name the part the context cannot answer.
+This is the shape the ground mode
+of SKILL.md and shared/reference/grounding-ground.md should produce.
+Adapt the shape, do not copy the wording.
 
 ## Input from the user
 

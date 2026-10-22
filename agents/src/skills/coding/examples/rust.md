@@ -1,9 +1,10 @@
 # Rust worked examples
 
-Worked examples demonstrating the rules in `shared/reference/rust.md`.
+Worked examples demonstrating the rules in `shared/reference/rust.md` and the files it lists.
 The shared domain is a small order-management system;
 each block is a fragment of that system illustrating two or three rules.
-Cross-references in the prose point to the corresponding `shared/reference/rust.md` section.
+Cross-references in the prose point to the corresponding `shared/reference/rust.md` section
+unless they name another reference file.
 
 Code in these blocks contains only natural comments
 (the kind a real developer writes for non-obvious WHY).
@@ -19,7 +20,7 @@ Compare your code against every file you read.
 
 ## 1. Domain types and errors
 
-This block demonstrates shared/reference/rust.md section 2 (rustdoc),
+This block demonstrates shared/reference/rust-api-design.md section 2 (rustdoc),
 section 5 (traits via derive), and section 10 (domain errors with thiserror).
 
 ```rust
@@ -46,18 +47,18 @@ pub enum OrderError {
 ```
 
 `CustomerOrder` derives `Debug`, `Clone`, `PartialEq`, and `Eq`
-rather than implementing them by hand (reference section 5).
+rather than implementing them by hand (rust-api-design.md section 5).
 The `OrderError` enum uses `thiserror::Error`
 to generate the `Display` and `std::error::Error` impls from the `#[error(...)]` attributes
-(reference section 10).
+(rust-api-design.md section 10).
 Each variant carries the structured data a caller needs to react (`order_id`, `sku`).
 
-The `///` doc comments render in `cargo doc` and `docs.rs` (reference section 2).
+The `///` doc comments render in `cargo doc` and `docs.rs` (rust-api-design.md section 2).
 
 ## 2. Persistence with validation
 
 This block demonstrates shared/reference/rust.md section 7 (Result and `?`),
-section 12 (validation with serde + validator), and section 11 (`Option` combinators).
+rust-api-design.md section 12 (validation with serde + validator), and section 11 (`Option` combinators).
 
 ```rust
 use std::collections::HashMap;
@@ -117,18 +118,18 @@ impl CustomerOrderRepository {
 ```
 
 `create` validates at the boundary with `request.validate()?`;
-the `?` operator propagates the `ValidationErrors` to the caller (reference section 7 and 12).
+the `?` operator propagates the `ValidationErrors` to the caller (reference section 7 and rust-api-design.md section 12).
 Internal code after the check trusts the typed fields.
 
 `fetch` converts the `Option` returned by `HashMap::get` into a `Result` with `.ok_or(...)`
-(reference section 11),
+(rust-api-design.md section 11),
 turning a missing key into the domain error.
-`#[derive(Default)]` provides the empty constructor for free (reference section 5).
+`#[derive(Default)]` provides the empty constructor for free (rust-api-design.md section 5).
 
 ## 5. Project layout
 
-This block demonstrates shared/reference/rust.md section 9 (module structure)
-and section 4 (naming).
+This block demonstrates shared/reference/rust.md section 4 (naming)
+and rust-modules.md section 9 (module structure).
 
 ```
 orders/
@@ -148,15 +149,15 @@ orders/
 └── Cargo.lock
 ```
 
-Organized by domain (reference section 9):
+Organized by domain (rust-modules.md section 9):
 
 - `order/model.rs` holds Example 1's `CustomerOrder`;
   `order/error.rs` holds `OrderError`;
   `order/mod.rs` re-exports both as the module's public surface.
 - `order/repository.rs` holds Example 2's `CustomerOrderRepository` and `CreateCustomerOrderRequest`.
-- `adapters/http.rs` holds Example 3's `fetch_orders`,
+- `adapters/http.rs` holds Example 3's `fetch_orders` (examples/rust-async-cli.md),
   isolating network I/O from the pure domain.
-- `main.rs` holds Example 4's CLI entry point.
+- `main.rs` holds Example 4's CLI entry point (examples/rust-async-cli.md).
 - `tests/integration.rs` imports the crate as an external consumer.
 
 All module and file names are `snake_case`;

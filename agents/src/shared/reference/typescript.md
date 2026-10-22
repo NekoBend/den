@@ -1,12 +1,12 @@
 # TypeScript language reference
 
 TypeScript-specific conventions for the `coding` skill.
-Layered on top of `architecture.md` (12 generic rules).
-When both apply, this file refines or specializes the generic rule.
+Layered on top of `architecture.md` and `architecture-readability.md` (12 generic rules).
+When a generic rule also applies, the TypeScript reference refines or specializes it.
 Never contradict.
 
 Apply with version awareness:
-section 13 governs which constructs are admissible
+typescript-types.md section 13 governs which constructs are admissible
 based on the project's TypeScript version and target runtime.
 Always read that section before proposing modern syntax.
 

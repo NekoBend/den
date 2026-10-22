@@ -87,8 +87,8 @@ tested, and anything reviewers should watch for.
 
 ### Step P4: Create it (only if asked)
 Confirm the remote and base branch first. The branch must be pushed before the
-PR; pushing is a remote-affecting step under the safety rules. Use the platform
-CLI if available (for example `gh pr create`), and show the command before
+PR; pushing is a remote-affecting step under SKILL.md's safety rules.
+Use the platform CLI if available (for example `gh pr create`), and show the command before
 running it.
 
 ## Output format

@@ -65,4 +65,4 @@ than a vague worry.
 For idioms that decide correctness in the target language
 (identity vs equality, error wrapping, nullability, integer width),
 consult the shared reference for the target language
-(SKILL.md Step 4 gives the path).
+(shared/reference/code-audit-languages.md gives the path).

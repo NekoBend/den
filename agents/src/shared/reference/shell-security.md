@@ -29,7 +29,7 @@ leaves temporary files, held locks, and orphaned background processes behind.
 
 - Never use `eval` with user-supplied input.
   If indirect variable access is needed, use nameref (`declare -n`, Bash 4.3+) instead.
-- Always quote variables in command arguments (section 5).
+- Always quote variables in command arguments (shell.md section 5).
   An unquoted variable containing `; rm -rf /` is a command injection.
 - Create temporary files with `mktemp`, not hardcoded paths in `/tmp`.
   Register cleanup via `trap EXIT` (section 8).

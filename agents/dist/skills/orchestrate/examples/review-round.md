@@ -1,8 +1,10 @@
 # Example: a read-only review panel with a dissent seat
 
 A worked plan-run-integrate chain for reviewing the master's own work
-before merge. This is the shape SKILL.md should produce. Adapt the
-shape, do not copy the wording.
+before merge.
+This is the shape SKILL.md, shared/reference/orchestrate-plan.md,
+and shared/reference/orchestrate-run-integrate.md should produce together.
+Adapt the shape, do not copy the wording.
 
 ## Input from the user
 

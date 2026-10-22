@@ -1,8 +1,9 @@
 # Example: the code did not change, the world did
 
-A worked diagnose pass where the cause is outside the repository. This is the
-shape the diagnose mode of SKILL.md should produce. Adapt the shape, do not
-copy the wording.
+A worked diagnose pass where the cause is outside the repository.
+This is the shape the diagnose mode
+of SKILL.md and shared/reference/troubleshoot-diagnose-repair.md should produce.
+Adapt the shape, do not copy the wording.
 
 ## Input from the user
 

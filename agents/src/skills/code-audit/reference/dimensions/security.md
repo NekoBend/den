@@ -74,4 +74,4 @@ For the safe API in the target language
 (parameterized queries, running a subprocess without a shell,
 the vetted crypto library),
 consult the shared reference for the target language
-(SKILL.md Step 4 gives the path).
+(shared/reference/code-audit-languages.md gives the path).

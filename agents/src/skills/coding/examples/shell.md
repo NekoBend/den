@@ -1,10 +1,11 @@
 # Shell worked examples
 
-Worked examples demonstrating the rules in `shared/reference/shell.md`.
+Worked examples demonstrating the rules in `shared/reference/shell.md` and the files it lists.
 The shared domain is a small order-management CLI:
 a script that fetches customer orders from an HTTP API and reports on them.
 Each block is a fragment illustrating two or three rules.
-Cross-references in the prose point to the corresponding `shared/reference/shell.md` section.
+Cross-references in the prose point to the corresponding `shared/reference/shell.md` section
+unless they name another reference file.
 
 Code in these blocks contains only natural comments
 (the kind a real developer writes for non-obvious WHY).
@@ -18,7 +19,7 @@ Compare your code against every file you read.
 
 ## 1. Script header and strict mode
 
-This block demonstrates shared/reference/shell.md section 2 (header block),
+This block demonstrates shared/reference/shell-structure.md section 2 (header block),
 section 7 (strict mode), and section 9 (script structure).
 
 ```bash
@@ -41,18 +42,18 @@ readonly API_BASE="${API_BASE:?API_BASE environment variable is required}"
 The shebang uses `/usr/bin/env bash`
 so the script runs against the `bash` found on `PATH` rather than a hardcoded `/bin/bash`
 (reference section 13).
-The header block documents usage, environment, and dependencies (reference section 2):
+The header block documents usage, environment, and dependencies (shell-structure.md section 2):
 the first thing a reader needs.
 
-`set -euo pipefail` enables strict mode (reference section 7):
+`set -euo pipefail` enables strict mode (shell-structure.md section 7):
 the script exits on any command failure, undefined variable, or pipeline failure.
-`API_BASE` is validated immediately with `${VAR:?message}` (reference section 12):
+`API_BASE` is validated immediately with `${VAR:?message}` (shell-structure.md section 12):
 if it is unset, the script exits with a clear message before doing any work.
 
 ## 2. Functions, locals, and error handling
 
 This block demonstrates shared/reference/shell.md section 4 (naming, `local`),
-section 10 (stderr and exit codes), and section 5 (quoting).
+section 5 (quoting), and shell-structure.md section 10 (stderr and exit codes).
 
 ```bash
 # Print an error message to stderr and exit.
@@ -73,7 +74,7 @@ fetch_order() {
 }
 ```
 
-`die` writes to stderr with `>&2` and exits non-zero (reference section 10):
+`die` writes to stderr with `>&2` and exits non-zero (shell-structure.md section 10):
 error messages must not pollute stdout, which carries the script's data output.
 `fetch_order` declares `order_id` and `response` as `local` (reference section 4)
 so they do not leak into the global scope.
@@ -87,7 +88,7 @@ instead of a silent empty response (the `-f` flag makes curl fail on HTTP errors
 ## 3. Iterating safely over arguments
 
 This block demonstrates shared/reference/shell.md section 5 (array quoting),
-section 11 (parameter expansion, `printf`), and section 12 (entry validation).
+shell-structure.md section 11 (parameter expansion, `printf`), and section 12 (entry validation).
 
 ```bash
 # Summarize one order's JSON: print "id: total" using jq.
@@ -117,9 +118,9 @@ process_orders() {
 `process_orders` collects its arguments into the `order_ids` array
 and iterates with `for id in "${order_ids[@]}"` (reference section 5):
 the `"${array[@]}"` form quotes each element separately, so IDs are never word-split.
-It validates that at least one ID was given before doing work (reference section 12).
+It validates that at least one ID was given before doing work (shell-structure.md section 12).
 
 `summarize_order` uses a here-string (`<<<"$json"`) to feed jq without a subshell pipe
-(reference section 11),
-and `printf` instead of `echo` for output with an explicit format (reference section 11),
+(shell-structure.md section 11),
+and `printf` instead of `echo` for output with an explicit format (shell-structure.md section 11),
 which is safer for values that might begin with a dash.

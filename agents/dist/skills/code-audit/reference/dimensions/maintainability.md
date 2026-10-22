@@ -53,4 +53,4 @@ For naming, structure, and documentation conventions in the target language,
 consult the shared reference for the target language,
 and the shared architecture reference for structure defaults
 (single responsibility, dependency injection, immutability).
-SKILL.md Step 4 gives the path.
+shared/reference/code-audit-languages.md gives the language reference's path.

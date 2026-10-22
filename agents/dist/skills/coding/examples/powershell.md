@@ -1,7 +1,8 @@
 # PowerShell worked example
 
 A worked example demonstrating the rules in
-`shared/reference/powershell.md`. The domain matches the shell example:
+`shared/reference/powershell.md` and powershell-pipeline.md.
+The domain matches the shell example:
 a small order-management CLI. One fragment, illustrating the rules the
 reference pins; cross-references in the prose point at its sections.
 
@@ -13,9 +14,9 @@ belong in this prose, never in the code.
 
 This block demonstrates powershell.md section 1 (pwsh 7 target),
 section 4 (strict posture, `$LASTEXITCODE` after a native call),
-section 5 (objects out, `[CmdletBinding()]`, validation attributes,
-`ShouldProcess` on the destructive path), and section 7 (argument
-tokens, no `Invoke-Expression`).
+powershell-pipeline.md section 5 (objects out, `[CmdletBinding()]`,
+validation attributes, `ShouldProcess` on the destructive path),
+and powershell.md section 7 (argument tokens, no `Invoke-Expression`).
 
 ```powershell
 #Requires -Version 7.0

@@ -112,7 +112,8 @@ get the user's yes before the first run.
   correctness). Its default base, HEAD, covers uncommitted edits only.
   For changes already committed (a branch, a pull request), pass
   `--base "$(git merge-base <base-branch> HEAD)"`,
-  and name the base you used under **Ran:**.
+  and name the base you used under **Ran:**
+  (the output format in code-audit-output.md).
 
 If a check or script cannot run (no toolchain, code only pasted in chat),
 say so and review by reading.

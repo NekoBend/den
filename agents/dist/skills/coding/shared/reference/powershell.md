@@ -37,7 +37,8 @@ costs the features that make cross-platform scripts tractable.
 the same bar the originating repository's CI applies. (Eight rules nominally; for a non-DSC
 script the live set is four, none of which cover the conventions
 below.) The conventions in sections
-3, 5, 6, and 7 report at Warning severity: review enforces them, the
+3 and 7, and in powershell-pipeline.md sections 5 and 6,
+report at Warning severity: review enforces them, the
 gate does not. Tests are Pester 5 (`Describe` / `It` / `Should`) in
 `*.Tests.ps1` files, invoked separately (`Invoke-Pester`); the gate
 lints test files, it does not run them.

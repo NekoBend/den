@@ -1,9 +1,10 @@
 # Example: green on Linux, red on Windows
 
 A worked reproduce-into-repair chain where the platform is the variable and
-the test, not the code, holds the bug. This is the shape SKILL.md should
-produce when a failure will not reproduce locally. Adapt the shape, do not
-copy the wording.
+the test, not the code, holds the bug.
+This is the shape SKILL.md and shared/reference/troubleshoot-diagnose-repair.md
+should produce when a failure will not reproduce locally.
+Adapt the shape, do not copy the wording.
 
 ## Input from the user
 

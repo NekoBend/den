@@ -1,8 +1,8 @@
 # Shell language reference
 
 Shell-specific conventions for the `coding` skill.
-Layered on top of `architecture.md` (12 generic rules).
-When both apply, this file refines or specializes the generic rule.
+Layered on top of `architecture.md` and `architecture-readability.md` (12 generic rules).
+When a generic rule also applies, the shell reference refines or specializes it.
 Never contradict.
 
 Shell scripts target Bash
@@ -113,7 +113,7 @@ that are prone to injection.
 
 ## 13. Version and portability awareness
 
-**Rule:** Before proposing Bash-specific features (sections 5, 6, 11),
+**Rule:** Before proposing Bash-specific features (sections 5 and 6, shell-structure.md section 11),
 check the target environment:
 
 - Shebang (`#!/usr/bin/env bash` vs `#!/bin/sh`):
