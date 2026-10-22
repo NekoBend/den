@@ -85,6 +85,9 @@ lint of the generated parent prompts, and bats), `tests` (pytest on Python
 sourceless install), `shell` (shellcheck + PSScriptAnalyzer, errors only),
 `shell-tests` (the bash/zsh/pwsh functional tests in Docker), and `windows`
 (pytest + a pwsh init smoke on a native windows-latest runner).
+`.github/workflows/docker-dev-image.yml` builds the dev image
+(`docker/ubuntu/Dockerfile`) when `docker/` or that workflow changes, or when
+run by hand, and checks the `HOME` and `PATH` root and `dev` get in it.
 
 ## Status
 
@@ -92,6 +95,7 @@ sourceless install), `shell` (shellcheck + PSScriptAnalyzer, errors only),
 - The environment (`shell/`, `cheatsheets/`, `tests/`) has been migrated out
   of the old dotfiles repo, security- and performance-reviewed, and wired into
   CI. The shell layer keeps its existing modern -> native -> fallback wrapper
-  design. `docker/` holds the dev container image, which CI does not build.
+  design. `docker/` holds the dev container image, which CI builds only when
+  `docker/` changes.
 - The bash/PowerShell installers were retired; `den install` is the one
   cross-platform installer.

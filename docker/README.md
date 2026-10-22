@@ -143,6 +143,9 @@ docker exec --user dev den-dev zsh -lc 'claude --version'
 docker exec --user dev -e HOME=/home/dev den-dev /home/dev/.local/bin/claude --version
 ```
 
+`.github/workflows/docker-dev-image.yml` builds the image when `docker/`
+changes and runs these forms, root's and `dev`'s, against it.
+
 ### zsh completion
 
 For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`: den's

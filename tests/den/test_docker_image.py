@@ -1,13 +1,14 @@
 """docker/ubuntu/Dockerfile: what the dev image gives root and dev.
 
-CI never builds this image (ci.yml only runs `docker buildx build --check` on
-it), so these tests read the Dockerfile instead. They evaluate the ENV that
-every `docker exec` starts with, check how den is fetched, and run the scripts
-the image installs (the entrypoint, the /etc/zsh/zshenv and /etc/bash.bashrc
-blocks and the /etc/profile.d script) in a scratch directory. Commands that
-would change accounts or files are stubs there, and the effective UID is read
-from FAKE_EUID so the root branches run without root. The script tests are
-skipped on native Windows and where the shell they need is missing.
+.github/workflows/docker-dev-image.yml builds this image and checks it with
+docker, but only when docker/ changes. These tests run on every push and read
+the Dockerfile instead. They evaluate the ENV that every `docker exec` starts
+with, check how den is fetched, and run the scripts the image installs (the
+entrypoint, the /etc/zsh/zshenv and /etc/bash.bashrc blocks and the
+/etc/profile.d script) in a scratch directory. Commands that would change
+accounts or files are stubs there, and the effective UID is read from
+FAKE_EUID so the root branches run without root. The script tests are skipped
+on native Windows and where the shell they need is missing.
 """
 
 import re
@@ -19,9 +20,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "docker" / "ubuntu" / "Dockerfile"
+WORKFLOW = ROOT / ".github" / "workflows" / "docker-dev-image.yml"
 SYSTEM_DIRS = (
     "/usr/local/sbin",
     "/usr/local/bin",
@@ -652,3 +655,59 @@ def test_test_helpers_see_the_whole_dockerfile():
     names = [name for name, _, _ in _stages()]
     assert names[0] == "system"
     assert names[-1] == "workspace"
+
+
+# --- the CI workflow that builds the image -------------------------------------
+
+
+def _workflow() -> dict:
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    # YAML 1.1 reads the bare key `on` as true; GitHub reads it as "on".
+    data["on"] = data.pop(True)
+    return data
+
+
+def test_the_image_workflow_runs_when_the_image_or_the_workflow_changes():
+    on = _workflow()["on"]
+    own = WORKFLOW.relative_to(ROOT).as_posix()
+    for event in ("push", "pull_request"):
+        assert {"docker/**", own} <= set(on[event]["paths"]), event
+    assert "workflow_dispatch" in on
+
+
+def _gha_scopes(step: dict) -> set[str]:
+    """The GitHub Actions cache scopes a build step reads or writes."""
+    scopes = set()
+    for key in ("cache-from", "cache-to"):
+        value = step.get("with", {}).get(key, "")
+        attrs = dict(part.split("=", 1) for part in value.split(",") if "=" in part)
+        if attrs.get("type") == "gha":
+            scopes.add(attrs.get("scope", "buildkit"))
+    return scopes
+
+
+def test_the_image_build_cache_has_a_scope_of_its_own():
+    # Builds of two images in one gha cache scope overwrite each other's cache
+    # (the default scope, buildkit, is what ci.yml's shell test image uses), so
+    # the next run of either would start cold.
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    build = next(step for step in steps if step.get("name") == "Build the dev image")
+    scopes = _gha_scopes(build)
+    assert len(scopes) == 1, scopes
+    for path in sorted(WORKFLOW.parent.glob("*.yml")):
+        if path == WORKFLOW:
+            continue
+        for job in yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"].values():
+            for step in job.get("steps", []):
+                shared = scopes & _gha_scopes(step)
+                assert not shared, f"{path.name}: {step.get('name')}"
+
+
+def test_the_image_workflow_budget_covers_its_steps():
+    # A job cancelled mid-build exports no layer cache, and the next run starts
+    # cold again, so the job's budget covers every step's.
+    job = _workflow()["jobs"]["dev-image"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    assert steps["Build the dev image"].get("timeout-minutes", 0) > 0
+    total = sum(step.get("timeout-minutes", 0) for step in job["steps"])
+    assert job["timeout-minutes"] >= total
