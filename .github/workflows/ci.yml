@@ -714,3 +714,25 @@ jobs:
         run: |
           ./tests/shell/relaunch_argv.ps1
           exit $LASTEXITCODE
+      - name: head stops the commands before it under Windows PowerShell 5.1
+        # head (shell/pwsh/coreutils.ps1) stops the commands before it once the
+        # Nth piped object is out, through PowerShell internals it looks up by
+        # reflection, and where one is missing reads the rest and drops it; the
+        # Linux tests see the stop on pwsh 7 only. head_stop.ps1 loads
+        # coreutils.ps1 as test_coreutils.sh does and checks that a producer
+        # makes only N objects, that a command after head gets its end, that the
+        # statements after the line run, and that a producer that never ends
+        # lets head return (a check still running after 30 s is stopped and
+        # fails). When head read its producer to the end, the script prints
+        # FALLBACK and the internals as this PowerShell has them. It exits 1
+        # when a check fails.
+        shell: powershell
+        run: |
+          ./tests/shell/head_stop.ps1
+          exit $LASTEXITCODE
+      - name: head stops the commands before it under pwsh 7
+        # The same under pwsh.
+        shell: pwsh
+        run: |
+          ./tests/shell/head_stop.ps1
+          exit $LASTEXITCODE
