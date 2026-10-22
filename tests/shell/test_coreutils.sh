@@ -743,7 +743,7 @@ HEAD_BROKEN_PS1="$TESTTMP/coreutils_broken.ps1"
     abort_suite "cannot write $HEAD_BROKEN_PS1"
 actual=$(head_stop -Coreutils "$HEAD_BROKEN_PS1" -Seconds 10)
 assert_match "pwsh/head_stop.ps1 names the load failure, with the parse error on its line" \
-    '^::error::head_stop: coreutils\.ps1 did not load on pwsh .*did not define head: .*function _HeadStopBroken \{' "$actual"
+    '^::error::head_stop: coreutils\.ps1 did not load cleanly on pwsh .*did not define head: .*function _HeadStopBroken \{' "$actual"
 assert_not_contains "pwsh/head_stop.ps1 does not call a load failure FALLBACK" "FALLBACK" "$actual"
 assert_contains "pwsh/head_stop.ps1 exits 1 when coreutils.ps1 does not load" "RC=1" "$actual"
 

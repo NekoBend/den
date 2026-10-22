@@ -164,11 +164,12 @@ $out = @(& { while ($true) { 'tick'; Start-Sleep -Milliseconds 50 } } | head -n 
     }
 )
 
-# The prelude alone gives no output when coreutils.ps1 loads. When it does not,
-# no check can tell the stop from the fallback, so the script stops here.
+# The prelude alone gives no output when coreutils.ps1 loads cleanly. Any
+# output (a load error, or a line coreutils.ps1 wrote while loading) means no
+# check can tell the stop from the fallback, so the script stops here.
 $load = @(Invoke-Line '' $Seconds)
 if ($load.Count -gt 0) {
-    '::error::head_stop: coreutils.ps1 did not load on {0}, so no check ran: {1}' -f $version, ($load -join ' ')
+    '::error::head_stop: coreutils.ps1 did not load cleanly on {0} (loading it gave output), so no check ran: {1}' -f $version, ($load -join ' ')
     exit 1
 }
 
