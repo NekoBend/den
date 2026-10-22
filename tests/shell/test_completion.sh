@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_completion.sh — Tests for Tab completion: init.zsh's compinit (zsh) and
+# test_completion.sh - Tests for Tab completion: init.zsh's compinit (zsh) and
 # completion.ps1 (pwsh). The completion itself needs a real terminal, so the zsh
 # tests watch which compinit runs and what happens to ~/.zcompdump, and the pwsh
 # tests ask TabExpansion2, which is what PSReadLine's Tab calls; the rest is
