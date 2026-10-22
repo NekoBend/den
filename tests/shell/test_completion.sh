@@ -72,8 +72,8 @@ touch -d '25 hours ago' "$ZC/home/.zcompdump"
 zc_run "$ZC_LOGGER" "" > /dev/null
 rm -f "$ZC/home/.zcompdump"
 zc_run "$ZC_LOGGER" "" > /dev/null
-assert_eq "zsh/old and missing dump: full compinit" "compinit
-compinit" "$(cat "$ZC/compinit.log" 2>/dev/null)"
+assert_eq "zsh/old and missing dump: full compinit" "compinit -u
+compinit -u" "$(cat "$ZC/compinit.log" 2>/dev/null)"
 
 # The full compinit rewrites the dump only when it finds the completion files
 # changed; init.zsh dates it today either way, or every later shell would run
@@ -86,6 +86,23 @@ out=$(zc_run "" "(( \${+functions[compdef]} )) && echo compdef-ok")
 assert_eq "zsh/full compinit: completion set up, nothing printed" "compdef-ok" "$out"
 assert_eq "zsh/full compinit: the dump is from today" "fresh" \
     "$(find "$ZC/home/.zcompdump" -newermt '1 hour ago' -printf 'fresh\n' 2>/dev/null)"
+
+# The full compinit audited fpath (compaudit), which the -C before it never
+# did: a directory there that others may write to made it ask "Ignore insecure
+# directories and continue [y] or abort compinit [n]?", and with no terminal to
+# answer (zsh -i -c, as an editor's environment probe runs it) it gave up: no
+# completion, and no dump, so every later start did the same. -u uses fpath as
+# it is, as -C does.
+echo "[zsh] init.zsh: an fpath directory others may write to, with no terminal"
+zc_reset
+mkdir -p "$ZC/home/zfunc"
+printf '#compdef zctool\n_zctool() { _files }\n' > "$ZC/home/zfunc/_zctool"
+chmod 777 "$ZC/home/zfunc"
+out=$(zc_run "fpath=(~/zfunc \$fpath)" \
+    "(( \${+functions[compdef]} )) && echo compdef-ok; echo \"zctool=\${_comps[zctool]-none}\"")
+assert_eq "zsh/insecure fpath: completion set up, nothing asked" "compdef-ok
+zctool=_zctool" "$out"
+assert_exists "zsh/insecure fpath: the dump written" "$ZC/home/.zcompdump"
 
 # reload starts zsh again: deleting the dump too makes that shell's compinit
 # look for new completion functions at once. It must do so with no init cache

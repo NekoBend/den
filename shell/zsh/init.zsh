@@ -9,13 +9,17 @@
 # up (compdef is defined: ~/.zshrc ran compinit before this file, or Ubuntu's
 # /etc/zsh/zshrc did, which `den install shell` turns off with
 # skip_global_compinit=1 in ~/.zshenv). While ~/.zcompdump is less than a day
-# old, -C loads it as it is, without the security audit and without looking
-# for new completion functions. A missing or older dump gets the full
-# compinit, which writes the dump again when it finds functions added since
-# (an apt package, a new tool); touch then dates it today either way, so the
-# next shells take -C again (compdump would rewrite it the same, at about 70
-# ms against touch's 2). A dump touch cannot date (not yours) only means the
-# full compinit again next time. reload deletes the dump.
+# old, -C loads it as it is, without looking for new completion functions. A
+# missing or older dump gets the full compinit, which writes the dump again
+# when it finds functions added since (an apt package, a new tool); touch then
+# dates it today either way, so the next shells take -C again (compdump would
+# rewrite it the same, at about 70 ms against touch's 2). A dump touch cannot
+# date (not yours) only means the full compinit again next time. reload
+# deletes the dump. -u: the full compinit uses every fpath directory, as -C
+# does, without the security audit, which asks whether to use one that others
+# may write to; with no terminal to answer (zsh -i -c, as an editor's
+# environment probe runs it), compinit gave up, wrote no dump, and so asked
+# again at every start.
 autoload -Uz compinit
 if (( ! ${+functions[compdef]} )); then
     () {
@@ -24,7 +28,7 @@ if (( ! ${+functions[compdef]} )); then
         if [[ -n $dump(#qN.mh-24) ]]; then
             compinit -C
         else
-            compinit && command touch -- "$dump" 2>/dev/null
+            compinit -u && command touch -- "$dump" 2>/dev/null
         fi
     }
 fi
