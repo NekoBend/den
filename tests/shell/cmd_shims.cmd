@@ -272,9 +272,9 @@ call :expect %errorlevel% 0 "pip: the venv's own pip.exe"
 del "%T%\venv\Scripts\pip.exe"
 set "VIRTUAL_ENV="
 
-rem --- no python.exe or pip.exe in the current directory runs
+rem --- no python.exe, pip.exe or uv.exe in the current directory runs
 cd /d "%T%\cwd" || exit /b 1
-for %%e in (python pip) do copy /y "%SystemRoot%\System32\hostname.exe" "%T%\cwd\%%e.exe" >nul
+for %%e in (python pip uv) do copy /y "%SystemRoot%\System32\hostname.exe" "%T%\cwd\%%e.exe" >nul
 copy /y "%T%\tools\fake.exe" "%T%\tools\python.exe" >nul || exit /b 1
 copy /y "%T%\tools\fake.exe" "%T%\tools\pip.exe" >nul || exit /b 1
 set "_DEN_UV_OVERRIDE=0"
@@ -288,6 +288,10 @@ call :expect %errorlevel% 0 "python: python.exe from PATH, not the current direc
 call "%BIN%\pip.cmd" list >"%O%" 2>&1
 call :expect %errorlevel% 0 "pip: pip.exe from PATH, not the current directory"
 set "_DEN_UV_OVERRIDE="
+>"%W%" echo [@tools]
+>>"%W%" echo [--version]
+call "%BIN%\uv.cmd" --version >"%O%" 2>&1
+call :expect %errorlevel% 0 "uv: uv.exe from PATH, not the current directory"
 del "%T%\tools\python.exe" "%T%\tools\pip.exe"
 set "FAKE_SELF="
 set "FAKE_FIND_SYSTEM="

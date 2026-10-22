@@ -708,7 +708,7 @@ fi
 fi
 
 # =============================================================================
-# The python, python3 and pip shims (run for real by the Windows job:
+# The python, python3, pip and uv shims (run for real by the Windows job:
 # tests/shell/cmd_shims.cmd)
 # =============================================================================
 # cmd_code <shim> - the shim's lines without CRs, rem comments and echo lines.
@@ -716,25 +716,25 @@ cmd_code() {
     tr -d '\r' < "$CMD_BIN/$1.cmd" | grep -v -i -E '^[[:space:]]*(rem( |$)|(>&2 )?echo[ (])' || true
 }
 
-echo "[cmd] python, python3 and pip run no program by a bare name"
+echo "[cmd] python, python3, pip and uv run no program by a bare name"
 # cmd looks a bare name up in the current directory before PATH, so a
-# python.exe or pip.exe kept at the top of a clone ran instead.
+# python.exe, pip.exe or uv.exe kept at the top of a clone ran instead.
 bare=""
-for f in python python3 pip; do
+for f in python python3 pip uv; do
     hits=$(cmd_code "$f" | grep -E '(^|[[:space:]&|(])(python3?|pip3?|uv)\.exe' || true)
     [ -z "$hits" ] || bare="$bare$f.cmd: $hits
 "
 done
-assert_eq "cmd/python shims: no bare python.exe or pip.exe" "" "$bare"
+assert_eq "cmd/python shims: no bare python.exe, pip.exe or uv.exe" "" "$bare"
 
 echo "[cmd] python3.cmd is python.cmd under another name"
 cmp -s "$CMD_BIN/python.cmd" "$CMD_BIN/python3.cmd" && same=yes || same=no
 assert_eq "cmd/python3.cmd is a copy of python.cmd" "yes" "$same"
 
-echo "[cmd] the python and pip shims keep CRLF line endings"
+echo "[cmd] the python, pip and uv shims keep CRLF line endings"
 # With LF only, cmd can miss a goto label that straddles a 512-byte block.
 lf=""
-for f in python python3 pip; do
+for f in python python3 pip uv; do
     [ "$(grep -c '' "$CMD_BIN/$f.cmd")" = "$(grep -c $'\r$' "$CMD_BIN/$f.cmd")" ] || lf="$lf $f.cmd"
 done
 assert_eq "cmd/python shims: CRLF" "" "$lf"

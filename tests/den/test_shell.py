@@ -192,14 +192,18 @@ def test_cmd_uv_passes_the_run_arguments_through_as_typed():
     # Windows CI job runs the shim; this pins the shape it relies on: the
     # raw argument text, cut after `run`, goes to uv.exe through delayed
     # expansion (after cmd has parsed the line), and CRLF keeps its goto
-    # label findable in a file this size.
+    # label findable in a file this size. uv.exe is the one on PATH: a bare
+    # uv.exe ran one in the current directory first.
     raw = (_CMD_BIN / "uv.cmd").read_bytes()
     assert raw.count(b"\n") == raw.count(b"\r\n"), "uv.cmd must use CRLF line endings"
     code = _cmd_code("uv")
     assert not [ln for ln in code if ln.lower().split()[0] == "shift"]
     assert "set _raw=%*" in code
     assert 'set "_rest=!_raw:*run=!"' in code
-    assert 'uv.exe run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code
+    where_uv = "%SystemRoot%\\System32\\where.exe $PATH:uv.exe 2^>nul"
+    assert f"for /f \"delims=\" %%p in ('{where_uv}') do if not defined _uv set \"_uv=%%p\"" in code
+    assert '"!_uv!" run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code
+    assert '"%_uv%" %*' in code
 
 
 def test_cmd_touch_handles_every_operand():
