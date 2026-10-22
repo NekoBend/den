@@ -725,7 +725,11 @@ jobs:
         # lets head return (a check still running after 30 s is stopped and
         # fails). When head read its producer to the end, the script prints
         # FALLBACK and the internals as this PowerShell has them. It exits 1
-        # when a check fails.
+        # when a check fails, or, running no check and naming what loading
+        # printed, when coreutils.ps1 does not load cleanly. Like the pwsh 7
+        # step below, it runs after a failed step too, so an earlier failure
+        # in this job does not hide either result.
+        if: ${{ !cancelled() }}
         shell: powershell
         run: |
           ./tests/shell/head_stop.ps1
