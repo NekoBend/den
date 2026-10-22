@@ -202,11 +202,13 @@ RUN --mount=type=bind,from=den-src,target=/tmp/den \
 
 # 6. Runtime entrypoint and defaults.
 USER root
-# Every docker exec, root's included, starts with the image's ENV. Keep its PATH
-# to root-owned system directories, so a root exec never resolves a command from
-# a directory dev can write. dev's tool directories come from the entrypoint and
-# from the non-root branches of /etc/zsh/zshenv and /etc/bash.bashrc below.
-ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Every docker exec, root's included, starts with the image's ENV. Give it
+# root's HOME and a PATH of root-owned system directories, so a root exec, with
+# or without a shell, never reads configuration from dev's home or resolves a
+# command from a directory dev can write. dev's HOME and tool directories come
+# from the entrypoint and from the non-root branches of the startup files below;
+# the build steps above that run as dev keep HOME=/home/dev.
+ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Build setting: IANA timezone name; also exported to application processes.
 ARG TZ=Asia/Tokyo
 ENV TZ=${TZ}
@@ -305,14 +307,23 @@ ENTRYPOINT
 chmod 0755 /usr/local/bin/container-entrypoint
 cat >> /etc/zsh/zshenv <<'CONTAINER_ZSH_ENV'
 
-# docker exec --user changes identity but retains the image's HOME and PATH.
-# That PATH holds system directories only: root gets its own HOME back, and
-# non-root shells add the user's tool directories (the entrypoint's list).
+# docker exec --user changes identity but retains the image's HOME (/root)
+# and PATH (system directories only). The container user gets its own HOME
+# back, non-root shells add the user's tool directories (the entrypoint's
+# list), and a root shell given the user's HOME (-e HOME=...) gets /root.
 if [[ "$EUID" == 0 ]]; then
     if [[ "$HOME" == "/home/$(</etc/container-user)" ]]; then
         export HOME=/root USER=root LOGNAME=root
     fi
 else
+    if [[ "$USERNAME" == "$(</etc/container-user)" ]]; then
+        if [[ "$HOME" == /root ]]; then
+            export HOME="/home/$USERNAME" USER="$USERNAME" LOGNAME="$USERNAME"
+        fi
+        # den's init.zsh runs compinit itself; skip the extra full one that
+        # /etc/zsh/zshrc runs before it.
+        skip_global_compinit=1
+    fi
     () {
         local dir
         for dir in "$HOME/.cargo/bin" "$HOME/.local/bin" "$HOME/.nvm/current/bin"; do
@@ -320,28 +331,28 @@ else
         done
     }
     export PATH
-    # den's init.zsh runs compinit itself; skip the extra full one that
-    # /etc/zsh/zshrc runs before it.
-    if [[ "$USERNAME" == "$(</etc/container-user)" ]]; then
-        skip_global_compinit=1
-    fi
 fi
 CONTAINER_ZSH_ENV
 cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
 
 # The /etc/zsh/zshenv block for interactive bash. It runs before ~/.bashrc,
-# so a root bash reads /root/.bashrc, not the user's.
+# so each bash reads its own user's ~/.bashrc. bash set HISTFILE from the HOME
+# it started with before it read this file.
+_container_user=$(< /etc/container-user)
 if [ "$EUID" -eq 0 ]; then
-    _container_home=/home/$(< /etc/container-user)
-    if [ "$HOME" = "$_container_home" ]; then
+    if [ "$HOME" = "/home/$_container_user" ]; then
         export HOME=/root USER=root LOGNAME=root
-        # bash set HISTFILE from the old HOME before it read this file.
-        if [ "${HISTFILE-}" = "$_container_home/.bash_history" ]; then
+        if [ "${HISTFILE-}" = "/home/$_container_user/.bash_history" ]; then
             HISTFILE=/root/.bash_history
         fi
     fi
-    unset _container_home
 else
+    if [ "$HOME" = /root ] && [ "$(id -un 2>/dev/null)" = "$_container_user" ]; then
+        export HOME="/home/$_container_user" USER="$_container_user" LOGNAME="$_container_user"
+        if [ "${HISTFILE-}" = /root/.bash_history ]; then
+            HISTFILE=$HOME/.bash_history
+        fi
+    fi
     for _container_dir in "$HOME/.cargo/bin" "$HOME/.local/bin" "$HOME/.nvm/current/bin"; do
         case ":$PATH:" in
             *":$_container_dir:"*) ;;
@@ -351,13 +362,21 @@ else
     unset _container_dir
     export PATH
 fi
+unset _container_user
 CONTAINER_BASH_RC
 cat > /etc/profile.d/00-container-home.sh <<'CONTAINER_PROFILE'
-# A root login shell (bash -l, sh -l) reads ~/.profile, and docker exec leaves
-# HOME at the user's home. /etc/profile runs this file before ~/.profile.
-if [ "$(id -u)" -eq 0 ] && [ "$HOME" = "/home/$(cat /etc/container-user)" ]; then
-    export HOME=/root USER=root LOGNAME=root
+# A login shell (bash -l, sh -l) finds ~/.profile through HOME, and
+# /etc/profile runs this file first: the container user gets its own HOME
+# back from the image's /root, and a root shell given the user's HOME /root.
+_container_user=$(cat /etc/container-user)
+if [ "$(id -u)" -eq 0 ]; then
+    if [ "$HOME" = "/home/$_container_user" ]; then
+        export HOME=/root USER=root LOGNAME=root
+    fi
+elif [ "$HOME" = /root ] && [ "$(id -un 2>/dev/null)" = "$_container_user" ]; then
+    export HOME="/home/$_container_user" USER="$_container_user" LOGNAME="$_container_user"
 fi
+unset _container_user
 CONTAINER_PROFILE
 chmod 0644 /etc/profile.d/00-container-home.sh
 cat >> /etc/zsh/zshrc <<'ROOT_ZSH_WARNING'

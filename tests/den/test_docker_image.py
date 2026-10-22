@@ -15,11 +15,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-DOCKERFILE = Path(__file__).resolve().parents[2] / "docker" / "ubuntu" / "Dockerfile"
+ROOT = Path(__file__).resolve().parents[2]
+DOCKERFILE = ROOT / "docker" / "ubuntu" / "Dockerfile"
 SYSTEM_DIRS = (
     "/usr/local/sbin",
     "/usr/local/bin",
@@ -68,26 +70,32 @@ def _expand(value: str, env: dict[str, str], args: dict[str, str]) -> str:
     return re.sub(r"\$\{(\w+)\}|\$(\w+)", lookup, value)
 
 
-def _stages() -> list[tuple[str, dict[str, str], dict[str, str]]]:
-    """(name, ENV, build args) for each stage, after its last instruction.
+def _walk() -> Iterator[tuple[str, str, str, dict[str, str], dict[str, str]]]:
+    """(stage, KEYWORD, USER, ENV, build args) after each instruction of a stage.
 
-    A stage built FROM another stage starts with that stage's ENV and build
-    args; the Ubuntu base image starts with the system PATH, scratch with
-    nothing. ENV wins over a build arg of the same name, as in Docker.
+    A stage built FROM another stage starts with that stage's USER, ENV and
+    build args; the Ubuntu base image starts as root with the system PATH,
+    scratch with nothing. ENV wins over a build arg of the same name, as in
+    Docker.
     """
-    stages: list[tuple[str, dict[str, str], dict[str, str]]] = []
+    finals: dict[str, tuple[str, dict[str, str], dict[str, str]]] = {}
+    stage = ""
+    user = ""
     env: dict[str, str] = {}
     args: dict[str, str] = {}
     for keyword, rest in _instructions():
         if keyword == "FROM":
             base, *alias = rest.split()
-            by_name = {name: (e, a) for name, e, a in stages}
-            if base in by_name:
-                env, args = dict(by_name[base][0]), dict(by_name[base][1])
+            if base in finals:
+                user, base_env, base_args = finals[base]
+                env, args = dict(base_env), dict(base_args)
             else:
+                user = "root"
                 env, args = ({} if base == "scratch" else {"PATH": SYSTEM_PATH}), {}
-            stages.append((alias[-1] if alias else base, env, args))
-        elif keyword == "ARG" and stages:
+            stage = alias[-1] if alias else base
+        elif not stage:
+            continue
+        elif keyword == "ARG":
             for item in shlex.split(rest):
                 name, _, default = item.partition("=")
                 args[name] = _expand(default, env, args)
@@ -95,7 +103,27 @@ def _stages() -> list[tuple[str, dict[str, str], dict[str, str]]]:
             for item in shlex.split(_expand(rest, env, args)):
                 name, _, value = item.partition("=")
                 env[name] = value
-    return stages
+        elif keyword == "USER":
+            user = _expand(rest, env, args)
+        finals[stage] = (user, env, args)
+        yield stage, keyword, user, dict(env), dict(args)
+
+
+def _stages() -> list[tuple[str, dict[str, str], dict[str, str]]]:
+    """(name, ENV, build args) for each stage, after its last instruction."""
+    finals: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
+    for stage, _, _, env, args in _walk():
+        finals[stage] = (env, args)
+    return [(name, env, args) for name, (env, args) in finals.items()]
+
+
+def _run_steps() -> list[tuple[str, str, dict[str, str], dict[str, str]]]:
+    """(stage, USER, ENV, build args) that each RUN executes with."""
+    return [
+        (stage, user, env, args)
+        for stage, keyword, user, env, args in _walk()
+        if keyword == "RUN"
+    ]
 
 
 def _appended_block(target: str) -> str:
@@ -154,6 +182,28 @@ def test_a_root_exec_path_holds_only_system_directories():
     assert all(entry in SYSTEM_DIRS for entry in entries), env["PATH"]
 
 
+def test_a_root_exec_home_is_roots():
+    # With the image's HOME=/home/dev, a root exec without a shell (or through
+    # bash -c or sh -c) read files dev can write as root's configuration:
+    # ~/.dpkg.cfg, ~/.gitconfig, and the .pth files in the Python user
+    # site-packages, which python3 runs at startup (apt's scripts start it).
+    _, env, _ = _stages()[-1]
+    assert env["HOME"] == "/root"
+
+
+def test_build_steps_that_run_as_the_user_keep_its_home():
+    # rustup, cargo, the installers, nvm, npm and den write under the user's
+    # home, so ENV HOME=/root must come after the last of them.
+    as_user = [
+        (stage, env, args)
+        for stage, user, env, args in _run_steps()
+        if user.partition(":")[0] not in {"root", "0"}
+    ]
+    assert len(as_user) > 10, "the parser no longer sees the user's build steps"
+    for stage, env, args in as_user:
+        assert env["HOME"] == f"/home/{args['USERNAME']}", stage
+
+
 def test_den_comes_from_a_git_source_of_main_mounted_into_the_install():
     # A RUN that cloned den was cached on its command text, so a rebuild after
     # main moved kept the first build's den. BuildKit resolves a git source's
@@ -204,8 +254,9 @@ def _source_block(
 ) -> list[str]:
     """Source the block twice in ``shell``.
 
-    Returns HOME, PATH, skip_global_compinit and HISTFILE. ``histfile`` stands
-    in for the HISTFILE bash sets from HOME before it reads its startup files.
+    Returns HOME, PATH, skip_global_compinit, HISTFILE and USER. ``histfile``
+    stands in for the HISTFILE bash sets from HOME before it reads its startup
+    files.
     """
     user_file = tmp_path / "container-user"
     user_file.write_text(f"{user}\n", encoding="utf-8")
@@ -224,11 +275,11 @@ def _source_block(
     # with -f, and in this image that file runs the very block under test.
     probe = (
         f"export HOME={shlex.quote(home)} PATH={SYSTEM_PATH}; "
-        "unset skip_global_compinit HISTFILE; "
+        "unset skip_global_compinit HISTFILE USER LOGNAME; "
         + (f"HISTFILE={shlex.quote(histfile)}; " if histfile else "")
         + f". {shlex.quote(str(block))}; . {shlex.quote(str(block))}; "
         'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}" '
-        '"${HISTFILE-unset}"'
+        '"${HISTFILE-unset}" "${USER-unset}"'
     )
     flags = {"zsh": ["-f"], "bash": ["--norc"], "sh": []}[shell]
     argv = [_tool(shell), *flags, "-c", probe]
@@ -257,6 +308,18 @@ def _zsh_username() -> str:
     return result.stdout.strip()
 
 
+def _login_name() -> str:
+    """The name ``id -un`` prints for this process, as the bash and sh blocks run it."""
+    result = subprocess.run(
+        [_tool("id"), "-un"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
 @_needs("zsh")
 def test_zshenv_gives_a_non_root_zsh_the_user_tool_directories_once(tmp_path):
     home = str(tmp_path / "home")
@@ -271,7 +334,30 @@ def test_zshenv_resets_a_root_zsh_and_adds_no_user_directories(tmp_path):
     out = _source_block(
         tmp_path, "zsh", "/etc/zsh/zshenv", euid=0, home="/home/dev", user="dev"
     )
-    assert out == ["/root", SYSTEM_PATH, "unset", "unset"]
+    assert out == ["/root", SYSTEM_PATH, "unset", "unset", "root"]
+
+
+@_needs("zsh")
+def test_zshenv_gives_the_container_user_its_home_back(tmp_path):
+    # docker exec --user dev keeps the image's HOME=/root, which dev cannot
+    # read. zsh finds ~/.zshenv, ~/.zshrc and the rest through the HOME this
+    # block sets, and the tool directories hang off it.
+    me = _zsh_username()
+    assert me
+    out = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home="/root", user=me
+    )
+    assert out == [f"/home/{me}", _user_path(f"/home/{me}"), "1", "unset", me]
+
+
+@_needs("zsh")
+def test_zshenv_gives_no_other_user_the_container_users_home(tmp_path):
+    me = _zsh_username()
+    out = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home="/root", user=f"{me}-other"
+    )
+    assert out[0] == "/root"
+    assert out[4] == "unset"
 
 
 @_needs("zsh")
@@ -324,7 +410,48 @@ def test_bashrc_moves_a_root_bash_history_out_of_the_user_home(tmp_path):
         user="dev",
         histfile="/home/dev/.bash_history",
     )
-    assert out == ["/root", SYSTEM_PATH, "unset", "/root/.bash_history"]
+    assert out == ["/root", SYSTEM_PATH, "unset", "/root/.bash_history", "root"]
+
+
+@_needs("bash", "id")
+def test_bashrc_gives_the_container_user_its_home_and_history_back(tmp_path):
+    # An interactive bash started by docker exec --user dev reads ~/.bashrc
+    # through the HOME this block sets, and had set HISTFILE from the image's
+    # HOME=/root, where dev cannot save it.
+    me = _login_name()
+    assert me
+    out = _source_block(
+        tmp_path,
+        "bash",
+        "/etc/bash.bashrc",
+        euid=1000,
+        home="/root",
+        user=me,
+        histfile="/root/.bash_history",
+    )
+    assert out == [
+        f"/home/{me}",
+        _user_path(f"/home/{me}"),
+        "unset",
+        f"/home/{me}/.bash_history",
+        me,
+    ]
+
+
+@_needs("bash", "id")
+def test_bashrc_gives_no_other_user_the_container_users_home(tmp_path):
+    me = _login_name()
+    out = _source_block(
+        tmp_path,
+        "bash",
+        "/etc/bash.bashrc",
+        euid=1000,
+        home="/root",
+        user=f"{me}-other",
+        histfile="/root/.bash_history",
+    )
+    assert out[0] == "/root"
+    assert out[3:] == ["/root/.bash_history", "unset"]
 
 
 @_needs("bash")
@@ -375,6 +502,30 @@ def test_profile_gives_a_root_login_shell_its_own_home(tmp_path, shell):
     assert out[:2] == ["/root", SYSTEM_PATH]
 
 
+@_needs("sh", "bash", "id")
+@pytest.mark.parametrize("shell", ["sh", "bash"])
+def test_profile_gives_the_container_users_login_shell_its_home_back(tmp_path, shell):
+    # bash -lc and sh -lc are not interactive, so only /etc/profile reaches
+    # them, and without its home dev's ~/.profile was never found.
+    me = _login_name()
+    assert me
+    out = _source_block(
+        tmp_path, shell, _profile_script(), euid=1000, home="/root", user=me
+    )
+    assert out[:2] == [f"/home/{me}", SYSTEM_PATH]
+    assert out[4] == me
+
+
+@_needs("sh", "id")
+def test_profile_gives_no_other_user_the_container_users_home(tmp_path):
+    me = _login_name()
+    out = _source_block(
+        tmp_path, "sh", _profile_script(), euid=1000, home="/root", user=f"{me}-other"
+    )
+    assert out[0] == "/root"
+    assert out[4] == "unset"
+
+
 @_needs("sh")
 def test_profile_leaves_a_non_root_login_shell_alone(tmp_path):
     home = str(tmp_path / "home")
@@ -393,7 +544,8 @@ def _run_entrypoint(
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
 
     The account is dev, 1000:1000, home /home/dev. setpriv prints its
-    arguments; the commands that change accounts or files only log theirs.
+    arguments and the HOME it got; the commands that change accounts or files
+    only log theirs.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -417,7 +569,7 @@ def _run_entrypoint(
     )
     for name in ("usermod", "groupadd", "find", "mountpoint", "gnuchown"):
         stub(name, f'echo "{name} $*" >> {shlex.quote(str(log))}')
-    stub("setpriv", 'printf "%s\\n" "$@"')
+    stub("setpriv", 'printf "%s\\n" "$@" "HOME=$HOME"')
     user_file = tmp_path / "container-user"
     user_file.write_text("dev\n", encoding="utf-8")
     system = "/usr/sbin:/usr/bin:/sbin:/bin"  # the entrypoint's own PATH
@@ -457,6 +609,16 @@ def test_entrypoint_started_as_the_user_adds_the_user_tool_directories(tmp_path)
     result, _ = _run_entrypoint(tmp_path, uid=1000, env={})
     assert result.returncode == 0, result.stderr
     assert f"PATH={_user_path('/home/dev')}" in result.stdout.splitlines()
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("uid", [0, 1000])
+def test_entrypoint_gives_the_command_the_user_home(tmp_path, uid):
+    # The entrypoint starts with the image's HOME=/root, whether docker run
+    # starts it as root or with --user; the command it runs gets the user's.
+    result, _ = _run_entrypoint(tmp_path, uid=uid, env={"HOME": "/root"})
+    assert result.returncode == 0, result.stderr
+    assert "HOME=/home/dev" in result.stdout.splitlines()
 
 
 @_needs("sh", "env")
