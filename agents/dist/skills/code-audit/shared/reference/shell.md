@@ -33,7 +33,7 @@ and when to stop using shell
 **Rule:** Default linter is `shellcheck`.
 Default formatter is `shfmt` with Google-compatible options (`shfmt -i 2 -ci -s`).
 Both run in CI.
-When the project has an `.editorconfig`, run `shfmt` with no formatting flags:
+When the project's `.editorconfig` sets `indent_style` for shell files, run `shfmt` with no formatting flags:
 a flag such as `-i` makes shfmt ignore the project's EditorConfig settings.
 **Why:** `shellcheck` catches quoting bugs, deprecated syntax, portability issues,
 and common logic errors.
@@ -41,7 +41,7 @@ and common logic errors.
 and simplification (`-s`).
 Together they are the shell equivalent of `ruff` + `gofmt`.
 **Run order:** `shfmt -w -i 2 -ci -s <changed files>`
-(`shfmt -w <changed files>` with an `.editorconfig`),
+(`shfmt -w <changed files>` when the `.editorconfig` sets their `indent_style`),
 then `shellcheck *.sh`.
 
 ## 4. Naming

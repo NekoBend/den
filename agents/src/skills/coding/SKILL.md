@@ -105,7 +105,7 @@ the language's standard tools:
               with the project's own config and venv)
   TypeScript  prettier --check, eslint, tsc --noEmit -p <file's tsconfig>
   Rust        cargo fmt --check, cargo clippy
-  Shell       shellcheck, shfmt -d -i 2 -ci -s (only -d with an .editorconfig)
+  Shell       shellcheck, shfmt -d -i 2 -ci -s
   PowerShell  Invoke-ScriptAnalyzer -Settings @{Severity='Error'}
 
 When you modified existing files, also run

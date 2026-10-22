@@ -462,6 +462,44 @@ _rustfmt_sets_edition() {
   grep -q '^[[:space:]]*edition[[:space:]]*=' "$conf"
 }
 
+# _editorconfig_sets_indent <dir> <extension>
+# True when an .editorconfig at or above <dir>, up to the first one with
+# root = true, sets indent_style in a section that plausibly applies to a
+# shell file with that extension: [*], [**], a header naming the extension
+# ([*.sh], [*.{sh,bash}]) or one of shfmt's language sections ([[shell]],
+# [[bash]]). This approximates EditorConfig's matching; it reads no paths in
+# the globs.
+_editorconfig_sets_indent() {
+  local dir="$1" conf
+  while conf=$(_find_up "$dir" .editorconfig); do
+    EC_EXT="$2" awk '
+      BEGIN { ext = ENVIRON["EC_EXT"] }
+      { line = tolower($0); sub(/\r$/, "", line) }
+      line ~ /^[ \t]*[#;]/ { next }
+      line ~ /^[ \t]*\[/ {
+        h = line
+        sub(/^[ \t]*\[/, "", h)
+        sub(/\][ \t]*$/, "", h)
+        in_section = 1
+        applies = h == "*" || h == "**" || h ~ /^\[[a-z]+\]$/ ||
+          h ~ ("\\." ext "$") || h ~ ("\\." ext "[,}]") ||
+          h ~ ("\\.[{]([^{}]*,)?" ext "(,[^{}]*)?[}]")
+        next
+      }
+      !in_section && line ~ /^[ \t]*root[ \t]*=[ \t]*true[ \t]*$/ { root = 1 }
+      applies && line ~ /^[ \t]*indent_style[ \t]*=[ \t]*(tab|space)[ \t]*$/ { found = 1; exit }
+      END { exit (found ? 0 : (root ? 2 : 1)) }
+    ' "$conf/.editorconfig"
+    case $? in
+      0) return 0 ;;
+      2) return 1 ;;
+    esac
+    [ "$conf" = / ] && return 1
+    dir=$(dirname -- "$conf")
+  done
+  return 1
+}
+
 case "$ext" in
   py)
     # typecheck (ty) resolves imports against the real environment, which
@@ -551,9 +589,10 @@ case "$ext" in
     ;;
   sh|bash)
     # -i 2 -ci -s is the style shell.md section 3 sets. A formatting flag
-    # makes shfmt ignore EditorConfig, so with an .editorconfig above the
-    # file shfmt runs with none and the project's settings win.
-    if _find_up "$(_abs_dir "$file")" .editorconfig >/dev/null; then
+    # makes shfmt ignore EditorConfig, so where an .editorconfig sets the
+    # indentation of shell files, shfmt runs with none and the project's
+    # settings win.
+    if _editorconfig_sets_indent "$(_abs_dir "$file")" "$ext"; then
       run_tool "format" shfmt -d "$file"
     else
       run_tool "format" shfmt -d -i 2 -ci -s "$file"

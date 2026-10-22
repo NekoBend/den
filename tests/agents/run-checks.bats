@@ -620,13 +620,41 @@ EOF
   [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s $WORK/a.sh"* ]]
 }
 
-@test "Shell: an .editorconfig makes shfmt run with no formatting flags (stub shfmt)" {
+@test "Shell: an .editorconfig that sets indent_style for the file makes shfmt run with no formatting flags (stub shfmt)" {
   _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
   # a formatting flag makes shfmt ignore EditorConfig
   _stub shfmt
   mkdir -p "$WORK/proj/bin"
-  printf 'root = true\n\n[*.sh]\nindent_style = tab\n' > "$WORK/proj/.editorconfig"
   printf '#!/usr/bin/env bash\necho hi\n' > "$WORK/proj/bin/a.sh"
+  for section in '[*.sh]\nindent_style = tab' '[*.sh]\nindent_style = space\nindent_size = 2' \
+    '[*]\nindent_style = tab' '[**]\nindent_style = space' '[*.{bash,sh}]\nindent_style = tab' \
+    '[{*.sh,*.bash}]\nindent_style = tab' '[[shell]]\nindent_style = tab'; do
+    printf 'root = true\n\n%b\n' "$section" > "$WORK/proj/.editorconfig"
+    _run_stubbed "$WORK/proj/bin/a.sh"
+    [[ "$output" == *"[format   ] PASS      shfmt -d $WORK/proj/bin/a.sh"* ]]
+  done
+}
+
+@test "Shell: an .editorconfig that leaves shell indentation alone keeps shfmt's flags (stub shfmt)" {
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  # regression: any .editorconfig above the file (one for Python only, the
+  # user's ~/.editorconfig) dropped the flags, and shfmt then indented with
+  # tabs, so every 2-space script FAILed
+  _stub shfmt
+  mkdir -p "$WORK/proj/bin"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$WORK/proj/bin/a.sh"
+  for section in '[*.py]\nindent_style = space' '[*.sh]\nindent_size = 4' \
+    '[*.{md,zsh}]\nindent_style = tab' '[Makefile]\nindent_style = tab' '[*.bash]\nindent_style = tab'; do
+    printf 'root = true\n\n%b\n' "$section" > "$WORK/proj/.editorconfig"
+    _run_stubbed "$WORK/proj/bin/a.sh"
+    [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s $WORK/proj/bin/a.sh"* ]]
+  done
+  # the walk stops at root = true, and goes past an .editorconfig without it
+  printf '[*]\nindent_style = tab\n' > "$WORK/.editorconfig"
+  printf 'root = true\n\n[*.py]\nindent_style = space\n' > "$WORK/proj/.editorconfig"
+  _run_stubbed "$WORK/proj/bin/a.sh"
+  [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s $WORK/proj/bin/a.sh"* ]]
+  printf '[*.py]\nindent_style = space\n' > "$WORK/proj/.editorconfig"
   _run_stubbed "$WORK/proj/bin/a.sh"
   [[ "$output" == *"[format   ] PASS      shfmt -d $WORK/proj/bin/a.sh"* ]]
 }
