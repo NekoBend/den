@@ -55,10 +55,13 @@ out of `~/.zshenv` to have Ubuntu's `compinit` back (den's then does not run).
 
 While `~/.zcompdump` is less than a day old, `compinit -C` loads it as it is:
 no security audit, and no look for completion functions added since. A missing
-or older dump gets the full `compinit`, which finds them (an apt package, a new
-tool) and rewrites the dump when they changed; the dump is then dated today, so
-the shells of the next day take `-C` again. `reload` deletes the dump, so the
-new shell picks new completion functions up at once.
+or older dump gets the full `compinit -u`, which finds them (an apt package, a
+new tool) and rewrites the dump when they changed; the dump is then dated
+today, so the shells of the next day take `-C` again. `-u` leaves out the
+security audit too, which asked about an `fpath` directory others may write to
+and, where no one could answer (`zsh -i -c`), gave up with no completion and
+no dump. `reload` deletes the dump, so the new shell picks new completion
+functions up at once.
 
 ## The wrapper system
 
