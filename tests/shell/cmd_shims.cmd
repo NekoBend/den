@@ -3,8 +3,9 @@ rem cmd_shims.cmd - run den's cmd shims (shell\cmd\bin) for real. The Windows
 rem CI job calls it; it exits 1 when any check fails. The tools are stand-ins
 rem that cmd_fake_tool.ps1 builds: each prints its arguments as [arg] lines
 rem and exits with FAKE_RC. Checked: the wrappers run the tool found on PATH,
-rem keep its exit code and run their fallback only without it (find also
-rem after a failing fd); no where.* or tool in the current directory runs;
+rem keep its exit code and run their fallback only without it; findw runs fd
+rem whatever the toggle, and says so without it; there is no find shim, so
+rem typed find is find.exe; no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; path lists PATH; again
 rem asks before it re-runs.
@@ -58,13 +59,20 @@ call :expect %errorlevel% 1 "grep: rg finds nothing, exit 1, no findstr after it
 call "%BIN%\cat.cmd" a.txt missing.txt >"%O%" 2>&1
 call :expect %errorlevel% 1 "cat: bat fails, no type after it"
 
-rem find is the exception: find.exe still runs after a failing fd, so a
-rem DOS-style find typed at the prompt answers as it always has
-call "%BIN%\find.cmd" "zzz" a.txt >"%O%" 2>&1
-set "RC=%errorlevel%"
-set "OK="
-"%FINDSTR%" /x /l /c:"[zzz]" "%O%" >nul && "%FINDSTR%" /x /l /c:"zzz" "%O%" >nul && if "%RC%"=="0" set "OK=1"
-call :check "find: fd fails, then find.exe answers"
+rem findw is fd, the toggle notwithstanding, and find.exe never runs after
+rem it. There is no find.cmd: typed find is find.exe, which reads a pipe
+rem (netstat -ano | find "8080") where fd reads none.
+>"%W%" echo [zzz]
+>>"%W%" echo [a.txt]
+call "%BIN%\findw.cmd" "zzz" a.txt >"%O%" 2>&1
+call :expect %errorlevel% 1 "findw: fd's exit code, no find.exe after it"
+set "_DEN_WRAPPERS=0"
+call "%BIN%\findw.cmd" "zzz" a.txt >"%O%" 2>&1
+call :expect %errorlevel% 1 "findw: fd with the wrappers off"
+set "_DEN_WRAPPERS="
+set "OK=1"
+if exist "%BIN%\find.cmd" set "OK="
+call :check "find: no shim, typed find stays find.exe"
 
 set "FAKE_RC="
 >"%W%" echo [--tree]
@@ -99,6 +107,9 @@ set "RC=%errorlevel%"
 set "OK="
 "%FINDSTR%" /l /c:"a.txt" "%O%" >nul && if "%RC%"=="0" set "OK=1"
 call :check "ls: dir /w without lsd"
+>"%W%" echo findw: fd is not installed.
+call "%BIN%\findw.cmd" zzz a.txt >"%O%" 2>&1
+call :expect %errorlevel% 1 "findw: says so without fd, and runs no find.exe"
 set "PATH=%T%\tools;%BASEPATH%"
 set "_DEN_WRAPPERS=0"
 >"%W%" echo zzz

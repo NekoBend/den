@@ -3,15 +3,15 @@ settings.set("clink.logo", "none")
 settings.set("prompt.spacing", "sparse")  -- cmd.exe adds its own newline + starship add_newline = 2 lines; sparse normalizes to 1
 
 -- ===== den's command shims: Clink aliases, never on PATH =====
--- The shims in bin_dir (ls.cmd, find.cmd, python.cmd, ...) are reached only
+-- The shims in bin_dir (ls.cmd, grep.cmd, python.cmd, ...) are reached only
 -- through the aliases defined below. An alias (a doskey macro) expands only
 -- where a command starts on a line typed at the Clink prompt: at the start of
 -- the line, or after | or & (Clink's doskey.enhanced, on by default). Batch
 -- files, `cmd /c`, child processes and starship's own probes therefore keep
--- seeing Windows' commands: System32 find.exe, the real python. den's own
--- commands (mkcd, dg, back, ...) do not exist there either. bin_dir used to be
--- put on PATH; a cmd started from such an older session inherits that entry,
--- so take it off again.
+-- seeing Windows' commands, such as the real python. den's own commands
+-- (mkcd, dg, back, ...) do not exist there either. bin_dir used to be put on
+-- PATH; a cmd started from such an older session inherits that entry, so take
+-- it off again.
 local bin_dir = os.getenv("LOCALAPPDATA") .. "\\clink\\bin"
 do
     local kept, dropped = {}, false
@@ -124,9 +124,11 @@ end
 -- One per shim in bin_dir, named after it (back.cmd -> back, tgl-hw.cmd ->
 -- tgl-hw), except path.cmd: `path` is a cmd builtin that also sets PATH
 -- (`path C:\tools;%PATH%`), and an alias would take that over as well, so
--- typed `path` stays cmd's own.
+-- typed `path` stays cmd's own. Nor is there a `find`: Clink expands an alias
+-- after a | too, and `netstat -ano | find "8080"` needs find.exe, which reads
+-- the piped text (fd reads none). fd is `findw`, as on the other shells.
 for _, name in ipairs({
-    "again", "back", "cat", "dg", "digest", "find", "fwd", "grep", "head", "la",
+    "again", "back", "cat", "dg", "digest", "findw", "fwd", "grep", "head", "la",
     "ll", "lla", "llt", "ls", "lt", "mkcd", "pip", "python", "python3",
     "tail", "tgl-hw", "tgl-uv", "tgl-wr", "toggle-hwinfo", "toggle-uv",
     "toggle-wrapper", "touch", "up", "uv", "wc", "which",

@@ -158,6 +158,26 @@ typed `clip` to cut a video. Nothing is left on disk, but a shell that loaded
 the older den keeps its `clip` until you replace it (a new terminal,
 `exec "$SHELL"` on bash/zsh, `reload` on pwsh).
 
+## 8. cmd's `find` is `find.exe` again; `fd` is `findw` (2026-10)
+
+On cmd, `find` was an alias for den's `find.cmd`, which ran `fd` whenever it
+was installed, after a `|` too, where `fd` ignores the piped text:
+`netstat -ano | find "8080"` looked for file names instead and, with none
+matching, printed nothing and exited 0. Typed `find` is Windows' `find.exe`
+again, and `fd` is `findw`, as on the other shells: type `findw` where you
+meant `fd`. A cmd window opened before the update keeps the old alias until
+you close it.
+
+The old shim stays in Clink's shim folder, where no alias reaches it:
+
+```bat
+del "%LOCALAPPDATA%\clink\bin\find.cmd"
+```
+
+```powershell
+Remove-Item "$env:LOCALAPPDATA\clink\bin\find.cmd" -ErrorAction SilentlyContinue
+```
+
 ## Why there is no `den prune`
 
 Deliberate: a prune command needs a durable record of everything den has
