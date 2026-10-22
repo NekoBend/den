@@ -46,7 +46,12 @@ already set up (`compdef` exists) by the time it loads: your `~/.zshrc` ran it
 first, or Ubuntu's `/etc/zsh/zshrc` did. Ubuntu runs a full `compinit` there
 unless `skip_global_compinit` is set, so every shell ran two; the
 `skip_global_compinit=1` that `den install shell` adds to `~/.zshenv` (read
-before `/etc/zsh/zshrc`) leaves only den's.
+before `/etc/zsh/zshrc`) leaves only den's. Completion is then set up where
+den's line in `~/.zshrc` runs, which `den install shell` puts at the end: a
+line above it that calls `compdef`, itself or through a tool's completion
+script (`source <(kubectl completion zsh)`, say), fails with
+`command not found: compdef`. Move such lines below den's, or take den's block
+out of `~/.zshenv` to have Ubuntu's `compinit` back (den's then does not run).
 
 While `~/.zcompdump` is less than a day old, `compinit -C` loads it as it is:
 no security audit, and no look for completion functions added since. A missing
