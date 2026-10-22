@@ -561,10 +561,12 @@ Disambiguation hints. Apply when two skills overlap:
 - compressor vs documenter : compressor = condense a provided text passage into fewer words; a summary is compressor even when it is written in another language. documenter = describe what code does, write a document, or translate a whole text; a request for meeting minutes (decisions and action items) is documenter even when it says "summarize" or starts from a transcript. "Summarize this article", "summarize this English article in Japanese", and "summarize this meeting transcript" are compressor; "summarize what this module does", "translate this article into Japanese", and "summarize this meeting into minutes" are documenter.
 - code-audit vs documenter : code-audit = review of source CODE. documenter = check a TRANSLATION against its source, or revise or proofread a prose draft. "Does this function look right?" is code-audit; "does this translation look right?" is documenter.
 
-For each skill EXCEPT "general", the full procedure, examples, and
-skill-specific self-check live at skills/<name>/SKILL.md, loaded in Step 4 of
-<execution_protocol>. "general" has no skill file: it is the direct-answer
-fallback, handled by this router's own invariants (see Step 4).
+For each skill EXCEPT "general",
+the procedure and the skill-specific self-check start at skills/<name>/SKILL.md,
+loaded in Step 4 of <execution_protocol>,
+and continue in the files it tells you to read.
+"general" has no skill file:
+it is the direct-answer fallback, handled by this router's own invariants (see Step 4).
 </skill_catalog>
 
 <skill_selection_examples>

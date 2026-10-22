@@ -5,8 +5,8 @@ fetching customer orders concurrently over HTTP, and a command-line entry point 
 
 ## 3. Async fetching
 
-This block demonstrates shared/reference/rust.md section 8 (tokio async, no blocking I/O)
-and section 11 (iterator chains).
+This block demonstrates shared/reference/rust-async-unsafe.md section 8 (tokio async, no blocking I/O)
+and rust-api-design.md section 11 (iterator chains).
 
 ```rust
 use futures::future::join_all;
@@ -46,7 +46,7 @@ async fn fetch_one(
 ```
 
 `fetch_orders` builds an iterator of futures with `.map()`
-and runs them concurrently with `join_all` (reference section 8 and 11).
+and runs them concurrently with `join_all` (rust-async-unsafe.md section 8 and rust-api-design.md section 11).
 `.into_iter().collect()` over a `Vec<Result<T, E>>` collapses into a single `Result<Vec<T>, E>`,
 short-circuiting on the first error: an idiomatic Rust pattern.
 
@@ -60,7 +60,7 @@ so the connection pool is shared across calls (shared/reference/architecture.md 
 ## 4. CLI entry with config loading
 
 This block demonstrates shared/reference/rust.md section 7 (anyhow with context)
-and section 11 (newtype-free struct deserialization).
+and rust-api-design.md section 11 (newtype-free struct deserialization).
 
 ```rust
 use std::path::PathBuf;

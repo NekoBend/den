@@ -1,12 +1,13 @@
 # Substitutions that turn the den-aware skills into the den-free copies under
 # agents/dist/skills/ (and `den install skills --no-den-cli`). A table named
 # after a skill edits that skill's SKILL.md; a table named by a path under
-# agents/src/ ("shared/reference/python.md") edits every copy of that shared
-# file a skill bundles. Each `from` must occur exactly once in the text it
+# agents/src/ ("shared/reference/python-progress.md")
+# edits every copy of that shared file a skill bundles.
+# Each `from` must occur exactly once in the text it
 # edits; the build fails otherwise, so a source edit that invalidates an
 # anchor is caught in CI, never shipped stale. The skills name their checks
 # tool-by-tool, so only the den shortcuts, the den board paragraphs and the
-# pointer to den's cheatsheets need to disappear here.
+# pointers to den's cheatsheets need to disappear here.
 
 [[coding]]
 from = """ruff check, ty check
@@ -53,7 +54,7 @@ from = """- With den's cheatsheets installed (`den install cheatsheets`),
   `${XDG_DATA_HOME:-$HOME/.local/share}/den/cheatsheets/python/progress/`;
   read them directly.
   Most of them use PEP 695 generic syntax (3.12+),
-  so adapt them to the project's floor (section 13).
+  so adapt them to the project's floor (python-types.md section 13).
 """
 to = ""
 

@@ -380,7 +380,7 @@ that resolves to the working directory itself - a cloned repo shipping its own
 `ruff.exe`, which Windows would otherwise prefer over the installed one - is
 refused and counted as a `SKIP`, never executed; a tool from the project's own
 `.venv` is unaffected.
-Python only; other languages go through the coding skill's `run-checks.sh`.
+Python only; for other languages the coding and code-audit skills name each language's standard tools.
 
 ## Architecture
 

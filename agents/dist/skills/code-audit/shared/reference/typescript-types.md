@@ -96,12 +96,13 @@ function describe(event: OrderEvent): string {
 
 ## 13. Version awareness
 
-**Rule:** Before proposing any version-gated form (sections 5, 6, 8, 10),
+**Rule:** Before proposing any version-gated form
+(sections 5 and 6, typescript-runtime.md section 8, typescript-patterns.md section 10),
 read the project's tsconfig settings and TypeScript version:
 
 - `tsconfig.json` `compilerOptions.target`: the ECMAScript output the compiler emits.
 - `tsconfig.json` `compilerOptions.lib`: the runtime types in scope
-  (`ES2022`, `DOM`, `WebWorker`; see section 14).
+  (`ES2022`, `DOM`, `WebWorker`; see typescript-runtime.md section 14).
 - `tsconfig.json` `compilerOptions.moduleResolution`: `"bundler"` for Vite / Next.js / webpack / esbuild,
   `"nodenext"` for Node.js without a bundler.
 - `tsconfig.json` `compilerOptions.strict`: must be `true`.

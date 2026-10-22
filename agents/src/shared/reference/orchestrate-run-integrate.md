@@ -4,6 +4,7 @@ Steps R1 to R4 of orchestrate's run mode
 and Steps I1 to I4 of its integrate mode,
 then the Codex setup, the Claude Code cautions, and the output format.
 orchestrate's SKILL.md sends you here when the mode is run or integrate.
+Rule numbers refer to the Six rules in orchestrate's SKILL.md.
 
 ## Mode: run
 

@@ -5,9 +5,9 @@ a command-line entry point that loads a TOML config, and the package layout.
 
 ## 4. CLI entry with config loading
 
-This block demonstrates shared/reference/python.md section 13 (version awareness)
+This block demonstrates shared/reference/python-types.md section 13 (version awareness)
 and section 14 (standard library import location map),
-with reinforcement of section 12 (validation at boundaries).
+with reinforcement of python-idioms.md section 12 (validation at boundaries).
 
 ```python
 """Command-line entry point for the order service.
@@ -82,7 +82,7 @@ if __name__ == "__main__":
 `ServiceConfig` is a Pydantic model that captures the shape of the `[service]` TOML table.
 The classmethod `load` is an alternate constructor:
 it reads the file, then calls `cls.model_validate` to convert the raw dict into a typed `ServiceConfig`.
-Callers read `config.endpoint`, not `config["endpoint"]` (reference section 12).
+Callers read `config.endpoint`, not `config["endpoint"]` (python-idioms.md section 12).
 
 Colocating the loader with the type via `@classmethod` keeps construction logic next to the data shape;
 a free-standing `load_config(path) -> ServiceConfig` would put the same logic in a separate module
@@ -91,15 +91,15 @@ The classmethod form also propagates correctly to subclasses through `Self`.
 
 `Self` (from `typing`, Python 3.11+) annotates the classmethod return as "the enclosing class".
 A subclass's `.load()` returns a subclass instance without changing the annotation
-(reference section 14, `Self` row).
+(python-types.md section 14, `Self` row).
 
 Both `tomllib` and `Self` require Python 3.11+.
 On older versions the imports become `import tomli as tomllib` and `from typing_extensions import Self`
-(reference section 13 gating; reference section 14 backport convention).
+(python-types.md: section 13 gating, section 14 backport convention).
 
 `with path.open("rb")` opens the file in binary mode because `tomllib.load` requires bytes.
 `argv: list[str] | None = None` uses PEP 604 union with a `None` sentinel;
-passing `None` defers to `argparse`'s default of reading `sys.argv` (reference sections 5 and 7).
+passing `None` defers to `argparse`'s default of reading `sys.argv` (python-types.md section 5 and python-idioms.md section 7).
 
 ## 5. Project layout
 
@@ -127,13 +127,13 @@ Each module holds one concern (reference section 9):
 - `__init__.py` is typically empty (when callers import from concrete submodules)
   or re-exports the public API (e.g., `from .models import CustomerOrder`).
 - `models.py` carries pure data classes and exception types; no I/O.
-  Holds Example 1's `CustomerOrder`, `CustomerOrderNotFoundError`, `InsufficientStockError`.
+  Holds Example 1's `CustomerOrder`, `CustomerOrderNotFoundError`, `InsufficientStockError` (examples/python.md).
 - `core.py` carries business logic and persistence orchestration.
   Validates input at its boundary, calls models.
-  Holds Example 2's `CreateCustomerOrderRequest` and `CustomerOrderRepository`.
+  Holds Example 2's `CreateCustomerOrderRequest` and `CustomerOrderRepository` (examples/python-persistence.md).
 - `adapters.py` carries side-effectful I/O (network, disk, DB).
   The only place where a synchronous-in-async-context bug would appear.
-  Holds Example 3's `fetch_orders`.
+  Holds Example 3's `fetch_orders` (examples/python-async.md).
 - `cli.py` is the user-facing entry surface: argument parsing, config loading, dispatch.
   Holds Example 4's `ServiceConfig` and `main`.
 - `__main__.py` is the smallest possible launcher (`sys.exit(cli.main())`),

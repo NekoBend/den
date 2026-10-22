@@ -1,9 +1,10 @@
 # Python worked examples
 
-Worked examples demonstrating the rules in `shared/reference/python.md`.
+Worked examples demonstrating the rules in `shared/reference/python.md` and the files it lists.
 The shared domain is a small order-management system;
 each block is a fragment of that system illustrating two or three rules.
-Cross-references in the prose point to the corresponding `shared/reference/python.md` section.
+Cross-references in the prose point to the corresponding `shared/reference/python.md` section
+unless they name another reference file.
 
 Code in these blocks contains only natural comments
 (the kind a real developer writes for non-obvious WHY).
@@ -22,7 +23,7 @@ Compare your code against every file you read.
 ## 1. Domain types and exceptions
 
 This block demonstrates shared/reference/python.md section 2 (docstrings),
-section 5 (type annotations), and section 10 (domain exceptions).
+python-types.md section 5 (type annotations), and python-idioms.md section 10 (domain exceptions).
 
 ```python
 """Order domain types and exceptions.
@@ -62,41 +63,41 @@ class CustomerOrder:
 
 `CustomerOrderNotFoundError` subclasses `LookupError`,
 so callers can catch it via `except LookupError:` alongside stdlib lookup failures
-(reference section 10).
+(python-idioms.md section 10).
 The combination of `@dataclass(frozen=True)` and `tuple[str, ...]` keeps `CustomerOrder` immutable;
 the Python realization of `shared/reference/architecture.md` section 3
 (immutability where the language supports it cheaply).
-Modern `tuple[str, ...]` syntax requires Python 3.9+ (reference section 5).
+Modern `tuple[str, ...]` syntax requires Python 3.9+ (python-types.md section 5).
 
 ## Pitfalls
 
-Common mistakes that the rules in `shared/reference/python.md` are designed to prevent.
+Common mistakes that the rules in `shared/reference/python.md` and the files it lists are designed to prevent.
 Each is a real bug class that ships when the rule is forgotten.
 
 - **Forgetting `await` on an async call.**
   `client.get(url)` returns a coroutine, not a response.
   Without `await`, the caller silently gets a coroutine where it expected the value,
-  and the request never actually fires (reference section 8).
+  and the request never actually fires (python-io.md section 8).
 - **Comparing to `None` with `==` instead of `is`.**
   Use `x is None` and `x is not None`.
   The `==` form invokes `__eq__` and can return surprising results on custom types;
-  `is` checks identity, which is exactly what `None` semantics require (reference section 11 idiom).
+  `is` checks identity, which is exactly what `None` semantics require (python-idioms.md section 11 idiom).
 - **Catching `Exception` at non-top-level functions.**
   Broad catches hide bugs that should propagate.
   Reserve them for entry points (request handlers, CLI main, message consumers);
-  catch narrower types everywhere else (reference section 10, `shared/reference/architecture.md` section 5).
+  catch narrower types everywhere else (python-idioms.md section 10, `shared/reference/architecture.md` section 5).
 - **Mutable default arguments.**
   A list, dict, or set used as a default value is shared across every call.
   Use `None` as the default and initialize inside the body.
-  This is the most common silent leak in Python; `ruff B006` catches it (reference section 7).
+  This is the most common silent leak in Python; `ruff B006` catches it (python-idioms.md section 7).
 - **Implicit `None` returns where the annotation is not `Optional`.**
   A function annotated `-> User` that returns `None` on the not-found path lies to its caller.
-  Either change the return to `User | None`, or raise a domain exception (reference section 10).
+  Either change the return to `User | None`, or raise a domain exception (python-idioms.md section 10).
 - **Reading TOML without binary mode.**
   Without `"rb"`, `tomllib.load` raises `TypeError`: the loader requires bytes, not a text stream.
-  Use `Path.open("rb")` (Example 4 demonstrates the correct form).
+  Use `Path.open("rb")` (Example 4 in examples/python-cli.md demonstrates the correct form).
 - **`print` inside library code.**
   `print` writes to stdout and cannot be filtered, redirected, or silenced per-module.
   Use `logging.getLogger(__name__)` for library output;
   reserve `print` for the CLI entry layer that explicitly owns stdout
-  (Example 4 is the place where `print` is appropriate).
+  (Example 4 in examples/python-cli.md is the place where `print` is appropriate).

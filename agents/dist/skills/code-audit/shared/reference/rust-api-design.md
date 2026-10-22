@@ -70,7 +70,7 @@ callers match on variants and traverse the source chain via `.source()`.
 This is the library-side counterpart to `anyhow` (application-side);
 the two compose cleanly.
 **Cross-ref:** architecture.md section 5 (catch narrow, propagate broad).
-Section 7 covers the propagation mechanic;
+rust.md section 7 covers the propagation mechanic;
 this section covers the type design.
 **Example:**
 

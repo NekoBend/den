@@ -1,8 +1,10 @@
 # Example: commit mode
 
 A worked commit showing the branch step and the "describe the diff, not the
-journey" rule in action. This is the shape the commit mode of SKILL.md should
-produce. Adapt the shape, do not copy the wording.
+journey" rule in action.
+This is the shape the commit mode
+of SKILL.md and shared/reference/git-manager-commit-pr.md should produce.
+Adapt the shape, do not copy the wording.
 
 ## Input from the user
 

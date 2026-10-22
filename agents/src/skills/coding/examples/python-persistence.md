@@ -4,7 +4,7 @@ Example 2 of the Python worked examples: a repository behind a validated request
 
 ## 2. Persistence with validation
 
-This block demonstrates shared/reference/python.md section 7 (mutable default argument trap)
+This block demonstrates shared/reference/python-idioms.md section 7 (mutable default argument trap)
 and section 12 (validation at boundaries).
 
 ```python
@@ -65,15 +65,15 @@ class CustomerOrderRepository:
 ```
 
 `CustomerOrderRepository.__init__` uses `None` as the sentinel for `initial`
-instead of a mutable default like `{}` (reference section 7).
+instead of a mutable default like `{}` (python-idioms.md section 7).
 The `dict(initial)` call is a defensive copy;
 without it, the caller could later mutate their original dict
 and silently change the repository's internal state.
 
-`CreateCustomerOrderRequest` is the validation boundary (reference section 12):
+`CreateCustomerOrderRequest` is the validation boundary (python-idioms.md section 12):
 Pydantic v2 parses the raw payload and raises `ValidationError` on shape mismatch
 (negative `total_cents`, empty `sku_ids`, wrong types, ...).
 Downstream methods (`create`, `fetch`) accept already-typed parameters and do not re-validate.
 
 `fetch` re-raises `KeyError` as `CustomerOrderNotFoundError` using exception chaining (`from exc`),
-preserving the original cause for debugging (reference section 10 + `shared/reference/architecture.md` section 5).
+preserving the original cause for debugging (python-idioms.md section 10 + `shared/reference/architecture.md` section 5).

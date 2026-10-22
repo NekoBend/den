@@ -46,7 +46,8 @@ and this section decides which one applies.
 
 - Test functions follow the same rules as the code they test:
   a one-line docstring naming the behavior the test pins down,
-  and a `-> None` return annotation (sections 2 and 5 apply to tests too).
+  and a `-> None` return annotation
+  (python.md section 2 and python-types.md section 5 apply to tests too).
 - Plain `assert` with an expressive expression; no `self.assertEqual`.
 - Exception checks are `pytest.raises(SomeError, match=...)`.
 - Temporary files and directories default to the `tmp_path` fixture

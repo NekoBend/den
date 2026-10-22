@@ -5,7 +5,7 @@ cleanup with trap, the `main` function that assembles the script, and common mis
 
 ## 4. Cleanup with trap
 
-This block demonstrates shared/reference/shell.md section 8 (trap and cleanup)
+This block demonstrates shared/reference/shell-security.md section 8 (trap and cleanup)
 and section 14 (safe temp files).
 
 ```bash
@@ -27,10 +27,10 @@ report_orders() {
 }
 ```
 
-`mktemp` creates the temp file with a unique, unpredictable name (reference section 14):
+`mktemp` creates the temp file with a unique, unpredictable name (shell-security.md section 14):
 never a hardcoded `/tmp/orders.txt`, which is a symlink-attack and race-condition risk.
 `trap 'rm -f "$tmp_file"' RETURN` registers cleanup that runs when the function returns,
-on success or failure (reference section 8).
+on success or failure (shell-security.md section 8).
 
 This example uses `RETURN` (function scope) rather than `EXIT` (script scope)
 because the temp file is local to `report_orders`.
@@ -38,7 +38,7 @@ A script-level temp file would use `trap ... EXIT` at the top level.
 
 ## 5. main and script assembly
 
-This block demonstrates shared/reference/shell.md section 9 (script structure, `main "$@"`).
+This block demonstrates shared/reference/shell-structure.md section 9 (script structure, `main "$@"`).
 
 ```bash
 main() {
@@ -52,7 +52,7 @@ main "$@"
 ```
 
 `main` wraps the top-level logic and is the last thing called,
-with `main "$@"` forwarding all script arguments (reference section 9).
+with `main "$@"` forwarding all script arguments (shell-structure.md section 9).
 This is the shell equivalent of Python's `if __name__ == "__main__"`:
 it keeps the functions definable without executing them,
 so the script can be sourced in tests (e.g., with Bats)
@@ -60,11 +60,11 @@ to test `fetch_order` and `summarize_order` in isolation.
 
 The full script orders its parts as:
 shebang, header, `set -euo pipefail`, `readonly` constants, function definitions, `main`,
-then the `main "$@"` call (reference section 9).
+then the `main "$@"` call (shell-structure.md section 9).
 
 ## Pitfalls
 
-Common mistakes that the rules in `shared/reference/shell.md` are designed to prevent.
+Common mistakes that the rules in `shared/reference/shell.md` and the files it lists are designed to prevent.
 Each is a real bug class that ships when the rule is forgotten.
 
 - **Unquoted variable expansions.**
@@ -75,19 +75,19 @@ Each is a real bug class that ships when the rule is forgotten.
 - **Omitting `set -euo pipefail`.**
   Without it, a failed command in the middle of the script is ignored
   and execution continues with stale or empty data.
-  Enable strict mode at the top (reference section 7).
+  Enable strict mode at the top (shell-structure.md section 7).
 - **Parsing `ls` output.**
   `for f in $(ls)` breaks on filenames with spaces or newlines.
-  Use a glob (`for f in *.txt`) or `find ... -print0` with `read -d ''` (reference section 11).
+  Use a glob (`for f in *.txt`) or `find ... -print0` with `read -d ''` (shell-structure.md section 11).
 - **Hardcoded `/tmp` paths.**
   A fixed temp path is predictable and exploitable (symlink attack, race condition).
-  Use `mktemp` and clean up with `trap` (reference section 14 and 8).
+  Use `mktemp` and clean up with `trap` (shell-security.md sections 14 and 8).
 - **`echo` with untrusted or dash-leading data.**
   `echo "$var"` mangles values beginning with `-` or containing escape sequences.
-  Use `printf '%s\n' "$var"` (reference section 11).
+  Use `printf '%s\n' "$var"` (shell-structure.md section 11).
 - **Using `[ ]` where `[[ ]]` is safer.**
   Single-bracket test subjects unquoted variables to word splitting and lacks `&&`, `||`, and `=~`.
-  Prefer `[[ ]]` in Bash (reference section 11).
+  Prefer `[[ ]]` in Bash (shell-structure.md section 11).
 - **`eval` on user input.**
   Passing user-controlled data to `eval` is arbitrary command execution.
-  Use namerefs (`declare -n`) for indirection instead (reference section 14).
+  Use namerefs (`declare -n`) for indirection instead (shell-security.md section 14).

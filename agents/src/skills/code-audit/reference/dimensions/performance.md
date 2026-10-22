@@ -52,4 +52,4 @@ For performance idioms in the target language
 (lazy iteration, value versus reference passing,
 the right standard collection),
 consult the shared reference for the target language
-(SKILL.md Step 4 gives the path).
+(shared/reference/code-audit-languages.md gives the path).

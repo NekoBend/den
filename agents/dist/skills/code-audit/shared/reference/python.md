@@ -1,12 +1,12 @@
 # Python language reference
 
 Python-specific conventions for the `coding` skill.
-Layered on top of `architecture.md` (12 generic rules).
-When both apply, this file refines or specializes the generic rule.
+Layered on top of `architecture.md` and `architecture-readability.md` (12 generic rules).
+When a generic rule also applies, the Python reference refines or specializes it.
 Never contradict.
 
 Apply with version awareness:
-section 13 governs which constructs are admissible based on the project's declared Python version.
+python-types.md section 13 governs which constructs are admissible based on the project's declared Python version.
 Always read that section before proposing modern syntax.
 
 ## Where each section lives
@@ -34,7 +34,7 @@ Layer the Google Python Style Guide on top for module-level conventions
 **Why:** PEP 8 covers syntax-level layout.
 Google adds module-level conventions that PEP 8 leaves unspecified.
 This combination is the standard this skill applies;
-teams with their own style guide override via project config (see section 3).
+teams with their own style guide override via project config (see python-tools.md section 3).
 
 ## 2. Docstrings: Google style, imperative summary
 

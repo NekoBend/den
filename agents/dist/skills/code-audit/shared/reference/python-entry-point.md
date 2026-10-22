@@ -105,7 +105,7 @@ logging.basicConfig(
   and wrap the loop in `with logging_redirect_tqdm():`.
   It sends each record through `tqdm.write` and keeps the handler's stderr stream.
 - rich: the entry point configures logging this way instead,
-  building the one console that `RichHandler` and every `Progress` (section 19) share:
+  building the one console that `RichHandler` and every `Progress` (python-progress.md section 19) share:
 
 ```python
 import logging

@@ -4,8 +4,8 @@ Example 3 of the Python worked examples: fetching customer orders concurrently o
 
 ## 3. Async fetching
 
-This block demonstrates shared/reference/python.md section 8 (async hygiene),
-section 11 (Pythonic patterns: generator expressions, `zip`),
+This block demonstrates shared/reference/python-io.md section 8 (async hygiene),
+python-idioms.md section 11 (Pythonic patterns: generator expressions, `zip`),
 and section 12 (validation at boundaries) applied to external responses.
 
 ```python
@@ -73,17 +73,17 @@ async def fetch_orders(
 
 `fetch_orders` is `async def`;
 every I/O call inside (`client.get`) is itself awaitable,
-so the event loop is never blocked (reference section 8).
+so the event loop is never blocked (python-io.md section 8).
 `asyncio.gather` with a generator expression
 (`(client.get(f"/orders/{oid}") for oid in order_ids)`)
 issues all requests concurrently without building an intermediate list.
 
 `zip(order_ids, responses)` pairs each requested ID with its response without manual indexing
-(reference section 11).
+(python-idioms.md section 11).
 The 404 case is checked explicitly before `raise_for_status`,
 which surfaces any other HTTP failure as `httpx.HTTPStatusError`.
 
-`_OrderResponse` is the boundary validator (reference section 12).
+`_OrderResponse` is the boundary validator (python-idioms.md section 12).
 The leading underscore marks it as module-private (reference section 4);
 external callers do not need this intermediate type.
 `model_validate` raises `ValidationError` when the HTTP payload diverges from the declared shape,

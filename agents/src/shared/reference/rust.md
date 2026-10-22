@@ -1,8 +1,8 @@
 # Rust language reference
 
 Rust-specific conventions for the `coding` skill.
-Layered on top of `architecture.md` (12 generic rules).
-When both apply, this file refines or specializes the generic rule.
+Layered on top of `architecture.md` and `architecture-readability.md` (12 generic rules).
+When a generic rule also applies, the Rust reference refines or specializes it.
 Never contradict.
 
 Apply with edition awareness:
@@ -123,7 +123,8 @@ fn load_config(path: &Path) -> anyhow::Result<Config> {
 
 ## 13. Edition and MSRV awareness
 
-**Rule:** Before proposing any edition-gated form (sections 5, 6, 8),
+**Rule:** Before proposing any edition-gated form
+(section 6, rust-api-design.md section 5, rust-async-unsafe.md section 8),
 read the project's `Cargo.toml`:
 
 - `edition`: the Rust edition (`"2018"`, `"2021"`, `"2024"`).

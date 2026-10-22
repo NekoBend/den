@@ -56,7 +56,7 @@ Never propose a form newer than what the project's `python_requires` admits.
 
 ## 13. Version awareness
 
-**Rule:** Before proposing any version-gated form (sections 5, 6, 8),
+**Rule:** Before proposing any version-gated form (sections 5 and 6, python-io.md section 8),
 read the project's declared Python version:
 
 - `pyproject.toml` `[project] requires-python`: the source of truth.

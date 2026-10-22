@@ -1,8 +1,10 @@
 # Example: reference mode
 
 A worked API reference written from the code, documenting actual behavior
-(including what the function does NOT do). This is the shape the reference mode
-of SKILL.md should produce. Adapt the shape, do not copy the wording.
+(including what the function does NOT do).
+This is the shape the reference mode
+of shared/reference/doc-reference.md should produce.
+Adapt the shape, do not copy the wording.
 
 ## Input from the user
 
@@ -52,7 +54,8 @@ parse_retry_after(None)  # 1.0
 - It documents what the code actually does: it clamps the result to
   [0.0, cap] (the max/min line), and it does NOT raise on a bad header,
   returning default instead (the try/except). Stating "Raises: none" is a
-  fact read from the code, not an assumption (Faithfulness rule, Step R2).
+  fact read from the code, not an assumption
+  (Source rule in shared/reference/doc-common.md, Step R2).
 - The example is runnable and shows the fallback path, the behavior most
   likely to surprise a caller (Step R3).
 - If, say, parsedate_to_datetime were imported from an unclear module, that

@@ -25,7 +25,8 @@ a `print` inside the loop tears the bar apart.
   the default `Progress()` shows description, bar, percentage and time remaining,
   with no count and no elapsed time.
   rich draws on stdout unless told otherwise,
-  so the bar goes to the one `Console(stderr=True)` that the entry point builds (section 21)
+  so the bar goes to the one `Console(stderr=True)`
+  that the entry point builds (python-entry-point.md section 21)
   and is disabled when that console is not a terminal.
   `redirect_stdout=False` keeps data that the loop prints on stdout;
   without it, rich moves that data to the bar's stream.

@@ -54,10 +54,12 @@ agents/
                             # doc-genres / writing / japanese-style / confluence /
                             # translation,
                             # the mode steps, output formats and checklists
-                            # of git-manager, orchestrate and coding
-                            # (git-manager-* / orchestrate-* / coding-*),
-                            # the diagnose and repair steps of troubleshoot,
-                            # grounding's ground steps
+                            # of git-manager and coding (coding's Steps 1-3,
+                            # T1-T3 and S1-S3), orchestrate's mode steps
+                            # and output formats
+                            # (git-manager-* / coding-* / orchestrate-*),
+                            # troubleshoot's Steps D1-D4 and P1-P3,
+                            # grounding's Steps G1-G3
                             # (troubleshoot-* / grounding-*),
                             # and code-audit's output format, self-check and
                             # language table (code-audit-*)
@@ -107,14 +109,17 @@ content as data, confirmation before outward actions, and secrets.
 | git-manager | commit / pr / history | Run git safely (commits, PRs, history ops), inspect-first and confirm before anything destructive; GitHub Flow by default. Uses `shared/reference/` git-manager-commit-pr and git-manager-history. |
 
 `coding` and `code-audit` are the heavy skills (they use `shared/reference/`
-and `shared/scripts/`; coding's mode steps, output format and checklists,
+and `shared/scripts/`; coding's Steps 1-3, T1-T3 and S1-S3
+with their output formats and checklists,
 and code-audit's output format, self-check and language
 table live in `shared/reference/` too). `documenter`, `git-manager`,
 `orchestrate`, `troubleshoot`, and `grounding` use `shared/reference/` only:
 documenter's source rule, its reference, guide and translate steps and their
-style rules, the mode steps, output formats and checklists of git-manager
-and orchestrate, troubleshoot's diagnose and repair steps, and grounding's
-ground steps, live there,
+style rules,
+the mode steps and output formats of git-manager and orchestrate,
+git-manager's mode checklists,
+troubleshoot's Steps D1-D4 and P1-P3,
+and grounding's Steps G1-G3, live there,
 and install copies them with the skill. The other two are light: `SKILL.md`
 plus examples, no shared dependencies.
 
@@ -140,11 +145,11 @@ into the place your tool reads skills from (`~/.claude/skills/<name>/`,
 `~/.agents/skills/<name>/`, ...) and it works with no den installed. It is
 generated from `src/` by `python3 -m den._portable` (CI fails if it is
 stale) through the substitution table `src/no-den-cli.toml`: the `den verify`
-shortcut mentions, the den board paragraphs and the pointer to den's
+shortcut mentions, the den board paragraphs and the pointers to den's
 cheatsheets are removed (the skills name
 their checks tool-by-tool), the shared resources each skill references are bundled inside
 it, and `shared/`, `examples/` and `reference/` paths are relative to the skill
-(the copy says so on its first line). den users get the same text, with
+(the copy's SKILL.md says so under its title). den users get the same text, with
 absolute paths, from `den install skills --no-den-cli`.
 
 ## Install

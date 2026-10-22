@@ -2,8 +2,10 @@
 
 A worked "fold a change into an earlier commit" (fixup plus non-interactive
 autosquash), with the published check, the confirmation gate, and a recovery
-path. This is the shape the history mode of SKILL.md should produce. Adapt the
-shape, do not copy the wording.
+path.
+This is the shape the history mode
+of SKILL.md and shared/reference/git-manager-history.md should produce.
+Adapt the shape, do not copy the wording.
 
 ## Input from the user
 
