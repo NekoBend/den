@@ -384,6 +384,17 @@ rm -f "$HWP_CACHE"
 printf '%s\n' "$HW_NONE_LINE" > "$HWP_CACHE"
 actual=$(hw_ps) || true
 assert_eq "pwsh/no recognized hardware: no detection the next time" "calls=0 CPU=[] GPU=[]" "$actual"
+# Any safe cache file that was sourced counted as a hit, an empty one too (a
+# write that failed), so the detection never ran again until refresh-hwinfo.
+# As in cmd's reader, a hit needs a value or that whole line.
+echo "[pwsh] an empty or cut-short cache file is not a hit: detected again"
+: > "$HWP_CACHE"
+actual=$(hw_ps) || true
+assert_eq "pwsh/empty cache: detected" "calls=2 CPU=[] GPU=[]" "$actual"
+assert_eq "pwsh/empty cache: written again" "$HW_NONE_LINE" "$(tr -d '\r' < "$HWP_CACHE" 2>/dev/null)"
+printf '%s' "${HW_NONE_LINE%GPU*}" > "$HWP_CACHE"
+actual=$(hw_ps) || true
+assert_eq "pwsh/cut-short cache: detected" "calls=2 CPU=[] GPU=[]" "$actual"
 echo "[pwsh] a detection that fails writes no cache"
 rm -f "$HWP_CACHE"
 actual=$(hw_ps HW_FAIL=1) || true
@@ -392,7 +403,7 @@ assert_not_exists "pwsh/failed detection: no cache, so the next start tries agai
 echo "[pwsh] hwinfo.ps1 writes the line cmd's starship.lua writes and reads"
 actual=$(sed -n 's/^local hw_none = "\(.*\)"$/\1/p' "$DOTFILES/shell/cmd/starship.lua")
 assert_eq "cmd/starship.lua's hw_none" "$HW_NONE_LINE" "$actual"
-assert_eq "pwsh/hwinfo.ps1 writes the same line" "1" "$(grep -cF "@('$HW_NONE_LINE')" "$HWINFO_PS1")"
+assert_eq "pwsh/hwinfo.ps1 writes and reads the same line" "1" "$(grep -cF "\$_hwNone = '$HW_NONE_LINE'" "$HWINFO_PS1")"
 
 # =============================================================================
 # Windows PowerShell 5.1 syntax, over every shell/pwsh/*.ps1
