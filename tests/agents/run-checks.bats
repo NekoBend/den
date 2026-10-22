@@ -344,6 +344,12 @@ EOF
   printf '1\n' > "$WORK/tsc.rc"
   _run_stubbed "$WORK/proj/src/a.ts"
   [[ "$output" == *"[typecheck] SKIPPED   src/a.ts is not in the program"* ]]
+  # a crash lists no file: a stop, not a file left out
+  printf '%s\n' "/usr/lib/node_modules/typescript/lib/tsc.js:118" "        throw e;" \
+    "Error: Debug Failure. False expression." > "$WORK/tsc.out"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   tsc -p $WORK/proj/tsconfig.json may have stopped before type-checking src/a.ts"* ]]
+  [[ "$output" == *"             Error: Debug Failure. False expression."* ]]
 }
 
 @test "TypeScript: a solution-style tsconfig.json hands the file to the referenced config that lists it (stub tsc)" {

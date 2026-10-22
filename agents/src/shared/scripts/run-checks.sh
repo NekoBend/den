@@ -189,7 +189,9 @@ _tsc_verdict() {
           code == 6198 || code == 6199 || code == 6205) checked = 1
       next
     }
-    NF { files++ }
+    # a file of the program, as --explainFiles names it (not a line of a
+    # crash trace)
+    /\.([cm]?[jt]sx?|json)$/ { files++ }
     { kind = "" }
     END {
       # without a type-checker error, an error elsewhere (a syntax error)
