@@ -2,9 +2,9 @@ name: dev image
 
 # docker/ubuntu/Dockerfile compiles the Rust tools and runs every installer,
 # so CI builds it only when the image or this workflow changes, or on demand.
-# The build checks that the Dockerfile still works; the step after it runs the
-# root and dev commands docker/README.md documents and checks the HOME and
-# PATH each one gets.
+# The build checks that the Dockerfile still works; the step after it checks
+# the HOME and PATH root gets with and without a shell, and runs dev's forms
+# from docker/README.md.
 on:
   push:
     branches: [main]
@@ -42,6 +42,8 @@ jobs:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       # A cold build compiles every Rust tool; with the layers cached, a rerun
       # redoes only what changed (and den's stage when den's main has moved).
+      # The base is the floating tag ubuntu:26.04, so a republished base also
+      # makes the next run cold.
       # A build cut off before it ends exports no cache, so the budget is for
       # a cold build. The scope keeps this cache apart from the shell test
       # image's in ci.yml, which uses the default scope: two images in one
@@ -90,6 +92,9 @@ jobs:
               failed=$((failed + 1))
             fi
           }
+
+          # The loop above waits for the entrypoint's command; fail if it never came.
+          check 'docker run -dit: PID 1 command' zsh docker exec den-dev cat /proc/1/comm
 
           # root, with or without a shell: root's home, system directories only.
           check 'root exec: id -u' 0 docker exec den-dev id -u

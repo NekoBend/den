@@ -207,6 +207,26 @@ def test_build_steps_that_run_as_the_user_keep_its_home():
         assert env["HOME"] == f"/home/{args['USERNAME']}", stage
 
 
+def test_root_build_steps_after_the_user_steps_use_roots_home():
+    # Once a step has run as the user (rustup, the installers, nvm, npm), the
+    # user's home may hold ~/.curlrc, ~/.dpkg.cfg or Python .pth files, which
+    # curl, dpkg's hooks and python3 read as root's configuration.
+    steps = _run_steps()
+    first_user = next(
+        i
+        for i, (_, user, _, _) in enumerate(steps)
+        if user.partition(":")[0] not in {"root", "0"}
+    )
+    as_root = [
+        (stage, env)
+        for stage, user, env, _ in steps[first_user:]
+        if user.partition(":")[0] in {"root", "0"}
+    ]
+    assert as_root, "the parser no longer sees a root step after the user's"
+    for stage, env in as_root:
+        assert env["HOME"] == "/root", stage
+
+
 def test_den_comes_from_a_git_source_of_main_mounted_into_the_install():
     # A RUN that cloned den was cached on its command text, so a rebuild after
     # main moved kept the first build's den. BuildKit resolves a git source's

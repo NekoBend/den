@@ -127,6 +127,10 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh -o /tmp/agy.sh && \
 # 4. System utilities and file-transfer tools, before workspace configuration.
 FROM tools AS utilities
 USER root
+# The installers above ran as the user and could leave files in its home that
+# root's tools read (~/.curlrc for curl, ~/.dpkg.cfg for dpkg's hooks), so this
+# root step uses root's home.
+ENV HOME=/root
 # Build setting: latest, or an exact package version from the official repository.
 ARG GH_VERSION=latest
 RUN <<'INSTALL_UTILITIES_DEPS'
@@ -154,6 +158,7 @@ rm -rf /var/lib/apt/lists/*
 INSTALL_UTILITIES_DEPS
 
 USER ${USER_UID}:${USER_GID}
+ENV HOME=/home/${USERNAME}
 # Build setting: exact official rsync release.
 ARG RSYNC_VERSION=3.5.1
 RUN <<'INSTALL_RSYNC'

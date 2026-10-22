@@ -117,14 +117,17 @@ already match.
 `docker exec` starts every process, root's included, with the image's
 environment: `HOME=/root` and a `PATH` that holds only root-owned system
 directories. A root command, run with or without a shell, therefore reads
-root's configuration, never a file `dev` can write (dpkg's `~/.dpkg.cfg`,
-git's `~/.gitconfig`, or the `.pth` files in the Python user site-packages
-under `~/.local`, which `python3` runs when package scripts start it, for
-example through `py3compile`), and a command it looks up by name never comes
-from a directory `dev` can write. Root administration needs nothing extra:
+its configuration from `/root`, not from files `dev` can write (dpkg's
+`~/.dpkg.cfg`, git's `~/.gitconfig`, or the `.pth` files in the Python user
+site-packages under `~/.local`, which `python3` runs when package scripts
+start it, for example through `py3compile`), and a command it looks up by
+name never comes from a directory `dev` can write. Root execs start in
+`/workspace`, which `dev` owns, and `python3 -c` or `-m` imports from the
+current directory first, so pass `-w /` when root runs Python there. The
+image keeps no package lists, so update them first:
 
 ```sh
-docker exec den-dev apt-get install -y <package>
+docker exec den-dev sh -c 'apt-get update && apt-get install -y <package>'
 ```
 
 `dev` gets its home and its tool directories (`~/.nvm/current/bin`,
@@ -144,7 +147,8 @@ docker exec --user dev -e HOME=/home/dev den-dev /home/dev/.local/bin/claude --v
 ```
 
 `.github/workflows/docker-dev-image.yml` builds the image when `docker/`
-changes and runs these forms, root's and `dev`'s, against it.
+changes, checks the `HOME` and `PATH` that root gets with and without a
+shell, and runs `dev`'s two forms above against it.
 
 ### zsh completion
 
