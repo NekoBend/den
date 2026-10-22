@@ -272,6 +272,43 @@ ran= fail=" "$out"
     out=$(ic "$d/a" kt --z)
     assert_eq "$sh/_init_cache symlinked cache: made again and sourced" "ran=a:init $sh --z fail=" "$out"
     assert_eq "$sh/_init_cache symlinked cache: its target untouched" "mine" "$(cat "$d/victim")"
+    # The new cache went to "<cache>.tmp.<the shell's PID>" through a
+    # truncating `>`, so a symlink planted at that name, known in advance, was
+    # written through, and mv put the link in place of the cache. Here the
+    # shell plants it at its own PID's name before it loads _helpers.sh.
+    local plant="ln -s '$d/victim' \"\$HOME/.cache/shell/kt-init.$sh.tmp.\$\$\"; "
+    echo "[$sh] _init_cache: a symlink at the temporary file's old name is left alone"
+    rm -f "$d/home/.cache/shell/kt-init.$sh"
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/a:$PATH" "$sh" -c \
+        "$plant. '$HELPERS_SH'; _init_cache kt $sh --t; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache link at the old temporary name: made and sourced" "ran=a:init $sh --t fail=" "$out"
+    assert_eq "$sh/_init_cache link at the old temporary name: its target untouched" "mine" "$(cat "$d/victim")"
+    # Without mktemp the name is that guessable one again: set -C will not
+    # create the file through the link, so no cache this time.
+    echo "[$sh] _init_cache: with no mktemp, a symlink at the guessable temporary name is left alone"
+    mkdir -p "$d/nomktemp"
+    printf '#!/bin/sh\nexit 1\n' > "$d/nomktemp/mktemp"
+    chmod +x "$d/nomktemp/mktemp"
+    printf 'mine\n' > "$d/victim"
+    rm -f "$d/home/.cache/shell/kt-init.$sh"
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/nomktemp:$d/a:$PATH" "$sh" -c \
+        "$plant. '$HELPERS_SH'; _init_cache kt $sh --u; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache no mktemp, link at the temporary name: no cache, nothing printed" "ran= fail=" "$out"
+    assert_eq "$sh/_init_cache no mktemp, link at the temporary name: its target untouched" "mine" "$(cat "$d/victim")"
+    assert_eq "$sh/_init_cache no mktemp, link at the temporary name: no cache" "" \
+        "$(find "$d/home/.cache/shell" -name "kt-init.$sh" 2>/dev/null)"
+    echo "[$sh] _init_cache: with no mktemp, the next start makes the cache"
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/nomktemp:$d/a:$PATH" "$sh" -c \
+        ". '$HELPERS_SH'; _init_cache kt $sh --u; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache no mktemp: made and sourced" "ran=a:init $sh --u fail=" "$out"
+    # The temporary file exists before the init goes into it, and a plain `>`
+    # will not write into an existing file under the user's noclobber.
+    echo "[$sh] _init_cache: made under the user's noclobber"
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/a:$PATH" "$sh" -c \
+        "set -C; . '$HELPERS_SH'; _init_cache kt $sh --c; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache under noclobber: made and sourced" "ran=a:init $sh --c fail=" "$out"
+    assert_eq "$sh/_init_cache: no temporary file left" "" \
+        "$(find "$d/home/.cache/shell" -name "kt-init.$sh.tmp.*" ! -type l 2>/dev/null)"
     # An alias of the tool's name (a ~/.bashrc line above den's): command -v
     # prints its definition, not a path (bash does so where aliases expand, as
     # in an interactive shell), and the tool still makes the cache.

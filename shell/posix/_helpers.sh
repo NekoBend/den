@@ -197,9 +197,21 @@ _init_cache() {
             # tool runs by its name, not by what command -v printed, which is
             # `alias <name>=...` text for an alias of that name.
             if _ic_o=$("$_ic_t" init "$_ic_s" "$@") && [ -n "$_ic_o" ]; then
-                if ! { (umask 077 && printf '%s\n%s\n' "$_ic_k" "$_ic_o" > "$_ic_f.tmp.$$") &&
-                    mv -f -- "$_ic_f.tmp.$$" "$_ic_f"; }; then
-                    rm -f -- "$_ic_f.tmp.$$"
+                # The temporary file comes from mktemp (O_EXCL, mode 600, a
+                # name no one can know first), as in hwinfo.sh: at a name
+                # known in advance ("$_ic_f.tmp.$$"), a symlink someone else
+                # put there was written through, and mv then put it in place
+                # of the cache. Without mktemp, noclobber (set -C) refuses an
+                # existing name, symlink included, and no cache is made this
+                # time. >| writes into the file under the user's noclobber.
+                _ic_tmp=$(command mktemp "$_ic_f.tmp.XXXXXX" 2>/dev/null)
+                if [ -z "$_ic_tmp" ]; then
+                    _ic_tmp="$_ic_f.tmp.$$"
+                    (umask 077 && set -C && : > "$_ic_tmp") 2>/dev/null || _ic_tmp=
+                fi
+                if [ -n "$_ic_tmp" ] && ! { printf '%s\n%s\n' "$_ic_k" "$_ic_o" >| "$_ic_tmp" &&
+                    mv -f -- "$_ic_tmp" "$_ic_f"; }; then
+                    rm -f -- "$_ic_tmp"
                 fi
             fi
         fi
@@ -216,7 +228,7 @@ _init_cache() {
             echo "_init_cache: refusing to source '$_ic_f' (not owned by current user)" >&2
         fi
     fi
-    unset _ic_t _ic_s _ic_d _ic_f _ic_b _ic_k _ic_l _ic_o
+    unset _ic_t _ic_s _ic_d _ic_f _ic_b _ic_k _ic_l _ic_o _ic_tmp
 }
 
 # ========== den's stores ==========
