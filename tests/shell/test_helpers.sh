@@ -272,6 +272,15 @@ ran= fail=" "$out"
     out=$(ic "$d/a" kt --z)
     assert_eq "$sh/_init_cache symlinked cache: made again and sourced" "ran=a:init $sh --z fail=" "$out"
     assert_eq "$sh/_init_cache symlinked cache: its target untouched" "mine" "$(cat "$d/victim")"
+    # An alias of the tool's name (a ~/.bashrc line above den's): command -v
+    # prints its definition, not a path (bash does so where aliases expand, as
+    # in an interactive shell), and the tool still makes the cache.
+    echo "[$sh] _init_cache: an alias of the tool's name"
+    local expand=''
+    [ "$sh" = bash ] && expand='shopt -s expand_aliases; '
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/a:$PATH" "$sh" -c \
+        "$expand. '$HELPERS_SH'; alias kt='kt --bogus'; _init_cache kt $sh --w; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache alias of the tool" "ran=a:init $sh --w fail=" "$out"
 }
 ic_key_cases bash
 ic_key_cases zsh

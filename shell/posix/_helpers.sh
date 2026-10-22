@@ -193,8 +193,10 @@ _init_cache() {
         [ -f "$_ic_f" ] && [ ! -L "$_ic_f" ] && { IFS= read -r _ic_l < "$_ic_f"; } 2>/dev/null
         if [ "$_ic_l" != "$_ic_k" ] || [ "$_ic_b" -nt "$_ic_f" ]; then
             # Through a temporary file renamed over the cache, which also
-            # replaces a symlink there instead of writing through it.
-            if _ic_o=$("$_ic_b" init "$_ic_s" "$@") && [ -n "$_ic_o" ]; then
+            # replaces a symlink there instead of writing through it. The
+            # tool runs by its name, not by what command -v printed, which is
+            # `alias <name>=...` text for an alias of that name.
+            if _ic_o=$("$_ic_t" init "$_ic_s" "$@") && [ -n "$_ic_o" ]; then
                 if ! { (umask 077 && printf '%s\n%s\n' "$_ic_k" "$_ic_o" > "$_ic_f.tmp.$$") &&
                     mv -f -- "$_ic_f.tmp.$$" "$_ic_f"; }; then
                     rm -f -- "$_ic_f.tmp.$$"
