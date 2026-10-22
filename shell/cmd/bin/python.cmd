@@ -3,14 +3,15 @@ rem python / python3 - uv-aware python. python3.cmd is a copy of this file,
 rem and the name it runs under tells the two apart.
 rem `python ...` runs `uv run -- python ...` and says so on stderr, except
 rem where uv run would build or run code that came with a clone: with a
-rem pyproject.toml or a .venv in the current directory or one above it, uv
-rem run builds that project (its build backend is the repository's own code)
-rem or runs that .venv's python. There, after a line on stderr that says so,
-rem and for --version or -V anywhere, a python runs directly: the system
-rem Python uv finds, else one uv installed (uv python install). --system
-rem skips the .venv here, and --no-config the .python-version, uv.toml and
-rem pyproject.toml here: a .python-version may name a program in the
-rem repository, which uv would run to ask its version.
+rem pyproject.toml, a .venv or a pyvenv.cfg in the current directory or one
+rem above it, uv run builds that project (its build backend is the
+rem repository's own code) or runs that venv's python (uv takes a directory
+rem that holds a pyvenv.cfg for a venv, whatever its name). There, after a
+rem line on stderr that says so, and for --version or -V anywhere, a python
+rem runs directly: the system Python uv finds, else one uv installed (uv
+rem python install). --system skips any venv here, and --no-config the
+rem .python-version, uv.toml and pyproject.toml here: a .python-version may
+rem name a program in the repository, which uv would run to ask its version.
 rem Inside a venv (VIRTUAL_ENV) it is the venv's python.exe, for python3 too
 rem (a Windows venv has no python3.exe). With the uv override off
 rem (_DEN_UV_OVERRIDE=0, toggle-uv) or no uv, it is the first python.exe
@@ -26,12 +27,14 @@ if defined _py goto run
 set "_uv="
 if not "%_DEN_UV_OVERRIDE%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
 if not defined _uv goto plain
-rem The pyproject.toml or .venv uv run would find: here, then each directory up.
+rem The pyproject.toml, .venv or pyvenv.cfg uv run would find: here, then
+rem each directory up.
 set "_d=%CD%"
 :walk
 if "%_d:~-1%"=="\" set "_d=%_d:~0,-1%"
 if exist "%_d%\pyproject.toml" set "_m=%_d%\pyproject.toml"
 if not defined _m if exist "%_d%\.venv" set "_m=%_d%\.venv"
+if not defined _m if exist "%_d%\pyvenv.cfg" set "_m=%_d%\pyvenv.cfg"
 if defined _m goto direct
 for %%u in ("%_d%\..") do set "_u=%%~fu"
 if "%_u:~-1%"=="\" set "_u=%_u:~0,-1%"

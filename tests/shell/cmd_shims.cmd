@@ -8,9 +8,9 @@ rem whatever the toggle, and says so without it; there is no find shim, so
 rem typed find is find.exe; no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
-rem python directly, not uv run, under a pyproject.toml or beside a .venv
-rem and for --version / -V; pip runs nothing outside a venv; path lists PATH;
-rem again asks before it re-runs.
+rem python directly, not uv run, under a pyproject.toml, beside a .venv or
+rem below a pyvenv.cfg and for --version / -V; pip runs nothing outside a
+rem venv; path lists PATH; again asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -202,10 +202,13 @@ rem --- python and pip where uv would build or run a clone's code. FAKE_SELF
 rem makes each copy of the stand-in name its folder first; as uv it answers
 rem `uv python find --system --no-config` with FAKE_FIND_SYSTEM or
 rem FAKE_FIND_MANAGED. The line on stderr comes before python's output.
-mkdir "%T%\sys" "%T%\managed" "%T%\proj\sub" "%T%\vproj\.venv" || exit /b 1
+mkdir "%T%\sys" "%T%\managed" "%T%\proj\sub" "%T%\vproj\.venv" "%T%\cfgvenv\Scripts" "%T%\cfgvenv\sub" || exit /b 1
 copy /y "%T%\tools\fake.exe" "%T%\sys\python.exe" >nul || exit /b 1
 copy /y "%T%\tools\fake.exe" "%T%\managed\python.exe" >nul || exit /b 1
+copy /y "%T%\tools\fake.exe" "%T%\cfgvenv\Scripts\python.exe" >nul || exit /b 1
 >"%T%\proj\pyproject.toml" echo [project]
+rem uv takes a directory that holds a pyvenv.cfg for a venv, whatever its name.
+>"%T%\cfgvenv\pyvenv.cfg" echo home = %T%\sys
 set "FAKE_SELF=1"
 set "FAKE_FIND_SYSTEM=%T%\sys\python.exe"
 set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
@@ -223,6 +226,13 @@ cd /d "%T%\vproj" || exit /b 1
 >>"%W%" echo [x]
 call "%BIN%\python3.cmd" -c x >"%O%" 2>&1
 call :expect %errorlevel% 0 "python3: beside a .venv, the system python and a line, not uv run"
+cd /d "%T%\cfgvenv\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\cfgvenv\pyvenv.cfg
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: below a pyvenv.cfg, the system python and a line, not uv run"
 cd /d "%T%\work" || exit /b 1
 >"%W%" echo [@sys]
 >>"%W%" echo [--version]

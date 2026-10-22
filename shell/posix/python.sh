@@ -67,15 +67,16 @@ pip3() {
     fi
 }
 
-# _den_py_marker → print the pyproject.toml or .venv that uv run would find from
-# here: the first one in this directory or a directory above it. Fails when
-# there is none. uv starts from the directory the system reports, with its
-# symbolic links resolved (pwd -P).
+# _den_py_marker → print the pyproject.toml, .venv or pyvenv.cfg that uv run
+# would find from here: the first one in this directory or a directory above
+# it. uv takes a directory that holds a pyvenv.cfg for a venv, whatever its
+# name, and runs the python in it. Fails when there is none. uv starts from the
+# directory the system reports, with its symbolic links resolved (pwd -P).
 _den_py_marker() {
     local d f
     d=$(pwd -P 2>/dev/null) || d=$PWD
     while :; do
-        for f in pyproject.toml .venv; do
+        for f in pyproject.toml .venv pyvenv.cfg; do
             if [ -e "${d%/}/$f" ]; then
                 printf '%s\n' "${d%/}/$f"
                 return 0
@@ -108,11 +109,11 @@ _den_py_exe() {
 # _den_py <name> [args...] → python, python3 and py: uv run python, with the
 # version of the venv va activated, and outside a venv a line on stderr that
 # says so. Not where uv run would build or run code that came with a clone:
-# with a pyproject.toml or a .venv in this directory or one above it, uv run
-# builds that project (its build backend is the repository's own code) or runs
-# that .venv's python, even for `python --version`. There, after a line on
-# stderr, the python _den_py_exe names runs directly, as it does anywhere for
-# --version and -V.
+# with a pyproject.toml, a .venv or a pyvenv.cfg in this directory or one above
+# it, uv run builds that project (its build backend is the repository's own
+# code) or runs that venv's python, even for `python --version`. There, after a
+# line on stderr, the python _den_py_exe names runs directly, as it does
+# anywhere for --version and -V.
 _den_py() {
     local name=$1 marker exe
     shift
