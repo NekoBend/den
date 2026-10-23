@@ -302,7 +302,7 @@ _ts_unchecked() {
   elif [ "$3" = ts ] && [ "${base#*.d.}" != "$base" ] && _fact skipLibCheck "$4"; then
     echo "skipLibCheck: tsc reports no type errors in declaration files ($2)"
   elif grep -qi '@ts-nocheck' "$1"; then
-    echo "$2 has a // @ts-nocheck comment: tsc reports no type errors in it"
+    echo "$2 contains @ts-nocheck, which turns off tsc's type errors when a leading // comment holds it"
   elif [ -n "$js" ] && ! _fact checkJs "$4" && ! awk '
       NR == 1 && /^#!/ { next }
       !/^[ \t]*(\/\/.*)?\r?$/ { exit }
@@ -565,7 +565,11 @@ _rustfmt_sets_edition() {
 _rustfmt_disabled() {
   local conf
   conf=$(_rustfmt_conf "$1") || return 1
-  grep -qE '^[[:space:]]*disable_all_formatting[[:space:]]*=[[:space:]]*true([[:space:]#]|$)' "$conf" || return 1
+  # rustfmt reads the file as TOML, so the key may be quoted and the file may
+  # start with a UTF-8 byte order mark.
+  LC_ALL=C sed "1s/^$(printf '\357\273\277')//" "$conf" |
+    grep -qE '^[[:space:]]*["'\'']?disable_all_formatting["'\'']?[[:space:]]*=[[:space:]]*true([[:space:]#]|$)' ||
+    return 1
   printf '%s\n' "$conf"
 }
 
@@ -652,9 +656,11 @@ case "$ext" in
     # replaced the retired verify-imports.py; the docstring-presence rules
     # below replaced the retired doc-coverage.py for Python.
     #
-    # Under force-exclude, ruff run from inside the project skips a file that
-    # its excludes match even when the file is named, prints "No Python files
-    # found under the given path(s)" and exits 0: SKIPPED with that line, not
+    # Under force-exclude, ruff run from inside the project skips a named file
+    # that its exclude or extend-exclude matches, prints "No Python files found
+    # under the given path(s)" and exits 0: SKIPPED with that line, not PASS.
+    # Not covered: a [tool.ruff.lint] or [tool.ruff.format] exclude also skips
+    # the file there but prints nothing about it, so such a file still gets
     # PASS.
     run_tool_skip_on "format" "No Python files found" ruff format --check "$file"
     if _py_has_ruff_config "$file"; then
@@ -666,8 +672,10 @@ case "$ext" in
     ;;
   ts|tsx|js|jsx|mjs|cjs)
     # prettier --check skips a file that the .prettierignore or .gitignore of
-    # the directory it runs from matches, or a file under node_modules, and
-    # still exits 0: SKIPPED, not PASS. Not covered: requirePragma (on a file
+    # the directory it runs from matches and still exits 0, and it stops with
+    # "No matching files" (exit 2) on a named file under node_modules;
+    # --file-info reports both as ignored: SKIPPED, not PASS or FAIL. Not
+    # covered: requirePragma (on a file
     # with no @format or @prettier pragma) and checkIgnorePragma (on a file
     # with @noformat or @noprettier) also make --check skip the file and exit
     # 0, and --file-info cannot see that, so such a file still gets PASS.

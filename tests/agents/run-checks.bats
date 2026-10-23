@@ -516,7 +516,7 @@ EOF
   _run_stubbed "$WORK/proj/src/c.js"
   [[ "$output" == *"[typecheck] PASS"* ]]
   _run_stubbed "$WORK/proj/src/e.js"
-  [[ "$output" == *"[typecheck] SKIPPED   src/e.js has a // @ts-nocheck comment: tsc reports no type errors in it"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   src/e.js contains @ts-nocheck, which turns off tsc's type errors when a leading // comment holds it"* ]]
   # tsc still reports a JavaScript file's syntax errors, and they FAIL
   _show "$WORK/tsconfig.json.show" '"allowJs": true'
   printf '%s\n' "src/c.js(1,14): error TS1005: ',' expected." src/a.ts src/c.js > "$WORK/tsc.out"
@@ -537,7 +537,7 @@ EOF
   _stub_tsc
   printf '%s\n' src/a.ts src/n.ts src/env.d.ts src/app.d.css.ts > "$WORK/tsc.out"
   _run_stubbed "$WORK/proj/src/n.ts"
-  [[ "$output" == *"[typecheck] SKIPPED   src/n.ts has a // @ts-nocheck comment: tsc reports no type errors in it"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   src/n.ts contains @ts-nocheck, which turns off tsc's type errors when a leading // comment holds it"* ]]
   _run_stubbed "$WORK/proj/src/env.d.ts"
   [[ "$output" == *"[typecheck] PASS"* ]]
   _show "$WORK/tsconfig.json.show" '"skipLibCheck": true'
@@ -569,7 +569,7 @@ EOF
   printf '%s\n' src/a.ts src/bom.ts src/blk.ts > "$WORK/tsc.out"
   for f in bom.ts blk.ts; do
     _run_stubbed "$WORK/proj/src/$f"
-    [[ "$output" == *"[typecheck] SKIPPED   src/$f has a // @ts-nocheck comment: tsc reports no type errors in it"* ]]
+    [[ "$output" == *"[typecheck] SKIPPED   src/$f contains @ts-nocheck, which turns off tsc's type errors when a leading // comment holds it"* ]]
   done
 }
 
@@ -584,14 +584,13 @@ EOF
   printf '%s\n' src/a.ts src/nbsp.ts > "$WORK/tsc.out"
   for loc in C C.UTF-8; do
     run env LC_ALL="$loc" PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$WORK/proj/src/nbsp.ts"
-    [[ "$output" == *"[typecheck] SKIPPED   src/nbsp.ts has a // @ts-nocheck comment: tsc reports no type errors in it"* ]]
+    [[ "$output" == *"[typecheck] SKIPPED   src/nbsp.ts contains @ts-nocheck, which turns off tsc's type errors when a leading // comment holds it"* ]]
   done
 }
 
 @test "TypeScript: a file prettier ignores is SKIPPED by the format check, not PASS (stub prettier)" {
   # regression: prettier --check skips a file that .prettierignore (or the
-  # .gitignore where it runs) matches, or a file under node_modules, and
-  # exits 0, and the file got PASS
+  # .gitignore where it runs) matches and exits 0, and the file got PASS
   _stub prettier
   printf 'export const a = 1;\n' > "$WORK/a.ts"
   printf '{ "ignored": true, "inferredParser": null }\n' > "$WORK/prettier.out"
@@ -687,7 +686,7 @@ EOF
   [ "$(wc -l < "$WORK/tsc.log")" -eq 1 ]
   printf '// @ts-nocheck\nexport const z: number = "x";\n' > "$WORK/loose/z.ts"
   _run_stubbed "$WORK/loose/z.ts"
-  [[ "$output" == *"[typecheck] SKIPPED   $WORK/loose/z.ts has a // @ts-nocheck comment: tsc reports no type errors in it"* ]]
+  [[ "$output" == *"[typecheck] SKIPPED   $WORK/loose/z.ts contains @ts-nocheck, which turns off tsc's type errors when a leading // comment holds it"* ]]
 }
 
 @test "TypeScript (tsc): tsconfig paths apply and another file's errors are not counted" {
@@ -838,7 +837,9 @@ EOF
   printf '[package]\nname = "probe"\nversion = "0.1.0"\nedition = "2021"\n' > "$WORK/crate/Cargo.toml"
   printf 'fn  main( ){}\n' > "$WORK/crate/src/main.rs"
   printf 'fn  f( ){}\n' > "$WORK/crate/src/sub/m.rs"
-  for conf in 'disable_all_formatting = true' 'disable_all_formatting=true # all off'; do
+  bom=$(printf '\357\273\277')
+  for conf in 'disable_all_formatting = true' 'disable_all_formatting=true # all off' \
+    '"disable_all_formatting" = true' "'disable_all_formatting' = true" "${bom}disable_all_formatting = true"; do
     printf '%s\n' "$conf" > "$WORK/crate/rustfmt.toml"
     _run_stubbed "$WORK/crate/src/main.rs"
     [ "$status" -eq 0 ]
