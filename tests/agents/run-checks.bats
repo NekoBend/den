@@ -809,7 +809,7 @@ EOF
   printf '#!/usr/bin/env bash\necho hi\n' > "$WORK/proj/bin/a.sh"
   for section in '[*.sh]\nindent_style = tab' '[*.sh]\nindent_style = space\nindent_size = 2' \
     '[*]\nindent_style = tab' '[**]\nindent_style = space' '[*.{bash,sh}]\nindent_style = tab' \
-    '[{*.sh,*.bash}]\nindent_style = tab' '[[shell]]\nindent_style = tab'; do
+    '[{*.sh,*.bash}]\nindent_style = tab' '[[shell]]\nindent_style = tab' '[[bash]]\nindent_style = tab'; do
     printf 'root = true\n\n%b\n' "$section" > "$WORK/proj/.editorconfig"
     _run_stubbed "$WORK/proj/bin/a.sh"
     [[ "$output" == *"[format   ] PASS      shfmt -d $WORK/proj/bin/a.sh"* ]]
@@ -824,8 +824,11 @@ EOF
   _stub shfmt
   mkdir -p "$WORK/proj/bin"
   printf '#!/usr/bin/env bash\necho hi\n' > "$WORK/proj/bin/a.sh"
+  # shfmt reads [[shell]], plus [[bash]] for bash and bats and [[zsh]] for
+  # zsh; any other [[name]] is no section of its
   for section in '[*.py]\nindent_style = space' '[*.sh]\nindent_size = 4' \
-    '[*.{md,zsh}]\nindent_style = tab' '[Makefile]\nindent_style = tab' '[*.bash]\nindent_style = tab'; do
+    '[*.{md,zsh}]\nindent_style = tab' '[Makefile]\nindent_style = tab' '[*.bash]\nindent_style = tab' \
+    '[[python]]\nindent_style = space' '[[posix]]\nindent_style = tab' '[[zsh]]\nindent_style = tab'; do
     printf 'root = true\n\n%b\n' "$section" > "$WORK/proj/.editorconfig"
     _run_stubbed "$WORK/proj/bin/a.sh"
     [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s $WORK/proj/bin/a.sh"* ]]
@@ -838,6 +841,58 @@ EOF
   printf '[*.py]\nindent_style = space\n' > "$WORK/proj/.editorconfig"
   _run_stubbed "$WORK/proj/bin/a.sh"
   [[ "$output" == *"[format   ] PASS      shfmt -d $WORK/proj/bin/a.sh"* ]]
+}
+
+@test "Shell: [[bash]] and [[zsh]] apply only to a file that shfmt parses as that language (stub shfmt)" {
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  _stub shfmt
+  mkdir -p "$WORK/proj"
+  printf '#!/bin/sh\necho hi\n' > "$WORK/proj/p.sh"
+  printf '#!/usr/bin/env zsh\necho hi\n' > "$WORK/proj/z.sh"
+  printf 'echo hi\n' > "$WORK/proj/n.sh"
+  printf 'echo hi\n' > "$WORK/proj/b.bash"
+  printf 'root = true\n\n[[bash]]\nindent_style = tab\n' > "$WORK/proj/.editorconfig"
+  # with no shebang, shfmt parses a .sh file as bash
+  for f in n.sh b.bash; do
+    _run_stubbed "$WORK/proj/$f"
+    [[ "$output" == *"[format   ] PASS      shfmt -d $WORK/proj/$f"* ]]
+  done
+  for f in p.sh z.sh; do
+    _run_stubbed "$WORK/proj/$f"
+    [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s $WORK/proj/$f"* ]]
+  done
+  printf 'root = true\n\n[[zsh]]\nindent_style = tab\n' > "$WORK/proj/.editorconfig"
+  _run_stubbed "$WORK/proj/z.sh"
+  [[ "$output" == *"[format   ] PASS      shfmt -d $WORK/proj/z.sh"* ]]
+}
+
+@test "Shell: only the project's .editorconfig counts, not the home directory's (stub shfmt)" {
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  _found_above "$WORK" .git && skip "a .git above the temp dir"
+  # regression: the walk went up to / and honoured ~/.editorconfig, so the
+  # user's own settings decided the verdict on every tree below $HOME
+  _stub shfmt
+  h="$WORK/home"
+  mkdir -p "$h/repo/.git" "$h/repo/bin" "$h/wt/bin" "$h/loose" "$h/bin"
+  printf 'gitdir: /elsewhere\n' > "$h/wt/.git"
+  printf '[*]\nindent_style = space\nindent_size = 4\n' > "$h/.editorconfig"
+  for f in repo/bin/a.sh wt/bin/a.sh loose/a.sh bin/a.sh; do
+    printf '#!/usr/bin/env bash\necho hi\n' > "$h/$f"
+  done
+  # a work tree without an .editorconfig (.git a directory or a file), and a
+  # file in no work tree
+  for f in repo/bin/a.sh wt/bin/a.sh loose/a.sh; do
+    run env HOME="$h" PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$h/$f"
+    [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s $h/$f"* ]]
+  done
+  # the work tree's own .editorconfig
+  printf '[*.sh]\nindent_style = tab\n' > "$h/repo/.editorconfig"
+  run env HOME="$h" PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$h/repo/bin/a.sh"
+  [[ "$output" == *"[format   ] PASS      shfmt -d $h/repo/bin/a.sh"* ]]
+  # a dotfiles repo rooted at $HOME: its .editorconfig is the project's
+  mkdir "$h/.git"
+  run env HOME="$h" PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$h/bin/a.sh"
+  [[ "$output" == *"[format   ] PASS      shfmt -d $h/bin/a.sh"* ]]
 }
 
 @test "Shell (shfmt): 2-space indentation passes with no .editorconfig" {
