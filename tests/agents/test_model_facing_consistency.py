@@ -66,11 +66,19 @@ def test_no_banned_dashes_in_any_model_facing_markdown() -> None:
     assert not offenders, offenders
 
 
-# A call that passes parameters but no -Settings (a bare -Severity Error)
-# loads the PSScriptAnalyzerSettings.psd1 next to the file it checks, and
-# that file's CustomRulePath is Import-Module'd: checked-out content runs as
-# you (powershell.md section 8). A name with no parameters is prose.
-_PSSA_CALL = re.compile(r"Invoke-ScriptAnalyzer(?P<args>[ \t]+-[^`\n]*)")
+# Invoke-ScriptAnalyzer reads settings from the checked-out tree unless its
+# -Settings is a hashtable: with none it loads the PSScriptAnalyzerSettings.psd1
+# next to the file it checks, and a path names such a file. Its
+# CustomRulePath is Import-Module'd, so checked-out content runs as you
+# (powershell.md section 8). So every call passes -Settings @{...}. A call is
+# the name, then a parameter or a line-continuing backtick, each after
+# whitespace (a backtick right after the name ends a Markdown code span). A
+# line that names the cmdlet with -Severity, which belongs inside that
+# hashtable, fails unless a "never" or "not" before the -Severity forbids it.
+_PSSA_CALL = re.compile(
+    r"Invoke-ScriptAnalyzer(?P<args>(?:[ \t]+-|[ \t]+`\r?\n)(?:[^`\n]|`\r?\n)*)"
+)
+_PSSA_FORBIDS = re.compile(r"\b(?:never|not)\b[^.;]*-Severity\b", re.IGNORECASE)
 
 
 def test_script_analyzer_calls_pass_settings() -> None:
@@ -83,12 +91,21 @@ def test_script_analyzer_calls_pass_settings() -> None:
             if f.suffix not in {".md", ".sh", ".py", ".ps1", ".psm1"}:
                 continue
             text = f.read_text(encoding="utf-8")
+            for n, row in enumerate(text.splitlines(), 1):
+                if (
+                    "Invoke-ScriptAnalyzer" in row
+                    and re.search(r"-Severity\b", row)
+                    and not _PSSA_FORBIDS.search(row)
+                ):
+                    bad.append(f"{f.relative_to(AGENTS)}:{n}: {row.strip()}")
             for m in _PSSA_CALL.finditer(text):
                 line = text.count("\n", 0, m.start()) + 1
                 where = f"{f.relative_to(AGENTS)}:{line}"
                 calls.append(where)
                 args = m.group("args")
-                if "-Settings" not in args or re.search(r"-Severity\b", args):
+                if not re.search(r"-Settings[ \t]+@\{", args) or re.search(
+                    r"-Severity\b", args
+                ):
                     bad.append(f"{where}: Invoke-ScriptAnalyzer{args}")
     assert calls, "no Invoke-ScriptAnalyzer call found; is the pattern stale?"
     assert not bad, bad
