@@ -157,13 +157,12 @@ fi
 # completion.ps1 runs each tool it finds on PATH (docker, gh, uv, rustup) to
 # cache its completion, and those tools write under HOME: gh its
 # ~/.local/state/gh/device-id, rustup a ~/.rustup. The pwsh cases run with HOME
-# under WORK, the XDG directories under that HOME, and none of the variables
-# that send rustup, cargo, gh or docker elsewhere. The check at the end fails
-# when pwsh would hand its tools anything outside this suite's directory.
-export HOME="$WORK/home"
-export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state" XDG_CACHE_HOME="$HOME/.cache"
-unset RUSTUP_HOME CARGO_HOME GH_CONFIG_DIR DOCKER_CONFIG
-mkdir -p "$HOME"
+# under WORK, the XDG config, state and cache directories under that HOME
+# (XDG_DATA_HOME stays where it is above), and none of the variables that send
+# rustup, cargo, gh or docker elsewhere: use_private_home, in helpers.sh. The
+# check at the end fails when pwsh would hand its tools anything outside this
+# suite's directory.
+use_private_home "$WORK/home" || abort_suite "cannot create $WORK/home"
 
 # completion.ps1 uses the shared Initialize-Cache (in _helpers.ps1) and registers
 # the per-tool completers. Sourcing both must not error: the trailing sentinel

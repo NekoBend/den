@@ -132,5 +132,41 @@ DOTFILES="$DOTFILES" TMPDIR="$LEAK_TMP" bash "$SCRIPT_DIR/test_cheat.sh" >/dev/n
 assert_success "harness/test_cheat passes" "$?"
 assert_eq "harness/test_cheat leaves TMPDIR empty" "" "$(ls -A "$LEAK_TMP")"
 
+# run_pwsh_den loads init.ps1, and its completion.ps1 runs each tool it finds
+# on PATH (docker, gh, uv, rustup) to cache its completion. An XDG_STATE_HOME,
+# RUSTUP_HOME, CARGO_HOME, GH_CONFIG_DIR or DOCKER_CONFIG that the suite
+# inherited (the developer's own) reached those tools, and gh wrote its
+# device-id in the developer's XDG_STATE_HOME. A stub gh, first on PATH, writes
+# its device-id where gh does.
+echo "[harness] run_pwsh_den: den's tools write nothing under an exported XDG_STATE_HOME"
+if command -v pwsh >/dev/null 2>&1; then
+    INHERITED="$WORK/inherited"
+    mkdir -p "$INHERITED/state" "$WORK/stub-gh"
+    cat > "$WORK/stub-gh/gh" <<'EOF'
+#!/bin/sh
+d="${XDG_STATE_HOME:-$HOME/.local/state}/gh"
+mkdir -p "$d" && echo stub > "$d/device-id"
+EOF
+    chmod +x "$WORK/stub-gh/gh"
+    actual=$(
+        export XDG_STATE_HOME="$INHERITED/state" RUSTUP_HOME="$INHERITED/rustup" CARGO_HOME="$INHERITED/cargo" \
+            GH_CONFIG_DIR="$INHERITED/gh" DOCKER_CONFIG="$INHERITED/docker"
+        run_pwsh_den "\$env:PATH = '$WORK/stub-gh:/usr/bin:/bin'" "
+            foreach (\$n in 'HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+                    'RUSTUP_HOME', 'CARGO_HOME', 'GH_CONFIG_DIR', 'DOCKER_CONFIG') {
+                \$v = [Environment]::GetEnvironmentVariable(\$n)
+                if (\$v -and -not (\$v + '/').StartsWith('$TESTTMP/den-home/')) { \"\$n=\$v\" }
+            }
+        " 2>&1 | tr -d '\r'
+    )
+    assert_eq "harness/run_pwsh_den: HOME and the tools' directories are in den-home, or unset" "" "$actual"
+    assert_eq "harness/run_pwsh_den: the exported XDG_STATE_HOME stays empty" "./state" \
+        "$(cd "$INHERITED" && find . -mindepth 1 | sort)"
+    assert_exists "harness/run_pwsh_den: gh wrote its device-id in den-home" \
+        "$TESTTMP/den-home/.local/state/gh/device-id"
+else
+    echo "  SKIP: run_pwsh_den: den's tools write nothing under an exported XDG_STATE_HOME (pwsh not found)"
+fi
+
 print_summary "test_harness"
 [ "$FAIL" -eq 0 ]
