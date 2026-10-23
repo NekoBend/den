@@ -562,16 +562,19 @@ done
 # 8e5eeba) keeps that file's toggle-uv, whose list names none of them. Its ON
 # dot-sources the updated file inside itself and copies only the names on its
 # list to global scope, so a helper defined there ended with the call, and
-# python could not find _DenPyRun. The old file comes from git: the test image
-# has no .git, so there this is skipped.
+# python could not find _DenPyRun. Such a session also still runs 8e5eeba's
+# _helpers.ps1, which the update does not load again, so the updated python.ps1
+# can call only the functions that file defines. Both old files come from git:
+# the test image has no .git, so there this is skipped.
 OLD_PY_PS1_COMMIT=8e5eeba21fd73828f96c232f0d3250f442c4aebc
 OLD_PY_DIR="$WORK/old-python-ps1"
 mkdir -p "$OLD_PY_DIR"
-echo "[pwsh] toggle-uv OFF then ON in a session that loaded 8e5eeba's python.ps1, after an update in place: python, python3 and py run"
-if git -C "$DOTFILES" show "$OLD_PY_PS1_COMMIT:shell/pwsh/python.ps1" > "$OLD_PY_DIR/python.ps1" 2>/dev/null; then
+echo "[pwsh] toggle-uv OFF then ON in a session that loaded 8e5eeba's python.ps1 and _helpers.ps1, after an update in place: python, python3 and py run"
+if git -C "$DOTFILES" show "$OLD_PY_PS1_COMMIT:shell/pwsh/python.ps1" > "$OLD_PY_DIR/python.ps1" 2>/dev/null &&
+    git -C "$DOTFILES" show "$OLD_PY_PS1_COMMIT:shell/pwsh/_helpers.ps1" > "$OLD_PY_DIR/_helpers.ps1" 2>/dev/null; then
     {
         echo "\$env:PATH = '$WORK' + [IO.Path]::PathSeparator + \$env:PATH"
-        echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
+        echo ". '$OLD_PY_DIR/_helpers.ps1'"
         echo ". '$OLD_PY_DIR/python.ps1'"
     } > "$OLD_PY_DIR/session.ps1"
     actual=$(run_pwsh "$OLD_PY_DIR/session.ps1" "
