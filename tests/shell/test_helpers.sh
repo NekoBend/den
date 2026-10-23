@@ -916,13 +916,51 @@ tool.cmd: [$FW/b/tool.cmd]
 code: [$FW/a/code.cmd]
 tool.ps1: []" "$actual"
 
+# Loading den runs its tools: completion.ps1 runs gh, among others, to cache its
+# completion, and gh writes its device-id under XDG_STATE_HOME. So each pwsh
+# start in this file that loads den (the two below and the reload sessions) runs
+# under use_private_home (helpers.sh) and keeps its own XDG_DATA_HOME. With a
+# HOME of its own but the XDG_STATE_HOME the suite inherited, gh wrote its
+# device-id there. One start of each kind (the starship one below and the first
+# reload session) is checked the way test_harness checks run_pwsh_den, with these:
+# export_inherited <dir> - export XDG_STATE_HOME, RUSTUP_HOME, CARGO_HOME,
+#   GH_CONFIG_DIR and DOCKER_CONFIG into <dir>, as a developer's own would be. A
+#   start that keeps den's tools in its own HOME leaves <dir> holding only the
+#   empty <dir>/state.
+# make_stub_gh <dir> - write a stub gh in <dir> that writes its device-id where
+#   gh does.
+# OUTSIDE_PS1 <dir> - print "outside=[...]", listing each variable that
+#   use_private_home sets or unsets and that holds a path outside <dir>.
+export_inherited() {
+    mkdir -p "$1/state" &&
+        export XDG_STATE_HOME="$1/state" RUSTUP_HOME="$1/rustup" CARGO_HOME="$1/cargo" \
+            GH_CONFIG_DIR="$1/gh" DOCKER_CONFIG="$1/docker"
+}
+make_stub_gh() {
+    mkdir -p "$1" && cat > "$1/gh" <<'EOF' && chmod +x "$1/gh"
+#!/bin/sh
+d="${XDG_STATE_HOME:-$HOME/.local/state}/gh"
+mkdir -p "$d" && echo stub > "$d/device-id"
+EOF
+}
+OUTSIDE_PS1="$TESTTMP/outside.ps1"
+cat > "$OUTSIDE_PS1" <<'EOF'
+param([string]$Dir)
+$out = foreach ($n in 'HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'RUSTUP_HOME', 'CARGO_HOME',
+        'GH_CONFIG_DIR', 'DOCKER_CONFIG') {
+    $v = [Environment]::GetEnvironmentVariable($n)
+    if ($v -and -not ($v + '/').StartsWith($Dir + '/')) { "$n=$v" }
+}
+'outside=[' + (@($out) -join '; ') + ']'
+EOF
+
 # den's whole load, with Get-Command wrapped to note each call: it made seven
 # Application lookups (above), and makes none now.
 echo "[pwsh] loading den looks up no program through Get-Command"
 GH="$WORK/gcm-home"
-mkdir -p "$GH/.local/share" "$GH/.cache" "$GH/.config"
-actual=$(cd "$GH" && HOME="$GH" XDG_DATA_HOME="$GH/.local/share" XDG_CACHE_HOME="$GH/.cache" \
-    XDG_CONFIG_HOME="$GH/.config" _DEN_FORCE_INTERACTIVE=1 PATH="/usr/bin:/bin" \
+mkdir -p "$GH/.local/share"
+actual=$(cd "$GH" && use_private_home "$GH" &&
+    XDG_DATA_HOME="$GH/.local/share" _DEN_FORCE_INTERACTIVE=1 PATH="/usr/bin:/bin" \
     pwsh -NoProfile -NonInteractive -Command "
         \$global:DenGcm = [System.Collections.Generic.List[string]]::new()
         function global:Get-Command { \$global:DenGcm.Add((\$args -join ' ')); Microsoft.PowerShell.Core\Get-Command @args }
@@ -932,10 +970,13 @@ actual=$(cd "$GH" && HOME="$GH" XDG_DATA_HOME="$GH/.local/share" XDG_CACHE_HOME=
 assert_eq "pwsh/no Get-Command -CommandType Application at load" "lookups=[]" "$actual"
 
 # init.ps1 caches starship's full init, not `starship init powershell`'s one line,
-# which ran starship again at every start to print the full init.
+# which ran starship again at every start to print the full init. A stub gh sits
+# beside the stub starship, and the variables that send gh, rustup, cargo or
+# docker elsewhere are exported into SS_INHERITED.
 echo "[pwsh] init.ps1 caches starship's full init"
 SSH="$WORK/ss-home"
-mkdir -p "$SSH/bin" "$SSH/.local/share" "$SSH/.cache" "$SSH/.config"
+SS_INHERITED="$WORK/ss-inherited"
+mkdir -p "$SSH/bin" "$SSH/.local/share"
 cat > "$SSH/bin/starship" <<'EOF'
 #!/bin/sh
 case "$*" in
@@ -944,13 +985,21 @@ case "$*" in
 esac
 EOF
 chmod +x "$SSH/bin/starship"
-actual=$(cd "$SSH" && HOME="$SSH" XDG_DATA_HOME="$SSH/.local/share" XDG_CACHE_HOME="$SSH/.cache" \
-    XDG_CONFIG_HOME="$SSH/.config" _DEN_FORCE_INTERACTIVE=1 PATH="$SSH/bin:/usr/bin:/bin" \
+make_stub_gh "$SSH/bin"
+actual=$(export_inherited "$SS_INHERITED" && cd "$SSH" && use_private_home "$SSH" &&
+    XDG_DATA_HOME="$SSH/.local/share" _DEN_FORCE_INTERACTIVE=1 PATH="$SSH/bin:/usr/bin:/bin" \
     pwsh -NoProfile -NonInteractive -Command "
         . '$DOTFILES/shell/pwsh/init.ps1'
         'starship=' + \$global:DenStarship
-    " < /dev/null 2>&1 | tr -d '\r' | grep '^starship=')
-assert_eq "pwsh/init.ps1 sources starship's full init" "starship=full" "$actual"
+        & '$OUTSIDE_PS1' '$SSH'
+    " < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/init.ps1 sources starship's full init" "starship=full" "$(grep '^starship=' <<<"$actual")"
+echo "[pwsh] den's load keeps its tools out of an exported XDG_STATE_HOME"
+assert_eq "pwsh/den's load: HOME and the tools' directories are in its HOME, or unset" "outside=[]" \
+    "$(grep -o 'outside=\[.*\]' <<<"$actual")"
+assert_eq "pwsh/den's load: the exported XDG_STATE_HOME stays empty" "./state" \
+    "$(cd "$SS_INHERITED" && find . -mindepth 1 | sort)"
+assert_exists "pwsh/den's load: gh wrote its device-id in its HOME" "$SSH/.local/state/gh/device-id"
 
 # --- _DenTrustedCacheOwner: the Windows cache-owner decision, by SID ---
 # Test-CacheSafe compares security identifiers, not account names: a file created
@@ -1544,9 +1593,12 @@ assert_eq "pwsh/_DenVSCodeEnv skips empty values" "a11y n=1:VSCODE_A11Y_MODE=1" 
 # added to the config was gone again when reload returned. It now starts the same
 # pwsh with the same arguments, waits, and exits with its exit code. These tests
 # run den's config from a copy (so a test can add to functions.ps1) under a
-# scratch HOME whose profile prints the PID of every shell that loads it.
+# scratch HOME whose profile prints the PID of every shell that loads it. Each
+# pwsh starts through rl_env <env arguments...>, which is env with that HOME
+# made private by use_private_home (see "Loading den runs its tools" above).
 RL_HOME="$WORK/reload_home"
 RL_CFG="$WORK/reload_cfg"
+rl_env() { (use_private_home "$RL_HOME" && env "$@"); }
 mkdir -p "$RL_HOME/.config/powershell" "$RL_CFG" "$WORK/reload dir"
 cp "$DOTFILES"/shell/pwsh/*.ps1 "$RL_CFG/"
 # The profile also ends a runaway chain of reloads: the fifth nested shell exits 99.
@@ -1569,7 +1621,7 @@ printf '%s\n' \
 run_reload_session() {
     local line out='' loaded=0 rc pid rfd wfd
     cp "$DOTFILES/shell/pwsh/functions.ps1" "$RL_CFG/functions.ps1"
-    coproc RLS { env -u _DEN_FORCE_INTERACTIVE VSCODE_NONCE=rl-nonce HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 90 pwsh -NoLogo "$@" 2>&1; }
+    coproc RLS { rl_env -u _DEN_FORCE_INTERACTIVE VSCODE_NONCE=rl-nonce timeout 90 pwsh -NoLogo "$@" 2>&1; }
     pid=$RLS_PID
     exec {rfd}<&"${RLS[0]}" {wfd}>&"${RLS[1]}"
     printf '%s\n' "Add-Content -LiteralPath '$RL_CFG/functions.ps1' -Value 'function reload-probe { \"PROBE-OK PID=\$PID PWD=[\$(\$PWD.Path)]\" }'" \
@@ -1591,7 +1643,13 @@ run_reload_session() {
 echo "[pwsh] reload starts a new pwsh that sees a function added to the config"
 # reload_pid <n> - the PID of the nth shell that loaded the profile in RL_OUT.
 reload_pid() { printf '%s\n' "$RL_OUT" | grep -oE 'PROFILE-LOADED PID=[0-9]+' | sed -n "$1s/.*=//p"; }
-RL_OUT=$(run_reload_session | tr -d '\r')
+# Both shells load den, and so run gh: here a stub one, first on PATH, while the
+# variables that send gh, rustup, cargo or docker elsewhere are exported into
+# RL_INHERITED (export_inherited, above). The first shell runs OUTSIDE_PS1.
+RL_INHERITED="$WORK/reload_inherited"
+make_stub_gh "$WORK/reload_bin"
+RL_OUT=$(export_inherited "$RL_INHERITED" && export PATH="$WORK/reload_bin:$PATH" &&
+    RL_PRE="& '$OUTSIDE_PS1' '$RL_HOME'" run_reload_session | tr -d '\r')
 RL_PID1=$(reload_pid 1)
 RL_PID2=$(reload_pid 2)
 assert_match "pwsh/reload loads the profile in a second shell" '^[0-9]+$' "$RL_PID2"
@@ -1599,6 +1657,13 @@ if [ -n "$RL_PID2" ] && [ "$RL_PID1" != "$RL_PID2" ]; then actual=new; else actu
 assert_eq "pwsh/reload runs a new process" "new" "$actual"
 assert_contains "pwsh/reload makes the added function visible" "PROBE-OK PID=$RL_PID2" "$RL_OUT"
 assert_contains "pwsh/reload exits with the new shell's exit code" "RC=7" "$RL_OUT"
+# pwsh echoes the line it reads, but that line names OUTSIDE_PS1, not "outside=[".
+echo "[pwsh] reload's shells keep den's tools out of an exported XDG_STATE_HOME"
+assert_eq "pwsh/reload: HOME and the tools' directories are in RL_HOME, or unset" "outside=[]" \
+    "$(grep -o 'outside=\[.*\]' <<<"$RL_OUT")"
+assert_eq "pwsh/reload: the exported XDG_STATE_HOME stays empty" "./state" \
+    "$(cd "$RL_INHERITED" && find . -mindepth 1 | sort)"
+assert_exists "pwsh/reload: gh wrote its device-id in RL_HOME" "$RL_HOME/.local/state/gh/device-id"
 
 echo "[pwsh] reload keeps the launch arguments (VS Code's -noexit -command)"
 RL_PAYLOAD="try { . \"$WORK/reload dir/si.ps1\" } catch {}"
@@ -1652,7 +1717,7 @@ assert_contains "pwsh/reload -wd relative payload exits with the new shell's cod
 printf '%s\n' '"RL-FILE-RAN PWD=[$($PWD.Path)]"' >"$RL_WD/start/rl-file.ps1"
 echo "[pwsh] reload does not restart when its -File is not found from the current directory"
 actual=$(cd "$RL_WD/start" && printf '%s\n' "Set-Location -LiteralPath '$RL_WD/moved'" 'reload' '"STILL-HERE PWD=[$($PWD.Path)]"' 'exit 3' |
-    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -File ./rl-file.ps1 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo -NoExit -File ./rl-file.ps1 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload missing -File warns" \
     "not restarting: its launch arguments name the file './rl-file.ps1', which the new shell would not find from the current directory" "$actual"
@@ -1679,14 +1744,14 @@ EOF
 
 echo "[pwsh] reload does not restart a -Command run"
 : >"$WORK/reload_runs.txt"
-actual=$(env HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" _DEN_FORCE_INTERACTIVE=1 timeout 60 pwsh -NoProfile -Command ". '$WORK/reload_guard.ps1'" 2>&1 | tr -d '\r')
+actual=$(rl_env _DEN_FORCE_INTERACTIVE=1 timeout 60 pwsh -NoProfile -Command ". '$WORK/reload_guard.ps1'" 2>&1 | tr -d '\r')
 assert_contains "pwsh/reload -Command warns" "reload: caches cleared, but not restarting" "$actual"
 assert_contains "pwsh/reload -Command continues" "AFTER-RELOAD" "$actual"
 assert_eq "pwsh/reload -Command runs once" "1" "$(grep -c . "$WORK/reload_runs.txt")"
 
 echo "[pwsh] reload does not restart a -File run"
 : >"$WORK/reload_runs.txt"
-actual=$(env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoProfile -File "$WORK/reload_guard.ps1" 2>&1 | tr -d '\r')
+actual=$(rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoProfile -File "$WORK/reload_guard.ps1" 2>&1 | tr -d '\r')
 assert_contains "pwsh/reload -File warns" "reload: caches cleared, but not restarting" "$actual"
 assert_contains "pwsh/reload -File continues" "AFTER-RELOAD" "$actual"
 assert_eq "pwsh/reload -File runs once" "1" "$(grep -c . "$WORK/reload_runs.txt")"
@@ -1695,7 +1760,7 @@ assert_eq "pwsh/reload -File runs once" "1" "$(grep -c . "$WORK/reload_runs.txt"
 # (it must not exit). Get-Process is shadowed to report a missing executable.
 echo "[pwsh] reload stays in the session when pwsh cannot be started"
 actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" 'reload' '"STILL-HERE DEPTH-ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 3' |
-    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload start failure warns" "reload: could not start" "$actual"
 assert_contains "pwsh/reload start failure keeps the session" "STILL-HERE DEPTH-ENV=[]" "$actual"
@@ -1706,7 +1771,7 @@ assert_contains "pwsh/reload start failure exit code is the session's" "RC=3" "$
 # back into this stale session. reload warns instead.
 echo "[pwsh] reload does not restart from a nested prompt"
 actual=$(printf '%s\n' '$Host.EnterNestedPrompt()' 'reload' '"NESTED-AFTER LEVEL=$NestedPromptLevel PID=$PID"' 'exit' 'exit 3' |
-    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 RL_PID1=$(printf '%s\n' "$actual" | grep -oE 'PROFILE-LOADED PID=[0-9]+' | sed -n '1s/.*=//p')
 assert_contains "pwsh/reload nested prompt warns" "not restarting: reload was called from a nested prompt" "$actual"
@@ -1719,7 +1784,7 @@ assert_contains "pwsh/reload nested prompt exit code" "RC=3" "$actual"
 # starts the eighth shell, whose own startup reload must refuse.
 echo "[pwsh] reload stops after 8 reloads in a row"
 actual=$(printf '%s\n' '"DEEPEST DEPTH=$_DenReloadDepth ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 5' |
-    env -u _DEN_FORCE_INTERACTIVE _DEN_RELOAD_DEPTH=7 HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -Command reload 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE _DEN_RELOAD_DEPTH=7 timeout 60 pwsh -NoLogo -NoExit -Command reload 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_eq "pwsh/reload limit starts one more shell" "2" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
 assert_contains "pwsh/reload limit warns" "not restarting: 8 reloads in a row led to this shell" "$actual"
@@ -1730,7 +1795,7 @@ assert_contains "pwsh/reload limit exit code" "RC=5" "$actual"
 # launch arguments cannot be passed on.
 echo "[pwsh] reload does not restart a launch whose arguments hold --%"
 actual=$(printf '%s\n' 'reload' 'exit 6' |
-    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -Command echo --% x 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo -NoExit -Command echo --% x 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload --% warns" "not restarting: its launch arguments hold '--%'" "$actual"
 assert_eq "pwsh/reload --% starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
