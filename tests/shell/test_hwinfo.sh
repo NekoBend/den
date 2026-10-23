@@ -229,6 +229,43 @@ CPU= GPU=" "$actual"
     assert_eq "$sh/hwinfo runs no cat" "" "$(cat "$HWN/cat.log" 2>/dev/null)"
 done
 
+# set -C alone opens an existing FIFO or device, or a link to one, so without
+# mktemp a FIFO at the cache's temporary name, or a link to one, made the shell
+# start wait for a reader, and a link to /dev/null was taken, then moved in as
+# the cache. Any existing name is refused now, and no cache is written that
+# time. This PATH has no mktemp at all, and timeout ends a start that waits.
+mkdir -p "$HWN/bin-nomktemp"
+for t in mv rm sed hostname; do
+    p=$(command -v "$t") && ln -sf "$p" "$HWN/bin-nomktemp/$t"
+done
+[ -p "$HWN/fifo" ] || mkfifo "$HWN/fifo"
+for sh in bash zsh; do
+    sh_bin=$(command -v "$sh")
+    for kind in fifo-link null-link fifo; do
+        case $kind in
+            fifo-link) what='symlink to a FIFO' mk="'$(command -v ln)' -s '$HWN/fifo'" ;;
+            null-link) what='symlink to /dev/null' mk="'$(command -v ln)' -s /dev/null" ;;
+            *) what='FIFO' mk="'$(command -v mkfifo)'" ;;
+        esac
+        echo "[$sh] with no mktemp, a $what at the cache's temporary name is refused"
+        rt="$HWN/rt-nomktemp-$sh-$kind"
+        mkdir -p "$rt"
+        hw_f=$(hwinfo_file "$rt")
+        rc=0
+        actual=$(timeout 10 env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA \
+            -u STARSHIP_GPU_AMD -u STARSHIP_GPU_INTEL XDG_RUNTIME_DIR="$rt" PATH="$HWN/bin-nomktemp" "$sh_bin" -c "
+                awk() { :; }
+                $mk \"$hw_f.tmp.\$\$\"
+                . '$HWINFO_SH'
+                echo \"CPU=\${STARSHIP_CPU_INTEL-} GPU=\${STARSHIP_GPU_NVIDIA-}\"
+            " 2>&1) || rc=$?
+        assert_eq "$sh/no mktemp, a $what at the temporary name: the start goes on" \
+            "rc=0 CPU= GPU=" "rc=$rc $actual"
+        assert_eq "$sh/no mktemp, a $what at the temporary name: no cache" "" \
+            "$(find "$rt" -name "${hw_f##*/}" 2>/dev/null)"
+    done
+done
+
 # =============================================================================
 # Zsh tests
 # =============================================================================

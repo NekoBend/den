@@ -201,13 +201,20 @@ _init_cache() {
                 # name no one can know first), as in hwinfo.sh: at a name
                 # known in advance ("$_ic_f.tmp.$$"), a symlink someone else
                 # put there was written through, and mv then put it in place
-                # of the cache. Without mktemp, noclobber (set -C) refuses an
-                # existing name, symlink included, and no cache is made this
-                # time. >| writes into the file under the user's noclobber.
+                # of the cache. Without mktemp, an existing name is refused,
+                # symlink included, and no cache is made this time: noclobber
+                # (set -C) alone opens an existing FIFO or device, or a link to
+                # one (a FIFO made the start wait for a reader, and a link to
+                # /dev/null was moved in place of the cache). >| writes into
+                # the file under the user's noclobber.
                 _ic_tmp=$(command mktemp "$_ic_f.tmp.XXXXXX" 2>/dev/null)
                 if [ -z "$_ic_tmp" ]; then
                     _ic_tmp="$_ic_f.tmp.$$"
-                    (umask 077 && set -C && : > "$_ic_tmp") 2>/dev/null || _ic_tmp=
+                    if [ -e "$_ic_tmp" ] || [ -L "$_ic_tmp" ]; then
+                        _ic_tmp=
+                    else
+                        (umask 077 && set -C && : > "$_ic_tmp") 2>/dev/null || _ic_tmp=
+                    fi
                 fi
                 if [ -n "$_ic_tmp" ] && ! { printf '%s\n%s\n' "$_ic_k" "$_ic_o" >| "$_ic_tmp" &&
                     mv -f -- "$_ic_tmp" "$_ic_f"; }; then

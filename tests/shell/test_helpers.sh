@@ -301,6 +301,32 @@ ran= fail=" "$out"
     out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/nomktemp:$d/a:$PATH" "$sh" -c \
         ". '$HELPERS_SH'; _init_cache kt $sh --u; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
     assert_eq "$sh/_init_cache no mktemp: made and sourced" "ran=a:init $sh --u fail=" "$out"
+    # set -C alone opens an existing FIFO or device, or a link to one, so
+    # without mktemp a FIFO at the temporary name, or a link to one, made the
+    # shell start wait for a reader, and a link to /dev/null was taken, then
+    # moved in as the cache. Any existing name is refused now. This PATH has no
+    # mktemp at all, and timeout ends a start that waits.
+    local nomk="$d/no-mktemp-path" kind what mk rc
+    mkdir -p "$nomk"
+    for t in mv rm chmod mkdir; do ln -sf "$(command -v "$t")" "$nomk/$t"; done
+    [ -p "$d/fifo" ] || mkfifo "$d/fifo"
+    for kind in fifo-link null-link fifo; do
+        case $kind in
+            fifo-link) what='symlink to a FIFO' mk="'$(command -v ln)' -s '$d/fifo'" ;;
+            null-link) what='symlink to /dev/null' mk="'$(command -v ln)' -s /dev/null" ;;
+            *) what='FIFO' mk="'$(command -v mkfifo)'" ;;
+        esac
+        echo "[$sh] _init_cache: with no mktemp, a $what at the temporary name is refused"
+        rm -rf "$d/home-$kind"
+        mkdir -p "$d/home-$kind/.cache/shell"
+        rc=0
+        out=$(timeout 10 env HOME="$d/home-$kind" XDG_CACHE_HOME='' PATH="$nomk:$d/a" "$(command -v "$sh")" -c \
+            "$mk \"\$HOME/.cache/shell/kt-init.$sh.tmp.\$\$\"; . '$HELPERS_SH'; _init_cache kt $sh --v; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1) || rc=$?
+        assert_eq "$sh/_init_cache no mktemp, a $what at the temporary name: no cache, nothing printed" \
+            "rc=0 ran= fail=" "rc=$rc $out"
+        assert_eq "$sh/_init_cache no mktemp, a $what at the temporary name: nothing at the cache path" "" \
+            "$(find "$d/home-$kind/.cache/shell" -name "kt-init.$sh" 2>/dev/null)"
+    done
     # The temporary file exists before the init goes into it, and a plain `>`
     # will not write into an existing file under the user's noclobber.
     echo "[$sh] _init_cache: made under the user's noclobber"
