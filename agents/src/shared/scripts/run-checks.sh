@@ -152,7 +152,8 @@ _py_has_ruff_config() {
 # relative to that directory. Prints the verdict (FAIL, PASS, UNLISTED or
 # STOPPED) and the number of errors in other files on the first line, then
 # the lines to show: the file's own diagnostics for FAIL, the first lines of
-# the other errors for STOPPED.
+# the other errors for STOPPED, and for UNLISTED when every error is in a
+# config.
 _tsc_verdict() {
   TSC_REL="$1" TSC_RC="$2" awk '
     BEGIN { rel = ENVIRON["TSC_REL"]; rc = ENVIRON["TSC_RC"] + 0 }
@@ -180,9 +181,12 @@ _tsc_verdict() {
       sub(/^.*TS/, "", code)
       code += 0
       # so may an error in the config (an option tsc rejects)
-      if (substr($0, 1, RSTART - 1) ~ /\.json$/) stopped = 1
+      if (substr($0, 1, RSTART - 1) ~ /\.json$/) { stopped = 1; injson++ }
       # TS2xxx, TS7xxx, the override and possibly-null errors and the
-      # unused-name errors come from the type checker, so it ran
+      # unused-name errors come from the type checker, so it ran; not these
+      # TS2xxx, which the parser reports too (parser.ts and scanner.ts of
+      # TypeScript 5.9.3 and 6.0.3, numbered in diagnosticMessages.json)
+      if (index(" 2427 2457 2458 2657 2754 2809 2819 ", " " code " ")) next
       if ((code >= 2000 && code < 3000) || (code >= 7000 && code < 8000) ||
           (code >= 4112 && code <= 4117) || (code >= 18046 && code <= 18050) ||
           code == 6133 || code == 6138 || code == 6192 || code == 6196 ||
@@ -197,13 +201,15 @@ _tsc_verdict() {
       # without a type-checker error, an error elsewhere (a syntax error)
       # means tsc may have stopped before type-checking this file. A file
       # the program leaves out is UNLISTED whatever else failed, unless tsc
-      # failed without listing any file.
+      # failed without listing any file and not only on errors in a config
+      # (a missing reference).
       if (n) verdict = "FAIL"
       else if (listed) verdict = (rc != 0 && (stopped || !checked)) ? "STOPPED" : "PASS"
-      else verdict = (files || rc == 0) ? "UNLISTED" : "STOPPED"
+      else verdict = (files || rc == 0 || (others && others == injson)) ? "UNLISTED" : "STOPPED"
       print verdict, others + 0
       if (verdict == "FAIL") for (i = 1; i <= n; i++) print mine[i]
-      if (verdict == "STOPPED") for (i = 1; i <= m; i++) print other[i]
+      if (verdict == "STOPPED" || (verdict == "UNLISTED" && others && others == injson))
+        for (i = 1; i <= m; i++) print other[i]
     }
   '
 }
@@ -216,10 +222,10 @@ _tsc_in() {
 
 # _tsconfig_facts
 # Reads 'tsc --showConfig' on stdin: the config as tsc resolves it (extends
-# applied), as JSON indented four spaces a level. Prints 'checkJs' when it is
-# on, 'buildinfo' when it sets incremental, composite or a tsBuildInfoFile,
-# and 'ref <path>' for each reference as written, with tsc's
-# backslash-to-slash.
+# applied), as JSON indented four spaces a level. Prints 'checkJs',
+# 'skipLibCheck' and 'noCheck' for each one that is on, 'buildinfo' when it
+# sets incremental, composite or a tsBuildInfoFile, and 'ref <path>' for each
+# reference as written, with tsc's backslash-to-slash.
 _tsconfig_facts() {
   awk '
     { sub(/\r$/, "") }
@@ -233,23 +239,41 @@ _tsconfig_facts() {
       print "ref " p
       next
     }
-    /^        "checkJs": true,?$/ { print "checkJs" }
+    /^        "(checkJs|skipLibCheck|noCheck)": true,?$/ { split($0, f, "\""); print f[2] }
     /^        "(incremental|composite)": true,?$/ { print "buildinfo" }
     /^        "tsBuildInfoFile": / { print "buildinfo" }
   '
 }
 
-# _ts_js_unchecked <file> <name to show> <checkJs: 1 or empty>
-# Prints why tsc reports no type errors in a JavaScript file of the program,
-# or nothing when it does: under checkJs or a // @ts-check comment, and with
-# no // @ts-nocheck. tsc honours both comments only before the first
-# statement; here @ts-check counts only in the comment lines that open the
-# file and @ts-nocheck counts anywhere, so a miss can cost a PASS, never
-# give one.
-_ts_js_unchecked() {
-  if grep -qiE '^[[:space:]]*///?[[:space:]]*@ts-nocheck([[:space:]:].*)?$' "$1"; then
+# _fact <name> <facts>: true when <name> is a line of <facts>.
+_fact() {
+  printf '%s\n' "$2" | grep -qx -- "$1"
+}
+
+# _ts_unchecked <file> <name to show> <extension> <facts of its config>
+# Prints why tsc reports no type errors in a file of the program, or nothing
+# when it does. noCheck turns them off for every file, skipLibCheck for a
+# declaration file (a name with .d. in it) and a // @ts-nocheck comment for
+# its file; JavaScript gets them only under checkJs or a // @ts-check
+# comment. tsc honours both comments only before the first statement; here
+# @ts-check counts only in the comment lines that open the file and
+# @ts-nocheck anywhere in a line (after a byte order mark or a block comment
+# too), so a miss can cost a PASS, never give one. Not covered: under
+# TypeScript 5.x, skipDefaultLibCheck also turns them off for a file whose
+# leading comments hold /// <reference no-default-lib="true"/>, and such a
+# file still gets PASS.
+_ts_unchecked() {
+  local base="${1##*/}" js=""
+  case "$3" in
+    js|jsx|mjs|cjs) js=1 ;;
+  esac
+  if _fact noCheck "$4"; then
+    echo "noCheck: tsc reports no type errors in any file ($2)"
+  elif [ "$3" = ts ] && [ "${base#*.d.}" != "$base" ] && _fact skipLibCheck "$4"; then
+    echo "skipLibCheck: tsc reports no type errors in declaration files ($2)"
+  elif grep -qiE '///?[[:space:]]*@ts-nocheck([[:space:]:].*)?$' "$1"; then
     echo "$2 has a // @ts-nocheck comment: tsc reports no type errors in it"
-  elif [ -z "$3" ] && ! awk '
+  elif [ -n "$js" ] && ! _fact checkJs "$4" && ! awk '
       NR == 1 && /^#!/ { next }
       !/^[ \t]*(\/\/.*)?\r?$/ { exit }
       tolower($0) ~ /^[ \t]*\/\/\/?[ \t]*@ts-check([ \t:\r].*)?$/ { found = 1; exit }
@@ -278,20 +302,19 @@ _in_list() {
 # in turn (a solution-style tsconfig.json has "files": [] and only lists
 # references, so its own program is empty). Errors that may have stopped tsc
 # before it type-checked anything (a syntax error in another file, an error
-# in the config) end in SKIPPED, never in PASS, and so does JavaScript that
-# tsc reads but does not type-check: it reports type errors in JavaScript
-# only under checkJs or a // @ts-check comment. With no tsconfig.json, a
-# .ts/.tsx file is checked alone from its own directory, and JavaScript is
+# in the config) end in SKIPPED, never in PASS, and so does a file that tsc
+# reads but does not type-check (see _ts_unchecked). With no tsconfig.json,
+# a .ts/.tsx file is checked alone from its own directory, and JavaScript is
 # SKIPPED.
 #
-# tsc writes a .tsbuildinfo next to the config (or where tsBuildInfoFile
-# says) when the config has incremental or composite, so the check sends it
-# to the temp directory. A tsBuildInfoFile without either is an error
-# outside 'tsc -b' (create-vite's tsconfig.app.json sets one), so
-# --incremental comes along.
+# tsc writes a .tsbuildinfo next to the config (under outDir if set, or
+# where tsBuildInfoFile says) when the config has incremental or composite,
+# so the check sends it to the temp directory. A tsBuildInfoFile without
+# either was an error outside 'tsc -b' up to TypeScript 5.6.2 (create-vite's
+# tsconfig.app.json sets one), so --incremental comes along.
 _ts_typecheck() {
-  local dir path conf cfg cdir name rel rc shown out verdict others facts
-  local ref target i why queue first first_rel
+  local dir path conf cfg cdir name rel rc shown out verdict="" others facts
+  local ref target i why queue first first_rel bad="" bad_rel=""
   if ! command -v tsc >/dev/null 2>&1; then
     skip "typecheck" "tsc not installed"
     return 0
@@ -302,7 +325,14 @@ _ts_typecheck() {
     case "$2" in
       ts|tsx)
         _tsc_in "$dir" --noEmit "./${path##*/}"
-        report "typecheck" "$?" "tsc --noEmit $1 (no tsconfig.json above it)"
+        rc=$?
+        why=""
+        [ "$rc" -eq 0 ] && why=$(_ts_unchecked "$1" "$1" "$2" "")
+        if [ -n "$why" ]; then
+          skip "typecheck" "$why"
+        else
+          report "typecheck" "$rc" "tsc --noEmit $1 (no tsconfig.json above it)"
+        fi
         ;;
       *)
         skip "typecheck" "no tsconfig.json above $1; JavaScript is type-checked only through one, under checkJs or // @ts-check"
@@ -322,9 +352,14 @@ _ts_typecheck() {
     name="${cfg##*/}"
     rel=$(_rel_path "$cdir" "$path")
     if ! _tsc_in "$cdir" --showConfig -p "./$name"; then
-      skip "typecheck" "tsc --showConfig -p $cfg reports errors in the config, so $rel was not checked (first lines below)"
-      head -n 10 "$tmp_out" | sed 's/^/             /'
-      return 0
+      # with no references to follow from the nearest config the walk ends;
+      # a referenced config is named only if no config lists the file
+      if [ -z "$bad" ]; then
+        bad="$cfg" bad_rel="$rel"
+        cp "$tmp_out" "$tmp_dir/bad"
+      fi
+      [ "$i" -gt 1 ] && continue
+      break
     fi
     facts=$(_tsconfig_facts <"$tmp_out")
     case "$facts" in
@@ -335,6 +370,11 @@ _ts_typecheck() {
     out=$(_tsc_verdict "$rel" "$rc" <"$tmp_out")
     verdict=$(printf '%s\n' "$out" | sed -n '1s/ .*//p')
     [ "$verdict" = UNLISTED ] || break
+    # a run that failed only on errors in a config (a missing reference)
+    # keeps its first lines, shown if no config lists the file
+    if [ ! -s "$tmp_dir/json" ]; then
+      printf '%s\n' "$out" | sed '1d' >"$tmp_dir/json"
+    fi
     # A reference names a config file, or a directory holding tsconfig.json,
     # relative to the referencing config.
     while IFS= read -r ref; do
@@ -354,18 +394,19 @@ _ts_typecheck() {
 $(printf '%s\n' "$facts" | sed -n 's/^ref //p')
 EOF
   done
+  if [ -n "$bad" ] && [ "${verdict:-UNLISTED}" = UNLISTED ]; then
+    skip "typecheck" "tsc --showConfig -p $bad reports errors in the config, so $bad_rel was not checked (first lines below)"
+    head -n 10 "$tmp_dir/bad" | sed 's/^/             /'
+    return 0
+  fi
   shown="tsc --noEmit --pretty false --explainFiles -p $cfg"
   others=$(printf '%s\n' "$out" | sed -n '1s/.* //p')
   if [ "$verdict" = PASS ]; then
-    case "$2" in
-      js|jsx|mjs|cjs)
-        why=$(_ts_js_unchecked "$1" "$rel" "$(printf '%s\n' "$facts" | sed -n 's/^checkJs$/1/p')")
-        if [ -n "$why" ]; then
-          skip "typecheck" "$why"
-          return 0
-        fi
-        ;;
-    esac
+    why=$(_ts_unchecked "$1" "$rel" "$2" "$facts")
+    if [ -n "$why" ]; then
+      skip "typecheck" "$why"
+      return 0
+    fi
   fi
   case "$verdict" in
     FAIL)
@@ -379,8 +420,18 @@ EOF
       passed=$((passed + 1))
       ;;
     UNLISTED)
-      [ "$i" -gt 1 ] && first="$first or of the configs it references ($((i - 1)) checked)"
-      skip "typecheck" "$first_rel is not in the program of $first (include, exclude and files decide; JavaScript also needs allowJs)"
+      if [ "$i" -lt "${#queue[@]}" ]; then
+        first="$first or of the configs it references ($((i - 1)) checked, stopped after $i configs)"
+      elif [ "$i" -gt 1 ]; then
+        first="$first or of the configs it references ($((i - 1)) checked)"
+      fi
+      why="$first_rel is not in the program of $first (include, exclude and files decide; JavaScript also needs allowJs)"
+      if [ -s "$tmp_dir/json" ]; then
+        skip "typecheck" "$why; tsc reports errors in a config (first lines below)"
+        sed 's/^/             /' "$tmp_dir/json"
+      else
+        skip "typecheck" "$why"
+      fi
       ;;
     *)
       skip "typecheck" "tsc -p $cfg may have stopped before type-checking $rel: errors in other files or in the config (first lines below)"
@@ -519,7 +570,14 @@ case "$ext" in
     run_tool "typecheck" ty check "$file"
     ;;
   ts|tsx|js|jsx|mjs|cjs)
-    run_tool "format"    prettier --check "$file"
+    # prettier --check skips a file that the .prettierignore or .gitignore of
+    # the directory it runs from matches, and still exits 0: SKIPPED, not PASS
+    if command -v prettier >/dev/null 2>&1 &&
+      prettier --file-info "$file" 2>/dev/null | grep -q '"ignored":[[:space:]]*true'; then
+      skip "format" "prettier ignores $file (.prettierignore or .gitignore where it runs), so prettier --check would not check it"
+    else
+      run_tool "format" prettier --check "$file"
+    fi
     run_tool "lint"      eslint "$file"
     _ts_typecheck "$file" "$ext"
     ;;
