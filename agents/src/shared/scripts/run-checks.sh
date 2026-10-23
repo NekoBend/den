@@ -284,13 +284,14 @@ _fact() {
 # when it does. noCheck turns them off for every file, skipLibCheck for a
 # declaration file (a name with .d. in it) and a // @ts-nocheck comment for
 # its file; JavaScript gets them only under checkJs or a // @ts-check
-# comment. tsc honours both comments only before the first statement; here
-# @ts-check counts only in the comment lines that open the file and
-# @ts-nocheck anywhere in a line (after a byte order mark or a block comment
-# too), so a miss can cost a PASS, never give one. Not covered: under
-# TypeScript 5.x, skipDefaultLibCheck also turns them off for a file whose
-# leading comments hold /// <reference no-default-lib="true"/>, and such a
-# file still gets PASS.
+# comment. tsc honours both comments only before the first statement, after
+# any Unicode space (JavaScript's \s) between the // and the @; here
+# @ts-check counts only in the comment lines that open the file, after a
+# space or a tab, and @ts-nocheck anywhere in the file, so either can cost a
+# PASS, never give one. Not covered: under TypeScript 5.x,
+# skipDefaultLibCheck also turns them off for a file whose leading comments
+# hold /// <reference no-default-lib="true"/>, and such a file still gets
+# PASS.
 _ts_unchecked() {
   local base="${1##*/}" js=""
   case "$3" in
@@ -300,7 +301,7 @@ _ts_unchecked() {
     echo "noCheck: tsc reports no type errors in any file ($2)"
   elif [ "$3" = ts ] && [ "${base#*.d.}" != "$base" ] && _fact skipLibCheck "$4"; then
     echo "skipLibCheck: tsc reports no type errors in declaration files ($2)"
-  elif grep -qiE '///?[[:space:]]*@ts-nocheck([[:space:]:].*)?$' "$1"; then
+  elif grep -qi '@ts-nocheck' "$1"; then
     echo "$2 has a // @ts-nocheck comment: tsc reports no type errors in it"
   elif [ -n "$js" ] && ! _fact checkJs "$4" && ! awk '
       NR == 1 && /^#!/ { next }
@@ -336,11 +337,12 @@ _in_list() {
 # a .ts/.tsx file is checked alone from its own directory, and JavaScript is
 # SKIPPED.
 #
-# tsc writes a .tsbuildinfo next to the config (under outDir if set, or
-# where tsBuildInfoFile says) when the config has incremental or composite,
-# so the check sends it to the temp directory. A tsBuildInfoFile without
-# either was an error outside 'tsc -b' up to TypeScript 5.6.2 (create-vite's
-# tsconfig.app.json sets one), so --incremental comes along.
+# tsc writes a .tsbuildinfo next to the config (next to outFile or under
+# outDir if set, or where tsBuildInfoFile says) when the config has
+# incremental or composite, so the check sends it to the temp directory. A
+# tsBuildInfoFile without either was an error outside 'tsc -b' up to
+# TypeScript 5.6.2 (create-vite's tsconfig.app.json sets one), so
+# --incremental comes along.
 _ts_typecheck() {
   local dir path conf cfg cdir name rel rc shown out verdict="" others facts
   local ref target i why queue first first_rel bad="" bad_rel=""

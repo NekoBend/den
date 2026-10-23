@@ -573,6 +573,21 @@ EOF
   done
 }
 
+@test "TypeScript: // @ts-nocheck after a no-break space gives SKIPPED (stub tsc)" {
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  # regression: tsc allows any Unicode space (JavaScript's \s) between the //
+  # and the @, and the check allowed only ASCII whitespace there, so the
+  # file got PASS
+  _ts_project
+  printf '//\302\240@ts-nocheck\nexport const n: number = "x";\n' > "$WORK/proj/src/nbsp.ts"
+  _stub_tsc
+  printf '%s\n' src/a.ts src/nbsp.ts > "$WORK/tsc.out"
+  for loc in C C.UTF-8; do
+    run env LC_ALL="$loc" PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$WORK/proj/src/nbsp.ts"
+    [[ "$output" == *"[typecheck] SKIPPED   src/nbsp.ts has a // @ts-nocheck comment: tsc reports no type errors in it"* ]]
+  done
+}
+
 @test "TypeScript: a file prettier ignores is SKIPPED by the format check, not PASS (stub prettier)" {
   # regression: prettier --check skips a file that .prettierignore (or the
   # .gitignore where it runs) matches, or a file under node_modules, and
