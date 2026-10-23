@@ -9,12 +9,13 @@
 #
 # Trust: on a .ts, .tsx, .js, .jsx, .mjs or .cjs file, eslint and prettier
 # run the project's code as you: they load its JavaScript config files and
-# the plugins those name (eslint.config.js, prettier.config.js). A rustfmt
-# that rustup installed is a proxy, so run from inside the tree, a
-# rust-toolchain.toml whose [toolchain] path is absolute runs the rustfmt at
-# that path. On a tree you do not trust, get the user's yes before running
-# this script on such a file. The PowerShell lint is pinned against the same
-# kind of attack (see the ps1 branch).
+# the plugins those name (eslint.config.js, prettier.config.js). On a .rs
+# file, rustfmt is usually a rustup proxy: when this script runs from inside
+# the tree, a rust-toolchain.toml or rust-toolchain whose [toolchain] path is
+# absolute runs the rustfmt at that path. On a tree you do not trust, get the
+# user's yes before running this script on any of these files. The
+# PowerShell lint is pinned against the same kind of attack (see the ps1
+# branch).
 
 # Note: intentionally NOT 'set -euo pipefail'. This wrapper runs each tool
 # with '|| <count failure>' fall-through so it can report ALL check results
