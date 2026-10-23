@@ -284,14 +284,14 @@ _fact() {
 # when it does. noCheck turns them off for every file, skipLibCheck for a
 # declaration file (a name with .d. in it) and a // @ts-nocheck comment for
 # its file; JavaScript gets them only under checkJs or a // @ts-check
-# comment. tsc honours both comments only before the first statement, after
-# any Unicode space (JavaScript's \s) between the // and the @; here
-# @ts-check counts only in the comment lines that open the file, after a
-# space or a tab, and @ts-nocheck anywhere in the file, so either can cost a
-# PASS, never give one. Not covered: under TypeScript 5.x,
-# skipDefaultLibCheck also turns them off for a file whose leading comments
-# hold /// <reference no-default-lib="true"/>, and such a file still gets
-# PASS.
+# comment. tsc honours both comments only before the first statement, and
+# allows any Unicode space (JavaScript's \s) between the // and the @; here
+# @ts-check counts only in the comment lines that open the file, with
+# nothing but spaces or tabs between the // and the @, and @ts-nocheck
+# anywhere in the file, so either can cost a PASS, never give one. Not
+# covered: under TypeScript 5.x, skipDefaultLibCheck also turns them off
+# for a file whose leading comments hold
+# /// <reference no-default-lib="true"/>, and such a file still gets PASS.
 _ts_unchecked() {
   local base="${1##*/}" js=""
   case "$3" in
