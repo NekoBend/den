@@ -575,13 +575,14 @@ EOF
 
 @test "TypeScript: a file prettier ignores is SKIPPED by the format check, not PASS (stub prettier)" {
   # regression: prettier --check skips a file that .prettierignore (or the
-  # .gitignore where it runs) matches and exits 0, and the file got PASS
+  # .gitignore where it runs) matches, or a file under node_modules, and
+  # exits 0, and the file got PASS
   _stub prettier
   printf 'export const a = 1;\n' > "$WORK/a.ts"
   printf '{ "ignored": true, "inferredParser": null }\n' > "$WORK/prettier.out"
   _run_stubbed "$WORK/a.ts"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[format   ] SKIPPED   prettier ignores $WORK/a.ts (.prettierignore or .gitignore where it runs), so prettier --check would not check it"* ]]
+  [[ "$output" == *"[format   ] SKIPPED   prettier ignores $WORK/a.ts (an ignore file or node_modules, where it runs), so prettier --check would not check it"* ]]
   grep -q -- " argv=--file-info $WORK/a.ts$" "$WORK/prettier.log"
   [ "$(grep -c -- '--check' "$WORK/prettier.log")" -eq 0 ]
   printf '{ "ignored": false, "inferredParser": "typescript" }\n' > "$WORK/prettier.out"
@@ -591,6 +592,29 @@ EOF
   _run_stubbed "$WORK/a.ts"
   [ "$status" -eq 1 ]
   [[ "$output" == *"[format   ] FAIL (1) prettier --check $WORK/a.ts"* ]]
+}
+
+@test "JavaScript: a file eslint ignores is SKIPPED by the lint check, not PASS (stub eslint)" {
+  # regression: given a file by name, eslint exits 0 with a single warning
+  # when its config ignores the file, no config object matches it, or it lies
+  # outside the base path, and the file got PASS
+  _stub eslint
+  printf 'module.exports = {};\n' > "$WORK/a.cjs"
+  # eslint's default (stylish) output
+  printf '\n%s\n  0:0  warning  %s\n\n%s\n\n' "$WORK/a.cjs" \
+    "File ignored because no matching configuration was supplied" \
+    "1 problem (0 errors, 1 warning)" > "$WORK/eslint.out"
+  _run_stubbed "$WORK/a.cjs"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[lint     ] SKIPPED   eslint $WORK/a.cjs did not check the file: File ignored because no matching configuration was supplied"$'\n'* ]]
+  # any other warning is a PASS, and an error a FAIL
+  printf '\n%s\n  1:1  warning  Unexpected console statement  no-console\n' "$WORK/a.cjs" > "$WORK/eslint.out"
+  _run_stubbed "$WORK/a.cjs"
+  [[ "$output" == *"[lint     ] PASS      eslint $WORK/a.cjs"* ]]
+  printf '1\n' > "$WORK/eslint.rc"
+  _run_stubbed "$WORK/a.cjs"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"[lint     ] FAIL (1) eslint $WORK/a.cjs"* ]]
 }
 
 @test "TypeScript: an incremental config writes its .tsbuildinfo to a temp dir, not the tree (stub tsc)" {
@@ -789,6 +813,54 @@ EOF
   run "$SCRIPT" "$WORK/crate/src/lib.rs"
   [ "$status" -eq 0 ]
   [[ "$output" == *"[format   ] PASS      rustfmt --check $WORK/crate/src/lib.rs"* ]]
+}
+
+@test "Rust: a rustfmt config that sets disable_all_formatting gives SKIPPED, and rustfmt does not run (stub rustfmt)" {
+  # regression: with disable_all_formatting = true in the config it picks,
+  # rustfmt --check exits 0 on any file, and the file got PASS
+  _stub rustfmt
+  mkdir -p "$WORK/crate/src/sub"
+  printf '[package]\nname = "probe"\nversion = "0.1.0"\nedition = "2021"\n' > "$WORK/crate/Cargo.toml"
+  printf 'fn  main( ){}\n' > "$WORK/crate/src/main.rs"
+  printf 'fn  f( ){}\n' > "$WORK/crate/src/sub/m.rs"
+  for conf in 'disable_all_formatting = true' 'disable_all_formatting=true # all off'; do
+    printf '%s\n' "$conf" > "$WORK/crate/rustfmt.toml"
+    _run_stubbed "$WORK/crate/src/main.rs"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[format   ] SKIPPED   $WORK/crate/rustfmt.toml sets disable_all_formatting = true, so rustfmt --check would not check $WORK/crate/src/main.rs"* ]]
+  done
+  [ ! -e "$WORK/rustfmt.log" ]
+  # rustfmt reads only the nearest config, .rustfmt.toml before rustfmt.toml
+  printf 'max_width = 100\n' > "$WORK/crate/src/sub/rustfmt.toml"
+  _run_stubbed "$WORK/crate/src/sub/m.rs"
+  [[ "$output" == *"[format   ] PASS      rustfmt --check --edition 2021 $WORK/crate/src/sub/m.rs"* ]]
+  printf 'max_width = 100\n' > "$WORK/crate/.rustfmt.toml"
+  _run_stubbed "$WORK/crate/src/main.rs"
+  [[ "$output" == *"[format   ] PASS      rustfmt --check --edition 2021 $WORK/crate/src/main.rs"* ]]
+  rm "$WORK/crate/.rustfmt.toml"
+  printf 'disable_all_formatting = false\n' > "$WORK/crate/rustfmt.toml"
+  _run_stubbed "$WORK/crate/src/main.rs"
+  [[ "$output" == *"[format   ] PASS      rustfmt --check --edition 2021 $WORK/crate/src/main.rs"* ]]
+}
+
+@test "Python: a file ruff's force-exclude skips is SKIPPED, not PASS (stub ruff)" {
+  # regression: under force-exclude, ruff format --check and ruff check run
+  # from inside the project skip a file that their excludes match even when
+  # it is named, print "No Python files found under the given path(s)" and
+  # exit 0, and the file got PASS
+  _stub ruff
+  mkdir -p "$WORK/proj"
+  printf '[tool.ruff]\nforce-exclude = true\nextend-exclude = ["gen.py"]\n' > "$WORK/proj/pyproject.toml"
+  printf 'import os\nx=1\n' > "$WORK/proj/gen.py"
+  printf 'warning: No Python files found under the given path(s)\n' > "$WORK/ruff.out"
+  _run_stubbed "$WORK/proj/gen.py"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[format   ] SKIPPED   ruff format --check $WORK/proj/gen.py did not check the file: No Python files found under the given path(s)"* ]]
+  [[ "$output" == *"[lint     ] SKIPPED   ruff check $WORK/proj/gen.py did not check the file: No Python files found under the given path(s)"* ]]
+  rm "$WORK/ruff.out"
+  _run_stubbed "$WORK/proj/gen.py"
+  [[ "$output" == *"[format   ] PASS      ruff format --check $WORK/proj/gen.py"* ]]
+  [[ "$output" == *"[lint     ] PASS      ruff check $WORK/proj/gen.py"* ]]
 }
 
 @test "Shell: shfmt gets -i 2 -ci -s when no .editorconfig is above the file (stub shfmt)" {

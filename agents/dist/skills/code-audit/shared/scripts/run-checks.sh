@@ -58,6 +58,34 @@ run_tool() {
   report "$label" "$?" "$*"
 }
 
+# run_tool_skip_on <label> <marker> <command...>
+# run_tool for a tool that, when its settings make it skip the file it was
+# given, still exits 0 and says so in a line containing <marker>: that run
+# is SKIPPED with the line from <marker> on, not PASS.
+run_tool_skip_on() {
+  local label="$1" marker="$2" rc line
+  shift 2
+  if ! command -v "$1" >/dev/null 2>&1; then
+    skip "$label" "$1 not installed"
+    return 0
+  fi
+  "$@" >"$tmp_out" 2>&1
+  rc=$?
+  line=$(RC_MARKER="$marker" awk '
+    i = index($0, ENVIRON["RC_MARKER"]) {
+      s = substr($0, i)
+      sub(/[ \t\r]+$/, "", s)
+      print s
+      exit
+    }
+  ' "$tmp_out")
+  if [ "$rc" -eq 0 ] && [ -n "$line" ]; then
+    skip "$label" "$* did not check the file: $line"
+  else
+    report "$label" "$rc" "$*"
+  fi
+}
+
 # report <label> <exit code> <command as shown>
 # Records PASS, or FAIL with the output captured in $tmp_out, for a command
 # that has already run.
@@ -505,18 +533,38 @@ _cargo_edition() {
   esac
 }
 
-# _rustfmt_sets_edition <dir>
-# True when the config rustfmt picks for a file in <dir> (the nearest
-# .rustfmt.toml or rustfmt.toml, the dotted name first) sets the edition.
-_rustfmt_sets_edition() {
+# _rustfmt_conf <dir>
+# The config rustfmt picks for a file in <dir>: the nearest .rustfmt.toml or
+# rustfmt.toml, the dotted name first. Returns 1 when there is none. Not
+# covered: with none from <dir> up to /, rustfmt also reads one in the home
+# directory or in rustfmt/ under the user's config directory.
+_rustfmt_conf() {
   local conf
   conf=$(_find_up "$1" .rustfmt.toml rustfmt.toml) || return 1
   if [ -f "$conf/.rustfmt.toml" ]; then
-    conf="$conf/.rustfmt.toml"
+    printf '%s\n' "$conf/.rustfmt.toml"
   else
-    conf="$conf/rustfmt.toml"
+    printf '%s\n' "$conf/rustfmt.toml"
   fi
+}
+
+# _rustfmt_sets_edition <dir>
+# True when the config rustfmt picks for a file in <dir> sets the edition.
+_rustfmt_sets_edition() {
+  local conf
+  conf=$(_rustfmt_conf "$1") || return 1
   grep -q '^[[:space:]]*edition[[:space:]]*=' "$conf"
+}
+
+# _rustfmt_disabled <dir>
+# Prints the config rustfmt picks for a file in <dir>, and returns 0, when it
+# sets disable_all_formatting = true: rustfmt --check then exits 0 on any
+# file.
+_rustfmt_disabled() {
+  local conf
+  conf=$(_rustfmt_conf "$1") || return 1
+  grep -qE '^[[:space:]]*disable_all_formatting[[:space:]]*=[[:space:]]*true([[:space:]#]|$)' "$conf" || return 1
+  printf '%s\n' "$conf"
 }
 
 # _shfmt_lang <file> <extension>
@@ -601,24 +649,36 @@ case "$ext" in
     # typecheck (ty) resolves imports against the real environment, which
     # replaced the retired verify-imports.py; the docstring-presence rules
     # below replaced the retired doc-coverage.py for Python.
-    run_tool "format"    ruff format --check "$file"
+    #
+    # Under force-exclude, ruff run from inside the project skips a file that
+    # its excludes match even when the file is named, prints "No Python files
+    # found under the given path(s)" and exits 0: SKIPPED with that line, not
+    # PASS.
+    run_tool_skip_on "format" "No Python files found" ruff format --check "$file"
     if _py_has_ruff_config "$file"; then
-      run_tool "lint"    ruff check "$file"
+      run_tool_skip_on "lint" "No Python files found" ruff check "$file"
     else
-      run_tool "lint"    ruff check --extend-select D101,D102,D103 "$file"
+      run_tool_skip_on "lint" "No Python files found" ruff check --extend-select D101,D102,D103 "$file"
     fi
     run_tool "typecheck" ty check "$file"
     ;;
   ts|tsx|js|jsx|mjs|cjs)
     # prettier --check skips a file that the .prettierignore or .gitignore of
-    # the directory it runs from matches, and still exits 0: SKIPPED, not PASS
+    # the directory it runs from matches, or a file under node_modules, and
+    # still exits 0: SKIPPED, not PASS. Not covered: requirePragma (on a file
+    # with no @format or @prettier pragma) and checkIgnorePragma (on a file
+    # with @noformat or @noprettier) also make --check skip the file and exit
+    # 0, and --file-info cannot see that, so such a file still gets PASS.
     if command -v prettier >/dev/null 2>&1 &&
       prettier --file-info "$file" 2>/dev/null | grep -q '"ignored":[[:space:]]*true'; then
-      skip "format" "prettier ignores $file (.prettierignore or .gitignore where it runs), so prettier --check would not check it"
+      skip "format" "prettier ignores $file (an ignore file or node_modules, where it runs), so prettier --check would not check it"
     else
       run_tool "format" prettier --check "$file"
     fi
-    run_tool "lint"      eslint "$file"
+    # Given a file by name, eslint exits 0 with a single "File ignored ..."
+    # warning when its config ignores the file, no config object matches it,
+    # or it lies outside the base path: SKIPPED with that line, not PASS.
+    run_tool_skip_on "lint" "File ignored" eslint "$file"
     _ts_typecheck "$file" "$ext"
     ;;
   go)
@@ -642,10 +702,14 @@ case "$ext" in
   rs)
     # rustfmt does not read Cargo.toml: with no edition it parses Rust 2015,
     # where 'async fn' is a syntax error. Pass the crate's edition unless the
-    # project's rustfmt config sets one.
+    # project's rustfmt config sets one. When that config sets
+    # disable_all_formatting = true, rustfmt --check exits 0 on any file:
+    # SKIPPED, and rustfmt does not run.
     rs_dir=$(_abs_dir "$file")
     edition=$(_cargo_edition "$rs_dir")
-    if [ -n "$edition" ] && ! _rustfmt_sets_edition "$rs_dir"; then
+    if rs_conf=$(_rustfmt_disabled "$rs_dir"); then
+      skip "format" "$rs_conf sets disable_all_formatting = true, so rustfmt --check would not check $file"
+    elif [ -n "$edition" ] && ! _rustfmt_sets_edition "$rs_dir"; then
       run_tool "format" rustfmt --check --edition "$edition" "$file"
     else
       run_tool "format" rustfmt --check "$file"
