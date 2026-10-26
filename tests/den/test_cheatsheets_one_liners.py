@@ -113,12 +113,16 @@ def test_delete_recipes_say_that_hidden_files_need_h():
 
 def test_fd_never_starts_a_mv_that_overwrites():
     # fd -x starts mv itself (a shell alias such as mv -i never applies), and
-    # `-x mv {} {.}.md` replaced an existing notes.md with notes.txt.
+    # `-x mv {} {.}.md` replaced an existing notes.md with notes.txt. -n alone
+    # still moved notes.txt into a directory named notes.md, so a rename needs
+    # -T too. A move into dest/ must not have it: dest/ itself would become
+    # the new name, and every file would be skipped.
     commands = [command for command, _ in map(_split, _sh_lines())]
     moves = [command for command in commands if re.search(r"-[xX] mv\b", command)]
     assert len(moves) == 3, moves
     for command in moves:
-        assert re.search(r"-[xX] mv -n -- \{\}", command), command
+        flags = "-n" if command.endswith("/") else "-n -T"
+        assert re.search(rf"-[xX] mv {flags} -- \{{\}}", command), command
 
 
 XH_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
@@ -261,6 +265,34 @@ def test_bulk_rename_skips_a_name_that_is_taken(repo, comment, taken, free):
     assert (repo / source).read_text(encoding="utf-8") == "SOURCE\n"
     assert (repo / free[1]).read_text(encoding="utf-8") == "FREE\n", result.stderr
     assert not (repo / free[0]).exists()
+
+
+@needs_tools
+@pytest.mark.parametrize(
+    "via_symlink", [False, True], ids=["directory", "symlink-to-directory"]
+)
+@pytest.mark.parametrize(
+    ("comment", "source", "target"),
+    [
+        (".jpeg → .jpg", "photo.jpeg", "photo.jpg"),
+        (".txt → .md", "notes.txt", "notes.md"),
+    ],
+    ids=["jpeg", "txt"],
+)
+def test_bulk_rename_skips_a_name_taken_by_a_directory(
+    repo, comment, source, target, via_symlink
+):
+    # mv takes a directory as its last operand (or a symlink to one) for the
+    # place to move into, -n or not: notes.txt next to a directory notes.md
+    # ended up as notes.md/notes.txt, and the run exited 0.
+    (repo / source).write_text("SOURCE\n", encoding="utf-8")
+    directory = repo / ("elsewhere" if via_symlink else target)
+    directory.mkdir()
+    if via_symlink:
+        (repo / target).symlink_to(directory.name, target_is_directory=True)
+    result = _run(_command(comment), repo)  # exit status: see above
+    assert [path.name for path in directory.iterdir()] == [], result.stderr
+    assert (repo / source).read_text(encoding="utf-8") == "SOURCE\n"
 
 
 @needs_tools
