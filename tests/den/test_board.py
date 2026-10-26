@@ -52,9 +52,14 @@ def _umask():
 
 
 def _request(port, method, path, body=None, headers=None):
+    """(status, body) of one request. The body goes as JSON, or as it is when
+    it is bytes: json.dumps cannot write every body a test sends."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        payload = None if body is None else json.dumps(body).encode()
+        if body is None or isinstance(body, bytes):
+            payload = body
+        else:
+            payload = json.dumps(body).encode()
         all_headers = {} if body is None else {"Content-Type": "application/json"}
         all_headers.update(headers or {})
         conn.request(method, path, body=payload, headers=all_headers)
@@ -925,6 +930,44 @@ def test_agent_list_answers_past_a_reaction_nested_near_the_limit(served, parse_
         status, body = _request(port, "GET", "/api/agent")
         assert status == 200, f"depth {depth}"
         assert _in_a_new_thread(json.loads, body)["entries"][0]["id"] == task_id
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(_BIG_INT_LINE, id="big-int"),
+        # As deep as a body may be, at two bytes a level. Where the stack lets
+        # json.loads parse it (CPython 3.14 sizes its limit to the stack), it
+        # is an array, and gets the 400 of every body that is not an object.
+        pytest.param(_nested(_board._MAX_BODY_BYTES // 2), id="deep"),
+    ],
+)
+def test_report_post_answers_a_body_json_cannot_parse(served, body):
+    # The ValueError and the RecursionError escaped do_POST, and the
+    # connection dropped without an answer.
+    root, _server, port = served
+    assert _request(port, "POST", "/api/report", body.encode())[0] == 400
+    assert not _board._reports_path(root).exists()
+    after = {"button": "note", "text": "after"}
+    assert _request(port, "POST", "/api/report", after)[0] == 200
+
+
+@pytest.mark.parametrize("field", ["button", "text", "re"])
+def test_report_post_stores_text_utf_8_cannot_carry(served, field):
+    # A browser's JSON.stringify writes the escape of a lone surrogate, as
+    # _request's json.dumps does here. The strict UTF-8 write in _append_line
+    # raised on what json.loads made of it: the connection dropped, and
+    # nothing was stored.
+    root, _server, port = served
+    body = {"button": "note", "text": "ok", "re": "t1", field: "caf\udce9"}
+    status, answer = _request(port, "POST", "/api/report", body)
+    assert status == 200
+    (line,) = _board._reports_path(root).read_text(encoding="utf-8").splitlines()
+    stored = json.loads(line)
+    assert (stored["id"], stored[field]) == (json.loads(answer)["id"], "caf?")
+    status, listed = _request(port, "GET", "/api/reports")
+    assert status == 200
+    assert json.loads(listed)["reports"] == [stored]
 
 
 def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):

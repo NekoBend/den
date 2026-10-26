@@ -180,6 +180,15 @@ def _append_line(root: Path, path: Path, line: str) -> bool:
     return True
 
 
+def _scrub(text: str) -> str:
+    """`text` with "?" in place of each lone surrogate, which json.dumps keeps
+    and the strict UTF-8 write in _append_line raises on. They come from argv
+    bytes that are not UTF-8 (Python decodes those with surrogateescape), and
+    from the escape of one in a POST body: json.loads accepts it, and a
+    browser's JSON.stringify writes it for a lone surrogate in the page's text."""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def _new_id() -> str:
     return secrets.token_hex(4)
 
@@ -635,7 +644,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (ValueError, RecursionError):
+            # ValueError covers UnicodeDecodeError and JSONDecodeError, and
+            # also int's digit limit (a 5000-digit number); a body nested too
+            # deep raises RecursionError. Those last two escaped here, and the
+            # connection dropped without an answer.
             self._send_json(400, {"error": "invalid JSON"})
             return
         button = payload.get("button") if isinstance(payload, dict) else None
@@ -649,11 +662,11 @@ class _Handler(BaseHTTPRequestHandler):
         entry: dict[str, object] = {
             "ts": datetime.now(UTC).isoformat(timespec="seconds"),
             "id": _new_id(),
-            "button": button.strip(),
-            "text": text.strip(),
+            "button": _scrub(button.strip()),
+            "text": _scrub(text.strip()),
         }
         if isinstance(re_id, str) and re_id.strip():
-            entry["re"] = re_id.strip()
+            entry["re"] = _scrub(re_id.strip())
         line = json.dumps(entry, ensure_ascii=False) + "\n"
         root = self.board.board_root
         with self.board.append_lock:
@@ -694,16 +707,14 @@ def _append_agent(
     root: Path, entry_type: str, text: str, re_id: str | None
 ) -> str | None:
     entry_id = _new_id()
-    # Lone surrogates (surrogateescape-decoded argv bytes) survive
-    # json.dumps but explode at the strict utf-8 file write - scrub first.
     entry: dict[str, object] = {
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "id": entry_id,
         "type": entry_type,
-        "text": text.strip().encode("utf-8", "replace").decode("utf-8"),
+        "text": _scrub(text.strip()),
     }
     if re_id is not None:
-        entry["re"] = re_id.encode("utf-8", "replace").decode("utf-8")
+        entry["re"] = _scrub(re_id)
     line = json.dumps(entry, ensure_ascii=False) + "\n"
     if not _append_line(root, _agent_path(root), line):
         return None
