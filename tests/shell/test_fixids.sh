@@ -219,6 +219,56 @@ else
 fi
 
 # =============================================================================
+# One class: a checked list too
+# =============================================================================
+# Without --from UID:GID and a --to GID there is one class (no --from, a
+# --from without a GID, or a --to without one), and its pass read find's
+# output through a pipe as find walked. A find killed mid-walk left that
+# stream ending inside a path, and xargs handed the fragment, a prefix of a
+# real path (an ancestor directory, or one -x excluded), to chown. That pass
+# now reads a list the walk checked first, as the three classes do. A find
+# stand-in runs the real one, then leaves what it wrote (its output, and each
+# -fprint0 list) less the last NUL and the character before it, and dies of
+# SIGKILL (CUTEND=sigkill) or exits 0 without a message (CUTEND=0). chown and
+# chgrp stand-ins only log their arguments, so these real runs change nothing.
+mkdir -p "$TESTTMP/cutall"
+{
+    printf '#!/bin/sh\nout="%s"\n"%s" "$@" > "$out" || exit\n' "$WORK/cutall.out" "$REAL_FIND"
+    cat <<'EOF'
+p=
+for a do
+    if [ "$p" = -fprint0 ]; then head -c -2 -- "$a" > "$a.cut" && mv -- "$a.cut" "$a"; fi
+    p=$a
+done
+head -c -2 -- "$out"
+[ "$CUTEND" != sigkill ] || kill -KILL $$
+EOF
+} > "$TESTTMP/cutall/find"
+for t in chown chgrp; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s"\n' "$t" "$WORK/cutall.calls" > "$TESTTMP/cutall/$t"
+done
+chmod +x "$TESTTMP/cutall/find" "$TESTTMP/cutall/chown" "$TESTTMP/cutall/chgrp"
+for _mode in "--from UID" "--to UID:GID" "--to UID"; do
+    case $_mode in
+        "--from UID") _args=(--from "$U" --to 2000) ;;
+        "--to UID:GID") _args=(--to 2000:2000) ;;
+        *) _args=(--to 2000) ;;
+    esac
+    echo "[fixids] $_mode: find killed mid-walk, its list ends inside a path: no chown runs"
+    rm -f "$WORK/cutall.calls"
+    actual=$(CUTEND=sigkill fx "$TESTTMP/cutall" "${_args[@]}" "$WORK/t")
+    assert_contains "fixids/$_mode, find killed: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 137); nothing was changed" "$actual"
+    assert_eq "fixids/$_mode, find killed: no chown ran" "" "$(cat "$WORK/cutall.calls" 2>/dev/null)"
+    assert_eq "fixids/$_mode, find killed: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+    echo "[fixids] $_mode: a list that ends inside a path stops the run, though find exits 0"
+    rm -f "$WORK/cutall.calls"
+    actual=$(CUTEND=0 fx "$TESTTMP/cutall" "${_args[@]}" "$WORK/t")
+    assert_contains "fixids/$_mode, cut list: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 0); nothing was changed" "$actual"
+    assert_eq "fixids/$_mode, cut list: no chown ran" "" "$(cat "$WORK/cutall.calls" 2>/dev/null)"
+    assert_eq "fixids/$_mode, cut list: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+done
+
+# =============================================================================
 # A real run (root only)
 # =============================================================================
 # Each class gets exactly its change, once: logging chown / chgrp stand-ins
