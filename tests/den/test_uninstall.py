@@ -1,7 +1,9 @@
 """Tests for den uninstall (den/_uninstall.py)."""
 
+import errno
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -499,6 +501,92 @@ def test_strip_block_says_whether_it_removed_a_block(tmp_path):
     assert _strip_block(rc, line) is False, "no block left to remove"
     assert rc.read_text() == "export FOO=1\n"
     assert _strip_block(tmp_path / "gone", line) is False
+
+
+def test_strip_block_keeps_the_rc_file_when_the_write_fails_part_way(tmp_path):
+    """The rc file was truncated and then written, so a write that failed
+    part-way (a full disk, an I/O error) left the user's file empty or cut
+    short. A file-size limit makes the write fail for real after its first
+    KiB, whichever way the bytes are written: the file must survive as it
+    was, and no temporary copy may be left beside it."""
+    resource = pytest.importorskip("resource")
+    import signal
+
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    original = b"export A=1\n" * 400 + f"\n# ===== den =====\n{line}\n".encode()
+    rc.write_bytes(original)
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    previous = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)  # EFBIG, not a kill
+    resource.setrlimit(resource.RLIMIT_FSIZE, (1024, hard))
+    try:
+        with pytest.raises(OSError, match="too large"):
+            _strip_block(rc, line)
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+        signal.signal(signal.SIGXFSZ, previous)
+    assert rc.read_bytes() == original, "the rc file is as it was"
+    assert sorted(tmp_path.iterdir()) == [rc], "no temporary copy is left"
+
+
+def test_strip_block_leaves_no_copy_when_the_replace_fails(tmp_path, monkeypatch):
+    # the same promise when the rename itself fails (any platform)
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    original = f"export A=1\n\n# ===== den =====\n{line}\n".encode()
+    rc.write_bytes(original)
+
+    def fail(*_a):
+        raise OSError(errno.EIO, "simulated I/O error")
+
+    monkeypatch.setattr(Path, "replace", fail)
+    with pytest.raises(OSError, match="simulated"):
+        _strip_block(rc, line)
+    monkeypatch.undo()
+    assert rc.read_bytes() == original
+    assert sorted(tmp_path.iterdir()) == [rc]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_strip_block_keeps_the_rc_files_mode(tmp_path):
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    rc.write_text(f"export A=1\n\n# ===== den =====\n{line}\n")
+    rc.chmod(0o640)
+    assert _strip_block(rc, line) is True
+    assert rc.read_text() == "export A=1\n"
+    assert stat.S_IMODE(rc.stat().st_mode) == 0o640
+
+
+def test_strip_block_rewrites_the_target_of_a_symlinked_rc_file(tmp_path, symlink):
+    """A ~/.bashrc linked into a dotfiles repo keeps its link: the new
+    content goes to the target, and the link is not replaced by a file."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    target = tmp_path / "dotfiles" / "bashrc"
+    target.parent.mkdir()
+    target.write_text(f"export A=1\n\n# ===== den =====\n{line}\n")
+    rc = tmp_path / ".bashrc"
+    symlink(target, rc)
+    assert _strip_block(rc, line) is True
+    assert rc.is_symlink() and rc.resolve() == target.resolve()
+    assert target.read_text() == "export A=1\n"
+
+
+def test_strip_block_empties_a_linked_rc_file_that_held_only_the_block(
+    tmp_path, symlink
+):
+    """A file holding only den's block is one den created, so it is removed;
+    but a link is the user's arrangement, and removing it left the target
+    with den's block in the dotfiles repo. The target is emptied instead."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    target = tmp_path / "dotfiles" / "zshrc"
+    target.parent.mkdir()
+    target.write_text(f"# ===== den =====\n{line}\n")
+    rc = tmp_path / ".zshrc"
+    symlink(target, rc)
+    assert _strip_block(rc, line) is True
+    assert rc.is_symlink(), "the link stays"
+    assert target.read_bytes() == b"", "den's block was all the file held"
 
 
 def test_strip_block_keeps_foreign_content(tmp_path):

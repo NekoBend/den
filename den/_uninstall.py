@@ -14,9 +14,13 @@ component, mirroring `den install`.
 
 from __future__ import annotations
 
+import errno
+import os
 import shutil
 import stat
 import sys
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from . import _ui
@@ -36,6 +40,37 @@ def _read_file(path: Path) -> bytes | None:
         return path.read_bytes()
     except (FileNotFoundError, NotADirectoryError):
         return None
+
+
+def _replace_bytes(path: Path, data: bytes) -> None:
+    """Put `data` in place of the file at `path` without truncating it first.
+
+    The bytes go to a new file beside it, which then replaces it in one
+    rename, so a write that fails part-way (a full disk, an I/O error) leaves
+    the file as it was instead of empty or cut short. The new file gets the
+    old one's permission bits. A symlink is followed: its target is replaced
+    and the link stays, as an in-place write would have left it. A file den
+    may not write is refused (PermissionError), as the in-place write refused
+    it, although its directory would let the rename through."""
+    real = path.resolve()
+    mode = stat.S_IMODE(real.stat().st_mode)
+    if not os.access(real, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+    fd, name = tempfile.mkstemp(
+        prefix=f"{real.name}.", suffix=".den-tmp", dir=real.parent
+    )
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.chmod(mode)
+        tmp.replace(real)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 def _has_block(rc: Path, line: str) -> bool:
@@ -67,10 +102,14 @@ def _has_block(rc: Path, line: str) -> bool:
 def _strip_block(rc: Path, line: str) -> bool:
     """Remove den's rc block: the `# ===== den =====` marker, the source line
     that follows it, and one preceding blank line (the append form). If nothing
-    but den's block was in the file, den created it, so the file goes too.
-    True when a block was removed; False when there was none to remove (the
-    file is then not rewritten). OSError when the file cannot be read,
-    rewritten or removed: the block is still there, and the caller says so.
+    but den's block was in the file, den created it, so the file goes too,
+    unless it is a symlink (the user's own arrangement, a dotfiles repo): its
+    target is emptied instead, and the link stays. The new content replaces
+    the file through a temporary copy (_replace_bytes), never by truncating
+    it. True when a block was removed; False when there was none to remove
+    (the file is then not rewritten). OSError when the file cannot be read,
+    rewritten or removed: the file is as it was, block included, and the
+    caller says so.
 
     Works on BYTES, keeping each surviving line with its own terminator. The
     previous version set one `crlf` flag if the file contained a single CRLF
@@ -87,9 +126,8 @@ def _strip_block(rc: Path, line: str) -> bool:
     """
     from ._shell import _bom_codec
 
-    try:
-        raw = rc.read_bytes()
-    except FileNotFoundError:
+    raw = _read_file(rc)
+    if raw is None:
         return False  # removed since den looked: no block left in it
     bom, codec = _bom_codec(raw)
     if codec == "utf-8":
@@ -103,8 +141,8 @@ def _strip_block(rc: Path, line: str) -> bool:
         kept = bom + kept.decode("utf-8").encode(codec)
     if not stripped:
         return False
-    if kept.removeprefix(bom):
-        rc.write_bytes(kept)
+    if kept.removeprefix(bom) or rc.is_symlink():
+        _replace_bytes(rc, kept)
     else:  # only den's block was there
         rc.unlink(missing_ok=True)
     return True
