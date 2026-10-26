@@ -294,11 +294,17 @@ _ptar_pipe() {
         */*) dir="${out%/*}" ;;
         *)   dir="." ;;
     esac
-    tmpd=$(command mktemp -d "$dir/.ptar.XXXXXX" 2>/dev/null)
+    # `|| tmpd=`: under a caller's `set -e` a failed mktemp ended the shell
+    # here, before the message below.
+    tmpd=$(command mktemp -d "$dir/.ptar.XXXXXX" 2>/dev/null) || tmpd=
     if [ -z "$tmpd" ]; then
         echo "ptar: cannot create a temporary directory in '$dir'" >&2
         return 1
     fi
+    # Every status in here is read in a condition (or let go with `|| true`).
+    # The subshell inherits a caller's `set -e`, and a failing tar or mv left
+    # in plain sight ended it on the spot: the old archive stayed in the
+    # staging directory, and nothing said so.
     (
         set -o pipefail
         sig=
@@ -309,10 +315,13 @@ _ptar_pipe() {
         rc=1
         if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$prev"; then
             if [ -z "$sig" ]; then
-                tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive"
-                rc=$?
-                if [ "$rc" -eq 0 ]; then
-                    mv -f -- "$tmpd/archive" "$out"
+                if tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive"; then
+                    if mv -f -- "$tmpd/archive" "$out"; then
+                        rc=0
+                    else
+                        rc=$?
+                    fi
+                else
                     rc=$?
                 fi
             fi
@@ -320,12 +329,12 @@ _ptar_pipe() {
         # Asked of the staging directory, not of a flag or of mv's status, as
         # in archive(): a move cut short by a signal may still have happened.
         if [ "$rc" -ne 0 ] && { [ -e "$prev" ] || [ -L "$prev" ]; }; then
-            mv -f -- "$prev" "$out"
+            mv -f -- "$prev" "$out" || true
         fi
         if [ "$rc" -ne 0 ] && { [ -e "$prev" ] || [ -L "$prev" ]; }; then
             echo "ptar: previous '$out' kept at $prev" >&2
         else
-            rm -rf -- "$tmpd"
+            rm -rf -- "$tmpd" || true
         fi
         if [ -n "$sig" ]; then
             trap - "$sig"

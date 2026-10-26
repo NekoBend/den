@@ -747,6 +747,12 @@ archive() {
             # so the caller (a loop at the prompt, a script) still sees an
             # interrupted command. The subshell keeps these traps away from
             # the user's own.
+            #
+            # Every status in it is read in a condition (or let go with
+            # `|| true`), for the same end: the subshell inherits a caller's
+            # `set -e`, and a failing archiver, rm or mv left in plain sight
+            # ended it on the spot, with the old archive in the staging
+            # directory and nothing said.
             (
                 _ar_sig=
                 trap '_ar_sig=INT' INT
@@ -758,7 +764,11 @@ archive() {
                     if [ -z "$_ar_sig" ]; then
                         case "$_ar_fmt" in
                             zip)
-                                zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@"
+                                if zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@"; then
+                                    _ar_rc=0
+                                else
+                                    _ar_rc=$?
+                                fi
                                 ;;
                             *)
                                 # 7z is not in the test image
@@ -781,19 +791,24 @@ archive() {
                                 # is sourced by those two only), which a POSIX
                                 # parser reading the file would reject.
                                 eval 'set -- "${@/#-/./-}"; set -- "${@/#@/./@}"'
-                                7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@"
+                                if 7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@"; then
+                                    _ar_rc=0
+                                else
+                                    _ar_rc=$?
+                                fi
                                 ;;
                         esac
-                        _ar_rc=$?
                         # What a failed archiver left at $out is not the old
                         # archive, and must not stay in its place.
-                        [ "$_ar_rc" -ne 0 ] && rm -f -- "$out"
+                        if [ "$_ar_rc" -ne 0 ]; then
+                            rm -f -- "$out" || true
+                        fi
                     fi
                 fi
                 # Tested by what is in the staging directory rather than by a
                 # flag: a move-aside cut short may still have moved the file.
                 if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
-                    mv -f -- "$_ar_prev" "$out"
+                    mv -f -- "$_ar_prev" "$out" || true
                 fi
                 # The restore can fail as well: the directory turned read-only
                 # while the archiver ran, or a second Ctrl-C stopped mv. The
@@ -804,7 +819,7 @@ archive() {
                 if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
                     echo "archive: previous '$out' kept at $_ar_prev" >&2
                 else
-                    rm -rf -- "$_ar_tmpd"
+                    rm -rf -- "$_ar_tmpd" || true
                 fi
                 if [ -n "$_ar_sig" ]; then
                     trap - "$_ar_sig"

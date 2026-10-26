@@ -608,6 +608,37 @@ STUB
     assert_eq "$sh/archive .zip kept the previous archive it could not put back" "PRECIOUS" "$(cat "$WORK/back"/.archive.*/previous 2>/dev/null)"
     rm -rf "$WORK/back"
 
+    # The steps run in a subshell, which inherits a caller's `set -e`. A
+    # failing archiver, rm or mv in plain sight ended it before the restore:
+    # the previous archive stayed in the staging directory, and nothing said
+    # so.
+    echo "[$sh] archive .zip/.7z under set -euo pipefail put the previous archive back, or say where it is"
+    rm -rf "$WORK/strict"
+    mkdir -p "$WORK/strict/bin" "$WORK/strict/src"
+    echo x > "$WORK/strict/src/x"
+    _strict="set -euo pipefail; source '$FUNCTIONS_SH'; PATH='$WORK/strict/bin:$PATH'; cd '$WORK/strict'"
+    echo PRECIOUS > "$WORK/strict/keep.zip"
+    actual=$("$sh" -c "$_strict; archive keep.zip missing; echo after" 2>&1)
+    assert_failure "$sh/archive .zip under set -e with zip failing fails" "$?"
+    assert_not_contains "$sh/archive .zip under set -e with zip failing stops its caller" "after" "$actual"
+    assert_eq "$sh/archive .zip under set -e with zip failing puts the previous archive back" "PRECIOUS" "$(cat "$WORK/strict/keep.zip" 2>/dev/null)"
+    assert_eq "$sh/archive .zip under set -e with zip failing leaves no staging directory" "" "$(ls -A "$WORK/strict" | grep '^\.archive\.' | tr -d '\n')"
+    # zip fails, and then the move back (the stub of the case above).
+    printf '#!/bin/sh\nmkdir -p keep.zip/previous\nexit 3\n' > "$WORK/strict/bin/zip"
+    chmod +x "$WORK/strict/bin/zip"
+    actual=$("$sh" -c "$_strict; archive keep.zip src; echo after" 2>&1)
+    assert_contains "$sh/archive .zip under set -e with the move back failing says where the previous archive is" "archive: previous 'keep.zip' kept at ./.archive." "$actual"
+    assert_eq "$sh/archive .zip under set -e with the move back failing keeps the previous archive" "PRECIOUS" "$(cat "$WORK/strict"/.archive.*/previous 2>/dev/null)"
+    rm -rf "$WORK/strict/keep.zip" "$WORK/strict"/.archive.*
+    printf '#!/bin/sh\nexit 2\n' > "$WORK/strict/bin/7z"
+    chmod +x "$WORK/strict/bin/7z"
+    echo PRECIOUS > "$WORK/strict/keep.7z"
+    actual=$("$sh" -c "$_strict; archive keep.7z src; echo after" 2>&1)
+    assert_failure "$sh/archive .7z under set -e with 7z failing fails" "$?"
+    assert_eq "$sh/archive .7z under set -e with 7z failing puts the previous archive back" "PRECIOUS" "$(cat "$WORK/strict/keep.7z" 2>/dev/null)"
+    assert_eq "$sh/archive .7z under set -e with 7z failing leaves no staging directory" "" "$(ls -A "$WORK/strict" | grep '^\.archive\.' | tr -d '\n')"
+    rm -rf "$WORK/strict"
+
     # `set -- "$@" x` per source made the 7z branch quadratic: 20000 sources
     # took minutes in bash before 7z even started. Linear, it is well under a
     # second; the timeout only catches the quadratic form.

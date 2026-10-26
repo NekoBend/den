@@ -519,6 +519,40 @@ for sh in bash zsh; do
     assert_eq "$sh/ptar kept the previous archive it could not put back" "PRECIOUS" "$(cat "$WORK/back"/.ptar.*/previous 2>/dev/null)"
     rm -rf "$WORK/back"
 
+    # The steps run in a subshell, which inherits a caller's `set -e`. A
+    # failing tar or mv in plain sight ended it before the restore: the
+    # previous archive stayed in the staging directory, and nothing said so.
+    # A pigz stub stands in for the compressor, as above.
+    echo "[$sh] ptar under set -euo pipefail puts the previous archive back, or says where it is"
+    rm -rf "$WORK/strict"
+    mkdir -p "$WORK/strict/bin" "$WORK/strict/src"
+    echo x > "$WORK/strict/src/x"
+    _strict="set -euo pipefail; source '$PARALLEL_SH'; PATH='$WORK/strict/bin:$PATH'; cd '$WORK/strict'"
+    printf '#!/bin/sh\nexec gzip -c\n' > "$WORK/strict/bin/pigz"
+    chmod +x "$WORK/strict/bin/pigz"
+    echo PRECIOUS > "$WORK/strict/keep.tgz"
+    actual=$("$sh" -c "$_strict; ptar keep.tgz src missing; echo after" 2>&1)
+    assert_failure "$sh/ptar under set -e with tar failing fails" "$?"
+    assert_not_contains "$sh/ptar under set -e with tar failing stops its caller" "after" "$actual"
+    assert_eq "$sh/ptar under set -e with tar failing puts the previous archive back" "PRECIOUS" "$(cat "$WORK/strict/keep.tgz" 2>/dev/null)"
+    assert_eq "$sh/ptar under set -e with tar failing leaves no staging directory" "" "$(ls -A "$WORK/strict" | grep '^\.ptar\.' | tr -d '\n')"
+    # The compressor fails, and then the move back (as above).
+    printf '#!/bin/sh\ncat > /dev/null\nmkdir -p keep.tgz/previous\nexit 3\n' > "$WORK/strict/bin/pigz"
+    actual=$("$sh" -c "$_strict; ptar keep.tgz src; echo after" 2>&1)
+    assert_contains "$sh/ptar under set -e with the move back failing says where the previous archive is" "ptar: previous 'keep.tgz' kept at ./.ptar." "$actual"
+    assert_eq "$sh/ptar under set -e with the move back failing keeps the previous archive" "PRECIOUS" "$(cat "$WORK/strict"/.ptar.*/previous 2>/dev/null)"
+    rm -rf "$WORK/strict/keep.tgz" "$WORK/strict"/.ptar.*
+    # The archive is written, and putting it in place fails, then the move back.
+    echo PRECIOUS > "$WORK/strict/keep.tgz"
+    printf '#!/bin/sh\ncat > /dev/null\nmkdir -p keep.tgz/archive keep.tgz/previous\n' > "$WORK/strict/bin/pigz"
+    actual=$("$sh" -c "$_strict; ptar keep.tgz src; echo after" 2>&1)
+    assert_contains "$sh/ptar under set -e with publishing failing says where the previous archive is" "ptar: previous 'keep.tgz' kept at ./.ptar." "$actual"
+    assert_eq "$sh/ptar under set -e with publishing failing keeps the previous archive" "PRECIOUS" "$(cat "$WORK/strict"/.ptar.*/previous 2>/dev/null)"
+    # And with no staging directory to be had, ptar says so.
+    actual=$("$sh" -c "$_strict; ptar nodir/out.tgz src; echo after" 2>&1)
+    assert_contains "$sh/ptar under set -e says it cannot create a staging directory" "ptar: cannot create a temporary directory in 'nodir'" "$actual"
+    rm -rf "$WORK/strict"
+
     # Between moving the existing output aside and putting it back there is
     # no <out>, so a Ctrl-C (or a TERM) while tar ran must not end the
     # function there. A pigz stub that waits stands in for a slow run; the

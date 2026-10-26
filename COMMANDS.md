@@ -476,6 +476,10 @@ threaded forms write the archive only once tar and the compressor have both
 succeeded, so a failed run leaves no truncated archive. They also leave an
 existing output out of the new archive, so running `ptar backup.tgz .` or
 `ptar all.tgz *` again does not store the previous archive inside the new one.
+The existing output waits in a staging directory beside it while they run;
+should it fail to go back in place after a failed or interrupted run, they
+leave it there and say where, as `archive` does
+(`ptar: previous 'backup.tgz' kept at ./.ptar.XXXXXX/previous`).
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
