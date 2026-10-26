@@ -131,7 +131,7 @@ def test_bulk_renames_rename_only_files():
     renames = [
         command
         for command, _ in map(_split, _sh_lines())
-        if re.search(r"-x mv -n -T\b", command)
+        if re.search(r"-x mv .*\{\.\}", command)
     ]
     assert len(renames) == 2, renames
     for command in renames:
