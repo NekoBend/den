@@ -54,6 +54,12 @@ function _Batches {
 
 # ===== Parallel File Operations =====
 
+# Every refusal below (a usage line, a destination that is not a directory, a
+# declined prm, no tar, an unsupported format) is a terminating error, as a
+# failure is. A plain Write-Error and return left $? true and `pwsh -Command`
+# exiting 0, so `pcp a b nodir && prm -Force a b` removed both files after pcp
+# had refused and copied nothing. The posix twins return 1 for each of them.
+
 # pcp → parallel copy (like cp, last arg is destination)
 function pcp {
     # Not Mandatory: a bare `pcp` must print the usage line, not open an
@@ -64,16 +70,14 @@ function pcp {
     )
 
     if ($Paths.Count -lt 2) {
-        Write-Error "usage: <src...> <dest>"
-        return
+        Write-Error "usage: <src...> <dest>" -ErrorAction Stop
     }
 
     $dest = $Paths[-1]
     $sources = _ResolvePaths $Paths[0..($Paths.Count - 2)]
 
     if ($sources.Count -gt 1 -and -not (Test-Path -LiteralPath $dest -PathType Container)) {
-        Write-Error "'$dest' is not a directory"
-        return
+        Write-Error "'$dest' is not a directory" -ErrorAction Stop
     }
 
     $jobs = [Environment]::ProcessorCount
@@ -99,16 +103,14 @@ function pmv {
     )
 
     if ($Paths.Count -lt 2) {
-        Write-Error "usage: <src...> <dest>"
-        return
+        Write-Error "usage: <src...> <dest>" -ErrorAction Stop
     }
 
     $dest = $Paths[-1]
     $sources = _ResolvePaths $Paths[0..($Paths.Count - 2)]
 
     if ($sources.Count -gt 1 -and -not (Test-Path -LiteralPath $dest -PathType Container)) {
-        Write-Error "'$dest' is not a directory"
-        return
+        Write-Error "'$dest' is not a directory" -ErrorAction Stop
     }
 
     $jobs = [Environment]::ProcessorCount
@@ -137,8 +139,7 @@ function prm {
         $Paths = @($Paths | Select-Object -Skip 1)
     }
     if ($Paths.Count -eq 0) {
-        Write-Error "usage: [-Force|--force] <path...>"
-        return
+        Write-Error "usage: [-Force|--force] <path...>" -ErrorAction Stop
     }
     $Paths = _ResolvePaths $Paths
 
@@ -148,8 +149,7 @@ function prm {
     if (-not $Force) {
         $reply = Read-Host "prm: remove $($Paths.Count) paths ($entries entries)? [y/N] "
         if ($reply -notmatch '^[yY]$') {
-            Write-Error "aborted"
-            return
+            Write-Error "aborted" -ErrorAction Stop
         }
     }
 
@@ -177,12 +177,10 @@ function ptar {
     )
 
     if (-not $Output -or $Sources.Count -eq 0) {
-        Write-Error "usage: <output.tar|.tar.gz|.tgz|.tar.bz2|.tbz2|.tar.xz|.txz> <src...>"
-        return
+        Write-Error "usage: <output.tar|.tar.gz|.tgz|.tar.bz2|.tbz2|.tar.xz|.txz> <src...>" -ErrorAction Stop
     }
     if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
-        Write-Error "'tar' command not found"
-        return
+        Write-Error "'tar' command not found" -ErrorAction Stop
     }
 
     Write-Host "+ ptar: compressing → $Output"
@@ -195,7 +193,7 @@ function ptar {
         '\.tar\.bz2$|\.tbz2$' { tar cjf $Output -- @Sources; break }
         '\.tar\.xz$|\.txz$'   { tar cJf $Output -- @Sources; break }
         '\.tar$'               { tar cf  $Output -- @Sources; break }
-        default                { Write-Error "unsupported format '$Output'"; return }
+        default                { Write-Error "unsupported format '$Output'" -ErrorAction Stop }
     }
     # tar's own status: a source it could not read left a partial archive and
     # ptar still succeeded. Terminating, because a plain Write-Error inside a

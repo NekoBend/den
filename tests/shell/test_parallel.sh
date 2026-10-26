@@ -716,6 +716,33 @@ assert_contains "pwsh/prm counts the paths that failed" "prm: 1 path(s) failed" 
 actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { prm -Force missing.txt 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
 assert_eq "pwsh/prm failure is a terminating error" "caught" "$actual"
 
+echo "[pwsh] pcp/pmv/prm/ptar: a refusal is a failure"
+# Each refusal was a plain Write-Error and return, which leaves \$? true and
+# `pwsh -Command` exiting 0: `pcp a b nodir && prm -Force a b` removed both
+# files after pcp had refused the destination and copied nothing.
+setup_fixtures
+mkdir -p "$WORK/nobin"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; pcp file1.txt file2.txt nodir && prm -Force file1.txt file2.txt" >/dev/null 2>&1
+assert_failure "pwsh/pcp into a destination that is not a directory exits nonzero" "$?"
+assert_exists "pwsh/pcp refusal stops a && chain" "$WORK/src/file1.txt"
+while IFS='|' read -r _label _call; do
+    actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; try { $_call 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
+    assert_eq "pwsh/$_label is a terminating error" "caught" "$actual"
+done <<CALLS
+pcp without arguments|pcp
+pcp with one argument|pcp file1.txt
+pmv without arguments|pmv
+pmv into a destination that is not a directory|pmv file1.txt file2.txt nodir
+prm without paths|prm --force
+prm declined|function Read-Host { 'n' }; prm file1.txt
+ptar without arguments|ptar
+ptar with an unsupported format|ptar out.zip file1.txt
+ptar without tar|\$env:PATH = '$WORK/nobin'; ptar out.tar file1.txt
+CALLS
+assert_exists "pwsh/declined prm kept the file" "$WORK/src/file1.txt"
+assert_exists "pwsh/refused pmv moved nothing" "$WORK/src/file2.txt"
+rm -rf "$WORK/nobin"
+
 echo "[pwsh] prm: a confirmed removal takes hidden entries too"
 # Remove-Item without -Force refuses hidden items, so a confirmed prm removed
 # every visible file in the tree and left the dotfiles and .git behind.
