@@ -623,6 +623,57 @@ def test_reactions_read_whole_lines_across_chunks(tmp_path, monkeypatch):
     }
 
 
+def test_reactions_read_only_what_was_appended(tmp_path, monkeypatch):
+    # After the first poll, a poll takes in only what was appended since, so
+    # the 5 s poll never reads the whole file again. The file is longer than
+    # the seam: a seam compared anywhere but where it was read would make
+    # every poll start over from byte 0.
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    notes = [{"id": f"n{i}", "button": "note", "text": "x" * 100} for i in range(64)]
+    reports.write_bytes("".join(json.dumps(n) + "\n" for n in notes).encode())
+    assert reports.stat().st_size > _board._SEAM_BYTES
+    index = _board._Reactions(tmp_path)
+    assert index.snapshot() == {}
+
+    taken = []
+    take = _board._Reactions._take
+
+    def record(self, block):
+        taken.append(block)
+        take(self, block)
+
+    monkeypatch.setattr(_board._Reactions, "_take", record)
+    line = json.dumps({"button": "task-done", "re": "t1"}).encode() + b"\n"
+    with reports.open("ab") as f:
+        f.write(line)
+    assert "t1" in index.snapshot()
+    assert taken == [line], "the poll took in only the appended line"
+    assert index._offset == reports.stat().st_size
+    taken.clear()
+    assert "t1" in index.snapshot()
+    assert taken == [], "a poll of an untouched file takes in nothing"
+
+
+# Lines json.loads rejects with something other than JSONDecodeError: an array
+# nested deeper than the parser can recurse (RecursionError), and an int past
+# Python's 4300-digit limit for int(str) (a plain ValueError).
+_DEEP_LINE = "[" * 200_000 + "]" * 200_000
+_BIG_INT_LINE = '{"n": ' + "1" * 5000 + "}"
+
+
+def test_reactions_skip_lines_json_cannot_parse(tmp_path):
+    # Both come before the reaction: a read that raised on them would never
+    # reach it, and would raise again on every poll after.
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    reaction = json.dumps({"button": "task-done", "re": "t1"})
+    reports.write_bytes(f"{_DEEP_LINE}\n{_BIG_INT_LINE}\n{reaction}\n".encode())
+    index = _board._Reactions(tmp_path)
+    assert index.snapshot()["t1"]["button"] == "task-done"
+    assert index.snapshot()["t1"]["button"] == "task-done", "and on the next poll"
+
+
 def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):
     reports = _board._reports_path(tmp_path)
     reports.parent.mkdir(parents=True)
