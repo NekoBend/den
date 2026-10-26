@@ -1217,7 +1217,7 @@ def test_typed_powershell_assignments_are_definitions(tmp_path: Path) -> None:
         "lib.ps1",
         "[int]$MaxTries = 3\n"
         "[string[]]$Names = @()\n"
-        "[Collections.Generic.List[string]] $Items = @()\n"
+        "[Collections.Generic.List[string[]]] $Items = @()\n"
         "[ValidateRange(1, 10)][int]$Level = 5\n"
         "$Plain = 5\n"
         "function Get-Thing {\n"
@@ -1231,7 +1231,7 @@ def test_typed_powershell_assignments_are_definitions(tmp_path: Path) -> None:
     expected_defs = {
         "MaxTries": "lib.ps1:1:def:[int]$MaxTries = 3",
         "Names": "lib.ps1:2:def:[string[]]$Names = @()",
-        "Items": "lib.ps1:3:def:[Collections.Generic.List[string]] $Items = @()",
+        "Items": "lib.ps1:3:def:[Collections.Generic.List[string[]]] $Items = @()",
         "Level": "lib.ps1:4:def:[ValidateRange(1, 10)][int]$Level = 5",
         "Count": "lib.ps1:7:def:[int]$script:Count = 0",
     }
