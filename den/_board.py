@@ -222,6 +222,50 @@ def _depth(value: object) -> int:
     return depth
 
 
+def _well_formed(button: object) -> bool:
+    """Whether `button` is a well-formed board.json button: an object with a
+    string id, and a string label and color when it has them (a null counts
+    as none)."""
+    if not isinstance(button, dict) or not isinstance(button.get("id"), str):
+        return False
+    return all(
+        value is None or isinstance(value, str)
+        for value in (button.get("label"), button.get("color"))
+    )
+
+
+def _usable_buttons(cfg_path: Path, buttons: object) -> object:
+    """The well-formed buttons of board.json, or the default buttons when
+    none is left. Those left out are named on stderr.
+
+    The page drew each button through conversions that call the value's own
+    toString, which throw on an object whose toString is not a function
+    ({"toString": null}), and it read b.id off a null button. Such a button
+    stopped the page part way through drawing its buttons or its reports
+    list, or both. An empty list stays empty: nothing in it was left out.
+    """
+    if not isinstance(buttons, list):
+        print(
+            f"den board: buttons in {cfg_path} is not a list; "
+            "using the default buttons",
+            file=sys.stderr,
+        )
+        return _DEFAULT_CONFIG["buttons"]
+    left_out = [n for n, b in enumerate(buttons, start=1) if not _well_formed(b)]
+    if not left_out:
+        return buttons
+    kept = [b for b in buttons if _well_formed(b)]
+    named = ", ".join(map(str, left_out[:10])) + (", ..." if len(left_out) > 10 else "")
+    plural = "s" if len(left_out) > 1 else ""
+    fallback = "" if kept else "; using the default buttons"
+    print(
+        f"den board: leaving out button{plural} {named} of {cfg_path} (a button "
+        f"needs a string id, and a string label and color if it has them){fallback}",
+        file=sys.stderr,
+    )
+    return kept or _DEFAULT_CONFIG["buttons"]
+
+
 def ensure_scaffold(root: Path) -> dict[str, object]:
     """Create .den/board/board.json with defaults; never clobber edits."""
     cfg_path = _board_dir(root) / "board.json"
@@ -261,7 +305,9 @@ def ensure_scaffold(root: Path) -> dict[str, object]:
     if not isinstance(loaded, dict):
         print(f"den board: {cfg_path} is not a JSON object", file=sys.stderr)
         return dict(_DEFAULT_CONFIG)
-    return {**_DEFAULT_CONFIG, **loaded}
+    config = {**_DEFAULT_CONFIG, **loaded}
+    config["buttons"] = _usable_buttons(cfg_path, config["buttons"])
+    return config
 
 
 def _split_jsonl(data: bytes) -> list[str]:

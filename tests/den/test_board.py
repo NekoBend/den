@@ -695,12 +695,21 @@ def test_scaffold_reads_a_board_json_json_cannot_take_as_invalid(tmp_path, capsy
     assert cfg_path.read_bytes() == data, "an edit is never clobbered"
 
 
+def _deep_buttons(depth):
+    """The buttons of a board.json `depth` levels deep: the object, its buttons
+    and one well-formed button are three levels, and the button's "x" holds
+    the rest. Only buttons den board keeps reach /api/config; nested in the
+    list itself, the depth would be a button it leaves out."""
+    rest = depth - 3
+    return '[{"id": "deep", "label": "Deep", "x": ' + "[" * rest + "]" * rest + "}]"
+
+
 @pytest.mark.parametrize(
     "buttons",
     [
         pytest.param('[{"id": "bug", "label": "Bug", "color": NaN}]', id="NaN"),
         pytest.param('[{"id": "bug", "label": "Bug", "size": 1e400}]', id="1e400"),
-        pytest.param("[" * 1000 + "]" * 1000, id="deep"),
+        pytest.param(_deep_buttons(1000), id="deep"),
     ],
 )
 def test_scaffold_reads_a_board_json_the_page_cannot_get_as_invalid(
@@ -724,11 +733,11 @@ def test_scaffold_reads_a_board_json_nested_past_the_bound_as_invalid(tmp_path, 
     cfg_path = tmp_path / ".den" / "board" / "board.json"
     cfg_path.parent.mkdir(parents=True)
     bound = _board._MAX_CONFIG_DEPTH
-    # The object is a level of its own, so the buttons get one level less.
-    cfg_path.write_text('{"buttons": ' + _nested(bound - 1) + "}\n")
-    assert _board.ensure_scaffold(tmp_path)["buttons"] == json.loads(_nested(bound - 1))
+    buttons = _deep_buttons(bound)
+    cfg_path.write_text('{"buttons": ' + buttons + "}\n")
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == json.loads(buttons)
     assert capsys.readouterr().err == ""
-    cfg_path.write_text('{"buttons": ' + _nested(bound) + "}\n")
+    cfg_path.write_text('{"buttons": ' + _deep_buttons(bound + 1) + "}\n")
     assert _board.ensure_scaffold(tmp_path) == _board._DEFAULT_CONFIG
     expected = f"unreadable {cfg_path}: nested deeper than {bound} levels"
     assert expected in capsys.readouterr().err
@@ -745,7 +754,7 @@ def test_config_answers_past_a_board_json_nested_near_the_limit(
     root, server, port = served
     cfg_path = root / ".den" / "board" / "board.json"
     for depth in _near(parse_limit):
-        buttons = _nested(depth - 1)  # depth levels, with the object
+        buttons = _deep_buttons(depth)
         cfg_path.write_text('{"buttons": ' + buttons + "}\n")
         server.board_config = _in_a_new_thread(_board.ensure_scaffold, root)
         status, body = _request(port, "GET", "/api/config")
@@ -757,6 +766,96 @@ def test_config_answers_past_a_board_json_nested_near_the_limit(
             f'"buttons": {buttons}'.encode() in body
         ), f"depth {depth}"
     capsys.readouterr()
+
+
+# board.json buttons den board leaves out: a button needs to be an object with
+# a string id, and a string label and color when it has them. The page drew a
+# button through conversions that call the value's own toString, which throw
+# on an object whose toString is not a function, and read b.id off a null one;
+# such a button stopped it part way through drawing its buttons or reports.
+_MALFORMED_BUTTONS = [
+    pytest.param("null", id="null"),
+    pytest.param('"bug"', id="string"),
+    pytest.param('["bug", "Bug"]', id="list"),
+    pytest.param('{"label": "Bug"}', id="no-id"),
+    pytest.param('{"id": 7, "label": "Bug"}', id="id-number"),
+    pytest.param('{"id": {"toString": null}, "label": "Bug"}', id="id-object"),
+    pytest.param('{"id": "bug", "label": {"toString": null}}', id="label-object"),
+    pytest.param('{"id": "bug", "label": 7}', id="label-number"),
+    pytest.param('{"id": "bug", "color": {"toString": null}}', id="color-object"),
+    pytest.param('{"id": "bug", "color": 255}', id="color-number"),
+]
+_NOTE_BUTTON = '{"id": "note", "label": "Note"}'
+_OK_BUTTON = '{"id": "ok", "label": "OK", "color": "#0ca30c"}'
+
+
+@pytest.mark.parametrize("bad", _MALFORMED_BUTTONS)
+def test_scaffold_leaves_out_a_malformed_button(tmp_path, capsys, bad):
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    data = f'{{"title": "Rig", "buttons": [{_NOTE_BUTTON}, {bad}, {_OK_BUTTON}]}}\n'
+    cfg_path.write_text(data)
+    config = _board.ensure_scaffold(tmp_path)
+    assert config["title"] == "Rig"
+    assert config["buttons"] == [json.loads(_NOTE_BUTTON), json.loads(_OK_BUTTON)]
+    assert f"leaving out button 2 of {cfg_path}" in capsys.readouterr().err
+    assert cfg_path.read_text() == data, "an edit is never clobbered"
+
+
+@pytest.mark.parametrize(
+    "buttons",
+    [
+        pytest.param("[null]", id="none-left"),
+        pytest.param('[{"id": {"toString": null}}, 7]', id="none-left-of-two"),
+        pytest.param('{"id": "bug", "label": "Bug"}', id="not-a-list"),
+        pytest.param("null", id="null"),
+    ],
+)
+def test_scaffold_falls_back_to_the_default_buttons_when_none_is_left(
+    tmp_path, capsys, buttons
+):
+    # A page without buttons can file no report. Before, a list of buttons it
+    # could not draw left it none, and so did buttons that are not a list.
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    data = '{"title": "Rig", "buttons": ' + buttons + "}\n"
+    cfg_path.write_text(data)
+    expected = {**_board._DEFAULT_CONFIG, "title": "Rig"}
+    assert _board.ensure_scaffold(tmp_path) == expected
+    assert "using the default" in capsys.readouterr().err
+    assert cfg_path.read_text() == data, "an edit is never clobbered"
+
+
+def test_scaffold_names_each_button_it_leaves_out(tmp_path, capsys):
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(f'{{"buttons": [null, {_NOTE_BUTTON}, 7, {_OK_BUTTON}]}}\n')
+    kept = [json.loads(_NOTE_BUTTON), json.loads(_OK_BUTTON)]
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == kept
+    assert f"leaving out buttons 1, 3 of {cfg_path}" in capsys.readouterr().err
+    # Ten are named, and "..." stands for the rest.
+    cfg_path.write_text('{"buttons": [' + "null, " * 12 + _NOTE_BUTTON + "]}\n")
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == kept[:1]
+    named = "leaving out buttons 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ... of"
+    assert named in capsys.readouterr().err
+
+
+def test_scaffold_keeps_buttons_without_a_label_or_color(tmp_path, capsys):
+    # The page draws a button without a label by its id, and one without a
+    # color in the page's own; a null label or color counts as none. Other
+    # fields a button holds are kept as they are. An empty list stays empty.
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    buttons = [
+        {"id": "crash"},
+        {"id": "hang", "label": None, "color": None},
+        {"id": "odd", "label": "Odd", "color": "#b8860b", "keys": [{"n": 1}]},
+    ]
+    cfg_path.write_text(json.dumps({"buttons": buttons}))
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == buttons
+    cfg_path.write_text('{"buttons": []}')
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == []
+    assert capsys.readouterr().err == ""
 
 
 def test_reactions_skip_lines_json_cannot_parse(tmp_path):
