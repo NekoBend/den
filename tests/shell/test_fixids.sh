@@ -130,6 +130,32 @@ for _xfsz in ignored default; do
 done
 rm -rf "${WORK:?}/big"
 
+# The same stop for a list cut by hand, in each of the three lists, which does
+# not hang on how find writes: a find stand-in runs the real one, then leaves
+# in the list named by CUT the "both" list's paths less the last NUL and the
+# character before it (a list that ends inside a path) and exits 0 without a
+# message. fixids used to run its passes over such a list.
+mkdir -p "$TESTTMP/cutfind"
+{
+    printf '#!/bin/sh\n"%s" "$@" || exit\n' "$REAL_FIND"
+    cat <<'EOF'
+for a do
+    case $a in */both) b=$a ;; esac
+    case $a in */"$CUT") c=$a ;; esac
+done
+head -c -2 -- "$b" > "$c.cut" && mv -- "$c.cut" "$c"
+EOF
+} > "$TESTTMP/cutfind/find"
+chmod +x "$TESTTMP/cutfind/find"
+for _list in both uid gid; do
+    echo "[fixids] a $_list list that ends inside a path stops the run, though find exits 0"
+    actual=$(CUT=$_list fx "$TESTTMP/cutfind" -n --from "$U:$G" --to 2000:2000 "$WORK/t")
+    assert_contains "fixids/hand-cut $_list list: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 0); nothing was changed" "$actual"
+    assert_not_contains "fixids/hand-cut $_list list: no pass ran" "would be" "$actual"
+    assert_eq "fixids/hand-cut $_list list: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+    assert_eq "fixids/hand-cut $_list list: lists removed" "" "$(find "$WORK/tmp" -mindepth 1)"
+done
+
 # An unreadable directory is a walk error, not a list error: the passes still
 # run over what find could read, and the run fails. Root reads any directory.
 echo "[fixids] an unreadable directory still lets the passes run"

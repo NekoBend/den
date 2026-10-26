@@ -278,12 +278,18 @@ run_pass() {
 # parentheses keep the prune ahead of all three.
 # A list find could not write in full (TMPDIR full, a file-size limit), or one
 # a find stopped by a signal left, can end in or splice in part of a path,
-# which chown would take for a path (an ancestor directory, say). So when
-# find names a list in an error, or does not exit 0 or 1, fixids stops before
-# it changes anything. Other walk errors (an unreadable directory) let the
+# which chown would take for a path (an ancestor directory, say). So fixids
+# stops before it changes anything when find names a list in an error, when
+# find does not exit 0 or 1, or when a list is not empty and its last byte is
+# not a NUL. find does not always notice a cut: GNU find 4.10 reports a list
+# it could not write only when closing the list fails, so with a file-size
+# limit and SIGXFSZ ignored it can exit 0, without a message, over a list
+# that ends inside a path. The last-byte check sees only where a list ends: a
+# list cut exactly after a NUL looks complete to it, and so does one that lost
+# bytes before its end. Other walk errors (an unreadable directory) let the
 # passes run, as before; find's messages are read for this and then printed.
 classify() {
-	local err rc=0 bad=0
+	local err rc=0 bad=0 l
 	tmpd=$(mktemp -d "${TMPDIR:-/tmp}/fixids.XXXXXX")
 	trap 'rm -rf -- "$tmpd"' EXIT
 	err=$(find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} '(' \
@@ -291,14 +297,17 @@ classify() {
 		'(' -uid "$1" '!' -gid "$2" -fprint0 "$tmpd/uid" ')' , \
 		'(' '!' -uid "$1" -gid "$2" -fprint0 "$tmpd/gid" ')' ')' 2>&1 >/dev/null) || rc=$?
 	[ -z "$err" ] || printf '%s\n' "$err" >&2
-	[ "$rc" -eq 0 ] && return 0
-	[ "$rc" -eq 1 ] || bad=1
+	[ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || bad=1
 	case $err in *"${tmpd##*/}/"*) bad=1 ;; esac
+	# tail -c 1 reads only the last byte (it seeks), however long the list
+	for l in "$tmpd/both" "$tmpd/uid" "$tmpd/gid"; do
+		[ ! -s "$l" ] || [ "$(tail -c 1 -- "$l" | od -An -tx1)" = " 00" ] || bad=1
+	done
 	if [ "$bad" -eq 1 ]; then
 		echo "$prog: the file lists under ${tmpd%/*} are incomplete (find exit $rc); nothing was changed" >&2
 		exit 1
 	fi
-	warn_walk
+	[ "$rc" -eq 0 ] || warn_walk
 }
 
 list=""
