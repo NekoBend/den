@@ -80,7 +80,7 @@ def compile_pipeline(
 
         def train(epochs: int = 10) -> str:
             import subprocess
-            subprocess.run(["python", "train.py", "--epochs", str(epochs)])
+            subprocess.run(["python", "train.py", "--epochs", str(epochs)], check=True)
             return "done"
 
         train_op = create_component_from_func(
