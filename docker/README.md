@@ -36,7 +36,7 @@ its header asks: the heredoc scripts run in bash, which chokes on CR characters.
 From the repository root:
 
 ```sh
-docker buildx build --load -t den-dev -f docker/ubuntu/Dockerfile docker/ubuntu
+docker buildx build --pull --load -t den-dev -f docker/ubuntu/Dockerfile docker/ubuntu
 ```
 
 The context directory is never read, so any small directory works. To give
@@ -49,7 +49,11 @@ about 2 GB into each new container before the shell starts.
 Downloads and compile outputs for cargo, npm and uv go to BuildKit cache
 mounts, so a rebuild reuses them. Most installers fetch the latest release, and
 layer caching keeps whichever release was fetched first. Add `--no-cache` when
-you want every tool refreshed.
+you want every tool refreshed. After a security fix in the base image, in an
+apt package or in one of these tools, build with `--pull --no-cache` and start
+a new container from the new image: `--pull` fetches the newest base image, and
+a running container keeps the binaries it started with. What a new container
+keeps is in [Keeping state across rebuilds](#keeping-state-across-rebuilds).
 
 den is the exception: each build resolves den's `main` to a commit, so a
 rebuild after `main` moves redoes the `workspace` stage and nothing before it.
