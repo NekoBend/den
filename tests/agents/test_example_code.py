@@ -9,6 +9,8 @@ test guards against, as an outside review (2026-10) found it in the old text:
   function returned: under set -u that exited 1 on `tmp_file: unbound
   variable`, and a caller's own tmp_file was deleted. When set -e stopped the
   function, the trap did not run and the temp file stayed behind.
+- Example 5 and shell-structure.md section 9 ended the script with a bare
+  `main "$@"` and said the script could be sourced: sourcing it ran main.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "agents" / "src" / "skills" / "coding" / "examples"
+REFERENCE = ROOT / "agents" / "src" / "shared" / "reference"
 BASH = shutil.which("bash")
 
 needs_bash = pytest.mark.skipif(
@@ -151,3 +154,58 @@ def test_example_4_cleans_up_and_leaves_the_caller_alone(tmp_path, case):
     assert ("main finished" in out) == (rc == 0), out
     if rc == 0:
         assert re.fullmatch(r"fetched\s+2 orders", out[0]), out
+
+
+# --- Example 5 and shell-structure.md section 9: main "$@" --------------------
+
+# die and process_orders stand in for Example 2's and Example 3's.
+_STUBS = r"""set -euo pipefail
+die() { echo "error: $*" >&2; exit 1; }
+process_orders() { echo "process_orders ran with: $*"; }
+"""
+
+
+def _example_5() -> str:
+    (block,) = _fenced(_section(EXAMPLES / "shell-cleanup-main.md", "5."), "bash")
+    return _STUBS + block
+
+
+def _section_9_item_7() -> str:
+    """A script whose last line is the code item 7 of section 9 puts at the
+    bottom: the last code span in the item that calls `main "$@"`."""
+    section = _section(REFERENCE / "shell-structure.md", "9.")
+    item = re.search(r"(?ms)^7\. (.*?)(?=\n\n|\n\d+\. )", section)
+    assert item, "shell-structure.md section 9 has no item 7"
+    spans = [s for s in re.findall(r"`([^`\n]+)`", item[1]) if 'main "$@"' in s]
+    assert spans, f"item 7 shows no main call: {item[1]!r}"
+    return _STUBS + 'main() { process_orders "$@"; }\n' + spans[-1] + "\n"
+
+
+_SCRIPTS = {"example-5": _example_5, "shell-structure-9": _section_9_item_7}
+
+# How the script is started, and what it must print: sourcing defines the
+# functions and runs nothing, also from a function that has arguments of its
+# own; executing it runs main with the script's arguments, also when bash
+# reads it from stdin (curl ... | bash), where BASH_SOURCE is empty.
+_DEFINED = 'echo "defined: $(type -t main)"'
+_STARTS = {
+    "sourced": ["-c", f"source ./orders.sh; {_DEFINED}"],
+    "sourced-in-a-function": ["-c", f"f() {{ source ./orders.sh; }}; f o1; {_DEFINED}"],
+    "executed": ["orders.sh", "o1", "o2"],
+    "read-from-stdin": ["-s", "o1", "o2"],
+}
+
+
+@needs_bash
+@pytest.mark.parametrize("script", list(_SCRIPTS))
+@pytest.mark.parametrize("start", list(_STARTS))
+def test_main_runs_when_executed_and_not_when_sourced(tmp_path, script, start):
+    text = _SCRIPTS[script]()
+    (tmp_path / "orders.sh").write_text(text, encoding="utf-8")
+    stdin = text if start == "read-from-stdin" else None
+    proc = _bash(tmp_path, *_STARTS[start], stdin=stdin)
+    assert (proc.returncode, proc.stderr) == (0, ""), proc.stdout + proc.stderr
+    if start.startswith("sourced"):
+        assert proc.stdout == "defined: function\n"
+    else:
+        assert proc.stdout == "process_orders ran with: o1 o2\n"

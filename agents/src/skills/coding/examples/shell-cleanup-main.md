@@ -55,19 +55,21 @@ main() {
   process_orders "$@"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  main "$@"
+fi
 ```
 
 `main` wraps the top-level logic and is the last thing called,
 with `main "$@"` forwarding all script arguments (shell-structure.md section 9).
-This is the shell equivalent of Python's `if __name__ == "__main__"`:
-it keeps the functions definable without executing them,
-so the script can be sourced in tests (e.g., with Bats)
+The `BASH_SOURCE` check around that call is the shell equivalent of Python's `if __name__ == "__main__"`:
+`main` runs when the script is executed and not when it is sourced,
+so tests (e.g., with Bats) can source the script
 to test `fetch_order` and `summarize_order` in isolation.
 
 The full script orders its parts as:
 shebang, header, `set -euo pipefail`, `readonly` constants, function definitions, `main`,
-then the `main "$@"` call (shell-structure.md section 9).
+then the guarded `main "$@"` call (shell-structure.md section 9).
 
 ## Pitfalls
 
