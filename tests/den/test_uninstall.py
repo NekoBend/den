@@ -1,6 +1,7 @@
 """Tests for den uninstall (den/_uninstall.py)."""
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -178,7 +179,10 @@ def test_uninstall_target_refuses_a_symlink_put_in_at_the_prompt(
     assert (repo / "skills" / "grounding").is_symlink()
     assert not (repo / "skills" / "coding").exists(), "the rest is removed"
     assert rc == 1
-    assert "grounding is a symlink" in capsys.readouterr().err
+    link = repo.resolve() / "skills" / "grounding"
+    err = capsys.readouterr().err
+    assert f"refusing to remove anything below {link}: it is a symlink" in err
+    assert err.count("refusing to remove") == 1, "the link is named once"
 
 
 @_mode_bits
@@ -324,11 +328,61 @@ def test_uninstall_target_never_removes_through_a_symlinked_skills_dir(
     assert _files(outside / "skills") == before, "the other install is untouched"
     assert (repo / "skills").is_symlink(), "and the link is left alone"
     assert rc == 1, "a refused path is a failed uninstall"
+    refusal = (
+        f"den uninstall: refusing to remove anything below {repo.resolve() / 'skills'}"
+        ": it is a symlink"
+    )
     err = capsys.readouterr().err
-    assert "refusing to remove" in err and "skills is a symlink" in err
-    # the preview names the same refusals and fails the same way
+    assert refusal in err
+    assert err.count("refusing to remove") == 1, "named once, not once per file"
+    # the preview names the same refusal and fails the same way
     assert uninstall_main(["skills", "--target", str(repo), "--dry-run"]) == 1
-    assert "skills is a symlink" in capsys.readouterr().err
+    assert refusal in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("behind", ["nothing", "an empty dir"])
+def test_uninstall_target_names_a_skills_link_with_nothing_behind_it(
+    tmp_path, monkeypatch, symlink, capsys, behind
+):
+    """A skills/ link that led nowhere, or to an empty dir, was passed over
+    without a word and the run exited 0, although the README says a path
+    below the target that reaches a symlink is refused and reported. The
+    link is now named, and the run fails."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    there = tmp_path / "there"
+    if behind == "an empty dir":
+        there.mkdir()
+    symlink(there, repo / "skills")
+    rc = uninstall_main(["skills", "--target", str(repo), "--yes"])
+    assert (repo / "skills").is_symlink()
+    assert rc == 1
+    link = repo.resolve() / "skills"
+    err = capsys.readouterr().err
+    assert f"den uninstall: refusing to remove anything below {link}" in err
+    assert err.count("refusing to remove") == 1
+
+
+def test_uninstall_target_names_a_dangling_skill_dir_link_once(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """The same for one skill's dir, linked to nothing: the other skills are
+    removed, the link is named once (not once per file den would have looked
+    for below it), and the run fails."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    repo = tmp_path / "repo"
+    _install(repo)
+    shutil.rmtree(repo / "skills" / "grounding")
+    symlink(tmp_path / "gone", repo / "skills" / "grounding")
+    rc = uninstall_main(["skills", "--target", str(repo), "--yes"])
+    assert (repo / "skills" / "grounding").is_symlink()
+    assert _files(repo / "skills") == [], "every other skill is removed"
+    assert rc == 1
+    link = repo.resolve() / "skills" / "grounding"
+    err = capsys.readouterr().err
+    assert f"den uninstall: refusing to remove anything below {link}" in err
+    assert err.count("refusing to remove") == 1
 
 
 def test_uninstall_target_never_removes_a_symlinked_or_dangling_parent(
@@ -354,7 +408,8 @@ def test_uninstall_target_never_removes_a_symlinked_or_dangling_parent(
     assert not (repo / "skills").exists(), "everything else is still removed"
     assert rc == 1
     err = capsys.readouterr().err
-    assert "AGENTS.md is a symlink" in err and "CLAUDE.md is a symlink" in err
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        assert f"refusing to remove {repo.resolve() / name}: it is a symlink" in err
 
 
 def test_uninstall_target_through_a_symlinked_root_is_the_users_choice(

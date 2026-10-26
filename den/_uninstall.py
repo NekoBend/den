@@ -14,7 +14,6 @@ component, mirroring `den install`.
 
 from __future__ import annotations
 
-import os
 import shutil
 import stat
 import sys
@@ -154,8 +153,10 @@ class _Remover:
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), as for _Writer: a path below it that reaches a
     symlink - a symlinked skills/, a CLAUDE.md linked elsewhere, a dangling
-    link - is refused and reported, never removed through. The default tool
-    dirs are not confined, as for _Writer.
+    link - is refused, never removed through, and the symlink is named once
+    on stderr, however many of den's paths lie below it and whether or not
+    anything is behind it. The default tool dirs are not confined, as for
+    _Writer.
 
     commit returns 1 when part of the plan did not happen without the user
     choosing so: a path refused, a file kept because it changed after den
@@ -197,33 +198,45 @@ class _Remover:
             candidates.setdefault(dest, []).append(content)
         return candidates
 
+    def _refused(self, dest: Path, named: set[Path]) -> bool:
+        """Whether `dest` lies below a confined root and reaches a symlink
+        there. The symlink is named on stderr the first time (and added to
+        `named`); every other path below it is refused without another line.
+        OSError when a component cannot be inspected."""
+        from ._install import _confined
+        from ._memory import _symlink_component
+
+        guard = _confined(self._roots, dest)
+        if guard is None:
+            return False
+        bad = _symlink_component(*guard)
+        if bad is None:
+            return False
+        if bad not in named:
+            named.add(bad)
+            what = bad if bad == guard[1] else f"anything below {bad}"
+            print(
+                f"{_ERR}: refusing to remove {what}: it is a symlink", file=sys.stderr
+            )
+        return True
+
     def _plan(
         self,
     ) -> tuple[list[Path], list[Path], list[tuple[Path, str]], int, int]:
         """(files to delete, files to keep, rc files to unwire, the number of
-        paths refused under a confined root, the number of files and rc files
-        den could not read). Each refusal and each read error is named on
-        stderr: a file den cannot inspect may well be den's, or hold its
+        symlinks refused under a confined root, the number of files and rc
+        files den could not read). Each refusal and each read error is named
+        on stderr: a file den cannot inspect may well be den's, or hold its
         block, so it is not passed over as absent."""
-        from ._install import _confined
-        from ._memory import _refuse_symlink, _symlink_component
-
         delete: list[Path] = []
         keep: list[Path] = []
-        refused = unreadable = 0
+        named: set[Path] = set()
+        unreadable = 0
         candidates = self._candidates()
         for dest in candidates:
             try:
-                guard = _confined(self._roots, dest)
-                if guard is not None and _symlink_component(*guard) is not None:
-                    # Left alone, never removed through the link. A link that
-                    # leads to nothing has nothing behind it to remove, so
-                    # only a path that is there is refused (one line each).
-                    if os.path.lexists(dest) and _refuse_symlink(
-                        *guard, "remove", _ERR
-                    ):
-                        refused += 1
-                    continue
+                if self._refused(dest, named):
+                    continue  # left alone, never removed through the link
                 on_disk = _read_file(dest)
             except OSError as e:
                 print(f"{_ERR}: cannot read {dest}: {e}", file=sys.stderr)
@@ -241,7 +254,7 @@ class _Remover:
             except OSError as e:
                 print(f"{_ERR}: cannot read {rc}: {e}", file=sys.stderr)
                 unreadable += 1
-        return delete, keep, unwire, refused, unreadable
+        return delete, keep, unwire, len(named), unreadable
 
     @staticmethod
     def _show(
@@ -289,16 +302,13 @@ class _Remover:
         holds now, not what it held when the plan was listed: an edit saved
         while the prompt was open is kept, and a path below a confined root
         that reaches a symlink by now is refused."""
-        from ._install import _confined
-        from ._memory import _refuse_symlink
-
         candidates = self._candidates()
         removed: list[Path] = []
         late = failed = 0
+        named: set[Path] = set()
         for d in delete:
             try:
-                guard = _confined(self._roots, d)
-                if guard is not None and _refuse_symlink(*guard, "remove", _ERR):
+                if self._refused(d, named):
                     late += 1
                     continue
                 data = _read_file(d)
