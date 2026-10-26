@@ -107,11 +107,24 @@ assert_eq "fixids/no lists left in TMPDIR" "" "$actual"
 # A list find could not write in full ended in part of a path, and the passes
 # still ran: xargs -0 handed that fragment (a prefix of a real path, which can
 # name an ancestor directory) to chown. A file-size limit of one block stands
-# in for a full TMPDIR: with SIGXFSZ ignored find gets EFBIG, names the list
-# and exits 1; with it at its default find is killed. Either way fixids now
-# stops before any pass. A probe first checks that the limit holds here.
-mkdir -p "$WORK/big"
-for i in $(seq 1 100); do : > "$WORK/big/a-file-name-long-enough-to-fill-a-block-$i"; done
+# in for a full TMPDIR. With SIGXFSZ at its default find is killed. With it
+# ignored find gets EFBIG, but GNU find 4.10 reports a list it could not write
+# only when closing the list fails, and closing has nothing left to write
+# when the NUL after the last path met a full stdio buffer (st_blksize, 4096
+# bytes on the usual file systems): the write of that buffer failed, emptied
+# it and dropped the NUL, and find exits 0 without a message. Whether a tree
+# of many files ended that way hung on the length of TMPDIR. The tree here
+# has a root path longer than a block, so the one-block list always ends
+# inside that first name, and one file in it whose path ends the list's
+# paths at 4096 bytes (2 * root + 2 + name), so that find exits 0 (up to a
+# TMPDIR of about 2000 characters, past which the name has no room left).
+# Either way fixids now stops before any pass. A probe first checks that the
+# limit holds here.
+_long=$(readlink -f -- "$WORK")/cut
+while [ "${#_long}" -lt 1920 ]; do _long=$_long/$(printf '%100s' '' | tr ' ' d); done
+mkdir -p "$_long"
+_name=$((4094 - 2 * ${#_long}))
+[ "$_name" -lt 1 ] || : > "$_long/$(printf "%${_name}s" '' | tr ' ' f)"
 _fsz=$("$BASH_BIN" -c 'trap "" XFSZ; ulimit -f 1; head -c 4096 /dev/zero > "$1" 2>/dev/null; stat -c %s "$1"' _ "$WORK/fsz.probe")
 rm -f "$WORK/fsz.probe"
 for _xfsz in ignored default; do
@@ -121,14 +134,14 @@ for _xfsz in ignored default; do
         continue
     fi
     if [ "$_xfsz" = ignored ]; then _trap='trap "" XFSZ;'; else _trap='trap - XFSZ;'; fi
-    actual=$(mkdir -p "$WORK/tmp"; PATH="$PATH" TMPDIR="$WORK/tmp" "$BASH_BIN" -c "$_trap ulimit -f 1; exec \"\$0\" \"\$@\"" "$BASH_BIN" "$FIXIDS" -n --from "$U:$G" --to 2000:2000 "$WORK/big" 2>&1; echo "rc=$?")
+    actual=$(mkdir -p "$WORK/tmp"; PATH="$PATH" TMPDIR="$WORK/tmp" "$BASH_BIN" -c "$_trap ulimit -f 1; exec \"\$0\" \"\$@\"" "$BASH_BIN" "$FIXIDS" -n --from "$U:$G" --to 2000:2000 "$_long" 2>&1; echo "rc=$?")
     assert_contains "fixids/cut list ($_xfsz): stops" "nothing was changed" "$actual"
     assert_contains "fixids/cut list ($_xfsz): names the lists" "fixids: the file lists under $WORK/tmp are incomplete (find exit " "$actual"
     assert_not_contains "fixids/cut list ($_xfsz): no pass ran" "would be" "$actual"
     assert_eq "fixids/cut list ($_xfsz): exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
     assert_eq "fixids/cut list ($_xfsz): lists removed" "" "$(find "$WORK/tmp" -mindepth 1)"
 done
-rm -rf "${WORK:?}/big"
+rm -rf "${WORK:?}/cut"
 
 # The same stop for a list cut by hand, in each of the three lists, which does
 # not hang on how find writes: a find stand-in runs the real one, then leaves
