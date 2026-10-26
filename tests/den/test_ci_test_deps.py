@@ -27,6 +27,30 @@ _IMPORT_CHECK = re.compile(r"""\bpython3? -c ["']import ([\w., ]+)["']""")
 # `uv run --with pytest pytest`, the first pytest is that package and the
 # second the command. Written as one word, --with=pytest holds its own value.
 _PACKAGE_OPTIONS = {"--with", "--with-editable"}
+# pytest's options whose value, given as the next word, is a path that pytest
+# does not collect: `pytest --ignore tests/agents` collects everything else.
+_PYTEST_PATH_OPTIONS = {
+    "--basetemp",
+    "--confcutdir",
+    "--config-file",
+    "--deselect",
+    "--ignore",
+    "--ignore-glob",
+    "--junit-xml",
+    "--junitxml",
+    "--log-file",
+    "--rootdir",
+    "-c",
+}
+# The runner's PATH directories: a command linked anywhere else is not on PATH.
+_PATH_DIRS = {
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+}
 # Where one command ends and the next starts on the same line.
 _SEPARATOR = re.compile(r"\s*(?:&&|\|\||;)\s*|\s+\|\s+")
 # What an apt package puts on PATH, where that is not the package's name.
@@ -138,10 +162,16 @@ def _pytest_targets(command: str) -> list[str] | None:
         if word == "pytest" and before not in _PACKAGE_OPTIONS:
             # A word that names no test file or directory is an option's value
             # (`-p no:cacheprovider`, `-k cheats`): pytest refuses a path that
-            # does not exist. Given no path, pytest collects the checkout: its
+            # does not exist. A path after --ignore and the like is not
+            # collected. Given no path, pytest collects the checkout: its
             # tests are in tests/.
+            after = words[i + 1 :]
             paths = [
-                w for w in words[i + 1 :] if not w.startswith("-") and _is_test_path(w)
+                w
+                for j, w in enumerate(after)
+                if not w.startswith("-")
+                and not (j and after[j - 1] in _PYTEST_PATH_OPTIONS)
+                and _is_test_path(w)
             ]
             return paths or ["tests"]
     return None
@@ -175,7 +205,9 @@ def _scan_job(job: dict) -> dict[str, set[str]] | None:
         elif m := _APT_INSTALL.search(command):
             on_path |= {_APT_COMMANDS.get(a, a) for a in _args(m.group(1))}
         elif _LINK.search(command):
-            on_path.add(_words(command)[-1].rsplit("/", 1)[-1])
+            directory, _, name = _words(command)[-1].rpartition("/")
+            if directory in _PATH_DIRS:
+                on_path.add(name)
         elif m := _IMPORT_CHECK.search(command):
             imported |= {n.strip().split(".")[0] for n in m.group(1).split(",")}
     if not ran_pytest:
@@ -188,10 +220,13 @@ def _scan_job(job: dict) -> dict[str, set[str]] | None:
     }
 
 
-def _pytest_jobs() -> dict[str, dict[str, set[str]]]:
+def _pytest_jobs(
+    workflows: Path = _ROOT / ".github" / "workflows",
+) -> dict[str, dict[str, set[str]]]:
     """_scan_job for every workflow job that runs pytest."""
     jobs = {}
-    for workflow in sorted((_ROOT / ".github" / "workflows").glob("*.yml")):
+    found = [*workflows.glob("*.yml"), *workflows.glob("*.yaml")]
+    for workflow in sorted(found):
         parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
         for job_id, job in parsed["jobs"].items():
             if (scan := _scan_job(job)) is not None:
@@ -226,6 +261,7 @@ def test_the_scan_finds_what_the_suites_skip_without():
         "uvx --from pytest pytest",
         "python -m pytest -p no:cacheprovider",
         'python -m pytest -m "not slow"',
+        "python -m pytest --ignore tests/agents",
     ],
 )
 def test_the_scan_reads_each_way_of_running_pytest(run):
@@ -256,6 +292,26 @@ def test_quoted_pip_requirements_count_as_installed():
     )
     assert scan is not None
     assert {"rich", "structlog"} <= scan["installed"]
+
+
+def test_the_scan_reads_yaml_workflows_too(tmp_path):
+    # GitHub runs .github/workflows/*.yaml as well; a job there went unread.
+    job = {"runs-on": "macos-latest", **_job("python -m pytest tests/den")}
+    workflow = {"on": "push", "jobs": {"mac": job}}
+    (tmp_path / "macos.yaml").write_text(yaml.safe_dump(workflow), encoding="utf-8")
+    assert list(_pytest_jobs(tmp_path)) == ["macos.yaml:mac"]
+
+
+def test_a_link_outside_path_puts_nothing_on_path():
+    # `ln -s ... /opt/fd` succeeds, and the fd tests still skip.
+    def linked(dest):
+        link = f'sudo ln -s "$(command -v fdfind)" {dest}'
+        scan = _scan_job(_job(link, "python -m pytest tests/den"))
+        assert scan is not None
+        return scan["on_path"]
+
+    assert "fd" not in linked("/opt/fd")
+    assert "fd" in linked("/usr/local/bin/fd")
 
 
 def test_pytest_jobs_install_what_their_suites_skip_without():
