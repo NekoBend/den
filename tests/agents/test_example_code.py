@@ -18,7 +18,9 @@ test guards against, as an outside review (2026-10) found it in the old text:
   through die, where section 10 gives usage errors 2.
 - examples/powershell.md's Pester mock of curl returned the JSON but left
   $LASTEXITCODE alone, so Get-Order read whatever the session held: nothing
-  (a StrictMode error) or an earlier native command's exit code.
+  (a StrictMode error) or an earlier native command's exit code. The Pester
+  block never loaded Get-Order either, so under Pester 5 its It blocks could
+  not find it.
 """
 
 from __future__ import annotations
@@ -260,35 +262,43 @@ def test_example_5_exits_2_on_a_usage_error(tmp_path):
 # --- examples/powershell.md: the Pester test -----------------------------------
 
 # Stand-ins for the Pester 5 commands the example uses (Pester is not a test
-# dependency). Mock makes a command of the mocked name that runs the mock's
-# body, as Pester's alias to its bootstrap function does: neither touches
-# $LASTEXITCODE. Each It runs once per state the session can be in before it:
-# no native command run yet (unset), an earlier one failed (1) or passed (0).
-# Before each It, curl is a function that throws, so an unmocked call fails
-# the test instead of reaching the network.
-_PESTER = r"""param([string]$Code, [string]$Tests)
+# dependency), run in Pester 5's two phases. Discovery runs the test file
+# once: Describe runs its body, while BeforeAll and It only record theirs.
+# The run phase then dot-sources each block's BeforeAll bodies into a scope
+# of the block's own, which its It bodies run under, so what the file
+# defines outside BeforeAll and It is gone by then, as in Pester 5. The
+# stand-in loads nothing itself: Get-Order exists only if the example's
+# BeforeAll loads it.
+# Mock makes a command of the mocked name that runs the mock's body, as
+# Pester's alias to its bootstrap function does: neither touches
+# $LASTEXITCODE. Each It runs once per state the session can be in before
+# it: no native command run yet (unset), an earlier one failed (1) or passed
+# (0). Before each It, curl is a function that throws, so an unmocked call
+# fails the test instead of reaching the network. Should records what it
+# checked, so the test can see which outcomes the It blocks cover.
+_PESTER = r"""param([string]$Tests)
 $ErrorActionPreference = 'Stop'
-$script:state = ''
+$global:StandIn = @{ Block = $null; Checks = @() }
 
-function Describe([string]$Name, [scriptblock]$Fixture) { & $Fixture }
+function New-Block { @{ Setup = @(); Tests = @(); Blocks = @() } }
 
-function Mock([string]$CommandName, [scriptblock]$MockWith) {
-    Set-Item -Path "function:global:$CommandName" -Value $MockWith
+function BeforeAll([scriptblock]$Setup) {
+    $global:StandIn.Block.Setup += $Setup
 }
 
 function It([string]$Name, [scriptblock]$Test) {
-    Set-Item -Path function:global:curl -Value { throw 'curl ran without a mock' }
-    if ($script:state -eq 'unset') {
-        Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
-    } else {
-        $global:LASTEXITCODE = [int]$script:state
-    }
-    try {
-        & $Test
-        "PASS [$script:state] $Name"
-    } catch {
-        "FAIL [$script:state] $Name :: $_"
-    }
+    $global:StandIn.Block.Tests += @{ Name = $Name; Test = $Test }
+}
+
+function Describe([string]$Name, [scriptblock]$Fixture) {
+    $parent = $global:StandIn.Block
+    $global:StandIn.Block = New-Block
+    $parent.Blocks += $global:StandIn.Block
+    try { & $Fixture } finally { $global:StandIn.Block = $parent }
+}
+
+function Mock([string]$CommandName, [scriptblock]$MockWith) {
+    Set-Item -Path "function:global:$CommandName" -Value $MockWith
 }
 
 function Should {
@@ -302,9 +312,11 @@ function Should {
     process {
         if ($Throw) {
             try { & $ActualValue } catch {
-                if ($_.Exception.Message -notlike $ExpectedMessage) {
-                    throw "threw '$($_.Exception.Message)', not '$ExpectedMessage'"
+                $message = $_.Exception.Message
+                if ($message -notlike $ExpectedMessage) {
+                    throw "threw '$message', not '$ExpectedMessage'"
                 }
+                $global:StandIn.Checks += "Throw '$message'"
                 return
             }
             throw 'expected a throw, got none'
@@ -318,17 +330,41 @@ function Should {
             if ($ActualValue -isnot $type) {
                 throw "expected [$type], got $ActualValue"
             }
+            $global:StandIn.Checks += "BeOfType [$type]"
             return
         }
         throw 'this stand-in knows only -BeOfType and -Throw'
     }
 }
 
-. $Code
-foreach ($s in 'unset', '1', '0') {
-    $script:state = $s
-    . $Tests
+function Invoke-Block($Block) {
+    foreach ($setup in $Block.Setup) { . $setup }
+    foreach ($test in $Block.Tests) {
+        foreach ($state in 'unset', '1', '0') { Invoke-Test $test $state }
+    }
+    foreach ($child in $Block.Blocks) { Invoke-Block $child }
 }
+
+function Invoke-Test($Test, [string]$State) {
+    Set-Item -Path function:global:curl -Value { throw 'curl ran without a mock' }
+    if ($State -eq 'unset') {
+        Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
+    } else {
+        $global:LASTEXITCODE = [int]$State
+    }
+    $global:StandIn.Checks = @()
+    try {
+        & $Test.Test
+        "PASS [$State] $($Test.Name) :: $($global:StandIn.Checks -join '; ')"
+    } catch {
+        "FAIL [$State] $($Test.Name) :: $_"
+    }
+}
+
+$root = New-Block
+$global:StandIn.Block = $root
+& $Tests
+Invoke-Block $root
 """
 
 
@@ -336,15 +372,16 @@ foreach ($s in 'unset', '1', '0') {
 def test_pester_example_passes_whatever_lastexitcode_the_session_holds(tmp_path):
     text = (EXAMPLES / "powershell.md").read_text(encoding="utf-8")
     code, tests = _fenced(text, "powershell")
-    its = len(re.findall(r"(?m)^\s*It '", tests))
-    assert its, "the Pester block has no It"
-    drive, code_ps1, tests_ps1 = (
-        tmp_path / "drive.ps1",
-        tmp_path / "Get-Order.ps1",
-        tmp_path / "Get-Order.Tests.ps1",
-    )
+    names = re.findall(r"(?m)^\s*It '([^']*)'", tests)
+    assert names, "the Pester block has no It"
+    # The example's BeforeAll loads Get-Order.ps1 from the test file's own
+    # folder; the stand-in lives elsewhere.
+    src, drive = tmp_path / "src", tmp_path / "pester" / "drive.ps1"
+    src.mkdir()
+    drive.parent.mkdir()
     drive.write_text(_PESTER, encoding="utf-8")
-    code_ps1.write_text(code, encoding="utf-8")
+    (src / "Get-Order.ps1").write_text(code, encoding="utf-8")
+    tests_ps1 = src / "Get-Order.Tests.ps1"
     tests_ps1.write_text(tests, encoding="utf-8")
     assert PWSH is not None
     # pwsh on Linux writes its caches under XDG: keep them out of $HOME
@@ -363,8 +400,6 @@ def test_pester_example_passes_whatever_lastexitcode_the_session_holds(tmp_path)
             "-NonInteractive",
             "-File",
             str(drive),
-            "-Code",
-            str(code_ps1),
             "-Tests",
             str(tests_ps1),
         ],
@@ -376,6 +411,17 @@ def test_pester_example_passes_whatever_lastexitcode_the_session_holds(tmp_path)
         timeout=120,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    results = [r for r in proc.stdout.splitlines() if r.startswith(("PASS", "FAIL"))]
-    assert [r for r in results if r.startswith("FAIL")] == []
-    assert len(results) == 3 * its, proc.stdout
+    assert not re.search(r"(?m)^FAIL", proc.stdout), proc.stdout
+    passed = re.findall(r"(?m)^PASS \[(unset|1|0)\] (.*) :: (.*)$", proc.stdout)
+    assert sorted((state, name) for state, name, _ in passed) == sorted(
+        (state, name) for state in ("unset", "1", "0") for name in names
+    ), proc.stdout
+    # Each It checks something, and together they check both outcomes: the
+    # typed object from the payload, and Get-Order's throw on a failed curl.
+    checks = [check for _, _, check in passed]
+    assert all(checks), proc.stdout
+    assert any(c.startswith("BeOfType") for c in checks), proc.stdout
+    assert any(
+        re.search(r"Throw 'order service returned exit code [1-9]\d* for o1'", c)
+        for c in checks
+    ), proc.stdout

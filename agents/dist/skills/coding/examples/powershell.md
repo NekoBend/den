@@ -60,10 +60,15 @@ function Remove-StaleOrder {
 }
 ```
 
-A Pester test for the pure part lives in `Get-Order.Tests.ps1`
+A Pester test for the pure part lives in `Get-Order.Tests.ps1`,
+next to `Get-Order.ps1`, which holds the block above
 (reference section 2; the lint gate lints test files, Pester runs them):
 
 ```powershell
+BeforeAll {
+    . $PSScriptRoot/Get-Order.ps1
+}
+
 Describe 'Get-Order' {
     It 'returns a typed object for a well-formed payload' {
         Mock curl {
@@ -80,6 +85,11 @@ Describe 'Get-Order' {
     }
 }
 ```
+
+Pester 5 runs code outside `BeforeAll`, `It` and the other setup and
+teardown blocks only while it discovers the tests, and its results are
+not available when the tests run, so `BeforeAll` dot-sources
+`Get-Order.ps1`.
 
 A mocked `curl` is a PowerShell command, so calling it leaves
 `$LASTEXITCODE` as it was: unset in a fresh session (an error under
