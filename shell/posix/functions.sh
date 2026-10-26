@@ -750,11 +750,11 @@ archive() {
             # interrupted command. The subshell keeps these traps away from
             # the user's own.
             #
-            # Every status in it is read in a condition (or let go with
-            # `|| true`), for the same end: the subshell inherits a caller's
-            # `set -e`, and a failing archiver, rm or mv left in plain sight
-            # ended it on the spot, with the old archive in the staging
-            # directory and nothing said.
+            # Each step in it that can fail (the archiver, rm, mv) runs in a
+            # condition or with `|| true`, for the same end: the subshell
+            # inherits a caller's `set -e`, and a failing archiver, rm or mv
+            # left in plain sight ended it on the spot, with the old archive
+            # in the staging directory and nothing said.
             (
                 _ar_sig=
                 trap '_ar_sig=INT' INT

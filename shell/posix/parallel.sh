@@ -303,10 +303,10 @@ _ptar_pipe() {
         echo "ptar: cannot create a temporary directory in '$dir'" >&2
         return 1
     fi
-    # Every status in here is read in a condition (or let go with `|| true`).
-    # The subshell inherits a caller's `set -e`, and a failing tar or mv left
-    # in plain sight ended it on the spot: the old archive stayed in the
-    # staging directory, and nothing said so.
+    # Each step in here that can fail (tar, the compressor, mv, rm) runs in a
+    # condition or with `|| true`. The subshell inherits a caller's `set -e`,
+    # and a failing tar or mv left in plain sight ended it on the spot: the
+    # old archive stayed in the staging directory, and nothing said so.
     (
         set -o pipefail
         sig=
