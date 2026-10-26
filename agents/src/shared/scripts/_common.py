@@ -372,7 +372,8 @@ def _python_scopes(text: str) -> dict[int, tuple[str, int]]:
     "class": a statement in a class body, an if/try/... block inside it
     included. Statements nested in a function or in the main guard,
     continuation lines and lines inside strings get no entry. The last line
-    is where the statement ends, or a compound statement's header.
+    is the statement's own last line; for a compound statement (a def, a
+    class, an if) it is the last line of its header.
 
     The blocks come from Python's own tokenizer, so a bracketed continuation
     line, a string spanning lines or a comment cannot pass for a statement.
@@ -434,9 +435,9 @@ def _python_definitions(text: str, *, member: bool) -> list[tuple[int, str, str]
             if line[:1].isspace():
                 picked.append((lineno, line.lstrip(), line, nested))
             else:
-                # all its lines, reported at the first: an annotation can run
-                # onto the next ones, and the `=` after it with it
-                # (`LIMITS: dict[` ... `] = {}`)
+                # the whole statement, reported at its first line: an
+                # annotation can run onto later lines, which then hold its
+                # `=` (`LIMITS: dict[` ... `] = {}`)
                 statement = "\n".join(lines[lineno - 1 : last])
                 picked.append((lineno, statement, line, top))
     return _scan(picked)
@@ -461,8 +462,8 @@ def is_definition_hit(file: str, lineno: int, line: str, symbol: str) -> bool:
     line starts an annotation without its `=`: an annotated assignment can
     run onto later lines (`LIMITS: dict[` ... `] = {}`), so the statement
     that starts there is read from the file and matched whole, as
-    _python_definitions matches it. A continuation line, or a line inside a
-    string, starts no statement and defines nothing.
+    _python_definitions matches it. Such a line that starts no statement
+    (a continuation line, a line inside a string) defines nothing.
     """
     ext = Path(file).suffix
     if is_definition_line(line, ext, symbol):
