@@ -92,7 +92,8 @@ function pcp {
     # went on to remove a file that was never copied. -ErrorVariable collects
     # the workers' errors; any at all is terminating, as ptar's tar check is
     # (a plain Write-Error inside a function leaves `pwsh -Command` exiting 0).
-    if ($failed.Count) { Write-Error "$($failed.Count) path(s) failed" -ErrorAction Stop }
+    # It counts errors, not paths: one unreadable file can report two.
+    if ($failed.Count) { Write-Error "$($failed.Count) error(s)" -ErrorAction Stop }
 }
 
 # pmv → parallel move (like mv, last arg is destination)
@@ -121,7 +122,7 @@ function pmv {
         foreach ($p in $_) { Move-Item -LiteralPath $p -Destination $using:dest -Force }
     } -ThrottleLimit $jobs -ErrorVariable failed
     # Terminating when any path failed: see pcp.
-    if ($failed.Count) { Write-Error "$($failed.Count) path(s) failed" -ErrorAction Stop }
+    if ($failed.Count) { Write-Error "$($failed.Count) error(s)" -ErrorAction Stop }
 }
 
 # prm → parallel remove with interactive confirmation by default
@@ -164,7 +165,7 @@ function prm {
         foreach ($p in $_) { Remove-Item -LiteralPath $p -Recurse -Force }
     } -ThrottleLimit $jobs -ErrorVariable failed
     # Terminating when any path failed: see pcp.
-    if ($failed.Count) { Write-Error "$($failed.Count) path(s) failed" -ErrorAction Stop }
+    if ($failed.Count) { Write-Error "$($failed.Count) error(s)" -ErrorAction Stop }
 }
 
 # ptar → compress using tar (available on Windows 10+)

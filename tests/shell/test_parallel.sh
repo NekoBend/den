@@ -758,14 +758,16 @@ assert_exists "pwsh/pmv with a missing source still moved the others" "$WORK/des
 run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; prm -Force src/subdir missing.txt" >/dev/null 2>&1
 assert_failure "pwsh/prm with a missing path exits nonzero" "$?"
 assert_not_exists "pwsh/prm with a missing path still removed the others" "$WORK/src/subdir"
+# The count is of the errors the workers reported, not of paths: one
+# unreadable file can report two.
 for _fn in pcp pmv; do
     err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK'; $_fn missing.txt dest")
-    assert_contains "pwsh/$_fn counts the paths that failed" "$_fn: 1 path(s) failed" "$err"
+    assert_contains "pwsh/$_fn counts the errors" "$_fn: 1 error(s)" "$err"
     actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { $_fn missing.txt dest 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
     assert_eq "pwsh/$_fn failure is a terminating error" "caught" "$actual"
 done
-err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK'; prm -Force missing.txt")
-assert_contains "pwsh/prm counts the paths that failed" "prm: 1 path(s) failed" "$err"
+err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK'; prm -Force missing.txt also-missing.txt")
+assert_contains "pwsh/prm counts the errors" "prm: 2 error(s)" "$err"
 actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { prm -Force missing.txt 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
 assert_eq "pwsh/prm failure is a terminating error" "caught" "$actual"
 

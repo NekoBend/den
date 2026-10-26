@@ -2425,6 +2425,17 @@ assert_eq "pwsh/archive 7z leaves nothing set aside" "" "$(ls -A "$WORK" | grep 
 actual=$(pwsh_outcome "\$env:PATH='$WORK/nobin'; archive none.7z src")
 assert_contains "pwsh/archive 7z not installed exits 1" "status=1" "$actual"
 assert_contains "pwsh/archive 7z not installed says so" "7z is not installed" "$actual"
+# When 7z failed and the old archive could not be moved back either (its
+# folder turned read-only while 7z ran), it stayed under its random set-aside
+# name, and nothing said where. A Move-Item that refuses that one move stands
+# in for the read-only folder, which root would get past.
+mv_refuses_restore="function Move-Item { [CmdletBinding()] param([string]\$LiteralPath, [string]\$Destination, [switch]\$Force) if (\$LiteralPath -like '*.previous.*') { Write-Error 'denied'; return }; Microsoft.PowerShell.Management\\Move-Item -LiteralPath \$LiteralPath -Destination \$Destination -Force:\$Force }"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/upd:' + \$env:PATH; \$env:STUB_FAIL='1'; $mv_refuses_restore; archive rel.7z src/file2.txt")
+assert_contains "pwsh/archive 7z that cannot put the previous archive back exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive 7z says where the previous archive was kept" "archive: previous 'rel.7z' kept at rel.7z.previous." "$actual"
+assert_contains "pwsh/archive 7z that cannot put the previous archive back names 7z's exit code" "7z exited 2" "$actual"
+assert_eq "pwsh/archive 7z kept the previous archive it could not put back" "file1.txt" "$(cat "$WORK"/rel.7z.previous.* 2>/dev/null)"
+rm -f "$WORK"/rel.7z.previous.*
 
 # A source that IS the output (a rerun whose list, or glob, holds the old
 # archive): the 7z branch moved the old archive aside and 7z then failed on

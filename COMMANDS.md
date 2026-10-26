@@ -294,7 +294,8 @@ archiver fails. A failed or interrupted `.zip`, `.7z` or single-file run keeps
 the existing output as it was; the tar formats replace it with whatever tar
 wrote. Should the existing output fail to go back in place as well (its folder
 turned read-only meanwhile), bash/zsh leave it where it waited and say where
-(`archive: previous 'out.zip' kept at ./.archive.XXXXXX/previous`).
+(`archive: previous 'out.zip' kept at ./.archive.XXXXXX/previous`), and so
+does pwsh for a `.7z` (`out.7z.previous.<random>`, beside it).
 On pwsh the `.zip` holds hidden files and folders (`.env`, `.git`) too, as
 `zip -r` does, but it stores each source under its own name (a folder as
 `name/`), where `zip -r` keeps the path as given (`alpha/config.txt`). Two
@@ -466,8 +467,8 @@ the parallel tool's own startup, GNU parallel's most of all, so for a quick
 copy of small files a plain `cp` stays faster. `pcp` and `pmv` overwrite an
 existing destination file on both shells, read-only or not. Once confirmed,
 `prm` removes hidden entries too on both shells. `pcp`, `pmv` and `prm` fail
-when any path fails (on pwsh with a terminating error that counts them) and
-when they refuse to start (a usage error, a destination that is not a
+when any path fails (on pwsh with a terminating error that counts the errors)
+and when they refuse to start (a usage error, a destination that is not a
 directory, a declined `prm`), so `pcp a b dest && prm --force a b` stops before
 it removes anything. On pwsh every `ptar` refusal is a terminating error too.
 `ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a plain `tar`

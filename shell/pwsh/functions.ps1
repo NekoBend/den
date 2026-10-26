@@ -826,6 +826,13 @@ function archive {
         if (-not $done) {
           Remove-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue
           if ($aside) { Move-Item -LiteralPath $prev -Destination $Output -Force -ErrorAction SilentlyContinue }
+          # The move back can fail as well (the folder turned read-only while
+          # 7z ran). The old archive then stays at $prev, a random name nothing
+          # pointed to, so say where it is, as the bash/zsh twin does. Not
+          # terminating: the error on its way out is 7z's.
+          if ($aside -and $null -ne (Get-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue)) {
+            Write-Error "previous '$Output' kept at $prev" -ErrorAction Continue
+          }
         } elseif ($aside) {
           Remove-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue
         }
