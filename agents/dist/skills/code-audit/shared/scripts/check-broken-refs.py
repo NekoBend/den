@@ -164,7 +164,7 @@ def _run_git(args: list[str], cwd: Path) -> str:
     """Run a git command and return stdout decoded as text (file CONTENT).
 
     Decoded as the working-tree side is (decode_text), so a blob saved as
-    UTF-16 yields its definitions too.
+    UTF-16 with its byte-order mark yields its definitions too.
     """
     return decode_text(_run_git_bytes(args, cwd))
 
@@ -287,7 +287,7 @@ def _file_text_now(file: Path) -> str | None:
 
     Decoded exactly as the BASE side is (decode_text), so bytes that did not
     change define the same names on both sides, and text that did not change
-    defines the same names whatever its encoding. Under
+    defines the same names in UTF-8 or behind a UTF-16 byte-order mark. Under
     `working-tree-encoding=UTF-16LE-BOM` git keeps the blob in UTF-8 and the
     file in UTF-16: read as UTF-8 here, the file defined nothing, so any edit
     to it reported every function it kept.
