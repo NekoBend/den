@@ -996,6 +996,111 @@ def test_a_definition_behind_a_byte_order_mark_is_seen(tmp_path: Path) -> None:
     assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:Get-Widget"]
 
 
+# Two functions as Windows PowerShell writes them, and the byte-order marks it
+# writes in front of a script saved as UTF-16.
+TOOLS = "function Get-Widget {\r\n}\r\nfunction Set-Thing {\r\n}\r\n"
+BOMS = {"utf-16-le": b"\xff\xfe", "utf-16-be": b"\xfe\xff", "utf-8": b""}
+
+
+def encoded(text: str, codec: str) -> bytes:
+    """`text` saved in `codec`, behind the byte-order mark of a UTF-16 one."""
+    return BOMS[codec] + text.encode(codec)
+
+
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+def test_a_definition_removed_from_a_utf16_file_is_reported(
+    tmp_path: Path, codec: str
+) -> None:
+    # Both sides of the diff were decoded as UTF-8, where a UTF-16 file
+    # defines nothing, so deleting Get-Widget from one reported no caller.
+    init_repo(tmp_path)
+    (tmp_path / "Tools.ps1").write_bytes(encoded(TOOLS, codec))
+    write(tmp_path, "run.ps1", "Get-Widget\nSet-Thing\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    kept = "function Set-Thing {\r\n}\r\n"
+    (tmp_path / "Tools.ps1").write_bytes(encoded(kept, codec))
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:Get-Widget"]
+
+
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+def test_saving_a_file_as_utf16_removes_nothing(tmp_path: Path, codec: str) -> None:
+    # Re-saved as UTF-16 with its functions unchanged, the file defined nothing
+    # in the working tree, so every function it kept was reported.
+    init_repo(tmp_path)
+    (tmp_path / "Tools.ps1").write_bytes(encoded(TOOLS, "utf-8"))
+    write(tmp_path, "run.ps1", "Get-Widget\nSet-Thing\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "Tools.ps1").write_bytes(encoded(TOOLS, codec))
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "1 changed file examined" in proc.stderr, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+
+def test_a_utf16_working_tree_encoding_keeps_its_definitions(tmp_path: Path) -> None:
+    # Under `working-tree-encoding=UTF-16LE-BOM` git stores the blob as UTF-8
+    # and writes the file as UTF-16. Read as UTF-8, the file defined nothing,
+    # so merely adding New-Thing reported both functions it kept.
+    init_repo(tmp_path)
+    write(tmp_path, ".gitattributes", "Tools.ps1 working-tree-encoding=UTF-16LE-BOM\n")
+    (tmp_path / "Tools.ps1").write_bytes(encoded(TOOLS, "utf-16-le"))
+    write(tmp_path, "run.ps1", "Get-Widget\nSet-Thing\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    exe = shutil.which("git")
+    assert exe is not None
+    blob = subprocess.run(
+        [exe, "cat-file", "-p", "HEAD:Tools.ps1"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert blob.startswith(b"function Get-Widget {"), blob[:24]
+
+    added = TOOLS + "function New-Thing {\r\n}\r\n"
+    (tmp_path / "Tools.ps1").write_bytes(encoded(added, "utf-16-le"))
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+    removed = "function Set-Thing {\r\n}\r\n"
+    (tmp_path / "Tools.ps1").write_bytes(encoded(removed, "utf-16-le"))
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:Get-Widget"]
+
+
+def test_an_undecodable_byte_cannot_keep_a_removed_name_defined(
+    tmp_path: Path,
+) -> None:
+    # The working tree was read with errors="ignore", which drops the byte
+    # that git show's side turned into U+FFFD: `def wid\xffget():` still
+    # defined widget, and its callers went unreported. Both sides now read
+    # it as the search does.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "from lib import widget\nwidget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "lib.py").write_bytes(b"def wid\xffget():\n    return 1\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.py:1:broken_ref:widget:from lib import widget",
+        "app.py:2:broken_ref:widget:widget()",
+    ]
+
+
 def test_bash_function_keyword_form_removal_is_reported(tmp_path: Path) -> None:
     # `function name {` (no parentheses) was never a definition, so removing
     # one while callers remain printed nothing: a false "zero broken refs".

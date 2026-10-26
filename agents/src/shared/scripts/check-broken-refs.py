@@ -15,6 +15,8 @@ Strategy:
     2. For each changed file:
        - Extract its top-level definitions and its methods at BASE (via
          `git show <base>:<old path>`) and in the working tree (new path).
+         Both are read alike: as UTF-16 behind a UTF-16 byte-order mark (as
+         Windows PowerShell saves scripts), otherwise as UTF-8.
        - removed = base - current.
     3. All removed names are searched for in ONE pass over the tree: a
        top-level name as a whole word, a member (a method, or a type nested
@@ -109,6 +111,7 @@ from _common import (
     CASE_INSENSITIVE_EXTS,
     DEFINITION_PATTERNS,
     allow_undecodable_paths_on_stdout,
+    decode_text,
     find_tool,
     format_hit,
     git_command,
@@ -155,8 +158,12 @@ def _run_git_bytes(args: list[str], cwd: Path) -> bytes:
 
 
 def _run_git(args: list[str], cwd: Path) -> str:
-    """Run a git command and return stdout decoded as text (file CONTENT)."""
-    return _run_git_bytes(args, cwd).decode("utf-8", errors="replace")
+    """Run a git command and return stdout decoded as text (file CONTENT).
+
+    Decoded as the working-tree side is (decode_text), so a blob saved as
+    UTF-16 yields its definitions too.
+    """
+    return decode_text(_run_git_bytes(args, cwd))
 
 
 def _is_git_repo(root: Path) -> bool:
@@ -273,9 +280,17 @@ def _file_text_at_base(base: str, file: Path, repo_root: Path) -> str | None:
 
 
 def _file_text_now(file: Path) -> str | None:
-    """Get the current working-tree text of `file`. Returns None if missing."""
+    """Get the current working-tree text of `file`. Returns None if missing.
+
+    Decoded exactly as the BASE side is (decode_text), so bytes that did not
+    change define the same names on both sides, and text that did not change
+    defines the same names whatever its encoding. Under
+    `working-tree-encoding=UTF-16LE-BOM` git keeps the blob in UTF-8 and the
+    file in UTF-16: read as UTF-8 here, the file defined nothing, so any edit
+    to it reported every function it kept.
+    """
     try:
-        return file.read_text(encoding="utf-8", errors="ignore")
+        return decode_text(file.read_bytes())
     except OSError:
         return None
 

@@ -994,6 +994,23 @@ _UTF16_BOMS = ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"))
 _UTF8_BOM = b"\xef\xbb\xbf"
 
 
+def decode_text(data: bytes) -> str:
+    """A whole file's bytes as text, decoded as _raw_lines decodes them.
+
+    Behind a UTF-16 byte-order mark the rest is UTF-16; anything else is
+    UTF-8, a leading UTF-8 mark dropped. Undecodable bytes become U+FFFD, as
+    in iter_searchable_lines, so they cannot join two halves of a name.
+    check-broken-refs reads both sides of a change with this: read as UTF-8,
+    a script Windows PowerShell saved as UTF-16 defined nothing, so a
+    function deleted from it went unreported, and re-saving a file as UTF-16
+    reported every function it kept.
+    """
+    for bom, codec in _UTF16_BOMS:
+        if data.startswith(bom):
+            return data[len(bom) :].decode(codec, errors="replace")
+    return data.removeprefix(_UTF8_BOM).decode("utf-8", errors="replace")
+
+
 def _raw_lines(path: Path) -> Iterator[bytes]:
     """Each line of `path` as UTF-8 bytes, without its "\\n"."""
     try:

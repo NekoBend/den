@@ -1451,6 +1451,28 @@ def test_byte_order_marks_are_read_alike_by_both_backends(
     assert rows(proc, tmp_path)[0] == "lib.py:1:def:def widget():"
 
 
+def test_a_file_decoded_whole_reads_as_its_lines_do(tmp_path: Path) -> None:
+    # check-broken-refs reads each changed file whole (decode_text) and the
+    # search reads files line by line (_raw_lines). It decoded UTF-8 only, so
+    # a UTF-16 script defined nothing there while the search read it fine.
+    samples = [
+        b"\xff\xfe" + "function Get-Widget {\r\n}\r\n".encode("utf-16-le"),
+        b"\xfe\xff" + "a\nGet-Widget\n".encode("utf-16-be"),
+        b"\xff\xfe" + "odd".encode("utf-16-le") + b"\x00",  # a byte short
+        b"\xef\xbb\xbfdef widget():\n    pass\n",
+        b"def wid\xffget():\n",
+        b"no newline at the end",
+    ]
+    for n, data in enumerate(samples):
+        path = tmp_path / f"{n}.txt"
+        path.write_bytes(data)
+        lines = [line for _lineno, line in _common.iter_searchable_lines(path)]
+        text = _common.decode_text(data)
+        if text.endswith("\n"):
+            lines.append("")  # what follows the last newline: nothing
+        assert text.split("\n") == lines, data
+
+
 def test_the_fallback_does_not_load_a_large_file_whole(
     tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
