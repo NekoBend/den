@@ -213,7 +213,11 @@ def ensure_scaffold(root: Path) -> dict[str, object]:
         )
     try:
         loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
+        # A cloned repo can ship board.json. ValueError covers a byte that is
+        # not UTF-8 (UnicodeDecodeError), invalid JSON and int's digit limit;
+        # a file nested too deep raises RecursionError. All of them are an
+        # unreadable config, not a traceback out of `den board`.
         print(f"den board: unreadable {cfg_path}: {exc}", file=sys.stderr)
         return dict(_DEFAULT_CONFIG)
     if not isinstance(loaded, dict):

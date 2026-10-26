@@ -702,6 +702,29 @@ _BAD_LINES = [
 ]
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        *_BAD_LINES,
+        pytest.param(b'{"title": "caf\xe9"}\n', id="not-utf-8"),
+        pytest.param("{not json\n", id="invalid"),
+    ],
+)
+def test_scaffold_reads_a_board_json_json_cannot_take_as_invalid(
+    tmp_path, capsys, bad
+):
+    # Each one but the invalid JSON raised out of ensure_scaffold, and
+    # `den board` stopped with a traceback at start. A cloned repo can ship
+    # board.json. Run in a new thread, where the [deep] skip was decided.
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    data = bad if isinstance(bad, bytes) else bad.encode()
+    cfg_path.write_bytes(data)
+    assert _in_a_new_thread(_board.ensure_scaffold, tmp_path) == _board._DEFAULT_CONFIG
+    assert f"unreadable {cfg_path}" in capsys.readouterr().err
+    assert cfg_path.read_bytes() == data, "an edit is never clobbered"
+
+
 def test_reactions_skip_lines_json_cannot_parse(tmp_path):
     # Both come before the reaction: a read that raised on them would never
     # reach it, and would raise again on every poll after.
