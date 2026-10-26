@@ -23,6 +23,10 @@ _PIP_INSTALL = re.compile(r"\bpip3? install\b(.*)")
 _APT_INSTALL = re.compile(r"\bapt-get install\b(.*)")
 _LINK = re.compile(r"\bln -s")
 _IMPORT_CHECK = re.compile(r"""\bpython3? -c ["']import ([\w., ]+)["']""")
+# The options whose value is a package that a launcher installs: in
+# `uv run --with pytest pytest`, the first pytest is that package and the
+# second the command. Written as one word, --with=pytest holds its own value.
+_PACKAGE_OPTIONS = {"--with", "--with-editable"}
 # Where one command ends and the next starts on the same line.
 _SEPARATOR = re.compile(r"\s*(?:&&|\|\||;)\s*|\s+\|\s+")
 # What an apt package puts on PATH, where that is not the package's name.
@@ -118,17 +122,17 @@ def _pytest_targets(command: str) -> list[str] | None:
     """The paths <command> runs pytest on, or None if it runs no pytest.
 
     pytest runs as a module (`python -m pytest`) or as a command, bare or after
-    a launcher such as `uv run --with pytest pytest`, whose first pytest is the
-    value of --with. So every word pytest counts that is not an option's value,
-    and a job that runs pytest some other way is scanned, not passed over. In a
-    pip install or a `python -c "import ..."`, pytest is a package.
+    a launcher and its flags (`uv run --frozen pytest`, `xvfb-run -a pytest`).
+    So the word pytest counts wherever it stands, unless it is the value of an
+    option that takes a package. In a pip install or a `python -c "import ..."`,
+    pytest is a package too.
     """
     if _PIP_INSTALL.search(command) or _IMPORT_CHECK.search(command):
         return None
     words = _words(command)
     for i, word in enumerate(words):
         before = words[i - 1] if i else ""
-        if word == "pytest" and (before == "-m" or not before.startswith("-")):
+        if word == "pytest" and before not in _PACKAGE_OPTIONS:
             # Given no path, pytest collects the checkout: its tests are in tests/.
             return [w for w in words[i + 1 :] if not w.startswith("-")] or ["tests"]
     return None
@@ -197,6 +201,9 @@ def test_the_scan_finds_what_the_suites_skip_without():
     [
         "python3 -m pytest tests/den",
         "uv run --with pytest pytest tests/den",
+        "uv run --with=pytest pytest tests/den",
+        "uv run --frozen pytest tests/den",
+        "xvfb-run -a pytest tests/den",
         "pytest -q tests/den",
         "python -m pytest 'tests/den'",
         "pip install pytest && python -m pytest tests/den",
@@ -211,7 +218,13 @@ def test_the_scan_reads_each_way_of_running_pytest(run):
 
 
 @pytest.mark.parametrize(
-    "run", ["pip install pytest pyyaml", "uv run --with pytest python -c 'import yaml'"]
+    "run",
+    [
+        "pip install pytest pyyaml",
+        'python -c "import yaml, pytest"',
+        "uv run --with pytest python -V",
+        "uv run --with-editable pytest python -V",
+    ],
 )
 def test_the_scan_does_not_take_installing_pytest_for_running_it(run):
     assert _scan_job(_job(run)) is None
