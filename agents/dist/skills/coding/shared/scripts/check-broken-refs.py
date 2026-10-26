@@ -93,7 +93,9 @@ Limitations:
     In PowerShell files (.ps1 .psm1 .psd1) names are compared and matched
     ignoring case, as PowerShell does: renaming Get-Widget to get-widget
     removes nothing, and a removed Get-Widget is found where it is called as
-    get-widget.
+    get-widget. A file saved as UTF-16 counts only with its byte-order mark:
+    without one (git's `working-tree-encoding=UTF-16LE`), it is read as
+    UTF-8, as rg reads it, and defines nothing.
 
     Signature changes (same name, different params) are NOT detected.
     Symbols added in the working tree that shadow an external symbol are NOT
