@@ -247,9 +247,27 @@
     });
   };
 
+  // Text for the page from a field of a board file. Those files are JSON
+  // anyone can edit, so a field meant to hold a string can hold a number, an
+  // object or null. The DOM, `+`, new Date() and a property lookup convert
+  // such a value with its own toString, and throw on an object whose
+  // toString is not a function ({"toString": null}). JSON.stringify never
+  // calls it; it throws only on a value nested deeper than it can go, and
+  // the server can list one nested thousands of levels deep.
+  const asText = (v) => {
+    if (typeof v === "string") { return v; }
+    if (v === null || v === undefined) { return ""; }
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return "";
+    }
+  };
+
   const fmtTime = (iso) => {
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
+    const s = asText(iso);
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? s : d.toLocaleTimeString();
   };
 
   const makeReply = (text) => {
@@ -258,7 +276,7 @@
     const who = document.createElement("span");
     who.className = "who";
     who.textContent = "agent";
-    div.append(who, document.createTextNode(text || ""));
+    div.append(who, document.createTextNode(asText(text)));
     return div;
   };
 
@@ -280,15 +298,15 @@
       row.className = "trow";
       const x = document.createElement("span");
       x.className = "x";
-      x.textContent = task.text || "";
+      x.textContent = asText(task.text);
       row.append(x);
       if (task.reaction) {
         li.classList.add("settled");
         const state = document.createElement("span");
         state.className = "state";
+        const button = asText(task.reaction.button);
         state.textContent =
-          (REACTION_LABELS[task.reaction.button] || task.reaction.button) +
-          " " + fmtTime(task.reaction.ts);
+          (REACTION_LABELS[button] || button) + " " + fmtTime(task.reaction.ts);
         row.append(state);
       } else {
         for (const [id, label] of Object.entries(REACTION_LABELS)) {
@@ -314,7 +332,8 @@
     const byId = Object.fromEntries(buttons.map((b) => [b.id, b]));
     for (const rep of reports.slice().reverse()) {
       const li = document.createElement("li");
-      const meta = byId[rep.button] || {};
+      const button = asText(rep.button);
+      const meta = byId[button] || {};
       if (meta.color) { li.style.borderLeftColor = meta.color; }
       const row = document.createElement("div");
       row.className = "row";
@@ -324,10 +343,10 @@
       const b = document.createElement("span");
       b.className = "b";
       if (meta.color) { b.style.color = meta.color; }
-      b.textContent = meta.label || REACTION_LABELS[rep.button] || rep.button;
+      b.textContent = meta.label || REACTION_LABELS[button] || button;
       const x = document.createElement("span");
       x.className = "x";
-      x.textContent = rep.text || "";
+      x.textContent = asText(rep.text);
       row.append(t, b, x);
       li.append(row);
       for (const reply of agent.filter(
@@ -378,9 +397,21 @@
       return;
     }
     if (my !== tickGen) { return; }  // a newer snapshot is on its way
-    renderTasks(agent);
-    renderReports(reports, agent);
-    renderOrphans(agent, reports);
+    // Each list on its own. One that throws on something the page did not
+    // expect stopped the lists after it, on every poll while the server
+    // listed that thing; renderTasks runs first, so a task hid every report.
+    const lists = [
+      () => renderTasks(agent),
+      () => renderReports(reports, agent),
+      () => renderOrphans(agent, reports),
+    ];
+    for (const render of lists) {
+      try {
+        render();
+      } catch (e) {
+        console.error(e);
+      }
+    }
   };
 
   document.addEventListener("keydown", (e) => {
