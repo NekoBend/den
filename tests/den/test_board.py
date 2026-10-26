@@ -9,6 +9,7 @@ import socket
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -503,6 +504,172 @@ def test_reaction_joined_server_side(served):
     assert entry["reaction"]["text"] == "ok"
 
 
+def _react(port, task_id):
+    """The user presses Done on the task, with the note "ok"."""
+    body = {"button": "task-done", "text": "ok", "re": task_id}
+    assert _request(port, "POST", "/api/report", body)[0] == 200
+
+
+def _listed_reaction(port):
+    """The reaction of the one task /api/agent lists, or None while it is open."""
+    _status, body = _request(port, "GET", "/api/agent")
+    (task,) = json.loads(body)["entries"]
+    return task.get("reaction")
+
+
+@pytest.mark.parametrize("polled_before", [False, True])
+def test_reaction_outlives_the_reports_window(served, polled_before):
+    # A reaction with more than _MAX_LIST_BYTES of reports after it fell out
+    # of the tail that settlement was joined over, and the page offered Done /
+    # Can't again on a task the user had answered. polled_before: the server
+    # saw the reaction before the flood and from then on reads only what was
+    # appended, or it reads the whole file for the first time after it.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    _react(port, task_id)
+    if polled_before:
+        assert _listed_reaction(port)["button"] == "task-done"
+    reports = _board._reports_path(root)
+    after = reports.stat().st_size
+    note = {"button": "note", "text": "x" * _board._MAX_TEXT_LEN}
+    while reports.stat().st_size - after <= _board._MAX_LIST_BYTES:
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+
+    reaction = _listed_reaction(port)
+    assert reaction is not None, "the answered task is open again"
+    assert (reaction["button"], reaction["text"]) == ("task-done", "ok")
+    # /api/reports keeps its window: the list no longer reaches the reaction.
+    _status, body = _request(port, "GET", "/api/reports?limit=500")
+    assert all(r.get("re") != task_id for r in json.loads(body)["reports"])
+
+
+def test_settlement_follows_a_rewritten_reports_file(served):
+    # The server reads only what was appended since its last poll, so a file
+    # changed in any other way has to be read again from the start.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+    reports = _board._reports_path(root)
+
+    # Edited in place, same size: the user changed the answer by hand.
+    reports.write_bytes(reports.read_bytes().replace(b"task-done", b"task-cant"))
+    assert _listed_reaction(port)["button"] == "task-cant"
+
+    # Changed back further up than the seam reaches, same size, and saved the
+    # way many editors save: a new file renamed over the old one.
+    note = {"button": "note", "text": "y" * 1000}
+    while reports.stat().st_size <= 2 * _board._SEAM_BYTES:
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+    assert _listed_reaction(port)["button"] == "task-cant"
+    saved = reports.with_name("reports.jsonl.new")
+    saved.write_bytes(reports.read_bytes().replace(b"task-cant", b"task-done"))
+    saved.replace(reports)
+    assert _listed_reaction(port)["button"] == "task-done"
+
+
+def test_settlement_follows_a_truncated_or_deleted_reports_file(served):
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    reports = _board._reports_path(root)
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+    reports.write_bytes(b"")
+    assert _listed_reaction(port) is None
+
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+    reports.unlink()  # as den/README.md suggests when a session is done
+    assert _listed_reaction(port) is None
+
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+    # Deleted again, and the new file grew past the old one between polls.
+    reports.unlink()
+    for _ in range(3):
+        note = {"button": "note", "text": "y" * 200}
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+    assert _listed_reaction(port) is None
+
+
+def test_reactions_read_whole_lines_across_chunks(tmp_path, monkeypatch):
+    # A line split across read chunks, multi-byte characters included, is read
+    # whole; a line still missing its newline waits for the next poll; and a
+    # task's latest reaction wins.
+    monkeypatch.setattr(_board, "_READ_CHUNK", 7)
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    text = "caf\u00e9 \u2028 \u7121\u7406"
+    rows = [
+        {"button": "bug", "text": text},
+        {"button": "task-cant", "re": "t1", "text": text},
+        {"button": "task-done", "re": "t2", "text": "ok", "ts": "now"},
+        {"button": "task-done", "re": "t1", "text": "after all"},
+    ]
+    data = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode()
+    cut = len(data) - 10  # inside the last line
+    reports.write_bytes(data[:cut])
+    index = _board._Reactions(tmp_path)
+    t2 = {"button": "task-done", "ts": "now", "text": "ok"}
+    assert index.snapshot() == {
+        "t1": {"button": "task-cant", "ts": None, "text": text},
+        "t2": t2,
+    }
+    with reports.open("ab") as f:
+        f.write(data[cut:])
+    assert index.snapshot() == {
+        "t1": {"button": "task-done", "ts": None, "text": "after all"},
+        "t2": t2,
+    }
+
+
+def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    reports.write_text(json.dumps({"button": "task-done", "re": "t1"}) + "\n")
+    index = _board._Reactions(tmp_path)
+    assert "t1" in index.snapshot()
+
+    real_open = Path.open
+
+    def refuse(self, *args, **kwargs):
+        if self == reports:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "open", refuse)
+        assert "t1" in index.snapshot(), "a read that fails once reopens nothing"
+    reports.unlink()
+    assert index.snapshot() == {}, "a deleted file settles nothing"
+
+
+def test_tasks_still_list_with_a_directory_at_reports_jsonl(served):
+    # A cloned repo can ship .den/board/reports.jsonl as a directory. The
+    # tasks still list, open, as they did when the tail read the file.
+    root, _server, port = served
+    _board._append_agent(root, "task", "press done", None)
+    _board._reports_path(root).mkdir()
+    assert _listed_reaction(port) is None
+    assert _listed_reaction(port) is None, "and on the next poll"
+
+
+def test_reactions_close_what_they_open(tmp_path):
+    # Every poll opens reports.jsonl, so one descriptor left behind per poll
+    # (a directory there is the case that does it) runs a long-lived board
+    # out of them.
+    listings = (Path("/proc/self/fd"), Path("/dev/fd"))
+    fd_dir = next((d for d in listings if d.is_dir()), None)
+    if fd_dir is None:
+        pytest.skip("no per-process descriptor listing here")
+    _board._reports_path(tmp_path).mkdir(parents=True)
+    index = _board._Reactions(tmp_path)
+    before = len(list(fd_dir.iterdir()))
+    for _ in range(5):
+        assert index.snapshot() == {}
+    assert len(list(fd_dir.iterdir())) == before
+
+
 def test_derived_ids_of_duplicate_lines_stay_distinct(served):
     root, _server, port = served
     raw = json.dumps({"type": "task", "text": "same"}) + "\n"
@@ -616,6 +783,21 @@ def test_tail_lines_ignores_symlinked_file(tmp_path, symlink):
     reports = _board._reports_path(proj)
     symlink(outside, reports)
     assert _board._tail_lines(proj, reports, 10_000) == []
+
+
+def test_reactions_ignore_a_symlinked_reports_file(tmp_path, symlink):
+    proj = tmp_path / "repo"
+    reports = _board._reports_path(proj)
+    reports.parent.mkdir(parents=True)
+    reaction = json.dumps({"button": "task-done", "re": "t1"}) + "\n"
+    reports.write_text(reaction)
+    index = _board._Reactions(proj)
+    assert "t1" in index.snapshot()
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(reaction)
+    reports.unlink()
+    symlink(outside, reports)
+    assert index.snapshot() == {}, "a symlinked board file reads as empty"
 
 
 def test_scaffold_refuses_symlinked_config(tmp_path, capsys, symlink):
