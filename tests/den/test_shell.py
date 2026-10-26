@@ -886,6 +886,17 @@ def test_disable_coreutils_readline_two_blocks_preserve_between(tmp_path):
     assert "60b36fc6" not in out
 
 
+def test_disable_coreutils_readline_two_blocks_one_blank_apart_keep_the_next_line(
+    tmp_path,
+):
+    # Both blocks' spans held the blank line between them, and deleting the spans
+    # one after the other took out the line after the second block too.
+    prof = tmp_path / "p.ps1"
+    prof.write_text(_CU_BLOCK + "\n" + _CU_BLOCK + "Import-Module KeepMe\n")
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert prof.read_text() == "Import-Module KeepMe\n"
+
+
 def test_disable_coreutils_readline_keeps_dangling_sentinel(tmp_path):
     prof = tmp_path / "p.ps1"
     lone = "# DO NOT MODIFY -- coreutils -- 60b36fc6-2d59-49df-be51-28dd2f4c3c9a\n"

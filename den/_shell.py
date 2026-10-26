@@ -426,6 +426,9 @@ def _disable_coreutils_readline(profile: Path) -> bool | None:
     modern-first dispatch. Each block is bracketed by two sentinel comment lines
     carrying a fixed GUID. Removes each open..close PAIR (plus an adjacent blank on
     each side), so content sitting BETWEEN two separate blocks is never touched.
+    Two blocks one blank line apart both claim that line, so the lines to drop are
+    gathered first and taken out in one pass: deleting each block's span in turn
+    took out the line after the second block as well.
     Preserves the file's CRLF/LF ending and its encoding (UTF-8, UTF-8-BOM, or
     UTF-16; a UTF-16 profile is normalized to little-endian, which is what
     PowerShell writes), and leaves the file untouched if it does not decode.
@@ -459,21 +462,19 @@ def _disable_coreutils_readline(profile: Path) -> bool | None:
     marks = [i for i, ln in enumerate(lines) if _COREUTILS_SENTINEL in ln]
     # Pair the sentinels (open, close). An odd trailing sentinel (corrupt/partial
     # block) is left in place rather than guessing where it ends.
-    spans = []
+    drop: set[int] = set()
     for open_i, close_i in zip(marks[0::2], marks[1::2], strict=False):
         start, end = open_i, close_i + 1
         if end < len(lines) and lines[end] == "":  # trailing blank
             end += 1
         if start > 0 and lines[start - 1] == "":  # preceding blank
             start -= 1
-        spans.append((start, end))
-    if not spans:
+        drop.update(range(start, end))
+    if not drop:
         return False
     if _Writer._backup(profile, None) is None:  # ruff: ignore[private-member-access]  # the --force backup, shared
         return None
-    for start, end in reversed(spans):  # deepest-first keeps earlier indices valid
-        del lines[start:end]
-    new = "\n".join(lines)
+    new = "\n".join(ln for i, ln in enumerate(lines) if i not in drop)
     if crlf:
         new = new.replace("\n", "\r\n")
     profile.write_text(new, encoding=enc, newline="")
