@@ -234,8 +234,8 @@ PowerShell additionally provides `df`, `env`, `head`, `tail`, `wc`, `which`,
 Profiles are stored in `$XDG_CONFIG_HOME/den/proxy.conf`. `on` / `off` only set
 or clear environment variables in the **current shell** (no global tool config
 such as `~/.gitconfig` is touched), so the active profile is tracked per-shell
-in `_DEN_PROXY_ACTIVE` and never disagrees with another shell. bash/zsh and
-PowerShell (a machine's pwsh and bash share the profile store).
+in `_DEN_PROXY_ACTIVE` and never disagrees with another shell. `proxy` is in
+bash/zsh and PowerShell, and a machine's pwsh and bash share the profile store.
 `localhost,127.0.0.1,::1` are always excluded; a profile's own `no_proxy`
 entries (comma-separated, e.g. `.corp.example.com,10.0.0.0/8`) are added on top.
 The one exception is `no_proxy = *`, which stays standalone (bypass everything).
@@ -254,10 +254,11 @@ the word `proxy` (not part of a name or a path such as `~/proxy`, `myproxy` or
 `$wc.Proxy`; on pwsh in upper or lower case), blanks, the word `add`, and
 after it a `:` before the last `@` once each `://` is taken out. So on zsh and
 pwsh a line that only looks like one (`echo proxy add c http://al:pw@p`) is
-left out too, and in every shell `proxy add` behind an alias is not seen. den
-changes no history setting, so the ones in effect still apply: `HISTIGNORE` /
-`HISTCONTROL` (init.bash sets both as it loads, so a value set before it is
-replaced), `HISTORY_IGNORE` and a `zshaddhistory` of your own, and an
+left out too, and in every shell `proxy add` behind an alias is not seen.
+`proxy` changes no history setting, so the ones in effect still apply:
+`HISTIGNORE` / `HISTCONTROL` (init.bash keeps a value set before it and adds to
+it; see Load flow and caches, below), `HISTORY_IGNORE` (init.zsh sets it as it loads, so a
+value set before it is replaced) and a `zshaddhistory` of your own, and an
 `AddToHistoryHandler` set before init.ps1 (den's handler chains to it, and a
 line it leaves out stays out).
 
@@ -297,8 +298,8 @@ Snippets are stored in `$XDG_CONFIG_HOME/den/snippets` (`name<TAB>command`; the
 name is `[A-Za-z0-9_-]`, the command may contain anything on one line). `run` and
 `pick` echo the command, then `eval` it in the **current shell** (you saved it,
 so it is trusted), which lets it `cd`, set vars, and use the current environment.
-`pick` needs `fzf`; without it, use `snippet run <name>`. bash/zsh and PowerShell
-(a machine's pwsh and bash share the snippet store).
+`pick` needs `fzf`; without it, use `snippet run <name>`. `snippet` is in
+bash/zsh and PowerShell, and a machine's pwsh and bash share the snippet store.
 
 `save` takes the command in one of these forms:
 - **One argument** (`snippet save cnt 'grep -c ">" seqs.fa | tee n.txt'`) or
@@ -427,6 +428,19 @@ itself).
 (wrappers, functions, aliases, hwinfo, python, ffmpeg, parallel) -> cached init
 of zoxide and starship. zsh and PowerShell mirror this.
 
+- History: init.bash sets `HISTSIZE` / `HISTFILESIZE` to 8192, replacing
+  values set before it, and turns on `histappend`. Without a `HISTCONTROL` it
+  sets `ignoreboth`. It keeps a `HISTCONTROL` set before it (above den's line
+  in `~/.bashrc`, or in the environment) and adds `ignorespace` when neither
+  `ignorespace` nor `ignoreboth` is in it, for example on Fedora and RHEL,
+  where `/etc/profile` exports `ignoredups` (`ignoredups` becomes
+  `ignoredups:ignorespace`, and an empty value becomes `ignorespace`), so a
+  line typed with a leading space stays out of the history. To have such
+  lines saved, set `HISTCONTROL` after den's line in `~/.bashrc`. To
+  `HISTIGNORE` it adds the patterns that keep `again` / `sagain` lines out of
+  the history, after yours, each once however often it loads. init.zsh sets
+  `HISTFILE`, `HISTSIZE` / `SAVEHIST` (8192) and `HISTORY_IGNORE` (the
+  `again` / `sagain` pattern) as it loads, replacing values set before it.
 - `~/.cache/shell/` holds the zoxide/starship init caches. They regenerate when
   the tool binary is newer than the cache, and are sourced only if they are a
   regular file owned by you (symlink and owner guarded).

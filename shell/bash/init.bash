@@ -4,9 +4,38 @@
 case $- in *i*) ;; *) return;; esac
 [[ -z "$BASH_VERSION" ]] && return
 
-HISTCONTROL=ignoreboth; shopt -s histappend
+# A HISTCONTROL or HISTIGNORE already set when this file runs (above den's
+# line in ~/.bashrc, or in the environment) is kept, and den adds only what
+# it lacks, so loading this file again (~/.bashrc sourced again, or reload
+# with either exported) adds nothing twice.
+# - HISTCONTROL: unset, it gets den's ignoreboth. When it holds neither
+#   ignorespace nor ignoreboth, it gets ':ignorespace' (an empty one becomes
+#   ignorespace), so a line typed with a leading space still stays out of the
+#   history: Fedora's and RHEL's /etc/profile export ignoredups. The check
+#   reads whole words between ':'s, as bash does. To have such lines saved,
+#   set HISTCONTROL after den's line in ~/.bashrc.
+# - HISTIGNORE: it gets each of den's again/sagain patterns it does not hold
+#   yet. A pattern counts as held only first or after a ':' with no '\'
+#   before it: bash does not split HISTIGNORE at '\:', so 'foo\:again' holds
+#   no again. (In 'foo\\:again' the '\' itself is escaped and again is held;
+#   den still adds one copy of it, which changes nothing.)
+if [ -z "${HISTCONTROL+set}" ]; then
+    HISTCONTROL=ignoreboth
+else
+    case ":$HISTCONTROL:" in
+        *:ignorespace:*|*:ignoreboth:*) ;;
+        *) HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignorespace" ;;
+    esac
+fi
+shopt -s histappend
 HISTSIZE=8192; HISTFILESIZE=8192
-HISTIGNORE="again:again *:sagain:sagain *"
+for _den_hi in again 'again *' sagain 'sagain *'; do
+    case ":${HISTIGNORE-}:" in
+        ":$_den_hi:"*|*[!\\]":$_den_hi:"*) ;;
+        *) HISTIGNORE="${HISTIGNORE:+$HISTIGNORE:}$_den_hi" ;;
+    esac
+done
+unset _den_hi
 
 # ============================================================================
 # Custom configuration
