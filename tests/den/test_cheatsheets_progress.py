@@ -7,6 +7,7 @@ without it these tests are skipped.
 """
 
 import asyncio
+import errno
 import importlib
 import multiprocessing
 import os
@@ -303,6 +304,36 @@ def test_copy_file_rich_escapes_the_file_name(descriptions, tmp_path):
 # --- copy_file_*: a private file stays private while it is copied ---------------
 
 
+class _Bar:
+    """tqdm stand-in (tqdm is not a test dependency)."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def __enter__(self) -> "_Bar":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def update(self, n: int) -> None:
+        pass
+
+
+def _stand_in_tqdm(monkeypatch: pytest.MonkeyPatch, bar: type[_Bar] = _Bar) -> None:
+    module = types.ModuleType("tqdm")
+    module.tqdm = bar
+    monkeypatch.setitem(sys.modules, "tqdm", module)
+
+
+def _still_open_on(fd: int, path: Path) -> bool:
+    """Whether ``fd`` is still open on ``path`` (closed or reused: no)."""
+    try:
+        return os.path.samestat(os.fstat(fd), path.stat())
+    except OSError:
+        return False
+
+
 @pytest.fixture
 def umask_022() -> Iterator[None]:
     old = os.umask(0o022)
@@ -329,25 +360,13 @@ def test_copy_keeps_the_destination_private_until_it_is_complete(
         dst.chmod(0o644)
     modes: list[int] = []
 
-    class Bar:
-        """tqdm stand-in (tqdm is not a test dependency): update() follows a write."""
-
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self) -> "Bar":
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            return None
-
+    class Bar(_Bar):
         @staticmethod
         def update(n: int) -> None:
+            # update() follows a write: dst is open by then.
             modes.append(stat.S_IMODE(dst.stat().st_mode))
 
-    fake_tqdm = types.ModuleType("tqdm")
-    fake_tqdm.tqdm = Bar
-    monkeypatch.setitem(sys.modules, "tqdm", fake_tqdm)
+    _stand_in_tqdm(monkeypatch, Bar)
     real_advance = Progress.advance
 
     def spy_advance(self, task_id, advance=1):
@@ -361,6 +380,51 @@ def test_copy_keeps_the_destination_private_until_it_is_complete(
     assert set(modes) == {0o600}
     assert dst.read_bytes() == src.read_bytes()
     assert stat.S_IMODE(dst.stat().st_mode) == src_mode  # copystat, as in copy2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("copier", ["copy_file_tqdm", "copy_file_rich"])
+def test_copy_leaves_a_destination_it_cannot_narrow_alone(
+    tmp_path, monkeypatch, copier
+):
+    # fchmod fails with EPERM on a file you may write but do not own, or on a
+    # device such as /dev/null. The opener's O_TRUNC had already emptied the
+    # destination by then, and the fd it opened was never closed.
+    src = tmp_path / "secret.key"
+    src.write_bytes(b"k" * 200_000)
+    dst = tmp_path / "theirs.txt"
+    dst.write_bytes(b"OLD CONTENT")
+    narrowed: list[int] = []
+
+    def fchmod(fd: int, mode: int) -> None:
+        narrowed.append(fd)
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    _stand_in_tqdm(monkeypatch)
+    monkeypatch.setattr(os, "fchmod", fchmod)
+    with pytest.raises(PermissionError):
+        getattr(files, copier)(src, dst)
+    assert dst.read_bytes() == b"OLD CONTENT"
+    assert narrowed
+    assert not [fd for fd in narrowed if _still_open_on(fd, dst)]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+@pytest.mark.parametrize("copier", ["copy_file_tqdm", "copy_file_rich"])
+def test_copy_still_writes_into_a_fifo(tmp_path, monkeypatch, copier):
+    # O_TRUNC leaves a FIFO alone, but ftruncate on one fails with EINVAL: the
+    # truncation that now waits for fchmod must skip it, as O_TRUNC does.
+    src = tmp_path / "payload"
+    src.write_bytes(b"p" * 1000)  # fits the pipe buffer: no reader thread
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    _stand_in_tqdm(monkeypatch)
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        assert getattr(files, copier)(src, fifo) == 1000
+        assert os.read(reader, 4096) == src.read_bytes()
+    finally:
+        os.close(reader)
 
 
 # --- run_thread_rich_per_task: one live task per running item -------------------

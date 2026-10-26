@@ -47,9 +47,11 @@ def copy_file_tqdm(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
            hardlink to the source, or ``out_dir / src.name`` when ``out_dir``
            is the source's own directory) would destroy it and report 0 bytes
            copied.
-           ``dst`` is 0o600 from before its first byte (an existing file is
-           narrowed to it), and ``shutil.copystat`` at the end gives it the
-           source's mode and times, as ``shutil.copy2`` does. That is
+           ``dst`` is 0o600 from before its first byte: an existing file is
+           narrowed to it before it is truncated, and one whose mode cannot
+           be changed (another user's file) raises ``PermissionError`` with
+           its old bytes intact. ``shutil.copystat`` at the end gives ``dst``
+           the source's mode and times, as ``shutil.copy2`` does. That is
            stricter than ``copy2``, which writes into a file with the
            umask's mode until then: interrupted, its copy of a 0600 secret is
            left 0644.
@@ -60,14 +62,23 @@ def copy_file_tqdm(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
     """
     import os
     import shutil
+    import stat
 
     from tqdm import tqdm
 
     def private(path: str, flags: int) -> int:
-        """Open ``path`` 0o600; an existing file is narrowed before any write."""
-        fd = os.open(path, flags, 0o600)
-        if os.name == "posix":
-            os.fchmod(fd, 0o600)
+        """Open ``path`` 0o600; an existing file is narrowed before it is truncated."""
+        fd = os.open(path, flags & ~os.O_TRUNC, 0o600)
+        try:
+            if os.name == "posix":
+                os.fchmod(fd, 0o600)  # EPERM on another user's file
+            # O_TRUNC's job, once the mode is safe. Like O_TRUNC, it skips a
+            # FIFO or a device, where ftruncate fails with EINVAL.
+            if flags & os.O_TRUNC and stat.S_ISREG(os.fstat(fd).st_mode):
+                os.ftruncate(fd, 0)
+        except BaseException:
+            os.close(fd)
+            raise
         return fd
 
     if dst.exists() and src.samefile(dst):
@@ -102,6 +113,7 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
     """
     import os
     import shutil
+    import stat
 
     from rich.markup import escape
     from rich.progress import (
@@ -114,10 +126,18 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
     )
 
     def private(path: str, flags: int) -> int:
-        """Open ``path`` 0o600; an existing file is narrowed before any write."""
-        fd = os.open(path, flags, 0o600)
-        if os.name == "posix":
-            os.fchmod(fd, 0o600)
+        """Open ``path`` 0o600; an existing file is narrowed before it is truncated."""
+        fd = os.open(path, flags & ~os.O_TRUNC, 0o600)
+        try:
+            if os.name == "posix":
+                os.fchmod(fd, 0o600)  # EPERM on another user's file
+            # O_TRUNC's job, once the mode is safe. Like O_TRUNC, it skips a
+            # FIFO or a device, where ftruncate fails with EINVAL.
+            if flags & os.O_TRUNC and stat.S_ISREG(os.fstat(fd).st_mode):
+                os.ftruncate(fd, 0)
+        except BaseException:
+            os.close(fd)
+            raise
         return fd
 
     if dst.exists() and src.samefile(dst):
