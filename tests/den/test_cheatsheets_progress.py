@@ -356,7 +356,9 @@ def test_copy_keeps_the_destination_private_until_it_is_complete(
     src.chmod(src_mode)
     dst = tmp_path / "copy.key"
     if existing:
-        dst.write_bytes(b"old")
+        # Longer than the source, so a copy that does not truncate it keeps
+        # the old file's tail and fails the comparison of the bytes below.
+        dst.write_bytes(b"o" * 300_000)
         dst.chmod(0o644)
     modes: list[int] = []
 
