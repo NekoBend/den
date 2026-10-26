@@ -152,7 +152,8 @@ function global:_DenPyExe {
 # _DenPyMarker's files in this directory or one above it, uv run builds that
 # project (its build backend is the repository's own code) or runs a python it
 # names, even for `python --version`. There, after a warning, the python
-# _DenPyExe names runs directly, as it does anywhere for --version and -V. With
+# _DenPyExe names runs directly, for --version and -V too. Elsewhere they go
+# through uv run as well, so they name the python that `python x.py` runs. With
 # uv gone since den loaded, the python on PATH. Parity with posix python.sh.
 # Returns @{ Exe; Args }, or @{ Error } for the caller to write under its own
 # name; the caller reads them as ['Error'], since reading a missing key as
@@ -166,11 +167,10 @@ function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
     return @{ Exe = $exe; Args = $PyArgs }
   }
   $marker = _DenPyMarker
-  $probe = $PyArgs.Count -ge 1 -and ("$($PyArgs[0])" -ceq '--version' -or "$($PyArgs[0])" -ceq '-V')
-  if ($marker -or $probe) {
+  if ($marker) {
     $exe = _DenPyExe
     if (-not $exe) { return @{ Error = 'no Python found to run in place of uv run; uv python install installs one' } }
-    if ($marker) { Write-Warning "${Name}: running $exe, not uv run: uv run would build or run code from $marker" }
+    Write-Warning "${Name}: running $exe, not uv run: uv run would build or run code from $marker"
     return @{ Exe = $exe; Args = $PyArgs }
   }
   if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON) {

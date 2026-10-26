@@ -756,6 +756,13 @@ finds=$(cmd_code python | grep -o 'python find [-a-z ]*-python' || true)
 assert_eq "cmd/python: uv python find --system --no-config" "python find --system --no-config --no-managed-python
 python find --system --no-config --managed-python" "$finds"
 
+echo "[cmd] python has no --version or -V case of its own"
+# Outside a project they ran the system python, which named another python
+# than the one `python x.py` runs: they go through uv run as any other call,
+# and in a project the walk sends every call to the python run directly.
+vcase=$(cmd_code python | grep -c -E -- '"(--version|-V)"' || true)
+assert_eq "cmd/python: --version and -V take the same way as any other call" "0" "$vcase"
+
 echo "[cmd] python's walk counts a uv.toml, and a .python-version that names a path"
 # uv run reads both from here and above; a .python-version counts when a line
 # holds / or \, comment lines aside. findstr from System32 reads it, so no line

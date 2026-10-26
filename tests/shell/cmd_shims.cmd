@@ -10,8 +10,9 @@ rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
 rem below a pyvenv.cfg, a uv.toml or a .python-version that names a path,
-rem and for --version / -V; pip runs nothing outside a venv; path lists
-rem PATH; again asks before it re-runs.
+rem for --version / -V too, and elsewhere uv run for those as well; pip
+rem runs nothing outside a venv; path lists PATH; again asks before it
+rem re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -268,16 +269,28 @@ cd /d "%T%\pyveronly" || exit /b 1
 >>"%W%" echo [x]
 call "%BIN%\python.cmd" -c x >"%O%" 2>nul
 call :expect %errorlevel% 0 "python: beside a .python-version of version requests alone, uv run as before"
-cd /d "%T%\work" || exit /b 1
->"%W%" echo [@sys]
+cd /d "%T%\proj\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\proj\pyproject.toml
+>>"%W%" echo [@sys]
 >>"%W%" echo [--version]
 call "%BIN%\python.cmd" --version >"%O%" 2>&1
-call :expect %errorlevel% 0 "python --version: the system python, no line"
->"%W%" echo [@sys]
->>"%W%" echo [-V]
-call "%BIN%\python3.cmd" -V >"%O%" 2>&1
-call :expect %errorlevel% 0 "python3 -V: the system python, no line"
+call :expect %errorlevel% 0 "python --version: in a project, the system python and a line"
+cd /d "%T%\work" || exit /b 1
 rem stdout only: the line on stderr holds a non-ASCII arrow
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [--version]
+call "%BIN%\python.cmd" --version >"%O%" 2>nul
+call :expect %errorlevel% 0 "python --version: outside a project, uv run as any other call"
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-V]
+call "%BIN%\python3.cmd" -V >"%O%" 2>nul
+call :expect %errorlevel% 0 "python3 -V: outside a project, uv run as any other call"
 >"%W%" echo [@tools]
 >>"%W%" echo [run]
 >>"%W%" echo [--]

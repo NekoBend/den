@@ -9,12 +9,14 @@ rem builds that project (its build backend is the repository's own code) or
 rem runs a python it names: uv takes a directory that holds a pyvenv.cfg for
 rem a venv, whatever its name, a uv.toml's settings can have it install and
 rem run a python the clone ships, and it runs the program a .python-version
-rem names to ask its version. There, after a line on stderr that says so, and
-rem for --version or -V anywhere, a python runs directly: the system Python
-rem uv finds, else one uv installed (uv python install). --system skips any
+rem names to ask its version. There, after a line on stderr that says so, a
+rem python runs directly, for --version and -V too: the system Python uv
+rem finds, else one uv installed (uv python install). --system skips any
 rem venv here, and --no-config the .python-version, uv.toml and
 rem pyproject.toml here: a .python-version may name a program in the
-rem repository, which uv would run to ask its version.
+rem repository, which uv would run to ask its version. Elsewhere --version
+rem and -V go through uv run as well, so they name the python that
+rem `python x.py` runs.
 rem Inside a venv (VIRTUAL_ENV) it is the venv's python.exe, for python3 too
 rem (a Windows venv has no python3.exe). With the uv override off
 rem (_DEN_UV_OVERRIDE=0, toggle-uv) or no uv, it is the first python.exe
@@ -47,12 +49,10 @@ if not defined _m if exist "%_d%\.python-version" "%SystemRoot%\System32\findstr
 if defined _m goto direct
 for %%u in ("%_d%\..") do set "_u=%%~fu"
 if "%_u:~-1%"=="\" set "_u=%_u:~0,-1%"
-if /i "%_u%"=="%_d%" goto probe
+if /i "%_u%"=="%_d%" goto uvrun
 set "_d=%_u%"
 goto walk
-:probe
-if "%~1"=="--version" goto direct
-if "%~1"=="-V" goto direct
+:uvrun
 echo %_n% %* → uv run -- python %* >&2
 "%_uv%" run -- python %*
 exit /b

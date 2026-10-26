@@ -1222,12 +1222,20 @@ rc=0" "$actual"
 rc=0" "$actual"
     assert_contains "$sh/py through a link names the project" "code from $RP/proj/pyproject.toml" "$(cat "$R/err")"
 
-    echo "[$sh] --version and -V anywhere: the python directly, and nothing on stderr"
+    echo "[$sh] --version and -V outside a project: uv run, as any other call"
     actual=$(route_posix "$sh" "$NOPROJ" "py --version; python -V")
-    assert_eq "$sh/--version and -V run the system python" "system-python --version
-system-python -V
+    assert_eq "$sh/--version and -V outside a project go through uv run" "mock-uv run -- python --version
+mock-uv run -- python -V
 rc=0" "$actual"
-    assert_eq "$sh/--version and -V outside a project print no line" "" "$(cat "$R/err")"
+    assert_eq "$sh/--version and -V outside a project say so" "py --version → uv run -- python --version
+python -V → uv run -- python -V" "$(cat "$R/err")"
+
+    echo "[$sh] --version in a project: the system python, after the line"
+    actual=$(route_posix "$sh" "$R/proj/sub" "python --version")
+    assert_eq "$sh/--version in a project runs the system python" "system-python --version
+rc=0" "$actual"
+    assert_eq "$sh/--version in a project says so" \
+        "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/proj/pyproject.toml" "$(cat "$R/err")"
 
     echo "[$sh] outside a project: uv run, as before"
     actual=$(route_posix "$sh" "$NOPROJ" "python -c pass")
@@ -1335,10 +1343,17 @@ actual=$(route_pwsh "$R/pyverzero" "python -c pass")
 assert_eq "pwsh/python beside a .python-version that links to /dev/zero goes through uv run" "HOST: python -c pass → uv run -- python -c pass
 mock-uv run -- python -c pass" "$actual"
 
-echo "[pwsh] --version and -V anywhere: the python directly, and no other line"
+echo "[pwsh] --version and -V outside a project: uv run, as any other call"
 actual=$(route_pwsh "$NOPROJ" "py --version; python -V")
-assert_eq "pwsh/--version and -V run the system python" "system-python --version
-system-python -V" "$actual"
+assert_eq "pwsh/--version and -V outside a project go through uv run" "HOST: py --version → uv run -- python --version
+mock-uv run -- python --version
+HOST: python -V → uv run -- python -V
+mock-uv run -- python -V" "$actual"
+
+echo "[pwsh] --version in a project: the system python, after the warning"
+actual=$(route_pwsh "$R/proj/sub" "python --version")
+assert_eq "pwsh/--version in a project runs the system python" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/proj/pyproject.toml
+system-python --version" "$actual"
 
 echo "[pwsh] outside a project: uv run, as before"
 actual=$(route_pwsh "$NOPROJ" "python -c pass")

@@ -129,19 +129,18 @@ _den_py_exe() {
 # with one of _den_py_marker's files in this directory or one above it, uv run
 # builds that project (its build backend is the repository's own code) or runs
 # a python it names, even for `python --version`. There, after a line on
-# stderr, the python _den_py_exe names runs directly, as it does anywhere for
-# --version and -V.
+# stderr, the python _den_py_exe names runs directly, for --version and -V too.
+# Elsewhere they go through uv run as well, so they name the python that
+# `python x.py` runs.
 _den_py() {
     local name=$1 marker exe
     shift
-    if marker=$(_den_py_marker) || [ "${1-}" = --version ] || [ "${1-}" = -V ]; then
+    if marker=$(_den_py_marker); then
         if ! exe=$(_den_py_exe); then
             printf '%s: no Python found to run in place of uv run; uv python install installs one\n' "$name" >&2
             return 1
         fi
-        if [ -n "$marker" ]; then
-            printf '%s: running %s, not uv run: uv run would build or run code from %s\n' "$name" "$exe" "$marker" >&2
-        fi
+        printf '%s: running %s, not uv run: uv run would build or run code from %s\n' "$name" "$exe" "$marker" >&2
         "$exe" "$@"
     elif [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ]; then
         command uv run --python "$_DEN_VENV_PYTHON" -- python "$@"
