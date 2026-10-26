@@ -8,7 +8,9 @@ test guards against, as an outside review (2026-10) found it in the old text:
   function. The trap stayed set after the call and ran again as each calling
   function returned: under set -u that exited 1 on `tmp_file: unbound
   variable`, and a caller's own tmp_file was deleted. When set -e stopped the
-  function, the trap did not run and the temp file stayed behind.
+  function, the trap did not run and the temp file stayed behind. It also
+  relied on set -e to stop at a failed fetch, which bash turns off in
+  `result="$(report_orders ...)"`: that call went on and returned a count.
 - Example 5 and shell-structure.md section 9 ended the script with a bare
   `main "$@"` and said the script could be sourced: sourcing it ran main.
 - examples/powershell.md's Pester mock of curl returned the JSON but left
@@ -81,8 +83,8 @@ def _bash(
 # --- Example 4: cleanup with trap ---------------------------------------------
 
 # fetch_order stands in for Example 2's: it prints one line per order, fails
-# for "bad" (a set -e stop) and calls die for "gone" (an exit). The caller
-# holds a trap and a file of its own that report_orders must leave alone.
+# with 7 for "bad" and calls die for "gone" (an exit). The caller holds a
+# trap and a file of its own that report_orders must leave alone.
 _CALLER = r"""set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 fetch_order() {
@@ -96,6 +98,13 @@ source ./report_orders.sh
 trap 'echo "caller EXIT trap"' EXIT
 """
 
+# A global tmp_file in the caller
+_KEEP = r"""tmp_file="$PWD/keep.txt"
+echo keep >"$tmp_file"
+"""
+
+# Each case: the caller's code, the status the script must exit with, and
+# what it must print before its EXIT trap runs.
 _CLEANUP_CASES = {
     # report_orders two calls deep, with a local tmp_file in its caller
     "caller-local-tmp_file": (
@@ -111,31 +120,52 @@ main() {
 main
 """,
         0,
+        ["fetched 2 orders", "main finished"],
     ),
     "global-tmp_file": (
-        r"""tmp_file="$PWD/keep.txt"
-echo keep >"$tmp_file"
-wrapper() { report_orders o1 o2; }
+        _KEEP
+        + r"""wrapper() { report_orders o1 o2; }
 wrapper
 echo "main finished"
 """,
         0,
+        ["fetched 2 orders", "main finished"],
     ),
     "set-e-stops-it": (
-        r"""tmp_file="$PWD/keep.txt"
-echo keep >"$tmp_file"
-report_orders o1 bad o2
-echo "main finished"
-""",
+        _KEEP + 'report_orders o1 bad o2\necho "main finished"\n',
         7,
+        [],
     ),
-    "die-exits-it": (
-        r"""tmp_file="$PWD/keep.txt"
-echo keep >"$tmp_file"
-report_orders o1 gone
-echo "main finished"
+    "die-exits-it": (_KEEP + 'report_orders o1 gone\necho "main finished"\n', 1, []),
+    # die ends only report_orders' subshell: a caller that tests the call goes on
+    "die-in-a-tested-call": (
+        _KEEP + 'report_orders o1 gone || echo "report_orders failed with $?"\n',
+        0,
+        ["report_orders failed with 1"],
+    ),
+    # $(...) runs report_orders with set -e off, and an `if` keeps it off:
+    # the failed fetch must still end it, before it prints a count.
+    "captured": (
+        _KEEP + 'result="$(report_orders o1 o2)"\necho "main finished: $result"\n',
+        0,
+        ["main finished: fetched 2 orders"],
+    ),
+    "captured-failure": (
+        _KEEP
+        + 'result="$(report_orders o1 bad o2)"\necho "main finished: $result"\n',
+        7,
+        [],
+    ),
+    "captured-failure-in-an-if": (
+        _KEEP
+        + r"""if result="$(report_orders o1 bad o2)"; then
+  echo "main finished: $result"
+else
+  echo "report_orders failed with $?: [$result]"
+fi
 """,
-        1,
+        0,
+        ["report_orders failed with 7: []"],
     ),
 }
 
@@ -145,19 +175,16 @@ echo "main finished"
 def test_example_4_cleans_up_and_leaves_the_caller_alone(tmp_path, case):
     (block,) = _fenced(_section(EXAMPLES / "shell-cleanup-main.md", "4."), "bash")
     (tmp_path / "report_orders.sh").write_text(block, encoding="utf-8")
-    body, rc = _CLEANUP_CASES[case]
+    body, rc, printed = _CLEANUP_CASES[case]
     (tmp_path / "run.sh").write_text(_CALLER + body, encoding="utf-8")
     proc = _bash(tmp_path, "run.sh")
-    out = proc.stdout.splitlines()
+    # BSD wc pads the count with spaces
+    out = [" ".join(line.split()) for line in proc.stdout.splitlines()]
     assert proc.returncode == rc, proc.stdout + proc.stderr
     assert (tmp_path / "keep.txt").is_file(), "the caller's tmp_file was deleted"
     assert not list((tmp_path / "tmp").iterdir()), "the temp file was left behind"
     # The caller's EXIT trap runs once, at the end: report_orders kept its own.
-    assert out[-1:] == ["caller EXIT trap"], out
-    assert out.count("caller EXIT trap") == 1, out
-    assert ("main finished" in out) == (rc == 0), out
-    if rc == 0:
-        assert re.fullmatch(r"fetched\s+2 orders", out[0]), out
+    assert out == [*printed, "caller EXIT trap"], out
 
 
 # --- Example 5 and shell-structure.md section 9: main "$@" --------------------

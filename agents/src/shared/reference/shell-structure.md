@@ -36,8 +36,9 @@ set -euo pipefail
 - `-u`: exit on undefined variable reference.
 - `-o pipefail`: a pipeline fails if any command in it fails.
 
-Known caveats: `-e` does not trigger inside command substitutions on older Bash,
-and it does not catch failures in commands before `&&` or `||`.
+Known caveats: Bash turns `-e` off inside command substitutions (`$(...)`)
+unless `shopt -s inherit_errexit` (Bash 4.4+) is set,
+and `-e` does not catch failures in commands before `&&` or `||`.
 Test exit codes explicitly when these patterns appear.
 
 **Why:** Without strict mode, a failing command in the middle of a script is silently ignored

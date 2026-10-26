@@ -13,16 +13,16 @@ and section 14 (safe temp files).
 report_orders() (
   local order_ids=("$@")
   local tmp_file
-  tmp_file="$(mktemp)"
+  tmp_file="$(mktemp)" || exit "$?"
   trap 'rm -f "$tmp_file"' EXIT
 
   local id
   for id in "${order_ids[@]}"; do
-    fetch_order "$id" >>"$tmp_file"
+    fetch_order "$id" >>"$tmp_file" || exit "$?"
   done
 
   local count
-  count="$(wc -l <"$tmp_file")"
+  count="$(wc -l <"$tmp_file")" || exit "$?"
   printf 'fetched %s orders\n' "$count"
 )
 ```
@@ -34,10 +34,17 @@ on success or failure (shell-security.md section 8).
 
 The body is in `( ... )`, not `{ ... }`, so the function runs in a subshell
 and its `EXIT` trap fires when that subshell exits:
-after the last command, or when `set -e` or `die` stops it.
+after the last command, or when `set -e` or an `exit` stops it.
+An `exit` in the body, `die`'s included, ends only that subshell:
+its status becomes the function's return status.
 The caller's traps and variables stay untouched.
 In exchange, nothing the function assigns reaches the caller,
 so it hands its result back on stdout, as `report_orders` does.
+A caller that captures the result, `result="$(report_orders ...)"`,
+runs the function in a command substitution, where Bash turns `set -e` off
+(shell-structure.md section 7),
+so the function does not rely on `set -e`:
+each command that can fail ends it with `|| exit "$?"`.
 Do not use a `RETURN` trap for this:
 it stays set after the function returns, runs again as each calling function returns,
 and does not run when `set -e` or `exit` ends the script.
