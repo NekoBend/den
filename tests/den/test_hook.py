@@ -571,6 +571,9 @@ _ODD_HOOKS = {
     "event-null": {"Stop": None},
     "hooks-null": None,
     "hooks-list": ["echo hi"],
+    # json reads NaN, which is not equal to itself: remove has to tell that
+    # nothing came out by getting the very object back, not by comparing.
+    "hooks-nan": float("nan"),
 }
 
 
@@ -772,6 +775,7 @@ _ODD_COPILOT_HOOKS = {
     "event-null": {"sessionStart": None},
     "hooks-null": None,
     "hooks-list": ["echo hi"],
+    "hooks-nan": float("nan"),
 }
 
 
