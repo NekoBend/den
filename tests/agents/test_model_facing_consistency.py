@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 AGENTS = Path(__file__).resolve().parents[2] / "agents"
 
 # Built from codepoints so the banned characters never appear literally in
@@ -64,6 +66,105 @@ def test_no_banned_dashes_in_any_model_facing_markdown() -> None:
                     line = text[: text.index(ch)].count("\n") + 1
                     offenders.append(f"{f.relative_to(AGENTS)}:{line} {name}")
     assert not offenders, offenders
+
+
+# Invoke-ScriptAnalyzer reads settings from the checked-out tree unless its
+# -Settings is a hashtable: with none it loads the PSScriptAnalyzerSettings.psd1
+# next to the file it checks, and a path names such a file. Its
+# CustomRulePath is Import-Module'd, so checked-out content runs as you
+# (powershell.md section 8). So every call passes -Settings @{...}. A call is
+# the name, then a parameter or a line-continuing backtick, each after
+# whitespace (a backtick right after the name ends a Markdown code span).
+#
+# -Severity belongs inside that hashtable, so a line that names the cmdlet
+# and holds -Severity fails, unless "never" or "not" comes before the
+# -Severity and is followed, within three more words, by "with", "pass" or
+# "use", all in one clause (no "." or ";" between): section 8's "never with
+# a bare `-Severity Error`" and "Do not pass `-Severity`". The test reads
+# only those words, so "is not clean at -Severity Error" and "Do not merge
+# until ... -Severity Error" still fail.
+_PSSA_CALL = re.compile(
+    r"Invoke-ScriptAnalyzer(?P<args>(?:[ \t]+-|[ \t]+`\r?\n)(?:[^`\n]|`\r?\n)*)"
+)
+_PSSA_FORBIDS = re.compile(
+    r"\b(?:never|not)\b\s+(?:[^\s.;]+\s+){0,3}?(?:with|pass|use)\b[^.;]*-Severity\b",
+    re.IGNORECASE,
+)
+
+
+def _severity_beside_cmdlet(row: str) -> bool:
+    """True for a line that names Invoke-ScriptAnalyzer and holds a -Severity
+    that no "never" or "not" ... "with", "pass" or "use" before it forbids."""
+    return (
+        "Invoke-ScriptAnalyzer" in row
+        and re.search(r"-Severity\b", row) is not None
+        and not _PSSA_FORBIDS.search(row)
+    )
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        # 94a4371's powershell.md:36, the text the check was written for
+        "**Rule:** Lint gate is `Invoke-ScriptAnalyzer` clean at `-Severity Error` -",
+        "**Rule:** Lint gate is `Invoke-ScriptAnalyzer` clean at"
+        " `-Severity Error`, not Warning -",
+        # a "not" that forbids something else
+        "**Rule:** Do not merge until `Invoke-ScriptAnalyzer` is clean at"
+        " `-Severity Error` -",
+        "**Rule:** If `Invoke-ScriptAnalyzer` is not clean at `-Severity Error`,"
+        " fix it -",
+    ],
+)
+def test_severity_check_flags_a_line_that_endorses_it(row: str) -> None:
+    assert _severity_beside_cmdlet(row)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        # section 8's sentence, on one line with the cmdlet named
+        "Run `Invoke-ScriptAnalyzer` with an explicit settings hashtable"
+        " (`-Settings @{ Severity = @('Error'); IncludeDefaultRules = $true }`),"
+        " never with a bare `-Severity Error`: with no `-Settings` it loads the"
+        " profile next to the file.",
+        "Never run Invoke-ScriptAnalyzer with a bare `-Severity Error`.",
+        "Do not pass `-Severity` to `Invoke-ScriptAnalyzer`; set it in the hashtable.",
+    ],
+)
+def test_severity_check_passes_a_line_that_forbids_it(row: str) -> None:
+    assert not _severity_beside_cmdlet(row)
+
+
+def test_script_analyzer_calls_pass_settings() -> None:
+    """Every Invoke-ScriptAnalyzer call under agents/src/skills, agents/src/shared
+    and agents/dist passes -Settings @{...} and no -Severity, read across
+    backtick continuations. No line there that names the cmdlet holds a
+    -Severity, unless "never" or "not" and then, within three words, "with",
+    "pass" or "use" come before it in the same clause (_severity_beside_cmdlet)."""
+    calls: list[str] = []
+    bad: list[str] = []
+    for base in ("src/skills", "src/shared", "dist"):
+        directory = AGENTS / base
+        assert directory.is_dir(), f"no such directory: {directory}"
+        for f in sorted(directory.rglob("*")):
+            if f.suffix not in {".md", ".sh", ".py", ".ps1", ".psm1"}:
+                continue
+            text = f.read_text(encoding="utf-8")
+            for n, row in enumerate(text.splitlines(), 1):
+                if _severity_beside_cmdlet(row):
+                    bad.append(f"{f.relative_to(AGENTS)}:{n}: {row.strip()}")
+            for m in _PSSA_CALL.finditer(text):
+                line = text.count("\n", 0, m.start()) + 1
+                where = f"{f.relative_to(AGENTS)}:{line}"
+                calls.append(where)
+                args = m.group("args")
+                if not re.search(r"-Settings[ \t]+@\{", args) or re.search(
+                    r"-Severity\b", args
+                ):
+                    bad.append(f"{where}: Invoke-ScriptAnalyzer{args}")
+    assert calls, "no Invoke-ScriptAnalyzer call found; is the pattern stale?"
+    assert not bad, bad
 
 
 def test_every_skill_carries_the_preamble_verbatim() -> None:

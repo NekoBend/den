@@ -96,13 +96,15 @@ When the code is on disk and the language toolchain is available,
 run the checks and scripts below against the files under review
 and fold the results into the relevant dimension.
 Code from outside your trust boundary (a fork, a downloaded repo)
-runs its own code in a check (cargo clippy runs build.rs):
-get the user's yes before the first run.
+runs its own code in a check (cargo clippy runs build.rs,
+eslint and prettier run its JS config):
+name what will run and get the user's yes before the first run.
 
 - the language's standard checks on each file under review
   (Python: ruff format --check, ruff check, ty check; TypeScript:
-  prettier --check, eslint, tsc --noEmit; Rust: cargo fmt --check,
-  cargo clippy; Shell: shellcheck; PowerShell: Invoke-ScriptAnalyzer;
+  prettier --check, eslint, tsc --noEmit -p <file's tsconfig>;
+  Rust: cargo fmt --check, cargo clippy; Shell: shellcheck;
+  PowerShell: Invoke-ScriptAnalyzer -Settings @{Severity='Error'};
   with den installed, `den verify <file>` runs the Python three with
   the project's own config and venv)
 - ../../shared/scripts/find-references.py --uses <symbol>

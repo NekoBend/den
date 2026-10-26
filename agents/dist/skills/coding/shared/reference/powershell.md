@@ -33,7 +33,7 @@ costs the features that make cross-platform scripts tractable.
 
 ## 2. Tooling: PSScriptAnalyzer + Pester
 
-**Rule:** Lint gate is `Invoke-ScriptAnalyzer` clean at `-Severity Error` -
+**Rule:** Lint gate is `Invoke-ScriptAnalyzer` clean at Error severity (run it as section 8 shows) -
 the same bar the originating repository's CI applies. (Eight rules nominally; for a non-DSC
 script the live set is four, none of which cover the conventions
 below.) The conventions in sections

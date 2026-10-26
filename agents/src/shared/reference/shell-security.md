@@ -28,7 +28,19 @@ leaves temporary files, held locks, and orphaned background processes behind.
 **Rule:**
 
 - Never use `eval` with user-supplied input.
-  If indirect variable access is needed, use nameref (`declare -n`, Bash 4.3+) instead.
+  To store or look up a value under a name that comes from input,
+  key an associative array with it (`declare -A` or `local -A`, Bash 4.0+;
+  without `-A` the subscript is arithmetic, and a key such as `x[$(cmd)]` runs `cmd`):
+  `map[$key]=value`, `"${map[$key]}"` and `${map[$key]+set}` use the key as data.
+  A builtin that takes the element as an argument expands the key a second time and runs code in it
+  (`unset`, `read`, `printf -v`, `declare`, `local`, `let`, `test -v`, `[ -v ]`, `wait -p`),
+  so single-quote the element: `unset 'map[$key]'`, `printf -v 'map[$key]' '%s' "$v"`.
+  Before Bash 5.2, `[[ -v ]]` and `(( ))` expand it twice too,
+  so test with `${map[$key]+set}` and do arithmetic on a copy (`n=${map[$key]:-0}`).
+- A nameref (`declare -n`), `printf -v`, or `${!name}` runs code hidden in an array subscript
+  inside the name (`x[$(cmd)]` runs `cmd`).
+  Use one on a name from input only after checking the name against `^[A-Za-z_][A-Za-z0-9_]*$`,
+  and give it a fixed prefix (`cfg_$name`) so the input cannot name `PATH` or `IFS`.
 - Always quote variables in command arguments (shell.md section 5).
   An unquoted variable containing `; rm -rf /` is a command injection.
 - Create temporary files with `mktemp`, not hardcoded paths in `/tmp`.
@@ -48,7 +60,16 @@ the rules above are defense in depth.
 tmp_file="$(mktemp)"
 trap 'rm -f "$tmp_file"' EXIT
 
-# Safe indirect variable (Bash 4.3+, no eval):
-declare -n ref="$var_name"
-echo "${ref}"
+# Value stored under a name that comes from input (Bash 4.0+, no eval):
+declare -A settings=()
+settings[$key]="$value"
+printf '%s\n' "${settings[$key]-}"
+
+# Variable named by input, checked and prefixed first (Bash 4.3+):
+if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  printf 'invalid name: %s\n' "$name" >&2
+  exit 1
+fi
+declare -n ref="cfg_$name"
+printf '%s\n' "${ref-}"
 ```

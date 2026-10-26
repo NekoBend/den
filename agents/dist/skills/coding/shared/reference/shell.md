@@ -33,12 +33,16 @@ and when to stop using shell
 **Rule:** Default linter is `shellcheck`.
 Default formatter is `shfmt` with Google-compatible options (`shfmt -i 2 -ci -s`).
 Both run in CI.
+When the project's `.editorconfig` sets `indent_style` for shell files, run `shfmt` with no formatting flags:
+a flag such as `-i` makes shfmt ignore the project's EditorConfig settings.
 **Why:** `shellcheck` catches quoting bugs, deprecated syntax, portability issues,
 and common logic errors.
 `shfmt` enforces consistent indentation (2 spaces), case indent (`-ci`),
 and simplification (`-s`).
 Together they are the shell equivalent of `ruff` + `gofmt`.
-**Run order:** `shfmt -w .` then `shellcheck *.sh`.
+**Run order:** `shfmt -w -i 2 -ci -s <changed files>`
+(`shfmt -w <changed files>` when the `.editorconfig` sets their `indent_style`),
+then `shellcheck *.sh`.
 
 ## 4. Naming
 
@@ -72,8 +76,11 @@ fetch_customer_order() {
 
 **Rule:** Always double-quote variable expansions:
 `"$var"`, `"${var}"`, `"$(command)"`, `"${array[@]}"`.
-The ONLY exception is inside `[[ ]]` on the left-hand side of `=~` (regex match),
+One exception is inside `[[ ]]` on the right-hand side of `=~` (the regex),
 where quoting changes semantics.
+Elsewhere a quoted expansion matches literally
+(`==` and `!=` inside `[[ ]]`, `case` patterns, `${var#pattern}`):
+leave one unquoted only when you mean a glob.
 
 **Why:** Unquoted variables undergo word splitting and pathname (glob) expansion.
 A filename with spaces or a variable containing `*` silently breaks an unquoted expansion.
@@ -106,9 +113,9 @@ Common version-gated features:
 | 4.3+ | nameref (`declare -n`) | `eval` for indirect variables |
 | 4.4+ | `${var@Q}` quoted expansion | manual quote escaping |
 
-**Why:** Newer Bash features replace fragile `eval`-based workarounds with safe built-in syntax.
-Associative arrays and namerefs in particular eliminate patterns
-that are prone to injection.
+**Why:** Newer Bash features replace fragile `eval`-based workarounds with built-in syntax.
+For a name that comes from input, the safe replacement is an associative array keyed by it:
+a nameref on an unchecked input name still runs code (shell-security.md section 14).
 **Defer to section 13** before applying.
 
 ## 13. Version and portability awareness
