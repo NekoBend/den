@@ -71,7 +71,7 @@ if defined _py if not exist "%_py%" set "_py="
 if not defined _py for /f "delims=" %%p in ('call "%%_uv%%" python find --system --no-config --managed-python 2^>nul') do if not defined _py set "_py=%%p"
 if defined _py if not exist "%_py%" set "_py="
 if not defined _py goto nopython
-if defined _m call :warn
+call :warn
 goto run
 :plain
 for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:%_n%.exe 2^>nul') do if not defined _py set "_py=%%p"
