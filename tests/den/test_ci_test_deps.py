@@ -12,17 +12,19 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[2]
 # Import name -> the distribution pip installs it from, where the two differ.
 _DIST = {"yaml": "pyyaml"}
 _IMPORT_ERRORS = {"ImportError", "ModuleNotFoundError"}
-_PYTEST = re.compile(r"\bpython3? -m pytest\b(.*)")
-_PIP_INSTALL = re.compile(r"\bpip install\b(.*)")
+_PIP_INSTALL = re.compile(r"\bpip3? install\b(.*)")
 _APT_INSTALL = re.compile(r"\bapt-get install\b(.*)")
-_LINK = re.compile(r"\bln -s\S* .* (\S+)$")  # group 1: the link
+_LINK = re.compile(r"\bln -s")
 _IMPORT_CHECK = re.compile(r"""\bpython3? -c ["']import ([\w., ]+)["']""")
+# Where one command ends and the next starts on the same line.
+_SEPARATOR = re.compile(r"\s*(?:&&|\|\||;)\s*|\s+\|\s+")
 # What an apt package puts on PATH, where that is not the package's name.
 _APT_COMMANDS = {"fd-find": "fdfind", "ripgrep": "rg"}
 # The commands tests/den's skip marks look for that the ubuntu runner image
@@ -87,53 +89,99 @@ def _skipped_without(suite: Path) -> set[str]:
 
 
 def _commands(job: dict) -> list[str]:
-    """A job's `run` lines, with continuations joined and comments dropped."""
+    """A job's `run` commands: continuations joined, comments dropped, and a
+    line split where &&, ||, ; or | starts another command."""
     lines = []
     for step in job.get("steps", []):
         run = re.sub(r"[\\`]\n", " ", step.get("run", ""))  # bash \, pwsh `
         lines += [line.split(" #")[0] for line in run.splitlines()]
-    return [ln for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
+    return [
+        command
+        for line in lines
+        if not line.lstrip().startswith("#")
+        for command in _SEPARATOR.split(line)
+        if command.strip()
+    ]
+
+
+def _words(text: str) -> list[str]:
+    """<text>'s words without the shell's quotes around them: a quoted
+    "rich>=13", the shell-safe way to write >=, still installs rich."""
+    return [word.strip("'\"") for word in text.split()]
+
+
+def _args(text: str) -> list[str]:
+    return [word for word in _words(text) if not word.startswith("-")]
+
+
+def _pytest_targets(command: str) -> list[str] | None:
+    """The paths <command> runs pytest on, or None if it runs no pytest.
+
+    pytest runs as a module (`python -m pytest`) or as a command, bare or after
+    a launcher such as `uv run --with pytest pytest`, whose first pytest is the
+    value of --with. So every word pytest counts that is not an option's value,
+    and a job that runs pytest some other way is scanned, not passed over. In a
+    pip install or a `python -c "import ..."`, pytest is a package.
+    """
+    if _PIP_INSTALL.search(command) or _IMPORT_CHECK.search(command):
+        return None
+    words = _words(command)
+    for i, word in enumerate(words):
+        before = words[i - 1] if i else ""
+        if word == "pytest" and (before == "-m" or not before.startswith("-")):
+            # Given no path, pytest collects the checkout: its tests are in tests/.
+            return [w for w in words[i + 1 :] if not w.startswith("-")] or ["tests"]
+    return None
+
+
+def _scan_job(job: dict) -> dict[str, set[str]] | None:
+    """For a job that runs pytest: the modules its suites are skipped without,
+    and what it pip-installs, puts on PATH (apt-get install, ln -s) and imports
+    with `python -c` before its first pytest command. None for other jobs."""
+    needed: set[str] = set()
+    installed: set[str] = set()
+    on_path: set[str] = set()
+    imported: set[str] = set()
+    ran_pytest = False
+    for command in _commands(job):
+        if (targets := _pytest_targets(command)) is not None:
+            ran_pytest = True
+            for target in targets:  # a dir, a file or a node id
+                needed |= _skipped_without(_ROOT / target.split("::")[0])
+        elif ran_pytest:
+            continue
+        elif m := _PIP_INSTALL.search(command):
+            args = _args(m.group(1))
+            installed |= {_dist(re.split(r"[\[<>=!~;@]", a)[0]) for a in args}
+        elif m := _APT_INSTALL.search(command):
+            on_path |= {_APT_COMMANDS.get(a, a) for a in _args(m.group(1))}
+        elif _LINK.search(command):
+            on_path.add(_words(command)[-1].rsplit("/", 1)[-1])
+        elif m := _IMPORT_CHECK.search(command):
+            imported |= {n.strip().split(".")[0] for n in m.group(1).split(",")}
+    if not ran_pytest:
+        return None
+    return {
+        "needed": needed,
+        "installed": installed,
+        "on_path": on_path,
+        "imported": imported,
+    }
 
 
 def _pytest_jobs() -> dict[str, dict[str, set[str]]]:
-    """Per workflow job that runs pytest: the modules its suites are skipped
-    without, and what it pip-installs, puts on PATH (apt-get install, ln -s)
-    and imports with `python -c` before its first pytest command."""
+    """_scan_job for every workflow job that runs pytest."""
     jobs = {}
     for workflow in sorted((_ROOT / ".github" / "workflows").glob("*.yml")):
         parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
         for job_id, job in parsed["jobs"].items():
-            needed: set[str] = set()
-            installed: set[str] = set()
-            on_path: set[str] = set()
-            imported: set[str] = set()
-            ran_pytest = False
-            for line in _commands(job):
-                if m := _PYTEST.search(line):
-                    ran_pytest = True
-                    args = [a for a in m.group(1).split() if not a.startswith("-")]
-                    for arg in args or ["tests"]:  # a dir, a file or a node id
-                        needed |= _skipped_without(_ROOT / arg.split("::")[0])
-                elif ran_pytest:
-                    continue
-                elif m := _PIP_INSTALL.search(line):
-                    args = [a for a in m.group(1).split() if not a.startswith("-")]
-                    installed |= {_dist(re.split(r"[\[<>=!~;@]", a)[0]) for a in args}
-                elif m := _APT_INSTALL.search(line):
-                    args = [a for a in m.group(1).split() if not a.startswith("-")]
-                    on_path |= {_APT_COMMANDS.get(a, a) for a in args}
-                elif m := _LINK.search(line):
-                    on_path.add(m.group(1).strip("'\"").rsplit("/", 1)[-1])
-                elif m := _IMPORT_CHECK.search(line):
-                    imported |= {n.strip().split(".")[0] for n in m.group(1).split(",")}
-            if ran_pytest:
-                jobs[f"{workflow.name}:{job_id}"] = {
-                    "needed": needed,
-                    "installed": installed,
-                    "on_path": on_path,
-                    "imported": imported,
-                }
+            if (scan := _scan_job(job)) is not None:
+                jobs[f"{workflow.name}:{job_id}"] = scan
     return jobs
+
+
+def _job(*runs: str) -> dict:
+    return {"steps": [{"run": run} for run in runs]}
 
 
 def test_the_scan_finds_what_the_suites_skip_without():
@@ -142,6 +190,40 @@ def test_the_scan_finds_what_the_suites_skip_without():
     assert {"rich", "structlog"} <= _skipped_without(_ROOT / "tests" / "den")
     assert "yaml" in _skipped_without(_ROOT / "tests" / "agents")
     assert {"ci.yml:tests", "ci.yml:windows"} <= _pytest_jobs().keys()
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        "python3 -m pytest tests/den",
+        "uv run --with pytest pytest tests/den",
+        "pytest -q tests/den",
+        "python -m pytest 'tests/den'",
+        "pip install pytest && python -m pytest tests/den",
+    ],
+)
+def test_the_scan_reads_each_way_of_running_pytest(run):
+    # A job whose pytest command the scan did not read went unchecked: it
+    # passed with neither rich nor structlog installed.
+    scan = _scan_job(_job(run))
+    assert scan is not None
+    assert {"rich", "structlog"} <= scan["needed"]
+
+
+@pytest.mark.parametrize(
+    "run", ["pip install pytest pyyaml", "uv run --with pytest python -c 'import yaml'"]
+)
+def test_the_scan_does_not_take_installing_pytest_for_running_it(run):
+    assert _scan_job(_job(run)) is None
+
+
+def test_quoted_pip_requirements_count_as_installed():
+    # With the quotes left on, "rich>=13" read as a distribution named '"rich'.
+    scan = _scan_job(
+        _job("""pip install "rich>=13" 'structlog<27'""", "python -m pytest tests/den")
+    )
+    assert scan is not None
+    assert {"rich", "structlog"} <= scan["installed"]
 
 
 def test_pytest_jobs_install_what_their_suites_skip_without():
