@@ -572,7 +572,8 @@ def test_a_leading_dashdash_is_not_a_file(tmp_path, monkeypatch, capsys):
     counted as a failure, exit 1, although a.py passed. A bare `--` was a
     usage error for the same reason; with no file after it, it is now the
     same as no arguments. Only a leading `--` is the marker: in
-    `den verify a.py --` the `--` is still a file name."""
+    `den verify a.py --` the `--` is still a file name, and so is the second
+    `--` in `den verify -- -- a.py`."""
     a = _py(tmp_path, "a.py")
     monkeypatch.chdir(tmp_path)  # a relative `--` is looked up next to a.py
     runs = _capture(monkeypatch)
@@ -589,6 +590,8 @@ def test_a_leading_dashdash_is_not_a_file(tmp_path, monkeypatch, capsys):
     assert captured.out.endswith(
         "summary: 3 passed, 1 failed, 0 skipped across 2 files\n"
     )
+    assert cli_main(["verify", "--", "--", str(a)]) == 1
+    assert capsys.readouterr().err.splitlines() == ["den verify: file not found: --"]
 
 
 def test_after_a_leading_dashdash_a_name_starting_with_dash_is_a_file(
