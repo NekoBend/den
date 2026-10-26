@@ -127,8 +127,8 @@ project_only() {
 # _parent <dir>
 # Prints the directory above <dir>; returns 1 at the top (/) and for a <dir>
 # that is not absolute. A walk up from '' (what a failed cd leaves) or from a
-# relative name never reached /: dirname turns either into '.', and '.' into
-# itself.
+# relative name never reached /: dirname turns '' into '.', takes a relative
+# name down to '.', and turns '.' into itself.
 _parent() {
   local up
   case "$1" in
