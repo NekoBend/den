@@ -633,6 +633,29 @@ def test_strip_block_keeps_the_rc_file_when_the_write_fails_part_way(tmp_path):
     assert sorted(tmp_path.iterdir()) == [rc], "no temporary copy is left"
 
 
+@_mode_bits
+def test_strip_block_names_the_directory_it_cannot_write_a_copy_in(tmp_path):
+    """In a directory den may not write, the new copy cannot be created, and
+    the warning named that copy as if den had left it behind. It now names
+    the directory."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    locked = tmp_path / "home"
+    locked.mkdir()
+    rc = locked / ".bashrc"
+    original = f"export A=1\n\n# ===== den =====\n{line}\n".encode()
+    rc.write_bytes(original)
+    locked.chmod(0o555)
+    try:
+        with pytest.raises(PermissionError) as raised:
+            _strip_block(rc, line)
+    finally:
+        locked.chmod(0o755)
+    assert f"cannot create a temporary file in {locked}: " in str(raised.value)
+    assert ".den-tmp" not in str(raised.value)
+    assert rc.read_bytes() == original
+    assert sorted(locked.iterdir()) == [rc]
+
+
 def test_strip_block_leaves_no_copy_when_the_replace_fails(tmp_path, monkeypatch):
     # the same promise when the rename itself fails (any platform)
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'

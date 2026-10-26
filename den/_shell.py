@@ -178,9 +178,14 @@ def _replace_bytes(path: Path, data: bytes) -> None:
             " them; edit it by hand"
         )
     mode = stat.S_IMODE(st.st_mode)
-    fd, name = tempfile.mkstemp(
-        prefix=f"{real.name}.", suffix=".den-tmp", dir=real.parent
-    )
+    try:
+        fd, name = tempfile.mkstemp(
+            prefix=f"{real.name}.", suffix=".den-tmp", dir=real.parent
+        )
+    except OSError as e:  # name the directory, not a copy that was never made
+        raise OSError(
+            e.errno, f"cannot create a temporary file in {real.parent}: {e.strerror}"
+        ) from e
     tmp = Path(name)
     try:
         with os.fdopen(fd, "wb") as fh:
