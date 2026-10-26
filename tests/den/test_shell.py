@@ -201,7 +201,8 @@ def test_cmd_uv_passes_the_run_arguments_through_as_typed():
     assert "set _raw=%*" in code
     assert 'set "_rest=!_raw:*run=!"' in code
     where_uv = "%SystemRoot%\\System32\\where.exe $PATH:uv.exe 2^>nul"
-    assert f"for /f \"delims=\" %%p in ('{where_uv}') do if not defined _uv set \"_uv=%%p\"" in code
+    find_uv = f"for /f \"delims=\" %%p in ('{where_uv}')"
+    assert f'{find_uv} do if not defined _uv set "_uv=%%p"' in code
     assert '"!_uv!" run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code
     assert '"%_uv%" %*' in code
 
@@ -223,10 +224,14 @@ def test_cmd_python3_in_a_venv_runs_the_venvs_python():
     # venv branch's `python3.exe %*` skipped the venv and found another Python
     # or the Microsoft Store stub (exit 9009). It runs the venv's python.exe
     # when the venv has one. python3.cmd is python.cmd under another name.
-    assert (_CMD_BIN / "python3.cmd").read_bytes() == (_CMD_BIN / "python.cmd").read_bytes()
+    python_cmd = (_CMD_BIN / "python.cmd").read_bytes()
+    assert (_CMD_BIN / "python3.cmd").read_bytes() == python_cmd
     code = _cmd_code("python3")
     venv_python = "%VIRTUAL_ENV%\\Scripts\\python.exe"
-    i = code.index(f'if defined VIRTUAL_ENV if exist "{venv_python}" set "_py={venv_python}"')
+    venv_line = (
+        f'if defined VIRTUAL_ENV if exist "{venv_python}" set "_py={venv_python}"'
+    )
+    i = code.index(venv_line)
     assert code[i + 1] == "if defined _py goto run"
     assert code[code.index(":run") + 1] == '"%_py%" %*'
 
