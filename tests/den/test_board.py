@@ -1417,6 +1417,36 @@ def test_lock_json_cannot_parse_reads_as_an_invalid_lock(tmp_path, bad):
     assert lock.is_file(), "left in place, as an unparseable lock always was"
 
 
+# json.loads makes float inf of each, and int() raises OverflowError on it.
+_INFINITE = ["1e400", "Infinity", "-Infinity"]
+
+
+@pytest.mark.parametrize("number", _INFINITE)
+def test_den_board_starts_past_a_lock_whose_port_is_infinite(
+    tmp_path, monkeypatch, number
+):
+    # The OverflowError escaped _existing_instance, and `den board` stopped
+    # with a traceback at start.
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_text(f'{{"pid": 1, "port": {number}}}\n')
+    assert _board._existing_instance(tmp_path) is None
+    assert lock.is_file(), "left in place, as an unparseable lock always was"
+    monkeypatch.setattr(_board.time, "sleep", lambda _seconds: None)  # no twin
+    assert _board._acquire(tmp_path, open_browser=False) is None, "did not start"
+    assert lock.read_bytes() == b"", "taken over: the new claim is this one"
+
+
+@pytest.mark.parametrize("number", _INFINITE)
+def test_release_lock_passes_a_lock_whose_pid_is_infinite(tmp_path, number):
+    # The same OverflowError escaped _release_lock, at exit.
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_text(f'{{"pid": {number}, "port": 1}}\n')
+    _board._release_lock(tmp_path)  # must not raise
+    assert lock.is_file(), "not ours to remove: no readable pid says so"
+
+
 def test_main_does_not_serve_when_the_lock_write_raises(tmp_path, monkeypatch, capsys):
     """_write_lock reaches os.open, which raises on a full or read-only
     filesystem (and on O_NOFOLLOW catching a symlink swapped in after the

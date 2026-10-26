@@ -410,7 +410,9 @@ def _existing_instance(root: Path) -> str | None:
         return None
     try:
         port = int(info["port"])
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, OverflowError):
+        # OverflowError: int() of the inf json.loads makes of 1e400 or
+        # Infinity. It escaped, and `den board` stopped at start.
         return None
     with suppress(OSError, ValueError, json.JSONDecodeError):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_PING_TIMEOUT_S)
@@ -436,7 +438,7 @@ def _release_lock(root: Path) -> None:
     info = _read_lock(root)
     if info is None:
         return
-    with suppress(ValueError, TypeError):
+    with suppress(ValueError, TypeError, OverflowError):  # as in _existing_instance
         if int(info.get("pid", -1)) == os.getpid():
             _unlink_lock(root)
 
