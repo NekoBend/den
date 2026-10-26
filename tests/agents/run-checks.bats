@@ -115,18 +115,35 @@ _run_stubbed() {
   run env PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$1"
 }
 
-# _run_bounded <file>: _run_stubbed, stopped after 20 seconds (status 124),
-# so a walk up that never ends fails the test instead of hanging the suite.
-_run_bounded() {
-  run timeout 20 env PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$1"
+# _bounded <seconds> <command...>: bats' run of the command, stopped after
+# <seconds>, so a run that never ends fails its test instead of hanging the
+# suite. timeout sends TERM then (status 124), and KILL 5 seconds later when
+# the command is still running (status 137): bash can outlive the TERM in a
+# loop of command substitutions, the shape of a walk up that never ends.
+_bounded() {
+  local limit="$1"
+  shift
+  run timeout -k 5 "$limit" "$@"
 }
 
-# _run_real <file>: run the script with the tools on PATH, stopped after 20
-# seconds, and with a home of its own, so no user-level ruff or ty config
-# applies.
+# _in_time: fails when _bounded stopped the run (status 124 or 137).
+_in_time() {
+  case "$status" in
+    124|137) return 1 ;;
+  esac
+}
+
+# _run_bounded <file>: _run_stubbed, stopped by _bounded after 20 seconds.
+_run_bounded() {
+  _bounded 20 env PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$1"
+}
+
+# _run_real <file>: run the script with the tools on PATH, stopped by
+# _bounded after 20 seconds, and with a home of its own, so no user-level
+# ruff or ty config applies.
 _run_real() {
   mkdir -p "$WORK/home"
-  run timeout 20 env HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/home/.config" \
+  _bounded 20 env HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/home/.config" \
     XDG_CACHE_HOME="$WORK/home/.cache" "$SCRIPT" "$1"
 }
 
@@ -173,6 +190,19 @@ _ts_project() {
   [[ "$output" == *"unknown extension"* ]]
 }
 
+@test "the time limit ends a run that outlives its TERM, with KILL 5 seconds later" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: the limit sent TERM alone, which bash can outlive in a walk
+  # up that never ends, so such a walk hung the suite instead of failing its
+  # test. The stand-in ignores TERM and ends by itself after 30 seconds.
+  printf '#!/usr/bin/env bash\ntrap "" TERM\nwhile [ "$SECONDS" -lt 30 ]; do sleep 0.1; done\n' > "$WORK/stand-in"
+  chmod +x "$WORK/stand-in"
+  SECONDS=0
+  _bounded 1 "$WORK/stand-in"
+  [ "$status" -eq 137 ]
+  [ "$SECONDS" -lt 20 ]
+}
+
 @test "a name that starts with - or @ reaches every tool as ./<name> (stub tools)" {
   command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
   # regression: each tool got the name as given, so ruff took
@@ -197,7 +227,7 @@ _ts_project() {
       printf '\n' > "./$name"
       rm -f "${WORK:?}"/*.log
       _run_bounded "$name"
-      [ "$status" -ne 124 ] # the timeout stopped a walk up that never ended
+      _in_time # else the time limit stopped a walk up that never ended
       [ "$status" -eq 0 ]
       for tool in $tools; do
         _each_run_ends_with "$tool" "./$name"
@@ -236,7 +266,7 @@ _ts_project() {
   cd "$WORK/proj"
   printf 'x = 1\n' > ./-x.py
   _run_bounded -x.py
-  [ "$status" -ne 124 ] # the timeout stopped a walk up that never ended
+  _in_time # else the time limit stopped a walk up that never ended
   [ "$status" -eq 0 ]
   [[ "$output" == *"[lint     ] PASS      ruff check "*"./-x.py"* ]]
 }
@@ -257,7 +287,7 @@ _ts_project() {
   for ext in py sh rs ts; do
     printf '\n' > "$nl/x.$ext"
     _run_bounded "$nl/x.$ext"
-    [ "$status" -ne 124 ] # the timeout stopped a walk up that never ended
+    _in_time # else the time limit stopped a walk up that never ended
     [ "$status" -eq 0 ]
     [[ "$output" == *"SUMMARY: "*", 0 failed, "* ]]
   done
