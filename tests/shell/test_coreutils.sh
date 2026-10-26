@@ -364,20 +364,27 @@ rm -rf "$WORK/exh"
 
 # With -n N, GNU split and uutils give the names the length N parts need from
 # the start (2 letters at least) rather than widening them, and refuse an -a
-# shorter than that before writing anything.
+# shorter than that before writing anything. So with -n 676 the names stay
+# two letters long to the last part (part 651 is pza, not pzaaa, the name it
+# would get without -n).
 echo "[pwsh] split -n sizes the suffix for N parts"
-rm -rf "$WORK/nsuf" && mkdir -p "$WORK/nsuf/wide" "$WORK/nsuf/short"
+rm -rf "$WORK/nsuf" && mkdir -p "$WORK/nsuf/wide" "$WORK/nsuf/short" "$WORK/nsuf/two"
 printf '%03d\n' $(seq 1 677) > "$WORK/nsuf/in.txt"
+printf '%03d\n' $(seq 1 676) > "$WORK/nsuf/in676.txt"
 actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
     function _CoreutilsBin { }
     Set-Location '$WORK/nsuf/wide'; split -n 677 ../in.txt p 2>&1 6>&1 | ForEach-Object { '-n 677: ' + \$_ }
     Set-Location '$WORK/nsuf/short'; split -n 677 -a 2 ../in.txt p 2>&1 6>&1 | ForEach-Object { '-n 677 -a 2: ' + \$_ }
+    Set-Location '$WORK/nsuf/two'; split -n 676 ../in676.txt p 2>&1 6>&1 | ForEach-Object { '-n 676: ' + \$_ }
 " < /dev/null 2>&1 | clean)
-assert_eq "pwsh/split -n 677 names three letters long; -a 2 is refused" "-n 677: Split into 677 files (paaa .. pbaa)
--n 677 -a 2: the suffix length needs to be at least 3" "$actual"
+assert_eq "pwsh/split -n 677 names three letters long, -n 676 two; -a 2 is refused" "-n 677: Split into 677 files (paaa .. pbaa)
+-n 677 -a 2: the suffix length needs to be at least 3
+-n 676: Split into 676 files (paa .. pzz)" "$actual"
 assert_eq "pwsh/split -n 677: the parts in name order are the input" "$(sha256sum < "$WORK/nsuf/in.txt")" \
     "$(cd "$WORK/nsuf/wide" && cat p* | sha256sum)"
 assert_eq "pwsh/split -n 677 -a 2 wrote nothing" "" "$(ls -A "$WORK/nsuf/short")"
+assert_eq "pwsh/split -n 676: parts 651 and 676 are pza and pzz" "651 676" \
+    "$(cd "$WORK/nsuf/two" && cat pza pzz 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/ $//')"
 rm -rf "$WORK/nsuf"
 
 # =============================================================================
