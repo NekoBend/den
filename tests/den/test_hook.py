@@ -1556,6 +1556,49 @@ def test_install_refuses_a_directory_at_the_backup_path(tmp_path, monkeypatch, c
     assert "not a regular file" in capsys.readouterr().err
 
 
+def _refusals(err):
+    return [line for line in err.splitlines() if "not replacing" in line]
+
+
+def test_install_names_den_hook_install_when_it_cannot_back_up(
+    tmp_path, monkeypatch, capsys
+):
+    # The refusal is printed by the --force backup, which named `den install`
+    # whatever command was run.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text("not json {{{")
+    cfg.with_name(cfg.name + ".den.bak").mkdir()
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    refusals = _refusals(capsys.readouterr().err)
+    assert len(refusals) == 1
+    assert refusals[0].startswith("den hook install: not replacing ")
+    assert refusals[0].endswith(".den.bak is not a regular file")
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0, reason="POSIX permission bits, not root"
+)
+def test_install_names_den_hook_install_when_the_config_cannot_be_read(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"keep": 1}')
+    cfg.chmod(0)
+    try:
+        assert hook_main(["install", "--tool", "claude"]) == 1
+    finally:
+        cfg.chmod(0o600)
+    assert cfg.read_text() == '{"keep": 1}', "not written over without a copy"
+    refusals = _refusals(capsys.readouterr().err)
+    assert len(refusals) == 1
+    assert refusals[0].startswith("den hook install: not replacing ")
+    assert "cannot back it up" in refusals[0]
+
+
 def test_install_backs_up_beside_an_existing_file_backup(tmp_path, monkeypatch, capsys):
     """An unmergeable config is never den's own output (den writes json.dumps),
     so an earlier backup cannot already hold it. Install took any existing

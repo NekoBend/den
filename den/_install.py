@@ -344,11 +344,14 @@ class _Writer:
         return False, True
 
     @staticmethod
-    def _backup(dest: Path, guard: tuple[Path, Path] | None) -> Path | None:
+    def _backup(
+        dest: Path, guard: tuple[Path, Path] | None, prefix: str = _ERR
+    ) -> Path | None:
         """Copy `dest` beside itself before --force replaces it; the copy's
-        path, or None (one line on stderr) when no backup could be made, and
-        the caller then leaves `dest` alone, since replacing what could not be
-        kept is the loss the backup exists to prevent.
+        path, or None (one line on stderr, starting with `prefix`, the command
+        that was run) when no backup could be made, and the caller then leaves
+        `dest` alone, since replacing what could not be kept is the loss the
+        backup exists to prevent.
 
         The copy is <dest>.den.bak, or the first free one of .den.bak.1, .2,
         ...: an earlier backup holding something else (the edit an earlier
@@ -369,7 +372,7 @@ class _Writer:
                 if bak.is_symlink() or (bak.exists() and not bak.is_file()):
                     what = "a symlink" if bak.is_symlink() else "not a regular file"
                     print(
-                        f"{_ERR}: not replacing {dest}: {bak} is {what}",
+                        f"{prefix}: not replacing {dest}: {bak} is {what}",
                         file=sys.stderr,
                     )
                     return None
@@ -389,7 +392,7 @@ class _Writer:
                 _chmod_no_follow(bak, mode)
         except OSError as exc:
             print(
-                f"{_ERR}: not replacing {dest}: cannot back it up: {exc}",
+                f"{prefix}: not replacing {dest}: cannot back it up: {exc}",
                 file=sys.stderr,
             )
             return None

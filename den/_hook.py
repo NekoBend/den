@@ -539,7 +539,7 @@ def _backup_if_unmergeable(config: Path, events: Iterable[str]) -> bool:
     # Imported here: install's module is not needed on the per-turn hook path.
     from ._install import _Writer
 
-    bak = _Writer._backup(config, None)  # ruff: ignore[private-member-access]  # the --force backup, shared
+    bak = _Writer._backup(config, None, _ERR_INSTALL)  # ruff: ignore[private-member-access]  # the --force backup, shared
     if bak is None:
         return False
     print(

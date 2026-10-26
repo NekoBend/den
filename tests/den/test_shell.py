@@ -988,7 +988,12 @@ def test_install_shell_fails_when_it_cannot_back_up_the_profile(
     assert install_main(["shell", "--no-extras", "--no-bin"]) == 1
     assert "60b36fc6" in prof.read_text(), "the block is left in place"
     assert not outside.exists()
-    assert "is a symlink" in capsys.readouterr().err
+    err = capsys.readouterr().err.splitlines()
+    refusals = [line for line in err if line.endswith(".den.bak is a symlink")]
+    assert len(refusals) == 1
+    assert refusals[0].startswith("den install shell: not replacing "), (
+        "named after the command that was run"
+    )
 
 
 def test_disable_coreutils_readline_preserves_utf16(tmp_path):

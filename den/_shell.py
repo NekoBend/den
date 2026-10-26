@@ -472,7 +472,7 @@ def _disable_coreutils_readline(profile: Path) -> bool | None:
         drop.update(range(start, end))
     if not drop:
         return False
-    if _Writer._backup(profile, None) is None:  # ruff: ignore[private-member-access]  # the --force backup, shared
+    if _Writer._backup(profile, None, "den install shell") is None:  # ruff: ignore[private-member-access]  # the --force backup, shared
         return None
     new = "\n".join(ln for i, ln in enumerate(lines) if i not in drop)
     if crlf:
