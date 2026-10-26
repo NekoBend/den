@@ -123,9 +123,12 @@ def _pytest_targets(command: str) -> list[str] | None:
 
     pytest runs as a module (`python -m pytest`) or as a command, bare or after
     a launcher and its flags (`uv run --frozen pytest`, `xvfb-run -a pytest`).
-    So the word pytest counts wherever it stands, unless it is the value of an
-    option that takes a package. In a pip install or a `python -c "import ..."`,
-    pytest is a package too.
+    So the first word pytest counts as the run, unless it follows --with or
+    --with-editable, whose value is a package. After another option that takes
+    a package (`uv run -w pytest pytest`, `uvx --from pytest pytest`), that
+    package counts as the run instead; the command's own pytest then names no
+    path and is dropped, like the value of an option such as `-k`. In a pip
+    install or a `python -c "import ..."`, pytest is a package too.
     """
     if _PIP_INSTALL.search(command) or _IMPORT_CHECK.search(command):
         return None
@@ -133,9 +136,21 @@ def _pytest_targets(command: str) -> list[str] | None:
     for i, word in enumerate(words):
         before = words[i - 1] if i else ""
         if word == "pytest" and before not in _PACKAGE_OPTIONS:
-            # Given no path, pytest collects the checkout: its tests are in tests/.
-            return [w for w in words[i + 1 :] if not w.startswith("-")] or ["tests"]
+            # A word that names no test file or directory is an option's value
+            # (`-p no:cacheprovider`, `-k cheats`): pytest refuses a path that
+            # does not exist. Given no path, pytest collects the checkout: its
+            # tests are in tests/.
+            paths = [
+                w for w in words[i + 1 :] if not w.startswith("-") and _is_test_path(w)
+            ]
+            return paths or ["tests"]
     return None
+
+
+def _is_test_path(word: str) -> bool:
+    """Whether <word> names a test directory, a .py file or a node id in one."""
+    path = _ROOT / word.split("::")[0]
+    return path.is_dir() or (path.suffix == ".py" and path.is_file())
 
 
 def _scan_job(job: dict) -> dict[str, set[str]] | None:
@@ -207,6 +222,10 @@ def test_the_scan_finds_what_the_suites_skip_without():
         "pytest -q tests/den",
         "python -m pytest 'tests/den'",
         "pip install pytest && python -m pytest tests/den",
+        "uv run -w pytest pytest",
+        "uvx --from pytest pytest",
+        "python -m pytest -p no:cacheprovider",
+        'python -m pytest -m "not slow"',
     ],
 )
 def test_the_scan_reads_each_way_of_running_pytest(run):
