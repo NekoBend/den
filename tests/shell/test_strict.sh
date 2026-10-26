@@ -641,6 +641,7 @@ Case '_ArRegularFile' { _ArRegularFile a.txt; _ArRegularFile sub; _ArRegularFile
 Case '_ArTool' { _ArTool 'gzip'; _ArTool 'nonexistent-strict' }
 Case '_ArCompressTo' { _ArCompressTo (_ArTool 'gzip') one.txt direct.gz }
 Case '_ArZipTo' { _ArZipTo @('a.txt', 'sub', 'emptydir') 'out.zip' 'direct.zip' }
+Case '_ArNameComparer' { _ArNameComparer $true; _ArNameComparer $false }
 Case '_ArZipTo, a missing source' { _ArZipTo @('missing.txt') 'out.zip' 'direct2.zip' }
 Case '_ArDropOutput' { _ArDropOutput @('a.txt', './b.txt', 'sub') 'b.txt'; _ArDropOutput @('a.txt') '' }
 Case '_ArDropOutput, only the output' { _ArDropOutput @('a.txt', 'link.txt') 'a.txt' }
@@ -658,6 +659,12 @@ Case 'archive .zip' { archive out.zip a.txt b.txt }
 Case 'archive .zip, the output among the sources' { archive out.zip a.txt out.zip }
 Case 'archive .zip, two sources with one name' { Set-Content -LiteralPath c.txt -Value 1; archive dup.zip c.txt sub/c.txt }
 Case 'archive .zip, one source named twice' { archive twice.zip a.txt ./a.txt }
+Case 'archive .zip, names that differ only in case' {
+    $null = New-Item -ItemType Directory -Path cs -Force
+    Set-Content -LiteralPath cs/x.txt -Value 1
+    Set-Content -LiteralPath cs/X.TXT -Value 2
+    archive cs.zip cs
+}
 Case 'archive .7z' { archive out.7z a.txt '-x' }
 Case 'archive .7z, only the output as a source' { archive out.7z ./out.7z }
 Case 'archive, a dash-leading output' { archive '-dash.tar' a.txt }

@@ -474,17 +474,32 @@ function _ArDropOutput([string[]]$Sources = @(), [string]$Output = '') {
   return $kept
 }
 
+# _ArNameComparer → how archive compares the names inside a zip: without
+# regard to case on Windows, where extracting writes two names that differ
+# only in case onto one file, and exactly elsewhere. The platform is a
+# parameter, so that a test can apply either rule on any system.
+function _ArNameComparer([bool]$Windows) {
+  if ($Windows) { return [System.StringComparer]::OrdinalIgnoreCase }
+  return [System.StringComparer]::Ordinal
+}
+
 # _ArZipTo → write a zip of $Sources into $Dest, a file that must not exist
 # yet, for archive. A directory is stored under its own name with everything
 # beneath it, hidden entries included (Get-ChildItem -Force), and a directory
 # entry for every folder, as `zip -r` does; a file is stored under its name.
 # Only the name, where `zip -r` keeps the path as given: two sources with one
 # name (alpha/config.txt and beta/config.txt, or two folders called src) made
-# two entries of that name, and extracting kept only the last. Such a pair
-# throws, naming both, before anything is listed or written; on Windows the
-# names are compared without regard to case, as its file system compares
-# them. A source named twice (a glob and its own name) is one source, stored
-# once, as `zip -r` stores it.
+# two entries of that name, and extracting kept only the last. So every entry
+# name is checked before $Dest is created, and two paths that would be stored
+# under one name throw, naming both. On Windows the names are compared without
+# regard to case (_ArNameComparer): a case-sensitive folder there (WSL makes
+# them) can hold config.txt and CONFIG.TXT, which would extract onto one file.
+# A source named twice, the same full path in any spelling (p1/src and
+# ./p1/src), is one source and is stored once. Only the same path counts:
+# compared without regard to case, config.txt and CONFIG.TXT in such a folder
+# were taken for one source, and one of the two files was silently left out.
+# (`zip -r` stores a path given twice in one spelling once, but refuses
+# p1/src next to ./p1/src: "cannot repeat names in zip file".)
 # $Skip is the final output: a source directory that holds it does not
 # archive the old archive into the new one. Every path is listed before $Dest
 # is created, so the zip being written is never one of its own entries. Any
@@ -495,37 +510,39 @@ function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = 
   $sess = $ExecutionContext.SessionState.Path
   $skipFull = if ($Skip) { $sess.GetUnresolvedProviderPathFromPSPath($Skip) } else { '' }
   $onWindows = ($env:OS -eq 'Windows_NT' -or $IsWindows)
-  $cmp = if ($onWindows) { [System.StringComparer]::OrdinalIgnoreCase } else { [System.StringComparer]::Ordinal }
-  # Each name at the top of the zip, and the source that takes it.
-  $claimed = [System.Collections.Generic.Dictionary[string, string]]::new($cmp)
-  $seen = [System.Collections.Generic.HashSet[string]]::new($cmp)
-  $items = [System.Collections.Generic.List[object]]::new()
+  # The separators of the file system the paths come from. On Linux and macOS
+  # a '\' is part of a name: turned into '/' as well, a file 'a\b.txt' and a
+  # file 'b.txt' in a folder 'a' were stored under one entry name.
+  $sep = [System.IO.Path]::DirectorySeparatorChar
+  $seps = [char[]]@($sep, [System.IO.Path]::AltDirectorySeparatorChar)
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  # (file item or $null for a folder, entry name, the path it is stored
+  # from) triples, in archive order.
+  $entries = [System.Collections.Generic.List[object]]::new()
   foreach ($src in $Sources) {
     $item = Get-Item -LiteralPath $sess.GetUnresolvedProviderPathFromPSPath($src) -Force -ErrorAction Stop
-    if (-not $seen.Add($item.FullName.TrimEnd('\', '/'))) { continue }
-    if ($claimed.ContainsKey($item.Name)) {
-      throw "'$($claimed[$item.Name])' and '$src' would both be stored as '$($item.Name)'"
-    }
-    $claimed[$item.Name] = $src
-    $items.Add($item)
-  }
-  # (file item or $null for a folder, entry name) pairs, in archive order.
-  $entries = [System.Collections.Generic.List[object]]::new()
-  foreach ($item in $items) {
+    $root = $item.FullName.TrimEnd($seps)
+    if (-not $seen.Add($root)) { continue }
     if (-not $item.PSIsContainer) {
-      $entries.Add(@($item, $item.Name))
+      $entries.Add(@($item, $item.Name, $src))
       continue
     }
-    $root = $item.FullName.TrimEnd('\', '/')
-    $entries.Add(@($null, "$($item.Name)/"))
+    $entries.Add(@($null, "$($item.Name)/", $src))
     foreach ($c in Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction Stop) {
       $full = $c.FullName
       $rel = if ($full.Length -gt $root.Length) { $full.Substring($root.Length + 1) } else { $c.Name }
-      $name = "$($item.Name)/" + $rel.Replace('\', '/')
-      if ($c.PSIsContainer) { $entries.Add(@($null, "$name/")); continue }
+      $name = "$($item.Name)/" + $rel.Replace($sep, [char]'/')
+      if ($c.PSIsContainer) { $entries.Add(@($null, "$name/", $full)); continue }
       $isOutput = if ($onWindows) { $full -eq $skipFull } else { $full -ceq $skipFull }
-      if (-not $isOutput) { $entries.Add(@($c, $name)) }
+      if (-not $isOutput) { $entries.Add(@($c, $name, $full)) }
     }
+  }
+  # Each entry name (a folder's without its '/') and the path stored under it.
+  $taken = [System.Collections.Generic.Dictionary[string, string]]::new((_ArNameComparer $onWindows))
+  foreach ($e in $entries) {
+    $key = $e[1].TrimEnd('/')
+    if ($taken.ContainsKey($key)) { throw "'$($taken[$key])' and '$($e[2])' would both be stored as '$key'" }
+    $taken[$key] = $e[2]
   }
   $fs = [System.IO.File]::Open($sess.GetUnresolvedProviderPathFromPSPath($Dest), [System.IO.FileMode]::CreateNew)
   try {

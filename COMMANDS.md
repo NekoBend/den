@@ -299,8 +299,13 @@ On pwsh the `.zip` holds hidden files and folders (`.env`, `.git`) too, as
 `name/`), where `zip -r` keeps the path as given (`alpha/config.txt`). Two
 sources with one name, such as `alpha/config.txt` and `beta/config.txt` or two
 folders called `src`, would then overwrite each other when extracted, so pwsh
-refuses them before it writes anything and names both (on Windows the names
-match without regard to case). One source named twice is stored once.
+refuses them before it writes anything and names both. It checks every name in
+the zip, the files inside a folder too, and on Windows names that differ only
+in case count as one (a case-sensitive folder, as WSL makes, can hold
+`config.txt` and `CONFIG.TXT`). One source named twice, in any spelling
+(`p1/src` and `./p1/src`), is stored once; `zip -r` stores a repeat of one
+spelling once but refuses a second spelling
+(`cannot repeat names in zip file`).
 
 On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
 `.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.

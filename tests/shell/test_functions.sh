@@ -2412,11 +2412,57 @@ assert_contains "pwsh/archive zip same-name folders exits 1" "status=1" "$actual
 assert_contains "pwsh/archive zip same-name folders names both" "'p1/src' and 'p2/src' would both be stored as 'src'" "$actual"
 assert_not_exists "pwsh/archive zip same-name folders wrote nothing" "$WORK/dirs.zip"
 assert_eq "pwsh/archive zip same-name sources leave no temporary" "" "$(ls -A "$WORK" | grep '\.tmp\.' | tr -d '\n')"
-# One source named twice is not two sources: it is stored once, as zip -r does.
+# One source named twice, in any spelling, is one source and is stored once.
+# (zip -r stores a path given twice in one spelling once, but refuses p1/src
+# next to ./p1/src: "cannot repeat names in zip file".)
 actual=$(pwsh_outcome "archive twice.zip p1/src ./p1/src alpha/config.txt")
 assert_contains "pwsh/archive zip one source named twice exits 0" "status=0" "$actual"
 assert_eq "pwsh/archive zip one source named twice is stored once" "config.txt src/ src/a.txt " "$(unzip -Z1 "$WORK/twice.zip" 2>/dev/null | sort | tr '\n' ' ')"
 rm -rf "$WORK/alpha" "$WORK/beta" "$WORK/p1" "$WORK/p2" "$WORK/both.zip" "$WORK/twice.zip"
+
+# Windows compares names without regard to case, and its case-sensitive
+# folders (WSL makes them) can still hold config.txt and CONFIG.TXT. The same
+# rule also picked the sources that count as one, so those two were one
+# source, and one of the files was left out without a word. Only the same
+# path is one source now, and every entry name is checked, not only the
+# sources' own. Linux's file system stands in for such a folder, and
+# $env:OS = 'Windows_NT' selects Windows' rule, as the test of the Windows
+# branch further down does.
+echo "[pwsh] archive zip compares the names by the platform's rule, and only the same path is one source"
+mkdir -p "$WORK/cs"
+echo lower > "$WORK/cs/config.txt"; echo upper > "$WORK/cs/CONFIG.TXT"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; archive cs1.zip cs/config.txt cs/CONFIG.TXT")
+assert_contains "pwsh/archive zip on Windows refuses two sources whose names differ only in case" "status=1" "$actual"
+assert_contains "pwsh/archive zip on Windows names both of those sources" "'cs/config.txt' and 'cs/CONFIG.TXT' would both be stored as 'CONFIG.TXT'" "$actual"
+assert_not_exists "pwsh/archive zip on Windows wrote nothing for those sources" "$WORK/cs1.zip"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; archive cs2.zip cs")
+assert_contains "pwsh/archive zip on Windows refuses entries whose names differ only in case" "status=1" "$actual"
+assert_contains "pwsh/archive zip on Windows names the first of those entries" "'$WORK/cs/config.txt'" "$actual"
+assert_contains "pwsh/archive zip on Windows names the second of those entries" "'$WORK/cs/CONFIG.TXT'" "$actual"
+assert_contains "pwsh/archive zip on Windows says which name they share" "would both be stored as 'cs/" "$actual"
+assert_not_exists "pwsh/archive zip on Windows wrote nothing for those entries" "$WORK/cs2.zip"
+actual=$(pwsh_outcome "archive cs3.zip cs/config.txt cs/CONFIG.TXT cs")
+assert_contains "pwsh/archive zip on Linux keeps names that differ only in case" "status=0" "$actual"
+assert_eq "pwsh/archive zip on Linux stores both of them" "CONFIG.TXT config.txt cs/ cs/CONFIG.TXT cs/config.txt " "$(unzip -Z1 "$WORK/cs3.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "(_ArNameComparer \$true).Equals('config.txt', 'CONFIG.TXT'); (_ArNameComparer \$false).Equals('config.txt', 'CONFIG.TXT'); (_ArNameComparer \$false).Equals('config.txt', 'config.txt')" 2>&1 | tr -d '\r' | tr '\n' ' ')
+assert_eq "pwsh/archive's name rule ignores case on Windows only" "True False True " "$actual"
+rm -rf "$WORK/cs" "$WORK"/cs?.zip
+
+# Below a folder, only the platform's separators become '/'. On Linux a '\'
+# is part of a name, and turning it into '/' as well stored a file 'a\b.txt'
+# and a file 'b.txt' in a folder 'a' under one entry name, of which
+# extracting kept one.
+echo "[pwsh] archive zip keeps a backslash in a Linux file name"
+mkdir -p "$WORK/bs/a"
+echo literal > "$WORK/bs/a\\b.txt"; echo nested > "$WORK/bs/a/b.txt"
+actual=$(pwsh_outcome "archive bs.zip bs")
+assert_contains "pwsh/archive zip with a backslash in a name exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip stores a backslash in a name as it is" 'bs/ bs/a/ bs/a/b.txt bs/a\b.txt ' "$(unzip -Z1 "$WORK/bs.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+mkdir -p "$WORK/bs.out"
+(cd "$WORK/bs.out" && unzip -q ../bs.zip)
+assert_eq "pwsh/archive zip with a backslash in a name extracts that file" "literal" "$(cat "$WORK/bs.out/bs/a\\b.txt" 2>/dev/null)"
+assert_eq "pwsh/archive zip with a backslash in a name extracts the other file" "nested" "$(cat "$WORK/bs.out/bs/a/b.txt" 2>/dev/null)"
+rm -rf "$WORK/bs" "$WORK/bs.zip" "$WORK/bs.out"
 
 # extract ran `& 7z` / `& unrar` by bare name: a missing tool raised only a
 # non-terminating CommandNotFound, $LASTEXITCODE stayed 0, and the archive
