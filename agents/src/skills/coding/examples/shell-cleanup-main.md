@@ -10,11 +10,11 @@ and section 14 (safe temp files).
 
 ```bash
 # Fetch all orders into a temp file, then report the total count.
-report_orders() {
+report_orders() (
   local order_ids=("$@")
   local tmp_file
   tmp_file="$(mktemp)"
-  trap 'rm -f "$tmp_file"' RETURN
+  trap 'rm -f "$tmp_file"' EXIT
 
   local id
   for id in "${order_ids[@]}"; do
@@ -24,17 +24,24 @@ report_orders() {
   local count
   count="$(wc -l <"$tmp_file")"
   printf 'fetched %s orders\n' "$count"
-}
+)
 ```
 
 `mktemp` creates the temp file with a unique, unpredictable name (shell-security.md section 14):
 never a hardcoded `/tmp/orders.txt`, which is a symlink-attack and race-condition risk.
-`trap 'rm -f "$tmp_file"' RETURN` registers cleanup that runs when the function returns,
+`trap 'rm -f "$tmp_file"' EXIT` registers cleanup that runs when the function ends,
 on success or failure (shell-security.md section 8).
 
-This example uses `RETURN` (function scope) rather than `EXIT` (script scope)
-because the temp file is local to `report_orders`.
-A script-level temp file would use `trap ... EXIT` at the top level.
+The body is in `( ... )`, not `{ ... }`, so the function runs in a subshell
+and its `EXIT` trap fires when that subshell exits:
+after the last command, or when `set -e` or `die` stops it.
+The caller's traps and variables stay untouched.
+In exchange, nothing the function assigns reaches the caller,
+so it hands its result back on stdout, as `report_orders` does.
+Do not use a `RETURN` trap for this:
+it stays set after the function returns, runs again as each calling function returns,
+and does not run when `set -e` or `exit` ends the script.
+A script-level temp file uses `trap ... EXIT` at the top level.
 
 ## 5. main and script assembly
 
