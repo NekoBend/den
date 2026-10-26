@@ -363,29 +363,31 @@ def _python_statement(line: str, col: int, blocks: list[str]) -> tuple[str, str]
 
 
 @functools.lru_cache(maxsize=8)
-def _python_scopes(text: str) -> dict[int, str]:
-    """Line number -> "module" or "class" for each Python statement line.
+def _python_scopes(text: str) -> dict[int, tuple[str, int]]:
+    """First line -> (scope, last line) for each Python statement.
 
-    "module": a statement at module level, or in a module-level
+    The scope is "module": a statement at module level, or in a module-level
     if/try/with/for/while block (a function defined there is still an
     attribute of the module), except `if __name__ == "__main__":`.
     "class": a statement in a class body, an if/try/... block inside it
     included. Statements nested in a function or in the main guard,
-    continuation lines and lines inside strings get no entry.
+    continuation lines and lines inside strings get no entry. The last line
+    is where the statement ends, or a compound statement's header.
 
     The blocks come from Python's own tokenizer, so a bracketed continuation
     line, a string spanning lines or a comment cannot pass for a statement.
     Where the tokenizer gives up (a syntax error, an unterminated string),
     the remaining lines fall back to the indentation rule: column 0 is
-    "module", anything indented "class".
+    "module", anything indented "class", and each line ends its statement.
     """
     lines = _lines(text)
-    scopes: dict[int, str] = {}
+    scopes: dict[int, tuple[str, int]] = {}
     # each open indented block: "def", "class", "script" (the main guard) or
     # "block" (any other compound statement)
     blocks: list[str] = []
     opens = "block"  # the kind of block the current statement would open
     statement_start = True
+    start = 0  # the first line of the current statement, when it has an entry
     last_row = 0
     try:
         tokens = tokenize.generate_tokens(io.StringIO("\n".join(lines)).readline)
@@ -397,18 +399,23 @@ def _python_scopes(text: str) -> dict[int, str]:
                 del blocks[-1:]
             elif tok.type == tokenize.NEWLINE:
                 statement_start = True
+                if start:
+                    scopes[start] = (scopes[start][0], tok.start[0])
+                    start = 0
             elif statement_start and tok.type not in _PY_PASSIVE_TOKENS:
                 statement_start = False
                 row, col = tok.start
                 line = lines[row - 1] if row <= len(lines) else ""
                 scope, opens = _python_statement(line, col, blocks)
                 if scope:
-                    scopes[row] = scope
+                    scopes[row] = (scope, row)
+                    start = row
     except (tokenize.TokenError, SyntaxError):
         for lineno in range(last_row + 1, len(lines) + 1):
             line = lines[lineno - 1]
             if line.strip():
-                scopes[lineno] = "class" if line[:1].isspace() else "module"
+                scope = "class" if line[:1].isspace() else "module"
+                scopes[lineno] = (scope, lineno)
     return scopes
 
 
@@ -418,7 +425,7 @@ def _python_definitions(text: str, *, member: bool) -> list[tuple[int, str, str]
     nested = _compile(".py", _PY_BLOCK_LEVEL)
     methods = _compile(".py", MEMBER_PATTERNS[".py"])
     picked: list[tuple[int, str, str, list[re.Pattern[str]]]] = []
-    for lineno, scope in sorted(_python_scopes(text).items()):
+    for lineno, (scope, last) in sorted(_python_scopes(text).items()):
         line = lines[lineno - 1] if lineno <= len(lines) else ""
         if member:
             if scope == "class":
@@ -427,8 +434,46 @@ def _python_definitions(text: str, *, member: bool) -> list[tuple[int, str, str]
             if line[:1].isspace():
                 picked.append((lineno, line.lstrip(), line, nested))
             else:
-                picked.append((lineno, line, line, top))
+                # all its lines, reported at the first: an annotation can run
+                # onto the next ones, and the `=` after it with it
+                # (`LIMITS: dict[` ... `] = {}`)
+                statement = "\n".join(lines[lineno - 1 : last])
+                picked.append((lineno, statement, line, top))
     return _scan(picked)
+
+
+@functools.cache
+def _annotation_start(symbol: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(symbol)}\s*:")
+
+
+@functools.lru_cache(maxsize=8)
+def _file_statements(file: str) -> tuple[list[str], dict[int, tuple[str, int]]]:
+    """The lines of the Python file `file`, as searched, and its statements."""
+    lines = [text for _lineno, text in iter_searchable_lines(Path(file))]
+    return lines, _python_scopes("\n".join(lines))
+
+
+def is_definition_hit(file: str, lineno: int, line: str, symbol: str) -> bool:
+    """Whether line `lineno` of `file`, which reads `line`, may define `symbol`.
+
+    is_definition_line decides from the line alone, except where a Python
+    line starts an annotation without its `=`: an annotated assignment can
+    run onto later lines (`LIMITS: dict[` ... `] = {}`), so the statement
+    that starts there is read from the file and matched whole, as
+    _python_definitions matches it. A continuation line, or a line inside a
+    string, starts no statement and defines nothing.
+    """
+    ext = Path(file).suffix
+    if is_definition_line(line, ext, symbol):
+        return True
+    if ext != ".py" or not _annotation_start(symbol).match(line):
+        return False
+    lines, statements = _file_statements(file)
+    entry = statements.get(lineno)
+    if entry is None:
+        return False
+    return is_definition_line("\n".join(lines[lineno - 1 : entry[1]]), ext, symbol)
 
 
 # ---------- Rust, Java, C#: scopes from braces ----------

@@ -100,7 +100,7 @@ from _common import (
     TOP_LEVEL_PATTERNS,
     allow_undecodable_paths_on_stdout,
     format_hit,
-    is_definition_line,
+    is_definition_hit,
     iter_searchable_lines,
     list_search_files,
     mentions,
@@ -131,7 +131,7 @@ def _split(
     defs: list[Result] = []
     uses: list[Result] = []
     for file, lineno, content in search_words([symbol], _files(root, ext_filter)):
-        if is_definition_line(content, Path(file).suffix, symbol):
+        if is_definition_hit(file, lineno, content, symbol):
             defs.append((file, lineno, "def", content.strip()))
         else:
             uses.append((file, lineno, "use", content.strip()))
@@ -206,7 +206,7 @@ def list_in_file(file_path: Path, root: Path) -> list[Result]:
         for u_file, u_line, u_content, u_ext in hits:
             if not mentions(u_content, u_ext, symbol):
                 continue
-            if is_definition_line(u_content, u_ext, symbol):
+            if is_definition_hit(u_file, u_line, u_content, symbol):
                 continue
             if u_file not in resolved:
                 resolved[u_file] = Path(u_file).resolve()

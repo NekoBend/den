@@ -1081,6 +1081,69 @@ def test_annotated_assignments_are_definitions(tmp_path: Path) -> None:
     ]
 
 
+def test_an_annotation_over_several_lines_is_one_definition(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The `=` of `LIMITS: dict[` ... `] = {}` is on its last line, so its first
+    # line alone matched nothing: --in listed SIMPLE only, --def found
+    # nothing and --uses listed the definition as a use. The statement is now
+    # matched whole and reported at its first line. A bare annotation over
+    # several lines defines nothing, and neither does a line that only looks
+    # like the start of one: a docstring line and a key in a dict.
+    lib = write(
+        tmp_path,
+        "lib.py",
+        '"""Settings.\n'
+        "\n"
+        "LIMITS: dict[\n"
+        '"""\n'
+        "LIMITS: dict[\n"
+        "    str, int\n"
+        "] = {}\n"
+        "SIMPLE: int = 1\n"
+        "DECLARED: dict[\n"
+        "    str, int\n"
+        "]\n"
+        "TABLE = {\n"
+        "LIMITS: 1,\n"
+        "}\n",
+    )
+    write(tmp_path, "app.py", "from lib import LIMITS, SIMPLE\nprint(LIMITS)\n")
+    for env in backends:
+        proc = run("--def", "LIMITS", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == ["lib.py:5:def:LIMITS: dict["]
+        proc = run("--uses", "LIMITS", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "app.py:1:use:from lib import LIMITS, SIMPLE",
+            "app.py:2:use:print(LIMITS)",
+            "lib.py:3:use:LIMITS: dict[",
+            "lib.py:13:use:LIMITS: 1,",
+        ]
+        proc = run("--def", "DECLARED", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == []
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:5:def:LIMITS: dict[",
+        "app.py:1:use:LIMITS:from lib import LIMITS, SIMPLE",
+        "app.py:2:use:LIMITS:print(LIMITS)",
+        "lib.py:8:def:SIMPLE: int = 1",
+        "app.py:1:use:SIMPLE:from lib import LIMITS, SIMPLE",
+        "lib.py:12:def:TABLE = {",
+    ]
+
+    # --in leaves out another file's definition of the same name, over
+    # several lines as on one
+    write(tmp_path, "other.py", "LIMITS: dict[\n    str, int\n] = {'a': 1}\n")
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "other.py" not in proc.stdout, proc.stdout
+
+
 def test_python_definitions_survive_a_syntax_error() -> None:
     # Where the tokenizer gives up, the rest of the file is read by
     # indentation: column 0 is module level, an indented def is a method.

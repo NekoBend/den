@@ -938,6 +938,38 @@ def test_a_removed_annotated_assignment_is_reported(tmp_path: Path) -> None:
     ]
 
 
+def test_a_removed_annotation_over_several_lines_is_reported(tmp_path: Path) -> None:
+    # The `=` of `LIMITS: dict[` ... `] = {}` is on its last line, so the
+    # first line alone defined nothing and deleting LIMITS reported only the
+    # SIMPLE next to it. A bare annotation over several lines assigns
+    # nothing, so deleting DECLARED removes no name.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "LIMITS: dict[\n"
+        "    str, int\n"
+        "] = {}\n"
+        "SIMPLE: int = 1\n"
+        "DECLARED: dict[\n"
+        "    str, int\n"
+        "]\n",
+    )
+    imports = "from lib import DECLARED, LIMITS, SIMPLE"
+    write(tmp_path, "app.py", f"{imports}\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# moved\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        f"app.py:1:broken_ref:LIMITS:{imports}",
+        f"app.py:1:broken_ref:SIMPLE:{imports}",
+    ]
+
+
 def test_a_keyword_before_a_colon_is_not_a_removed_name(tmp_path: Path) -> None:
     # `else: LEVEL = 2` has the shape of an annotated assignment (`name:
     # annotation = value`). Taken for one, removing such lines made else, try,
