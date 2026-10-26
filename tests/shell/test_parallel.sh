@@ -776,10 +776,14 @@ echo "[pwsh] pcp/pmv/prm/ptar: a refusal is a failure"
 # `pwsh -Command` exiting 0: `pcp a b nodir && prm -Force a b` removed both
 # files after pcp had refused the destination and copied nothing.
 setup_fixtures
-mkdir -p "$WORK/nobin"
 run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; pcp file1.txt file2.txt nodir && prm -Force file1.txt file2.txt" >/dev/null 2>&1
 assert_failure "pwsh/pcp into a destination that is not a directory exits nonzero" "$?"
 assert_exists "pwsh/pcp refusal stops a && chain" "$WORK/src/file1.txt"
+# The cases below start from a full tree again: where the chain above went
+# on and removed both files, each of them must still pass or fail for its
+# own reason.
+setup_fixtures
+mkdir -p "$WORK/nobin"
 while IFS='|' read -r _label _call; do
     actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; try { $_call 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
     assert_eq "pwsh/$_label is a terminating error" "caught" "$actual"
@@ -794,8 +798,14 @@ ptar without arguments|ptar
 ptar with an unsupported format|ptar out.zip file1.txt
 ptar without tar|\$env:PATH = '$WORK/nobin'; ptar out.tar file1.txt
 CALLS
-assert_exists "pwsh/declined prm kept the file" "$WORK/src/file1.txt"
-assert_exists "pwsh/refused pmv moved nothing" "$WORK/src/file2.txt"
+# A declined prm and a refused pmv stop a && chain as well, and touch nothing
+# themselves.
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; function Read-Host { 'n' }; prm file1.txt && Remove-Item -LiteralPath file1.txt" >/dev/null 2>&1
+assert_failure "pwsh/declined prm exits nonzero" "$?"
+assert_exists "pwsh/declined prm stops a && chain and keeps the file" "$WORK/src/file1.txt"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; pmv file1.txt file2.txt nodir && Remove-Item -LiteralPath file2.txt" >/dev/null 2>&1
+assert_failure "pwsh/refused pmv exits nonzero" "$?"
+assert_exists "pwsh/refused pmv stops a && chain and moved nothing" "$WORK/src/file2.txt"
 rm -rf "$WORK/nobin"
 
 echo "[pwsh] prm: a confirmed removal takes hidden entries too"
