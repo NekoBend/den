@@ -671,6 +671,28 @@ assert_eq "pwsh/env without coreutils: KEYS restored, the variable it names kept
 KEYS after, unset: True
 KEYS after: DEN_ENV_HELD, DEN_ENV_HELD after: kept" "$actual"
 
+# env set its names before the try that restores them. When one could not be
+# set (.NET refuses a name that starts with a NUL character, on every
+# platform), the error ended env inside a try or under $ErrorActionPreference
+# Stop, and the names set before it stayed in the session; with no try, env
+# went on and ran the command without that name, and its restore failed on
+# that name too, a second error. The names are now set inside the try: those
+# set before the failure go back, the command does not run, and the failure is
+# reported once.
+echo "[pwsh] env without coreutils undoes its assignments when a later one fails"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$bad = [string][char]0 + 'DEN_ENV_BAD=x'
+    try { env DEN_ENV_FIRST=set \$bad bash -c 'echo command ran'; 'went on' } catch { 'caught' }
+    'in a try, DEN_ENV_FIRST after, unset: ' + (\$null -eq \$env:DEN_ENV_FIRST)
+    \$Error.Clear()
+    env DEN_ENV_SECOND=set \$bad bash -c 'echo command ran' 2>\$null
+    'no try, DEN_ENV_SECOND after, unset: ' + (\$null -eq \$env:DEN_ENV_SECOND) + ', errors: ' + \$Error.Count
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: a failed assignment undoes the earlier ones" "caught
+in a try, DEN_ENV_FIRST after, unset: True
+no try, DEN_ENV_SECOND after, unset: True, errors: 1" "$actual"
+
 # =============================================================================
 # wc — pipe character count
 # =============================================================================

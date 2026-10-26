@@ -81,16 +81,28 @@ function env {
       $i++
     }
     if ($null -ne $cmd) {
-      # A name's value is saved the first time the name comes up, and each
-      # name is restored once. Saved again at a repeat (`env A=1 A=2 cmd`),
-      # it was the value the first assignment had just set, and the session
-      # kept it. $saved ignores case, as Windows' variable names do.
+      # A name's value is saved the first time the name comes up, before it
+      # is set, and each name is restored once. Saved again at a repeat
+      # (`env A=1 A=2 cmd`), it was the value the first assignment had just
+      # set, and the session kept it. $saved ignores case, as Windows'
+      # variable names do.
+      # The names are set inside the try. Set before it, the names set ahead
+      # of one that could not be (.NET refuses a name that starts with a NUL
+      # character, for one) stayed in the session when the error ended env,
+      # as it does inside a try or under $ErrorActionPreference Stop; and
+      # otherwise the command ran without that name. Now they are restored
+      # and the command does not run. A name whose set throws was not
+      # changed, so if it came up first there it leaves $saved: restoring it
+      # would throw again, and could stop the restore of the names after it.
       $saved = @{}
-      foreach ($kv in $assigns) {
-        if (-not $saved.ContainsKey($kv.Name)) { $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name) }
-        [Environment]::SetEnvironmentVariable($kv.Name, $kv.Value)
-      }
       try {
+        foreach ($kv in $assigns) {
+          $first = -not $saved.ContainsKey($kv.Name)
+          if ($first) { $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name) }
+          $set = $false
+          try { [Environment]::SetEnvironmentVariable($kv.Name, $kv.Value); $set = $true }
+          finally { if ($first -and -not $set) { $saved.Remove($kv.Name) } }
+        }
         if ($__in) { $__piped | & $cmd @cmdArgs } else { & $cmd @cmdArgs }
       }
       finally {
