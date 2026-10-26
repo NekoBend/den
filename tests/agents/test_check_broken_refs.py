@@ -1137,6 +1137,40 @@ def test_powershell_names_are_case_insensitive(
         assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:get-widget"]
 
 
+def test_a_removed_typed_powershell_assignment_is_reported(tmp_path: Path) -> None:
+    # The assignment patterns wanted the line to start with `$`, so deleting
+    # `[int]$MaxTries = 3` while run.ps1 still reads it reported only the
+    # untyped $Plain next to it. A typed local of a function is no
+    # definition, so deleting one reports nothing.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.ps1",
+        "[int]$MaxTries = 3\n"
+        "[string[]]$Names = @()\n"
+        "$Plain = 5\n"
+        "function Get-Thing {\n"
+        "    [int]$script:Count = 0\n"
+        "    [int]$Local = 1\n"
+        "}\n",
+    )
+    uses = "Write-Output $MaxTries $Names $Plain $Count $Local"
+    write(tmp_path, "run.ps1", f"{uses}\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.ps1", "function Get-Thing {\n}\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        f"run.ps1:1:broken_ref:Count:{uses}",
+        f"run.ps1:1:broken_ref:MaxTries:{uses}",
+        f"run.ps1:1:broken_ref:Names:{uses}",
+        f"run.ps1:1:broken_ref:Plain:{uses}",
+    ]
+
+
 def test_a_removed_typescript_enum_is_reported(tmp_path: Path) -> None:
     init_repo(tmp_path)
     write(tmp_path, "status.ts", "export enum OrderStatus { Open }\n")

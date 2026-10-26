@@ -74,6 +74,11 @@ _GO_METHOD = r"^func\s*\(\s*(?:\w+\s+)?\*?\s*\w+\s*(?:\[[^\]]*\]\s*)?\)\s*{name}
 # `else: x = 1` defines no `else`.
 _PY_ASSIGNMENT = r"^(?!(?:else|try|finally|except|lambda)\b){name}\s*(?::[^=]+)?=(?!=)"
 
+# What may stand before a PowerShell variable's `$`: type constraints and
+# attributes such as `[int]`, `[string[]]` or `[ValidateRange(1, 9)]`, with
+# brackets nested up to three deep (`[List[string[]]]`).
+_PS_TYPES = r"(?:\[(?:[^\[\]]|\[(?:[^\[\]]|\[[^\[\]]*\])*\])*\]\s*)*"
+
 # Where a symbol may be defined, per extension. {name} is the symbol.
 DEFINITION_PATTERNS: dict[str, list[str]] = {
     ".py": [
@@ -143,9 +148,10 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         r"^\s*class\s+{name}\b",
         r"^\s*enum\s+{name}\b",
         # a script-level `$x =` at column 0, or an explicitly scoped one at any
-        # depth; an indented plain `$x =` is a function's local
-        r"^\$(?:script:|global:)?{name}\s*=",
-        r"^\s*\$(?:script|global):{name}\s*=",
+        # depth, typed or not (`[int]$x =`); an indented plain `$x =` is a
+        # function's local
+        r"^" + _PS_TYPES + r"\$(?:script:|global:)?{name}\s*=",
+        r"^\s*" + _PS_TYPES + r"\$(?:script|global):{name}\s*=",
     ],
 }
 

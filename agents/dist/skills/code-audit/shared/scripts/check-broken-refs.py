@@ -89,10 +89,11 @@ Limitations:
     or const in a Rust impl or trait and a type nested in a Java or C# type
     is a member, anything in a function body is neither. Shell and PowerShell
     functions count at any depth; a shell variable does not, a PowerShell
-    `$x =` at column 0 (or a `$script:`/`$global:` one) does. In PowerShell
-    files (.ps1 .psm1 .psd1) names are compared and matched ignoring case,
-    as PowerShell does: renaming Get-Widget to get-widget removes nothing,
-    and a removed Get-Widget is found where it is called as get-widget.
+    `$x =` or `[int]$x =` at column 0 (or a `$script:`/`$global:` one) does.
+    In PowerShell files (.ps1 .psm1 .psd1) names are compared and matched
+    ignoring case, as PowerShell does: renaming Get-Widget to get-widget
+    removes nothing, and a removed Get-Widget is found where it is called as
+    get-widget.
 
     Signature changes (same name, different params) are NOT detected.
     Symbols added in the working tree that shadow an external symbol are NOT

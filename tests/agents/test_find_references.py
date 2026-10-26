@@ -1144,6 +1144,65 @@ def test_powershell_matching_ignores_case(
     assert len(rows(proc, tmp_path)) == 3, proc.stdout
 
 
+def test_typed_powershell_assignments_are_definitions(tmp_path: Path) -> None:
+    # The assignment patterns wanted the line to start with `$`, so a typed
+    # one such as `[int]$MaxTries = 3` was no definition: --def found
+    # nothing, --uses listed it as a use and --in left it out. A typed local
+    # in a function body and a call on a cast are still no definitions.
+    lib = write(
+        tmp_path,
+        "lib.ps1",
+        "[int]$MaxTries = 3\n"
+        "[string[]]$Names = @()\n"
+        "[Collections.Generic.List[string]] $Items = @()\n"
+        "[ValidateRange(1, 10)][int]$Level = 5\n"
+        "$Plain = 5\n"
+        "function Get-Thing {\n"
+        "    [int]$script:Count = 0\n"
+        "    [int]$MaxTries = 1\n"
+        "}\n"
+        "[void]$Names.Add('x')\n",
+    )
+    uses = "Write-Output $MaxTries $Names $Items $Level $Count"
+    write(tmp_path, "run.ps1", f"{uses}\n")
+    expected_defs = {
+        "MaxTries": "lib.ps1:1:def:[int]$MaxTries = 3",
+        "Names": "lib.ps1:2:def:[string[]]$Names = @()",
+        "Items": "lib.ps1:3:def:[Collections.Generic.List[string]] $Items = @()",
+        "Level": "lib.ps1:4:def:[ValidateRange(1, 10)][int]$Level = 5",
+        "Count": "lib.ps1:7:def:[int]$script:Count = 0",
+    }
+    for symbol, expected in expected_defs.items():
+        proc = run("--def", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [expected], symbol
+
+    proc = run("--uses", "MaxTries", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.ps1:8:use:[int]$MaxTries = 1",
+        f"run.ps1:1:use:{uses}",
+    ]
+    proc = run("--uses", "Names", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.ps1:10:use:[void]$Names.Add('x')",
+        f"run.ps1:1:use:{uses}",
+    ]
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert [r for r in rows(proc, tmp_path) if ":def:" in r] == [
+        expected_defs["Count"],
+        "lib.ps1:6:def:function Get-Thing {",
+        expected_defs["Items"],
+        expected_defs["Level"],
+        expected_defs["MaxTries"],
+        expected_defs["Names"],
+        "lib.ps1:5:def:$Plain = 5",
+    ]
+
+
 def test_typescript_enum_and_namespace_are_definitions(tmp_path: Path) -> None:
     status = write(
         tmp_path,
