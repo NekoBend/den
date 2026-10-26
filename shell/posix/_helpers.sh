@@ -165,6 +165,13 @@ _source_all() {
 
 # _init_cache <tool> <shell> [extra_args...]
 # NOTE: umask 077 and symlink/owner checks are required — do not remove.
+# The cache's first line is its key, `# den-init-cache <binary> init <shell>
+# <args>`, read back with the read builtin (no process). The cache is made
+# again when the key differs (the tool moved: starship's full init runs
+# starship by the absolute path it had; or the arguments changed) or the
+# binary is newer than the cache (an upgrade in place). A run that fails or
+# prints nothing is not kept: its key would match, so it would stay until the
+# binary changed.
 _init_cache() {
     _ic_t="$1"; _ic_s="$2"; shift 2
     _ic_d="${XDG_CACHE_HOME:-$HOME/.cache}/shell"
@@ -179,21 +186,56 @@ _init_cache() {
     _ic_f="$_ic_d/${_ic_t}-init.${_ic_s}"
     _ic_b=$(command -v "$_ic_t" 2>/dev/null)
     if [ -n "$_ic_b" ]; then
-        # Regenerate cache when missing or older than the binary (binary upgrade)
-        if [ ! -f "$_ic_f" ] || [ "$_ic_b" -nt "$_ic_f" ]; then
-            (umask 077 && "$_ic_t" init "$_ic_s" "$@" > "$_ic_f")
+        _ic_k="# den-init-cache $_ic_b init $_ic_s $*"
+        # The key is read from a regular file only, never through a symlink
+        # (whose target could be a device that never ends a line).
+        _ic_l=
+        [ -f "$_ic_f" ] && [ ! -L "$_ic_f" ] && { IFS= read -r _ic_l < "$_ic_f"; } 2>/dev/null
+        if [ "$_ic_l" != "$_ic_k" ] || [ "$_ic_b" -nt "$_ic_f" ]; then
+            # Through a temporary file renamed over the cache, which also
+            # replaces a symlink there instead of writing through it. The
+            # tool runs by its name, not by what command -v printed, which is
+            # `alias <name>=...` text for an alias of that name.
+            if _ic_o=$("$_ic_t" init "$_ic_s" "$@") && [ -n "$_ic_o" ]; then
+                # The temporary file comes from mktemp (O_EXCL, mode 600, a
+                # name no one can know first), as in hwinfo.sh: at a name
+                # known in advance ("$_ic_f.tmp.$$"), a symlink someone else
+                # put there was written through, and mv then put it in place
+                # of the cache. Without mktemp, an existing name is refused,
+                # symlink included, and no cache is made this time: noclobber
+                # (set -C) alone opens an existing FIFO or device, or a link to
+                # one (a FIFO made the start wait for a reader, and a link to
+                # /dev/null was moved in place of the cache). >| writes into
+                # the file under the user's noclobber.
+                _ic_tmp=$(command mktemp "$_ic_f.tmp.XXXXXX" 2>/dev/null)
+                if [ -z "$_ic_tmp" ]; then
+                    _ic_tmp="$_ic_f.tmp.$$"
+                    if [ -e "$_ic_tmp" ] || [ -L "$_ic_tmp" ]; then
+                        _ic_tmp=
+                    else
+                        (umask 077 && set -C && : > "$_ic_tmp") 2>/dev/null || _ic_tmp=
+                    fi
+                fi
+                if [ -n "$_ic_tmp" ] && ! { printf '%s\n%s\n' "$_ic_k" "$_ic_o" >| "$_ic_tmp" &&
+                    mv -f -- "$_ic_tmp" "$_ic_f"; }; then
+                    rm -f -- "$_ic_tmp"
+                fi
+            fi
         fi
         # Owner check ([ -O ]) guards against another user writing the file on
         # shared cache paths. POSIX-optional but supported in bash/dash/zsh/ash.
+        # No file: the first run failed or printed nothing.
         if [ -L "$_ic_f" ]; then
             echo "_init_cache: refusing to source symlink '$_ic_f'" >&2
+        elif [ ! -e "$_ic_f" ]; then
+            :
         elif [ -O "$_ic_f" ]; then
             . "$_ic_f"
         else
             echo "_init_cache: refusing to source '$_ic_f' (not owned by current user)" >&2
         fi
     fi
-    unset _ic_t _ic_s _ic_d _ic_f _ic_b
+    unset _ic_t _ic_s _ic_d _ic_f _ic_b _ic_k _ic_l _ic_o _ic_tmp
 }
 
 # ========== den's stores ==========

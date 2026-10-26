@@ -20,6 +20,13 @@ source "$SCRIPT_DIR/helpers.sh"
 P="$DOTFILES/shell/pwsh"
 HELPERS_PS1="$P/_helpers.ps1"
 
+# functions.ps1's Initialize-Cache 'zoxide' writes the zoxide init cache to
+# pwsh's LocalApplicationData, which is XDG_DATA_HOME off Windows: under WORK,
+# so a run never writes the real ~/.local/share/shell-cache. The directory must
+# exist (see assert_pwsh_data_private).
+export XDG_DATA_HOME="$WORK/xdg"
+mkdir -p "$XDG_DATA_HOME"
+
 echo "================================================"
 echo "  Testing pwsh alias-collision handling"
 echo "================================================"
@@ -300,6 +307,9 @@ actual=$(run_pwsh "$HELPERS_PS1" "
     code 'a%USERPROFILE%b' 2>\$null
 " | tr -d '\r')
 assert_not_contains "pwsh/code does not reach the shim when refusing" "STUB-CMD" "$actual"
+
+echo "[pwsh] the pwsh runs above kept their caches in this suite's directory"
+assert_pwsh_data_private "pwsh/LocalApplicationData in the suite's directory"
 
 print_summary "test_aliases"
 [ "$FAIL" -eq 0 ]

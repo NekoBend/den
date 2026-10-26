@@ -411,7 +411,10 @@ text and never runs. Only without it does a new cmd window detect them (through
 Windows PowerShell, the way pwsh's hwinfo does, so both shells show the same
 names) and write the file for the next one, a "nothing recognized" result
 included; without starship nothing is detected. cmd has no `refresh-hwinfo`:
-pwsh's, or deleting that file, makes the next window detect again.
+pwsh's, or deleting that file, makes the next window detect again. bash, zsh
+and pwsh cache a "nothing recognized" result too (pwsh with the line cmd
+writes), so no shell detects again at each start; their `refresh-hwinfo` makes
+the next shell try again.
 
 ## History, session, editor
 
@@ -430,6 +433,10 @@ On cmd, `again` reads Clink's history (cmd's own `doskey /history` stays empty
 under Clink) and needs Clink 1.3.18 or newer. Type it on a line of its own:
 after the confirm, the command becomes the next input line, so it runs as if
 typed, aliases included.
+
+On zsh, `reload` also deletes the completion dump (`~/.zcompdump`), so the new
+shell's `compinit` takes in completion functions installed since; without it,
+den's `compinit` does so once the dump is a day old (see shell/README.md).
 
 On pwsh, `reload` cannot replace the running process, so it starts the same
 pwsh with the arguments this session was launched with, in the current

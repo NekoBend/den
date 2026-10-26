@@ -432,6 +432,22 @@ def test_install_shell_wiring_is_idempotent(tmp_path, monkeypatch):
     assert bashrc.count("# ===== den =====") == 1  # den block added once
 
 
+def test_install_shell_leaves_zshenv_alone(tmp_path, monkeypatch):
+    # den writes nothing to ~/.zshenv. init.zsh runs no compinit of its own
+    # after the one Ubuntu's /etc/zsh/zshrc runs, so skip_global_compinit=1
+    # there would save only a few ms, and it breaks setups: a compdef call
+    # above den's line in ~/.zshrc fails at every start, and a ~/.zshenv that
+    # moves ZDOTDIR to a .zshrc without den's line leaves zsh with no compinit.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(_shell.shutil, "which", _stub_which({"zsh"}))
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 0
+    assert _shell._ZSH_LINE in (tmp_path / ".zshrc").read_text()
+    assert not (tmp_path / ".zshenv").exists()
+    (tmp_path / ".zshenv").write_bytes(b"export EDITOR=vi\n")
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 0
+    assert (tmp_path / ".zshenv").read_bytes() == b"export EDITOR=vi\n"
+
+
 # ---- _wire keeps the rc file's own encoding and line ending ----
 
 

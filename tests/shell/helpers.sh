@@ -128,24 +128,58 @@ run_pwsh() {
     "
 }
 
+# use_private_home <dir> - export HOME=<dir>, with XDG_CONFIG_HOME,
+# XDG_STATE_HOME and XDG_CACHE_HOME under it, and unset RUSTUP_HOME, CARGO_HOME,
+# GH_CONFIG_DIR and DOCKER_CONFIG, which send rustup, cargo, gh or docker
+# elsewhere. den's pwsh files run those tools (completion.ps1 runs each one it
+# finds on PATH to cache its completion), and the tools write under these: gh
+# its device-id under XDG_STATE_HOME, rustup a ~/.rustup. Makes the
+# directories. XDG_DATA_HOME, where den's pwsh files keep their own caches, is
+# the caller's to set (see assert_pwsh_data_private). This changes the calling
+# shell: run it in a subshell to keep it to one command.
+use_private_home() {
+    export HOME="$1" XDG_CONFIG_HOME="$1/.config" XDG_STATE_HOME="$1/.local/state" XDG_CACHE_HOME="$1/.cache"
+    unset RUSTUP_HOME CARGO_HOME GH_CONFIG_DIR DOCKER_CONFIG
+    mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+}
+
 # run_pwsh_den <prelude> <cmd> - load den the way $PROFILE does (init.ps1, from
 # DOTFILES) in an interactive session (_DEN_FORCE_INTERACTIVE=1), after the
 # PowerShell code <prelude> (stock aliases to stand in for Windows', a PATH),
 # then run <cmd>. pwsh counts <cmd> as typed at the prompt: a command at the top
 # level of -Command has CommandOrigin Runspace. A script <cmd> runs with & runs
-# as a user's script does. HOME and the XDG directories are TESTTMP/den-home,
-# so den's caches stay out of the real ones; stdin is /dev/null. Expand the
-# PowerShell variables in both arguments (\$) as for run_pwsh.
+# as a user's script does. HOME is TESTTMP/den-home (use_private_home), and
+# XDG_DATA_HOME is under it too, so neither den's caches nor what the tools den
+# runs write reach the real ones; stdin is /dev/null. Expand the PowerShell
+# variables in both arguments (\$) as for run_pwsh.
 run_pwsh_den() {
     local home="$TESTTMP/den-home"
-    mkdir -p "$home/.local/share" "$home/.cache" "$home/.config" || return 1
-    HOME="$home" XDG_DATA_HOME="$home/.local/share" XDG_CACHE_HOME="$home/.cache" \
-        XDG_CONFIG_HOME="$home/.config" _DEN_FORCE_INTERACTIVE=1 \
-        pwsh -NoProfile -NonInteractive -Command "
-            $1
-            . '$DOTFILES/shell/pwsh/init.ps1'
-            $2
-        " < /dev/null
+    mkdir -p "$home/.local/share" || return 1
+    (
+        use_private_home "$home" || exit 1
+        XDG_DATA_HOME="$home/.local/share" _DEN_FORCE_INTERACTIVE=1 \
+            pwsh -NoProfile -NonInteractive -Command "
+                $1
+                . '$DOTFILES/shell/pwsh/init.ps1'
+                $2
+            " < /dev/null
+    )
+}
+
+# assert_pwsh_data_private <label> - pass when pwsh's LocalApplicationData is a
+# directory in this suite's temporary root (TEST_ROOT, below). Off Windows it is
+# XDG_DATA_HOME, which .NET answers only while the directory exists (an empty
+# string otherwise), and den's pwsh files keep their caches there: a suite whose
+# pwsh loads functions.ps1 (zoxide's init) or completion.ps1 sets XDG_DATA_HOME
+# to a directory of its own, or it writes the real ~/.local/share/shell-cache.
+assert_pwsh_data_private() {
+    local actual
+    actual=$(pwsh -NoProfile -NonInteractive -Command "[Environment]::GetFolderPath('LocalApplicationData')" 2>&1 |
+        tr -d '\r')
+    case "$actual" in
+        "$TEST_ROOT"/?*) assert_eq "$1" "in the suite's directory" "in the suite's directory" ;;
+        *) assert_eq "$1" "a directory in $TEST_ROOT" "$actual" ;;
+    esac
 }
 
 # ===== Streaming through pwsh functions =====

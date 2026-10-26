@@ -37,6 +37,25 @@ the flag nothing is fetched -- code sourced at shell startup is opt-in.
 Pre-existing clones are left untouched (the pin applies to new clones only).
 `init.zsh` guards each source, so a missing plugin just turns that feature off.
 
+### zsh completion
+
+`init.zsh` runs `compinit` once per shell, and not at all when completion is
+already set up (`compdef` exists) by the time it loads: your `~/.zshrc` ran it
+first, or Ubuntu's `/etc/zsh/zshrc` did, which runs a full `compinit` unless
+`skip_global_compinit` is set. A second one would only cost time and undo the
+`compdef` calls made before it, such as those of a tool's completion script
+above den's line (`source <(kubectl completion zsh)`, say).
+
+While `~/.zcompdump` is less than a day old, den's `compinit -C` loads it as
+it is: no security audit, and no look for completion functions added since. A
+missing or older dump gets the full `compinit -u`, which finds them (an apt
+package, a new tool) and rewrites the dump when they changed; the dump is then
+dated today, so the shells of the next day take `-C` again. `-u` leaves out the
+security audit too, which asked about an `fpath` directory others may write to
+and, where no one could answer (`zsh -i -c`), gave up with no completion and
+no dump. `reload` deletes the dump, so the new shell picks new completion
+functions up at once.
+
 ## The wrapper system
 
 Commands like `ls`, `cat`, `grep`, `find` dispatch through tiers, in order:
@@ -362,6 +381,11 @@ exports `STARSHIP_CPU_*` / `STARSHIP_GPU_*`.
   `$XDG_RUNTIME_DIR/den-hwinfo.<machine-id>.sh` (mode 600); PowerShell
   caches under LocalAppData keyed by `$COMPUTERNAME`. This keeps a shared or
   synced `$HOME` from showing one machine's hardware on another.
+- A detection that recognizes no CPU or GPU name (Windows on ARM, say) is
+  cached too, so it does not run again at every start: the POSIX cache then
+  holds only its `_DEN_HWINFO_CACHED=1` end line, the PowerShell one the
+  comment line cmd writes for the same case. A shell that inherits
+  `STARSHIP_*` values reads no cache at all.
 - `toggle-hwinfo` (short: `tgl-hw`) shows/hides the info in the prompt.
 - `refresh-hwinfo` clears the cache so the next shell re-detects.
 
@@ -377,7 +401,8 @@ extra, installed with `den install shell`):
   generated PowerShell completion script (the subcommand varies per tool) is
   cached under LocalAppData (via the shared `Initialize-Cache`, validated by
   `Test-CacheSafe`) and sourced, so `docker run <Tab>` etc. complete. Each is
-  skipped when the tool is absent.
+  skipped when the tool is absent. `uv`'s (about 750 KB) and `rustup`'s are
+  sourced at the first Tab after the command, not at startup.
 - **git** branch/remote completion comes from `posh-git`, but only when it is
   already installed (it is a heavy module, so it is never force-installed or
   imported when absent).
@@ -387,9 +412,13 @@ Add a tool by dropping one
 line in `completion.ps1` (adjust the subcommand: `gh` uses `completion -s`, `uv`
 uses `generate-shell-completion`, `rustup` uses `completions`). The dot-source
 must stay at the file's top level (global scope), not inside a function, or some
-completers (docker's) silently fail. Note that the completers are sourced eagerly
-at startup, so a very large one (e.g. `kubectl`, `helm`) adds measurable startup
-time each session.
+completers (docker's) silently fail. A script sourced this way costs startup
+time in every session, a very large one (e.g. `kubectl`, `helm`) measurably.
+One that only registers a self-contained `Register-ArgumentCompleter -Native`
+script block (clap's, as `uv`'s and `rustup`'s) can wait for the first Tab
+instead: `if ($_c) { _DenLazyCompleter '<tool>' $_c }`. Cobra's (`docker`'s,
+`gh`'s) cannot: their completer calls helper functions the script defines,
+which need the global scope.
 
 ## Layout
 
@@ -441,9 +470,23 @@ of zoxide and starship. zsh and PowerShell mirror this.
   the history, after yours, each once however often it loads. init.zsh sets
   `HISTFILE`, `HISTSIZE` / `SAVEHIST` (8192) and `HISTORY_IGNORE` (the
   `again` / `sagain` pattern) as it loads, replacing values set before it.
-- `~/.cache/shell/` holds the zoxide/starship init caches. They regenerate when
-  the tool binary is newer than the cache, and are sourced only if they are a
-  regular file owned by you (symlink and owner guarded).
+- `~/.cache/shell/` holds the zoxide/starship init caches. Each one's first
+  line is a key, the binary's path and the arguments it was made with; a cache
+  is made again when that line differs (the tool moved: starship's full init
+  runs starship by the path it had; or init.bash/init.zsh changed the
+  arguments) or the binary is newer than the cache. A run that fails or prints
+  nothing is not cached. They are sourced only if they are a regular file owned
+  by you (symlink and owner guarded).
+- PowerShell keeps its caches (zoxide's init, starship's full init, the
+  completion scripts) under LocalAppData's `shell-cache`, keyed the same way:
+  the tool's file (the one a symlink leads to), its length and modification
+  time, and the arguments; for a scoop shim, which stays the same file when
+  the tool upgrades, also the program its `.shim` file names. Each PowerShell
+  edition keeps its own, `<tool>-<suffix>.Core.ps1` (pwsh 7) and
+  `<tool>-<suffix>.Desktop.ps1` (Windows PowerShell 5.1), both UTF-8 with a
+  BOM. It finds each tool by walking `$env:PATH` itself (`_DenFindApp`), not
+  through `Get-Command`, whose lookups took tens of milliseconds of every
+  start.
 - `reload` clears the caches and restarts the shell, which rebuilds them.
   bash/zsh `exec` a new shell. pwsh cannot, so it starts the same pwsh with
   the same launch arguments (less `-WorkingDirectory`: it stays in the current

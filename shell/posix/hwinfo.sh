@@ -10,21 +10,40 @@ case $- in *i*) ;; *) return 0 2>/dev/null || exit 0;; esac
 # Lives under $XDG_RUNTIME_DIR (tmpfs: per-boot, per-machine) so a shared or
 # synced $HOME never serves one machine's hardware to another, and the cache
 # auto-refreshes on reboot. Falls back to /tmp, still keyed by machine-id.
-_hwc_dir="${XDG_RUNTIME_DIR:-/tmp}"
-_hwc_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
-_hwc_f="$_hwc_dir/den-hwinfo.${_hwc_mid}.sh"
+# _den_hwinfo_file sets _hwc_f to that file. The machine id is read with the
+# read builtin, not a cat process at every shell start; without one, the host
+# name stands in ($HOSTNAME in bash, $HOST in zsh, else hostname's).
+_den_hwinfo_file() {
+    _hwc_mid=
+    { IFS= read -r _hwc_mid < /etc/machine-id; } 2>/dev/null
+    # shellcheck disable=SC3028  # HOSTNAME: bash sets it, zsh HOST; else hostname below
+    [ -n "$_hwc_mid" ] || _hwc_mid=${HOSTNAME:-${HOST:-}}
+    [ -n "$_hwc_mid" ] || _hwc_mid=$(command hostname 2>/dev/null)
+    _hwc_f="${XDG_RUNTIME_DIR:-/tmp}/den-hwinfo.${_hwc_mid:-unknown}.sh"
+    unset _hwc_mid
+}
 
-# Source the cache only if a regular file, not a symlink, owned by us.
+# Source the cache only if a regular file, not a symlink, owned by us, and only
+# when no STARSHIP_* value came from the parent (a nested shell needs no file).
+# A cache den writes ends with _DEN_HWINFO_CACHED=1, so one that holds no CPU or
+# GPU name (none recognized) still counts, and the detection below does not run
+# again at every start; refresh-hwinfo deletes the file to detect again.
+_hwc_hit=
 if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
    [ -z "$STARSHIP_GPU_NVIDIA" ] && [ -z "$STARSHIP_GPU_AMD" ] && \
    [ -z "$STARSHIP_GPU_INTEL" ]; then
+    _den_hwinfo_file
     if [ -f "$_hwc_f" ] && [ ! -L "$_hwc_f" ] && [ -O "$_hwc_f" ]; then
+        _DEN_HWINFO_CACHED=
         . "$_hwc_f"
+        _hwc_hit=$_DEN_HWINFO_CACHED
+        unset _DEN_HWINFO_CACHED
     fi
 fi
 
 # --- Detect hardware live only if still uncached (env + file cache both miss) ---
-if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
+if [ -z "$_hwc_hit" ] && \
+   [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
    [ -z "$STARSHIP_GPU_NVIDIA" ] && [ -z "$STARSHIP_GPU_AMD" ] && \
    [ -z "$STARSHIP_GPU_INTEL" ]; then
 
@@ -138,14 +157,21 @@ if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
     # Create the temp file with mktemp (O_EXCL + 0600 + random suffix) rather than
     # the predictable "$_hwc_f.tmp.$$": with XDG_RUNTIME_DIR unset the cache lives
     # in a shared /tmp, where another user can pre-plant that exact name as a
-    # symlink and have the truncating `>` below rewrite whatever it points at.
-    # Without mktemp, fall back to a noclobber (set -C) redirect, which also fails
-    # closed on an existing path or symlink. Same fail-closed intent as the read
-    # side above and _init_cache in _helpers.sh.
+    # symlink and have the writes below go to whatever it points at. Without
+    # mktemp, refuse an existing name, symlink included, and write no cache this
+    # time; then create the file with a noclobber (set -C) redirect, which alone
+    # opens an existing FIFO or device, or a link to one (a FIFO made the start
+    # wait for a reader, and a link to /dev/null was moved in place of the
+    # cache). Same fail-closed intent as the read side above and _init_cache in
+    # _helpers.sh.
     _hwc_tmp=$(command mktemp "$_hwc_f.tmp.XXXXXX" 2>/dev/null)
     if [ -z "$_hwc_tmp" ]; then
         _hwc_tmp="$_hwc_f.tmp.$$"
-        (umask 077 && set -C && : > "$_hwc_tmp") 2>/dev/null || _hwc_tmp=""
+        if [ -e "$_hwc_tmp" ] || [ -L "$_hwc_tmp" ]; then
+            _hwc_tmp=""
+        else
+            (umask 077 && set -C && : > "$_hwc_tmp") 2>/dev/null || _hwc_tmp=""
+        fi
     fi
     if [ -n "$_hwc_tmp" ]; then
         for _hwc_v in STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL; do
@@ -156,6 +182,8 @@ if [ -z "$STARSHIP_CPU_INTEL" ] && [ -z "$STARSHIP_CPU_AMD" ] && \
                 printf "export %s='%s'\n" "$_hwc_v" "$_hwc_esc" >> "$_hwc_tmp"
             fi
         done
+        # Last, so a file cut short by a failed write does not count as a hit.
+        printf '_DEN_HWINFO_CACHED=1\n' >> "$_hwc_tmp"
         mv -f "$_hwc_tmp" "$_hwc_f" 2>/dev/null || rm -f "$_hwc_tmp"
     fi
     unset _hwc_v _hwc_val _hwc_esc _hwc_tmp
@@ -176,13 +204,13 @@ if [ "${_DEN_HWINFO_HIDDEN:-0}" = 1 ]; then
     done
     unset _hwc_v _hwc_val
 fi
-unset _hwc_dir _hwc_mid _hwc_f
+unset _hwc_f _hwc_hit
 
 # refresh-hwinfo → clear the hardware info cache (re-detect on next shell)
 refresh-hwinfo() {
-    _rh_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
-    rm -f "${XDG_RUNTIME_DIR:-/tmp}/den-hwinfo.${_rh_mid}.sh"
-    unset _rh_mid
+    _den_hwinfo_file
+    rm -f "$_hwc_f"
+    unset _hwc_f
     echo "hwinfo cache cleared. Restart shell to refresh."
 }
 

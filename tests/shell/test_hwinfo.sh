@@ -139,31 +139,41 @@ actual=$(bash -c "
 " | tr -d '\r')
 assert_contains "bash/Intel GPU via lspci" "GPU_INTEL=UHD Graphics 620" "$actual"
 
+# hwinfo_file <runtime dir> - the cache file hwinfo.sh keeps in that directory:
+# den-hwinfo.<machine id>.sh, the host name standing in for a missing or empty
+# /etc/machine-id (_den_hwinfo_file)
+hwinfo_file() {
+    local mid=
+    { IFS= read -r mid < /etc/machine-id; } 2>/dev/null
+    [ -n "$mid" ] || mid=${HOSTNAME:-$(hostname 2>/dev/null)}
+    printf '%s/den-hwinfo.%s.sh\n' "$1" "${mid:-unknown}"
+}
+
 echo "[bash] cache write ignores a planted temp symlink"
 # The old write path opened the predictable "$cache.tmp.$$" with a truncating
 # redirect, so another user sharing /tmp (XDG_RUNTIME_DIR unset) could pre-plant
 # that name as a symlink and have the shell rewrite the file it points at.
 mkdir -p "$WORK/hwinfo-symcache"
 echo "VICTIM" > "$WORK/hwinfo-victim.txt"
+hw_sym_f=$(hwinfo_file "$WORK/hwinfo-symcache")
 actual=$(bash -c "
     export XDG_RUNTIME_DIR='$WORK/hwinfo-symcache'
     unset STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL
-    mid=\$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
-    ln -sf '$WORK/hwinfo-victim.txt' \"\$XDG_RUNTIME_DIR/den-hwinfo.\${mid}.sh.tmp.\$\$\"
+    ln -sf '$WORK/hwinfo-victim.txt' \"$hw_sym_f.tmp.\$\$\"
     source '$HWINFO_SH'
     command cat '$WORK/hwinfo-victim.txt'
 " | tr -d '\r')
 assert_eq "bash/hwinfo does not write through planted symlink" "VICTIM" "$actual"
-hwc_mid=$(command cat /etc/machine-id 2>/dev/null || command hostname 2>/dev/null || echo unknown)
-assert_exists "bash/hwinfo cache still written" "$WORK/hwinfo-symcache/den-hwinfo.${hwc_mid}.sh"
+assert_exists "bash/hwinfo cache still written" "$hw_sym_f"
 
 # toggle-hwinfo exports _DEN_HWINFO_HIDDEN, so a reload or a child shell starts
 # with it while the cache still holds the values: loading them anyway showed them
 # under an OFF, and the next toggle took the ON branch and changed nothing.
 HW_HIDDEN_RT="$WORK/hwinfo-hidden-rt"
 mkdir -p "$HW_HIDDEN_RT"
-printf "export STARSHIP_CPU_INTEL='i9-13900K'\n" > "$HW_HIDDEN_RT/den-hwinfo.${hwc_mid}.sh"
-chmod 600 "$HW_HIDDEN_RT/den-hwinfo.${hwc_mid}.sh"
+hw_hidden_f=$(hwinfo_file "$HW_HIDDEN_RT")
+printf "export STARSHIP_CPU_INTEL='i9-13900K'\n" > "$hw_hidden_f"
+chmod 600 "$hw_hidden_f"
 for sh in bash zsh; do
     echo "[$sh] _DEN_HWINFO_HIDDEN=1 at load keeps the cached info hidden; one toggle shows it"
     actual=$(env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
@@ -177,6 +187,83 @@ for sh in bash zsh; do
     assert_eq "$sh/_DEN_HWINFO_HIDDEN=1 at load" "LOAD:CPU=UNSET SAVED=i9-13900K
 hwinfo: ON (visible in prompt)
 ON:CPU=i9-13900K HIDDEN=0" "$actual"
+done
+
+# A machine whose CPU and GPU den does not recognize (no Intel or AMD model
+# name, no nvidia-smi, rocm-smi or lspci): the cache den wrote then held no
+# value, so every start ran the detection again. Now the cache ends with
+# _DEN_HWINFO_CACHED=1 and counts as a hit. awk is a function here that logs
+# each call and recognizes nothing; PATH holds only the programs the cache
+# write needs, and cat, which logs each run: the machine id is read with the
+# read builtin, and not at all when STARSHIP_* came from the parent.
+HWN="$WORK/hwinfo-none"
+mkdir -p "$HWN/bin"
+for t in mktemp mv rm sed hostname; do
+    p=$(command -v "$t") && ln -s "$p" "$HWN/bin/$t"
+done
+printf '#!/bin/sh\necho cat >> "%s/cat.log"\nexec %s "$@"\n' "$HWN" "$(command -v cat)" > "$HWN/bin/cat"
+chmod +x "$HWN/bin/cat"
+for sh in bash zsh; do
+    sh_bin=$(command -v "$sh")
+    mkdir -p "$HWN/rt-$sh"
+    # hw_none_start [VAR=value...] - one start of hwinfo.sh on that machine
+    hw_none_start() {
+        env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+            -u STARSHIP_GPU_INTEL XDG_RUNTIME_DIR="$HWN/rt-$sh" PATH="$HWN/bin" HWN_LOG="$HWN/awk-$sh.log" "$@" \
+            "$sh_bin" -c "
+                awk() { echo awk >> \"\$HWN_LOG\"; }
+                . '$HWINFO_SH'
+                echo \"CPU=\${STARSHIP_CPU_INTEL-} GPU=\${STARSHIP_GPU_NVIDIA-}\"
+            " 2>&1
+    }
+    echo "[$sh] a cache with no CPU or GPU den recognizes counts: one detection in two starts"
+    actual=$(hw_none_start; hw_none_start)
+    assert_eq "$sh/no recognized hardware: nothing set" "CPU= GPU=
+CPU= GPU=" "$actual"
+    assert_eq "$sh/no recognized hardware: detected once" "awk" "$(cat "$HWN/awk-$sh.log" 2>/dev/null)"
+    assert_eq "$sh/no recognized hardware: the cache says so" "_DEN_HWINFO_CACHED=1" \
+        "$(cat "$(hwinfo_file "$HWN/rt-$sh")" 2>/dev/null)"
+    echo "[$sh] no cat process: not with values from the parent, not with a cache"
+    rm -f "$HWN/cat.log"
+    actual=$(hw_none_start STARSHIP_CPU_INTEL=i9; hw_none_start)
+    assert_eq "$sh/hwinfo runs no cat" "" "$(cat "$HWN/cat.log" 2>/dev/null)"
+done
+
+# set -C alone opens an existing FIFO or device, or a link to one, so without
+# mktemp a FIFO at the cache's temporary name, or a link to one, made the shell
+# start wait for a reader, and a link to /dev/null was taken, then moved in as
+# the cache. Any existing name is refused now, and no cache is written that
+# time. This PATH has no mktemp at all, and timeout ends a start that waits.
+mkdir -p "$HWN/bin-nomktemp"
+for t in mv rm sed hostname; do
+    p=$(command -v "$t") && ln -sf "$p" "$HWN/bin-nomktemp/$t"
+done
+[ -p "$HWN/fifo" ] || mkfifo "$HWN/fifo"
+for sh in bash zsh; do
+    sh_bin=$(command -v "$sh")
+    for kind in fifo-link null-link fifo; do
+        case $kind in
+            fifo-link) what='symlink to a FIFO' mk="'$(command -v ln)' -s '$HWN/fifo'" ;;
+            null-link) what='symlink to /dev/null' mk="'$(command -v ln)' -s /dev/null" ;;
+            *) what='FIFO' mk="'$(command -v mkfifo)'" ;;
+        esac
+        echo "[$sh] with no mktemp, a $what at the cache's temporary name is refused"
+        rt="$HWN/rt-nomktemp-$sh-$kind"
+        mkdir -p "$rt"
+        hw_f=$(hwinfo_file "$rt")
+        rc=0
+        actual=$(timeout 10 env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA \
+            -u STARSHIP_GPU_AMD -u STARSHIP_GPU_INTEL XDG_RUNTIME_DIR="$rt" PATH="$HWN/bin-nomktemp" "$sh_bin" -c "
+                awk() { :; }
+                $mk \"$hw_f.tmp.\$\$\"
+                . '$HWINFO_SH'
+                echo \"CPU=\${STARSHIP_CPU_INTEL-} GPU=\${STARSHIP_GPU_NVIDIA-}\"
+            " 2>&1) || rc=$?
+        assert_eq "$sh/no mktemp, a $what at the temporary name: the start goes on" \
+            "rc=0 CPU= GPU=" "rc=$rc $actual"
+        assert_eq "$sh/no mktemp, a $what at the temporary name: no cache" "" \
+            "$(find "$rt" -name "${hw_f##*/}" 2>/dev/null)"
+    done
 done
 
 # =============================================================================
@@ -293,6 +380,67 @@ actual=$(cd "$WORK" && env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP
     " 2>&1 | tr -d '\r')
 assert_eq "pwsh/_DEN_HWINFO_HIDDEN=1 at load" "LOAD:CPU=[] SAVED=[i9-13900K]
 hwinfo: ON (visible in prompt)|CPU=i9-13900K|HIDDEN=0" "$actual"
+
+# The same machine on Windows: hwinfo.ps1 detects through the registry and CIM
+# (Get-ItemProperty, Get-CimInstance), and wrote no cache when it recognized
+# nothing, so the detection ran at every start. Now it writes the comment line
+# cmd's starship.lua writes for that, and a cache it sourced counts as a hit.
+# hw_ps stands in for that machine: $IsWindows set, _OnWindows false (so
+# Test-CacheSafe checks the file the POSIX way), and functions of those names
+# that answer with a Snapdragon CPU and an Adreno GPU (or fail, with HW_FAIL set)
+# and count their calls. LocalApplicationData is XDG_DATA_HOME here.
+HWP="$WORK/hwinfo-ps"
+HWP_CACHE="$HWP/data/shell-cache/hwinfo-cache.DENTEST.ps1"
+mkdir -p "$HWP/data/shell-cache"
+hw_ps() {
+    (cd "$WORK" && env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+        -u STARSHIP_GPU_INTEL -u _DEN_HWINFO_HIDDEN XDG_DATA_HOME="$HWP/data" COMPUTERNAME=DENTEST "$@" \
+        pwsh -NoProfile -NonInteractive -Command "
+            . '$DOTFILES/shell/pwsh/_helpers.ps1'
+            Set-Variable -Name IsWindows -Value \$true -Scope Global -Force
+            function global:_OnWindows { \$false }
+            \$global:HwCalls = 0
+            function global:Get-ItemProperty {
+                \$global:HwCalls++
+                if (\$env:HW_FAIL) { throw 'no registry here' }
+                [pscustomobject]@{ ProcessorNameString = 'Snapdragon(R) X Elite - X1E80100 - Qualcomm(R) Oryon(TM) CPU' }
+            }
+            function global:Get-CimInstance { \$global:HwCalls++; [pscustomobject]@{ Name = 'Qualcomm(R) Adreno(TM) X1-85 GPU' } }
+            . '$HWINFO_PS1'
+            \"calls=\$global:HwCalls CPU=[\$env:STARSHIP_CPU_INTEL\$env:STARSHIP_CPU_AMD] GPU=[\$env:STARSHIP_GPU_INTEL]\"
+        " 2>&1 | tr -d '\r')
+}
+HW_NONE_LINE='# den: no CPU or GPU name it recognizes'
+echo "[pwsh] a detection that recognizes nothing writes cmd's comment line"
+rm -f "$HWP_CACHE"
+actual=$(hw_ps) || true
+assert_eq "pwsh/no recognized hardware: detected" "calls=2 CPU=[] GPU=[]" "$actual"
+assert_eq "pwsh/no recognized hardware: the cache says so" "$HW_NONE_LINE" "$(tr -d '\r' < "$HWP_CACHE" 2>/dev/null)"
+echo "[pwsh] that cache counts as a hit: no detection"
+rm -f "$HWP_CACHE"
+printf '%s\n' "$HW_NONE_LINE" > "$HWP_CACHE"
+actual=$(hw_ps) || true
+assert_eq "pwsh/no recognized hardware: no detection the next time" "calls=0 CPU=[] GPU=[]" "$actual"
+# Any safe cache file that was sourced counted as a hit, an empty one too (a
+# write that failed), so the detection never ran again until refresh-hwinfo.
+# As in cmd's reader, a hit needs a value or that whole line.
+echo "[pwsh] an empty or cut-short cache file is not a hit: detected again"
+: > "$HWP_CACHE"
+actual=$(hw_ps) || true
+assert_eq "pwsh/empty cache: detected" "calls=2 CPU=[] GPU=[]" "$actual"
+assert_eq "pwsh/empty cache: written again" "$HW_NONE_LINE" "$(tr -d '\r' < "$HWP_CACHE" 2>/dev/null)"
+printf '%s' "${HW_NONE_LINE%GPU*}" > "$HWP_CACHE"
+actual=$(hw_ps) || true
+assert_eq "pwsh/cut-short cache: detected" "calls=2 CPU=[] GPU=[]" "$actual"
+echo "[pwsh] a detection that fails writes no cache"
+rm -f "$HWP_CACHE"
+actual=$(hw_ps HW_FAIL=1) || true
+assert_eq "pwsh/failed detection: ran" "calls=1 CPU=[] GPU=[]" "$actual"
+assert_not_exists "pwsh/failed detection: no cache, so the next start tries again" "$HWP_CACHE"
+echo "[pwsh] hwinfo.ps1 writes the line cmd's starship.lua writes and reads"
+actual=$(sed -n 's/^local hw_none = "\(.*\)"$/\1/p' "$DOTFILES/shell/cmd/starship.lua")
+assert_eq "cmd/starship.lua's hw_none" "$HW_NONE_LINE" "$actual"
+assert_eq "pwsh/hwinfo.ps1 writes and reads the same line" "1" "$(grep -cF "\$_hwNone = '$HW_NONE_LINE'" "$HWINFO_PS1")"
 
 # =============================================================================
 # Windows PowerShell 5.1 syntax, over every shell/pwsh/*.ps1

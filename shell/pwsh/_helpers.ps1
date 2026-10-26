@@ -304,12 +304,56 @@ function _DenVSCodeEnv {
 # script's scope and the cache does not exist.
 $global:_DenCmdCache = @{}
 
+# _DenWindowsFiles - whether program files follow Windows' rules here (PATHEXT,
+# quoted PATH entries): the operating system .NET runs on. Not _OnWindows, which
+# reads $PSVersionTable and $IsWindows, which the tests set to stand in for
+# Windows on Linux, whose programs have no extension. Kept apart so a test can
+# redefine it and run _DenFindApp's Windows rules off Windows.
+function _DenWindowsFiles {
+    [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+}
+
+# _DenFindApp <name> - the full path of the program <name> (a bare name) on
+# $env:PATH, or $null: what Get-Command <name> -CommandType Application finds
+# first, without PowerShell's command discovery, whose seven lookups at every
+# start (Initialize-Cache's, python.ps1's) took tens of milliseconds. Each PATH
+# directory in turn holds a file of that name; on Windows the name plus each
+# PATHEXT extension, in PATHEXT's order (the name as it is first when it already
+# ends in one of them), leaving out .ps1, which Get-Command counts as a script.
+# As with Get-Command, an empty entry is not the current directory and a
+# file needs no exec bit (Get-Command returns a 0644 file too); unlike it, an
+# entry that is not an absolute path is skipped, so the answer never depends on
+# the current location. An entry with a character .NET Framework rejects in a
+# path (Windows PowerShell 5.1 throws on it) is skipped too.
+function _DenFindApp([string]$Name) {
+    if (-not $Name) { return $null }
+    $onWindows = _DenWindowsFiles
+    $suffixes = @('')
+    if ($onWindows) {
+        $pathext = if ($env:PATHEXT) { $env:PATHEXT } else { '.COM;.EXE;.BAT;.CMD' }
+        $suffixes = @(foreach ($e in $pathext.Split(';')) { if ($e -and $e -ne '.ps1') { $e } })
+        if ($suffixes -contains [IO.Path]::GetExtension($Name)) { $suffixes = @('') + $suffixes }
+    }
+    foreach ($dir in "$env:PATH".Split([IO.Path]::PathSeparator)) {
+        if ($onWindows) { $dir = $dir.Trim('"') }
+        try {
+            if (-not $dir -or -not [IO.Path]::IsPathRooted($dir)) { continue }
+            foreach ($s in $suffixes) {
+                $p = [IO.Path]::Combine($dir, $Name + $s)
+                if ([IO.File]::Exists($p)) { return $p }
+            }
+        } catch [System.ArgumentException] { continue }
+    }
+    return $null
+}
+
 # _ResolveCmd <name> [type] — cached Get-Command. Type 'App' resolves to the real
-# executable PATH (CommandType Application), which skips a same-named function or
-# alias -- the wrappers and the uv/pip/python overrides are functions named after
-# the command they wrap, so they MUST call the resolved path to avoid recursion and
-# to work cross-platform (no hardcoded .exe). Any other type returns the NAME if the
-# command exists at all (used only as a boolean existence check). $null when absent.
+# executable PATH (CommandType Application, looked up by _DenFindApp), which skips a
+# same-named function or alias -- the wrappers and the uv/pip/python overrides are
+# functions named after the command they wrap, so they MUST call the resolved path to
+# avoid recursion and to work cross-platform (no hardcoded .exe). Any other type
+# returns the NAME if the command exists at all (used only as a boolean existence
+# check). $null when absent.
 function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
     # An 'App' result is a resolved PATH that depends on the active venv (pip and
     # python live in $VIRTUAL_ENV when one is active), so key it by $VIRTUAL_ENV --
@@ -320,9 +364,8 @@ function _ResolveCmd([string]$Name, [string]$Type = 'Any') {
     if (-not $global:_DenCmdCache.ContainsKey($key)) {
         $val = ''
         if ($Type -eq 'App') {
-            # No .Source on an empty result: a caller's Set-StrictMode makes that an error.
-            $app = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($app) { $val = $app.Source }
+            $app = _DenFindApp $Name
+            if ($app) { $val = $app }
         }
         elseif (Get-Command $Name -ErrorAction SilentlyContinue) {
             $val = $Name
@@ -898,32 +941,81 @@ function Test-CacheSafe([string]$Path, [ref]$Reason) {
 # dot-sources the path at GLOBAL scope: an init/completion script that defines
 # functions or registers completers (zoxide, docker's completion) must land in the
 # session scope, so dot-sourcing inside THIS function would scope those away and the
-# tool would silently fail. Regenerates only when the tool binary is newer, commits
-# the cache only on success + non-empty output, and validates with Test-CacheSafe.
+# tool would silently fail. The cache's first line is its key, `# den-cache
+# <file>|<length>|<mtime ticks>|<invokeArgs>` of the tool's file, and the cache is
+# made again whenever the key differs: the tool upgraded or downgraded in place,
+# moved (starship's full init runs starship by the path it had), or run with other
+# arguments. A symlinked tool (a package manager's link) is keyed by the file the
+# link leads to, where .NET can follow it (pwsh 7.2+), and a scoop shim also by the
+# program its .shim file names (before the arguments). Each PowerShell edition has
+# its own cache, <tool>-<suffix>.<Core|Desktop>.ps1: Windows PowerShell 5.1 keys a
+# symlinked tool on the link, so with one file between them, a user who opens both
+# made it again (ran the tool) at every switch. Commits the cache only on success +
+# non-empty output, and validates with Test-CacheSafe.
 function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix = 'init') {
-    $toolPath = Get-Command $Tool -CommandType Application -ErrorAction SilentlyContinue |
-        Select-Object -First 1 -ExpandProperty Source
-    if ([string]::IsNullOrWhiteSpace($toolPath)) { return }
+    $toolPath = _DenFindApp $Tool
+    if (-not $toolPath) { return }
 
     $_cd = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache'
     if (-not (Test-Path -LiteralPath $_cd -PathType Container)) {
         New-Item -ItemType Directory -Path $_cd -Force | Out-Null
     }
 
-    $_cf = Join-Path $_cd "$Tool-$Suffix.ps1"
-    $needsRegen = (-not (Test-Path -LiteralPath $_cf -PathType Leaf)) -or
-        ((Get-Item -LiteralPath $_cf).LastWriteTime -lt (Get-Item -LiteralPath $toolPath).LastWriteTime)
+    $_cf = Join-Path $_cd "$Tool-$Suffix.$($PSVersionTable.PSEdition).ps1"
+    $item = [IO.FileInfo]::new($toolPath)
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        # Windows PowerShell 5.1's .NET has no ResolveLinkTarget: the link's own.
+        try {
+            $target = $item.ResolveLinkTarget($true)
+            if ($target -and $target.Exists) { $item = $target }
+        } catch { $null = $_ }
+    }
+    # A scoop shim, <name>.exe, is one small program scoop copies for every tool and
+    # leaves as it is when the tool upgrades; the <name>.shim beside it names the
+    # program it runs (`path = "..."`). starship's full init, printed fresh at every
+    # start before den cached it, would then stay cached across an upgrade, so the
+    # file that program is (its path, length and mtime) is part of the key too.
+    $shim = ''
+    $shimFile = [IO.Path]::ChangeExtension($item.FullName, '.shim')
+    if ([IO.File]::Exists($shimFile)) {
+        try {
+            foreach ($line in [IO.File]::ReadAllLines($shimFile)) {
+                if ($line -match '^\s*path\s*=\s*(.+?)\s*$') {
+                    $runs = [IO.FileInfo]::new([IO.Path]::Combine($item.DirectoryName, $Matches[1].Trim('"')))
+                    $shim = '{0}|{1}|{2}|' -f $runs.FullName, $runs.Length, $runs.LastWriteTimeUtc.Ticks
+                    break
+                }
+            }
+        } catch { $shim = '' }
+    }
+    $key = '# den-cache {0}|{1}|{2}|{3}{4}' -f $item.FullName, $item.Length, $item.LastWriteTimeUtc.Ticks, $shim, ($InvokeArgs -join ' ')
+    # The key is read from a regular file only, never through a symlink (whose
+    # target could be a device that never ends a line): a symlinked cache is made
+    # again, and the move below replaces the link, not the file it points to.
+    $have = $null
+    $cacheFile = [IO.FileInfo]::new($_cf)
+    if ($cacheFile.Exists -and -not ($cacheFile.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        try {
+            $reader = [IO.StreamReader]::new($_cf)
+            try { $have = $reader.ReadLine() } finally { $reader.Dispose() }
+        } catch { $have = $null }
+    }
 
-    if ($needsRegen) {
+    # -cne: a path or an argument that differs only in case is another key (Linux
+    # file names, and arguments, are case-sensitive); -ne ignores case.
+    if ($have -cne $key) {
         # Commit only when the command printed something. An empty run would write a
-        # cache newer than the binary, so the freshness check would never regenerate
-        # and the tool would stay broken until a reinstall. (Non-empty output is the
-        # signal; $LASTEXITCODE is unreliable for shell scripts on non-Windows.)
+        # cache whose key matches, so it would never be made again and the tool would
+        # stay broken until it changed. (Non-empty output is the signal;
+        # $LASTEXITCODE is unreliable for shell scripts on non-Windows.)
         $out = & $toolPath @InvokeArgs 2>$null
         if ($out) {
             $tmpCache = $_cf + '.tmp.' + [guid]::NewGuid().ToString('N')
             try {
-                $out | Set-Content -LiteralPath $tmpCache -Encoding UTF8
+                # UTF-8 with a BOM in both editions: Windows PowerShell 5.1 reads a .ps1
+                # without one in the ANSI code page, and Set-Content -Encoding UTF8
+                # writes one only there.
+                [IO.File]::WriteAllLines($tmpCache, [string[]](@($key) + @($out)), [Text.UTF8Encoding]::new($true))
                 Move-Item -LiteralPath $tmpCache -Destination $_cf -Force
             } finally {
                 if (Test-Path -LiteralPath $tmpCache -PathType Leaf) {
@@ -934,8 +1026,8 @@ function Initialize-Cache([string]$Tool, [string[]]$InvokeArgs, [string]$Suffix 
     }
 
     # Return the cache path for the caller to dot-source at GLOBAL scope (a prior good
-    # cache is reused if regen was skipped above). A refused cache is kept until the
-    # tool binary changes, so the warning names the remedy along with the reason.
+    # cache is reused if regen was skipped above). A refused cache is kept until its
+    # key changes, so the warning names the remedy along with the reason.
     if (Test-Path -LiteralPath $_cf -PathType Leaf) {
         $why = $null
         if (Test-CacheSafe -Path $_cf -Reason ([ref]$why)) {

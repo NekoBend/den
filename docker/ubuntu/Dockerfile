@@ -325,8 +325,8 @@ else
         if [[ "$HOME" == /root ]]; then
             export HOME="/home/$USERNAME" USER="$USERNAME" LOGNAME="$USERNAME"
         fi
-        # den's init.zsh runs compinit itself; skip the extra full one that
-        # /etc/zsh/zshrc runs before it.
+        # den's init.zsh runs a quick compinit when none ran before it; skip
+        # the full one /etc/zsh/zshrc would run instead.
         skip_global_compinit=1
     fi
     () {

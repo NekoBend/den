@@ -214,6 +214,140 @@ second=$(cat "$cache_file" 2>/dev/null)
 assert_contains "bash/_init_cache regenerated" "v2" "$second"
 rm -rf "$WORK/icbin" "$HOME_OVERRIDE"
 
+# --- _init_cache: a key line with the binary's path and the arguments ---
+# The cache was made again only when the binary was newer than it, so a cache
+# made with other arguments, or by a binary that has since moved (starship's
+# full init runs starship by the absolute path it had), stayed in use: the
+# binaries here are dated 2020, older than any cache. Its first line now holds
+# the binary's path and the arguments, and a cache whose line differs is made
+# again. A run that fails or prints nothing leaves no cache, whose key would
+# match, and no warning.
+ic_key_cases() {
+    local sh="$1" d="$WORK/ickey-$1" t out
+    rm -rf "$d"
+    mkdir -p "$d/a" "$d/b" "$d/home"
+    for t in a b; do
+        printf '#!/bin/sh\necho run >> "%s/runs"\necho "IC_RAN='"'"'%s:$*'"'"'"\n' "$d" "$t" > "$d/$t/kt"
+        printf '#!/bin/sh\necho "IC_FAIL=1"\nexit 3\n' > "$d/$t/ktfail"
+        printf '#!/bin/sh\nexit 0\n' > "$d/$t/ktnone"
+        chmod +x "$d/$t/kt" "$d/$t/ktfail" "$d/$t/ktnone"
+        touch -d '2020-01-01' "$d/$t/kt" "$d/$t/ktfail" "$d/$t/ktnone"
+    done
+    # ic <bin dir> <tool> [args...] - _init_cache <tool> <sh> [args...] in a new
+    # shell, then what the cache set, and anything the shell printed
+    ic() {
+        local bin="$1" tool="$2"
+        shift 2
+        HOME="$d/home" XDG_CACHE_HOME='' PATH="$bin:$PATH" "$sh" -c \
+            ". '$HELPERS_SH'; _init_cache $tool $sh $*; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1
+    }
+    echo "[$sh] _init_cache: made again when the arguments change"
+    ic "$d/a" kt --x > /dev/null
+    out=$(ic "$d/a" kt --y)
+    assert_eq "$sh/_init_cache other arguments" "ran=a:init $sh --y fail=" "$out"
+    echo "[$sh] _init_cache: made again when the binary moves"
+    out=$(ic "$d/b" kt --y)
+    assert_eq "$sh/_init_cache moved binary" "ran=b:init $sh --y fail=" "$out"
+    assert_eq "$sh/_init_cache key line" "# den-init-cache $d/b/kt init $sh --y" \
+        "$(head -n 1 "$d/home/.cache/shell/kt-init.$sh")"
+    echo "[$sh] _init_cache: not made again when nothing changed"
+    : > "$d/runs"
+    out=$(ic "$d/b" kt --y)
+    assert_eq "$sh/_init_cache same key: from the cache" "ran=b:init $sh --y fail=" "$out"
+    assert_eq "$sh/_init_cache same key: no run" "" "$(cat "$d/runs")"
+    echo "[$sh] _init_cache: a run that fails or prints nothing leaves no cache"
+    out=$(ic "$d/a" ktfail; ic "$d/a" ktnone)
+    assert_eq "$sh/_init_cache failed and empty runs: nothing set, no warning" "ran= fail=
+ran= fail=" "$out"
+    assert_not_exists "$sh/_init_cache failed run: no cache" "$d/home/.cache/shell/ktfail-init.$sh"
+    assert_not_exists "$sh/_init_cache empty run: no cache" "$d/home/.cache/shell/ktnone-init.$sh"
+    # The cache was written with `>`, which follows a symlink at the cache path
+    # and rewrote the file it pointed to.
+    echo "[$sh] _init_cache: a symlink at the cache path is replaced, not written through"
+    printf 'mine\n' > "$d/victim"
+    touch -d '2021-01-01' "$d/victim"
+    rm -f "$d/home/.cache/shell/kt-init.$sh"
+    ln -s "$d/victim" "$d/home/.cache/shell/kt-init.$sh"
+    touch "$d/a/kt"
+    out=$(ic "$d/a" kt --z)
+    assert_eq "$sh/_init_cache symlinked cache: made again and sourced" "ran=a:init $sh --z fail=" "$out"
+    assert_eq "$sh/_init_cache symlinked cache: its target untouched" "mine" "$(cat "$d/victim")"
+    # The new cache went to "<cache>.tmp.<the shell's PID>" through a
+    # truncating `>`, so a symlink planted at that name, known in advance, was
+    # written through, and mv put the link in place of the cache. Here the
+    # shell plants it at its own PID's name before it loads _helpers.sh.
+    local plant="ln -s '$d/victim' \"\$HOME/.cache/shell/kt-init.$sh.tmp.\$\$\"; "
+    echo "[$sh] _init_cache: a symlink at the temporary file's old name is left alone"
+    rm -f "$d/home/.cache/shell/kt-init.$sh"
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/a:$PATH" "$sh" -c \
+        "$plant. '$HELPERS_SH'; _init_cache kt $sh --t; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache link at the old temporary name: made and sourced" "ran=a:init $sh --t fail=" "$out"
+    assert_eq "$sh/_init_cache link at the old temporary name: its target untouched" "mine" "$(cat "$d/victim")"
+    # Without mktemp the name is that guessable one again: set -C will not
+    # create the file through the link, so no cache this time.
+    echo "[$sh] _init_cache: with no mktemp, a symlink at the guessable temporary name is left alone"
+    mkdir -p "$d/nomktemp"
+    printf '#!/bin/sh\nexit 1\n' > "$d/nomktemp/mktemp"
+    chmod +x "$d/nomktemp/mktemp"
+    printf 'mine\n' > "$d/victim"
+    rm -f "$d/home/.cache/shell/kt-init.$sh"
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/nomktemp:$d/a:$PATH" "$sh" -c \
+        "$plant. '$HELPERS_SH'; _init_cache kt $sh --u; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache no mktemp, link at the temporary name: no cache, nothing printed" "ran= fail=" "$out"
+    assert_eq "$sh/_init_cache no mktemp, link at the temporary name: its target untouched" "mine" "$(cat "$d/victim")"
+    assert_eq "$sh/_init_cache no mktemp, link at the temporary name: no cache" "" \
+        "$(find "$d/home/.cache/shell" -name "kt-init.$sh" 2>/dev/null)"
+    echo "[$sh] _init_cache: with no mktemp, the next start makes the cache"
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/nomktemp:$d/a:$PATH" "$sh" -c \
+        ". '$HELPERS_SH'; _init_cache kt $sh --u; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache no mktemp: made and sourced" "ran=a:init $sh --u fail=" "$out"
+    # set -C alone opens an existing FIFO or device, or a link to one, so
+    # without mktemp a FIFO at the temporary name, or a link to one, made the
+    # shell start wait for a reader, and a link to /dev/null was taken, then
+    # moved in as the cache. Any existing name is refused now. This PATH has no
+    # mktemp at all, and timeout ends a start that waits.
+    local nomk="$d/no-mktemp-path" kind what mk rc
+    mkdir -p "$nomk"
+    for t in mv rm chmod mkdir; do ln -sf "$(command -v "$t")" "$nomk/$t"; done
+    [ -p "$d/fifo" ] || mkfifo "$d/fifo"
+    for kind in fifo-link null-link fifo; do
+        case $kind in
+            fifo-link) what='symlink to a FIFO' mk="'$(command -v ln)' -s '$d/fifo'" ;;
+            null-link) what='symlink to /dev/null' mk="'$(command -v ln)' -s /dev/null" ;;
+            *) what='FIFO' mk="'$(command -v mkfifo)'" ;;
+        esac
+        echo "[$sh] _init_cache: with no mktemp, a $what at the temporary name is refused"
+        rm -rf "$d/home-$kind"
+        mkdir -p "$d/home-$kind/.cache/shell"
+        rc=0
+        out=$(timeout 10 env HOME="$d/home-$kind" XDG_CACHE_HOME='' PATH="$nomk:$d/a" "$(command -v "$sh")" -c \
+            "$mk \"\$HOME/.cache/shell/kt-init.$sh.tmp.\$\$\"; . '$HELPERS_SH'; _init_cache kt $sh --v; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1) || rc=$?
+        assert_eq "$sh/_init_cache no mktemp, a $what at the temporary name: no cache, nothing printed" \
+            "rc=0 ran= fail=" "rc=$rc $out"
+        assert_eq "$sh/_init_cache no mktemp, a $what at the temporary name: nothing at the cache path" "" \
+            "$(find "$d/home-$kind/.cache/shell" -name "kt-init.$sh" 2>/dev/null)"
+    done
+    # The temporary file exists before the init goes into it, and a plain `>`
+    # will not write into an existing file under the user's noclobber.
+    echo "[$sh] _init_cache: made under the user's noclobber"
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/a:$PATH" "$sh" -c \
+        "set -C; . '$HELPERS_SH'; _init_cache kt $sh --c; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache under noclobber: made and sourced" "ran=a:init $sh --c fail=" "$out"
+    assert_eq "$sh/_init_cache: no temporary file left" "" \
+        "$(find "$d/home/.cache/shell" -name "kt-init.$sh.tmp.*" ! -type l 2>/dev/null)"
+    # An alias of the tool's name (a ~/.bashrc line above den's): command -v
+    # prints its definition, not a path (bash does so where aliases expand, as
+    # in an interactive shell), and the tool still makes the cache.
+    echo "[$sh] _init_cache: an alias of the tool's name"
+    local expand=''
+    [ "$sh" = bash ] && expand='shopt -s expand_aliases; '
+    out=$(HOME="$d/home" XDG_CACHE_HOME='' PATH="$d/a:$PATH" "$sh" -c \
+        "$expand. '$HELPERS_SH'; alias kt='kt --bogus'; _init_cache kt $sh --w; echo \"ran=\${IC_RAN-} fail=\${IC_FAIL-}\"" 2>&1)
+    assert_eq "$sh/_init_cache alias of the tool" "ran=a:init $sh --w fail=" "$out"
+}
+ic_key_cases bash
+ic_key_cases zsh
+
 # =============================================================================
 # Zsh tests
 # =============================================================================
@@ -587,13 +721,13 @@ printf "%s\n" "\$env:PWSH_CACHE_TEST = 'v1:$2'"
 EOF
 chmod +x "$WORK/pwsh_icbin/pwshcachetool"
 run_pwsh "$HELPERS_PS1" "
-    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.Core.ps1') -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\PWSH_CACHE_TEST -ErrorAction SilentlyContinue
 " >/dev/null 2>&1
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/pwsh_icbin:' + \$env:PATH
     [void](Initialize-Cache 'pwshcachetool' @('init', 'powershell'))
-    \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1'
+    \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.Core.ps1'
     Get-Content -Raw -LiteralPath \$cacheFile
 " 2>/dev/null | tr -d '\r')
 assert_contains "pwsh/Initialize-Cache initial" "v1:powershell" "$actual"
@@ -606,14 +740,266 @@ chmod +x "$WORK/pwsh_icbin/pwshcachetool"
 actual=$(run_pwsh "$HELPERS_PS1" "
     \$env:PATH = '$WORK/pwsh_icbin:' + \$env:PATH
     [void](Initialize-Cache 'pwshcachetool' @('init', 'powershell'))
-    \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1'
+    \$cacheFile = Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.Core.ps1'
     Get-Content -Raw -LiteralPath \$cacheFile
 " 2>/dev/null | tr -d '\r')
 assert_contains "pwsh/Initialize-Cache regenerated" "v2:powershell" "$actual"
 run_pwsh "$HELPERS_PS1" "
-    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.ps1') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache') 'pwshcachetool-init.Core.ps1') -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\PWSH_CACHE_TEST -ErrorAction SilentlyContinue
 " >/dev/null 2>&1
+
+# --- Initialize-Cache: a key line with the tool's file and the arguments ---
+# The cache was made again only when the tool was newer than it, so a cache made
+# with other arguments (init.ps1 now asks starship for its full init), by a tool
+# that has since moved (that init runs starship by the path it had), or before a
+# downgrade or an update behind a symlink stayed in use: the tools here are dated
+# 2020 and older. Its first line now holds the tool's file (the one a symlink
+# leads to), the file's length and mtime, and the arguments.
+PK="$WORK/pwsh_key"
+mkdir -p "$PK/a" "$PK/b" "$PK/l" "$PK/t"
+# make_key_tool <path> <tag> [date] - a tool that logs each run to $PK/runs and
+# prints `$env:PWSH_KEY = '<tag>:<its arguments>'`
+make_key_tool() {
+    printf '#!/bin/sh\necho run >> "%s/runs"\nprintf "%%s\\n" "\\$env:PWSH_KEY = '"'"'%s:$*'"'"'"\n' "$PK" "$2" > "$1"
+    chmod +x "$1"
+    touch -d "${3:-2020-01-01}" "$1"
+}
+make_key_tool "$PK/a/pwshkeytool" a
+make_key_tool "$PK/b/pwshkeytool" b
+make_key_tool "$PK/t/pwshkeytool" t
+ln -s "$PK/t/pwshkeytool" "$PK/l/pwshkeytool"
+# pk <bin dir> <PowerShell array items> - Initialize-Cache's cache, sourced in a
+# new pwsh, then what it set
+pk() {
+    run_pwsh "$HELPERS_PS1" "
+        \$env:PATH = '$1:' + \$env:PATH
+        \$c = Initialize-Cache 'pwshkeytool' @($2)
+        if (\$c) { . \$c }
+        \"key=\$env:PWSH_KEY\"
+    " 2>&1 | tr -d '\r'
+}
+PK_CACHE="$XDG_DATA_HOME/shell-cache/pwshkeytool-init.Core.ps1"
+rm -f "$PK_CACHE"
+echo "[pwsh] Initialize-Cache: made again when the arguments change"
+pk "$PK/a" "'init', 'powershell'" > /dev/null
+actual=$(pk "$PK/a" "'init', 'powershell', '--print-full-init'")
+assert_eq "pwsh/Initialize-Cache other arguments" "key=a:init powershell --print-full-init" "$actual"
+echo "[pwsh] Initialize-Cache: made again when the tool moves"
+actual=$(pk "$PK/b" "'init', 'powershell', '--print-full-init'")
+assert_eq "pwsh/Initialize-Cache moved tool" "key=b:init powershell --print-full-init" "$actual"
+assert_match "pwsh/Initialize-Cache key line" \
+    "^# den-cache $PK/b/pwshkeytool\\|[0-9]+\\|[0-9]+\\|init powershell --print-full-init\$" \
+    "$(head -n 1 "$PK_CACHE" | sed '1s/^\xEF\xBB\xBF//' | tr -d '\r')"
+echo "[pwsh] Initialize-Cache: not made again when nothing changed"
+: > "$PK/runs"
+actual=$(pk "$PK/b" "'init', 'powershell', '--print-full-init'")
+assert_eq "pwsh/Initialize-Cache same key: from the cache" "key=b:init powershell --print-full-init" "$actual"
+assert_eq "pwsh/Initialize-Cache same key: no run" "" "$(cat "$PK/runs")"
+echo "[pwsh] Initialize-Cache: made again when the tool is replaced by an older one"
+make_key_tool "$PK/b/pwshkeytool" c 2019-01-01
+actual=$(pk "$PK/b" "'init', 'powershell', '--print-full-init'")
+assert_eq "pwsh/Initialize-Cache downgrade in place" "key=c:init powershell --print-full-init" "$actual"
+echo "[pwsh] Initialize-Cache: made again when the file a symlinked tool leads to changes"
+pk "$PK/l" "'init', 'powershell'" > /dev/null
+make_key_tool "$PK/t/pwshkeytool" u 2018-01-01
+actual=$(pk "$PK/l" "'init', 'powershell'")
+assert_eq "pwsh/Initialize-Cache update behind a symlink" "key=u:init powershell" "$actual"
+# PowerShell's -ne ignores case, so a key that differed only in case (a path or
+# an argument; both are case-sensitive on Linux) counted as the same.
+echo "[pwsh] Initialize-Cache: made again when the arguments differ only in case"
+pk "$PK/a" "'init', 'powershell', '--x'" > /dev/null
+actual=$(pk "$PK/a" "'init', 'powershell', '--X'")
+assert_eq "pwsh/Initialize-Cache arguments in another case" "key=a:init powershell --X" "$actual"
+# Windows PowerShell 5.1 has no ResolveLinkTarget, so it keys a symlinked tool on
+# the link, and pwsh 7.2+ on the file the link leads to. With one cache between
+# them, a user who opened both made it again (ran the tool) at every switch; each
+# edition has its own now. The stand-in for 5.1 is _helpers.ps1 with the edition
+# read as Desktop and no ResolveLinkTarget (and _OnWindows false, as off Windows).
+echo "[pwsh] Initialize-Cache: a cache for each PowerShell edition, so they do not take turns"
+PK_DESKTOP="$TESTTMP/_helpers_desktop_cache.ps1"
+sed "s/[\$]PSVersionTable[.]PSEdition/'Desktop'/g; s/ResolveLinkTarget/NoResolveLinkTarget/g" \
+    "$HELPERS_PS1" > "$PK_DESKTOP" || abort_suite "cannot write $PK_DESKTOP"
+# pk_path <helpers> - the cache path Initialize-Cache returns for the symlinked
+# tool, with <helpers> loaded
+pk_path() {
+    run_pwsh "$1" "
+        function global:_OnWindows { \$false }
+        \$env:PATH = '$PK/l:' + \$env:PATH
+        Initialize-Cache 'pwshkeytool' @('init', 'powershell', '--e')
+    " 2>&1 | tr -d '\r' | sed "s|$XDG_DATA_HOME|XDG|"
+}
+: > "$PK/runs"
+actual="$(pk_path "$HELPERS_PS1") $(pk_path "$PK_DESKTOP") $(pk_path "$HELPERS_PS1") $(pk_path "$PK_DESKTOP")"
+assert_eq "pwsh/Initialize-Cache cache names, pwsh 7 then 5.1, twice" \
+    "XDG/shell-cache/pwshkeytool-init.Core.ps1 XDG/shell-cache/pwshkeytool-init.Desktop.ps1 XDG/shell-cache/pwshkeytool-init.Core.ps1 XDG/shell-cache/pwshkeytool-init.Desktop.ps1" \
+    "$actual"
+assert_eq "pwsh/Initialize-Cache a cache per edition: the tool ran once for each" "run
+run" "$(cat "$PK/runs")"
+echo "[pwsh] Initialize-Cache: both editions write the cache with a BOM"
+for edition in Core Desktop; do
+    assert_eq "pwsh/Initialize-Cache BOM, $edition" "efbbbf" \
+        "$(head -c 3 "$XDG_DATA_HOME/shell-cache/pwshkeytool-init.$edition.ps1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+done
+# A scoop shim, <name>.exe, is one small program scoop copies for every tool and
+# leaves as it is when the tool upgrades; it runs the program its <name>.shim
+# names. The stand-in shim here runs app/real, which then upgrades.
+echo "[pwsh] Initialize-Cache: made again when the program a scoop shim runs changes"
+mkdir -p "$PK/shim" "$PK/app"
+printf '#!/bin/sh\nexec "%s/app/real" "$@"\n' "$PK" > "$PK/shim/pwshkeytool"
+chmod +x "$PK/shim/pwshkeytool"
+touch -d 2020-01-01 "$PK/shim/pwshkeytool"
+printf 'path = "%s/app/real"\n' "$PK" > "$PK/shim/pwshkeytool.shim"
+make_key_tool "$PK/app/real" v1
+pk "$PK/shim" "'init', 'powershell'" > /dev/null
+: > "$PK/runs"
+# Older scoop wrote the path without quotes; an args line may follow.
+printf 'path = %s/app/real\nargs = --quiet\n' "$PK" > "$PK/shim/pwshkeytool.shim"
+actual=$(pk "$PK/shim" "'init', 'powershell'")
+assert_eq "pwsh/Initialize-Cache scoop shim, nothing changed: from the cache" "key=v1:init powershell" "$actual"
+assert_eq "pwsh/Initialize-Cache scoop shim, nothing changed: no run" "" "$(cat "$PK/runs")"
+make_key_tool "$PK/app/real" v2 2020-02-02
+actual=$(pk "$PK/shim" "'init', 'powershell'")
+assert_eq "pwsh/Initialize-Cache scoop shim: the program it runs upgraded" "key=v2:init powershell" "$actual"
+rm -f "$PK_CACHE"
+
+# --- _DenFindApp: Get-Command -CommandType Application's first answer, without it ---
+# Each lookup through PowerShell's command discovery took tens of milliseconds of
+# every start: Initialize-Cache's for zoxide, starship, docker, gh, uv and rustup,
+# and python.ps1's for uv. _DenFindApp answers as Get-Command does for a file
+# that is not executable, a directory of the name (skipped), the PATH order and an
+# empty PATH entry (not the current directory); a relative entry, which Get-Command
+# reads from the current location, it skips.
+echo "[pwsh] _DenFindApp finds what Get-Command -CommandType Application finds first"
+FA="$WORK/findapp"
+mkdir -p "$FA/a/isdir" "$FA/b" "$FA/c" "$FA/cwd" "$FA/rel/bin"
+printf '#!/bin/sh\n' > "$FA/a/plain"
+chmod +x "$FA/a/plain"
+printf 'x\n' > "$FA/a/noexec"
+printf 'x\n' | tee "$FA/b/isdir" "$FA/b/later" "$FA/c/later" "$FA/cwd/incwd" "$FA/rel/bin/inrel" > /dev/null
+actual=$(cd "$FA/cwd" && run_pwsh "$HELPERS_PS1" "
+    \$env:PATH = '$FA/a::$FA/b:../rel/bin:$FA/c'
+    foreach (\$n in 'plain', 'noexec', 'isdir', 'later', 'incwd', 'missing', 'inrel') {
+        \$g = Get-Command \$n -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        '{0}: [{1}] [{2}]' -f \$n, (_DenFindApp \$n), \$(if (\$g) { \$g.Source })
+    }
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/_DenFindApp against Get-Command" "plain: [$FA/a/plain] [$FA/a/plain]
+noexec: [$FA/a/noexec] [$FA/a/noexec]
+isdir: [$FA/b/isdir] [$FA/b/isdir]
+later: [$FA/b/later] [$FA/b/later]
+incwd: [] []
+missing: [] []
+inrel: [] [$FA/rel/bin/inrel]" "$actual"
+
+# Windows, through its seam (_DenWindowsFiles): PATHEXT's extensions in PATHEXT's order
+# within each directory before the next one, the name as it is when it already
+# ends in one of them, no extensionless file (Windows cannot run one) and no .ps1
+# (a script, not a program), and a quoted PATH entry.
+echo "[pwsh] _DenFindApp on Windows: PATHEXT, a name's own extension, no script"
+FW="$WORK/findapp-win"
+mkdir -p "$FW/a" "$FW/b"
+: > "$FW/a/tool"
+: > "$FW/a/tool.ps1"
+: > "$FW/b/tool.cmd"
+: > "$FW/b/tool.exe"
+: > "$FW/a/code.cmd"
+: > "$FW/b/code.exe"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    function _DenWindowsFiles { \$true }
+    \$env:PATHEXT = '.com;.exe;.bat;.cmd;.ps1'
+    \$env:PATH = '\"$FW/a\":$FW/b'
+    foreach (\$n in 'tool', 'tool.cmd', 'code', 'tool.ps1') { '{0}: [{1}]' -f \$n, (_DenFindApp \$n) }
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/_DenFindApp on Windows" "tool: [$FW/b/tool.exe]
+tool.cmd: [$FW/b/tool.cmd]
+code: [$FW/a/code.cmd]
+tool.ps1: []" "$actual"
+
+# Loading den runs its tools: completion.ps1 runs gh, among others, to cache its
+# completion, and gh writes its device-id under XDG_STATE_HOME. So each pwsh
+# start in this file that loads den (the two below and the reload sessions) runs
+# under use_private_home (helpers.sh) and keeps its own XDG_DATA_HOME. With a
+# HOME of its own but the XDG_STATE_HOME the suite inherited, gh wrote its
+# device-id there. One start of each kind (the starship one below and the first
+# reload session) is checked the way test_harness checks run_pwsh_den, with these:
+# export_inherited <dir> - export XDG_STATE_HOME, RUSTUP_HOME, CARGO_HOME,
+#   GH_CONFIG_DIR and DOCKER_CONFIG into <dir>, as a developer's own would be. A
+#   start that keeps den's tools in its own HOME leaves <dir> holding only the
+#   empty <dir>/state.
+# make_stub_gh <dir> - write a stub gh in <dir> that writes its device-id where
+#   gh does.
+# OUTSIDE_PS1 <dir> - print "outside=[...]", listing each variable that
+#   use_private_home sets or unsets and that holds a path outside <dir>.
+export_inherited() {
+    mkdir -p "$1/state" &&
+        export XDG_STATE_HOME="$1/state" RUSTUP_HOME="$1/rustup" CARGO_HOME="$1/cargo" \
+            GH_CONFIG_DIR="$1/gh" DOCKER_CONFIG="$1/docker"
+}
+make_stub_gh() {
+    mkdir -p "$1" && cat > "$1/gh" <<'EOF' && chmod +x "$1/gh"
+#!/bin/sh
+d="${XDG_STATE_HOME:-$HOME/.local/state}/gh"
+mkdir -p "$d" && echo stub > "$d/device-id"
+EOF
+}
+OUTSIDE_PS1="$TESTTMP/outside.ps1"
+cat > "$OUTSIDE_PS1" <<'EOF'
+param([string]$Dir)
+$out = foreach ($n in 'HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'RUSTUP_HOME', 'CARGO_HOME',
+        'GH_CONFIG_DIR', 'DOCKER_CONFIG') {
+    $v = [Environment]::GetEnvironmentVariable($n)
+    if ($v -and -not ($v + '/').StartsWith($Dir + '/')) { "$n=$v" }
+}
+'outside=[' + (@($out) -join '; ') + ']'
+EOF
+
+# den's whole load, with Get-Command wrapped to note each call: it made seven
+# Application lookups (above), and makes none now.
+echo "[pwsh] loading den looks up no program through Get-Command"
+GH="$WORK/gcm-home"
+mkdir -p "$GH/.local/share"
+actual=$(cd "$GH" && use_private_home "$GH" &&
+    XDG_DATA_HOME="$GH/.local/share" _DEN_FORCE_INTERACTIVE=1 PATH="/usr/bin:/bin" \
+    pwsh -NoProfile -NonInteractive -Command "
+        \$global:DenGcm = [System.Collections.Generic.List[string]]::new()
+        function global:Get-Command { \$global:DenGcm.Add((\$args -join ' ')); Microsoft.PowerShell.Core\Get-Command @args }
+        . '$DOTFILES/shell/pwsh/init.ps1'
+        'lookups=[' + (@(\$global:DenGcm | Where-Object { \$_ -match 'Application' }) -join '; ') + ']'
+    " < /dev/null 2>&1 | tr -d '\r' | grep '^lookups=')
+assert_eq "pwsh/no Get-Command -CommandType Application at load" "lookups=[]" "$actual"
+
+# init.ps1 caches starship's full init, not `starship init powershell`'s one line,
+# which ran starship again at every start to print the full init. A stub gh sits
+# beside the stub starship, and the variables that send gh, rustup, cargo or
+# docker elsewhere are exported into SS_INHERITED.
+echo "[pwsh] init.ps1 caches starship's full init"
+SSH="$WORK/ss-home"
+SS_INHERITED="$WORK/ss-inherited"
+mkdir -p "$SSH/bin" "$SSH/.local/share"
+cat > "$SSH/bin/starship" <<'EOF'
+#!/bin/sh
+case "$*" in
+    'init powershell --print-full-init') echo "\$global:DenStarship = 'full'" ;;
+    'init powershell') echo "\$global:DenStarship = 'one line'" ;;
+esac
+EOF
+chmod +x "$SSH/bin/starship"
+make_stub_gh "$SSH/bin"
+actual=$(export_inherited "$SS_INHERITED" && cd "$SSH" && use_private_home "$SSH" &&
+    XDG_DATA_HOME="$SSH/.local/share" _DEN_FORCE_INTERACTIVE=1 PATH="$SSH/bin:/usr/bin:/bin" \
+    pwsh -NoProfile -NonInteractive -Command "
+        . '$DOTFILES/shell/pwsh/init.ps1'
+        'starship=' + \$global:DenStarship
+        & '$OUTSIDE_PS1' '$SSH'
+    " < /dev/null 2>&1 | tr -d '\r')
+assert_eq "pwsh/init.ps1 sources starship's full init" "starship=full" "$(grep '^starship=' <<<"$actual")"
+echo "[pwsh] den's load keeps its tools out of an exported XDG_STATE_HOME"
+assert_eq "pwsh/den's load: HOME and the tools' directories are in its HOME, or unset" "outside=[]" \
+    "$(grep -o 'outside=\[.*\]' <<<"$actual")"
+assert_eq "pwsh/den's load: the exported XDG_STATE_HOME stays empty" "./state" \
+    "$(cd "$SS_INHERITED" && find . -mindepth 1 | sort)"
+assert_exists "pwsh/den's load: gh wrote its device-id in its HOME" "$SSH/.local/state/gh/device-id"
 
 # --- _DenTrustedCacheOwner: the Windows cache-owner decision, by SID ---
 # Test-CacheSafe compares security identifiers, not account names: a file created
@@ -711,29 +1097,45 @@ assert_contains "pwsh/Test-CacheSafe trusts user's own SID" "self=True asked=1" 
 
 # --- Initialize-Cache warning says WHY the cache was refused and how to fix it ---
 # A symlinked cache is refused on every OS (reparse point); the warning must carry
-# the reason (so a report from the field is diagnosable) and the remedy.
+# the reason (so a report from the field is diagnosable) and the remedy. The cache
+# is made again in its place when it can be (below); here the tool prints nothing.
 echo "[pwsh] Initialize-Cache refusal warning names the reason and remedy"
 mkdir -p "$WORK/pwsh_iclink"
-cat > "$WORK/pwsh_iclink/pwshcachelink" <<'EOF'
-#!/bin/sh
-printf "%s\n" "\$env:PWSH_CACHE_LINK = 'regenerated'"
-EOF
+printf '#!/bin/sh\nexit 0\n' > "$WORK/pwsh_iclink/pwshcachelink"
 chmod +x "$WORK/pwsh_iclink/pwshcachelink"
 printf "%s\n" "\$env:PWSH_CACHE_LINK = 'linked'" > "$WORK/pwsh_iclink/target.ps1"
-actual=$(run_pwsh "$HELPERS_PS1" "
-    \$cacheDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache'
-    [void](New-Item -ItemType Directory -Path \$cacheDir -Force)
-    \$cacheFile = Join-Path \$cacheDir 'pwshcachelink-init.ps1'
-    Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
-    [void](New-Item -ItemType SymbolicLink -Path \$cacheFile -Target '$WORK/pwsh_iclink/target.ps1')
-    \$env:PATH = '$WORK/pwsh_iclink:' + \$env:PATH
-    \$r = Initialize-Cache 'pwshcachelink' @('init', 'powershell') 3>&1
-    Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
-    \$r | ForEach-Object { 'out: ' + \$_ }
-" 2>/dev/null | tr -d '\r')
+# iclink - Initialize-Cache 'pwshcachelink' with a symlink to target.ps1 at the
+# cache path: its output (warnings included), then the cache's first line and
+# the target's
+iclink() {
+    run_pwsh "$HELPERS_PS1" "
+        \$cacheDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'shell-cache'
+        [void](New-Item -ItemType Directory -Path \$cacheDir -Force)
+        \$cacheFile = Join-Path \$cacheDir 'pwshcachelink-init.Core.ps1'
+        Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
+        [void](New-Item -ItemType SymbolicLink -Path \$cacheFile -Target '$WORK/pwsh_iclink/target.ps1')
+        \$env:PATH = '$WORK/pwsh_iclink:' + \$env:PATH
+        \$r = Initialize-Cache 'pwshcachelink' @('init', 'powershell') 3>&1
+        \$r | ForEach-Object { 'out: ' + \$_ }
+        'link: ' + [bool]((Get-Item -LiteralPath \$cacheFile -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)
+        'target: ' + (Get-Content -LiteralPath '$WORK/pwsh_iclink/target.ps1')
+        Remove-Item -LiteralPath \$cacheFile -Force -ErrorAction SilentlyContinue
+    " 2>/dev/null | tr -d '\r'
+}
+actual=$(iclink)
 assert_contains "pwsh/Initialize-Cache refuses symlinked cache" "refusing to source unsafe cache file" "$actual"
 assert_contains "pwsh/Initialize-Cache warning names reason" "reparse point" "$actual"
 assert_contains "pwsh/Initialize-Cache warning names remedy" "delete it to regenerate" "$actual"
+
+# The tool printing again: the new cache replaces the symlink. The cache was
+# never written through one, and a cache read through one could be a device
+# that never ends the key's line, so the key is not read from a symlink at all.
+echo "[pwsh] Initialize-Cache replaces a symlinked cache it can make again, not the file it points to"
+printf '#!/bin/sh\nprintf "%%s\\n" "\\$env:PWSH_CACHE_LINK = '"'"'regenerated'"'"'"\n' > "$WORK/pwsh_iclink/pwshcachelink"
+actual=$(iclink | sed "s|$XDG_DATA_HOME|XDG|")
+assert_eq "pwsh/Initialize-Cache symlinked cache made again" "out: XDG/shell-cache/pwshcachelink-init.Core.ps1
+link: False
+target: \$env:PWSH_CACHE_LINK = 'linked'" "$actual"
 
 # --- _DenInteractive reads pwsh's real launch switches ---
 # _DenInteractive inspects [Environment]::GetCommandLineArgs(), so these cases
@@ -1191,9 +1593,12 @@ assert_eq "pwsh/_DenVSCodeEnv skips empty values" "a11y n=1:VSCODE_A11Y_MODE=1" 
 # added to the config was gone again when reload returned. It now starts the same
 # pwsh with the same arguments, waits, and exits with its exit code. These tests
 # run den's config from a copy (so a test can add to functions.ps1) under a
-# scratch HOME whose profile prints the PID of every shell that loads it.
+# scratch HOME whose profile prints the PID of every shell that loads it. Each
+# pwsh starts through rl_env <env arguments...>, which is env with that HOME
+# made private by use_private_home (see "Loading den runs its tools" above).
 RL_HOME="$WORK/reload_home"
 RL_CFG="$WORK/reload_cfg"
+rl_env() { (use_private_home "$RL_HOME" && env "$@"); }
 mkdir -p "$RL_HOME/.config/powershell" "$RL_CFG" "$WORK/reload dir"
 cp "$DOTFILES"/shell/pwsh/*.ps1 "$RL_CFG/"
 # The profile also ends a runaway chain of reloads: the fifth nested shell exits 99.
@@ -1216,7 +1621,7 @@ printf '%s\n' \
 run_reload_session() {
     local line out='' loaded=0 rc pid rfd wfd
     cp "$DOTFILES/shell/pwsh/functions.ps1" "$RL_CFG/functions.ps1"
-    coproc RLS { env -u _DEN_FORCE_INTERACTIVE VSCODE_NONCE=rl-nonce HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 90 pwsh -NoLogo "$@" 2>&1; }
+    coproc RLS { rl_env -u _DEN_FORCE_INTERACTIVE VSCODE_NONCE=rl-nonce timeout 90 pwsh -NoLogo "$@" 2>&1; }
     pid=$RLS_PID
     exec {rfd}<&"${RLS[0]}" {wfd}>&"${RLS[1]}"
     printf '%s\n' "Add-Content -LiteralPath '$RL_CFG/functions.ps1' -Value 'function reload-probe { \"PROBE-OK PID=\$PID PWD=[\$(\$PWD.Path)]\" }'" \
@@ -1238,7 +1643,13 @@ run_reload_session() {
 echo "[pwsh] reload starts a new pwsh that sees a function added to the config"
 # reload_pid <n> - the PID of the nth shell that loaded the profile in RL_OUT.
 reload_pid() { printf '%s\n' "$RL_OUT" | grep -oE 'PROFILE-LOADED PID=[0-9]+' | sed -n "$1s/.*=//p"; }
-RL_OUT=$(run_reload_session | tr -d '\r')
+# Both shells load den, and so run gh: here a stub one, first on PATH, while the
+# variables that send gh, rustup, cargo or docker elsewhere are exported into
+# RL_INHERITED (export_inherited, above). The first shell runs OUTSIDE_PS1.
+RL_INHERITED="$WORK/reload_inherited"
+make_stub_gh "$WORK/reload_bin"
+RL_OUT=$(export_inherited "$RL_INHERITED" && export PATH="$WORK/reload_bin:$PATH" &&
+    RL_PRE="& '$OUTSIDE_PS1' '$RL_HOME'" run_reload_session | tr -d '\r')
 RL_PID1=$(reload_pid 1)
 RL_PID2=$(reload_pid 2)
 assert_match "pwsh/reload loads the profile in a second shell" '^[0-9]+$' "$RL_PID2"
@@ -1246,6 +1657,13 @@ if [ -n "$RL_PID2" ] && [ "$RL_PID1" != "$RL_PID2" ]; then actual=new; else actu
 assert_eq "pwsh/reload runs a new process" "new" "$actual"
 assert_contains "pwsh/reload makes the added function visible" "PROBE-OK PID=$RL_PID2" "$RL_OUT"
 assert_contains "pwsh/reload exits with the new shell's exit code" "RC=7" "$RL_OUT"
+# pwsh echoes the line it reads, but that line names OUTSIDE_PS1, not "outside=[".
+echo "[pwsh] reload's shells keep den's tools out of an exported XDG_STATE_HOME"
+assert_eq "pwsh/reload: HOME and the tools' directories are in RL_HOME, or unset" "outside=[]" \
+    "$(grep -o 'outside=\[.*\]' <<<"$RL_OUT")"
+assert_eq "pwsh/reload: the exported XDG_STATE_HOME stays empty" "./state" \
+    "$(cd "$RL_INHERITED" && find . -mindepth 1 | sort)"
+assert_exists "pwsh/reload: gh wrote its device-id in RL_HOME" "$RL_HOME/.local/state/gh/device-id"
 
 echo "[pwsh] reload keeps the launch arguments (VS Code's -noexit -command)"
 RL_PAYLOAD="try { . \"$WORK/reload dir/si.ps1\" } catch {}"
@@ -1299,7 +1717,7 @@ assert_contains "pwsh/reload -wd relative payload exits with the new shell's cod
 printf '%s\n' '"RL-FILE-RAN PWD=[$($PWD.Path)]"' >"$RL_WD/start/rl-file.ps1"
 echo "[pwsh] reload does not restart when its -File is not found from the current directory"
 actual=$(cd "$RL_WD/start" && printf '%s\n' "Set-Location -LiteralPath '$RL_WD/moved'" 'reload' '"STILL-HERE PWD=[$($PWD.Path)]"' 'exit 3' |
-    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -File ./rl-file.ps1 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo -NoExit -File ./rl-file.ps1 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload missing -File warns" \
     "not restarting: its launch arguments name the file './rl-file.ps1', which the new shell would not find from the current directory" "$actual"
@@ -1326,14 +1744,14 @@ EOF
 
 echo "[pwsh] reload does not restart a -Command run"
 : >"$WORK/reload_runs.txt"
-actual=$(env HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" _DEN_FORCE_INTERACTIVE=1 timeout 60 pwsh -NoProfile -Command ". '$WORK/reload_guard.ps1'" 2>&1 | tr -d '\r')
+actual=$(rl_env _DEN_FORCE_INTERACTIVE=1 timeout 60 pwsh -NoProfile -Command ". '$WORK/reload_guard.ps1'" 2>&1 | tr -d '\r')
 assert_contains "pwsh/reload -Command warns" "reload: caches cleared, but not restarting" "$actual"
 assert_contains "pwsh/reload -Command continues" "AFTER-RELOAD" "$actual"
 assert_eq "pwsh/reload -Command runs once" "1" "$(grep -c . "$WORK/reload_runs.txt")"
 
 echo "[pwsh] reload does not restart a -File run"
 : >"$WORK/reload_runs.txt"
-actual=$(env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoProfile -File "$WORK/reload_guard.ps1" 2>&1 | tr -d '\r')
+actual=$(rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoProfile -File "$WORK/reload_guard.ps1" 2>&1 | tr -d '\r')
 assert_contains "pwsh/reload -File warns" "reload: caches cleared, but not restarting" "$actual"
 assert_contains "pwsh/reload -File continues" "AFTER-RELOAD" "$actual"
 assert_eq "pwsh/reload -File runs once" "1" "$(grep -c . "$WORK/reload_runs.txt")"
@@ -1342,7 +1760,7 @@ assert_eq "pwsh/reload -File runs once" "1" "$(grep -c . "$WORK/reload_runs.txt"
 # (it must not exit). Get-Process is shadowed to report a missing executable.
 echo "[pwsh] reload stays in the session when pwsh cannot be started"
 actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" 'reload' '"STILL-HERE DEPTH-ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 3' |
-    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload start failure warns" "reload: could not start" "$actual"
 assert_contains "pwsh/reload start failure keeps the session" "STILL-HERE DEPTH-ENV=[]" "$actual"
@@ -1353,7 +1771,7 @@ assert_contains "pwsh/reload start failure exit code is the session's" "RC=3" "$
 # back into this stale session. reload warns instead.
 echo "[pwsh] reload does not restart from a nested prompt"
 actual=$(printf '%s\n' '$Host.EnterNestedPrompt()' 'reload' '"NESTED-AFTER LEVEL=$NestedPromptLevel PID=$PID"' 'exit' 'exit 3' |
-    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 RL_PID1=$(printf '%s\n' "$actual" | grep -oE 'PROFILE-LOADED PID=[0-9]+' | sed -n '1s/.*=//p')
 assert_contains "pwsh/reload nested prompt warns" "not restarting: reload was called from a nested prompt" "$actual"
@@ -1366,7 +1784,7 @@ assert_contains "pwsh/reload nested prompt exit code" "RC=3" "$actual"
 # starts the eighth shell, whose own startup reload must refuse.
 echo "[pwsh] reload stops after 8 reloads in a row"
 actual=$(printf '%s\n' '"DEEPEST DEPTH=$_DenReloadDepth ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 5' |
-    env -u _DEN_FORCE_INTERACTIVE _DEN_RELOAD_DEPTH=7 HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -Command reload 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE _DEN_RELOAD_DEPTH=7 timeout 60 pwsh -NoLogo -NoExit -Command reload 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_eq "pwsh/reload limit starts one more shell" "2" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
 assert_contains "pwsh/reload limit warns" "not restarting: 8 reloads in a row led to this shell" "$actual"
@@ -1377,7 +1795,7 @@ assert_contains "pwsh/reload limit exit code" "RC=5" "$actual"
 # launch arguments cannot be passed on.
 echo "[pwsh] reload does not restart a launch whose arguments hold --%"
 actual=$(printf '%s\n' 'reload' 'exit 6' |
-    env -u _DEN_FORCE_INTERACTIVE HOME="$RL_HOME" XDG_CONFIG_HOME="$RL_HOME/.config" timeout 60 pwsh -NoLogo -NoExit -Command echo --% x 2>&1 | tr -d '\r'
+    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo -NoExit -Command echo --% x 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload --% warns" "not restarting: its launch arguments hold '--%'" "$actual"
 assert_eq "pwsh/reload --% starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"

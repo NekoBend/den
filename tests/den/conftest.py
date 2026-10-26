@@ -31,6 +31,7 @@ _WINDOWS_SKIP = {
     "test_install_shell_deploys_both_families",
     "test_install_shell_force_overwrites",
     "test_install_shell_keeps_modified_config_non_tty",
+    "test_install_shell_leaves_zshenv_alone",
     "test_install_shell_no_extras_skips_optional",
     "test_install_shell_wires_bashrc",
     "test_install_shell_wires_the_profile_pwsh_reads_under_xdg",
