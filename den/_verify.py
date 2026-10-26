@@ -24,6 +24,10 @@ never override":
   NoDefaultCurrentDirectoryInExePath is set) and CreateProcess searches it
   too for a path-less name, so a cloned repo shipping `ruff.exe` at its root
   would otherwise run when `den verify` is invoked there.
+- every file reaches the tools after `--`, and a name starting with `@` as
+  `./@name` (_operands): a bare name from a glob could otherwise be taken
+  as an option (a file named `--output-file=victim.py` overwrote victim.py)
+  or as a response file of more arguments.
 
 Output is line-oriented for model consumption: one `config:` line per tool,
 then PASS / FAIL / SKIP per stage. FAIL detail is capped; SKIP always names
@@ -47,6 +51,19 @@ from ._exe import resolve_tool
 
 _MAX_DETAIL_LINES = 30
 _DEN_DEFAULT_LINT = ("--extend-select", "D101,D102,D103")
+
+
+def _operands(files: list[Path]) -> list[str]:
+    """How files reach ruff and ty: `--`, then each one as a path.
+
+    A bare name, as a glob in the working directory expands to, is otherwise
+    the tools' to interpret: `--output-file=victim.py` was taken as ruff's
+    flag and overwrote victim.py. `--` ends the options, but both tools
+    still read an argument starting with `@` as a response file and splice
+    in its lines, so such a name goes as `./@name` (pathlib drops a `./` the
+    caller typed)."""
+    names = [str(f) for f in files]
+    return ["--", *(os.curdir + os.sep + n if n.startswith("@") else n for n in names)]
 
 
 def _ruff_config(file: Path) -> tuple[Path, str] | None:
@@ -102,7 +119,7 @@ def _ruff_fallback_config(file: Path) -> Path | None:
         return None
     try:
         proc = subprocess.run(
-            [exe, "check", "--show-settings", str(file)],
+            [exe, "check", "--show-settings", *_operands([file])],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -173,9 +190,9 @@ def _venv_line(root: Path) -> str:
 _Outcome = tuple[str, list[str]]
 
 
-def _run(exe: str, args: list[str]) -> tuple[int, list[str]]:
+def _run(exe: str, args: list[str], files: list[Path]) -> tuple[int, list[str]]:
     proc = subprocess.run(
-        [exe, *args],
+        [exe, *args, *_operands(files)],
         capture_output=True,
         text=True,
         # ruff and ty emit UTF-8 (source snippets included); the locale codec
@@ -196,7 +213,7 @@ def _failed(label: str, lines: list[str]) -> _Outcome:
 def _stage(
     label: str, tool: str, args: list[str], files: list[Path]
 ) -> dict[Path, _Outcome]:
-    """Run `tool *args <files>` for a group of files; each file's outcome.
+    """Run `tool *args -- <files>` for a group of files; each file's outcome.
 
     One process for the whole group, instead of one per file. When it passes,
     every file passes. On exit 1 (diagnostics found, for ruff and ty alike) a
@@ -213,7 +230,7 @@ def _stage(
     if exe is None:
         skip = f"SKIP {label} ({tool} not installed: uv tool install {tool})"
         return {f: ("skip", [skip]) for f in files}
-    rc, lines = _run(exe, [*args, *map(str, files)])
+    rc, lines = _run(exe, args, files)
     if rc == 0:
         return {f: ("pass", [f"PASS {label}"]) for f in files}
     if len(files) == 1:
@@ -222,7 +239,7 @@ def _stage(
     suspects = [f for f in files if rc != 1 or f.name.lower() in output]
     outcomes: dict[Path, _Outcome] = {f: ("pass", [f"PASS {label}"]) for f in files}
     for f in suspects or files:
-        rc, lines = _run(exe, [*args, str(f)])
+        rc, lines = _run(exe, args, [f])
         if rc != 0:
             outcomes[f] = _failed(label, lines)
     return outcomes
@@ -297,7 +314,13 @@ def main(argv: list[str] | None = None) -> int:
         with suppress(OSError, ValueError):
             reconfigure(errors="replace")
     args = argv if argv is not None else sys.argv[1:]
-    if not args or args[0] in {"-h", "--help", "help"}:
+    # A leading `--` ends den verify's own options and is not a file: every
+    # argument after it is one, even `-h` or another name that starts with
+    # `-`. With nothing after it, it is the same as no arguments.
+    end_of_options = args[:1] == ["--"]
+    if end_of_options:
+        args = args[1:]
+    if not args or (not end_of_options and args[0] in {"-h", "--help", "help"}):
         _usage()
         return 0
     files = [Path(a) for a in args]
