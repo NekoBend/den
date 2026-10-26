@@ -3,8 +3,11 @@ tool-result cap.
 
 Cline middle-cuts each tool result above 8,000 UTF-16 units. A skill arrives
 as the skills tool's result (formatSkillInvocation), and every other file as
-a read_files result with 'N | ' line prefixes. Installed copies are measured
-with a 16-character user name, so a longer home path still has margin."""
+a read_files result with 'N | ' line prefixes. den writes each installed
+skill's absolute directory into its paths, so installed copies are measured
+under both home shapes: /home/<user>, and C:/Users/<user>, which is 3
+characters longer per path. Both use a 16-character user name, longer than
+most, so a real home has margin."""
 
 from __future__ import annotations
 
@@ -23,11 +26,15 @@ except ImportError:  # optional locally; CI installs it
 ROOT = Path(__file__).resolve().parents[2]
 CAP = 8_000  # Cline's default tool-result cap (message-builder.ts:28)
 RAW_CAP = 6_000  # a file's own length; also keeps it under Copilot CLI's 20KB read
-HOME = "/home/abcdefghijklmnop"
+USER = "abcdefghijklmnop"  # 16 characters
+# den writes the skill's directory as Path.resolve().as_posix()
+# (_install_skill), which starts with one of these.
+HOMES = {"linux": f"/home/{USER}", "windows": f"C:/Users/{USER}"}
 # Cline's frontmatter split (user-instruction-config-loader.ts).
 _FRONTMATTER = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$")
 
-VARIANTS = ("den", "den-free", "dist")  # installed, installed --no-den-cli, dist
+# installed and installed --no-den-cli, each under both homes; and dist
+VARIANTS = ("den-linux", "den-windows", "den-free-linux", "den-free-windows", "dist")
 
 # Files over a cap, as '<variant>:<skill>/<path>:<metric>'. It let CI stay
 # green while the 2026-10 size reduction shrank 117 offenders one change at a
@@ -92,10 +99,20 @@ def _measure(metric: str, text: str) -> tuple[int, int]:
     return _u16(text), RAW_CAP
 
 
+def _where(variant: str) -> str:
+    """What `variant` measures, as a failure message names it."""
+    if variant == "dist":
+        return "agents/dist/skills"
+    flavor, _, shape = variant.rpartition("-")
+    how = "den install skills" + (" --no-den-cli" if flavor == "den-free" else "")
+    return f"{how} under the {shape.capitalize()}-shaped home {HOMES[shape]}"
+
+
 def _check(variant: str, base: Path, *, skill_md: bool, metrics: tuple[str, ...]):
     """Measure each skill under `base`: its SKILL.md (skill_md) or every other
     .md file, against each metric's cap, and compare the offenders with the
-    KNOWN_OVER entries in the same scope."""
+    KNOWN_OVER entries in the same scope. A failure names the variant and,
+    for an installed one, the home it was built under."""
     over: dict[str, str] = {}
     for skill in sorted(p for p in base.iterdir() if p.is_dir()):
         for md in sorted(skill.rglob("*.md")):
@@ -120,26 +137,32 @@ def _check(variant: str, base: Path, *, skill_md: bool, metrics: tuple[str, ...]
 
     new = sorted(over[k] for k in over.keys() - KNOWN_OVER)
     assert not new, (
-        "over a size cap (Cline's 8,000-character tool-result cap, or den's"
-        " 6,000 raw cap); shrink or split these files (KNOWN_OVER may only"
-        " shrink):\n" + "\n".join(new)
+        f"{variant} ({_where(variant)}): over a size cap (Cline's 8,000-character"
+        " tool-result cap, or den's 6,000 raw cap); shrink or split these files"
+        " (KNOWN_OVER may only shrink):\n" + "\n".join(new)
     )
     fits = sorted(e for e in KNOWN_OVER if in_scope(e) and e not in over)
     assert not fits, (
-        "these files fit now; delete their entries from KNOWN_OVER:\n" + "\n".join(fits)
+        f"{variant} ({_where(variant)}): these files fit now; delete their"
+        " entries from KNOWN_OVER:\n" + "\n".join(fits)
     )
 
 
-@pytest.fixture(scope="module", params=[False, True], ids=["den", "den-free"])
+@pytest.fixture(scope="module", params=VARIANTS[:-1])
 def installed(request, tmp_path_factory) -> tuple[str, Path]:
-    """Every skill as `den install skills` builds it for ~/.agents/skills/."""
-    no_den_cli: bool = request.param
+    """Every skill as `den install skills` builds it for ~/.agents/skills/
+    under the variant's home, with --no-den-cli for den-free."""
+    variant: str = request.param
+    flavor, _, shape = variant.rpartition("-")
     base = tmp_path_factory.mktemp("skills")
     for name in _install._skill_names():
         _install._materialize(
-            name, base / name, f"{HOME}/.agents/skills/{name}/", no_den_cli=no_den_cli
+            name,
+            base / name,
+            f"{HOMES[shape]}/.agents/skills/{name}/",
+            no_den_cli=flavor == "den-free",
         )
-    return ("den-free" if no_den_cli else "den"), base
+    return variant, base
 
 
 DIST = ROOT / "agents" / "dist" / "skills"
@@ -166,6 +189,29 @@ def test_plain_refuses_a_line_yaml_reads_differently():
     commented = "---\nname: n\ndescription: d # a YAML comment\n---\n\nbody\n"
     with pytest.raises(AssertionError, match="YAML reads"):
         skills_tool_result(commented)
+
+
+@pytest.mark.parametrize(
+    ("variant", "where"),
+    [
+        (
+            "den-windows",
+            f"den install skills under the Windows-shaped home C:/Users/{USER}",
+        ),
+        (
+            "den-free-linux",
+            f"den install skills --no-den-cli under the Linux-shaped home /home/{USER}",
+        ),
+        ("dist", "agents/dist/skills"),
+    ],
+)
+def test_a_file_over_a_cap_fails_naming_its_variant_and_home(tmp_path, variant, where):
+    (tmp_path / "s").mkdir()
+    (tmp_path / "s" / "SKILL.md").write_text("x\n" * 3_000, encoding="utf-8")
+    with pytest.raises(AssertionError) as exc:
+        _check(variant, tmp_path, skill_md=True, metrics=("read-tool",))
+    assert str(exc.value).startswith(f"{variant} ({where}): over a size cap")
+    assert "s/SKILL.md: read-tool 26,999 > 8,000" in str(exc.value)
 
 
 def _entry(entry: str) -> tuple[str, str, str]:
