@@ -737,9 +737,126 @@ def test_report_list_answers_past_a_line_json_cannot_parse(served, bad):
 
 def _listed_reports(body):
     """(button, text) of each report an /api/reports body lists, leaving out
-    the ones that are not objects: a line that parses lists as itself."""
-    reports = json.loads(body)["reports"]
+    the ones that are not objects: a line that parses lists as itself, and
+    can be nested as deep as a handler could send (so decode it as one)."""
+    reports = _in_a_new_thread(json.loads, body)["reports"]
     return [(r["button"], r["text"]) for r in reports if isinstance(r, dict)]
+
+
+# The escape of a lone surrogate. json.loads accepts it, but the str it gives
+# back has no UTF-8 encoding. Python's json.dumps writes one for text decoded
+# with surrogateescape: a file name with a byte that is not UTF-8, say.
+_LONE_SURROGATE = '"caf\\udce9"'
+
+
+def test_lists_answer_past_text_utf_8_cannot_carry(served):
+    # Encoding the response raised, and the connection dropped, on every poll
+    # while such a line stayed in the window.
+    root, _server, port = served
+    with _board._agent_path(root).open("a") as f:
+        f.write('{"id": "t1", "type": "task", "text": ' + _LONE_SURROGATE + "}\n")
+    with _board._reports_path(root).open("a") as f:
+        f.write('{"button": "note", "text": ' + _LONE_SURROGATE + "}\n")
+
+    status, body = _request(port, "GET", "/api/agent")
+    assert status == 200
+    (task,) = json.loads(body)["entries"]
+    assert (task["id"], task["text"][:3]) == ("t1", "caf")
+    status, body = _request(port, "GET", "/api/reports")
+    assert status == 200
+    [(button, text)] = _listed_reports(body)
+    assert (button, text[:3]) == ("note", "caf")
+
+
+@pytest.mark.parametrize("polled_before", [False, True])
+def test_reaction_with_text_utf_8_cannot_carry_outlives_the_reports_window(
+    served, polled_before
+):
+    # Such a reaction made /api/agent raise as above, and since settlement is
+    # read over the whole file, it kept doing so past the reports window. The
+    # first poll after the notes reads the file whole, as after a restart.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    reports = _board._reports_path(root)
+    reports.write_text(
+        f'{{"button": "task-done", "re": "{task_id}", "text": {_LONE_SURROGATE}}}\n'
+    )
+    if polled_before:
+        assert _listed_reaction(port)["button"] == "task-done"
+    after = reports.stat().st_size
+    note = {"button": "note", "text": "x" * _board._MAX_TEXT_LEN}
+    while reports.stat().st_size - after <= _board._MAX_LIST_BYTES:
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+    assert _listed_reaction(port)["button"] == "task-done"
+
+
+def _nested(depth):
+    return "[" * depth + "]" * depth
+
+
+@pytest.fixture(scope="module")
+def parse_limit():
+    """The deepest array json.loads accepts in a new thread."""
+    if _DEEP_LINE_PARSES:
+        pytest.skip("a new thread's stack parses _DEEP_LINE here")
+    parses, fails = 1, 200_000  # _DEEP_LINE's depth
+    while fails - parses > 1:
+        depth = (parses + fails) // 2
+        if _in_a_new_thread(_parses, _nested(depth)):
+            parses = depth
+        else:
+            fails = depth
+    return parses
+
+
+# json.loads accepts an array nested a few levels short of its limit, and the
+# response nests it deeper still: json.dumps raised, and the connection dropped
+# on every poll. How many levels short depends on the Python and its stack, so
+# the tests below try every depth from 32 levels short up to the limit. What a
+# handler sent is decoded in a new thread too: json.dumps and json.loads reach
+# the same depth, and a handler starts deeper in its stack than a new thread.
+def _near(limit):
+    return range(limit - 32, limit + 1)
+
+
+def test_report_list_answers_past_a_report_nested_near_the_limit(served, parse_limit):
+    root, _server, port = served
+    for depth in _near(parse_limit):
+        _board._reports_path(root).write_text(
+            '{"button": "note", "text": "before"}\n'
+            + _nested(depth)
+            + '\n{"button": "bug", "text": "after"}\n'
+        )
+        status, body = _request(port, "GET", "/api/reports")
+        assert status == 200, f"depth {depth}"
+        assert _listed_reports(body) == [("note", "before"), ("bug", "after")]
+
+
+def test_agent_list_answers_past_an_entry_nested_near_the_limit(served, parse_limit):
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    task_line = _board._agent_path(root).read_text()
+    for depth in _near(parse_limit):
+        entry = '{"type": "note", "x": ' + _nested(depth - 1) + "}\n"
+        _board._agent_path(root).write_text(task_line + entry)
+        status, body = _request(port, "GET", "/api/agent")
+        assert status == 200, f"depth {depth}"
+        assert _in_a_new_thread(json.loads, body)["entries"][0]["id"] == task_id
+
+
+def test_agent_list_answers_past_a_reaction_nested_near_the_limit(served, parse_limit):
+    # Appended, as the server writes reactions, so each poll reads one more.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    for depth in _near(parse_limit):
+        with _board._reports_path(root).open("a") as f:
+            f.write(
+                f'{{"button": "task-done", "re": "{task_id}", '
+                f'"text": {_nested(depth - 1)}}}\n'
+            )
+        status, body = _request(port, "GET", "/api/agent")
+        assert status == 200, f"depth {depth}"
+        assert _in_a_new_thread(json.loads, body)["entries"][0]["id"] == task_id
 
 
 def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):

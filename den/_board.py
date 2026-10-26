@@ -324,7 +324,10 @@ class _Reactions:
         for line in _split_jsonl(block):
             # ValueError is JSONDecodeError and also int's digit limit; a line
             # nested too deep raises RecursionError. A line that raised would
-            # be read again, and raise again, on every poll after.
+            # be read again, and raise again, on every poll after. A reaction
+            # /api/agent cannot send is skipped too (as in _list_reports):
+            # kept, it would fail every /api/agent for as long as the file
+            # holds it, however much follows it.
             with suppress(ValueError, RecursionError):
                 rep = json.loads(line)
                 if (
@@ -333,11 +336,15 @@ class _Reactions:
                     and isinstance(rep.get("button"), str)
                     and rep["button"].startswith("task-")
                 ):
-                    self._by_task[rep["re"]] = {
+                    reaction = {
                         "button": rep["button"],
                         "ts": rep.get("ts"),
                         "text": rep.get("text"),
                     }
+                    json.dumps(
+                        {"entries": [{"reaction": reaction}]}, ensure_ascii=False
+                    )
+                    self._by_task[rep["re"]] = reaction
         self._offset += len(block)
         self._seam = (self._seam + block[-_SEAM_BYTES:])[-_SEAM_BYTES:]
 
@@ -486,7 +493,11 @@ class _Handler(BaseHTTPRequestHandler):
         return origin is None or origin == f"http://{self.headers.get('Host', '')}"
 
     def _send_json(self, code: int, obj: dict[str, object]) -> None:
-        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        # "replace": json.loads turns the escape of a lone surrogate ("\udce9";
+        # Python's json.dumps writes one for text decoded with surrogateescape)
+        # into a str UTF-8 cannot carry. A strict encode raised on every poll
+        # while such a line stayed in a board file; the page shows "?" instead.
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8", "replace")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -549,9 +560,14 @@ class _Handler(BaseHTTPRequestHandler):
         reports: list[object] = []
         for line in lines[-limit:]:
             # Every line json.loads rejects, as in _Reactions._take: one that
-            # raised would fail every poll while it stays in the window.
+            # raised would fail every poll while it stays in the window. And
+            # every report this response cannot hold: json.loads accepts an
+            # array nested a few levels short of its limit, which _send_json's
+            # json.dumps then has to nest two levels deeper.
             with suppress(ValueError, RecursionError):
-                reports.append(json.loads(line))
+                report = json.loads(line)
+                json.dumps({"reports": [report]}, ensure_ascii=False)
+                reports.append(report)
         return {"reports": reports, "total": len(lines)}
 
     def _list_agent(self) -> dict[str, object]:
@@ -570,6 +586,9 @@ class _Handler(BaseHTTPRequestHandler):
                 entry = json.loads(line)
                 if not isinstance(entry, dict):
                     continue
+                # Only an entry this response can hold, as in _list_reports.
+                # The reaction joined below was checked when it was read.
+                json.dumps({"entries": [entry]}, ensure_ascii=False)
                 if not isinstance(entry.get("id"), str) or not entry["id"]:
                     # Occurrence-salted so duplicate id-less lines stay
                     # distinct; append-only order keeps the salt stable.
