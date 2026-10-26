@@ -270,6 +270,26 @@ cd /d "%T%\pyvers\sub" || exit /b 1
 >>"%W%" echo [x]
 call "%BIN%\python.cmd" -c x >"%O%" 2>&1
 call :expect %errorlevel% 0 "python: below a .python-versions that names a path, the system python and a line, not uv run"
+rem uv trims white space alone and keeps a byte order mark: a line that
+rem starts with U+200B, or the mark, and then # names a path to it.
+rem PowerShell writes the bytes, so this file holds no character beyond
+rem ASCII.
+mkdir "%T%\pyverzw" "%T%\pyverbom" || exit /b 1
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$u = New-Object Text.UTF8Encoding $false; [IO.File]::WriteAllBytes($env:T + '\pyverzw\.python-version', $u.GetBytes([string][char]0x200B + '#x/tools/py' + [char]10)); [IO.File]::WriteAllBytes($env:T + '\pyverbom\.python-version', [byte[]](@(0xEF, 0xBB, 0xBF) + $u.GetBytes('#x/tools/py' + [char]10)))" || exit /b 1
+cd /d "%T%\pyverzw" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyverzw\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: beside a .python-version with U+200B before #, the system python and a line, not uv run"
+cd /d "%T%\pyverbom" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyverbom\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: beside a .python-version with a byte order mark before #, the system python and a line, not uv run"
 cd /d "%T%\pyveronly" || exit /b 1
 >"%W%" echo [@tools]
 >>"%W%" echo [run]

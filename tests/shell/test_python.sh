@@ -1119,7 +1119,8 @@ R="$WORK/route"
 ROUTE_BIN="$R/bin"
 ROUTE_LOG="$R/uvcalls"
 mkdir -p "$ROUTE_BIN" "$R/sys" "$R/managed" "$R/venv/bin" "$R/proj/sub" "$R/vproj/.venv" "$R/cfgvenv/bin" "$R/cfgvenv/sub" \
-    "$R/uvtoml/sub" "$R/pyver/sub" "$R/pyverbs" "$R/pyveronly" "$R/nopyvenv/bin" "$R/pyvers/sub"
+    "$R/uvtoml/sub" "$R/pyver/sub" "$R/pyverbs" "$R/pyveronly" "$R/nopyvenv/bin" "$R/pyvers/sub" \
+    "$R/pyverzw" "$R/pyverbom"
 cat > "$ROUTE_BIN/uv" << EOF
 #!/bin/sh
 echo "\$*" >> "$ROUTE_LOG"
@@ -1146,6 +1147,13 @@ printf '%s\n' '.\tools\py' > "$R/pyverbs/.python-version"
 printf '3.13\ncpython@3.13\npypy3.10\n  # not ./tools/py\n' > "$R/pyveronly/.python-version"
 # uv reads a .python-versions the same way (pyvers/).
 printf './tools/py\n' > "$R/pyvers/.python-versions"
+# uv trims white space alone and keeps a byte order mark, so a line that
+# starts with U+200B or a byte order mark and then # names a path to it
+# (pyverzw/, pyverbom/). pwsh compared # by culture, which passes over
+# U+200B, and read the file with ReadAllText, which drops the mark: to it
+# both lines were comments.
+printf '\342\200\213#x/tools/py\n' > "$R/pyverzw/.python-version"
+printf '\357\273\277#x/tools/py\n' > "$R/pyverbom/.python-version"
 # uv reads a regular file only: one that links to /dev/zero is skipped, and
 # reading it would not end (pyverzero/).
 mkdir -p "$R/pyverzero"
@@ -1214,6 +1222,15 @@ rc=0" "$actual"
 rc=0" "$actual"
     assert_eq "$sh/python below a .python-versions that names a path names it" \
         "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyvers/.python-versions" "$(cat "$R/err")"
+
+    echo "[$sh] beside a .python-version whose path line starts with U+200B, or a byte order mark, and then #: the same"
+    for c in pyverzw pyverbom; do
+        actual=$(route_posix "$sh" "$R/$c" "python -c pass")
+        assert_eq "$sh/python beside $c's .python-version runs the system python" "system-python -c pass
+rc=0" "$actual"
+        assert_eq "$sh/python beside $c's .python-version names it" \
+            "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/$c/.python-version" "$(cat "$R/err")"
+    done
 
     echo "[$sh] beside a .python-version of version requests alone, a path only in a comment: uv run, as before"
     actual=$(route_posix "$sh" "$R/pyveronly" "python -c pass")
@@ -1350,6 +1367,13 @@ echo "[pwsh] python below a .python-versions that names a path: the same"
 actual=$(route_pwsh "$R/pyvers/sub" "python -c pass")
 assert_eq "pwsh/python below a .python-versions that names a path runs the system python" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/pyvers/.python-versions
 system-python -c pass" "$actual"
+
+echo "[pwsh] beside a .python-version whose path line starts with U+200B, or a byte order mark, and then #: the same"
+for c in pyverzw pyverbom; do
+    actual=$(route_pwsh "$R/$c" "python -c pass")
+    assert_eq "pwsh/python beside $c's .python-version runs the system python" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/$c/.python-version
+system-python -c pass" "$actual"
+done
 
 echo "[pwsh] beside a .python-version of version requests alone, a path only in a comment: uv run, as before"
 actual=$(route_pwsh "$R/pyveronly" "python -c pass")

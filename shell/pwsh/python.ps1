@@ -92,7 +92,9 @@ function global:_DenPyMarker {
     while ($dir) {
       foreach ($name in 'pyproject.toml', '.venv', 'pyvenv.cfg', 'uv.toml', '.python-version', '.python-versions') {
         $path = [System.IO.Path]::Combine($dir, $name)
-        if ($name -notlike '.python-version*') {
+        # Every string test here is ordinal: one by culture passes over
+        # characters such as U+200B, U+00AD and U+0001 (-like and -eq too).
+        if (-not $name.StartsWith('.python-version', [System.StringComparison]::Ordinal)) {
           if ([System.IO.File]::Exists($path) -or [System.IO.Directory]::Exists($path)) { return $path }
           continue
         }
@@ -104,11 +106,14 @@ function global:_DenPyMarker {
           try { $target = $file.ResolveLinkTarget($true); if ($target) { $file = $target } } catch { $null = $_ }
           try { if ($file.Length -eq 0) { continue } } catch { continue }
         }
-        try { $text = [System.IO.File]::ReadAllText($path) } catch { continue }
-        # uv splits the lines at \n alone.
+        # uv reads the file as UTF-8 and keeps a byte order mark, which
+        # ReadAllText drops, and splits the lines at \n alone. A line that
+        # starts with U+200B or a byte order mark and then # is no comment
+        # to uv.
+        try { $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($path)) } catch { continue }
         foreach ($line in $text -split "`n") {
           $line = $line.TrimStart(' ')
-          if (-not $line.StartsWith('#') -and $line.IndexOfAny([char[]]'/\') -ge 0) { return $path }
+          if (-not $line.StartsWith('#', [System.StringComparison]::Ordinal) -and $line.IndexOfAny([char[]]'/\') -ge 0) { return $path }
         }
       }
       if (-not (_OnWindows)) {
