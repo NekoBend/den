@@ -72,19 +72,20 @@ pip3() {
 # directory or a directory above it. uv takes a directory that holds a
 # pyvenv.cfg for a venv, whatever its name, and runs the python in it; a
 # uv.toml's settings can have it install and run a python the clone ships; and
-# it runs the program a .python-version names to ask its version. A
-# .python-version counts only when it names a path: a line with / or \ in it,
-# comment (#) and blank lines aside. One that holds version requests alone
-# (3.13, cpython@3.13) does not, so a pyenv ~/.python-version leaves home
-# alone. Fails when there is none. uv starts from the directory the system
-# reports, with its symbolic links resolved (pwd -P).
+# it runs the program a .python-version names to ask its version (a
+# .python-versions as well, which it reads the same way). A .python-version
+# counts only when it names a path: a line with / or \ in it, comment (#) and
+# blank lines aside. One that holds version requests alone (3.13,
+# cpython@3.13) does not, so a pyenv ~/.python-version leaves home alone.
+# Fails when there is none. uv starts from the directory the system reports,
+# with its symbolic links resolved (pwd -P).
 _den_py_marker() {
     local d f l
     d=$(pwd -P 2>/dev/null) || d=$PWD
     while :; do
-        for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version; do
+        for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version .python-versions; do
             [ -e "${d%/}/$f" ] || continue
-            if [ "$f" = .python-version ]; then
+            if [ "$f" = .python-version ] || [ "$f" = .python-versions ]; then
                 # A regular file, as uv reads: a link to /dev/zero or a FIFO
                 # would not end.
                 [ -f "${d%/}/$f" ] && [ -r "${d%/}/$f" ] || continue

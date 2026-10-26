@@ -763,18 +763,19 @@ echo "[cmd] python has no --version or -V case of its own"
 vcase=$(cmd_code python | grep -c -E -- '"(--version|-V)"' || true)
 assert_eq "cmd/python: --version and -V take the same way as any other call" "0" "$vcase"
 
-echo "[cmd] python's walk counts a uv.toml, and a .python-version that names a path"
-# uv run reads both from here and above; a .python-version counts when a line
-# holds / or \, comment lines aside. findstr from System32 reads it, so no line
-# of it reaches cmd's parser. Its patterns use only ^, " *", [...], [^...] and
-# .*, which grep -E reads the same way, so they run here on sample lines.
+echo "[cmd] python's walk counts a uv.toml, and a .python-version or .python-versions that names a path"
+# uv run reads them from here and above; a .python-version counts when a line
+# holds / or \, comment lines aside, and so does a .python-versions, which uv
+# reads the same way. findstr from System32 reads it, so no line of it reaches
+# cmd's parser. Its patterns use only ^, " *", [...], [^...] and .*, which
+# grep -E reads the same way, so they run here on sample lines.
 walk=$(cmd_code python | sed -n '/^:walk$/,/^if defined _m goto direct$/p')
 assert_contains "cmd/python: a uv.toml is a marker" 'if not defined _m if exist "%_d%\uv.toml" set "_m=%_d%\uv.toml"' "$walk"
 pyver=$(printf '%s\n' "$walk" | grep -F '.python-version' || true)
-assert_contains "cmd/python: findstr from System32 reads a .python-version" \
-    'if not defined _m if exist "%_d%\.python-version" "%SystemRoot%\System32\findstr.exe" /r /c:' "$pyver"
-assert_contains "cmd/python: a .python-version that findstr matches is the marker" \
-    '"%_d%\.python-version" >nul 2>&1 && set "_m=%_d%\.python-version"' "$pyver"
+assert_contains "cmd/python: findstr from System32 reads a .python-version or .python-versions" \
+    'for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" "%SystemRoot%\System32\findstr.exe" /r /c:' "$pyver"
+assert_contains "cmd/python: the version file that findstr matches is the marker" \
+    '"%_d%\%%f" >nul 2>&1 && set "_m=%_d%\%%f"' "$pyver"
 pats=()
 while IFS= read -r p; do pats+=(-e "$p"); done < <(printf '%s\n' "$pyver" | grep -o '/c:"[^"]*"' | sed 's|^/c:"||; s|"$||')
 assert_eq "cmd/python: two findstr patterns" "2" "$((${#pats[@]} / 2))"

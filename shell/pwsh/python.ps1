@@ -77,21 +77,22 @@ function pip3 {
 # takes a directory that holds a pyvenv.cfg for a venv, whatever its name, and
 # runs the python in it; a uv.toml's settings can have it install and run a
 # python the clone ships; and it runs the program a .python-version names to
-# ask its version. A .python-version counts only when it names a path: a line
-# with / or \ in it, comment (#) and blank lines aside. One that holds version
-# requests alone (3.13, cpython@3.13) does not, so a pyenv ~/.python-version
-# leaves home alone. Windows hands uv the directory as PowerShell has it; Linux
-# and macOS resolve its symbolic links first, so there a linked directory's
-# target is searched as well.
+# ask its version (a .python-versions as well, which it reads the same way). A
+# .python-version counts only when it names a path: a line with / or \ in it,
+# comment (#) and blank lines aside. One that holds version requests alone
+# (3.13, cpython@3.13) does not, so a pyenv ~/.python-version leaves home
+# alone. Windows hands uv the directory as PowerShell has it; Linux and macOS
+# resolve its symbolic links first, so there a linked directory's target is
+# searched as well.
 function global:_DenPyMarker {
   $starts = [System.Collections.Generic.List[string]]::new()
   $starts.Add($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath)
   for ($i = 0; $i -lt $starts.Count -and $i -lt 16; $i++) {
     $dir = $starts[$i]
     while ($dir) {
-      foreach ($name in 'pyproject.toml', '.venv', 'pyvenv.cfg', 'uv.toml', '.python-version') {
+      foreach ($name in 'pyproject.toml', '.venv', 'pyvenv.cfg', 'uv.toml', '.python-version', '.python-versions') {
         $path = [System.IO.Path]::Combine($dir, $name)
-        if ($name -ne '.python-version') {
+        if ($name -notlike '.python-version*') {
           if ([System.IO.File]::Exists($path) -or [System.IO.Directory]::Exists($path)) { return $path }
           continue
         }

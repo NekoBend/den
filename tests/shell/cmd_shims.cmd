@@ -9,7 +9,7 @@ rem typed find is find.exe; no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
-rem below a pyvenv.cfg, a uv.toml or a .python-version that names a path,
+rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path,
 rem for --version / -V too, and elsewhere uv run for those as well; pip
 rem runs nothing outside a venv; path lists PATH; again asks before it
 rem re-runs.
@@ -260,6 +260,16 @@ cd /d "%T%\pyver\sub" || exit /b 1
 >>"%W%" echo [x]
 call "%BIN%\python3.cmd" -c x >"%O%" 2>&1
 call :expect %errorlevel% 0 "python3: below a .python-version that names a path, the system python and a line, not uv run"
+rem uv reads a .python-versions the same way.
+mkdir "%T%\pyvers\sub" || exit /b 1
+>"%T%\pyvers\.python-versions" echo ./tools/py
+cd /d "%T%\pyvers\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyvers\.python-versions
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: below a .python-versions that names a path, the system python and a line, not uv run"
 cd /d "%T%\pyveronly" || exit /b 1
 >"%W%" echo [@tools]
 >>"%W%" echo [run]

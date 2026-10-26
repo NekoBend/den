@@ -9,13 +9,13 @@ rem builds that project (its build backend is the repository's own code) or
 rem runs a python it names: uv takes a directory that holds a pyvenv.cfg for
 rem a venv, whatever its name, a uv.toml's settings can have it install and
 rem run a python the clone ships, and it runs the program a .python-version
-rem names to ask its version. There, after a line on stderr that says so, a
-rem python runs directly, for --version and -V too: the system Python uv
-rem finds, else one uv installed (uv python install). --system skips any
-rem venv here, and --no-config the .python-version, uv.toml and
-rem pyproject.toml here: a .python-version may name a program in the
-rem repository, which uv would run to ask its version. Elsewhere --version
-rem and -V go through uv run as well, so they name the python that
+rem (or a .python-versions) names to ask its version. There, after a line on
+rem stderr that says so, a python runs directly, for --version and -V too:
+rem the system Python uv finds, else one uv installed (uv python install).
+rem --system skips any venv here, and --no-config the .python-version,
+rem uv.toml and pyproject.toml here: a .python-version may name a program in
+rem the repository, which uv would run to ask its version. Elsewhere
+rem --version and -V go through uv run as well, so they name the python that
 rem `python x.py` runs.
 rem Inside a venv (VIRTUAL_ENV) it is the venv's python.exe, for python3 too
 rem (a Windows venv has no python3.exe). With the uv override off
@@ -33,11 +33,12 @@ set "_uv="
 if not "%_DEN_UV_OVERRIDE%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
 if not defined _uv goto plain
 rem The file uv run would read: here, then each directory up. A
-rem .python-version counts when it names a path: a line with / or \ in it,
-rem comment (#) lines aside. One that holds version requests alone (3.13,
-rem cpython@3.13) does not, so a pyenv .python-version in the user's folder
-rem leaves that folder alone. findstr reads the file, so no line of it
-rem reaches cmd's parser.
+rem .python-version, or a .python-versions, which uv reads the same way,
+rem counts when it names a path: a line with / or \ in it, comment (#)
+rem lines aside. One that holds version requests alone (3.13, cpython@3.13)
+rem does not, so a pyenv .python-version in the user's folder leaves that
+rem folder alone. findstr reads the file, so no line of it reaches cmd's
+rem parser.
 set "_d=%CD%"
 :walk
 if "%_d:~-1%"=="\" set "_d=%_d:~0,-1%"
@@ -45,7 +46,7 @@ if exist "%_d%\pyproject.toml" set "_m=%_d%\pyproject.toml"
 if not defined _m if exist "%_d%\.venv" set "_m=%_d%\.venv"
 if not defined _m if exist "%_d%\pyvenv.cfg" set "_m=%_d%\pyvenv.cfg"
 if not defined _m if exist "%_d%\uv.toml" set "_m=%_d%\uv.toml"
-if not defined _m if exist "%_d%\.python-version" "%SystemRoot%\System32\findstr.exe" /r /c:"^ *[/\\]" /c:"^ *[^# ].*[/\\]" "%_d%\.python-version" >nul 2>&1 && set "_m=%_d%\.python-version"
+for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" "%SystemRoot%\System32\findstr.exe" /r /c:"^ *[/\\]" /c:"^ *[^# ].*[/\\]" "%_d%\%%f" >nul 2>&1 && set "_m=%_d%\%%f"
 if defined _m goto direct
 for %%u in ("%_d%\..") do set "_u=%%~fu"
 if "%_u:~-1%"=="\" set "_u=%_u:~0,-1%"
