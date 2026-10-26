@@ -197,31 +197,41 @@ def split_by_lines(
     """Split a text file into chunks of N lines each.
 
     [Best for] Distributing CSV/log processing across workers.
-    [Note] Streams the file — memory usage is constant regardless of file size.
-           ``newline=""`` on the read and on every write keeps each line
-           ending (LF, CRLF) exactly as it was, so ``merge_files`` rebuilds
-           the original byte for byte. Pass ``encoding`` for non-UTF-8 text
-           (e.g. ``"cp932"`` for Shift-JIS logs).
+    [Note] Streams the file in binary, so memory use is constant regardless
+           of file size and nothing is decoded and encoded again: every part
+           holds the source's own bytes, cut after a ``b"\\n"`` (a CRLF stays
+           whole), and ``merge_files`` rebuilds the original byte for byte.
+           That needs a line break to be the byte 0x0A, as in UTF-8 and the
+           ASCII-compatible encodings (``"cp932"`` for Shift-JIS logs,
+           EUC-JP, Latin-1). ``encoding`` names the file's encoding only to
+           refuse UTF-16 and UTF-32 (``ValueError``): decode those and split
+           the text, accepting a BOM at the start of every part.
     """
+    import codecs
+
+    if codecs.lookup(encoding).name.startswith(("utf-16", "utf-32")):
+        raise ValueError(
+            f"{encoding} is not ASCII-compatible: split_by_lines cuts at the byte 0x0A"
+        )
     src = Path(path)
     dest = Path(out_dir) if out_dir else src.parent
     dest.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
 
-    with open(src, encoding=encoding, newline="") as fh:
+    with open(src, "rb") as fh:
         idx = 0
-        batch: list[str] = []
+        batch: list[bytes] = []
         for line in fh:
             batch.append(line)
             if len(batch) >= lines_per_chunk:
                 part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-                part_path.write_text("".join(batch), encoding=encoding, newline="")
+                part_path.write_bytes(b"".join(batch))
                 parts.append(part_path)
                 batch = []
                 idx += 1
         if batch:
             part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-            part_path.write_text("".join(batch), encoding=encoding, newline="")
+            part_path.write_bytes(b"".join(batch))
             parts.append(part_path)
 
     return parts

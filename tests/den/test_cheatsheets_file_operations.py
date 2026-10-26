@@ -55,6 +55,42 @@ def test_split_by_lines_reads_the_given_encoding(fileops, tmp_path):
     assert b"".join(part.read_bytes() for part in parts) == data
 
 
+@pytest.mark.parametrize(
+    ("encoding", "data"),
+    [
+        # A BOM came back at the start of every part: 23 bytes became 29.
+        ("utf-8-sig", "alpha\r\nbeta\r\ngamma\r\n".encode("utf-8-sig")),
+        # NEC row 13's 0x8790 decodes to U+2252, which cp932 encodes as 0x81E0.
+        ("cp932", b"\x87\x90 nec\r\n" + "ログ 2\r\n".encode("cp932")),
+    ],
+    ids=["utf-8-sig", "cp932-nec"],
+)
+def test_split_then_merge_does_not_reencode(fileops, tmp_path, encoding, data):
+    # Every part was decoded and encoded again, which is not the identity.
+    src = tmp_path / "src.txt"
+    src.write_bytes(data)
+    parts = fileops.split_by_lines(
+        src, lines_per_chunk=1, out_dir=tmp_path / "parts", encoding=encoding
+    )
+    assert len(parts) == data.count(b"\n")
+    merged = tmp_path / "merged.txt"
+    fileops.merge_files(parts, merged)
+    assert merged.read_bytes() == data
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "UTF-16-LE", "utf_32"])
+def test_split_by_lines_refuses_utf16_and_utf32(fileops, tmp_path, encoding):
+    # Their line break is not the byte 0x0A. Decoded and encoded again, every
+    # part got a BOM of its own: 36 bytes of UTF-16 came back as 40.
+    src = tmp_path / "src.txt"
+    src.write_bytes("alpha\nbeta\n".encode(encoding))
+    with pytest.raises(ValueError, match="0x0A"):
+        fileops.split_by_lines(
+            src, lines_per_chunk=1, out_dir=tmp_path / "parts", encoding=encoding
+        )
+    assert not (tmp_path / "parts").exists()
+
+
 # --- write_csv ---------------------------------------------------------------
 
 
