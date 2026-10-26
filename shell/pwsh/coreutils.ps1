@@ -86,14 +86,15 @@ function env {
       # (`env A=1 A=2 cmd`), it was the value the first assignment had just
       # set, and the session kept it. $saved ignores case, as Windows'
       # variable names do.
-      # The names are set inside the try. Set before it, the names set ahead
-      # of one that could not be (.NET refuses a name that starts with a NUL
-      # character, for one) stayed in the session when the error ended env,
-      # as it does inside a try or under $ErrorActionPreference Stop; and
-      # otherwise the command ran without that name. Now they are restored
-      # and the command does not run. A name whose set throws was not
-      # changed, so if it came up first there it leaves $saved: restoring it
-      # would throw again, and could stop the restore of the names after it.
+      # The names are set inside the try, so that when one cannot be set
+      # (.NET refuses a name that starts with a NUL character, for one), the
+      # ones set before it are restored and the command does not run. Set
+      # before the try, they stayed in the session when the error ended env
+      # (called inside a try, or under $ErrorActionPreference Stop), and
+      # otherwise the command ran without the name that failed. A name whose
+      # set throws was not changed, so if it came up first there it leaves
+      # $saved: restoring it would throw again, and could stop the restore of
+      # the names after it.
       $saved = @{}
       try {
         foreach ($kv in $assigns) {
