@@ -1,5 +1,5 @@
-"""Every file a model reads from a skill fits Cline v4.1.22's 8,000-character
-tool-result cap.
+"""Every file a model reads from a skill fits the 8,000-character tool-result
+cap of Cline v4.1.26 (CLI 3.0.74 runs the same code).
 
 Cline middle-cuts each tool result above 8,000 UTF-16 units. A skill arrives
 as the skills tool's result (formatSkillInvocation), and every other file as
@@ -24,7 +24,7 @@ except ImportError:  # optional locally; CI installs it
     yaml = None
 
 ROOT = Path(__file__).resolve().parents[2]
-CAP = 8_000  # Cline's default tool-result cap (message-builder.ts:28)
+CAP = 8_000  # Cline's default tool-result cap (message-builder.ts:29)
 RAW_CAP = 6_000  # a file's own length; also keeps it under Copilot CLI's 20KB read
 USER = "abcdefghijklmnop"  # 16 characters
 # den writes the skill's directory as Path.resolve().as_posix()
@@ -81,7 +81,7 @@ def skills_tool_result(text: str) -> str:
 
 
 def read_tool_result(text: str) -> str:
-    """What Cline's read_files returns for a whole file (file-read.ts:160-170):
+    """What Cline's read_files returns for a whole file (file-read.ts:164-174):
     readline's lines, each behind its line number padded to the last one's."""
     lines = text.replace("\r\n", "\n").split("\n")
     if lines[-1] == "":
