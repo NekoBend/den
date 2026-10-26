@@ -125,6 +125,13 @@ def test_fd_never_starts_a_mv_that_overwrites():
         assert re.search(rf"-[xX] mv {flags} -- \{{\}}", command), command
 
 
+def test_rename_prefix_rewrites_only_the_file_name():
+    # A Perl rename applies the expression to the whole path fd hands it:
+    # 's/test_/spec_/' aimed ./test_dir/test_a.py at ./spec_dir/test_a.py.
+    words = shlex.split(_command("rename prefix"))
+    assert words[words.index("rename") + 1] == "s{(^|/)test_([^/]*)$}{$1spec_$2}"
+
+
 XH_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
 XH_FLAGS_WITH_A_VALUE = {"-a", "--auth", "-o", "--output"}
 
@@ -293,6 +300,44 @@ def test_bulk_rename_skips_a_name_taken_by_a_directory(
     result = _run(_command(comment), repo)  # exit status: see above
     assert [path.name for path in directory.iterdir()] == [], result.stderr
     assert (repo / source).read_text(encoding="utf-8") == "SOURCE\n"
+
+
+@pytest.fixture
+def perl_rename(tmp_path) -> None:
+    """Skip unless ``rename`` is a Perl rename (util-linux's takes other operands)."""
+    exe = shutil.which("rename")
+    if exe is None:
+        pytest.skip("needs a Perl rename")
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    (probe / "x_a").touch()
+    subprocess.run(
+        [exe, "s/_a$/_b/", "x_a"],
+        cwd=probe,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    if not (probe / "x_b").exists():
+        pytest.skip("rename is not a Perl rename")
+
+
+@needs_tools
+@pytest.mark.usefixtures("perl_rename")
+def test_rename_prefix_renames_the_file_not_its_directory(repo):
+    # 's/test_/spec_/' changed the first test_ in the path: ./test_dir/test_a.py
+    # went into an existing spec_dir/ under its old name, and a_test_c.py,
+    # which has no test_ prefix, became a_spec_c.py.
+    (repo / "test_dir").mkdir()
+    (repo / "test_dir" / "test_a.py").write_text("A\n", encoding="utf-8")
+    (repo / "spec_dir").mkdir()
+    (repo / "test_b.py").write_text("B\n", encoding="utf-8")
+    (repo / "a_test_c.py").write_text("C\n", encoding="utf-8")
+    result = _run(_command("rename prefix"), repo)
+    assert list((repo / "spec_dir").iterdir()) == [], result.stderr
+    assert (repo / "test_dir" / "spec_a.py").read_text(encoding="utf-8") == "A\n"
+    assert (repo / "spec_b.py").read_text(encoding="utf-8") == "B\n"
+    assert (repo / "a_test_c.py").read_text(encoding="utf-8") == "C\n"
 
 
 @needs_tools
