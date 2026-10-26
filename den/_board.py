@@ -405,15 +405,16 @@ class _Reactions:
                     and isinstance(rep.get("button"), str)
                     and rep["button"].startswith("task-")
                 ):
-                    # ts and text as the server writes them, strings, or None.
-                    # A reaction stays in every /api/agent for as long as the
-                    # file holds it, however much follows it, and from the
-                    # first poll after a restart. An object whose toString is
-                    # not a function made the page throw on every poll; a nan
-                    # or inf (json.loads makes them of NaN, Infinity and the
-                    # standard 1e400) put JSON the page cannot parse in every
-                    # body, which is why such a reaction used to be skipped,
-                    # leaving its task open. Strings and None always encode.
+                    # ts and text only when they are strings, as the server
+                    # writes them, and None otherwise. A reaction stays in
+                    # every /api/agent for as long as the file holds it,
+                    # however much follows it, and from the first poll after a
+                    # restart. An object whose toString is not a function made
+                    # the page throw on every poll; a nan or inf (json.loads
+                    # makes them of NaN, Infinity and the standard 1e400) put
+                    # JSON the page cannot parse in every body, which is why
+                    # such a reaction used to be skipped, leaving its task
+                    # open. Strings and None always encode.
                     ts, text = rep.get("ts"), rep.get("text")
                     self._by_task[rep["re"]] = {
                         "button": rep["button"],
