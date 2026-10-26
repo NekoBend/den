@@ -291,8 +291,16 @@ updating it, so files deleted from the sources do not linger, and a source that
 is the output itself (a rerun of `pk all.7z *`) is left out. Every format exits
 non-zero when its archiver fails. A failed or interrupted `.zip`, `.7z` or
 single-file run keeps the existing output as it was; the tar formats replace it
-with whatever tar wrote. On pwsh the `.zip` holds hidden files and folders
-(`.env`, `.git`) too, as `zip -r` does.
+with whatever tar wrote. Should the existing output fail to go back in place as
+well (its folder turned read-only meanwhile), bash/zsh leave it where it waited
+and say where (`archive: previous 'out.zip' kept at ./.archive.XXXXXX/previous`).
+On pwsh the `.zip` holds hidden files and folders (`.env`, `.git`) too, as
+`zip -r` does, but it stores each source under its own name (a folder as
+`name/`), where `zip -r` keeps the path as given (`alpha/config.txt`). Two
+sources with one name, such as `alpha/config.txt` and `beta/config.txt` or two
+folders called `src`, would then overwrite each other when extracted, so pwsh
+refuses them before it writes anything and names both (on Windows the names
+match without regard to case). One source named twice is stored once.
 
 On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
 `.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.

@@ -590,6 +590,24 @@ STUB
     done
     rm -rf "$WORK/slow" "$WORK/slow.out"
 
+    # When zip failed and the old archive could not be moved back either (the
+    # directory turned read-only while zip ran), the staging directory, the
+    # one place the old archive was left, was removed with it. A zip stub
+    # that fails after putting a directory (holding a 'previous' directory)
+    # where the archive goes makes that move back fail even as root.
+    echo "[$sh] archive .zip keeps the previous archive when it cannot be put back"
+    rm -rf "$WORK/back"
+    mkdir -p "$WORK/back/bin" "$WORK/back/src"
+    echo x > "$WORK/back/src/x"
+    echo PRECIOUS > "$WORK/back/keep.zip"
+    printf '#!/bin/sh\nmkdir -p keep.zip/previous\nexit 3\n' > "$WORK/back/bin/zip"
+    chmod +x "$WORK/back/bin/zip"
+    actual=$($run "$FUNCTIONS_SH" "PATH='$WORK/back/bin:$PATH' && cd '$WORK/back' && archive keep.zip src" 2>&1)
+    assert_eq "$sh/archive .zip that cannot put the previous archive back exits with zip's code" "3" "$?"
+    assert_contains "$sh/archive .zip says where the previous archive was kept" "archive: previous 'keep.zip' kept at ./.archive." "$actual"
+    assert_eq "$sh/archive .zip kept the previous archive it could not put back" "PRECIOUS" "$(cat "$WORK/back"/.archive.*/previous 2>/dev/null)"
+    rm -rf "$WORK/back"
+
     # `set -- "$@" x` per source made the 7z branch quadratic: 20000 sources
     # took minutes in bash before 7z even started. Linear, it is well under a
     # second; the timeout only catches the quadratic form.
@@ -2374,6 +2392,31 @@ assert_contains "pwsh/archive zip with only the output as a source exits 1" "sta
 assert_contains "pwsh/archive zip with only the output as a source says so" "no source besides the output" "$actual"
 assert_eq "pwsh/archive zip with only the output keeps it" "$(sha256sum < "$WORK/self.before")" "$(sha256sum < "$WORK/self/all.zip")"
 rm -rf "$WORK/upd" "$WORK/rel.7z" "$WORK/self" "$WORK/self.before"
+
+# The zip stores each source under its own name (a folder as name/), where
+# `zip -r` keeps the path as given. Two sources with one name from different
+# folders made two entries of that name, and extracting kept only the last.
+echo "[pwsh] archive zip refuses two sources that would be stored under one name"
+setup_fixtures
+mkdir -p "$WORK/alpha" "$WORK/beta" "$WORK/p1/src" "$WORK/p2/src"
+echo alpha > "$WORK/alpha/config.txt"; echo beta > "$WORK/beta/config.txt"
+echo one > "$WORK/p1/src/a.txt"; echo two > "$WORK/p2/src/a.txt"
+echo PRECIOUS > "$WORK/both.zip"
+actual=$(pwsh_outcome "archive both.zip alpha/config.txt beta/config.txt")
+assert_contains "pwsh/archive zip same-name files exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive zip same-name files names both" "'alpha/config.txt' and 'beta/config.txt' would both be stored as 'config.txt'" "$actual"
+assert_not_contains "pwsh/archive zip same-name files stops the run" "out=after" "$actual"
+assert_eq "pwsh/archive zip same-name files keeps the existing output" "PRECIOUS" "$(cat "$WORK/both.zip")"
+actual=$(pwsh_outcome "archive dirs.zip p1/src p2/src")
+assert_contains "pwsh/archive zip same-name folders exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive zip same-name folders names both" "'p1/src' and 'p2/src' would both be stored as 'src'" "$actual"
+assert_not_exists "pwsh/archive zip same-name folders wrote nothing" "$WORK/dirs.zip"
+assert_eq "pwsh/archive zip same-name sources leave no temporary" "" "$(ls -A "$WORK" | grep '\.tmp\.' | tr -d '\n')"
+# One source named twice is not two sources: it is stored once, as zip -r does.
+actual=$(pwsh_outcome "archive twice.zip p1/src ./p1/src alpha/config.txt")
+assert_contains "pwsh/archive zip one source named twice exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip one source named twice is stored once" "config.txt src/ src/a.txt " "$(unzip -Z1 "$WORK/twice.zip" 2>/dev/null | sort | tr '\n' ' ')"
+rm -rf "$WORK/alpha" "$WORK/beta" "$WORK/p1" "$WORK/p2" "$WORK/both.zip" "$WORK/twice.zip"
 
 # extract ran `& 7z` / `& unrar` by bare name: a missing tool raised only a
 # non-terminating CommandNotFound, $LASTEXITCODE stayed 0, and the archive

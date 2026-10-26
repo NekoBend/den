@@ -704,7 +704,8 @@ archive() {
         # write a fresh one. An existing output is moved aside into a private
         # staging directory beside it (see _ar_stage), so the archiver always
         # creates a new file; on success the old one is dropped, on failure
-        # whatever the archiver left is removed and the old one is put back.
+        # whatever the archiver left is removed and the old one is put back
+        # (or, when even that fails, left in the staging directory, named).
         #
         # The archiver still writes $out itself, not a staged name: when $out
         # lies inside a source directory (`archive all.zip .`), zip and 7z
@@ -794,7 +795,17 @@ archive() {
                 if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
                     mv -f -- "$_ar_prev" "$out"
                 fi
-                rm -rf -- "$_ar_tmpd"
+                # The restore can fail as well: the directory turned read-only
+                # while the archiver ran, or a second Ctrl-C stopped mv. The
+                # staging directory then holds the only copy of the old
+                # archive, and removing it with the rest lost that archive, so
+                # it is kept and named instead. Asked of the directory once
+                # more, not of mv's status, for the reason above.
+                if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
+                    echo "archive: previous '$out' kept at $_ar_prev" >&2
+                else
+                    rm -rf -- "$_ar_tmpd"
+                fi
                 if [ -n "$_ar_sig" ]; then
                     trap - "$_ar_sig"
                     # $$ is the parent shell's pid, even in a subshell; the sh

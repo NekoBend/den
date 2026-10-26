@@ -478,6 +478,13 @@ function _ArDropOutput([string[]]$Sources = @(), [string]$Output = '') {
 # yet, for archive. A directory is stored under its own name with everything
 # beneath it, hidden entries included (Get-ChildItem -Force), and a directory
 # entry for every folder, as `zip -r` does; a file is stored under its name.
+# Only the name, where `zip -r` keeps the path as given: two sources with one
+# name (alpha/config.txt and beta/config.txt, or two folders called src) made
+# two entries of that name, and extracting kept only the last. Such a pair
+# throws, naming both, before anything is listed or written; on Windows the
+# names are compared without regard to case, as its file system compares
+# them. A source named twice (a glob and its own name) is one source, stored
+# once, as `zip -r` stores it.
 # $Skip is the final output: a source directory that holds it does not
 # archive the old archive into the new one. Every path is listed before $Dest
 # is created, so the zip being written is never one of its own entries. Any
@@ -488,10 +495,23 @@ function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = 
   $sess = $ExecutionContext.SessionState.Path
   $skipFull = if ($Skip) { $sess.GetUnresolvedProviderPathFromPSPath($Skip) } else { '' }
   $onWindows = ($env:OS -eq 'Windows_NT' -or $IsWindows)
-  # (file item or $null for a folder, entry name) pairs, in archive order.
-  $entries = [System.Collections.Generic.List[object]]::new()
+  $cmp = if ($onWindows) { [System.StringComparer]::OrdinalIgnoreCase } else { [System.StringComparer]::Ordinal }
+  # Each name at the top of the zip, and the source that takes it.
+  $claimed = [System.Collections.Generic.Dictionary[string, string]]::new($cmp)
+  $seen = [System.Collections.Generic.HashSet[string]]::new($cmp)
+  $items = [System.Collections.Generic.List[object]]::new()
   foreach ($src in $Sources) {
     $item = Get-Item -LiteralPath $sess.GetUnresolvedProviderPathFromPSPath($src) -Force -ErrorAction Stop
+    if (-not $seen.Add($item.FullName.TrimEnd('\', '/'))) { continue }
+    if ($claimed.ContainsKey($item.Name)) {
+      throw "'$($claimed[$item.Name])' and '$src' would both be stored as '$($item.Name)'"
+    }
+    $claimed[$item.Name] = $src
+    $items.Add($item)
+  }
+  # (file item or $null for a folder, entry name) pairs, in archive order.
+  $entries = [System.Collections.Generic.List[object]]::new()
+  foreach ($item in $items) {
     if (-not $item.PSIsContainer) {
       $entries.Add(@($item, $item.Name))
       continue

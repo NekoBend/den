@@ -656,6 +656,8 @@ Case 'archive .xz' { archive s3.xz one.txt }
 Case 'archive .zst' { archive s4.zst one.txt }
 Case 'archive .zip' { archive out.zip a.txt b.txt }
 Case 'archive .zip, the output among the sources' { archive out.zip a.txt out.zip }
+Case 'archive .zip, two sources with one name' { Set-Content -LiteralPath c.txt -Value 1; archive dup.zip c.txt sub/c.txt }
+Case 'archive .zip, one source named twice' { archive twice.zip a.txt ./a.txt }
 Case 'archive .7z' { archive out.7z a.txt '-x' }
 Case 'archive .7z, only the output as a source' { archive out.7z ./out.7z }
 Case 'archive, a dash-leading output' { archive '-dash.tar' a.txt }
