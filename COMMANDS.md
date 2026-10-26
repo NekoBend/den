@@ -469,7 +469,7 @@ succeeded, so a failed run leaves no truncated archive.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets; `save <name> '<command>'` stores it as typed, `save <name> <word...>` quotes each word again where it needs it (see shell/README.md) | ✓ | ✓ | — |
+| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets; `save <name> '<command>'` stores it as typed, `save <name> <word...>` quotes each word again where it needs it; on pwsh a snippet runs inside a function, so a `cd` and `$env:` changes stay, but a variable or function it makes stays only as `$global:x` or `function global:f` (see shell/README.md) | ✓ | ✓ | — |
 | `cheat [name\|ls]` | browse den's bundled cheatsheets (fzf + bat) | ✓ | ✓ | — |
 | `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars); a password in a url prints as `user:***@host`, and the `proxy add` line that typed it stays out of the history file | ✓ | ✓ | — |
 
@@ -516,6 +516,11 @@ On cmd, `again` reads Clink's history (cmd's own `doskey /history` stays empty
 under Clink) and needs Clink 1.3.18 or newer. Type it on a line of its own:
 after the confirm, the command becomes the next input line, so it runs as if
 typed, aliases included.
+
+On pwsh, `again` runs the line inside a function, as `snippet run` does: a `cd`
+and `$env:` changes stay, but a variable or function the line makes does not,
+so `$x = Get-Date` run again leaves `$x` as it was; `$global:x = Get-Date`
+sets it (see shell/README.md, Command snippets).
 
 On zsh, `reload` also deletes the completion dump (`~/.zcompdump`), so the new
 shell's `compinit` takes in completion functions installed since; without it,

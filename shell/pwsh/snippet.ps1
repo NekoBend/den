@@ -4,7 +4,12 @@
 # snippet saved from bash is usable from pwsh on the same machine, as far as its
 # syntax is (save quotes words in the saving shell's syntax). run/pick
 # Invoke-Expression the command in the CURRENT session (you saved it, so it is
-# trusted). Defining these functions has no side effects, so (like cheat.ps1) it is
+# trusted), from inside a function (_DenReplay, _helpers.ps1). Unlike bash/zsh's
+# eval, which sets the shell's own variables, that keeps a cd and $env: changes
+# but not a variable, function or alias the command makes ($x = 1,
+# function f {...}, Set-Alias) unless it is made global ($global:x,
+# function global:f, -Scope Global), as shell/README.md tells users.
+# Defining these functions has no side effects, so (like cheat.ps1) it is
 # not gated on an interactive session. The store is written by _DenWritePrivate
 # (_helpers.ps1, which init.ps1 loads first): 0600 in a 0700 directory off
 # Windows, and through a symlink, as snippet.sh does.

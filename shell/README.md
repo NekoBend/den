@@ -265,7 +265,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `extract ARCHIVE...` / `xt` | auto-detect and extract each archive; a failure is reported and the rest still run (exit 1 if any failed). Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst |
 | `archive OUT FILES...` / `pk` | create an archive (format from `OUT` extension); every argument after `OUT` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) |
 | `y` | yazi file manager (returns you to the dir you exit in) |
-| `again [N]` / `sagain` | re-run the Nth previous command (`sagain` = with sudo) |
+| `again [N]` / `sagain` | re-run the Nth previous command (`sagain` = with sudo); on PowerShell a variable or function the line makes is not kept unless it is global (see Command snippets, below) |
 
 ### Python / uv
 | Command | What it does |
@@ -380,6 +380,12 @@ Snippets are stored in `$XDG_CONFIG_HOME/den/snippets` (`name<TAB>command`; the
 name is `[A-Za-z0-9_-]`, the command may contain anything on one line). `run` and
 `pick` echo the command, then `eval` it in the **current shell** (you saved it,
 so it is trusted), which lets it `cd`, set vars, and use the current environment.
+PowerShell runs it with `Invoke-Expression` inside a function, as `again` runs
+the line it re-runs: it can `cd`, set `$env:` variables and read the session's
+variables, but a variable, function or alias it makes (`$x = 1`,
+`function f {...}`, `Set-Alias`), itself or through a script it dot-sources
+(`. ./env.ps1`), is gone when it ends. Make one global to keep it in the
+session: `$global:x = 1`, `function global:f {...}`, `Set-Alias -Scope Global`.
 `pick` needs `fzf`; without it, use `snippet run <name>`. `snippet` is in
 bash/zsh and PowerShell, and a machine's pwsh and bash share the snippet store.
 

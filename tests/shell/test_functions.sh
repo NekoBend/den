@@ -3312,6 +3312,31 @@ echo "[pwsh] sagain 0"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "sagain -N 0")
 assert_contains "pwsh/sagain 0 usage" "usage" "$err"
 
+# again replays the line inside a function (_DenReplay), as snippet run does.
+# Unlike bash/zsh's eval, which sets the shell's own variables, that keeps
+# $global: and $env: changes but not a plain assignment. The docs say so.
+echo "[pwsh] again runs the line inside a function: a plain \$x = ... is not kept, \$global: and \$env: are"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    function global:Read-Host { 'y' }
+    \$x = 'old'
+    Add-History -InputObject ([pscustomobject]@{
+        CommandLine = '\$x = ''new''; \$global:g = ''set''; \$env:DEN_AGAIN_PROBE = ''set'''; ExecutionStatus = 'Completed'
+        StartExecutionTime = [datetime]::Now; EndExecutionTime = [datetime]::Now
+    })
+    again 6>\$null
+    \"x=\$x g=\$g env=\$env:DEN_AGAIN_PROBE\"
+" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/again: what stays in the session" "x=old g=set env=set" "$actual"
+assert_eq "docs/README: pwsh again keeps only global variables" 'on PowerShell a variable or function the line makes is not kept unless it is global' \
+    "$(grep -oF -- 'on PowerShell a variable or function the line makes is not kept unless it is global' "$DOTFILES/shell/README.md" | head -n 1)"
+# The shell test image copies only shell/ and tests/shell/, not COMMANDS.md.
+if [ -f "$DOTFILES/COMMANDS.md" ]; then
+    assert_eq "docs/COMMANDS: pwsh again runs the line inside a function" 'On pwsh, `again` runs the line inside a function' \
+        "$(grep -oF -- 'On pwsh, `again` runs the line inside a function' "$DOTFILES/COMMANDS.md" | head -n 1)"
+else
+    echo "  SKIP: docs/COMMANDS pwsh again paragraph (no COMMANDS.md in $DOTFILES)"
+fi
+
 # back N>1 is supported now (browser-style history); with nothing recorded
 # yet it reports the empty history instead of "only N=1".
 echo "[pwsh] back 2 with no history"

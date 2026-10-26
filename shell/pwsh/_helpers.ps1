@@ -568,6 +568,11 @@ function _DenTyped([string]$Origin, [int]$Hops = 0) {
 # _DenReplay <line> <typed> - Invoke-Expression <line>, for again and snippet. When
 # the command replaying it was typed (<typed>), the commands the line calls itself
 # count as typed too (see _DenTyped), as they did when the line was first typed.
+# The line runs in this function's scope, not in the prompt's: it reads the
+# session's variables, and the location, $env: and what it makes global
+# ($global:x, function global:f, -Scope Global) stay, but a variable, function
+# or alias it makes otherwise, itself or in a script it dot-sources, ends with
+# it (shell/README.md, Command snippets, tells users so).
 function _DenReplay([string]$Line, [bool]$Typed) {
     $outer = $global:_DenReplayDepth
     $global:_DenReplayDepth = 0

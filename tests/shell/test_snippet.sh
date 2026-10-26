@@ -649,6 +649,44 @@ snippet: saved 'enc'
 + \$OutputEncoding.WebName
 snippet pick: no such snippet 'gone' (snippet ls)" "$(tr -d '\r' < "$WORK/pick.err")"
     unset FZF_LOG
+
+    # run and pick replay the line inside a function (_DenReplay). Unlike
+    # bash/zsh's eval, which sets the shell's own variables, that keeps what
+    # the line makes global, $env: and the location, but not a plain variable,
+    # function or alias, whether the line or a script it dot-sources makes it.
+    # The line still reads the session's variables. The docs say so.
+    reset_store
+    echo "[pwsh] a snippet runs inside a function: it reads the session's variables; global, \$env: and cd stay, plain variables, functions and aliases do not"
+    rm -rf "${WORK:?}/scope"
+    mkdir -p "$WORK/scope/to"
+    printf '%s\n' '$dotVar = 1' 'function Dot-Fn { }' > "$WORK/scope/env.ps1"
+    cat > "$TESTTMP/scope.ps1" <<'PS1'
+$v = 'old'
+snippet save plain '"read=$v"; $v = ''new''; $made = 1; function Plain-Fn { }; Set-Alias plain-al Get-Date'
+snippet save dot '. ./env.ps1'
+snippet save glob '$global:g = ''set''; function global:Global-Fn { }; Set-Alias global-al Get-Date -Scope Global'
+snippet save envcd '$env:DEN_SCOPE_PROBE = ''set''; Set-Location ./to'
+foreach ($n in 'plain', 'dot', 'glob', 'envcd') { snippet run $n }
+"v=$v made=$(Test-Path Variable:made) Plain-Fn=$(Test-Path Function:Plain-Fn) plain-al=$(Test-Path Alias:plain-al)"
+"dotVar=$(Test-Path Variable:dotVar) Dot-Fn=$(Test-Path Function:Dot-Fn)"
+"g=$g Global-Fn=$(Test-Path Function:Global-Fn) global-al=$(Test-Path Alias:global-al)"
+"env=$env:DEN_SCOPE_PROBE location=$(Split-Path -Leaf (Get-Location).Path)"
+PS1
+    actual=$(cd "$WORK/scope" && run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/scope.ps1'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet run: what stays in the session" "read=old
+v=old made=False Plain-Fn=False plain-al=False
+dotVar=False Dot-Fn=False
+g=set Global-Fn=True global-al=True
+env=set location=to" "$actual"
+    assert_eq "docs/README: a pwsh snippet runs inside a function" 'PowerShell runs it with `Invoke-Expression` inside a function' \
+        "$(grep -oF -- 'PowerShell runs it with `Invoke-Expression` inside a function' "$DOTFILES/shell/README.md" | head -n 1)"
+    # The shell test image copies only shell/ and tests/shell/, not COMMANDS.md.
+    if [ -f "$DOTFILES/COMMANDS.md" ]; then
+        row=$(grep -F '| `snippet` / `snip` |' "$DOTFILES/COMMANDS.md" | head -n 1)
+        assert_contains "docs/COMMANDS: a pwsh snippet runs inside a function" 'on pwsh a snippet runs inside a function' "$row"
+    else
+        echo "  SKIP: docs/COMMANDS snippet row (no COMMANDS.md in $DOTFILES)"
+    fi
 else
     echo "pwsh not found; skipping pwsh snippet tests"
 fi
