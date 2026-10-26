@@ -548,7 +548,9 @@ class _Handler(BaseHTTPRequestHandler):
         lines = _tail_lines(root, _reports_path(root), _MAX_LIST_BYTES)
         reports: list[object] = []
         for line in lines[-limit:]:
-            with suppress(json.JSONDecodeError):
+            # Every line json.loads rejects, as in _Reactions._take: one that
+            # raised would fail every poll while it stays in the window.
+            with suppress(ValueError, RecursionError):
                 reports.append(json.loads(line))
         return {"reports": reports, "total": len(lines)}
 
@@ -564,7 +566,7 @@ class _Handler(BaseHTTPRequestHandler):
         entries: list[object] = []
         seen: dict[str, int] = {}
         for line in lines:
-            with suppress(json.JSONDecodeError):
+            with suppress(ValueError, RecursionError):  # as in _list_reports
                 entry = json.loads(line)
                 if not isinstance(entry, dict):
                     continue

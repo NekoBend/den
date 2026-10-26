@@ -674,6 +674,33 @@ def test_reactions_skip_lines_json_cannot_parse(tmp_path):
     assert index.snapshot()["t1"]["button"] == "task-done", "and on the next poll"
 
 
+@pytest.mark.parametrize("bad", [_DEEP_LINE, _BIG_INT_LINE], ids=["deep", "big-int"])
+def test_agent_list_answers_past_a_line_json_cannot_parse(served, bad):
+    # Raised out of the handler, such a line dropped the connection on every
+    # poll for as long as it stayed inside the 512 KiB window.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    with _board._agent_path(root).open("ab") as f:
+        f.write(bad.encode() + b"\n")
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+
+
+@pytest.mark.parametrize("bad", [_DEEP_LINE, _BIG_INT_LINE], ids=["deep", "big-int"])
+def test_report_list_answers_past_a_line_json_cannot_parse(served, bad):
+    root, _server, port = served
+    before = {"button": "note", "text": "before"}
+    assert _request(port, "POST", "/api/report", before)[0] == 200
+    with _board._reports_path(root).open("ab") as f:
+        f.write(bad.encode() + b"\n")
+    after = {"button": "bug", "text": "after"}
+    assert _request(port, "POST", "/api/report", after)[0] == 200
+    status, body = _request(port, "GET", "/api/reports")
+    assert status == 200
+    listed = [(r["button"], r["text"]) for r in json.loads(body)["reports"]]
+    assert listed == [("note", "before"), ("bug", "after")]
+
+
 def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):
     reports = _board._reports_path(tmp_path)
     reports.parent.mkdir(parents=True)
