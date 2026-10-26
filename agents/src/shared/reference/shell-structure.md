@@ -56,13 +56,14 @@ Strict mode turns silent corruption into an immediate, diagnosable failure.
 5. Function definitions
 6. `main` function
 7. `main "$@"` call at the bottom, guarded so it runs only when the script is executed:
-   `if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then main "$@"; fi`
+   `if ! (return 0 2>/dev/null); then main "$@"; fi`
 
 Wrap logic in a `main()` function rather than running at the top level.
 This prevents variables from leaking into the global scope
 and makes the script testable (functions can be sourced without executing `main`).
-The `:-$0` keeps the check working under `set -u` for a script read from stdin (`curl ... | bash`),
-where `BASH_SOURCE` is empty.
+`return` works only in a function or a sourced file,
+so `(return 0 2>/dev/null)` fails when the script is executed (also when Bash reads it from stdin)
+and succeeds when it is sourced.
 
 **Why:** The guarded `main "$@"` call is the shell equivalent of Python's `if __name__ == "__main__"`.
 Sourcing the script defines its functions without running `main`,

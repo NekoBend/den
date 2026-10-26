@@ -62,14 +62,14 @@ main() {
   process_orders "$@"
 }
 
-if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+if ! (return 0 2>/dev/null); then
   main "$@"
 fi
 ```
 
 `main` wraps the top-level logic and is the last thing called,
 with `main "$@"` forwarding all script arguments (shell-structure.md section 9).
-The `BASH_SOURCE` check around that call is the shell equivalent of Python's `if __name__ == "__main__"`:
+The `(return 0 2>/dev/null)` check around that call is the shell equivalent of Python's `if __name__ == "__main__"`:
 `main` runs when the script is executed and not when it is sourced,
 so tests (e.g., with Bats) can source the script
 to test `fetch_order` and `summarize_order` in isolation.

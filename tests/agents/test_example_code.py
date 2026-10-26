@@ -13,6 +13,8 @@ test guards against, as an outside review (2026-10) found it in the old text:
   `result="$(report_orders ...)"`: that call went on and returned a count.
 - Example 5 and shell-structure.md section 9 ended the script with a bare
   `main "$@"` and said the script could be sourced: sourcing it ran main.
+  A `BASH_SOURCE` check against $0 still ran it when sourced through
+  `bash -c 'source "$0"' ./orders.sh`.
 - examples/powershell.md's Pester mock of curl returned the JSON but left
   $LASTEXITCODE alone, so Get-Order read whatever the session held: nothing
   (a StrictMode error) or an earlier native command's exit code.
@@ -216,12 +218,15 @@ _SCRIPTS = {"example-5": _example_5, "shell-structure-9": _section_9_item_7}
 
 # How the script is started, and what it must print: sourcing defines the
 # functions and runs nothing, also from a function that has arguments of its
-# own; executing it runs main with the script's arguments, also when bash
-# reads it from stdin (curl ... | bash), where BASH_SOURCE is empty.
+# own, and through `bash -c 'source "$0"' ./orders.sh`, where $0 and
+# BASH_SOURCE both name the file; executing it runs main with the script's
+# arguments, also when bash reads it from stdin (curl ... | bash), where
+# BASH_SOURCE is empty.
 _DEFINED = 'echo "defined: $(type -t main)"'
 _STARTS = {
     "sourced": ["-c", f"source ./orders.sh; {_DEFINED}"],
     "sourced-in-a-function": ["-c", f"f() {{ source ./orders.sh; }}; f o1; {_DEFINED}"],
+    "sourced-by-bash-c": ["-c", f'source "$0"; {_DEFINED}', "./orders.sh"],
     "executed": ["orders.sh", "o1", "o2"],
     "read-from-stdin": ["-s", "o1", "o2"],
 }
