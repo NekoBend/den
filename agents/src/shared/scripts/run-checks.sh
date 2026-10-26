@@ -214,8 +214,10 @@ _tsc_verdict() {
       # TS2xxx, TS7xxx, the override and possibly-null errors and the
       # unused-name errors come from the type checker, so it ran; not these
       # TS2xxx, which the parser reports too (parser.ts and scanner.ts of
-      # TypeScript 5.9.3 and 6.0.3, numbered in diagnosticMessages.json)
-      if (index(" 2427 2457 2458 2657 2754 2809 2819 ", " " code " ")) next
+      # TypeScript 5.9.3 and 6.0.3, numbered in diagnosticMessages.json, and
+      # the parser and scanner of 7.0.2, whose parser reports TS2880 for an
+      # import assertion)
+      if (index(" 2427 2457 2458 2657 2754 2809 2819 2880 ", " " code " ")) next
       if ((code >= 2000 && code < 3000) || (code >= 7000 && code < 8000) ||
           (code >= 4112 && code <= 4117) || (code >= 18046 && code <= 18050) ||
           code == 6133 || code == 6138 || code == 6192 || code == 6196 ||

@@ -329,6 +329,12 @@ EOF
     _run_stubbed "$WORK/proj/src/a.ts"
     [[ "$output" == *"[typecheck] SKIPPED   tsc -p $WORK/proj/tsconfig.json may have stopped"* ]]
   done
+  # regression: TypeScript 7.0's parser reports TS2880 for an import
+  # assertion, and tsc 7.0.2 then printed this line alone, exit 1
+  printf '%s\n' "src/b.ts(1,32): error TS2880: Import assertions have been replaced by import attributes. Use 'with' instead of 'assert'." \
+    "src/a.ts" "src/b.ts" > "$WORK/tsc.out"
+  _run_stubbed "$WORK/proj/src/a.ts"
+  [[ "$output" == *"[typecheck] SKIPPED   tsc -p $WORK/proj/tsconfig.json may have stopped before type-checking src/a.ts"* ]]
 }
 
 @test "TypeScript: a config tsc cannot parse is SKIPPED before any check runs (stub tsc)" {
@@ -726,6 +732,23 @@ EOF
     run "$SCRIPT" "$WORK/proj/src/typed.ts"
     [[ "$output" == *"[typecheck] SKIPPED   tsc -p $WORK/proj/tsconfig.json may have stopped before type-checking src/typed.ts"* ]]
   done
+}
+
+@test "TypeScript (tsc): an import assertion in another file never gives PASS" {
+  command -v tsc >/dev/null 2>&1 || skip "tsc not installed"
+  _found_above "$WORK" tsconfig.json && skip "a tsconfig.json above the temp dir"
+  # 'assert' in place of 'with': 5.9 takes it, 6.0's checker reports TS2880
+  # beside typed.ts's own error, and 7.0's parser reports TS2880 and then
+  # checks nothing
+  mkdir -p "$WORK/proj/src"
+  printf '{ "compilerOptions": { "strict": true, "noEmit": true, "module": "esnext", "moduleResolution": "bundler", "resolveJsonModule": true }, "include": ["src"] }\n' > "$WORK/proj/tsconfig.json"
+  printf '{ "a": 1 }\n' > "$WORK/proj/src/data.json"
+  printf 'import data from "./data.json" assert { type: "json" };\nexport const a = data.a;\n' > "$WORK/proj/src/assert.ts"
+  printf 'export const n: number = "x";\n' > "$WORK/proj/src/typed.ts"
+  run "$SCRIPT" "$WORK/proj/src/typed.ts"
+  [[ "$output" != *"[typecheck] PASS"* ]]
+  [[ "$output" == *"src/typed.ts(1,14): error TS2322"* ||
+    "$output" == *"[typecheck] SKIPPED   tsc -p $WORK/proj/tsconfig.json may have stopped before type-checking src/typed.ts"* ]]
 }
 
 @test "TypeScript (tsc): JavaScript is type-checked only in a project that takes it" {
