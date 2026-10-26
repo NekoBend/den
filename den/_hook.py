@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
 
 from ._exe import find_tool
 from ._memory import (
@@ -489,22 +489,32 @@ def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
     return entries
 
 
-def _mergeable(config: Path) -> bool:
-    """True when config is already a JSON object den can merge its keys into, so
-    nothing of the user's is lost by writing it back. ValueError covers both
-    JSONDecodeError and UnicodeDecodeError."""
+def _mergeable(config: Path, events: Iterable[str]) -> bool:
+    """True when config is already a JSON object den can merge its hooks for
+    `events` into, so nothing of the user's is lost by writing it back: its
+    `hooks`, if it has one, is an object, and each of those events in it holds
+    a list. ValueError covers both JSONDecodeError and UnicodeDecodeError."""
     try:
-        return isinstance(json.loads(config.read_text(encoding="utf-8")), dict)
+        data = json.loads(config.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
+    if not isinstance(data, dict):
+        return False
+    hooks = data.get("hooks", {})
+    return isinstance(hooks, dict) and all(
+        isinstance(hooks.get(event, []), list) for event in events
+    )
 
 
-def _backup_if_unmergeable(config: Path) -> bool:
-    """Back up config before install overwrites it, UNLESS it is already a JSON
-    object den can merge into. _read_json reads anything else as {} -- a
-    malformed file, a non-UTF-8 file, OR valid-but-non-object JSON (a
-    list/string/number) -- so without this, install would write back only den's
-    keys and silently discard the user's file.
+def _backup_if_unmergeable(config: Path, events: Iterable[str]) -> bool:
+    """Back up config before install overwrites it, UNLESS den can merge its
+    hooks for `events` into it (_mergeable). _read_json reads anything but a
+    JSON object as {} -- a malformed file, a non-UTF-8 file, OR
+    valid-but-non-object JSON (a list/string/number) -- so without this, install
+    would write back only den's keys and silently discard the user's file. Inside
+    an object, a `hooks` that is not an object, or one of den's events holding
+    something other than a list, is a shape den never writes and cannot add to:
+    install replaces it (_add_den_entries), so the file is backed up first too.
 
     The copy is the one `--force` makes (_Writer._backup): <config>.den.bak, or
     the first free .den.bak.N when an earlier backup holds something else, and
@@ -524,7 +534,7 @@ def _backup_if_unmergeable(config: Path) -> bool:
     backup's directory is the config's own, which _resolve_config already
     vetted.
     """
-    if not config.is_file() or _mergeable(config):
+    if not config.is_file() or _mergeable(config, events):
         return True
     # Imported here: install's module is not needed on the per-turn hook path.
     from ._install import _Writer
@@ -533,8 +543,8 @@ def _backup_if_unmergeable(config: Path) -> bool:
     if bak is None:
         return False
     print(
-        f"{_ERR_INSTALL}: {config} is not a JSON object den can merge; "
-        f"backed up to {bak} before writing den's hooks",
+        f"{_ERR_INSTALL}: {config} is not a JSON object den can merge its hooks "
+        f"into; backed up to {bak} before writing den's hooks",
         file=sys.stderr,
     )
     return True
@@ -562,7 +572,7 @@ def _is_den_hook(hook: object) -> bool:
     return isinstance(command, str) and _MARKER in command
 
 
-def _strip_den_hooks(hooks: dict) -> dict:
+def _strip_den_hooks(hooks: object) -> object:
     """`hooks` with den's own entries taken out; the argument is not changed.
 
     Only a hook whose command carries the den marker comes out. Its group stays,
@@ -570,39 +580,57 @@ def _strip_den_hooks(hooks: dict) -> dict:
     someone added to a group den wrote is theirs, and dropping the whole group
     deleted it on every install and remove, and on the move out of a shared
     .claude/settings.json. A group goes only when den's hooks were all it held,
-    and an event only when that leaves it with no group, so an object holding
-    nothing of den's comes back equal. The exceptions are shapes den cannot
-    merge into: a `hooks` that is not an object reads as empty, and an event
-    whose value is not a list is dropped."""
+    and an event only when that leaves it with no group. A shape den never
+    writes (a `hooks` that is not an object, an event whose value is not a
+    list) holds nothing den can tell is its own, so it stays as it is.
+
+    When nothing of den's is in it, `hooks` itself comes back, whatever its
+    shape: remove then leaves the file byte-identical."""
     if not isinstance(hooks, dict):
-        return {}
-    cleaned: dict[str, list] = {}
+        return hooks
+    cleaned: dict = {}
     for event, groups in hooks.items():
         if not isinstance(groups, list):
+            cleaned[event] = groups
             continue
         kept = []
         for group in groups:
-            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+            if not isinstance(group, dict):
+                kept.append(group)  # not a group, so nothing of den's in it
+                continue
+            inner = group.get("hooks")
+            if not isinstance(inner, list):
                 kept.append(group)  # no hook list, so nothing of den's in it
                 continue
-            rest = [h for h in group["hooks"] if not _is_den_hook(h)]
-            if len(rest) == len(group["hooks"]):
+            rest = [h for h in inner if not _is_den_hook(h)]
+            if len(rest) == len(inner):
                 kept.append(group)
             elif rest:
                 kept.append({**group, "hooks": rest})
         if kept or not groups:
             cleaned[event] = kept
-    return cleaned
+    # Equal exactly when nothing came out: the groups kept are the same objects.
+    return hooks if cleaned == hooks else cleaned
+
+
+def _add_den_entries(hooks: object, entries: dict[str, list]) -> dict:
+    """`hooks`, den's own entries already taken out, with den's `entries` added
+    after what each event holds. What den cannot add to (a `hooks` that is not
+    an object, one of den's events holding something other than a list) is
+    replaced: _backup_if_unmergeable has copied the file first."""
+    merged = dict(hooks) if isinstance(hooks, dict) else {}
+    for event, new in entries.items():
+        old = merged.get(event)
+        merged[event] = [*old, *new] if isinstance(old, list) else list(new)
+    return merged
 
 
 def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    if not _backup_if_unmergeable(config):
+    entries = _settings_entries(tool, spec, den_dir)
+    if not _backup_if_unmergeable(config, entries):
         return False
     data = _read_json(config)
-    hooks = _strip_den_hooks(data.get("hooks", {}))
-    for event, groups in _settings_entries(tool, spec, den_dir).items():
-        hooks.setdefault(event, []).extend(groups)
-    data["hooks"] = hooks
+    data["hooks"] = _add_den_entries(_strip_den_hooks(data.get("hooks", {})), entries)
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return True
@@ -633,7 +661,7 @@ def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
     if "hooks" not in data:
         return True
     cleaned = _strip_den_hooks(data["hooks"])
-    if cleaned == data["hooks"]:
+    if cleaned is data["hooks"]:
         return True  # nothing of den's: leave the file byte-identical
     data["hooks"] = cleaned
     if not data["hooks"]:
@@ -661,7 +689,7 @@ def _strip_copilot(hooks: dict) -> dict:
 
 
 def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    if not _backup_if_unmergeable(config):
+    if not _backup_if_unmergeable(config, spec["events"].values()):
         return False
     data = _read_json(config)
     data["version"] = data.get("version", 1)

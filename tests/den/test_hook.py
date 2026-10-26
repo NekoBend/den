@@ -536,12 +536,19 @@ def test_strip_den_hooks_takes_out_only_dens_hooks():
         {"Stop": [{"hooks": "echo hi"}]},
         {"Stop": [{"hooks": ["echo hi", 5, None]}]},
         {"Stop": [{"hooks": [{"type": "command", "command": 5}]}]},
+        {"Stop": {"hooks": [{"type": "command", "command": "echo hi"}]}},
+        {"Stop": "echo hi", "PreToolUse": None},
+        None,
+        ["echo hi"],
     ],
 )
 def test_strip_den_hooks_returns_what_holds_nothing_of_dens_unchanged(hooks):
     # Anything else made remove rewrite a file it had nothing to take out of,
-    # or raised on an entry den never wrote.
-    assert _hook._strip_den_hooks(copy.deepcopy(hooks)) == hooks
+    # or raised on an entry den never wrote. A shape den never writes (the last
+    # four) was dropped. Getting the very object back is remove's cue.
+    arg = copy.deepcopy(hooks)
+    assert _hook._strip_den_hooks(arg) is arg
+    assert arg == hooks
 
 
 def test_remove_leaves_a_file_with_nothing_of_dens_byte_identical(
@@ -554,6 +561,80 @@ def test_remove_leaves_a_file_with_nothing_of_dens_byte_identical(
     local.write_bytes(raw)
     assert hook_main(["remove", "--tool", "claude"]) == 0
     assert local.read_bytes() == raw
+
+
+# Shapes den never writes: a `hooks` that is not an object, an event whose value
+# is not a list. strip dropped them, so remove rewrote a file that held nothing
+# of den's without them, and install dropped them with no copy anywhere.
+_ODD_HOOKS = {
+    "event-object": {"Stop": {"hooks": [{"type": "command", "command": "echo hi"}]}},
+    "event-null": {"Stop": None},
+    "hooks-null": None,
+    "hooks-list": ["echo hi"],
+}
+
+
+@pytest.mark.parametrize("hooks", list(_ODD_HOOKS.values()), ids=list(_ODD_HOOKS))
+def test_remove_leaves_hooks_of_a_shape_den_never_writes_byte_identical(
+    tmp_path, monkeypatch, hooks
+):
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    raw = json.dumps({"x": 1, "hooks": hooks}, separators=(",", ":")).encode()
+    local.write_bytes(raw)
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    assert local.read_bytes() == raw
+
+
+@pytest.mark.parametrize("hooks", list(_ODD_HOOKS.values()), ids=list(_ODD_HOOKS))
+def test_install_backs_up_hooks_it_cannot_add_to_before_replacing_them(
+    tmp_path, monkeypatch, capsys, hooks
+):
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    raw = json.dumps({"x": 1, "hooks": hooks}).encode()
+    local.write_bytes(raw)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    bak = local.with_name(local.name + ".den.bak")
+    assert bak.read_bytes() == raw
+    assert str(bak) in capsys.readouterr().err, "the backup is named"
+    data = json.loads(local.read_text())
+    assert data["x"] == 1
+    cmds = _commands(data["hooks"]["Stop"])
+    assert len(cmds) == 1 and cmds[0].startswith("den hook run --event stop")
+
+
+def test_install_keeps_another_events_value_of_a_shape_den_never_writes(
+    tmp_path, monkeypatch
+):
+    # den adds nothing to these events, so it neither replaces nor copies them.
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    odd = {"PreToolUse": "echo keep", "Notification": None}
+    local.write_text(json.dumps({"hooks": odd}))
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    hooks = json.loads(local.read_text())["hooks"]
+    assert {k: hooks[k] for k in odd} == odd
+    assert "UserPromptSubmit" in hooks
+    assert not list(local.parent.glob("*.den.bak*")), "nothing replaced, no backup"
+
+
+def test_install_moves_den_out_of_settings_json_and_keeps_a_value_it_never_wrote(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    shared.write_text(
+        json.dumps(
+            {"hooks": {"Stop": [_den_group("claude", "stop")], "PreToolUse": "echo x"}}
+        )
+    )
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert json.loads(shared.read_text()) == {"hooks": {"PreToolUse": "echo x"}}
 
 
 def test_list_shows_den_managed(tmp_path, monkeypatch, capsys):
