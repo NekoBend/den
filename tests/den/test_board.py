@@ -695,6 +695,70 @@ def test_scaffold_reads_a_board_json_json_cannot_take_as_invalid(tmp_path, capsy
     assert cfg_path.read_bytes() == data, "an edit is never clobbered"
 
 
+@pytest.mark.parametrize(
+    "buttons",
+    [
+        pytest.param('[{"id": "bug", "label": "Bug", "color": NaN}]', id="NaN"),
+        pytest.param('[{"id": "bug", "label": "Bug", "size": 1e400}]', id="1e400"),
+        pytest.param("[" * 1000 + "]" * 1000, id="deep"),
+    ],
+)
+def test_scaffold_reads_a_board_json_the_page_cannot_get_as_invalid(
+    tmp_path, capsys, buttons
+):
+    # /api/config sends the buttons as they are. NaN, and the inf json.loads
+    # makes of 1e400, went out as NaN and Infinity, which the page cannot
+    # parse, and buttons nested near json.loads' limit dropped the connection
+    # (see the test below). Either way the page showed no buttons, and no
+    # report could be filed.
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    data = ('{"title": "Rig", "buttons": ' + buttons + "}\n").encode()
+    cfg_path.write_bytes(data)
+    assert _in_a_new_thread(_board.ensure_scaffold, tmp_path) == _board._DEFAULT_CONFIG
+    assert f"unreadable {cfg_path}" in capsys.readouterr().err
+    assert cfg_path.read_bytes() == data, "an edit is never clobbered"
+
+
+def test_scaffold_reads_a_board_json_nested_past_the_bound_as_invalid(tmp_path, capsys):
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    bound = _board._MAX_CONFIG_DEPTH
+    # The object is a level of its own, so the buttons get one level less.
+    cfg_path.write_text('{"buttons": ' + _nested(bound - 1) + "}\n")
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == json.loads(_nested(bound - 1))
+    assert capsys.readouterr().err == ""
+    cfg_path.write_text('{"buttons": ' + _nested(bound) + "}\n")
+    assert _board.ensure_scaffold(tmp_path) == _board._DEFAULT_CONFIG
+    expected = f"unreadable {cfg_path}: nested deeper than {bound} levels"
+    assert expected in capsys.readouterr().err
+
+
+def test_config_answers_past_a_board_json_nested_near_the_limit(
+    served, capsys, parse_limit
+):
+    # json.loads read such a board.json at start, and /api/config, which nests
+    # the buttons as deep from a server thread further down its stack, could
+    # not send it: json.dumps raised there, and the connection dropped.
+    # ensure_scaffold runs in a new thread, near the top of its stack, as
+    # `den board` runs it.
+    root, server, port = served
+    cfg_path = root / ".den" / "board" / "board.json"
+    for depth in _near(parse_limit):
+        buttons = _nested(depth - 1)  # depth levels, with the object
+        cfg_path.write_text('{"buttons": ' + buttons + "}\n")
+        server.board_config = _in_a_new_thread(_board.ensure_scaffold, root)
+        status, body = _request(port, "GET", "/api/config")
+        assert status == 200, f"depth {depth}"
+        # The config's own buttons while the response can hold them, and the
+        # defaults past that.
+        listed = _in_a_new_thread(_strict_json, body)["buttons"]
+        assert listed == _board._DEFAULT_CONFIG["buttons"] or (
+            f'"buttons": {buttons}'.encode() in body
+        ), f"depth {depth}"
+    capsys.readouterr()
+
+
 def test_reactions_skip_lines_json_cannot_parse(tmp_path):
     # Both come before the reaction: a read that raised on them would never
     # reach it, and would raise again on every poll after.

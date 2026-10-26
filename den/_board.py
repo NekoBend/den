@@ -84,6 +84,11 @@ _DEFAULT_CONFIG: dict[str, object] = {
         {"id": "ok", "label": "OK", "color": "#0ca30c"},
     ],
 }
+# board.json nests three levels deep (the object, its buttons, a button).
+# This leaves room for anything a user adds, and stays far below the depth
+# any thread can encode (CPython 3.12 and 3.13 stop at 10000 levels, at 3000
+# on Windows and at 500 in a debug build).
+_MAX_CONFIG_DEPTH = 32
 
 
 def _board_dir(root: Path) -> Path:
@@ -203,6 +208,20 @@ def _derived_id(line: str) -> str:
     return digest.hexdigest()[:8]
 
 
+def _depth(value: object) -> int:
+    """How many levels of dicts and lists `value` nests: 0 for anything else.
+    Level by level, not by recursion, so any depth json.loads made is fine."""
+    depth, level = 0, [value]
+    while containers := [v for v in level if isinstance(v, (dict, list))]:
+        depth += 1
+        level = [
+            item
+            for v in containers
+            for item in (v.values() if isinstance(v, dict) else v)
+        ]
+    return depth
+
+
 def ensure_scaffold(root: Path) -> dict[str, object]:
     """Create .den/board/board.json with defaults; never clobber edits."""
     cfg_path = _board_dir(root) / "board.json"
@@ -215,6 +234,23 @@ def ensure_scaffold(root: Path) -> dict[str, object]:
         )
     try:
         loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+        # /api/config sends the buttons as they are, so a config the response
+        # cannot carry is no more usable than one json.loads rejects; the page
+        # showed no buttons, and no report could be filed. allow_nan=False
+        # refuses the nan and inf json.loads makes of NaN, Infinity and the
+        # standard 1e400 (json.dumps writes them back as NaN and Infinity,
+        # which the page's JSON parser rejects). The depth bound stands in
+        # for "too deep to send": a server thread nests the buttons as deep
+        # as this file, from further down its stack, so a file this thread
+        # reads and writes back can still be too deep for that one. That is
+        # a few levels with equal stacks, and far more on CPython 3.14 when
+        # this thread's stack is the larger: 3.14 sizes the limit to each
+        # thread's stack. Any depth past what a board.json needs is refused,
+        # on every Python and stack alike.
+        if _depth(loaded) > _MAX_CONFIG_DEPTH:
+            msg = f"nested deeper than {_MAX_CONFIG_DEPTH} levels"
+            raise ValueError(msg)
+        json.dumps(loaded, allow_nan=False)
     except (OSError, ValueError, RecursionError) as exc:
         # A cloned repo can ship board.json. ValueError covers a byte that is
         # not UTF-8 (UnicodeDecodeError), invalid JSON and int's digit limit;
