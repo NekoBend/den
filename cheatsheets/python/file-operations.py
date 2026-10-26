@@ -198,9 +198,10 @@ def split_by_lines(
 
     [Best for] Distributing CSV/log processing across workers.
     [Note] Streams the file in binary, so memory use is constant regardless
-           of file size and nothing is decoded and encoded again: every part
-           holds the source's own bytes, cut after a ``b"\\n"`` (a CRLF stays
-           whole), and ``merge_files`` rebuilds the original byte for byte.
+           of file size as long as lines end in 0x0A, and nothing is decoded
+           and encoded again: every part holds the source's own bytes, cut
+           after a ``b"\\n"`` (a CRLF stays whole), and ``merge_files``
+           rebuilds the original byte for byte.
            That needs a line break to be the byte 0x0A, as in UTF-8 and the
            ASCII-compatible encodings (``"cp932"`` for Shift-JIS logs,
            EUC-JP, Latin-1). ``encoding`` names the file's encoding only to
@@ -209,7 +210,8 @@ def split_by_lines(
            a file and split the text instead, accepting that UTF-16 and
            UTF-32 give every part a BOM of its own.
            A lone CR is not cut at: a file with CR-only line endings (classic
-           Mac OS) has no 0x0A and stays in one part.
+           Mac OS) has no 0x0A, so it stays in one part and is read into
+           memory whole.
     """
     import codecs
 
