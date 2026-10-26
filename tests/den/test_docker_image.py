@@ -385,8 +385,8 @@ def test_zshenv_gives_no_other_user_the_container_users_home(tmp_path):
 
 @_needs("zsh")
 def test_zshenv_skips_ubuntus_global_compinit_for_the_container_user_only(tmp_path):
-    # den's init.zsh runs its own compinit; Ubuntu's /etc/zsh/zshrc ran an
-    # extra full one before it (about 12 ms) unless skip_global_compinit is set.
+    # With skip_global_compinit set, Ubuntu's /etc/zsh/zshrc runs no compinit
+    # and den's init.zsh runs its quick one instead of that full one.
     home = str(tmp_path / "home")
     me = _zsh_username()
     assert me

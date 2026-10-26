@@ -156,9 +156,9 @@ shell, and runs `dev`'s two forms above against it.
 
 ### zsh completion
 
-For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`: den's
-`init.zsh` runs `compinit` itself, so the extra full `compinit` that Ubuntu's
-`/etc/zsh/zshrc` runs before den's would only add about 12 ms to every
+For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`, so den's quick
+`compinit` runs. Without it, Ubuntu's `/etc/zsh/zshrc` would run a full one
+before `init.zsh` (which then runs none of its own), a few ms more for every
 shell. den's `compinit -C` reuses `~/.zcompdump` as it is while the dump is
 less than a day old; an older one gets the full `compinit`, which takes in
 completion functions added since (an apt package, a new tool). To have them at
