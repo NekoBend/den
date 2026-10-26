@@ -67,10 +67,11 @@ Hit = tuple[str, int, str]
 _GO_METHOD = r"^func\s*\(\s*(?:\w+\s+)?\*?\s*\w+\s*(?:\[[^\]]*\]\s*)?\)\s*{name}\s*\("
 
 # A Python assignment at column 0, plain or annotated: `X = 3`, `X: int = 3`,
-# `X: dict[str, list[str]] = {`. The annotation runs to the first `=`, so one
-# that holds an `=` itself (`Field(default=1)`) ends there. `X: int` alone
-# binds nothing, and `X == 3` compares. The keywords a colon can follow at the
-# start of a statement are no names: `else: x = 1` defines no `else`.
+# `X: dict[str, list[str]] = {`. `X: int` alone binds nothing, and `X == 3`
+# compares. The annotation is taken to end at its first `=`, so a bare one
+# holding an `=` of its own (`X: Annotated[int, Field(gt=0)]`) still counts.
+# The keywords a colon can follow at the start of a statement are no names:
+# `else: x = 1` defines no `else`.
 _PY_ASSIGNMENT = r"^(?!(?:else|try|finally|except|lambda)\b){name}\s*(?::[^=]+)?=(?!=)"
 
 # Where a symbol may be defined, per extension. {name} is the symbol.
