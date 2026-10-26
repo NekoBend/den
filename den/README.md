@@ -95,14 +95,15 @@ with a second hard link (a dotfiles repo) is left as it is, block included,
 and named for you to edit by hand: a new copy would split it from its other
 names. It lists the plan and asks once before deleting (`--yes` to skip,
 `--dry-run` to preview only; non-interactive runs require `--yes`). Each file
-is compared again right before it is deleted, so one you save while that
-prompt is open is kept and named. A `--target` directory gets the same
-symlink rule as on install: a path that reaches a symlink below it is
-refused and reported, never removed through. The run exits non-zero when it
-refuses such a path, keeps a file saved while the prompt was open, or cannot
-read or remove a file, or read or rewrite an rc file (each one is named, and
-the closing count holds only what was really removed). Hooks are
-per-workspace, so `den uninstall` does not touch them; use `den uninstall hook`.
+is compared again right before it is deleted, so one you save, or replace
+with something else (a directory, say), while that prompt is open is kept
+and named. A `--target` directory gets the same symlink rule as on install:
+a path that reaches a symlink below it is refused and reported, never
+removed through. The run exits non-zero when it refuses such a path, keeps
+a file changed while the prompt was open, or cannot read or remove a file,
+or read or rewrite an rc file (each one is named, and the closing count
+holds only what was really removed). Hooks are per-workspace, so
+`den uninstall` does not touch them; use `den uninstall hook`.
 
 Being stateless has one cost: when den stops deploying something (a retired
 tool, a renamed skill, a deleted script), the old copy is no longer anything

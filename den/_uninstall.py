@@ -14,6 +14,7 @@ component, mirroring `den install`.
 
 from __future__ import annotations
 
+import os
 import shutil
 import stat
 import sys
@@ -157,7 +158,7 @@ class _Remover:
     deletes only the files byte-identical to den's version and keeps the ones
     the user changed. Also strips rc blocks and prunes emptied dirs. The bytes
     are compared when the plan is listed and again right before each delete,
-    so a file saved again while the prompt was open is kept.
+    so a file saved again, or replaced, while the prompt was open is kept.
 
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), as for _Writer: a path below it that reaches a
@@ -309,8 +310,10 @@ class _Remover:
         to read or remove, each named on stderr). Each one is checked again
         right before it goes, so what decides the delete is what the file
         holds now, not what it held when the plan was listed: an edit saved
-        while the prompt was open is kept, and a path below a confined root
-        that reaches a symlink by now is refused."""
+        while the prompt was open is kept, so is whatever took the file's
+        place (a directory, a FIFO, a dangling link), and a path below a
+        confined root that reaches a symlink by now is refused. Only a file
+        deleted in that time is passed over without a word."""
         candidates = self._candidates()
         removed: list[Path] = []
         late = failed = 0
@@ -325,9 +328,10 @@ class _Remover:
                 print(f"  warning: {d}: {e}", file=sys.stderr)
                 failed += 1
                 continue
-            if data is None:
-                continue  # gone since the plan was listed: nothing to remove
-            if not any(data == c for c in candidates[d]):
+            if data is None and not os.path.lexists(d):
+                continue  # deleted since the plan was listed: nothing to remove
+            if data is None or not any(data == c for c in candidates[d]):
+                # saved again, or replaced by something that is not a file
                 late += 1
                 print(f"  kept {d}: it changed after den checked it", file=sys.stderr)
                 continue

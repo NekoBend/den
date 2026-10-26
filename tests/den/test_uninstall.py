@@ -3,6 +3,7 @@
 import errno
 import os
 import shutil
+import signal
 import stat
 import sys
 from pathlib import Path
@@ -159,6 +160,50 @@ def test_uninstall_keeps_a_file_saved_at_the_prompt(tmp_path, monkeypatch, capsy
     assert skill.is_file() and skill.read_text().endswith("\nMY EDIT\n")
     assert _files(tmp_path / "skills") == [skill], "every other file is removed"
     assert rc == 1, "a file kept because it changed is not removed as asked"
+    out, err = capsys.readouterr()
+    assert f"kept {skill}: it changed after den checked it" in err
+    assert f"removed {planned - 1} file(s)" in out
+
+
+@pytest.mark.parametrize("what", ["a directory", "a FIFO"])
+def test_uninstall_keeps_a_file_replaced_at_the_prompt(
+    tmp_path, monkeypatch, capsys, what
+):
+    """A planned file replaced by a directory or a FIFO while 'Remove them?'
+    was open was passed over as if it were gone: no word, and exit 0. What
+    took its place is kept and named now, and the run fails, as for a file
+    saved again, and as install does."""
+    if what == "a FIFO" and not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFOs on this platform")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    _install(tmp_path)
+    planned = len(_files(tmp_path / "skills"))
+    skill = tmp_path / "skills" / "grounding" / "SKILL.md"
+
+    def confirm(*_a, **_k):
+        skill.unlink()
+        if what == "a directory":
+            skill.mkdir()
+        else:
+            os.mkfifo(skill)
+        return True
+
+    def blocked(*_a):  # reading the FIFO would wait for a writer forever
+        raise TimeoutError(f"den uninstall blocked on {skill}")
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    if what == "a FIFO":
+        previous = signal.signal(signal.SIGALRM, blocked)
+        signal.alarm(60)
+    try:
+        rc = uninstall_main(["skills", "--target", str(tmp_path)])
+    finally:
+        if what == "a FIFO":
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+    kind = stat.S_ISDIR if what == "a directory" else stat.S_ISFIFO
+    assert kind(skill.lstat().st_mode), "what took the file's place is left"
+    assert rc == 1, "a file that changed after den checked it is not removed"
     out, err = capsys.readouterr()
     assert f"kept {skill}: it changed after den checked it" in err
     assert f"removed {planned - 1} file(s)" in out
