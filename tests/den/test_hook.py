@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -1356,9 +1357,12 @@ def test_install_refuses_a_directory_at_the_backup_path(tmp_path, monkeypatch, c
     assert "not a regular file" in capsys.readouterr().err
 
 
-def test_install_accepts_an_existing_file_backup(tmp_path, monkeypatch):
-    # A real backup from an earlier run is still respected: install proceeds and
-    # does not clobber it with the (already overwritten) config.
+def test_install_backs_up_beside_an_existing_file_backup(tmp_path, monkeypatch, capsys):
+    """An unmergeable config is never den's own output (den writes json.dumps),
+    so an earlier backup cannot already hold it. Install took any existing
+    .den.bak for "already preserved" and wrote den's hooks over the new edit,
+    which then survived nowhere. It goes to the first free .den.bak.N, as with
+    --force, and the earlier backup is left as it was."""
     proj = tmp_path / "repo"
     cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
@@ -1368,7 +1372,80 @@ def test_install_accepts_an_existing_file_backup(tmp_path, monkeypatch):
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 0
     assert bak.read_text() == "the original, from an earlier install\n"
+    numbered = proj / ".claude" / "settings.local.json.den.bak.1"
+    assert numbered.read_text() == "not json {{{"
+    assert str(numbered) in capsys.readouterr().err, "the backup is named"
     assert "UserPromptSubmit" in json.loads(cfg.read_text())["hooks"]
+
+
+@pytest.mark.parametrize(
+    ("tool", "rel"),
+    [("claude", ".claude/settings.local.json"), ("copilot", ".github/hooks/den.json")],
+)
+def test_install_keeps_every_unmergeable_edit(tmp_path, monkeypatch, tool, rel):
+    # The finding's repro, for both tools whose install merges JSON: install
+    # backs a broken config up, the user breaks it again, install runs again.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("FIRST_EDIT {{{")
+    assert hook_main(["install", "--tool", tool]) == 0
+    cfg.write_text("SECOND_EDIT {{{")
+    assert hook_main(["install", "--tool", tool]) == 0
+    saved = sorted(p.read_text() for p in cfg.parent.glob(cfg.name + ".den.bak*"))
+    assert saved == ["FIRST_EDIT {{{", "SECOND_EDIT {{{"]
+
+
+def test_install_reuses_a_backup_that_holds_the_same_bytes(tmp_path, monkeypatch):
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.local.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not json {{{")
+    (proj / ".claude" / "settings.local.json.den.bak").write_text("not json {{{")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert not (proj / ".claude" / "settings.local.json.den.bak.1").exists()
+
+
+def test_install_refuses_a_symlink_at_a_numbered_backup(tmp_path, monkeypatch, symlink):
+    """The numbered names get the guard .den.bak has: a repo can ship
+    `settings.local.json.den.bak.1` as a dangling link next to a regular
+    .den.bak, and writing through it would create the link's target."""
+    outside = tmp_path / "home" / "stolen.json"
+    outside.parent.mkdir(parents=True)
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.local.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not json {{{")
+    (proj / ".claude" / "settings.local.json.den.bak").write_text("something else\n")
+    symlink(outside, proj / ".claude" / "settings.local.json.den.bak.1")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    assert not outside.exists(), "nothing may be created outside the workspace"
+    assert cfg.read_text() == "not json {{{", "not overwritten without a backup"
+
+
+@pytest.fixture
+def umask_022():
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o600, 0o640], ids=oct)
+def test_install_backup_keeps_the_config_mode(tmp_path, monkeypatch, umask_022, mode):
+    """The backup was written with the umask's mode, so a 0600 settings file got
+    a world-readable copy. It now keeps the config's own permission bits."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"token": "secret", // not json\n')
+    cfg.chmod(mode)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    bak = cfg.with_name(cfg.name + ".den.bak")
+    assert stat.S_IMODE(bak.stat().st_mode) == mode
+    assert "secret" in bak.read_text()
 
 
 def test_install_refuses_a_symlinked_backup_outside_the_workspace(

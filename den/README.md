@@ -297,7 +297,11 @@ seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope
 `install` writes only the hooks den manages (marked by a sentinel) and leaves
 foreign hooks untouched, one added to a group den wrote included: install and
 `uninstall hook` take out only den's own hooks, and a group only when those
-were all it held. Generic events map to each tool's own names:
+were all it held. A settings file den cannot merge (not a JSON object) is
+first copied to `<file>.den.bak`, or to the first free `.den.bak.N` when an
+earlier backup holds something else, with the file's permissions minus
+execute; when no copy can be made, install leaves the file alone and exits
+non-zero. Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
 
 `--all-tools` installs every verified tool: claude, copilot and cline (the

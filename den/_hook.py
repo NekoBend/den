@@ -500,45 +500,37 @@ def _mergeable(config: Path) -> bool:
 
 
 def _backup_if_unmergeable(config: Path) -> bool:
-    """Back up config to <config>.den.bak before install overwrites it, UNLESS it
-    is already a JSON object den can merge into. _read_json reads anything else as
-    {} -- a malformed file, a non-UTF-8 file, OR valid-but-non-object JSON (a
+    """Back up config before install overwrites it, UNLESS it is already a JSON
+    object den can merge into. _read_json reads anything else as {} -- a
+    malformed file, a non-UTF-8 file, OR valid-but-non-object JSON (a
     list/string/number) -- so without this, install would write back only den's
-    keys and silently discard the user's file. ValueError covers both
-    JSONDecodeError and UnicodeDecodeError.
+    keys and silently discard the user's file.
 
-    False when the backup could not be made and the caller must not write. The
-    backup path gets the same guard as the config itself: a repo can ship a
-    DANGLING symlink at `settings.json.den.bak`, where `exists()` is False, so the
-    write would have followed it out of the workspace. Refusing the backup means
-    refusing the install -- writing den's hooks over a file we could not preserve
-    is exactly the loss the backup exists to prevent.
+    The copy is the one `--force` makes (_Writer._backup): <config>.den.bak, or
+    the first free .den.bak.N when an earlier backup holds something else, and
+    one that holds these very bytes is reused. An earlier backup proves nothing
+    about the file there now: den never writes an unmergeable file itself, so a
+    backup it made before holds an earlier edit, and taking it for this one let
+    install overwrite the new edit with no copy anywhere. The copy keeps the
+    config's permission bits minus execute, so a private settings file does not
+    get a world-readable backup.
 
-    An existing backup path is accepted as "already preserved" only when it is a
-    regular file. A repo can ship `settings.json.den.bak/` as a DIRECTORY (or as
-    a symlink to one), which preserves nothing; taking it for a backup would hand
-    install a green light to overwrite the config it was meant to save.
+    False (one line on stderr) when no backup could be made, and the caller must
+    not write: writing den's hooks over a file we could not preserve is exactly
+    the loss the backup exists to prevent. A symlink at a backup name is refused,
+    not written through (a repo can ship a DANGLING one, where `exists()` is
+    False), and so is anything else that is not a regular file there (a repo can
+    ship `settings.json.den.bak/` as a DIRECTORY, which preserves nothing). The
+    backup's directory is the config's own, which _resolve_config already
+    vetted.
     """
     if not config.is_file() or _mergeable(config):
         return True
-    bak = config.with_suffix(config.suffix + ".den.bak")
-    if _leaves_workspace(bak, _ERR_INSTALL):
-        return False
-    if bak.is_symlink() or (bak.exists() and not bak.is_file()):
-        print(
-            f"{_ERR_INSTALL}: refusing to treat {bak} as a backup of {config}: "
-            "it is not a regular file",
-            file=sys.stderr,
-        )
-        return False
-    if bak.is_file():
-        return True
-    try:
-        written = _write_guarded(bak.parent, bak, config.read_bytes(), _ERR_INSTALL)
-    except OSError as exc:
-        print(f"{_ERR_INSTALL}: cannot back up {config}: {exc}", file=sys.stderr)
-        written = False
-    if not written:
+    # Imported here: install's module is not needed on the per-turn hook path.
+    from ._install import _Writer
+
+    bak = _Writer._backup(config, None)  # ruff: ignore[private-member-access]  # the --force backup, shared
+    if bak is None:
         return False
     print(
         f"{_ERR_INSTALL}: {config} is not a JSON object den can merge; "
