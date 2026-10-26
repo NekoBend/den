@@ -295,7 +295,9 @@ Hooks install **per workspace**: run `den install hook` inside a project and it
 writes that tool's project-level hook config under the current directory and
 seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope.
 `install` writes only the hooks den manages (marked by a sentinel) and leaves
-foreign hooks untouched. Generic events map to each tool's own names:
+foreign hooks untouched, one added to a group den wrote included: install and
+`uninstall hook` take out only den's own hooks, and a group only when those
+were all it held. Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
 
 `--all-tools` installs every verified tool: claude, copilot and cline (the

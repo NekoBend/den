@@ -560,21 +560,45 @@ def _read_json(config: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _is_den_hook(hook: object) -> bool:
+    """Whether a settings_json hook entry is one den wrote: an object whose
+    command carries the marker. list and strip both ask this, so what `den hook
+    list` shows is exactly what install and remove take out."""
+    if not isinstance(hook, dict):
+        return False
+    command = hook.get("command")
+    return isinstance(command, str) and _MARKER in command
+
+
 def _strip_den_hooks(hooks: dict) -> dict:
-    """Drop every hook group whose command contains the den marker."""
+    """`hooks` with den's own entries taken out; the argument is not changed.
+
+    Only a hook whose command carries the den marker comes out. Its group stays,
+    with its matcher and every other key, while anything is left in it: a hook
+    someone added to a group den wrote is theirs, and dropping the whole group
+    deleted it on every install and remove, and on the move out of a shared
+    .claude/settings.json. A group goes only when den's hooks were all it held,
+    and an event only when that leaves it with no group, so an object holding
+    nothing of den's comes back equal. The exceptions are shapes den cannot
+    merge into: a `hooks` that is not an object reads as empty, and an event
+    whose value is not a list is dropped."""
     if not isinstance(hooks, dict):
         return {}
     cleaned: dict[str, list] = {}
     for event, groups in hooks.items():
         if not isinstance(groups, list):
             continue
-        kept = [
-            g
-            for g in groups
-            if isinstance(g, dict)
-            and not any(_MARKER in h.get("command", "") for h in g.get("hooks", []))
-        ]
-        if kept:
+        kept = []
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                kept.append(group)  # no hook list, so nothing of den's in it
+                continue
+            rest = [h for h in group["hooks"] if not _is_den_hook(h)]
+            if len(rest) == len(group["hooks"]):
+                kept.append(group)
+            elif rest:
+                kept.append({**group, "hooks": rest})
+        if kept or not groups:
             cleaned[event] = kept
     return cleaned
 
@@ -601,12 +625,11 @@ def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
         if not isinstance(groups, list):
             continue
         for g in groups:
-            if not isinstance(g, dict):
+            inner = g.get("hooks") if isinstance(g, dict) else None
+            if not isinstance(inner, list):
                 continue
             lines.extend(
-                f"{tool}  {event}  {h['command']}"
-                for h in g.get("hooks", [])
-                if isinstance(h, dict) and _MARKER in h.get("command", "")
+                f"{tool}  {event}  {h['command']}" for h in inner if _is_den_hook(h)
             )
     return lines
 

@@ -1,6 +1,7 @@
 """Tests for den hook (den/_hook.py)."""
 
 import base64
+import copy
 import json
 import os
 import shlex
@@ -440,6 +441,120 @@ def test_remove_strips_den_keeps_foreign(tmp_path, monkeypatch):
     assert commands == ["echo foreign"]
 
 
+# den writes one hook per group, but a hook added by hand (or by a tool that
+# appends to an existing group with the same matcher) can share one of den's.
+# Install, remove and the move out of settings.json all dropped every group that
+# held a den command, and the foreign hook with it.
+
+
+def _commands(groups):
+    return [h["command"] for g in groups for h in g["hooks"]]
+
+
+def _add_to_den_group(settings, event, command):
+    data = json.loads(settings.read_text())
+    data["hooks"][event][0]["hooks"].append({"type": "command", "command": command})
+    settings.write_text(json.dumps(data))
+
+
+def test_reinstall_keeps_a_foreign_hook_in_dens_group(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    local = tmp_path / ".claude" / "settings.local.json"
+    _add_to_den_group(local, "PostToolUse", "echo foreign-policy-check")
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    groups = json.loads(local.read_text())["hooks"]["PostToolUse"]
+    foreign = {"type": "command", "command": "echo foreign-policy-check"}
+    assert {"matcher": "Write|Edit|MultiEdit", "hooks": [foreign]} in groups
+    den = [c for c in _commands(groups) if c.startswith(_hook._MARKER)]
+    assert len(den) == 1, "den's own hook is replaced, not duplicated"
+
+
+def test_remove_keeps_a_foreign_hook_in_dens_group(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    local = tmp_path / ".claude" / "settings.local.json"
+    _add_to_den_group(local, "Stop", "echo KEEP_FOREIGN_STOP")
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    foreign = {"type": "command", "command": "echo KEEP_FOREIGN_STOP"}
+    assert json.loads(local.read_text()) == {"hooks": {"Stop": [{"hooks": [foreign]}]}}
+
+
+def test_install_moves_den_out_of_a_shared_group_and_keeps_the_team_hook(
+    tmp_path, monkeypatch
+):
+    # A committed .claude/settings.json with a team hook in an earlier den's
+    # group: the team hook left the shared file and was in neither file.
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    team = {"type": "command", "command": "echo team-policy-check"}
+    den = _den_group("claude")["hooks"][0]
+    perms = {"allow": ["Bash(git status)"]}
+    shared.write_text(
+        json.dumps(
+            {
+                "permissions": perms,
+                "hooks": {"UserPromptSubmit": [{"hooks": [den, team]}]},
+            }
+        )
+    )
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert json.loads(shared.read_text()) == {
+        "permissions": perms,
+        "hooks": {"UserPromptSubmit": [{"hooks": [team]}]},
+    }
+    local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    cmds = _commands(local["hooks"]["UserPromptSubmit"])
+    assert len(cmds) == 1 and cmds[0].startswith("den hook run --event per-turn")
+
+
+def test_strip_den_hooks_takes_out_only_dens_hooks():
+    den = _den_group("claude")["hooks"][0]
+    foreign = {"type": "command", "command": "echo foreign", "timeout": 5}
+    hooks = {
+        "PostToolUse": [{"matcher": "Write|Edit", "hooks": [den, foreign]}],
+        "SessionStart": [{"hooks": [den]}, {"matcher": "startup", "hooks": [foreign]}],
+        "Stop": [{"hooks": [den]}],
+    }
+    before = copy.deepcopy(hooks)
+    assert _hook._strip_den_hooks(hooks) == {
+        "PostToolUse": [{"matcher": "Write|Edit", "hooks": [foreign]}],
+        "SessionStart": [{"matcher": "startup", "hooks": [foreign]}],
+    }
+    assert hooks == before, "the argument is unchanged: remove compares against it"
+
+
+@pytest.mark.parametrize(
+    "hooks",
+    [
+        {"Stop": []},
+        {"Stop": [{"matcher": "Bash"}]},
+        {"Stop": [{"hooks": []}]},
+        {"Stop": ["not a group"]},
+        {"Stop": [{"hooks": "echo hi"}]},
+        {"Stop": [{"hooks": ["echo hi", 5, None]}]},
+        {"Stop": [{"hooks": [{"type": "command", "command": 5}]}]},
+    ],
+)
+def test_strip_den_hooks_returns_what_holds_nothing_of_dens_unchanged(hooks):
+    # Anything else made remove rewrite a file it had nothing to take out of,
+    # or raised on an entry den never wrote.
+    assert _hook._strip_den_hooks(copy.deepcopy(hooks)) == hooks
+
+
+def test_remove_leaves_a_file_with_nothing_of_dens_byte_identical(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    raw = b'{"hooks": {"Stop": [], "PreToolUse": [{"matcher": "Bash", "hooks": []}]}}'
+    local.write_bytes(raw)
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    assert local.read_bytes() == raw
+
+
 def test_list_shows_den_managed(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "settings.json"
@@ -448,6 +563,20 @@ def test_list_shows_den_managed(tmp_path, monkeypatch, capsys):
     assert hook_main(["list", "--tool", "claude", "--config", str(cfg)]) == 0
     out = capsys.readouterr().out
     assert "den hook run --event per-turn --tool claude" in out
+
+
+def test_list_names_only_dens_hooks_among_entries_it_never_wrote(
+    tmp_path, monkeypatch, capsys
+):
+    # list decides whether the move out of settings.json strips anything, so it
+    # must read every shape strip does, not raise on a group without a list.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    den = _den_group("claude")["hooks"][0]
+    odd = [{"hooks": None}, {"hooks": ["echo hi", {"command": 5}, den]}]
+    cfg.write_text(json.dumps({"hooks": {"Stop": odd}}))
+    assert hook_main(["list", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert capsys.readouterr().out.splitlines() == [f"claude  Stop  {den['command']}"]
 
 
 # --------------------------------------------------------------------------- #
