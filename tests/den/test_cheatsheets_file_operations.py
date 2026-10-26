@@ -104,6 +104,20 @@ def test_split_by_lines_refuses_ebcdic(fileops, tmp_path, encoding):
     assert not (tmp_path / "parts").exists()
 
 
+@pytest.mark.parametrize("encoding", ["iso2022_kr", "ISO-2022-KR"])
+def test_split_by_lines_refuses_iso2022_kr(fileops, tmp_path, encoding):
+    # It encodes "\n" as 0x0A, but writes its ESC $ ) C declaration only once,
+    # before the first Korean text: the second part, decoded on its own, gave
+    # "beta GQ19>n" for "beta 한국어", without an error.
+    src = tmp_path / "src.txt"
+    src.write_bytes("alpha 한국어\nbeta 한국어\n".encode(encoding))
+    with pytest.raises(ValueError, match="declares its character set once"):
+        fileops.split_by_lines(
+            src, lines_per_chunk=1, out_dir=tmp_path / "parts", encoding=encoding
+        )
+    assert not (tmp_path / "parts").exists()
+
+
 def test_split_by_lines_keeps_cr_only_line_endings_in_one_part(fileops, tmp_path):
     # Only b"\n" is cut at. Read as text, a lone CR ended a line as well; a
     # classic Mac OS file has no 0x0A, so it stays whole, as the docstring says.

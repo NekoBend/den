@@ -205,10 +205,13 @@ def split_by_lines(
            That needs a line break to be the byte 0x0A, as in UTF-8 and the
            ASCII-compatible encodings (``"cp932"`` for Shift-JIS logs,
            EUC-JP, Latin-1). ``encoding`` names the file's encoding only to
-           check that: one that encodes ``"\\n"`` any other way (UTF-16,
-           UTF-32, EBCDIC such as cp037) raises ``ValueError``. Decode such
-           a file and split the text instead, accepting that UTF-16 and
-           UTF-32 give every part a BOM of its own.
+           check it: one that encodes ``"\\n"`` any other way (UTF-16,
+           UTF-32, EBCDIC such as cp037) raises ``ValueError``. So does
+           ISO-2022-KR, which declares its character set once, not on every
+           line: in a part without that declaration, Korean text decodes to
+           the wrong characters. Decode such a file and split the text
+           instead, accepting that UTF-16 and UTF-32 give every part a BOM
+           of its own.
            A lone CR is not cut at: a file with CR-only line endings (classic
            Mac OS) has no 0x0A, so it stays in one part and is read into
            memory whole.
@@ -221,6 +224,13 @@ def split_by_lines(
         raise ValueError(
             f"{encoding} does not encode a line break as the byte 0x0A,"
             " where split_by_lines cuts"
+        )
+    if codecs.lookup(encoding).name == "iso2022_kr":
+        # The declaration is ESC $ ) C, written once before the first Korean text.
+        raise ValueError(
+            f"{encoding} declares its character set once, not on every line:"
+            " in a part without that declaration, Korean text decodes to the"
+            " wrong characters"
         )
     src = Path(path)
     dest = Path(out_dir) if out_dir else src.parent
