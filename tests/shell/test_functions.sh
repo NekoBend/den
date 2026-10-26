@@ -1538,11 +1538,15 @@ fi
 # init.bash keeps a HISTCONTROL and a HISTIGNORE set before it runs (above
 # den's line in ~/.bashrc, or in the environment); it used to assign both, and
 # the user's values were lost. HISTCONTROL gets den's ignoreboth only when it is
-# unset, and HISTIGNORE each of den's again/sagain patterns it lacks, after the
-# user's own and once, however often init.bash loads. hb_run runs <setup> (the
-# lines above den's line), then init.bash, in an interactive bash that gets
-# only the environment it is given (env -i: an exported HISTCONTROL of the
-# caller's would pass for the user's), and prints "HISTCONTROL|HISTIGNORE".
+# unset, and ':ignorespace' when it holds neither ignorespace nor ignoreboth (an
+# empty one becomes ignorespace): Fedora's and RHEL's /etc/profile export
+# ignoredups, and a line typed with a leading space must still stay out of the
+# history. HISTIGNORE gets each of den's again/sagain patterns it lacks, after
+# the user's own. Neither gets anything twice, however often init.bash loads.
+# hb_run runs <setup> (the lines above den's line), then init.bash, in an
+# interactive bash that gets only the environment it is given (env -i: an
+# exported HISTCONTROL of the caller's would pass for the user's), and prints
+# "HISTCONTROL|HISTIGNORE".
 echo "[bash] init.bash: a HISTCONTROL and a HISTIGNORE set before it are kept"
 HB="$WORK/hbinit"
 rm -rf "$HB"
@@ -1561,16 +1565,38 @@ hb_run() {
 }
 assert_eq "bash/init.bash: with nothing set, den's ignoreboth and again patterns" \
     "ignoreboth|again:again *:sagain:sagain *" "$(hb_run :)"
-assert_eq "bash/init.bash: the user's HISTCONTROL and HISTIGNORE kept, den's patterns after them" \
-    "ignoredups|ls:bg:again:again *:sagain:sagain *" "$(hb_run "HISTCONTROL=ignoredups; HISTIGNORE='ls:bg'")"
-assert_eq "bash/init.bash: an empty HISTCONTROL is kept" \
-    "|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=')"
+assert_eq "bash/init.bash: the user's HISTCONTROL and HISTIGNORE kept, ignorespace and den's patterns after them" \
+    "ignoredups:ignorespace|ls:bg:again:again *:sagain:sagain *" \
+    "$(hb_run "HISTCONTROL=ignoredups; HISTIGNORE='ls:bg'")"
+assert_eq "bash/init.bash: an ignoreboth is kept as it is" \
+    "ignoreboth|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=ignoreboth')"
+assert_eq "bash/init.bash: an ignorespace is kept as it is" \
+    "ignorespace|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=ignorespace')"
+assert_eq "bash/init.bash: an ignoreboth after another word is kept as it is" \
+    "erasedups:ignoreboth|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=erasedups:ignoreboth')"
+# Fedora's and RHEL's /etc/profile export HISTCONTROL=ignoredups, so a login
+# shell and every shell it starts get it from the environment.
+assert_eq "bash/init.bash: an exported ignoredups (Fedora, RHEL) gets ignorespace" \
+    "ignoredups:ignorespace|again:again *:sagain:sagain *" "$(hb_run : HISTCONTROL=ignoredups)"
+assert_eq "bash/init.bash: an exported ignoredups loaded twice gets ignorespace once" \
+    "ignoredups:ignorespace|again:again *:sagain:sagain *" \
+    "$(hb_run '. ~/.config/shell/init.bash' HISTCONTROL=ignoredups)"
+# An empty HISTCONTROL saves a line typed with a leading space, as ignoredups
+# does, so it gets ignorespace too.
+assert_eq "bash/init.bash: an empty HISTCONTROL becomes ignorespace" \
+    "ignorespace|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=')"
+assert_eq "bash/init.bash: an empty HISTCONTROL loaded twice is ignorespace once" \
+    "ignorespace|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=; . ~/.config/shell/init.bash')"
+# bash takes HISTCONTROL as whole words between ':'s: xignorespace is not
+# ignorespace, and bash saves a line with a leading space under it.
+assert_eq "bash/init.bash: ignorespace inside a longer word does not count" \
+    "xignorespace:ignorespace|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=xignorespace')"
 assert_eq "bash/init.bash: only the again patterns HISTIGNORE lacks are added" \
     "ignoreboth|sagain *:ls:again:again *:sagain" "$(hb_run "HISTIGNORE='sagain *:ls:again'")"
 assert_eq "bash/init.bash: loaded twice, it adds the patterns once" \
     "ignoreboth|ls:again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=ls; . ~/.config/shell/init.bash')"
-assert_eq "bash/init.bash: values from the environment are kept" \
-    "erasedups|ls:again:again *:sagain:sagain *" "$(hb_run : HISTCONTROL=erasedups HISTIGNORE=ls)"
+assert_eq "bash/init.bash: values from the environment are kept, an erasedups gets ignorespace" \
+    "erasedups:ignorespace|ls:again:again *:sagain:sagain *" "$(hb_run : HISTCONTROL=erasedups HISTIGNORE=ls)"
 # bash does not split HISTIGNORE at an escaped ':' (\:): 'foo\:again' is one
 # pattern, and den's again is not in it. Without an escaped ':', a pattern
 # first, after a ':' or after a trailing ':' gives what it gave before.
@@ -1588,23 +1614,36 @@ assert_eq "bash/init.bash: an again after a ':' is held" \
 assert_eq "bash/init.bash: a trailing ':' is kept, den's patterns after it" \
     "ignoreboth|ls::again:again *:sagain:sagain *" "$(hb_run 'HISTIGNORE=ls:')"
 # reload execs $BASH, which reads ~/.bashrc and so loads init.bash again; an
-# exported HISTIGNORE comes back holding den's patterns already. $BASH is a
-# script that starts an interactive bash on the fixture's ~/.bashrc and prints
-# HISTIGNORE there. (--rcfile does not skip the system bashrc: Debian's and
-# Ubuntu's bash still runs /etc/bash.bashrc first, and only --norc skips it.
-# The stock one sets no HISTIGNORE.)
+# exported HISTCONTROL or HISTIGNORE comes back holding what den added to it
+# already. $BASH is a script that starts an interactive bash on the fixture's
+# ~/.bashrc and prints "HISTCONTROL|HISTIGNORE" there. (--rcfile does not skip
+# the system bashrc: Debian's and Ubuntu's bash still runs /etc/bash.bashrc
+# first, and only --norc skips it. The stock one sets neither variable.)
 printf '%s\n' '. ~/.config/shell/init.bash' > "$HB/home/.bashrc"
 cat > "$HB/rebash" <<EOF
 #!/bin/sh
-exec '$hb_bash' --rcfile "\$HOME/.bashrc" -i -c 'printf "after reload: %s\n" "\$HISTIGNORE"'
+exec '$hb_bash' --rcfile "\$HOME/.bashrc" -i -c 'printf "after reload: %s|%s\n" "\$HISTCONTROL" "\$HISTIGNORE"'
 EOF
 chmod +x "$HB/rebash"
 out=$(cd "$HB/home" && env -i HOME="$HB/home" PATH="$hb_path" TERM=dumb XDG_CACHE_HOME="$HB/home/.cache" \
-    XDG_CONFIG_HOME="$HB/home/.config" HISTIGNORE=ls "$hb_bash" --rcfile "$HB/home/.bashrc" -i -c \
-    "printf 'loaded: %s\n' \"\$HISTIGNORE\"; BASH='$HB/rebash'; reload" 2>/dev/null </dev/null)
-assert_eq "bash/init.bash: reload keeps an exported HISTIGNORE and adds den's patterns once" \
-    "loaded: ls:again:again *:sagain:sagain *
-after reload: ls:again:again *:sagain:sagain *" "$out"
+    XDG_CONFIG_HOME="$HB/home/.config" HISTCONTROL=ignoredups HISTIGNORE=ls \
+    "$hb_bash" --rcfile "$HB/home/.bashrc" -i -c \
+    "printf 'loaded: %s|%s\n' \"\$HISTCONTROL\" \"\$HISTIGNORE\"; BASH='$HB/rebash'; reload" 2>/dev/null </dev/null)
+assert_eq "bash/init.bash: reload keeps an exported HISTCONTROL and HISTIGNORE and adds den's parts once" \
+    "loaded: ignoredups:ignorespace|ls:again:again *:sagain:sagain *
+after reload: ignoredups:ignorespace|ls:again:again *:sagain:sagain *" "$out"
+# End to end, as on Fedora or RHEL: HISTCONTROL=ignoredups comes from the
+# environment. Lines typed into the interactive bash that loaded init.bash
+# reach its history file, except the one typed with a leading space; the
+# user's ignoredups still drops the repeated line.
+printf '%s\n' "HISTFILE='$HB/history'" '. ~/.config/shell/init.bash' > "$HB/e2e_bashrc"
+printf '%s\n' 'echo one' ' echo spaced' 'echo two' 'echo two' |
+    (cd "$HB/home" && env -i HOME="$HB/home" PATH="$hb_path" TERM=dumb XDG_CACHE_HOME="$HB/home/.cache" \
+        XDG_CONFIG_HOME="$HB/home/.config" HISTCONTROL=ignoredups \
+        "$hb_bash" --rcfile "$HB/e2e_bashrc" -i >/dev/null 2>&1)
+assert_eq "bash/init.bash: under an exported ignoredups, a line typed with a leading space stays out of the history file" \
+    "echo one
+echo two" "$(cat "$HB/history" 2>&1)"
 rm -rf "$HB"
 
 # =============================================================================

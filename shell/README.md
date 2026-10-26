@@ -429,9 +429,14 @@ itself).
 of zoxide and starship. zsh and PowerShell mirror this.
 
 - History: init.bash sets `HISTSIZE` / `HISTFILESIZE` to 8192, replacing
-  values set before it, and turns on `histappend`. A `HISTCONTROL` set before
-  it (above den's line in `~/.bashrc`, or in the environment), an empty one
-  included, is kept; only without one does it set `ignoreboth`. To
+  values set before it, and turns on `histappend`. Without a `HISTCONTROL` it
+  sets `ignoreboth`. It keeps a `HISTCONTROL` set before it (above den's line
+  in `~/.bashrc`, or in the environment) and adds `ignorespace` when neither
+  `ignorespace` nor `ignoreboth` is in it, for example on Fedora and RHEL,
+  where `/etc/profile` exports `ignoredups` (`ignoredups` becomes
+  `ignoredups:ignorespace`, and an empty value becomes `ignorespace`), so a
+  line typed with a leading space stays out of the history. To have such
+  lines saved, set `HISTCONTROL` after den's line in `~/.bashrc`. To
   `HISTIGNORE` it adds the patterns that keep `again` / `sagain` lines out of
   the history, after yours, each once however often it loads. init.zsh sets
   `HISTFILE`, `HISTSIZE` / `SAVEHIST` (8192) and `HISTORY_IGNORE` (the

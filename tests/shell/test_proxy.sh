@@ -347,15 +347,16 @@ assert_eq "bash/history: HISTIGNORE still applies" "echo \"HI=\$HISTIGNORE\"" "$
 assert_contains "bash/history: HISTIGNORE unchanged" "HI=echo mine" "$(cat "$HIST_OUT")"
 
 # init.bash keeps a HISTCONTROL and a HISTIGNORE set above den's line (it used
-# to replace both with its own). Under the user's ignoredups a line typed with a
-# leading space is saved, so proxy add takes such a line out itself; the user's
-# HISTIGNORE and den's again patterns, added to it, keep their lines out.
+# to replace both with its own). To the user's ignoredups it adds ignorespace,
+# so the lines typed with a leading space stay out; proxy add takes the line
+# with a password and no leading space out itself; the user's HISTIGNORE and
+# den's again patterns, added to it, keep their lines out.
 reset_conf
 echo "[bash] init.bash keeps the user's HISTCONTROL and HISTIGNORE, and a password still stays out"
 actual=$(hist_init_bash "HISTCONTROL=ignoredups; HISTIGNORE='echo mine'" \
     'echo before' ' echo spaced' 'echo mine' 'again 0' " $SECRET_LINE" "$SECRET_LINE" 'echo after')
-assert_eq "bash/history: under init.bash, the user's settings, den's again pattern and proxy add all apply" "echo before
- echo spaced
+assert_eq "bash/history: under init.bash, the user's settings, den's ignorespace and again pattern and proxy add all apply" \
+    "echo before
 echo after" "$actual"
 
 # A subshell has a copy of the history list: the line stays, and proxy says how
