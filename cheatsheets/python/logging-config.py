@@ -330,11 +330,13 @@ def setup_rich_logging(log_level: int = 10) -> None:
 # =============================================================================
 
 
-def setup_level_filter() -> None:
+def setup_level_filter(log_path: str = "warnings.log") -> None:
     """Route log levels to different handlers — WARNING+ to file, all to console.
 
     [Best for] Separating noisy debug output from actionable warnings/errors.
     [Note] Custom Filter on the file handler rejects records below WARNING.
+           A relative ``log_path`` is opened in the working directory, as
+           in ``setup_basic_file`` and ``setup_dictconfig``.
     """
     import logging
     import sys
@@ -358,7 +360,7 @@ def setup_level_filter() -> None:
     console_handler.setLevel(logging.DEBUG)
     console_handler.setFormatter(formatter)
 
-    file_handler = logging.FileHandler("warnings.log", encoding="utf-8")
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(MinLevelFilter(logging.WARNING))
@@ -431,12 +433,16 @@ def setup_context_vars() -> tuple[
 # =============================================================================
 
 if __name__ == "__main__":
+    import contextlib
     import logging
+    import tempfile
 
     def _reset_logging() -> None:
         """Reset root logger between demos so handlers don't stack."""
         root = logging.getLogger()
-        root.handlers.clear()
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+            handler.close()  # a FileHandler holds its file open until closed
         root.setLevel(logging.WARNING)
         # Reset structlog if loaded
         try:
@@ -470,73 +476,79 @@ if __name__ == "__main__":
         log.warning("structlog warning")
         log.error("structlog error", err="something broke")
 
-    # --- 1. Basic ---
-    _reset_logging()
-    setup_basic()
-    _demo_logs("setup_basic — basicConfig to stderr")
+    def _run_demos() -> None:
+        """Set up every recipe in turn and log through it."""
+        # --- 1. Basic ---
+        _reset_logging()
+        setup_basic()
+        _demo_logs("setup_basic: basicConfig to stderr")
 
-    # --- 2. Basic File ---
-    _reset_logging()
-    setup_basic_file(log_path="demo.log")
-    _demo_logs("setup_basic_file — console + file")
+        # --- 2. Basic File ---
+        _reset_logging()
+        setup_basic_file(log_path="demo.log")
+        _demo_logs("setup_basic_file: console + file")
 
-    # --- 3. dictConfig ---
-    _reset_logging()
-    setup_dictconfig(log_path="demo_dict.log")
-    _demo_logs("setup_dictconfig — dictConfig with rotating file")
+        # --- 3. dictConfig ---
+        _reset_logging()
+        setup_dictconfig(log_path="demo_dict.log")
+        _demo_logs("setup_dictconfig: dictConfig with rotating file")
 
-    # --- 4. JSON format ---
-    _reset_logging()
-    setup_json_format()
-    _demo_logs("setup_json_format — JSON lines (no deps)")
+        # --- 4. JSON format ---
+        _reset_logging()
+        setup_json_format()
+        _demo_logs("setup_json_format: JSON lines (no deps)")
 
-    # --- 5. structlog dev ---
-    _reset_logging()
-    try:
-        setup_structlog_dev()
-        _demo_structlog("setup_structlog_dev — colored console")
-    except ImportError:
-        print("\n  [SKIP] structlog not installed")
+        # --- 5. structlog dev ---
+        _reset_logging()
+        try:
+            setup_structlog_dev()
+            _demo_structlog("setup_structlog_dev: colored console")
+        except ImportError:
+            print("\n  [SKIP] structlog not installed")
 
-    # --- 6. structlog prod ---
-    _reset_logging()
-    try:
-        setup_structlog_prod()
-        _demo_structlog("setup_structlog_prod — JSON output")
-    except ImportError:
-        print("\n  [SKIP] structlog not installed")
+        # --- 6. structlog prod ---
+        _reset_logging()
+        try:
+            setup_structlog_prod()
+            _demo_structlog("setup_structlog_prod: JSON output")
+        except ImportError:
+            print("\n  [SKIP] structlog not installed")
 
-    # --- 7. structlog + stdlib ---
-    _reset_logging()
-    try:
-        setup_structlog_with_stdlib()
-        _demo_logs("setup_structlog_with_stdlib — bridged to stdlib")
-    except ImportError:
-        print("\n  [SKIP] structlog not installed")
+        # --- 7. structlog + stdlib ---
+        _reset_logging()
+        try:
+            setup_structlog_with_stdlib()
+            _demo_logs("setup_structlog_with_stdlib: bridged to stdlib")
+        except ImportError:
+            print("\n  [SKIP] structlog not installed")
 
-    # --- 8. Rich ---
-    _reset_logging()
-    try:
-        setup_rich_logging()
-        _demo_logs("setup_rich_logging — pretty console")
-    except ImportError:
-        print("\n  [SKIP] rich not installed")
+        # --- 8. Rich ---
+        _reset_logging()
+        try:
+            setup_rich_logging()
+            _demo_logs("setup_rich_logging: pretty console")
+        except ImportError:
+            print("\n  [SKIP] rich not installed")
 
-    # --- 9. Level filter ---
-    _reset_logging()
-    setup_level_filter()
-    _demo_logs("setup_level_filter — WARNING+ to file")
+        # --- 9. Level filter ---
+        _reset_logging()
+        setup_level_filter()
+        _demo_logs("setup_level_filter: WARNING+ to file")
 
-    # --- 10. Context vars ---
-    _reset_logging()
-    setup_context_vars()
-    _demo_logs("setup_context_vars — request_id/user_id injection")
+        # --- 10. Context vars ---
+        _reset_logging()
+        setup_context_vars()
+        _demo_logs("setup_context_vars: request_id/user_id injection")
 
-    # --- Cleanup temp files ---
-    import pathlib
-
-    for f in ("demo.log", "demo_dict.log", "warnings.log"):
-        pathlib.Path(f).unlink(missing_ok=True)
+    # The file demos write demo.log, demo_dict.log and warnings.log (the
+    # setup_level_filter default) into the working directory, so they run in
+    # a scratch directory that is removed afterwards: same-named logs in the
+    # directory you started from are never touched.
+    with tempfile.TemporaryDirectory() as scratch, contextlib.chdir(scratch):
+        try:
+            _run_demos()
+        finally:
+            _reset_logging()  # Windows cannot delete a log file still open
 
     print(f"\n{'=' * 60}")
     print("  All sanity checks passed.")

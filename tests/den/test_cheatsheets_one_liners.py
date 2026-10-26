@@ -8,6 +8,7 @@ missing (or on native Windows, where the lines are not POSIX sh).
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -110,6 +111,40 @@ def test_delete_recipes_say_that_hidden_files_need_h():
         assert " -H " in f" {command} " or "-H" in note, line
 
 
+def test_fd_never_starts_a_mv_that_overwrites():
+    # fd -x starts mv itself (a shell alias such as mv -i never applies), and
+    # `-x mv {} {.}.md` replaced an existing notes.md with notes.txt.
+    commands = [command for command, _ in map(_split, _sh_lines())]
+    moves = [command for command in commands if re.search(r"-[xX] mv\b", command)]
+    assert len(moves) == 3, moves
+    for command in moves:
+        assert re.search(r"-[xX] mv -n -- \{\}", command), command
+
+
+XH_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+XH_FLAGS_WITH_A_VALUE = {"-a", "--auth", "-o", "--output"}
+
+
+def _xh_url(command: str) -> str:
+    """The URL operand of an xh command line."""
+    words = iter(shlex.split(command)[1:])
+    for word in words:
+        if word in XH_FLAGS_WITH_A_VALUE:
+            next(words)
+        elif not word.startswith("-") and word not in XH_METHODS:
+            return word
+    raise AssertionError(f"no URL in {command!r}")
+
+
+def test_xh_lines_spell_out_https():
+    # xh sends a URL without a scheme over plain http, so `xh -a user:pass
+    # api.example.com` put the credentials on the wire in clear text.
+    commands = [cmd for cmd, _ in map(_split, _sh_lines()) if cmd.startswith("xh ")]
+    assert len(commands) == 14, commands
+    for command in commands:
+        assert _xh_url(command).startswith("https://"), command
+
+
 # --- behavior: the sheet's own lines, run in a scratch tree -------------------
 
 
@@ -202,6 +237,47 @@ def test_bulk_rename_touches_only_the_files_that_match(repo):
     assert match.read_text(encoding="utf-8") == "new_name = 1\n"
     assert [path.stat().st_mtime for path in others] == [OLD, OLD]
     assert [path.stat().st_ino for path in others] == inodes
+
+
+@needs_tools
+@pytest.mark.parametrize(
+    ("comment", "taken", "free"),
+    [
+        (".jpeg → .jpg", ("photo.jpeg", "photo.jpg"), ("other.jpeg", "other.jpg")),
+        (".txt → .md", ("notes.txt", "notes.md"), ("other.txt", "other.md")),
+    ],
+    ids=["jpeg", "txt"],
+)
+def test_bulk_rename_skips_a_name_that_is_taken(repo, comment, taken, free):
+    # `-x mv {} {.}.md` replaced an existing notes.md with notes.txt (and
+    # photo.jpg with photo.jpeg), and the run still exited 0.
+    source, target = taken
+    (repo / source).write_text("SOURCE\n", encoding="utf-8")
+    (repo / target).write_text("PRECIOUS\n", encoding="utf-8")
+    (repo / free[0]).write_text("FREE\n", encoding="utf-8")
+    # Not checked: GNU mv 9.2 to 9.4 exit 1 on a skip, 9.5 and later exit 0.
+    result = _run(_command(comment), repo)
+    assert (repo / target).read_text(encoding="utf-8") == "PRECIOUS\n"
+    assert (repo / source).read_text(encoding="utf-8") == "SOURCE\n"
+    assert (repo / free[1]).read_text(encoding="utf-8") == "FREE\n", result.stderr
+    assert not (repo / free[0]).exists()
+
+
+@needs_tools
+def test_move_to_dest_skips_a_name_already_there(repo):
+    # `fd -e jpg -x mv {} dest/` replaced a dest/pic.jpg that was already
+    # there, and of a/pic.jpg and b/pic.jpg only one survived.
+    dest = repo / "dest"
+    dest.mkdir()
+    (dest / "pic.jpg").write_text("ALREADY THERE\n", encoding="utf-8")
+    (repo / "a").mkdir()
+    (repo / "a" / "pic.jpg").write_text("FROM A\n", encoding="utf-8")
+    (repo / "a" / "free.jpg").write_text("FREE\n", encoding="utf-8")
+    result = _run(_command("move all .jpg to dest/"), repo)  # exit status: see above
+    assert (dest / "pic.jpg").read_text(encoding="utf-8") == "ALREADY THERE\n"
+    assert (repo / "a" / "pic.jpg").read_text(encoding="utf-8") == "FROM A\n"
+    assert (dest / "free.jpg").read_text(encoding="utf-8") == "FREE\n", result.stderr
+    assert not (repo / "a" / "free.jpg").exists()
 
 
 @needs_tools

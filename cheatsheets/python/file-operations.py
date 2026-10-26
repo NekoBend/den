@@ -197,31 +197,60 @@ def split_by_lines(
     """Split a text file into chunks of N lines each.
 
     [Best for] Distributing CSV/log processing across workers.
-    [Note] Streams the file — memory usage is constant regardless of file size.
-           ``newline=""`` on the read and on every write keeps each line
-           ending (LF, CRLF) exactly as it was, so ``merge_files`` rebuilds
-           the original byte for byte. Pass ``encoding`` for non-UTF-8 text
-           (e.g. ``"cp932"`` for Shift-JIS logs).
+    [Note] Streams the file in binary, so memory use is constant regardless
+           of file size as long as lines end in 0x0A, and nothing is decoded
+           and encoded again: every part holds the source's own bytes, cut
+           after a ``b"\\n"`` (a CRLF stays whole), and ``merge_files``
+           rebuilds the original byte for byte.
+           That needs a line break to be the byte 0x0A, as in UTF-8 and the
+           ASCII-compatible encodings (``"cp932"`` for Shift-JIS logs,
+           EUC-JP, Latin-1). ``encoding`` names the file's encoding only to
+           check it: one that encodes ``"\\n"`` any other way (UTF-16,
+           UTF-32, EBCDIC such as cp037) raises ``ValueError``. So does
+           ISO-2022-KR, which declares its character set once, not on every
+           line: in a part without that declaration, Korean text decodes to
+           the wrong characters. Decode such a file and split the text
+           instead, accepting that UTF-16 and UTF-32 give every part a BOM
+           of its own.
+           A lone CR is not cut at: a file with CR-only line endings (classic
+           Mac OS) has no 0x0A, so it stays in one part and is read into
+           memory whole.
     """
+    import codecs
+
+    # utf-8-sig writes its BOM once, at the start of the file, not per line.
+    nl = "\n".encode(encoding).removeprefix(codecs.BOM_UTF8)
+    if nl != b"\n":
+        raise ValueError(
+            f"{encoding} does not encode a line break as the byte 0x0A,"
+            " where split_by_lines cuts"
+        )
+    if codecs.lookup(encoding).name == "iso2022_kr":
+        # The declaration is ESC $ ) C, written once before the first Korean text.
+        raise ValueError(
+            f"{encoding} declares its character set once, not on every line:"
+            " in a part without that declaration, Korean text decodes to the"
+            " wrong characters"
+        )
     src = Path(path)
     dest = Path(out_dir) if out_dir else src.parent
     dest.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
 
-    with open(src, encoding=encoding, newline="") as fh:
+    with open(src, "rb") as fh:
         idx = 0
-        batch: list[str] = []
+        batch: list[bytes] = []
         for line in fh:
             batch.append(line)
             if len(batch) >= lines_per_chunk:
                 part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-                part_path.write_text("".join(batch), encoding=encoding, newline="")
+                part_path.write_bytes(b"".join(batch))
                 parts.append(part_path)
                 batch = []
                 idx += 1
         if batch:
             part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-            part_path.write_text("".join(batch), encoding=encoding, newline="")
+            part_path.write_bytes(b"".join(batch))
             parts.append(part_path)
 
     return parts

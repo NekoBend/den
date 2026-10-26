@@ -29,7 +29,7 @@ fd PATTERN DIR              # search in specific directory
 
 ```sh
 fd -I -t f -e log -X rm         # delete all .log files (-I: gitignored ones too; -H adds hidden ones)
-fd -e jpg -x mv {} dest/        # move all .jpg to dest/
+fd -e jpg -x mv -n -- {} dest/  # move all .jpg to dest/ (-n: a name already in dest/ is skipped)
 fd -e py -x wc -l               # line count per Python file
 fd -e rs -X rustfmt             # format all Rust files (all at once with -X)
 fd -I -t f -e bak -X rm         # remove all .bak files (-I: gitignored ones too; -H adds hidden ones)
@@ -281,33 +281,38 @@ zoxide query -l -s        # list with scores, sorted
 
 > replaces: `curl` (for HTTP)
 
+xh sends a URL that has no scheme over plain http unless `--https` is passed,
+so the lines below spell out `https://`. Without it,
+`xh -a user:pass api.example.com` sends the credentials in clear text, before
+any redirect to https can happen.
+
 ### Requests
 
 ```sh
-xh httpbin.org/get                                          # GET request
-xh POST api.example.com/items name=test price:=19.99        # POST JSON
-xh PUT api.example.com/items/1 name=updated                 # PUT JSON
-xh DELETE api.example.com/items/1                           # DELETE
-xh PATCH api.example.com/items/1 status=active              # PATCH
+xh https://httpbin.org/get                                          # GET request
+xh POST https://api.example.com/items name=test price:=19.99        # POST JSON
+xh PUT https://api.example.com/items/1 name=updated                 # PUT JSON
+xh DELETE https://api.example.com/items/1                           # DELETE
+xh PATCH https://api.example.com/items/1 status=active              # PATCH
 ```
 
 ### Headers and auth
 
 ```sh
-xh GET api.example.com Authorization:'Bearer TOKEN'              # custom header
-xh -a user:pass api.example.com                                  # basic auth
-xh api.example.com X-Custom:value Accept:application/json        # multiple headers
+xh GET https://api.example.com Authorization:'Bearer TOKEN'              # custom header
+xh -a user:pass https://api.example.com                                  # basic auth
+xh https://api.example.com X-Custom:value Accept:application/json        # multiple headers
 ```
 
 ### Output control
 
 ```sh
-xh -b api.example.com/data                       # body only (no headers)
-xh -h api.example.com                            # headers only
-xh -d api.example.com/file.zip                   # download file
-xh -o out.json api.example.com                   # save to file
-xh POST api.example.com --raw '{"key":"val"}'    # raw JSON body
-xh -f POST api.example.com name=test             # form data
+xh -b https://api.example.com/data                       # body only (no headers)
+xh -h https://api.example.com                            # headers only
+xh -d https://api.example.com/file.zip                   # download file
+xh -o out.json https://api.example.com                   # save to file
+xh POST https://api.example.com --raw '{"key":"val"}'    # raw JSON body
+xh -f POST https://api.example.com name=test             # form data
 ```
 
 ---
@@ -382,9 +387,16 @@ rg -l0 -F 'unwrap()' -t rust | xargs -0 -r bat       # find risky unwrap() calls
 
 ### Bulk rename files
 
+`mv -n` never overwrites: a file whose new name is taken (README.txt next to
+README.md) is skipped and keeps its old name. GNU mv 9.5 and later skip it
+silently with exit status 0 (9.2 to 9.4 exit 1), so run the same `fd` search
+again to list what was left; `mv --update=none-fail` (GNU 9.5 and later only)
+reports every skip. `fd -x` starts mv itself, so a shell alias such as
+`mv -i` never applies.
+
 ```sh
-fd -e .jpeg -x mv {} {.}.jpg                         # .jpeg → .jpg
-fd -t f -e txt -x mv {} {.}.md                       # .txt → .md
+fd -e .jpeg -x mv -n -- {} {.}.jpg                   # .jpeg → .jpg (-n: skipped if the .jpg exists)
+fd -t f -e txt -x mv -n -- {} {.}.md                 # .txt → .md (-n: skipped if the .md exists)
 fd 'test_' -t f -x rename 's/test_/spec_/' {}        # rename prefix (with rename util)
 ```
 

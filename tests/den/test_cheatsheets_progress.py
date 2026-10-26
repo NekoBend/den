@@ -7,13 +7,16 @@ without it these tests are skipped.
 """
 
 import asyncio
+import errno
 import importlib
 import multiprocessing
 import os
 import queue
+import stat
 import sys
 import time
 import traceback
+import types
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
@@ -296,6 +299,134 @@ def test_copy_file_rich_escapes_the_file_name(descriptions, tmp_path):
     src.write_bytes(b"x" * 100)
     assert files.copy_file_rich(src, tmp_path / "out.bin") == 100
     assert "[draft] clip.bin" in [_plain(d) for d in descriptions]
+
+
+# --- copy_file_*: a private file stays private while it is copied ---------------
+
+
+class _Bar:
+    """tqdm stand-in (tqdm is not a test dependency)."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def __enter__(self) -> "_Bar":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def update(self, n: int) -> None:
+        pass
+
+
+def _stand_in_tqdm(monkeypatch: pytest.MonkeyPatch, bar: type[_Bar] = _Bar) -> None:
+    module = types.ModuleType("tqdm")
+    module.tqdm = bar
+    monkeypatch.setitem(sys.modules, "tqdm", module)
+
+
+def _still_open_on(fd: int, path: Path) -> bool:
+    """Whether ``fd`` is still open on ``path`` (closed or reused: no)."""
+    try:
+        return os.path.samestat(os.fstat(fd), path.stat())
+    except OSError:
+        return False
+
+
+@pytest.fixture
+def umask_022() -> Iterator[None]:
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("copier", ["copy_file_tqdm", "copy_file_rich"])
+@pytest.mark.parametrize("existing", [False, True], ids=["new-dst", "old-0644-dst"])
+@pytest.mark.parametrize("src_mode", [0o600, 0o640], ids=oct)
+def test_copy_keeps_the_destination_private_until_it_is_complete(
+    tmp_path, monkeypatch, umask_022, copier, existing, src_mode
+):
+    # The destination was opened with the umask's mode (0o644 here) and got
+    # the source's mode only from copystat at the end: an interrupted copy of
+    # a 0o600 secret was left 0o644, readable by other users.
+    src = tmp_path / "secret.key"
+    src.write_bytes(b"k" * 200_000)
+    src.chmod(src_mode)
+    dst = tmp_path / "copy.key"
+    if existing:
+        # Longer than the source, so a copy that does not truncate it keeps
+        # the old file's tail and fails the comparison of the bytes below.
+        dst.write_bytes(b"o" * 300_000)
+        dst.chmod(0o644)
+    modes: list[int] = []
+
+    class Bar(_Bar):
+        @staticmethod
+        def update(n: int) -> None:
+            # update() follows a write: dst is open by then.
+            modes.append(stat.S_IMODE(dst.stat().st_mode))
+
+    _stand_in_tqdm(monkeypatch, Bar)
+    real_advance = Progress.advance
+
+    def spy_advance(self, task_id, advance=1):
+        # progress.open's reader advances on every read: dst is open by then.
+        modes.append(stat.S_IMODE(dst.stat().st_mode))
+        return real_advance(self, task_id, advance)
+
+    monkeypatch.setattr(Progress, "advance", spy_advance)
+    assert getattr(files, copier)(src, dst) == 200_000
+    assert modes
+    assert set(modes) == {0o600}
+    assert dst.read_bytes() == src.read_bytes()
+    assert stat.S_IMODE(dst.stat().st_mode) == src_mode  # copystat, as in copy2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("copier", ["copy_file_tqdm", "copy_file_rich"])
+def test_copy_leaves_a_destination_it_cannot_narrow_alone(
+    tmp_path, monkeypatch, copier
+):
+    # fchmod fails with EPERM on a file you may write but do not own, or on a
+    # device such as /dev/null. The opener's O_TRUNC had already emptied the
+    # destination by then, and the fd it opened was never closed.
+    src = tmp_path / "secret.key"
+    src.write_bytes(b"k" * 200_000)
+    dst = tmp_path / "theirs.txt"
+    dst.write_bytes(b"OLD CONTENT")
+    narrowed: list[int] = []
+
+    def fchmod(fd: int, mode: int) -> None:
+        narrowed.append(fd)
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    _stand_in_tqdm(monkeypatch)
+    monkeypatch.setattr(os, "fchmod", fchmod)
+    with pytest.raises(PermissionError):
+        getattr(files, copier)(src, dst)
+    assert dst.read_bytes() == b"OLD CONTENT"
+    assert narrowed
+    assert not [fd for fd in narrowed if _still_open_on(fd, dst)]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+@pytest.mark.parametrize("copier", ["copy_file_tqdm", "copy_file_rich"])
+def test_copy_still_writes_into_a_fifo(tmp_path, monkeypatch, copier):
+    # O_TRUNC leaves a FIFO alone, but ftruncate on one fails with EINVAL: the
+    # truncation that now waits for fchmod must skip it, as O_TRUNC does.
+    src = tmp_path / "payload"
+    src.write_bytes(b"p" * 1000)  # fits the pipe buffer: no reader thread
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    _stand_in_tqdm(monkeypatch)
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        assert getattr(files, copier)(src, fifo) == 1000
+        assert os.read(reader, 4096) == src.read_bytes()
+    finally:
+        os.close(reader)
 
 
 # --- run_thread_rich_per_task: one live task per running item -------------------
