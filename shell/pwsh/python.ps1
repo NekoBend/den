@@ -123,18 +123,12 @@ function global:_DenPyMarker {
   return $null
 }
 
-# _DenPyExe - the python to run in uv run's place: the active venv's, else the
+# _DenPyExe - the python to run in uv run's place when no venv's own runs: the
 # system Python uv finds, else one uv installed (uv python install); $null when
 # there is none. --system skips the .venv here, and --no-config the
 # .python-version, uv.toml and pyproject.toml here: a .python-version may name a
 # program in the repository, which uv would run to ask its version.
 function global:_DenPyExe {
-  if ($env:VIRTUAL_ENV) {
-    foreach ($rel in 'Scripts/python.exe', 'bin/python') {
-      $path = Join-Path $env:VIRTUAL_ENV $rel
-      if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
-    }
-  }
   $uv = _ResolveCmd 'uv' 'App'
   if (-not $uv) { return $null }
   foreach ($kind in '--no-managed-python', '--managed-python') {
@@ -151,8 +145,9 @@ function global:_DenPyExe {
 # Not where uv run would build or run code that came with a clone: with one of
 # _DenPyMarker's files in this directory or one above it, uv run builds that
 # project (its build backend is the repository's own code) or runs a python it
-# names, even for `python --version`. There, after a warning, the python
-# _DenPyExe names runs directly, for --version and -V too. Elsewhere they go
+# names, even for `python --version`. There a python runs directly, for
+# --version and -V too: the active venv's own, with no warning, as on cmd, else,
+# after a warning, the one _DenPyExe names. Elsewhere --version and -V go
 # through uv run as well, so they name the python that `python x.py` runs. With
 # uv gone since den loaded, the python on PATH. Parity with posix python.sh.
 # Returns @{ Exe; Args }, or @{ Error } for the caller to write under its own
@@ -168,6 +163,12 @@ function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
   }
   $marker = _DenPyMarker
   if ($marker) {
+    if ($env:VIRTUAL_ENV) {
+      foreach ($rel in 'Scripts/python.exe', 'bin/python') {
+        $path = Join-Path $env:VIRTUAL_ENV $rel
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return @{ Exe = $path; Args = $PyArgs } }
+      }
+    }
     $exe = _DenPyExe
     if (-not $exe) { return @{ Error = 'no Python found to run in place of uv run; uv python install installs one' } }
     Write-Warning "${Name}: running $exe, not uv run: uv run would build or run code from $marker"

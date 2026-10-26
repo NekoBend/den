@@ -1119,7 +1119,7 @@ R="$WORK/route"
 ROUTE_BIN="$R/bin"
 ROUTE_LOG="$R/uvcalls"
 mkdir -p "$ROUTE_BIN" "$R/sys" "$R/managed" "$R/venv/bin" "$R/proj/sub" "$R/vproj/.venv" "$R/cfgvenv/bin" "$R/cfgvenv/sub" \
-    "$R/uvtoml/sub" "$R/pyver/sub" "$R/pyverbs" "$R/pyveronly"
+    "$R/uvtoml/sub" "$R/pyver/sub" "$R/pyverbs" "$R/pyveronly" "$R/nopyvenv/bin"
 cat > "$ROUTE_BIN/uv" << EOF
 #!/bin/sh
 echo "\$*" >> "$ROUTE_LOG"
@@ -1254,12 +1254,16 @@ rc=0" "$actual"
     assert_eq "$sh/python with no python to run only asks uv" "python find --system --no-config --no-managed-python
 python find --system --no-config --managed-python" "$(cat "$ROUTE_LOG")"
 
-    echo "[$sh] in a venv va activated, in a project: the venv's python, not uv run --python"
+    echo "[$sh] in a venv va activated, in a project: the venv's python, not uv run --python, and no line, as on cmd"
     actual=$(route_posix "$sh" "$R/proj" "export VIRTUAL_ENV='$R/venv' _DEN_VENV_PYTHON=3.12; python -c pass")
     assert_eq "$sh/python in a venv in a project runs the venv's python" "venv-python -c pass
 rc=0" "$actual"
-    assert_eq "$sh/python in a venv in a project says so" \
-        "python: running $R/venv/bin/python, not uv run: uv run would build or run code from $RP/proj/pyproject.toml" "$(cat "$R/err")"
+    assert_eq "$sh/python in a venv in a project prints no line" "" "$(cat "$R/err")"
+    actual=$(route_posix "$sh" "$R/proj" "export VIRTUAL_ENV='$R/nopyvenv' _DEN_VENV_PYTHON=3.12; python -c pass")
+    assert_eq "$sh/python in a venv with no python of its own, in a project, runs the system python" "system-python -c pass
+rc=0" "$actual"
+    assert_eq "$sh/python in a venv with no python of its own, in a project, says so" \
+        "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/proj/pyproject.toml" "$(cat "$R/err")"
     actual=$(route_posix "$sh" "$NOPROJ" "export VIRTUAL_ENV='$R/venv' _DEN_VENV_PYTHON=3.12; python -c pass")
     assert_eq "$sh/python in a venv outside a project: uv run --python, as before" "mock-uv run --python 3.12 -- python -c pass
 rc=0" "$actual"
@@ -1371,10 +1375,12 @@ assert_eq "pwsh/python with no python to run fails" \
 err=$(run_pwsh_stderr_oneline "$PYTHON_PS1_ROUTE" "Remove-Item Env:\\VIRTUAL_ENV -ErrorAction SilentlyContinue; Set-Location -LiteralPath '$R/proj'; \$env:ROUTE_NO_SYSTEM = '1'; \$env:ROUTE_NO_MANAGED = '1'; python -c pass")
 assert_contains "pwsh/python's error is python's" "python: no Python found" "$err"
 
-echo "[pwsh] in a venv va activated, in a project: the venv's python, not uv run --python"
+echo "[pwsh] in a venv va activated, in a project: the venv's python, not uv run --python, and no warning, as on cmd"
 actual=$(route_pwsh "$R/proj" "\$env:VIRTUAL_ENV = '$R/venv'; \$env:_DEN_VENV_PYTHON = '3.12'; python -c pass")
-assert_eq "pwsh/python in a venv in a project runs the venv's python" "WARNING: python: running $R/venv/bin/python, not uv run: uv run would build or run code from $R/proj/pyproject.toml
-venv-python -c pass" "$actual"
+assert_eq "pwsh/python in a venv in a project runs the venv's python, with no warning" "venv-python -c pass" "$actual"
+actual=$(route_pwsh "$R/proj" "\$env:VIRTUAL_ENV = '$R/nopyvenv'; \$env:_DEN_VENV_PYTHON = '3.12'; python -c pass")
+assert_eq "pwsh/python in a venv with no python of its own, in a project, runs the system python after the warning" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/proj/pyproject.toml
+system-python -c pass" "$actual"
 actual=$(route_pwsh "$NOPROJ" "\$env:VIRTUAL_ENV = '$R/venv'; \$env:_DEN_VENV_PYTHON = '3.12'; python -c pass")
 assert_eq "pwsh/python in a venv outside a project: uv run --python, as before" \
     "mock-uv run --python 3.12 -- python -c pass" "$actual"

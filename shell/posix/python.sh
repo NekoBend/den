@@ -104,18 +104,13 @@ _den_py_marker() {
     done
 }
 
-# _den_py_exe → print the python to run in uv run's place: the active venv's,
-# else the system Python uv finds, else one uv installed (uv python install).
+# _den_py_exe → print the python to run in uv run's place when no venv's own
+# runs: the system Python uv finds, else one uv installed (uv python install).
 # Fails when there is none. --system skips the .venv here, and --no-config the
 # .python-version, uv.toml and pyproject.toml here: a .python-version may name
 # a program in the repository, which uv would run to ask its version.
 _den_py_exe() {
     local p kind
-    if [ -n "$VIRTUAL_ENV" ]; then
-        for p in "$VIRTUAL_ENV/bin/python" "$VIRTUAL_ENV/Scripts/python.exe"; do
-            [ -x "$p" ] && { printf '%s\n' "$p"; return 0; }
-        done
-    fi
     for kind in --no-managed-python --managed-python; do
         p=$(command uv python find --system --no-config "$kind" 2>/dev/null) &&
             [ -n "$p" ] && [ -x "$p" ] && { printf '%s\n' "$p"; return 0; }
@@ -128,14 +123,23 @@ _den_py_exe() {
 # says so. Not where uv run would build or run code that came with a clone:
 # with one of _den_py_marker's files in this directory or one above it, uv run
 # builds that project (its build backend is the repository's own code) or runs
-# a python it names, even for `python --version`. There, after a line on
-# stderr, the python _den_py_exe names runs directly, for --version and -V too.
-# Elsewhere they go through uv run as well, so they name the python that
-# `python x.py` runs.
+# a python it names, even for `python --version`. There a python runs directly,
+# for --version and -V too: the active venv's own, with no line, as on cmd,
+# else, after a line on stderr, the one _den_py_exe names. Elsewhere --version
+# and -V go through uv run as well, so they name the python that `python x.py`
+# runs.
 _den_py() {
     local name=$1 marker exe
     shift
     if marker=$(_den_py_marker); then
+        if [ -n "$VIRTUAL_ENV" ]; then
+            for exe in "$VIRTUAL_ENV/bin/python" "$VIRTUAL_ENV/Scripts/python.exe"; do
+                if [ -x "$exe" ]; then
+                    "$exe" "$@"
+                    return
+                fi
+            done
+        fi
         if ! exe=$(_den_py_exe); then
             printf '%s: no Python found to run in place of uv run; uv python install installs one\n' "$name" >&2
             return 1

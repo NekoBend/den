@@ -322,11 +322,12 @@ keeps), except where uv would build or run code that came with a clone:
   names a path when a line of it holds `/` or `\`, comment (`#`) and blank
   lines aside; one of version requests alone (`3.13`, `cpython@3.13`) is no
   marker, so a pyenv `~/.python-version` leaves home alone. There a python runs
-  directly instead, after a warning line: the active venv's, else the system
-  Python uv finds, else one uv installed (`uv python install`). Type
-  `uv run python` to use the project. `--version` and `-V` take the same way
-  as any other call: through `uv run` outside a project, so they name the
-  python that `python x.py` runs, and after the warning line inside one.
+  directly instead: the active venv's own, with no line, else, after a warning
+  line, the system Python uv finds, else one uv installed
+  (`uv python install`). Type `uv run python` to use the project. `--version`
+  and `-V` take the same way as any other call: through `uv run` outside a
+  project, so they name the python that `python x.py` runs, and the python
+  run directly inside one.
 - `pip` / `pip3` run only inside an active venv: the venv's own pip when it has
   one, else `uv pip`, which installs into that venv (a venv made by uv, `vv` /
   `vva`, has no pip). With no venv active they run nothing and say so, since

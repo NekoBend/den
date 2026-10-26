@@ -275,6 +275,15 @@ cd /d "%T%\proj\sub" || exit /b 1
 >>"%W%" echo [--version]
 call "%BIN%\python.cmd" --version >"%O%" 2>&1
 call :expect %errorlevel% 0 "python --version: in a project, the system python and a line"
+rem In a venv, its python.exe and no line, in a project too (bash, zsh and
+rem pwsh do the same).
+set "VIRTUAL_ENV=%T%\venv"
+>"%W%" echo [@Scripts]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: in a venv in a project, the venv's python.exe and no line"
+set "VIRTUAL_ENV="
 cd /d "%T%\work" || exit /b 1
 rem stdout only: the line on stderr holds a non-ASCII arrow
 >"%W%" echo [@tools]
