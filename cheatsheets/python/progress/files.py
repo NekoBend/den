@@ -25,7 +25,9 @@ Note:
     a half-written destination is the caller's to clean up. The two copiers
     match ``shutil.copy2``: metadata travels with the bytes and a destination
     that is the source raises ``shutil.SameFileError`` instead of truncating
-    it.
+    it. They are stricter than ``copy2`` in one way: the destination is 0o600
+    from before the first byte until the copy completes, so a half-written
+    copy of a private file is private too.
 """
 
 from collections.abc import Callable, Iterable
@@ -40,20 +42,33 @@ def copy_file_tqdm(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
     """Copy ``src`` to ``dst`` with a tqdm bar measured in bytes.
 
     [Best for] Any copy/convert step where the user waits on a large file.
-    [Note] ``samefile`` first: ``dst.open("wb")`` truncates before the first
-           read, so copying a file onto itself (a symlink or hardlink to the
-           source, or ``out_dir / src.name`` when ``out_dir`` is the source's
-           own directory) would destroy it and report 0 bytes copied.
-           ``shutil.copystat`` at the end keeps mode and times, as
-           ``shutil.copy2`` does; without it a 0600 secret lands 0644.
+    [Note] ``samefile`` first: opening ``dst`` for writing truncates it before
+           the first read, so copying a file onto itself (a symlink or
+           hardlink to the source, or ``out_dir / src.name`` when ``out_dir``
+           is the source's own directory) would destroy it and report 0 bytes
+           copied.
+           ``dst`` is 0o600 from before its first byte (an existing file is
+           narrowed to it), and ``shutil.copystat`` at the end gives it the
+           source's mode and times, as ``shutil.copy2`` does. That is
+           stricter than ``copy2``, which writes into a file with the
+           umask's mode until then: interrupted, its copy of a 0600 secret is
+           left 0644.
            ``unit="B", unit_scale=True, unit_divisor=1024`` divides by 1024 but
            labels it "12.3MB/s": tqdm's prefixes never carry the "i".
            64 KiB is ``shutil.copyfileobj``'s block size and keeps the bar
            refresh frequent enough to look live on a fast disk.
     """
+    import os
     import shutil
 
     from tqdm import tqdm
+
+    def private(path: str, flags: int) -> int:
+        """Open ``path`` 0o600; an existing file is narrowed before any write."""
+        fd = os.open(path, flags, 0o600)
+        if os.name == "posix":
+            os.fchmod(fd, 0o600)
+        return fd
 
     if dst.exists() and src.samefile(dst):
         raise shutil.SameFileError(f"{src} and {dst} are the same file")
@@ -61,7 +76,7 @@ def copy_file_tqdm(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
     written = 0
     with (
         src.open("rb") as reader,
-        dst.open("wb") as writer,
+        open(dst, "wb", opener=private) as writer,
         tqdm(
             total=total, desc=src.name, unit="B", unit_scale=True, unit_divisor=1024
         ) as bar,
@@ -82,8 +97,10 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
            description, bar, ``DownloadColumn`` and ``TimeRemainingColumn`` and
            takes no ``columns`` argument, so the speed readout needs an
            explicit ``Progress`` with ``TransferSpeedColumn``. Same
-           ``samefile`` guard and ``shutil.copystat`` as ``copy_file_tqdm``.
+           ``samefile`` guard, 0o600 destination and ``shutil.copystat`` as
+           ``copy_file_tqdm``.
     """
+    import os
     import shutil
 
     from rich.markup import escape
@@ -95,6 +112,13 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
         TimeRemainingColumn,
         TransferSpeedColumn,
     )
+
+    def private(path: str, flags: int) -> int:
+        """Open ``path`` 0o600; an existing file is narrowed before any write."""
+        fd = os.open(path, flags, 0o600)
+        if os.name == "posix":
+            os.fchmod(fd, 0o600)
+        return fd
 
     if dst.exists() and src.samefile(dst):
         raise shutil.SameFileError(f"{src} and {dst} are the same file")
@@ -110,7 +134,7 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
         # TextColumn parses the description as markup: "[draft] notes.txt" would
         # lose its brackets.
         progress.open(src, "rb", description=escape(src.name)) as reader,
-        dst.open("wb") as writer,
+        open(dst, "wb", opener=private) as writer,
     ):
         while chunk := reader.read(chunk_size):
             written += writer.write(chunk)

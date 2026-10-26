@@ -11,9 +11,11 @@ import importlib
 import multiprocessing
 import os
 import queue
+import stat
 import sys
 import time
 import traceback
+import types
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
@@ -296,6 +298,69 @@ def test_copy_file_rich_escapes_the_file_name(descriptions, tmp_path):
     src.write_bytes(b"x" * 100)
     assert files.copy_file_rich(src, tmp_path / "out.bin") == 100
     assert "[draft] clip.bin" in [_plain(d) for d in descriptions]
+
+
+# --- copy_file_*: a private file stays private while it is copied ---------------
+
+
+@pytest.fixture
+def umask_022() -> Iterator[None]:
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("copier", ["copy_file_tqdm", "copy_file_rich"])
+@pytest.mark.parametrize("existing", [False, True], ids=["new-dst", "old-0644-dst"])
+@pytest.mark.parametrize("src_mode", [0o600, 0o640], ids=oct)
+def test_copy_keeps_the_destination_private_until_it_is_complete(
+    tmp_path, monkeypatch, umask_022, copier, existing, src_mode
+):
+    # The destination was opened with the umask's mode (0o644 here) and got
+    # the source's mode only from copystat at the end: an interrupted copy of
+    # a 0o600 secret was left 0o644, readable by other users.
+    src = tmp_path / "secret.key"
+    src.write_bytes(b"k" * 200_000)
+    src.chmod(src_mode)
+    dst = tmp_path / "copy.key"
+    if existing:
+        dst.write_bytes(b"old")
+        dst.chmod(0o644)
+    modes: list[int] = []
+
+    class Bar:
+        """tqdm stand-in (tqdm is not a test dependency): update() follows a write."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self) -> "Bar":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        @staticmethod
+        def update(n: int) -> None:
+            modes.append(stat.S_IMODE(dst.stat().st_mode))
+
+    fake_tqdm = types.ModuleType("tqdm")
+    fake_tqdm.tqdm = Bar
+    monkeypatch.setitem(sys.modules, "tqdm", fake_tqdm)
+    real_advance = Progress.advance
+
+    def spy_advance(self, task_id, advance=1):
+        # progress.open's reader advances on every read: dst is open by then.
+        modes.append(stat.S_IMODE(dst.stat().st_mode))
+        return real_advance(self, task_id, advance)
+
+    monkeypatch.setattr(Progress, "advance", spy_advance)
+    assert getattr(files, copier)(src, dst) == 200_000
+    assert modes
+    assert set(modes) == {0o600}
+    assert dst.read_bytes() == src.read_bytes()
+    assert stat.S_IMODE(dst.stat().st_mode) == src_mode  # copystat, as in copy2
 
 
 # --- run_thread_rich_per_task: one live task per running item -------------------
