@@ -1019,6 +1019,68 @@ def test_in_follows_python_blocks_not_indentation(tmp_path: Path) -> None:
     ]
 
 
+def test_annotated_assignments_are_definitions(tmp_path: Path) -> None:
+    # The assignment pattern was `^name\s*=`, which the annotation in
+    # `MAX_RETRIES: int = 3` defeats: --def found nothing, --uses listed the
+    # line as a use and --in left the name out, while the comparison
+    # `PLAIN == 5` passed for a definition. A bare annotation binds nothing,
+    # and the keyword before the colon of a one-line block is no name.
+    lib = write(
+        tmp_path,
+        "lib.py",
+        "MAX_RETRIES: int = 3\n"
+        "TABLE: dict[str, list[str]] = {\n"
+        "    'a': [],\n"
+        "}\n"
+        "PLAIN = 5\n"
+        "DECLARED: int\n"
+        "PLAIN == 5\n"
+        "if PLAIN: LEVEL = 1\n"
+        "else: LEVEL = 2\n"
+        "try: N = int('1')\n"
+        "except: N = 0\n"
+        "finally: DONE = True\n"
+        "lambda: dict(key=1)\n",
+    )
+    write(
+        tmp_path, "app.py", "from lib import MAX_RETRIES, TABLE\nprint(MAX_RETRIES)\n"
+    )
+    expected_defs = {
+        "MAX_RETRIES": ["lib.py:1:def:MAX_RETRIES: int = 3"],
+        "TABLE": ["lib.py:2:def:TABLE: dict[str, list[str]] = {"],
+        "PLAIN": ["lib.py:5:def:PLAIN = 5"],
+        "DECLARED": [],
+    }
+    for symbol, expected in expected_defs.items():
+        proc = run("--def", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == expected, symbol
+
+    proc = run("--uses", "MAX_RETRIES", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "app.py:1:use:from lib import MAX_RETRIES, TABLE",
+        "app.py:2:use:print(MAX_RETRIES)",
+    ]
+    proc = run("--uses", "PLAIN", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:7:use:PLAIN == 5",
+        "lib.py:8:use:if PLAIN: LEVEL = 1",
+    ]
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:1:def:MAX_RETRIES: int = 3",
+        "app.py:1:use:MAX_RETRIES:from lib import MAX_RETRIES, TABLE",
+        "app.py:2:use:MAX_RETRIES:print(MAX_RETRIES)",
+        "lib.py:5:def:PLAIN = 5",
+        "lib.py:2:def:TABLE: dict[str, list[str]] = {",
+        "app.py:1:use:TABLE:from lib import MAX_RETRIES, TABLE",
+    ]
+
+
 def test_python_definitions_survive_a_syntax_error() -> None:
     # Where the tokenizer gives up, the rest of the file is read by
     # indentation: column 0 is module level, an indented def is a method.

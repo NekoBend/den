@@ -77,7 +77,8 @@ Limitations:
 
     What counts as a definition: in Python, a def or class at module level
     (column 0, or inside a module-level if/try/with/for/while block) and an
-    assignment at column 0; a def in a class body is a method. Local
+    assignment at column 0, annotated or not (`X: int = 1`; a bare `X: int`
+    assigns nothing); a def in a class body is a method. Local
     variables, keyword arguments, nested functions, class attributes and
     assignments inside a block are not definitions. A Go func with a
     receiver is a method. In Rust, Java and C# the braces decide: a

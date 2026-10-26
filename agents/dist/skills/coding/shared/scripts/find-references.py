@@ -20,7 +20,8 @@ Modes:
 
     --in lists top-level names: in Python, a def or class at module level
     (column 0, or inside a module-level if/try/with/for/while block) and an
-    assignment at column 0, never a method, a nested function or a local.
+    assignment at column 0, annotated or not (`X: int = 1`; a bare `X: int`
+    assigns nothing), never a method, a nested function or a local.
     A Go method (a func with a receiver) is not one either. In Rust, Java
     and C# a name counts outside every type and function body only (a Rust
     `mod` or `extern` block and a C# namespace count as outside), so an impl

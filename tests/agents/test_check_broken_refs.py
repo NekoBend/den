@@ -900,6 +900,83 @@ def test_conditionally_defined_functions_are_module_level(tmp_path: Path) -> Non
     ]
 
 
+def test_a_removed_annotated_assignment_is_reported(tmp_path: Path) -> None:
+    # The assignment pattern was `^name\s*=`, which the annotation in
+    # `RETRIES: int = 3` defeats, so deleting it while a caller still imports
+    # it reported only the plain LIMIT next to it.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "RETRIES: int = 3\n"
+        "TABLE: dict[str, list[str]] = {\n"
+        "    'a': [],\n"
+        "}\n"
+        "LIMIT = 5\n"
+        "def helper():\n"
+        "    return 1\n",
+    )
+    write(
+        tmp_path,
+        "app.py",
+        "from lib import LIMIT, RETRIES, TABLE, helper\nprint(RETRIES, TABLE)\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "def helper():\n    return 1\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    imports = "from lib import LIMIT, RETRIES, TABLE, helper"
+    assert report(proc, tmp_path) == [
+        f"app.py:1:broken_ref:LIMIT:{imports}",
+        f"app.py:1:broken_ref:RETRIES:{imports}",
+        "app.py:2:broken_ref:RETRIES:print(RETRIES, TABLE)",
+        f"app.py:1:broken_ref:TABLE:{imports}",
+        "app.py:2:broken_ref:TABLE:print(RETRIES, TABLE)",
+    ]
+
+
+def test_a_keyword_before_a_colon_is_not_a_removed_name(tmp_path: Path) -> None:
+    # `else: LEVEL = 2` has the shape of an annotated assignment (`name:
+    # annotation = value`). Taken for one, removing such lines made else, try,
+    # except, finally and lambda removed names, and every block in the tree
+    # that uses one became a broken reference.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "import os\n"
+        "if os.sep == '/': LEVEL = 1\n"
+        "else: LEVEL = 2\n"
+        "try: N = int('1')\n"
+        "except: N = 0\n"
+        "finally: DONE = True\n"
+        "lambda: dict(key=1)\n",
+    )
+    write(
+        tmp_path,
+        "app.py",
+        "try:\n"
+        "    x = 1\n"
+        "except ValueError:\n"
+        "    x = 2\n"
+        "else:\n"
+        "    x = 3\n"
+        "finally:\n"
+        "    f = lambda: x\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "import os\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+
 def test_a_definition_behind_a_byte_order_mark_is_seen(tmp_path: Path) -> None:
     # A UTF-8 byte-order mark (what Windows editors often write to a .ps1) was
     # read as part of line 1, so `^function` missed a definition there and
