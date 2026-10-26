@@ -14,7 +14,6 @@ component, mirroring `den install`.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
 import sys
@@ -47,10 +46,13 @@ def _has_block(rc: Path, line: str) -> bool:
     )
 
 
-def _strip_block(rc: Path, line: str) -> None:
+def _strip_block(rc: Path, line: str) -> bool:
     """Remove den's rc block: the `# ===== den =====` marker, the source line
     that follows it, and one preceding blank line (the append form). If nothing
     but den's block was in the file, den created it, so the file goes too.
+    True when a block was removed; False when there was none to remove (the
+    file is then not rewritten). OSError when the file cannot be read,
+    rewritten or removed: the block is still there, and the caller says so.
 
     Works on BYTES, keeping each surviving line with its own terminator. The
     previous version set one `crlf` flag if the file contained a single CRLF
@@ -67,7 +69,10 @@ def _strip_block(rc: Path, line: str) -> None:
     """
     from ._shell import _bom_codec
 
-    raw = rc.read_bytes()
+    try:
+        raw = rc.read_bytes()
+    except FileNotFoundError:
+        return False  # removed since den looked: no block left in it
     bom, codec = _bom_codec(raw)
     if codec == "utf-8":
         kept, stripped = _strip_lines(raw, line)
@@ -75,14 +80,16 @@ def _strip_block(rc: Path, line: str) -> None:
         try:
             text = raw[len(bom) :].decode(codec)
         except UnicodeDecodeError:
-            return
+            return False
         kept, stripped = _strip_lines(text.encode("utf-8"), line)
         kept = bom + kept.decode("utf-8").encode(codec)
-    if stripped and not kept.removeprefix(bom):  # only den's block was there
-        with contextlib.suppress(OSError):
-            rc.unlink()
-        return
-    rc.write_bytes(kept)
+    if not stripped:
+        return False
+    if kept.removeprefix(bom):
+        rc.write_bytes(kept)
+    else:  # only den's block was there
+        rc.unlink(missing_ok=True)
+    return True
 
 
 def _strip_lines(data: bytes, line: str) -> tuple[bytes, bool]:
@@ -123,14 +130,18 @@ class _Remover:
     deletes only the files byte-identical to den's version and keeps the ones
     the user changed. Also strips rc blocks and prunes emptied dirs. The bytes
     are compared when the plan is listed and again right before each delete,
-    so a file saved again while the prompt was open is kept, and commit
-    returns 1.
+    so a file saved again while the prompt was open is kept.
 
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), as for _Writer: a path below it that reaches a
     symlink - a symlinked skills/, a CLAUDE.md linked elsewhere, a dangling
-    link - is refused and reported, never removed through, and commit returns
-    1. The default tool dirs are not confined, as for _Writer."""
+    link - is refused and reported, never removed through. The default tool
+    dirs are not confined, as for _Writer.
+
+    commit returns 1 when part of the plan did not happen without the user
+    choosing so: a path refused, a file kept because it changed after den
+    checked it, or a file or rc file den failed to remove or rewrite (each
+    named on stderr and left out of the closing count)."""
 
     def __init__(self) -> None:
         self._files: list[tuple[Path, bytes]] = []
@@ -226,19 +237,20 @@ class _Remover:
             _ui.say(f"  unwire {rc}")
         return True
 
-    def _remove(self, delete: list[Path]) -> tuple[list[Path], int]:
+    def _remove(self, delete: list[Path]) -> tuple[list[Path], int, int]:
         """Delete the planned files: (the files removed, the number kept
-        because they changed after den checked them). Each one is checked
-        again right before it goes, so what decides the delete is what the
-        file holds now, not what it held when the plan was listed: an edit
-        saved while the prompt was open is kept, and a path below a confined
-        root that reaches a symlink by now is refused."""
+        because they changed after den checked them, the number den failed
+        to read or remove, each named on stderr). Each one is checked again
+        right before it goes, so what decides the delete is what the file
+        holds now, not what it held when the plan was listed: an edit saved
+        while the prompt was open is kept, and a path below a confined root
+        that reaches a symlink by now is refused."""
         from ._install import _confined
         from ._memory import _refuse_symlink
 
         candidates = self._candidates()
         removed: list[Path] = []
-        late = 0
+        late = failed = 0
         for d in delete:
             guard = _confined(self._roots, d)
             if guard is not None and _refuse_symlink(*guard, "remove", _ERR):
@@ -250,6 +262,7 @@ class _Remover:
                 continue  # deleted while the prompt was open: nothing to do
             except OSError as e:
                 print(f"  warning: {d}: {e}", file=sys.stderr)
+                failed += 1
                 continue
             if not any(data == c for c in candidates[d]):
                 late += 1
@@ -259,14 +272,29 @@ class _Remover:
                 d.unlink()
             except OSError as e:
                 print(f"  warning: {d}: {e}", file=sys.stderr)
+                failed += 1
                 continue
             removed.append(d)
-        return removed, late
+        return removed, late, failed
+
+    @staticmethod
+    def _unwire_all(unwire: list[tuple[Path, str]]) -> tuple[int, int]:
+        """Strip den's block from each rc file: (the number unwired, the
+        number den failed to read, rewrite or remove, each named on stderr)."""
+        unwired = failed = 0
+        for rc, line in unwire:
+            try:
+                if _strip_block(rc, line):
+                    unwired += 1
+            except OSError as e:
+                print(f"  warning: {rc}: {e}", file=sys.stderr)
+                failed += 1
+        return unwired, failed
 
     def commit(self, *, assume_yes: bool, dry_run: bool) -> int:
-        """Delete what _plan found, after one confirmation. 1 when a path was
-        refused (see the class docstring), a file changed after den checked
-        it (see _remove), or a non-interactive run lacks --yes, else 0."""
+        """Delete what _plan found, after one confirmation. 1 when part of the
+        plan did not happen (see the class docstring) or a non-interactive
+        run lacks --yes, else 0."""
         delete, keep, unwire, refused = self._plan()
         status = 1 if refused else 0
         if not self._show(delete, keep, unwire, refused):
@@ -284,12 +312,16 @@ class _Remover:
             if not _ui.confirm("Remove them?", default=False):
                 _ui.say("aborted; nothing removed.")
                 return status
-        removed, late = self._remove(delete)
-        for rc, line in unwire:
-            _strip_block(rc, line)
+        removed, late, failed = self._remove(delete)
+        unwired, unwire_failed = self._unwire_all(unwire)
         self._prune(removed)
-        _ui.say(f"removed {len(removed)} file(s); unwired {len(unwire)} rc file(s).")
-        return 1 if refused or late else 0
+        _ui.say(f"removed {len(removed)} file(s); unwired {unwired} rc file(s).")
+        not_done = [f"{failed} file(s) not removed"] if failed else []
+        if unwire_failed:
+            not_done.append(f"{unwire_failed} rc file(s) not unwired")
+        if not_done:
+            print(f"  {', '.join(not_done)}; see the warnings above", file=sys.stderr)
+        return 1 if refused or late or failed or unwire_failed else 0
 
     @staticmethod
     def _drop_pycache(cur: Path) -> None:

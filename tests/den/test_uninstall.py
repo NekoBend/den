@@ -1,10 +1,21 @@
 """Tests for den uninstall (den/_uninstall.py)."""
 
+import os
+import sys
 from pathlib import Path
 
+import pytest
+
 from den._install import main as install_main
-from den._uninstall import _has_block, _strip_block
+from den._uninstall import _has_block, _Remover, _strip_block
 from den._uninstall import main as uninstall_main
+
+# A read-only dir or file is how these tests make a delete or rewrite fail for
+# real; Windows ignores the mode bits and root writes through them.
+_mode_bits = pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="POSIX mode bits do not stop Windows or root",
+)
 
 
 def _install(tmp_path, *extra):
@@ -170,6 +181,63 @@ def test_uninstall_target_refuses_a_symlink_put_in_at_the_prompt(
     assert "grounding is a symlink" in capsys.readouterr().err
 
 
+@_mode_bits
+def test_uninstall_reports_a_file_it_cannot_remove(tmp_path, monkeypatch, capsys):
+    """A failed unlink printed a warning, but the closing line counted the
+    whole plan as removed and the run exited 0: 'removed 117 file(s)' with a
+    read-only skill dir whose SKILL.md stayed where it was."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    _install(tmp_path)
+    planned = len(_files(tmp_path / "skills"))
+    locked = tmp_path / "skills" / "grounding"
+    stuck = [p for p in locked.iterdir() if p.is_file()]
+    locked.chmod(0o555)
+    try:
+        rc = uninstall_main(["skills", "--target", str(tmp_path), "--yes"])
+    finally:
+        locked.chmod(0o755)
+    assert stuck and all(p.is_file() for p in stuck)
+    assert rc == 1, "a file den failed to remove is a failed uninstall"
+    out, err = capsys.readouterr()
+    assert f"removed {planned - len(stuck)} file(s)" in out
+    assert f"warning: {locked / 'SKILL.md'}:" in err
+    assert f"{len(stuck)} file(s) not removed; see the warnings above" in err
+
+
+@_mode_bits
+def test_uninstall_reports_an_rc_file_it_cannot_unwire(tmp_path, capsys):
+    """_strip_block's OSError went straight out of commit when an rc file
+    could not be rewritten (a traceback, after the files were gone), and was
+    swallowed when a file holding only den's block could not be removed,
+    which then still counted as unwired."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    block = f"# ===== den =====\n{line}\n"
+    readonly = tmp_path / ".bashrc"
+    readonly.write_text(f"export A=1\n\n{block}")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    only_den = locked / ".zshrc"  # only den's block: den made it, so it goes
+    only_den.write_text(block)
+    fine = tmp_path / ".profile"
+    fine.write_text(f"export B=2\n\n{block}")
+    remover = _Remover()
+    for rc in (readonly, only_den, fine):
+        remover.unwire(rc, line)
+    readonly.chmod(0o444)
+    locked.chmod(0o555)
+    try:
+        assert remover.commit(assume_yes=True, dry_run=False) == 1
+    finally:
+        locked.chmod(0o755)
+        readonly.chmod(0o644)
+    assert _has_block(readonly, line) and _has_block(only_den, line)
+    assert fine.read_text() == "export B=2\n", "the others are still unwired"
+    out, err = capsys.readouterr()
+    assert "unwired 1 rc file(s)" in out
+    assert f"warning: {readonly}:" in err and f"warning: {only_den}:" in err
+    assert "2 rc file(s) not unwired; see the warnings above" in err
+
+
 def test_uninstall_parent_only_with_flag(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path, "--with-parent")
@@ -291,6 +359,18 @@ def test_strip_block_removes_marker_and_line(tmp_path):
     _strip_block(rc, line)
     assert rc.read_text() == "export FOO=1\n"
     assert not _has_block(rc, line)
+
+
+def test_strip_block_says_whether_it_removed_a_block(tmp_path):
+    # commit counts 'unwired' from this, and an rc file deleted while the
+    # prompt was open is nothing left to do, not a crash
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    rc.write_text(f"export FOO=1\n\n# ===== den =====\n{line}\n")
+    assert _strip_block(rc, line) is True
+    assert _strip_block(rc, line) is False, "no block left to remove"
+    assert rc.read_text() == "export FOO=1\n"
+    assert _strip_block(tmp_path / "gone", line) is False
 
 
 def test_strip_block_keeps_foreign_content(tmp_path):

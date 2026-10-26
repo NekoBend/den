@@ -38,10 +38,10 @@ den verify <file.py...>               format/lint/typecheck each file, config-fa
 `den install` never silently clobbers local edits: files that already exist and
 differ from the bundled version are listed and you are asked once before
 overwriting (default no, so your changes are kept); a listed file you save
-again while that prompt is open is kept too. Pass `--force` to overwrite
-without asking; each file it overwrites is first copied to `<file>.den.bak`
-(`.den.bak.1`, `.2`, ... when an earlier backup holds something else; the copy
-keeps the file's permissions minus execute).
+again while that prompt is open is kept too, and the run exits non-zero.
+Pass `--force` to overwrite without asking; each file it overwrites is first
+copied to `<file>.den.bak` (`.den.bak.1`, `.2`, ... when an earlier backup
+holds something else; the copy keeps the file's permissions minus execute).
 Non-interactive runs skip the changed files and exit non-zero,
 so a scripted install cannot mistake a full skip for success. `den install hook`
 into a tool's settings file merges (it preserves foreign hooks and other keys).
@@ -92,11 +92,13 @@ the rc-file `# ===== den =====` block and prunes dirs den created that became
 empty. It lists the plan and asks once before deleting (`--yes` to skip,
 `--dry-run` to preview only; non-interactive runs require `--yes`). Each file
 is compared again right before it is deleted, so one you save while that
-prompt is open is kept and named, and the run exits non-zero. A
-`--target` directory gets the same symlink rule as on install: a path that
-reaches a symlink below it is refused and reported, never removed through,
-and the run exits non-zero. Hooks are per-workspace, so `den uninstall` does
-not touch them; use `den uninstall hook`.
+prompt is open is kept and named. A `--target` directory gets the same
+symlink rule as on install: a path that reaches a symlink below it is
+refused and reported, never removed through. The run exits non-zero when it
+refuses such a path, keeps a file saved while the prompt was open, or cannot
+remove a file or rewrite an rc file (each one is named, and the closing count
+holds only what was really removed). Hooks are per-workspace, so
+`den uninstall` does not touch them; use `den uninstall hook`.
 
 Being stateless has one cost: when den stops deploying something (a retired
 tool, a renamed skill, a deleted script), the old copy is no longer anything
