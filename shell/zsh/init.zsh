@@ -7,8 +7,8 @@
 # theme and aliases.sh owns the git aliases).
 # compinit runs once per shell: not at all here when completion is already set
 # up (compdef is defined: ~/.zshrc ran compinit before this file, or Ubuntu's
-# /etc/zsh/zshrc did, which `den install shell` turns off with
-# skip_global_compinit=1 in ~/.zshenv). While ~/.zcompdump is less than a day
+# /etc/zsh/zshrc did, unless skip_global_compinit is set; a second compinit
+# would undo compdef calls since). While ~/.zcompdump is less than a day
 # old, -C loads it as it is, without looking for new completion functions. A
 # missing or older dump gets the full compinit, which writes the dump again
 # when it finds functions added since (an apt package, a new tool); touch then

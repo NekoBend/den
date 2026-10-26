@@ -31,9 +31,8 @@ _WINDOWS_SKIP = {
     "test_install_shell_deploys_both_families",
     "test_install_shell_force_overwrites",
     "test_install_shell_keeps_modified_config_non_tty",
-    "test_install_shell_leaves_zshenv_alone_without_zsh",
+    "test_install_shell_leaves_zshenv_alone",
     "test_install_shell_no_extras_skips_optional",
-    "test_install_shell_turns_off_ubuntus_global_compinit_in_zshenv",
     "test_install_shell_wires_bashrc",
     "test_install_shell_wires_the_profile_pwsh_reads_under_xdg",
     "test_install_shell_wiring_is_idempotent",
@@ -41,7 +40,6 @@ _WINDOWS_SKIP = {
     "test_uninstall_shell_non_tty_refuses_without_yes",
     "test_uninstall_shell_removes_posix_bin_keeps_local_bin",
     "test_uninstall_shell_round_trip",
-    "test_uninstall_shell_takes_the_zshenv_line_back",
     # cline: workspace-local executable scripts (POSIX name/bit) + Documents rules dir
     "test_install_cline_is_workspace_local",
     "test_install_cline_writes_executable_scripts",

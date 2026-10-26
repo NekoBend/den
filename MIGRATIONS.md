@@ -188,25 +188,6 @@ del "%LOCALAPPDATA%\clink\bin\find.cmd"
 Remove-Item "$env:LOCALAPPDATA\clink\bin\find.cmd" -ErrorAction SilentlyContinue
 ```
 
-## 9. zsh: `compdef` above den's line in `~/.zshrc` (2026-10)
-
-`den install shell` now adds `skip_global_compinit=1` to `~/.zshenv`, so
-Ubuntu's `/etc/zsh/zshrc` no longer runs a `compinit` of its own before
-`~/.zshrc`: den's `init.zsh` runs the only one, where den's line sits, at
-the end of `~/.zshrc`. Nothing is left behind, but a line above den's that
-calls `compdef`, itself or through a tool's completion script, ran after
-Ubuntu's `compinit` before and now fails at every start with
-`command not found: compdef`. Find such lines:
-
-```sh
-grep -n -e compdef -e 'completion zsh' ~/.zshrc
-```
-
-Move each one below den's `# ===== den =====` block. Or keep Ubuntu's
-`compinit` instead: delete den's two lines from `~/.zshenv` (den's
-`init.zsh` then sees completion set up and runs no `compinit` of its own;
-`den install shell` adds the lines again when it runs).
-
 ## Why there is no `den prune`
 
 Deliberate: a prune command needs a durable record of everything den has

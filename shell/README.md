@@ -17,9 +17,7 @@ den install shell --no-extras # skip the optional helper modules
 ```
 
 It copies the config into `~/.config/shell/` (POSIX) or the `$PROFILE` dir
-(PowerShell) and adds a source line to your `~/.bashrc` / `~/.zshrc`. For zsh
-it also adds `skip_global_compinit=1` to `~/.zshenv` (see zsh completion
-below); `den uninstall shell` takes each of these blocks out again.
+(PowerShell) and adds a source line to your `~/.bashrc` / `~/.zshrc`.
 
 ### zsh plugins
 
@@ -43,21 +41,16 @@ Pre-existing clones are left untouched (the pin applies to new clones only).
 
 `init.zsh` runs `compinit` once per shell, and not at all when completion is
 already set up (`compdef` exists) by the time it loads: your `~/.zshrc` ran it
-first, or Ubuntu's `/etc/zsh/zshrc` did. Ubuntu runs a full `compinit` there
-unless `skip_global_compinit` is set, so every shell ran two; the
-`skip_global_compinit=1` that `den install shell` adds to `~/.zshenv` (read
-before `/etc/zsh/zshrc`) leaves only den's. Completion is then set up where
-den's line in `~/.zshrc` runs, which `den install shell` puts at the end: a
-line above it that calls `compdef`, itself or through a tool's completion
-script (`source <(kubectl completion zsh)`, say), fails with
-`command not found: compdef`. Move such lines below den's, or take den's block
-out of `~/.zshenv` to have Ubuntu's `compinit` back (den's then does not run).
+first, or Ubuntu's `/etc/zsh/zshrc` did, which runs a full `compinit` unless
+`skip_global_compinit` is set. A second one would only cost time and undo the
+`compdef` calls made before it, such as those of a tool's completion script
+above den's line (`source <(kubectl completion zsh)`, say).
 
-While `~/.zcompdump` is less than a day old, `compinit -C` loads it as it is:
-no security audit, and no look for completion functions added since. A missing
-or older dump gets the full `compinit -u`, which finds them (an apt package, a
-new tool) and rewrites the dump when they changed; the dump is then dated
-today, so the shells of the next day take `-C` again. `-u` leaves out the
+While `~/.zcompdump` is less than a day old, den's `compinit -C` loads it as
+it is: no security audit, and no look for completion functions added since. A
+missing or older dump gets the full `compinit -u`, which finds them (an apt
+package, a new tool) and rewrites the dump when they changed; the dump is then
+dated today, so the shells of the next day take `-C` again. `-u` leaves out the
 security audit too, which asked about an `fpath` directory others may write to
 and, where no one could answer (`zsh -i -c`), gave up with no completion and
 no dump. `reload` deletes the dump, so the new shell picks new completion
