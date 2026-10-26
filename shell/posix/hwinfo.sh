@@ -215,10 +215,19 @@ fi
 unset _hwc_f _hwc_hit
 
 # refresh-hwinfo → clear the hardware info cache (re-detect on next shell)
+# It unsets this shell's STARSHIP_CPU_*/STARSHIP_GPU_* values, and the ones
+# toggle-hwinfo saved, too: reload (exec) and a child shell inherit them, and
+# an inherited value skips both the cache and the detection above, so the next
+# shell showed the old names again. The prompt shows no CPU or GPU until the
+# next shell; an OFF (_DEN_HWINFO_HIDDEN) stays.
 refresh-hwinfo() {
     _den_hwinfo_file
     rm -f "$_hwc_f"
     unset _hwc_f
+    unset STARSHIP_CPU_INTEL STARSHIP_CPU_AMD
+    unset STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL
+    unset _DEN_SAVED_CPU_INTEL _DEN_SAVED_CPU_AMD
+    unset _DEN_SAVED_GPU_NVIDIA _DEN_SAVED_GPU_AMD _DEN_SAVED_GPU_INTEL
     echo "hwinfo cache cleared. Restart shell to refresh."
 }
 

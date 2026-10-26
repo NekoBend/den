@@ -450,7 +450,11 @@ exports `STARSHIP_CPU_*` / `STARSHIP_GPU_*`.
   comment line cmd writes for the same case. A shell that inherits
   `STARSHIP_*` values reads no cache at all.
 - `toggle-hwinfo` (short: `tgl-hw`) shows/hides the info in the prompt.
-- `refresh-hwinfo` clears the cache so the next shell re-detects.
+- `refresh-hwinfo` clears the cache, and unsets this shell's
+  `STARSHIP_CPU_*` / `STARSHIP_GPU_*` values and the ones `toggle-hwinfo`
+  saved, so the next shell re-detects, a `reload` or a child shell included
+  (either would inherit the old values). The prompt shows no CPU or GPU until
+  then.
 
 ## Tab completion (pwsh)
 
