@@ -710,9 +710,7 @@ _BAD_LINES = [
         pytest.param("{not json\n", id="invalid"),
     ],
 )
-def test_scaffold_reads_a_board_json_json_cannot_take_as_invalid(
-    tmp_path, capsys, bad
-):
+def test_scaffold_reads_a_board_json_json_cannot_take_as_invalid(tmp_path, capsys, bad):
     # Each one but the invalid JSON raised out of ensure_scaffold, and
     # `den board` stopped with a traceback at start. A cloned repo can ship
     # board.json. Run in a new thread, where the [deep] skip was decided.
@@ -764,11 +762,26 @@ def test_report_list_answers_past_a_line_json_cannot_parse(served, bad):
 
 
 def _listed_reports(body):
-    """(button, text) of each report an /api/reports body lists, leaving out
-    the ones that are not objects: a line that parses lists as itself, and
-    can be nested as deep as a handler could send (so decode it as one)."""
+    """(button, text) of each report an /api/reports body lists, and anything
+    else it lists as itself. A report can be nested as deep as a handler could
+    send, so the body is decoded in a new thread, as a handler encodes it."""
     reports = _in_a_new_thread(json.loads, body)["reports"]
-    return [(r["button"], r["text"]) for r in reports if isinstance(r, dict)]
+    return [(r["button"], r["text"]) if isinstance(r, dict) else r for r in reports]
+
+
+def test_report_list_leaves_out_lines_that_are_not_objects(served):
+    # Each one was listed as itself, and the page threw on null's rep.button:
+    # no report rendered while such a line stayed in the window.
+    root, _server, port = served
+    before = {"button": "note", "text": "before"}
+    assert _request(port, "POST", "/api/report", before)[0] == 200
+    with _board._reports_path(root).open("a") as f:
+        f.write("null\n[1]\n")
+    after = {"button": "bug", "text": "after"}
+    assert _request(port, "POST", "/api/report", after)[0] == 200
+    status, body = _request(port, "GET", "/api/reports")
+    assert status == 200
+    assert _listed_reports(body) == [("note", "before"), ("bug", "after")]
 
 
 # The escape of a lone surrogate. json.loads accepts it, but the str it gives
@@ -917,15 +930,20 @@ def _near(limit):
 
 def test_report_list_answers_past_a_report_nested_near_the_limit(served, parse_limit):
     root, _server, port = served
+    before, deep, after = ("note", "before"), ("odd", "deep"), ("bug", "after")
     for depth in _near(parse_limit):
+        # An object, as /api/reports lists no other line: the array in it is
+        # what takes the report near the limit.
+        report = '{"button": "odd", "text": "deep", "x": ' + _nested(depth - 1) + "}"
         _board._reports_path(root).write_text(
             '{"button": "note", "text": "before"}\n'
-            + _nested(depth)
+            + report
             + '\n{"button": "bug", "text": "after"}\n'
         )
         status, body = _request(port, "GET", "/api/reports")
         assert status == 200, f"depth {depth}"
-        assert _listed_reports(body) == [("note", "before"), ("bug", "after")]
+        # Listed while the response can hold it, and left out past that.
+        assert _listed_reports(body) in ([before, after], [before, deep, after])
 
 
 def test_agent_list_answers_past_an_entry_nested_near_the_limit(served, parse_limit):

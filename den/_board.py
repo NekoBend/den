@@ -577,16 +577,21 @@ class _Handler(BaseHTTPRequestHandler):
         reports: list[object] = []
         for line in lines[-limit:]:
             # Every line json.loads rejects, as in _Reactions._take: one that
-            # raised would fail every poll while it stays in the window. And
-            # every report this response cannot hold: json.loads accepts an
-            # array nested a few levels short of its limit, which _send_json's
-            # json.dumps then has to nest two levels deeper. allow_nan=False
-            # refuses the nan and inf that json.loads makes of NaN, Infinity
-            # and the standard 1e400: json.dumps writes them back as NaN and
-            # Infinity, the page's JSON parser rejects those, and the page
-            # shows the server as unreachable.
+            # raised would fail every poll while it stays in the window. Every
+            # line that is not an object, as in _list_agent: the page reads
+            # rep.button on each report, and a null threw there, so no report
+            # rendered while that line stayed in the window. And every report
+            # this response cannot hold: json.loads accepts a report nested a
+            # few levels short of its limit, which _send_json's json.dumps
+            # then has to nest two levels deeper. allow_nan=False refuses the
+            # nan and inf that json.loads makes of NaN, Infinity and the
+            # standard 1e400: json.dumps writes them back as NaN and Infinity,
+            # the page's JSON parser rejects those, and the page shows the
+            # server as unreachable.
             with suppress(ValueError, RecursionError):
                 report = json.loads(line)
+                if not isinstance(report, dict):
+                    continue
                 json.dumps({"reports": [report]}, ensure_ascii=False, allow_nan=False)
                 reports.append(report)
         return {"reports": reports, "total": len(lines)}
