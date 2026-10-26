@@ -14,7 +14,8 @@ test guards against, as an outside review (2026-10) found it in the old text:
 - Example 5 and shell-structure.md section 9 ended the script with a bare
   `main "$@"` and said the script could be sourced: sourcing it ran main.
   A `BASH_SOURCE` check against $0 still ran it when sourced through
-  `bash -c 'source "$0"' ./orders.sh`.
+  `bash -c 'source "$0"' ./orders.sh`. Example 5's usage error exited 1
+  through die, where section 10 gives usage errors 2.
 - examples/powershell.md's Pester mock of curl returned the JSON but left
   $LASTEXITCODE alone, so Get-Order read whatever the session held: nothing
   (a StrictMode error) or an earlier native command's exit code.
@@ -191,9 +192,8 @@ def test_example_4_cleans_up_and_leaves_the_caller_alone(tmp_path, case):
 
 # --- Example 5 and shell-structure.md section 9: main "$@" --------------------
 
-# die and process_orders stand in for Example 2's and Example 3's.
+# process_orders stands in for Example 3's.
 _STUBS = r"""set -euo pipefail
-die() { echo "error: $*" >&2; exit 1; }
 process_orders() { echo "process_orders ran with: $*"; }
 """
 
@@ -245,6 +245,16 @@ def test_main_runs_when_executed_and_not_when_sourced(tmp_path, script, start):
         assert proc.stdout == "defined: function\n"
     else:
         assert proc.stdout == "process_orders ran with: o1 o2\n"
+
+
+@needs_bash
+def test_example_5_exits_2_on_a_usage_error(tmp_path):
+    # shell-structure.md section 10: 2 is the exit status for usage errors
+    (tmp_path / "orders.sh").write_text(_example_5(), encoding="utf-8")
+    proc = _bash(tmp_path, "orders.sh")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert proc.stdout == ""
+    assert proc.stderr.startswith("usage: orders.sh <order_id>"), proc.stderr
 
 
 # --- examples/powershell.md: the Pester test -----------------------------------

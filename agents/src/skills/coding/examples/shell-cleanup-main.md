@@ -57,7 +57,8 @@ This block demonstrates shared/reference/shell-structure.md section 9 (script st
 ```bash
 main() {
   if [[ "$#" -eq 0 ]]; then
-    die "usage: $(basename "$0") <order_id> [<order_id>...]"
+    echo "usage: $(basename "$0") <order_id> [<order_id>...]" >&2
+    exit 2
   fi
   process_orders "$@"
 }
