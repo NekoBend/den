@@ -8,6 +8,7 @@ missing (or on native Windows, where the lines are not POSIX sh).
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -118,6 +119,30 @@ def test_fd_never_starts_a_mv_that_overwrites():
     assert len(moves) == 3, moves
     for command in moves:
         assert re.search(r"-[xX] mv -n -- \{\}", command), command
+
+
+XH_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+XH_FLAGS_WITH_A_VALUE = {"-a", "--auth", "-o", "--output"}
+
+
+def _xh_url(command: str) -> str:
+    """The URL operand of an xh command line."""
+    words = iter(shlex.split(command)[1:])
+    for word in words:
+        if word in XH_FLAGS_WITH_A_VALUE:
+            next(words)
+        elif not word.startswith("-") and word not in XH_METHODS:
+            return word
+    raise AssertionError(f"no URL in {command!r}")
+
+
+def test_xh_lines_spell_out_https():
+    # xh sends a URL without a scheme over plain http, so `xh -a user:pass
+    # api.example.com` put the credentials on the wire in clear text.
+    commands = [cmd for cmd, _ in map(_split, _sh_lines()) if cmd.startswith("xh ")]
+    assert len(commands) == 14, commands
+    for command in commands:
+        assert _xh_url(command).startswith("https://"), command
 
 
 # --- behavior: the sheet's own lines, run in a scratch tree -------------------
