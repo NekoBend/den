@@ -129,6 +129,96 @@ def test_uninstall_parent_only_with_flag(tmp_path, monkeypatch):
     assert not agents.is_file()
 
 
+# ---- --target workspaces are never removed through a symlink (as on install) ----
+
+
+def _files(root: Path) -> list[Path]:
+    return sorted(p for p in root.rglob("*") if p.is_file())
+
+
+def test_uninstall_target_never_removes_through_a_symlinked_skills_dir(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """A checkout shipping skills -> another den install: uninstall --target
+    read that install through the link, found den's bytes, deleted every file
+    and reported them as removed, with exit 0."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    outside = tmp_path / "outside-install"
+    _install(outside)
+    before = _files(outside / "skills")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    symlink(outside / "skills", repo / "skills")
+
+    rc = uninstall_main(["skills", "--target", str(repo), "--yes"])
+    assert _files(outside / "skills") == before, "the other install is untouched"
+    assert (repo / "skills").is_symlink(), "and the link is left alone"
+    assert rc == 1, "a refused path is a failed uninstall"
+    err = capsys.readouterr().err
+    assert "refusing to remove" in err and "skills is a symlink" in err
+    # the preview names the same refusals and fails the same way
+    assert uninstall_main(["skills", "--target", str(repo), "--dry-run"]) == 1
+    assert "skills is a symlink" in capsys.readouterr().err
+
+
+def test_uninstall_target_never_removes_a_symlinked_or_dangling_parent(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """AGENTS.md -> a den-identical parent elsewhere was unlinked as den's
+    own file, and a dangling CLAUDE.md went unmentioned; both are links the
+    checkout carries, so both are refused and named, and the run fails."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    outside = tmp_path / "outside-install"
+    _install(outside, "--with-parent")
+    repo = tmp_path / "repo"
+    _install(repo, "--with-parent")
+    (repo / "AGENTS.md").unlink()
+    symlink(outside / "AGENTS.md", repo / "AGENTS.md")
+    (repo / "CLAUDE.md").unlink()
+    symlink(tmp_path / "nowhere.md", repo / "CLAUDE.md")
+
+    rc = uninstall_main(["skills", "--target", str(repo), "--with-parent", "--yes"])
+    assert (repo / "AGENTS.md").is_symlink() and (outside / "AGENTS.md").is_file()
+    assert (repo / "CLAUDE.md").is_symlink()
+    assert not (tmp_path / "nowhere.md").exists()
+    assert not (repo / "skills").exists(), "everything else is still removed"
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "AGENTS.md is a symlink" in err and "CLAUDE.md is a symlink" in err
+
+
+def test_uninstall_target_through_a_symlinked_root_is_the_users_choice(
+    tmp_path, monkeypatch, symlink
+):
+    """Only links BELOW the target are the checkout's; a target reached
+    through a link of its own (~/work -> /data/work) is uninstalled as usual."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    real = tmp_path / "data" / "repo"
+    _install(real)
+    symlink(real, tmp_path / "repo")
+    assert uninstall_main(["skills", "--target", str(tmp_path / "repo"), "--yes"]) == 0
+    assert not (real / "skills").exists()
+
+
+def test_uninstall_tool_dir_still_follows_a_dotfiles_symlink(
+    tmp_path, monkeypatch, symlink
+):
+    """~/.claude symlinked into a dotfiles repo is the user's own arrangement:
+    the default tool dirs are not confined, on uninstall as on install."""
+    home = tmp_path / "home"
+    home.mkdir()
+    dotfiles = tmp_path / "dotfiles" / "claude"
+    dotfiles.mkdir(parents=True)
+    symlink(dotfiles, home / ".claude")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert install_main(["skills", "--tool", "claude"]) == 0
+    assert (dotfiles / "skills" / "coding" / "SKILL.md").is_file()
+    assert uninstall_main(["skills", "--tool", "claude", "--yes"]) == 0
+    assert not (dotfiles / "skills").exists()
+
+
 def test_uninstall_unknown_target(capsys):
     assert uninstall_main(["bogus"]) == 2
 

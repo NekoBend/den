@@ -14,11 +14,14 @@ mirroring `den install`.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import sys
 from pathlib import Path
 
 from . import _ui
+
+_ERR = "den uninstall"
 
 
 def _has_block(rc: Path, line: str) -> bool:
@@ -117,16 +120,27 @@ def _strip_lines(data: bytes, line: str) -> tuple[bytes, bool]:
 class _Remover:
     """Collects the same (dest, content) stages a _Writer would, but on commit
     deletes only the files byte-identical to den's version and keeps the ones
-    the user changed. Also strips rc blocks and prunes emptied dirs."""
+    the user changed. Also strips rc blocks and prunes emptied dirs.
+
+    A root passed to confine() is a workspace den does not control (--target,
+    typically a cloned repo), as for _Writer: a path below it that reaches a
+    symlink - a symlinked skills/, a CLAUDE.md linked elsewhere, a dangling
+    link - is refused and reported, never removed through, and commit returns
+    1. The default tool dirs are not confined, as for _Writer."""
 
     def __init__(self) -> None:
         self._files: list[tuple[Path, bytes]] = []
         self._unwire: list[tuple[Path, str]] = []
         self._boundaries: set[Path] = set()
+        self._roots: list[Path] = []
 
     # same signature as _Writer.stage so install's staging code can drive us
     def stage(self, dest: Path, content: bytes) -> None:
         self._files.append((Path(dest), content))
+
+    def confine(self, root: Path) -> None:
+        """Refuse every staged path below `root` that reaches a symlink."""
+        self._roots.append(root)
 
     def unwire(self, rc: Path, line: str) -> None:
         self._unwire.append((Path(rc), line))
@@ -136,9 +150,15 @@ class _Remover:
         for d in dirs:
             self._boundaries.add(Path(d))
 
-    def _plan(self) -> tuple[list[Path], list[Path], list[tuple[Path, str]]]:
+    def _plan(self) -> tuple[list[Path], list[Path], list[tuple[Path, str]], int]:
+        """(files to delete, files to keep, rc files to unwire, the number of
+        paths refused under a confined root)."""
+        from ._install import _confined
+        from ._memory import _refuse_symlink, _symlink_component
+
         delete: list[Path] = []
         keep: list[Path] = []
+        refused = 0
         # A dest can be staged more than once, because `den install` can write
         # more than one content there (the --no-den-cli SKILL.md variants, the
         # frontier/weak parents). Collect every candidate and delete when the
@@ -152,6 +172,14 @@ class _Remover:
                 order.append(dest)
             candidates[dest].append(content)
         for dest in order:
+            guard = _confined(self._roots, dest)
+            if guard is not None and _symlink_component(*guard) is not None:
+                # Left alone, never removed through the link. A link that
+                # leads to nothing has nothing behind it to remove, so only a
+                # path that is there is refused (one line each on stderr).
+                if os.path.lexists(dest) and _refuse_symlink(*guard, "remove", _ERR):
+                    refused += 1
+                continue
             if not dest.is_file():
                 continue
             try:
@@ -161,25 +189,48 @@ class _Remover:
             same = any(on_disk == c for c in candidates[dest])
             (delete if same else keep).append(dest)
         unwire = [(rc, line) for rc, line in self._unwire if _has_block(rc, line)]
-        return delete, keep, unwire
+        return delete, keep, unwire, refused
 
-    def commit(self, *, assume_yes: bool, dry_run: bool) -> int:
-        delete, keep, unwire = self._plan()
+    @staticmethod
+    def _show(
+        delete: list[Path],
+        keep: list[Path],
+        unwire: list[tuple[Path, str]],
+        refused: int,
+    ) -> bool:
+        """Print the plan; False when there is nothing to remove."""
+        if refused:
+            print(
+                f"  refused {refused} path(s) listed above; nothing was removed there",
+                file=sys.stderr,
+            )
         if keep:
             _ui.say("Keeping files you changed (no longer den's):", style="yellow")
             for d in keep:
                 _ui.say(f"  {d}", style="yellow")
         if not delete and not unwire:
-            _ui.say("Nothing else to remove." if keep else "Nothing to remove.")
-            return 0
+            _ui.say(
+                "Nothing else to remove." if keep or refused else "Nothing to remove."
+            )
+            return False
         _ui.say("To be removed:")
         for d in delete:
             _ui.say(f"  rm {d}")
         for rc, _line in unwire:
             _ui.say(f"  unwire {rc}")
+        return True
+
+    def commit(self, *, assume_yes: bool, dry_run: bool) -> int:
+        """Delete what _plan found, after one confirmation. 1 when a path was
+        refused (see the class docstring) or a non-interactive run lacks
+        --yes, else 0."""
+        delete, keep, unwire, refused = self._plan()
+        status = 1 if refused else 0
+        if not self._show(delete, keep, unwire, refused):
+            return status
         if dry_run:
             _ui.say("(dry-run; nothing changed)")
-            return 0
+            return status
         if not assume_yes:
             if not sys.stdin.isatty():
                 print(
@@ -189,7 +240,7 @@ class _Remover:
                 return 1
             if not _ui.confirm("Remove them?", default=False):
                 _ui.say("aborted; nothing removed.")
-                return 0
+                return status
         for d in delete:
             try:
                 d.unlink()
@@ -199,7 +250,7 @@ class _Remover:
             _strip_block(rc, line)
         self._prune(delete)
         _ui.say(f"removed {len(delete)} file(s); unwired {len(unwire)} rc file(s).")
-        return 0
+        return status
 
     @staticmethod
     def _drop_pycache(cur: Path) -> None:
@@ -328,6 +379,9 @@ def _stage_skills(
         do(*_tool_paths(tool))
     for t in targets:
         root = Path(t).expanduser()
+        # a workspace den does not control, as `den install --target` treats
+        # it: nothing below it is removed through a symlink
+        remover.confine(root)
         do(root / "skills", root, "AGENTS.md")
         if with_parent:
             content = parent_bytes(root / "CLAUDE.md", "CLAUDE.md")

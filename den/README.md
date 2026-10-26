@@ -89,8 +89,11 @@ edited is kept and reported (package-manager semantics). It is stateless (no
 manifest): "unchanged" means "matches what this den version installs". It strips
 the rc-file `# ===== den =====` block and prunes dirs den created that became
 empty. It lists the plan and asks once before deleting (`--yes` to skip,
-`--dry-run` to preview only; non-interactive runs require `--yes`). Hooks are
-per-workspace, so `den uninstall` does not touch them; use `den uninstall hook`.
+`--dry-run` to preview only; non-interactive runs require `--yes`). A
+`--target` directory gets the same symlink rule as on install: a path that
+reaches a symlink below it is refused and reported, never removed through,
+and the run exits non-zero. Hooks are per-workspace, so `den uninstall` does
+not touch them; use `den uninstall hook`.
 
 Being stateless has one cost: when den stops deploying something (a retired
 tool, a renamed skill, a deleted script), the old copy is no longer anything

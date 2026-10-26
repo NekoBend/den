@@ -204,6 +204,24 @@ def _chmod_no_follow(path: Path, mode: int) -> None:
     path.chmod(mode)
 
 
+def _confined(roots: list[Path], dest: Path) -> tuple[Path, Path] | None:
+    """(resolved root, dest under it) when `dest` lies in one of `roots`, the
+    --target workspaces _Writer.confine and _uninstall._Remover.confine take.
+
+    The root is resolved first: a symlink in the root's OWN path is the
+    user's choice of where the workspace lives, only links below it are
+    the workspace's. One helper for install and uninstall, so the rule
+    cannot drift between the two."""
+    for root in roots:
+        try:
+            rel = dest.relative_to(root)
+        except ValueError:
+            continue
+        real = root.resolve()
+        return real, real / rel
+    return None
+
+
 _ERR = "den install"
 
 
@@ -263,21 +281,6 @@ class _Writer:
     def confine(self, root: Path) -> None:
         """Refuse every staged path below `root` that reaches a symlink."""
         self._roots.append(root)
-
-    def _confined(self, dest: Path) -> tuple[Path, Path] | None:
-        """(resolved root, dest under it) when `dest` lies in a confined root.
-
-        The root is resolved first: a symlink in the root's OWN path is the
-        user's choice of where the workspace lives, only links below it are
-        the workspace's."""
-        for root in self._roots:
-            try:
-                rel = dest.relative_to(root)
-            except ValueError:
-                continue
-            real = root.resolve()
-            return real, real / rel
-        return None
 
     @staticmethod
     def _ensure_mode(dest: Path) -> None:
@@ -401,7 +404,7 @@ class _Writer:
         refused = 0
         items: list[tuple[Path, bytes, tuple[Path, Path] | None]] = []
         for dest, content in self._items:
-            guard = self._confined(dest)
+            guard = _confined(self._roots, dest)
             if guard is not None and _refuse_symlink(*guard, "write", _ERR):
                 refused += 1
                 continue
