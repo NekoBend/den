@@ -76,7 +76,7 @@ fetch_customer_order() {
 
 **Rule:** Always double-quote variable expansions:
 `"$var"`, `"${var}"`, `"$(command)"`, `"${array[@]}"`.
-The ONLY exception is inside `[[ ]]` on the right-hand side of `=~` (the regex),
+One exception is inside `[[ ]]` on the right-hand side of `=~` (the regex),
 where quoting changes semantics.
 Elsewhere a quoted expansion matches literally
 (`==` and `!=` inside `[[ ]]`, `case` patterns, `${var#pattern}`):
