@@ -71,10 +71,13 @@ def _strip_block(rc: Path, line: str) -> bool:
     unless it is a symlink (the user's own arrangement, a dotfiles repo): its
     target is emptied instead, and the link stays. The new content replaces
     the file through a temporary copy (_shell._replace_bytes), never by
-    truncating it. True when a block was removed; False when there was none
-    to remove (the file is then not rewritten). OSError when the file cannot
-    be read, rewritten or removed: the file is as it was, block included, and
-    the caller says so.
+    truncating it. A file with a second hard link (a dotfiles repo) is left
+    for the user to edit: a new copy would split it from its other names, and
+    removing it would leave den's block under them. True when a block was
+    removed; False when there was none to remove (the file is then not
+    rewritten). OSError when the file cannot be read, rewritten or removed,
+    and when it has a second hard link: the file is as it was, block
+    included, and the caller says so.
 
     Works on BYTES, keeping each surviving line with its own terminator. The
     previous version set one `crlf` flag if the file contained a single CRLF
@@ -106,9 +109,12 @@ def _strip_block(rc: Path, line: str) -> bool:
         kept = bom + kept.decode("utf-8").encode(codec)
     if not stripped:
         return False
-    if kept.removeprefix(bom) or rc.is_symlink():
+    # A file another name leads to is never removed, even when den's block
+    # was all it held: _replace_bytes empties a symlink's target, and refuses
+    # a file with a second hard link.
+    if kept.removeprefix(bom) or rc.is_symlink() or rc.stat().st_nlink > 1:
         _replace_bytes(rc, kept)
-    else:  # only den's block was there
+    else:  # only den's block was there, in a file nothing else names
         rc.unlink(missing_ok=True)
     return True
 

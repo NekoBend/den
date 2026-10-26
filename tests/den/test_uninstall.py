@@ -21,6 +21,14 @@ _mode_bits = pytest.mark.skipif(
 )
 
 
+def _hard_link(target: Path, link: Path) -> None:
+    """os.link, or skip where this filesystem cannot make a hard link."""
+    try:
+        os.link(target, link)
+    except (OSError, NotImplementedError) as e:
+        pytest.skip(f"no hard links here: {e}")
+
+
 def _install(tmp_path, *extra):
     assert install_main(["skills", "--target", str(tmp_path), *extra]) == 0
 
@@ -242,6 +250,36 @@ def test_uninstall_reports_an_rc_file_it_cannot_unwire(tmp_path, capsys):
     assert "unwired 1 rc file(s)" in out
     assert f"warning: {readonly}:" in err and f"warning: {only_den}:" in err
     assert "2 rc file(s) not unwired; see the warnings above" in err
+
+
+@pytest.mark.parametrize(
+    "mine", [b"export A=1\n\n", b""], ids=["with the user's lines", "only den's block"]
+)
+def test_uninstall_leaves_an_rc_file_with_a_second_hard_link(
+    tmp_path, monkeypatch, capsys, mine
+):
+    """An rc file with a second hard link (a dotfiles repo) was replaced by
+    a new file, or removed when den's block was all it held: ~/.bashrc was
+    unwired, but the other name kept den's block and was no longer the same
+    file. It is now left as it is, block included, and named, and the run
+    fails, so the user removes the block by hand."""
+    from den._shell import _BASH_LINE, _COMMENT
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    bashrc = tmp_path / ".bashrc"  # HOME is tmp_path (isolate_user_dirs)
+    original = mine + f"{_COMMENT}\n{_BASH_LINE}\n".encode()
+    bashrc.write_bytes(original)
+    other = tmp_path / "dotfiles" / "bashrc"
+    other.parent.mkdir()
+    _hard_link(bashrc, other)
+    rc = uninstall_main(["shell", "--yes"])
+    assert bashrc.read_bytes() == original
+    assert bashrc.samefile(other), "still one file under both names"
+    assert rc == 1
+    out, err = capsys.readouterr()
+    assert "unwired 0 rc file(s)" in out
+    assert f"warning: {bashrc}: it has 2 hard links" in err
+    assert "1 rc file(s) not unwired; see the warnings above" in err
 
 
 @_mode_bits
@@ -653,6 +691,23 @@ def test_strip_block_empties_a_linked_rc_file_that_held_only_the_block(
     assert _strip_block(rc, line) is True
     assert rc.is_symlink(), "the link stays"
     assert target.read_bytes() == b"", "den's block was all the file held"
+
+
+def test_strip_block_leaves_a_hard_linked_target_of_a_symlink(tmp_path, symlink):
+    # behind a symlink the rule holds for the target the new copy would replace
+    line = '[ -f "$HOME/.config/shell/init.zsh" ] && . "$HOME/.config/shell/init.zsh"'
+    target = tmp_path / "dotfiles" / "zshrc"
+    target.parent.mkdir()
+    original = f"export Z=1\n\n# ===== den =====\n{line}\n".encode()
+    target.write_bytes(original)
+    _hard_link(target, tmp_path / "dotfiles" / "zshrc.orig")
+    rc = tmp_path / ".zshrc"
+    symlink(target, rc)
+    with pytest.raises(OSError, match="it has 2 hard links"):
+        _strip_block(rc, line)
+    assert rc.is_symlink() and target.read_bytes() == original
+    assert target.stat().st_nlink == 2
+    assert sorted(target.parent.iterdir()) == [target, target.with_name("zshrc.orig")]
 
 
 def test_strip_block_keeps_foreign_content(tmp_path):

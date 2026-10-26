@@ -90,7 +90,10 @@ removes each file ONLY if it is byte-identical to den's version, so a file you
 edited is kept and reported (package-manager semantics). It is stateless (no
 manifest): "unchanged" means "matches what this den version installs". It strips
 the rc-file `# ===== den =====` block and prunes dirs den created that became
-empty. It lists the plan and asks once before deleting (`--yes` to skip,
+empty. An rc file is rewritten through a new copy that replaces it, so one
+with a second hard link (a dotfiles repo) is left as it is, block included,
+and named for you to edit by hand: a new copy would split it from its other
+names. It lists the plan and asks once before deleting (`--yes` to skip,
 `--dry-run` to preview only; non-interactive runs require `--yes`). Each file
 is compared again right before it is deleted, so one you save while that
 prompt is open is kept and named. A `--target` directory gets the same

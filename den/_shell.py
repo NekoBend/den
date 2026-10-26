@@ -160,14 +160,24 @@ def _replace_bytes(path: Path, data: bytes) -> None:
     rename, so a write that fails part-way (a full disk, an I/O error) leaves
     the file as it was instead of empty or cut short. The new file gets the
     old one's permission bits. A symlink is followed: its target is replaced
-    and the link stays, as an in-place write would have left it. A file den
-    may not write is refused (PermissionError), as the in-place write refused
-    it, although its directory would let the rename through. Shared with
-    _uninstall, which strips den's block from an rc file this way."""
+    and the link stays, as an in-place write would have left it. Shared with
+    _uninstall, which strips den's block from an rc file this way.
+
+    Refused with OSError, the file left as it is: a file den may not write
+    (PermissionError), as the in-place write refused it, although its
+    directory would let the rename through; and a file with a second hard
+    link, since the new file would take only this name, and the others would
+    keep the old content and no longer be the same file."""
     real = path.resolve()
-    mode = stat.S_IMODE(real.stat().st_mode)
+    st = real.stat()
     if not os.access(real, os.W_OK):
         raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+    if st.st_nlink > 1:
+        raise OSError(
+            f"it has {st.st_nlink} hard links, and replacing it would split"
+            " them; edit it by hand"
+        )
+    mode = stat.S_IMODE(st.st_mode)
     fd, name = tempfile.mkstemp(
         prefix=f"{real.name}.", suffix=".den-tmp", dir=real.parent
     )
