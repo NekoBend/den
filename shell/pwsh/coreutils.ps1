@@ -226,28 +226,52 @@ function split {
     # `split -n 0` silently fell through to the 1000-line default instead of
     # being refused. The same held for `-b 0`, and for a file literally named
     # "0", which "$path -eq ''" read as "no file, use stdin".
-    $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixLen = 2; $i = 0
+    $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixArg = ''; $i = 0
     while ($i -lt $__a.Count) {
       $a = [string]$__a[$i]
       if ($a -eq '-l' -and ($i + 1) -lt $__a.Count) { $lines = [int]$__a[$i + 1]; $i += 2 }
       elseif ($a -eq '-n' -and ($i + 1) -lt $__a.Count) { $chunks = [string]$__a[$i + 1]; $i += 2 }
       elseif ($a -eq '-b' -and ($i + 1) -lt $__a.Count) { $bytes = [string]$__a[$i + 1]; $i += 2 }
-      elseif ($a -eq '-a' -and ($i + 1) -lt $__a.Count) { $suffixLen = [int]$__a[$i + 1]; $i += 2 }
+      elseif ($a -eq '-a' -and ($i + 1) -lt $__a.Count) { $suffixArg = [string]$__a[$i + 1]; $i += 2 }
       else {
         if ($path -eq '') { $path = $a } else { $prefix = $a }
         $i++
       }
+    }
+    # The suffix starts at 2 letters and widens as the names run out, or with
+    # -a it is that many letters and no more (see _suffix). GNU split and
+    # uutils read -a 0 as no -a; den refuses it, as any other length below 1.
+    $suffixLen = 2; $widen = $suffixArg -eq ''
+    if (-not $widen -and -not ([int]::TryParse($suffixArg, [ref]$suffixLen) -and $suffixLen -ge 1)) {
+      Write-Error "invalid suffix length '$suffixArg'"; return
     }
     if ($path -eq '') {
       $content = $__piped.ToArray()
       if ($content.Count -eq 0) { Write-Error "usage: [-l N] [-n l/N] [-b SIZE] <file> [prefix]"; return }
     }
 
-    # Generate suffix: aa, ab, ... like GNU split
-    function _suffix([int]$idx, [int]$len) {
+    # The suffix of part $idx (from 0): aa, ab, ... az, ba, ... as GNU split
+    # names them. It used to keep only the last $len letters of the number,
+    # so the 677th part was named aa again, and its file replaced the first
+    # part's. Without -a the names do not run out: the first letter stops at
+    # y, then z joins the prefix and the rest is a letter longer (yz, then
+    # zaaa; zyzz, then zzaaaa), as in GNU split and uutils, so the parts still
+    # sort in their order. With -a (or -n, below) there are $suffixLen letters
+    # and no more: after the last name (zz for 2) there is none ($null), and
+    # split stops with a terminating error where GNU split exits 1. The parts
+    # written by then are not the whole input, so the rest of the line
+    # (`&& Remove-Item f`) must not run.
+    function _suffix([long]$idx) {
+      $len = $suffixLen; $lead = ''
+      if ($widen) {
+        # $block: how many names of this length start with a to y.
+        for ($block = 25 * [math]::Pow(26, $len - 1); $idx -ge $block; $block *= 26) {
+          $idx -= $block; $lead += 'z'; $len++
+        }
+      } elseif ($idx -ge [math]::Pow(26, $len)) { return $null }
       $s = ''; for ($j = $len - 1; $j -ge 0; $j--) {
         $s = [char](97 + ($idx % 26)) + $s; $idx = [math]::Floor($idx / 26)
-      }; $s
+      }; $lead + $s
     }
 
     # .NET resolves relative paths against the process directory, which
@@ -280,7 +304,9 @@ function split {
         while ($true) {
           $n = $in.Read($buf, 0, [int][math]::Min([long]$buf.Length, $sz))
           if ($n -le 0) { break }
-          $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
+          $sfx = _suffix $idx
+          if ($null -eq $sfx) { Write-Error 'output file suffixes exhausted' -ErrorAction Stop }
+          $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("$prefix$sfx"))
           try {
             $out.Write($buf, 0, $n)
             $left = $sz - $n
@@ -301,6 +327,13 @@ function split {
     if ($chunks -ne '') {
       $n = [int]($chunks -replace '^l/', '')
       if ($n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
+      # With -n N, GNU split and uutils give the names the length N parts need
+      # from the start, 2 letters at least, and do not widen them; an -a
+      # shorter than that is refused before any part is written. den's -n
+      # makes N parts at most, so these names do not run out.
+      $need = 1; while ([math]::Pow(26, $need) -lt $n) { $need++ }
+      if ($widen) { $suffixLen = [math]::Max(2, $need); $widen = $false }
+      elseif ($suffixLen -lt $need) { Write-Error "the suffix length needs to be at least $need"; return }
     }
 
     if ($full) {
@@ -333,7 +366,9 @@ function split {
           $p = 0
           while ($p -lt $got) {
             if ($null -eq $out) {
-              $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
+              $sfx = _suffix $idx
+              if ($null -eq $sfx) { Write-Error 'output file suffixes exhausted' -ErrorAction Stop }
+              $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("$prefix$sfx"))
               $idx++
             }
             $nl = [Array]::IndexOf($buf, [byte]10, $p, $got - $p)
@@ -349,7 +384,7 @@ function split {
         $in.Dispose()
       }
       if ($idx -eq 0) { Write-Host "Split into 0 files"; return }
-      Write-Host "Split into $idx files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($idx-1) $suffixLen))"
+      Write-Host "Split into $idx files (${prefix}$(_suffix 0) .. ${prefix}$(_suffix ($idx-1)))"
       return
     }
 
@@ -359,11 +394,13 @@ function split {
     if ($lines -lt 1) { $lines = 1000 }
     $total = [math]::Ceiling($content.Count / $lines)
     for ($idx = 0; $idx -lt $total; $idx++) {
+      $sfx = _suffix $idx
+      if ($null -eq $sfx) { Write-Error 'output file suffixes exhausted' -ErrorAction Stop }
       $start = $idx * $lines
-      $outFile = "${prefix}$(_suffix $idx $suffixLen)"
+      $outFile = "$prefix$sfx"
       $content[$start..([math]::Min($start + $lines, $content.Count) - 1)] | Set-Content -LiteralPath $outFile
     }
-    Write-Host "Split into $total files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($total-1) $suffixLen))"
+    Write-Host "Split into $total files (${prefix}$(_suffix 0) .. ${prefix}$(_suffix ($total-1)))"
   }
 }
 

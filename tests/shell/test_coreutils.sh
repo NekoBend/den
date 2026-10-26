@@ -292,6 +292,89 @@ assert_eq "split -b parts reassemble to the file" "$(sha256sum < "$WORK/big/blob
 assert_eq "split -b made four parts" "4" "$(ls "$WORK/big"/part.* | wc -l | tr -d ' ')"
 rm -rf "$WORK/big"
 
+# The suffix kept only the last two letters (or -a's count) of a part's
+# number, so the 677th part was named paa again, and File.Create or
+# Set-Content cut the first part short to write it there: 676 files, paa
+# holding 677, "Split into 677 files (paa .. paa)", from a file's lines, its
+# bytes or piped lines alike. Without -a the names now widen as GNU split's
+# and uutils' do (pyz, then pzaaa; the 677th is pzaba), so the parts in name
+# order are the input again. Each part here is one line of three digits, its
+# own number; _CoreutilsBin answers nothing, as on Windows without coreutils.
+echo "[pwsh] split widens the suffix past 676 parts when -a is not given"
+rm -rf "$WORK/wide" && mkdir -p "$WORK/wide/l" "$WORK/wide/b" "$WORK/wide/p"
+printf '%03d\n' $(seq 1 677) > "$WORK/wide/in.txt"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    Set-Location '$WORK/wide/l'; split -l 1 ../in.txt p 2>&1 6>&1 | ForEach-Object { 'lines: ' + \$_ }
+    Set-Location '$WORK/wide/b'; split -b 4 ../in.txt p 2>&1 6>&1 | ForEach-Object { 'bytes: ' + \$_ }
+    Set-Location '$WORK/wide/p'; Get-Content ../in.txt | split -l 1 2>&1 6>&1 | ForEach-Object { 'piped: ' + \$_ }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/split without -a names the 677th part pzaba" "lines: Split into 677 files (paa .. pzaba)
+bytes: Split into 677 files
+piped: Split into 677 files (xaa .. xzaba)" "$actual"
+want=$(sha256sum < "$WORK/wide/in.txt")
+for m in l b p; do
+    pre=p; [ "$m" = p ] && pre=x
+    assert_eq "pwsh/split without -a ($m): 677 files" "677" "$(ls "$WORK/wide/$m" | wc -l | tr -d ' ')"
+    assert_eq "pwsh/split without -a ($m): parts 1, 650, 651 and 677" "001 650 651 677" \
+        "$(cd "$WORK/wide/$m" && cat "${pre}aa" "${pre}yz" "${pre}zaaa" "${pre}zaba" 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/ $//')"
+    assert_eq "pwsh/split without -a ($m): the parts in name order are the input" "$want" \
+        "$(cd "$WORK/wide/$m" && cat "$pre"* | tr -d '\r' | sha256sum)"
+done
+rm -rf "$WORK/wide"
+
+# With -a the suffix is that many letters and no more: -a 1 holds 26 parts, a
+# to z, and a 27th stops split, with GNU split's and uutils' "output file
+# suffixes exhausted", instead of being written over the first. The stop is a
+# terminating error (the try below catches it): the parts so far are not the
+# whole input, so the rest of the line must not run. -a below 1 is refused
+# before any part is written; GNU split and uutils read -a 0 as no -a.
+echo "[pwsh] split -a stops at its last suffix, and refuses a length below 1"
+rm -rf "$WORK/exh" && mkdir -p "$WORK/exh/l" "$WORK/exh/b" "$WORK/exh/p" "$WORK/exh/fit" "$WORK/exh/bad"
+printf '%03d\n' $(seq 1 27) > "$WORK/exh/in.txt"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    Set-Location '$WORK/exh/l'; try { split -l 1 -a 1 ../in.txt p 6>\$null; 'lines: went on' } catch { 'lines: ' + \$_ }
+    Set-Location '$WORK/exh/b'; try { split -b 4 -a 1 ../in.txt p 6>\$null; 'bytes: went on' } catch { 'bytes: ' + \$_ }
+    Set-Location '$WORK/exh/p'; try { Get-Content ../in.txt | split -l 1 -a 1 6>\$null; 'piped: went on' } catch { 'piped: ' + \$_ }
+    Set-Location '$WORK/exh/fit'; Get-Content ../in.txt -TotalCount 26 | split -l 1 -a 1 2>&1 6>&1 | ForEach-Object { 'fits: ' + \$_ }
+    Set-Location '$WORK/exh/bad'
+    foreach (\$len in '0', '-1', 'abc') { split -l 1 -a \$len ../in.txt p 2>&1 6>&1 | ForEach-Object { \"-a \${len}: \" + \$_ } }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/split -a 1 stops at the 27th part; -a below 1 is refused" "lines: output file suffixes exhausted
+bytes: output file suffixes exhausted
+piped: output file suffixes exhausted
+fits: Split into 26 files (xa .. xz)
+-a 0: invalid suffix length '0'
+-a -1: invalid suffix length '-1'
+-a abc: invalid suffix length 'abc'" "$actual"
+for m in l b p; do
+    pre=p; [ "$m" = p ] && pre=x
+    assert_eq "pwsh/split -a 1 ($m): the 26 parts that fit, the first kept" "26 files, ${pre}a 001, ${pre}z 026" \
+        "$(cd "$WORK/exh/$m" && printf '%s files, %sa %s, %sz %s' "$(ls | wc -l | tr -d ' ')" \
+            "$pre" "$(cat "${pre}a" 2>/dev/null | tr -d '\r')" "$pre" "$(cat "${pre}z" 2>/dev/null | tr -d '\r')")"
+done
+assert_eq "pwsh/split -a below 1 wrote nothing" "" "$(ls -A "$WORK/exh/bad")"
+rm -rf "$WORK/exh"
+
+# With -n N, GNU split and uutils give the names the length N parts need from
+# the start (2 letters at least) rather than widening them, and refuse an -a
+# shorter than that before writing anything.
+echo "[pwsh] split -n sizes the suffix for N parts"
+rm -rf "$WORK/nsuf" && mkdir -p "$WORK/nsuf/wide" "$WORK/nsuf/short"
+printf '%03d\n' $(seq 1 677) > "$WORK/nsuf/in.txt"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    Set-Location '$WORK/nsuf/wide'; split -n 677 ../in.txt p 2>&1 6>&1 | ForEach-Object { '-n 677: ' + \$_ }
+    Set-Location '$WORK/nsuf/short'; split -n 677 -a 2 ../in.txt p 2>&1 6>&1 | ForEach-Object { '-n 677 -a 2: ' + \$_ }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/split -n 677 names three letters long; -a 2 is refused" "-n 677: Split into 677 files (paaa .. pbaa)
+-n 677 -a 2: the suffix length needs to be at least 3" "$actual"
+assert_eq "pwsh/split -n 677: the parts in name order are the input" "$(sha256sum < "$WORK/nsuf/in.txt")" \
+    "$(cd "$WORK/nsuf/wide" && cat p* | sha256sum)"
+assert_eq "pwsh/split -n 677 -a 2 wrote nothing" "" "$(ls -A "$WORK/nsuf/short")"
+rm -rf "$WORK/nsuf"
+
 # =============================================================================
 # touch
 # =============================================================================
