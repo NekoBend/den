@@ -37,8 +37,9 @@ den verify <file.py...>               format/lint/typecheck each file, config-fa
 
 `den install` never silently clobbers local edits: files that already exist and
 differ from the bundled version are listed and you are asked once before
-overwriting (default no, so your changes are kept); a listed file you save
-again while that prompt is open is kept too, and the run exits non-zero.
+overwriting (default no, so your changes are kept). A yes covers the files as
+they were listed: one you save again or delete while that prompt is open
+stays as you left it, and the run exits non-zero.
 Pass `--force` to overwrite without asking; each file it overwrites is first
 copied to `<file>.den.bak` (`.den.bak.1`, `.2`, ... when an earlier backup
 holds something else; the copy keeps the file's permissions minus execute).

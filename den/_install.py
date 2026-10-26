@@ -250,7 +250,8 @@ class _Writer:
     Only what was listed and approved (or is still den's) is ever replaced
     without --force, and a listed file only while it holds the bytes it was
     listed with: a file that changes between the listing and its write (an
-    edit saved while the prompt was open) is kept.
+    edit saved while the prompt was open) is kept, and one deleted in that
+    time is not created again.
 
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), so a symlink anywhere below it - CLAUDE.md ->
@@ -437,11 +438,7 @@ class _Writer:
                             and hashlib.sha256(data).hexdigest() != listed[dest]
                         )
                     ):
-                        late += 1
-                        print(
-                            f"  kept {dest}: it changed after den checked it",
-                            file=sys.stderr,
-                        )
+                        late += self._late(dest)
                         continue
                     if not self.force and dest not in approved:
                         kept += 1
@@ -452,6 +449,15 @@ class _Writer:
                             refused += 1
                             continue
                         backed_up.append((dest, bak))
+            elif dest in listed and not self.force:
+                # Listed, then deleted (or replaced by something that is not
+                # a file) before it was written: the answer covered the file
+                # as it was listed, so the path stays as the user left it.
+                if dest in approved:
+                    late += self._late(dest)
+                else:
+                    kept += 1
+                continue
             if guard is None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
@@ -462,6 +468,20 @@ class _Writer:
         self._report(backed_up, missing, kept, refused)
         late = late if self.owned is None else 0  # a refresh keeps it on purpose
         return refused + (kept if silently_skipped else 0) + late
+
+    @staticmethod
+    def _late(dest: Path) -> int:
+        """1, after one line on stderr: `dest` changed after den listed and
+        checked it (saved again, deleted, or replaced), so it was left as
+        the user left it."""
+        if os.path.lexists(dest):
+            print(f"  kept {dest}: it changed after den checked it", file=sys.stderr)
+        else:
+            print(
+                f"  did not recreate {dest}: it was deleted after den checked it",
+                file=sys.stderr,
+            )
+        return 1
 
     def _changed(
         self, items: list[tuple[Path, bytes, tuple[Path, Path] | None]]
