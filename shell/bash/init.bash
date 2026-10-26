@@ -19,11 +19,14 @@ case $- in *i*) ;; *) return;; esac
 #   before it: bash does not split HISTIGNORE at '\:', so 'foo\:again' holds
 #   no again. (In 'foo\\:again' the '\' itself is escaped and again is held;
 #   den still adds one copy of it, which changes nothing.)
-HISTCONTROL=${HISTCONTROL-ignoreboth}
-case ":$HISTCONTROL:" in
-    *:ignorespace:*|*:ignoreboth:*) ;;
-    *) HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignorespace" ;;
-esac
+if [ -z "${HISTCONTROL+set}" ]; then
+    HISTCONTROL=ignoreboth
+else
+    case ":$HISTCONTROL:" in
+        *:ignorespace:*|*:ignoreboth:*) ;;
+        *) HISTCONTROL="${HISTCONTROL:+$HISTCONTROL:}ignorespace" ;;
+    esac
+fi
 shopt -s histappend
 HISTSIZE=8192; HISTFILESIZE=8192
 for _den_hi in again 'again *' sagain 'sagain *'; do

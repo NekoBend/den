@@ -256,8 +256,8 @@ after it a `:` before the last `@` once each `://` is taken out. So on zsh and
 pwsh a line that only looks like one (`echo proxy add c http://al:pw@p`) is
 left out too, and in every shell `proxy add` behind an alias is not seen.
 `proxy` changes no history setting, so the ones in effect still apply:
-`HISTIGNORE` / `HISTCONTROL` (init.bash keeps a value set before it; see Load
-flow and caches, below), `HISTORY_IGNORE` (init.zsh sets it as it loads, so a
+`HISTIGNORE` / `HISTCONTROL` (init.bash keeps a value set before it and adds to
+it; see Load flow and caches, below), `HISTORY_IGNORE` (init.zsh sets it as it loads, so a
 value set before it is replaced) and a `zshaddhistory` of your own, and an
 `AddToHistoryHandler` set before init.ps1 (den's handler chains to it, and a
 line it leaves out stays out).

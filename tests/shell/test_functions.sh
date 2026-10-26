@@ -1587,6 +1587,18 @@ assert_eq "bash/init.bash: an empty HISTCONTROL becomes ignorespace" \
     "ignorespace|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=')"
 assert_eq "bash/init.bash: an empty HISTCONTROL loaded twice is ignorespace once" \
     "ignorespace|again:again *:sagain:sagain *" "$(hb_run 'HISTCONTROL=; . ~/.config/shell/init.bash')"
+# A readonly HISTCONTROL is assigned only when something changes: one that
+# already holds ignoreboth gets no 'readonly variable' error, and one that
+# lacks ignorespace gets one, not two.
+hb_err() {
+    (cd "$HB/home" && env -i HOME="$HB/home" PATH="$hb_path" TERM=dumb XDG_CACHE_HOME="$HB/home/.cache" \
+        XDG_CONFIG_HOME="$HB/home/.config" "$hb_bash" --norc -i -c \
+        "$1; . ~/.config/shell/init.bash" 2>&1 >/dev/null </dev/null)
+}
+assert_not_contains "bash/init.bash: a readonly HISTCONTROL holding ignoreboth is not assigned again" \
+    "readonly variable" "$(hb_err 'declare -r HISTCONTROL=ignoreboth')"
+assert_eq "bash/init.bash: a readonly HISTCONTROL lacking ignorespace gets one error" \
+    1 "$(hb_err 'declare -r HISTCONTROL=ignoredups' | grep -c 'readonly variable')"
 # bash takes HISTCONTROL as whole words between ':'s: xignorespace is not
 # ignorespace, and bash saves a line with a leading space under it.
 assert_eq "bash/init.bash: ignorespace inside a longer word does not count" \
