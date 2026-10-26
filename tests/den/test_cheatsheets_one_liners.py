@@ -125,6 +125,19 @@ def test_fd_never_starts_a_mv_that_overwrites():
         assert re.search(rf"-[xX] mv {flags} -- \{{\}}", command), command
 
 
+def test_bulk_renames_rename_only_files():
+    # fd -e .jpeg lists directories too: a directory album.jpeg/ became
+    # album.jpg/ along with the photos.
+    renames = [
+        command
+        for command, _ in map(_split, _sh_lines())
+        if re.search(r"-x mv -n -T\b", command)
+    ]
+    assert len(renames) == 2, renames
+    for command in renames:
+        assert " -t f " in f" {command} ", command
+
+
 def test_rename_prefix_rewrites_only_the_file_name():
     # A Perl rename applies the expression to the whole path fd hands it:
     # 's/test_/spec_/' aimed ./test_dir/test_a.py at ./spec_dir/test_a.py.
@@ -300,6 +313,26 @@ def test_bulk_rename_skips_a_name_taken_by_a_directory(
     result = _run(_command(comment), repo)  # exit status: see above
     assert [path.name for path in directory.iterdir()] == [], result.stderr
     assert (repo / source).read_text(encoding="utf-8") == "SOURCE\n"
+
+
+@needs_tools
+@pytest.mark.parametrize(
+    ("comment", "directory", "renamed"),
+    [
+        (".jpeg → .jpg", "album.jpeg", "album.jpg"),
+        (".txt → .md", "album.txt", "album.md"),
+    ],
+    ids=["jpeg", "txt"],
+)
+def test_bulk_rename_leaves_a_directory_named_like_a_file_alone(
+    repo, comment, directory, renamed
+):
+    # fd -e .jpeg lists directories too: album.jpeg/ became album.jpg/.
+    (repo / directory).mkdir()
+    (repo / directory / "keep.dat").write_text("KEEP\n", encoding="utf-8")
+    result = _run(_command(comment), repo)
+    assert (repo / directory / "keep.dat").is_file(), result.stderr
+    assert not (repo / renamed).exists()
 
 
 @pytest.fixture

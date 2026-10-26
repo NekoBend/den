@@ -402,7 +402,7 @@ path `fd` hands it, so `s/test_/spec_/` would turn ./test_dir/test_a.py into
 ./spec_dir/test_a.py; the expression below changes only the file name.
 
 ```sh
-fd -e .jpeg -x mv -n -T -- {} {.}.jpg                # .jpeg → .jpg (-n -T: skipped if the .jpg exists)
+fd -t f -e .jpeg -x mv -n -T -- {} {.}.jpg           # .jpeg → .jpg (-n -T: skipped if the .jpg exists)
 fd -t f -e txt -x mv -n -T -- {} {.}.md              # .txt → .md (-n -T: skipped if the .md exists)
 fd 'test_' -t f -x rename 's{(^|/)test_([^/]*)$}{$1spec_$2}' {}  # rename prefix (with rename util)
 ```
