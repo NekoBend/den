@@ -5,6 +5,7 @@ The sheet's name has a hyphen, so it is loaded from its path, not imported.
 
 import importlib.util
 import os
+import re
 import shutil
 import stat
 import sys
@@ -307,3 +308,33 @@ def test_atomic_write_never_writes_a_private_file_into_a_wider_one(
     fileops.atomic_write(secret, '{"token": "s3cret"}')
     assert modes == [0o600]
     assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+
+
+# --- merge_files + atomic_write: what the 0o600 notes promise -------------------
+
+
+@pytest.mark.parametrize(
+    ("recipe", "posix"),
+    [
+        ("merge_files", "On POSIX, over an existing ``output`` the temp file is 0o600"),
+        ("atomic_write", "On POSIX, over an existing file the temp file is 0o600"),
+    ],
+    ids=["merge_files", "atomic_write"],
+)
+def test_temp_file_notes_say_that_the_0o600_promise_is_posix_only(
+    fileops, recipe, posix
+):
+    # Both create the temp file 0o600, but on Windows os.open's 0o600 only
+    # keeps it from being read-only: the ACL it inherits from its directory
+    # decides who can read it, and os.replace keeps that ACL. The notes
+    # promised on every platform that private data never sits in a wider
+    # file. The promise has to sit in a sentence that names POSIX and not
+    # Windows.
+    doc = getattr(fileops, recipe).__doc__
+    assert doc is not None
+    sentences = re.split(r"(?<=\.)\s+(?=[A-Z`])", " ".join(doc.split()))
+    promise = [sentence for sentence in sentences if posix in sentence]
+    assert len(promise) == 1, (posix, sentences)
+    assert "Windows" not in promise[0], promise[0]
+    assert any("Windows has no such guarantee" in s for s in sentences), sentences
+    assert "ACL" in doc

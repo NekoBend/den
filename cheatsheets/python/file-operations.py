@@ -271,9 +271,13 @@ def merge_files(paths: list[Path], output: Path, chunk_size: int = 1024 * 1024) 
            on the second run): reading the file being appended to never
            reaches EOF and fills the disk. The merge goes to a temp file that
            replaces ``output`` only once complete, so a failed merge leaves
-           the previous ``output`` untouched. Over an existing ``output`` the
-           temp file is 0o600 until the copy is done and then takes the old
-           file's mode, so a private file's data never sits in a wider one.
+           the previous ``output`` untouched. On POSIX, over an existing
+           ``output`` the temp file is 0o600 until the copy is done and then
+           takes the old file's mode, so a private file's data never sits in
+           a wider one. Windows has no such guarantee: there 0o600 only keeps
+           the temp file from being read-only, and who can read it is up to
+           the ACL it inherits from its directory. ``os.replace`` keeps that
+           ACL, not the old file's.
     """
     import os
     import shutil
@@ -390,13 +394,17 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
            as the OS allows. The temp file is created in the same directory to
            ensure it resides on the same filesystem. Symlinks are resolved
            first, so a dotfiles-managed link stays a link and the file it
-           points to is the one updated. Over an existing file the temp file
-           is 0o600 while the content is written and takes the old file's
-           permission bits just before the rename, so a 0o600 secret never
-           sits in a wider file; a new file gets 0o666 minus the umask, as
-           with ``open`` (``tempfile.mkstemp`` would leave it 0o600). It is
-           fsynced before the rename and the directory after it, so a crash
-           leaves the old content or the new one, never an empty file.
+           points to is the one updated. On POSIX, over an existing file the
+           temp file is 0o600 while the content is written and takes the old
+           file's permission bits just before the rename, so a 0o600 secret
+           never sits in a wider file; a new file gets 0o666 minus the umask,
+           as with ``open`` (``tempfile.mkstemp`` would leave it 0o600).
+           Windows has no such guarantee: there 0o600 only keeps the temp file
+           from being read-only, and who can read it is up to the ACL it
+           inherits from its directory. ``os.replace`` keeps that ACL, not the
+           old file's. The temp file is fsynced before the rename and the
+           directory after it, so a crash leaves the old content or the new
+           one, never an empty file.
     """
     import os
     import stat
