@@ -354,6 +354,32 @@ def test_install_interactive_decline_is_not_a_failure(tmp_path, monkeypatch):
     assert skill.read_text() == "MINE"
 
 
+def test_install_keeps_a_listed_file_saved_again_at_the_prompt(
+    tmp_path, monkeypatch, capsys
+):
+    """The 'yes' covers the files as they were listed. One saved again while
+    the prompt was open used to be overwritten all the same, its newer edit
+    lost with no backup; it is now kept and named, and the run fails."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    install_main(["skills", "--target", str(tmp_path)])
+    skill = tmp_path / "skills" / "grounding" / "SKILL.md"
+    other = tmp_path / "skills" / "coding" / "SKILL.md"
+    skill.write_text(skill.read_text() + "\nFIRST EDIT\n")
+    other.write_text("MINE")
+
+    def confirm(*_a, **_k):
+        assert "SECOND" not in skill.read_text()
+        skill.write_text(skill.read_text() + "SECOND EDIT\n")  # saved at the prompt
+        return True
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    rc = install_main(["skills", "--target", str(tmp_path)])
+    assert skill.read_text().endswith("\nFIRST EDIT\nSECOND EDIT\n")
+    assert other.read_text() != "MINE", "an approved file left as listed is replaced"
+    assert rc == 1, "a file kept because it changed is not a deploy"
+    assert f"kept {skill}: it changed after den checked it" in capsys.readouterr().err
+
+
 @pytest.mark.real_path_probes
 def test_install_cline_parent_goes_to_cline_rules_dir(tmp_path, monkeypatch):
     # the VS Code extension reads global rules from <Documents>/Cline/Rules and

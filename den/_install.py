@@ -248,8 +248,9 @@ class _Writer:
     written was deleted while uv ran, and is treated the same way.
 
     Only what was listed and approved (or is still den's) is ever replaced
-    without --force: a file that changes between the listing and its write is
-    kept.
+    without --force, and a listed file only while it holds the bytes it was
+    listed with: a file that changes between the listing and its write (an
+    edit saved while the prompt was open) is kept.
 
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), so a symlink anywhere below it - CLAUDE.md ->
@@ -409,10 +410,9 @@ class _Writer:
                 refused += 1
                 continue
             items.append((dest, content, guard))
-        changed = self._changed(items)
-        overwrite, silently_skipped = self._ask(changed)
-        listed = set(changed)
-        approved = listed if overwrite else set()
+        listed = self._changed(items)
+        overwrite, silently_skipped = self._ask(list(listed))
+        approved = set(listed) if overwrite else set()
         kept = late = 0
         backed_up: list[tuple[Path, Path]] = []
         missing: list[Path] = []
@@ -428,7 +428,15 @@ class _Writer:
                     self._ensure_mode(dest)
                     continue
                 if not self._owns(dest, data):
-                    if not self.force and dest not in listed:
+                    # Not what the user was shown: missing from the list, or
+                    # approved but saved again since it was listed.
+                    if not self.force and (
+                        dest not in listed
+                        or (
+                            dest in approved
+                            and hashlib.sha256(data).hexdigest() != listed[dest]
+                        )
+                    ):
                         late += 1
                         print(
                             f"  kept {dest}: it changed after den checked it",
@@ -457,14 +465,15 @@ class _Writer:
 
     def _changed(
         self, items: list[tuple[Path, bytes, tuple[Path, Path] | None]]
-    ) -> list[Path]:
+    ) -> dict[Path, str]:
         """The staged files that exist, differ, and are not den's: the list
-        _ask shows."""
-        changed = []
+        _ask shows, each with the SHA-256 of the bytes it was listed with
+        (commit replaces an approved file only while it still holds them)."""
+        changed: dict[Path, str] = {}
         for dest, content, _guard in items:
             data = dest.read_bytes() if dest.is_file() else None
             if data is not None and data != content and not self._owns(dest, data):
-                changed.append(dest)
+                changed[dest] = hashlib.sha256(data).hexdigest()
         return changed
 
     def _report(
