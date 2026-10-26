@@ -365,6 +365,46 @@ done
 assert_eq "pwsh/split with a bad -a wrote nothing" "" "$(ls -A "$WORK/exh/bad")"
 rm -rf "$WORK/exh"
 
+# -l, -b and -n are checked as -a is: an empty value, one below 1 or one that
+# is not a number is refused before any part is written, as uutils refuses
+# it, also where another flag decides how the input is cut (-b 4 -l abc).
+# -l '', 0 and -5, -b '' and -n '' passed for the flag not given, and split
+# wrote 1000-line parts (one part here); -l abc did too, after a conversion
+# error, and -b abc and -n abc put that error before den's own. A value is
+# read as a cast reads it, so a bare 0x10 or 1kb still counts, and so does a
+# line count past [int] (-l 99999999999, a conversion error before).
+echo "[pwsh] split refuses an empty or bad -l, -b or -n before writing"
+rm -rf "$WORK/badv" && mkdir -p "$WORK/badv/bad" "$WORK/badv/ok"
+printf '%03d\n' $(seq 1 27) > "$WORK/badv/in.txt"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    Set-Location '$WORK/badv/bad'
+    foreach (\$c in @('-l', ''), @('-l', '0'), @('-l', '-5'), @('-l', 'abc'), @('-b', ''), @('-b', 'abc'), @('-n', ''), @('-n', 'abc')) {
+        split \$c[0] \$c[1] ../in.txt p 2>&1 6>&1 | ForEach-Object { \"\$(\$c[0]) '\$(\$c[1])': \" + \$_ }
+    }
+    Get-Content ../in.txt | split -l '' 2>&1 6>&1 | ForEach-Object { \"piped -l '': \" + \$_ }
+    split -b 4 -l abc ../in.txt p 2>&1 6>&1 | ForEach-Object { \"-b 4 -l 'abc': \" + \$_ }
+    Set-Location '$WORK/badv/ok'
+    split -l 0x10 ../in.txt h 2>&1 6>&1 | ForEach-Object { 'bare -l 0x10: ' + \$_ }
+    split -b 1kb ../in.txt k 2>&1 6>&1 | ForEach-Object { 'bare -b 1kb: ' + \$_ }
+    split -l 99999999999 ../in.txt w 2>&1 6>&1 | ForEach-Object { '-l 99999999999: ' + \$_ }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/split refuses an empty or bad -l, -b or -n, and reads a bare 0x10 or 1kb" "-l '': invalid line count ''
+-l '0': invalid line count '0'
+-l '-5': invalid line count '-5'
+-l 'abc': invalid line count 'abc'
+-b '': invalid byte size ''
+-b 'abc': invalid byte size 'abc'
+-n '': invalid chunk count ''
+-n 'abc': invalid chunk count 'abc'
+piped -l '': invalid line count ''
+-b 4 -l 'abc': invalid line count 'abc'
+bare -l 0x10: Split into 2 files (haa .. hab)
+bare -b 1kb: Split into 1 files
+-l 99999999999: Split into 1 files (waa .. waa)" "$actual"
+assert_eq "pwsh/split with a bad -l, -b or -n wrote nothing" "" "$(ls -A "$WORK/badv/bad")"
+rm -rf "$WORK/badv"
+
 # With -n N, GNU split and uutils give the names the length N parts need from
 # the start (2 letters at least) rather than widening them, and refuse an -a
 # shorter than that before writing anything. So with -n 676 the names stay

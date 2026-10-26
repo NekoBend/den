@@ -261,10 +261,10 @@ function split {
     # `split -n 0` silently fell through to the 1000-line default instead of
     # being refused. The same held for `-b 0`, and for a file literally named
     # "0", which "$path -eq ''" read as "no file, use stdin".
-    $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixArg = $null; $i = 0
+    $path = ''; $linesArg = $null; $chunks = $null; $bytes = $null; $prefix = 'x'; $suffixArg = $null; $i = 0
     while ($i -lt $__a.Count) {
       $a = [string]$__a[$i]
-      if ($a -eq '-l' -and ($i + 1) -lt $__a.Count) { $lines = [int]$__a[$i + 1]; $i += 2 }
+      if ($a -eq '-l' -and ($i + 1) -lt $__a.Count) { $linesArg = [string]$__a[$i + 1]; $i += 2 }
       elseif ($a -eq '-n' -and ($i + 1) -lt $__a.Count) { $chunks = [string]$__a[$i + 1]; $i += 2 }
       elseif ($a -eq '-b' -and ($i + 1) -lt $__a.Count) { $bytes = [string]$__a[$i + 1]; $i += 2 }
       elseif ($a -eq '-a' -and ($i + 1) -lt $__a.Count) { $suffixArg = [string]$__a[$i + 1]; $i += 2 }
@@ -291,6 +291,29 @@ function split {
       $suffixLen = _num $suffixArg
       if ($null -eq $suffixLen -or $suffixLen -lt 0) { Write-Error "invalid suffix length '$suffixArg'"; return }
       if ($suffixLen -eq 0) { $suffixLen = 2; $widen = $true }
+    }
+    # -l, -b and -n are checked as -a is, before any part is written: each
+    # one given, whichever decides how the input is cut. They start as $null,
+    # so an empty value does not pass for the flag not given, and a value
+    # below 1 or not a number is refused, as uutils refuses it (-b may end in
+    # K, M or G, and -n start with l/). -l '', 0 and -5, -b '' and -n '' used
+    # to give the 1000-line default, and -l abc a conversion error and then,
+    # outside a try, that default too.
+    $lines = 0; $sz = 0; $n = 0
+    if ($null -ne $linesArg) {
+      $lines = _num $linesArg
+      if ($null -eq $lines -or $lines -lt 1) { Write-Error "invalid line count '$linesArg'"; return }
+    }
+    if ($null -ne $bytes) {
+      $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB }; $num = $bytes; $unit = 1
+      if ($bytes -match '^(\d+)([KMG])$') { $num = $Matches[1]; $unit = $mult[$Matches[2]] }
+      $sz = _num $num
+      if ($null -eq $sz -or $sz -lt 1) { Write-Error "invalid byte size '$bytes'"; return }
+      $sz *= $unit
+    }
+    if ($null -ne $chunks) {
+      $n = _num ($chunks -replace '^l/', '')
+      if ($null -eq $n -or $n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
     }
     if ($path -eq '') {
       $content = $__piped.ToArray()
@@ -331,14 +354,8 @@ function split {
       if (-not [System.IO.File]::Exists($full)) { Write-Error "cannot open '$path' for reading: No such file"; return }
     }
 
-    if ($bytes -ne '') {
-      # Byte splitting
-      $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB }
-      $sz = if ($bytes -match '^(\d+)([KMG])$') { [long]$Matches[1] * $mult[$Matches[2]] } else { [long]$bytes }
-      # A size of 0 advances the write loop by 0 bytes for ever, so it has to be
-      # refused rather than run. It was unreachable while `-b 0` was read as
-      # "-b not given"; the [string] cast above is what makes it reachable.
-      if ($sz -lt 1) { Write-Error "invalid byte size '$bytes'"; return }
+    if ($null -ne $bytes) {
+      # Byte splitting, in parts of $sz bytes (checked above).
       # Streamed through one reusable buffer. ReadAllBytes plus a range slice
       # per part ($data[$a..$b], an object[] of boxed bytes) took about 50x the
       # file size in memory and ran some 250x slower than native split, so a
@@ -371,9 +388,7 @@ function split {
       return
     }
 
-    if ($chunks -ne '') {
-      $n = [int]($chunks -replace '^l/', '')
-      if ($n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
+    if ($null -ne $chunks) {
       # With -n N, GNU split and uutils give the names the length N parts need
       # from the start, 2 letters at least, and do not widen them; an -a
       # shorter than that is refused before any part is written. den's -n
@@ -391,7 +406,7 @@ function split {
       # final newline the file did not have. The chunk sizes are den's own:
       # -l N lines per part, -n N parts of ceil(lines/N) lines each.
       $buf = New-Object byte[] 65536
-      if ($chunks -ne '') {
+      if ($null -ne $chunks) {
         # Count the lines first: every LF, plus a last line without one.
         $count = 0; $last = [byte]10
         $in = [System.IO.File]::OpenRead($full)
@@ -437,7 +452,7 @@ function split {
 
     # Piped input arrives as strings, already decoded: it is written back as
     # lines. $content is @() above, so .Count and the slice are strict-safe.
-    if ($chunks -ne '') { $lines = [math]::Ceiling($content.Count / $n) }
+    if ($null -ne $chunks) { $lines = [math]::Ceiling($content.Count / $n) }
     if ($lines -lt 1) { $lines = 1000 }
     $total = [math]::Ceiling($content.Count / $lines)
     for ($idx = 0; $idx -lt $total; $idx++) {
