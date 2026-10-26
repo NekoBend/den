@@ -328,7 +328,9 @@ rm -rf "$WORK/wide"
 # suffixes exhausted", instead of being written over the first. The stop is a
 # terminating error (the try below catches it): the parts so far are not the
 # whole input, so the rest of the line must not run. -a below 1 is refused
-# before any part is written; GNU split and uutils read -a 0 as no -a.
+# before any part is written; GNU split and uutils read -a 0 as no -a. So is
+# an empty -a, which was read as no -a and widened; GNU split and uutils
+# refuse it.
 echo "[pwsh] split -a stops at its last suffix, and refuses a length below 1"
 rm -rf "$WORK/exh" && mkdir -p "$WORK/exh/l" "$WORK/exh/b" "$WORK/exh/p" "$WORK/exh/fit" "$WORK/exh/bad"
 printf '%03d\n' $(seq 1 27) > "$WORK/exh/in.txt"
@@ -339,22 +341,23 @@ actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
     Set-Location '$WORK/exh/p'; try { Get-Content ../in.txt | split -l 1 -a 1 6>\$null; 'piped: went on' } catch { 'piped: ' + \$_ }
     Set-Location '$WORK/exh/fit'; Get-Content ../in.txt -TotalCount 26 | split -l 1 -a 1 2>&1 6>&1 | ForEach-Object { 'fits: ' + \$_ }
     Set-Location '$WORK/exh/bad'
-    foreach (\$len in '0', '-1', 'abc') { split -l 1 -a \$len ../in.txt p 2>&1 6>&1 | ForEach-Object { \"-a \${len}: \" + \$_ } }
+    foreach (\$len in '0', '', '-1', 'abc') { split -l 1 -a \$len ../in.txt p 2>&1 6>&1 | ForEach-Object { \"-a '\${len}': \" + \$_ } }
 " < /dev/null 2>&1 | clean)
-assert_eq "pwsh/split -a 1 stops at the 27th part; -a below 1 is refused" "lines: output file suffixes exhausted
+assert_eq "pwsh/split -a 1 stops at the 27th part; -a below 1 or empty is refused" "lines: output file suffixes exhausted
 bytes: output file suffixes exhausted
 piped: output file suffixes exhausted
 fits: Split into 26 files (xa .. xz)
--a 0: invalid suffix length '0'
--a -1: invalid suffix length '-1'
--a abc: invalid suffix length 'abc'" "$actual"
+-a '0': invalid suffix length '0'
+-a '': invalid suffix length ''
+-a '-1': invalid suffix length '-1'
+-a 'abc': invalid suffix length 'abc'" "$actual"
 for m in l b p; do
     pre=p; [ "$m" = p ] && pre=x
     assert_eq "pwsh/split -a 1 ($m): the 26 parts that fit, the first kept" "26 files, ${pre}a 001, ${pre}z 026" \
         "$(cd "$WORK/exh/$m" && printf '%s files, %sa %s, %sz %s' "$(ls | wc -l | tr -d ' ')" \
             "$pre" "$(cat "${pre}a" 2>/dev/null | tr -d '\r')" "$pre" "$(cat "${pre}z" 2>/dev/null | tr -d '\r')")"
 done
-assert_eq "pwsh/split -a below 1 wrote nothing" "" "$(ls -A "$WORK/exh/bad")"
+assert_eq "pwsh/split -a below 1 or empty wrote nothing" "" "$(ls -A "$WORK/exh/bad")"
 rm -rf "$WORK/exh"
 
 # With -n N, GNU split and uutils give the names the length N parts need from

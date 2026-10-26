@@ -245,7 +245,7 @@ function split {
     # `split -n 0` silently fell through to the 1000-line default instead of
     # being refused. The same held for `-b 0`, and for a file literally named
     # "0", which "$path -eq ''" read as "no file, use stdin".
-    $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixArg = ''; $i = 0
+    $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixArg = $null; $i = 0
     while ($i -lt $__a.Count) {
       $a = [string]$__a[$i]
       if ($a -eq '-l' -and ($i + 1) -lt $__a.Count) { $lines = [int]$__a[$i + 1]; $i += 2 }
@@ -260,7 +260,10 @@ function split {
     # The suffix starts at 2 letters and widens as the names run out, or with
     # -a it is that many letters and no more (see _suffix). GNU split and
     # uutils read -a 0 as no -a; den refuses it, as any other length below 1.
-    $suffixLen = 2; $widen = $suffixArg -eq ''
+    # $suffixArg stays $null when -a is not given. It started as '', so an
+    # empty -a ('') read as no -a and widened, where GNU split and uutils
+    # refuse it as they refuse any other -a that is not a number.
+    $suffixLen = 2; $widen = $null -eq $suffixArg
     if (-not $widen -and -not ([int]::TryParse($suffixArg, [ref]$suffixLen) -and $suffixLen -ge 1)) {
       Write-Error "invalid suffix length '$suffixArg'"; return
     }
