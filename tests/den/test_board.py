@@ -662,6 +662,41 @@ _DEEP_LINE = "[" * 200_000 + "]" * 200_000
 _BIG_INT_LINE = '{"n": ' + "1" * 5000 + "}"
 
 
+def _in_a_new_thread(func, *args):
+    """func(*args) in a new thread, as the server's handlers run json.loads and
+    json.dumps. A new thread starts near the top of its stack; the thread a
+    test runs in is deep in pytest's, and there both give up sooner."""
+    results = []
+    thread = threading.Thread(target=lambda: results.append(func(*args)))
+    thread.start()
+    thread.join()
+    (result,) = results  # empty when func raised (the thread printed why)
+    return result
+
+
+def _parses(text):
+    try:
+        json.loads(text)
+    except RecursionError:
+        return False
+    return True
+
+
+# CPython 3.14 sizes the recursion limit to the stack, so a big enough stack
+# parses even _DEEP_LINE, which there cannot reach the RecursionError it is for.
+_DEEP_LINE_PARSES = _in_a_new_thread(_parses, _DEEP_LINE)
+_BAD_LINES = [
+    pytest.param(
+        _DEEP_LINE,
+        id="deep",
+        marks=pytest.mark.skipif(
+            _DEEP_LINE_PARSES, reason="a new thread's stack parses _DEEP_LINE here"
+        ),
+    ),
+    pytest.param(_BIG_INT_LINE, id="big-int"),
+]
+
+
 def test_reactions_skip_lines_json_cannot_parse(tmp_path):
     # Both come before the reaction: a read that raised on them would never
     # reach it, and would raise again on every poll after.
@@ -674,7 +709,7 @@ def test_reactions_skip_lines_json_cannot_parse(tmp_path):
     assert index.snapshot()["t1"]["button"] == "task-done", "and on the next poll"
 
 
-@pytest.mark.parametrize("bad", [_DEEP_LINE, _BIG_INT_LINE], ids=["deep", "big-int"])
+@pytest.mark.parametrize("bad", _BAD_LINES)
 def test_agent_list_answers_past_a_line_json_cannot_parse(served, bad):
     # Raised out of the handler, such a line dropped the connection on every
     # poll for as long as it stayed inside the 512 KiB window.
@@ -686,7 +721,7 @@ def test_agent_list_answers_past_a_line_json_cannot_parse(served, bad):
     assert _listed_reaction(port)["button"] == "task-done"
 
 
-@pytest.mark.parametrize("bad", [_DEEP_LINE, _BIG_INT_LINE], ids=["deep", "big-int"])
+@pytest.mark.parametrize("bad", _BAD_LINES)
 def test_report_list_answers_past_a_line_json_cannot_parse(served, bad):
     root, _server, port = served
     before = {"button": "note", "text": "before"}
@@ -697,8 +732,14 @@ def test_report_list_answers_past_a_line_json_cannot_parse(served, bad):
     assert _request(port, "POST", "/api/report", after)[0] == 200
     status, body = _request(port, "GET", "/api/reports")
     assert status == 200
-    listed = [(r["button"], r["text"]) for r in json.loads(body)["reports"]]
-    assert listed == [("note", "before"), ("bug", "after")]
+    assert _listed_reports(body) == [("note", "before"), ("bug", "after")]
+
+
+def _listed_reports(body):
+    """(button, text) of each report an /api/reports body lists, leaving out
+    the ones that are not objects: a line that parses lists as itself."""
+    reports = json.loads(body)["reports"]
+    return [(r["button"], r["text"]) for r in reports if isinstance(r, dict)]
 
 
 def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):
