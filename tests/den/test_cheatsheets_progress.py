@@ -7,11 +7,14 @@ without it these tests are skipped.
 """
 
 import asyncio
+import builtins
 import errno
 import importlib
 import multiprocessing
 import os
 import queue
+import runpy
+import shutil
 import stat
 import sys
 import time
@@ -444,6 +447,54 @@ def test_copy_notes_say_that_the_0o600_promise_is_posix_only():
         assert "0o600" in note, name
         assert "POSIX" in note, name
         assert "Windows" in note, name
+
+
+# --- files.py's own sanity check ------------------------------------------------
+
+
+def _run_sanity_check(os_module: types.ModuleType = os) -> None:
+    """Run files.py as a script, its ``import os`` statements giving ``os_module``."""
+    real_import = builtins.__import__
+
+    def sheet_import(name, *args, **kwargs):
+        return os_module if name == "os" else real_import(name, *args, **kwargs)
+
+    runpy.run_path(
+        str(PROGRESS_DIR / "files.py"),
+        init_globals={"__builtins__": {**vars(builtins), "__import__": sheet_import}},
+        run_name="__main__",
+    )
+
+
+def test_sanity_check_passes_with_windows_file_modes(monkeypatch, capsys):
+    # Windows keeps no permission bits, only a read-only flag: chmod(0o640)
+    # leaves the source writable, and stat reports a writable file as 0o666.
+    # The sanity check still wanted 0o640 on each copy, so `python files.py`
+    # stopped at the first copier there.
+    _stand_in_tqdm(monkeypatch)
+    real_chmod = os.chmod
+
+    def chmod(path, mode, **kwargs):
+        real_chmod(path, 0o666 if mode & stat.S_IWRITE else 0o444, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", chmod)
+    windows = types.ModuleType("os")  # what the sheet sees; the rest stays POSIX
+    windows.__dict__.update(vars(os), name="nt")
+    try:
+        _run_sanity_check(windows)
+    except SystemExit as stop:
+        pytest.fail(f"the sanity check stopped: {stop}")
+    assert "All sanity checks passed." in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_sanity_check_still_checks_the_copy_mode_on_posix(monkeypatch):
+    # Where there are permission bits, a copy without the source's mode
+    # must still stop the sanity check.
+    _stand_in_tqdm(monkeypatch)
+    monkeypatch.setattr(shutil, "copystat", lambda src, dst: None)
+    with pytest.raises(SystemExit, match="expected 0o640"):
+        _run_sanity_check()
 
 
 # --- run_thread_rich_per_task: one live task per running item -------------------

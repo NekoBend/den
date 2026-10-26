@@ -236,6 +236,7 @@ def consume_chunks_rich(
 # =============================================================================
 
 if __name__ == "__main__":
+    import os
     import shutil
     import stat
     import tempfile
@@ -258,7 +259,8 @@ if __name__ == "__main__":
             if dst.read_bytes() != payload:
                 raise SystemExit(f"{name}: the copy differs from the source")
             mode = stat.S_IMODE(dst.stat().st_mode)
-            if mode != 0o640:
+            # Windows keeps only a read-only flag: a writable copy reads 0o666.
+            if os.name == "posix" and mode != 0o640:
                 raise SystemExit(f"{name}: mode is {mode:#o}, expected 0o640")
             print(f"ok: {name} ({written} bytes, mode {mode:#o})")
 
