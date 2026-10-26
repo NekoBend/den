@@ -47,7 +47,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import cast
+from typing import BinaryIO, cast
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
@@ -279,9 +279,15 @@ class _Reactions:
     delete it (den/README.md suggests that when a session is done) or edit it.
     A different file, or other bytes where the last _SEAM_BYTES read were (the
     seam; a shorter file lacks some), mean more than an append happened, and
-    the index starts over from byte 0. A same-length change further back in
-    the same file goes unseen until the server restarts. Only complete lines
-    count: a line still missing its newline is read again, whole, next poll.
+    the file is read again from byte 0, into a new index that replaces this one
+    once that read reaches the end of the file. A same-length change further
+    back in the same file goes unseen until the server restarts. Only complete
+    lines count: a line still missing its newline is read again, whole, next
+    poll. A failed read keeps the reactions already known. One that fails to
+    open the file, or part way through reading it again from byte 0, changes
+    nothing, and the next poll tries again; one that fails part way through
+    what was appended keeps the whole lines it took in, and the next poll
+    reads on from there.
     """
 
     def __init__(self, root: Path) -> None:
@@ -298,9 +304,9 @@ class _Reactions:
             self._refresh()
             return dict(self._by_task)
 
-    def _restart(self, ident: tuple[int, int] | None = None) -> None:
+    def _restart(self) -> None:
         self._by_task = {}
-        self._ident = ident
+        self._ident = None
         self._offset = 0
         self._seam = b""
 
@@ -323,16 +329,30 @@ class _Reactions:
             st = os.fstat(f.fileno())
             ident = (st.st_dev, st.st_ino)
             f.seek(self._offset - len(self._seam))
-            if ident != self._ident or f.read(len(self._seam)) != self._seam:
-                self._restart(ident)
-                f.seek(0)
-            pending = b""
-            while chunk := f.read(_READ_CHUNK):
-                pending += chunk
-                end = pending.rfind(b"\n") + 1
-                if end:
-                    self._take(pending[:end])
-                    pending = pending[end:]
+            if ident == self._ident and f.read(len(self._seam)) == self._seam:
+                self._read_on(f)  # what was appended since, if anything
+                return
+            # More than an append happened. Cleared first and then read, the
+            # index lost every answer it held when that read failed part way
+            # (the suppress above), and answered tasks showed open again. The
+            # new index replaces this one only once the whole file is read.
+            fresh = _Reactions(self._root)
+            f.seek(0)
+            fresh._read_on(f)
+            self._by_task = fresh._by_task
+            self._ident = ident
+            self._offset = fresh._offset
+            self._seam = fresh._seam
+
+    def _read_on(self, f: BinaryIO) -> None:
+        """Take in the whole lines from f's position on, to its end."""
+        pending = b""
+        while chunk := f.read(_READ_CHUNK):
+            pending += chunk
+            end = pending.rfind(b"\n") + 1
+            if end:
+                self._take(pending[:end])
+                pending = pending[end:]
 
     def _take(self, block: bytes) -> None:
         """Take in `block`: whole lines, read from _offset on."""

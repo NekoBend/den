@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import http.client
 import json
 import os
@@ -1030,6 +1031,76 @@ def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):
         assert "t1" in index.snapshot(), "a read that fails once reopens nothing"
     reports.unlink()
     assert index.snapshot() == {}, "a deleted file settles nothing"
+
+
+class _ReadsFailFrom:
+    """An open reports.jsonl whose reads fail from byte `start` on, as on a
+    disk error part way through the file."""
+
+    def __init__(self, f, start):
+        self._f = f
+        self._start = start
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self._f.close()
+
+    def fileno(self):
+        return self._f.fileno()
+
+    def seek(self, *args):
+        return self._f.seek(*args)
+
+    def read(self, size=-1):
+        if self._f.tell() >= self._start:
+            raise OSError(errno.EIO, "Input/output error")
+        return self._f.read(size)
+
+
+@pytest.mark.parametrize("change", ["replaced", "edited", "appended"])
+def test_reactions_survive_a_read_that_fails_part_way(tmp_path, monkeypatch, change):
+    # A file replaced, or edited where its seam was, is read again from byte
+    # 0. The index was cleared before that read, so one that failed part way
+    # left only the lines it had taken in, and answered tasks showed open
+    # until a read got through. An append keeps what it took in.
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    old = (json.dumps({"button": "task-done", "re": "t1"}) + "\n").encode()
+    reports.write_bytes(old)
+    index = _board._Reactions(tmp_path)
+    done = {"button": "task-done", "ts": None, "text": None}
+    cant = {"button": "task-cant", "ts": None, "text": None}
+    assert index.snapshot() == {"t1": done}
+
+    first = (json.dumps({"button": "task-done", "re": "t2"}) + "\n").encode()
+    second = (json.dumps({"button": "task-cant", "re": "t1"}) + "\n").encode()
+    start = len(first)  # a read from the start fails after the first line
+    if change == "replaced":  # as many editors save
+        saved = reports.with_name("reports.jsonl.new")
+        saved.write_bytes(first + second)
+        saved.replace(reports)
+    elif change == "edited":  # in place, from the first line on
+        reports.write_bytes(first + second)
+    else:
+        with reports.open("ab") as f:
+            f.write(first + second)
+        start += len(old)
+    monkeypatch.setattr(_board, "_READ_CHUNK", len(first))  # a line per read
+    real_open = Path.open
+
+    def open_failing(self, *args, **kwargs):
+        f = real_open(self, *args, **kwargs)
+        return _ReadsFailFrom(f, start) if self == reports else f
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "open", open_failing)
+        if change == "appended":
+            assert index.snapshot() == {"t1": done, "t2": done}
+        else:
+            assert index.snapshot() == {"t1": done}, "an answer was dropped"
+    assert index.snapshot() == {"t1": cant, "t2": done}, "the next poll took the rest"
 
 
 def test_tasks_still_list_with_a_directory_at_reports_jsonl(served):
