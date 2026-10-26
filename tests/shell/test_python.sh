@@ -15,8 +15,9 @@ NO_UV_BIN="$WORK/no-uv-bin"
 mkdir -p "$NO_UV_BIN"
 
 # python, python3 and py go through uv run only outside a project: with a
-# pyproject.toml or a .venv in the current directory or one above it they run a
-# python directly. The suite itself may run from a checkout, which has a
+# pyproject.toml, a .venv or another file uv run would read (see the route
+# tests below) in the current directory or one above it they run a python
+# directly. The suite itself may run from a checkout, which has a
 # pyproject.toml, so a test that wants uv run starts in this directory.
 NOPROJ="$WORK/noproj"
 mkdir -p "$NOPROJ"
@@ -1104,7 +1105,11 @@ done
 # it too), and with a .venv here or above it runs that .venv's python, which a
 # clone may commit; uv pip with no venv active picks that .venv as well. uv
 # takes a directory that holds a pyvenv.cfg for a venv, whatever its name, so
-# uv run in it or below it runs the python there too (cfgvenv/).
+# uv run in it or below it runs the python there too (cfgvenv/). A uv.toml's
+# settings can have uv install and run a python the clone ships (uvtoml/), and
+# uv runs the program a .python-version names (pyver/, pyverbs/); one of
+# version requests alone is no marker (pyveronly/), and neither is a path in a
+# comment line.
 # ROUTE_BIN's uv writes each call to ROUTE_LOG and answers `uv python find` with
 # a stand-in system python (--no-managed-python) or a stand-in uv-managed one
 # (--managed-python); ROUTE_NO_SYSTEM and ROUTE_NO_MANAGED make it find none.
@@ -1113,7 +1118,8 @@ done
 R="$WORK/route"
 ROUTE_BIN="$R/bin"
 ROUTE_LOG="$R/uvcalls"
-mkdir -p "$ROUTE_BIN" "$R/sys" "$R/managed" "$R/venv/bin" "$R/proj/sub" "$R/vproj/.venv" "$R/cfgvenv/bin" "$R/cfgvenv/sub"
+mkdir -p "$ROUTE_BIN" "$R/sys" "$R/managed" "$R/venv/bin" "$R/proj/sub" "$R/vproj/.venv" "$R/cfgvenv/bin" "$R/cfgvenv/sub" \
+    "$R/uvtoml/sub" "$R/pyver/sub" "$R/pyverbs" "$R/pyveronly"
 cat > "$ROUTE_BIN/uv" << EOF
 #!/bin/sh
 echo "\$*" >> "$ROUTE_LOG"
@@ -1134,6 +1140,14 @@ printf '#!/bin/sh\necho "cfgvenv-python $*"\n' > "$R/cfgvenv/bin/python"
 chmod +x "$ROUTE_BIN/uv" "$R/sys/python3" "$R/managed/python3.13" "$R/venv/bin/python" "$R/cfgvenv/bin/python"
 : > "$R/proj/pyproject.toml"
 printf 'home = /usr/bin\n' > "$R/cfgvenv/pyvenv.cfg"
+: > "$R/uvtoml/uv.toml"
+printf '# pinned to the one in tools/\n\n  ../tools/py\n' > "$R/pyver/.python-version"
+printf '%s\n' '.\tools\py' > "$R/pyverbs/.python-version"
+printf '3.13\ncpython@3.13\npypy3.10\n  # not ./tools/py\n' > "$R/pyveronly/.python-version"
+# uv reads a regular file only: one that links to /dev/zero is skipped, and
+# reading it would not end (pyverzero/).
+mkdir -p "$R/pyverzero"
+ln -s /dev/zero "$R/pyverzero/.python-version"
 ln -s "$R/proj/sub" "$R/link"
 # uv starts from the current directory with its symbolic links resolved, and so
 # does python.sh: it names a project found that way under this spelling of $R.
@@ -1141,10 +1155,13 @@ RP=$(cd "$R" && pwd -P)
 
 # route_posix <shell> <dir> <command> - run the command in <dir> with python.sh
 # loaded, ROUTE_BIN first on PATH and no venv active; print its stdout and then
-# "rc=<status>". Its stderr goes to $R/err, and ROUTE_LOG starts empty.
+# "rc=<status>". Its stderr goes to $R/err, and ROUTE_LOG starts empty. A run
+# that does not end is stopped after 120 s (ROUTE_TIMEOUT), and fails its check.
+ROUTE_TIMEOUT=""
+command -v timeout >/dev/null 2>&1 && ROUTE_TIMEOUT="timeout 120"
 route_posix() {
     : > "$ROUTE_LOG"
-    "$1" -c "export PATH='$ROUTE_BIN':\$PATH; . '$PYTHON_SH_SOURCE'; unset VIRTUAL_ENV _DEN_VENV_PYTHON; cd '$2' || exit 99; $3; echo \"rc=\$?\"" \
+    $ROUTE_TIMEOUT "$1" -c "export PATH='$ROUTE_BIN':\$PATH; . '$PYTHON_SH_SOURCE'; unset VIRTUAL_ENV _DEN_VENV_PYTHON; cd '$2' || exit 99; $3; echo \"rc=\$?\"" \
         2>"$R/err" | tr -d '\r'
 }
 
@@ -1170,6 +1187,34 @@ rc=0" "$actual"
 rc=0" "$actual"
     assert_eq "$sh/python below a pyvenv.cfg names it" \
         "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/cfgvenv/pyvenv.cfg" "$(cat "$R/err")"
+
+    echo "[$sh] python below a uv.toml: the same"
+    actual=$(route_posix "$sh" "$R/uvtoml/sub" "python -c pass")
+    assert_eq "$sh/python below a uv.toml runs the system python" "system-python -c pass
+rc=0" "$actual"
+    assert_eq "$sh/python below a uv.toml names it" \
+        "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/uvtoml/uv.toml" "$(cat "$R/err")"
+
+    echo "[$sh] python3 below a .python-version that names a path, and py beside one with a \\ in it: the same"
+    actual=$(route_posix "$sh" "$R/pyver/sub" "python3 -c pass")
+    assert_eq "$sh/python3 below a .python-version that names a path runs the system python" "system-python -c pass
+rc=0" "$actual"
+    assert_eq "$sh/python3 below a .python-version that names a path names it" \
+        "python3: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyver/.python-version" "$(cat "$R/err")"
+    actual=$(route_posix "$sh" "$R/pyverbs" "py -c pass")
+    assert_eq "$sh/py beside a .python-version with a \\ path runs the system python" "system-python -c pass
+rc=0" "$actual"
+    assert_contains "$sh/py beside a .python-version with a \\ path names it" "code from $RP/pyverbs/.python-version" "$(cat "$R/err")"
+
+    echo "[$sh] beside a .python-version of version requests alone, a path only in a comment: uv run, as before"
+    actual=$(route_posix "$sh" "$R/pyveronly" "python -c pass")
+    assert_eq "$sh/python beside a version-only .python-version goes through uv run" "mock-uv run -- python -c pass
+rc=0" "$actual"
+
+    echo "[$sh] beside a .python-version that links to /dev/zero: uv run, and python ends"
+    actual=$(route_posix "$sh" "$R/pyverzero" "python -c pass")
+    assert_eq "$sh/python beside a .python-version that links to /dev/zero goes through uv run" "mock-uv run -- python -c pass
+rc=0" "$actual"
 
     echo "[$sh] py through a symbolic link into a project still finds the project"
     actual=$(route_posix "$sh" "$R/link" "py -c pass")
@@ -1234,7 +1279,7 @@ PYTHON_PS1_ROUTE="$TESTTMP/python_route.ps1"
 } > "$PYTHON_PS1_ROUTE"
 route_pwsh() {
     : > "$ROUTE_LOG"
-    pwsh -NoProfile -NonInteractive -Command "
+    $ROUTE_TIMEOUT pwsh -NoProfile -NonInteractive -Command "
         . '$PYTHON_PS1_ROUTE'
         Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
         Set-Location -LiteralPath '$1'
@@ -1266,6 +1311,29 @@ echo "[pwsh] python below a directory with a pyvenv.cfg: the same"
 actual=$(route_pwsh "$R/cfgvenv/sub" "python -c pass")
 assert_eq "pwsh/python below a pyvenv.cfg runs the system python" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/cfgvenv/pyvenv.cfg
 system-python -c pass" "$actual"
+
+echo "[pwsh] python below a uv.toml: the same"
+actual=$(route_pwsh "$R/uvtoml/sub" "python -c pass")
+assert_eq "pwsh/python below a uv.toml runs the system python" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/uvtoml/uv.toml
+system-python -c pass" "$actual"
+
+echo "[pwsh] python3 below a .python-version that names a path, and py beside one with a \\ in it: the same"
+actual=$(route_pwsh "$R/pyver/sub" "python3 -c pass")
+assert_eq "pwsh/python3 below a .python-version that names a path runs the system python" "WARNING: python3: running $R/sys/python3, not uv run: uv run would build or run code from $R/pyver/.python-version
+system-python -c pass" "$actual"
+actual=$(route_pwsh "$R/pyverbs" "py -c pass")
+assert_eq "pwsh/py beside a .python-version with a \\ path runs the system python" "WARNING: py: running $R/sys/python3, not uv run: uv run would build or run code from $R/pyverbs/.python-version
+system-python -c pass" "$actual"
+
+echo "[pwsh] beside a .python-version of version requests alone, a path only in a comment: uv run, as before"
+actual=$(route_pwsh "$R/pyveronly" "python -c pass")
+assert_eq "pwsh/python beside a version-only .python-version goes through uv run" "HOST: python -c pass → uv run -- python -c pass
+mock-uv run -- python -c pass" "$actual"
+
+echo "[pwsh] beside a .python-version that links to /dev/zero: uv run, and python ends"
+actual=$(route_pwsh "$R/pyverzero" "python -c pass")
+assert_eq "pwsh/python beside a .python-version that links to /dev/zero goes through uv run" "HOST: python -c pass → uv run -- python -c pass
+mock-uv run -- python -c pass" "$actual"
 
 echo "[pwsh] --version and -V anywhere: the python directly, and no other line"
 actual=$(route_pwsh "$NOPROJ" "py --version; python -V")
@@ -1386,16 +1454,61 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
         echo "  SKIP: pwsh/va between python -m venv and uv venv (python -m venv failed)"
     fi
 
-    # mk_clones <dir> - three clones under <dir>, each piece of whose code
+    # mk_uvtoml_clone <dir> - <dir>/uvtoml, a clone with a uv.toml at its top
+    # and none of the other files: its settings have uv install a "python" the
+    # clone ships and run it, whose program writes uvtoml-python to <dir>/marks.
+    # A real clone names an https URL; here the download list and the archive
+    # are files (file:// URLs), so it works offline.
+    mk_uvtoml_clone() {
+        local b="$1/uvtoml-src/python" n sha os=linux libc=gnu arch
+        arch=$(uname -m)
+        case $arch in arm64) arch=aarch64 ;; esac
+        case "$(uname -s)" in Darwin) os=macos libc=none ;; esac
+        mkdir -p "$1/marks" "$1/config" "$1/uvtoml/sub" "$b/bin" "$b/lib/python3.13"
+        for n in python3 python3.13; do
+            printf '#!/bin/sh\necho ran >> "%s/marks/uvtoml-python"\nexec "%s" "$@"\n' "$1" "$WORK/uv_probe/bin/python" > "$b/bin/$n"
+            chmod +x "$b/bin/$n"
+        done
+        printf '# system configuration generated and used by the sysconfig module\nbuild_time_vars = {}\n' \
+            > "$b/lib/python3.13/_sysconfigdata__${os}_$arch.py"
+        tar -czf "$1/uvtoml/python.tar.gz" -C "$1/uvtoml-src" python
+        sha=$(sha256sum "$1/uvtoml/python.tar.gz" 2>/dev/null || shasum -a 256 "$1/uvtoml/python.tar.gz")
+        printf '{"cpython-3.13.99-%s-%s-%s": {"name": "cpython", "arch": {"family": "%s", "variant": null}, "os": "%s", "libc": "%s", "major": 3, "minor": 13, "patch": 99, "prerelease": "", "url": "file://%s/uvtoml/python.tar.gz", "sha256": "%s", "variant": null}}\n' \
+            "$os" "$arch" "$libc" "$arch" "$os" "$libc" "$1" "${sha%% *}" > "$1/uvtoml/downloads.json"
+        printf 'python-downloads-json-url = "%s/uvtoml/downloads.json"\npython-preference = "only-managed"\npython-downloads = "automatic"\n' \
+            "$1" > "$1/uvtoml/uv.toml"
+    }
+    # in_uvtoml_env <dir> <command...> - run the command as in a shell of one's
+    # own, where a uv.toml may have uv download a python (the suite turns that
+    # off above): config read, downloads allowed, installs under <dir>. Every
+    # proxy is a closed local port, so nothing reaches the network.
+    in_uvtoml_env() {
+        local d=$1
+        shift
+        env -u UV_NO_CONFIG -u UV_OFFLINE -u UV_PYTHON_DOWNLOADS -u NO_PROXY -u no_proxy \
+            HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 \
+            http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 \
+            UV_PYTHON_INSTALL_DIR="$d/pythons" UV_PYTHON_BIN_DIR="$d/bin" UV_CACHE_DIR="$d/uvcache" \
+            XDG_CONFIG_HOME="$d/config" "$@"
+    }
+    # mk_clones <dir> - five clones under <dir>, each piece of whose code
     # writes its name to <dir>/marks when it runs: build/ has a pyproject.toml
     # whose build backend is in the repository, venv/ commits a .venv and a
-    # .python-version that names a program in the repository, and cfg/ commits
+    # .python-version that names a program in the repository, cfg/ commits
     # a pyvenv.cfg and a bin/python at its top, with no pyproject.toml and no
-    # .venv. uv run built the first, for `python --version` too, and left a
-    # .venv and a uv.lock in it; in the second it ran the .venv's python, and
-    # the .python-version's program when it read that file; below the third it
-    # ran its bin/python, as uv takes a directory with a pyvenv.cfg for a venv.
+    # .venv, pyver/ commits only the .python-version and its program, and
+    # uvtoml/ is mk_uvtoml_clone's. uv run built the first, for `python
+    # --version` too, and left a .venv and a uv.lock in it; in the second it ran
+    # the .venv's python, and the .python-version's program when it read that
+    # file; below the third it ran its bin/python, as uv takes a directory with
+    # a pyvenv.cfg for a venv; in the fourth it ran the program; and in the fifth
+    # it installed the clone's python and ran it.
     mk_clones() {
+        mk_uvtoml_clone "$1"
+        mkdir -p "$1/pyver/tools"
+        printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" pyver-program "$WORK/uv_probe/bin/python" > "$1/pyver/tools/py"
+        chmod +x "$1/pyver/tools/py"
+        printf './tools/py\n' > "$1/pyver/.python-version"
         mkdir -p "$1/marks" "$1/build/src" "$1/venv/.venv/bin" "$1/venv/tools" "$1/config" "$1/cfg/bin" "$1/cfg/src"
         printf '[project]\nname = "probe"\nversion = "0.1"\n[build-system]\nrequires = []\nbuild-backend = "backend"\nbackend-path = ["."]\n' \
             > "$1/build/pyproject.toml"
@@ -1409,6 +1522,16 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
         printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" cfg-python "$WORK/uv_probe/bin/python" > "$1/cfg/bin/python"
         chmod +x "$1/cfg/bin/python"
     }
+    # pyver/ and uvtoml/ are a threat only while the real uv here runs their
+    # code: plain uv run shows that once, in clones of their own, or their
+    # checks are skipped, as there would be nothing to keep from running.
+    mk_clones "$WORK/clones-uv"
+    (cd "$WORK/clones-uv/pyver" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/clones-uv/config" "$REAL_UV" run -- python -c pass) >/dev/null 2>&1 || true
+    PYVER_THREAT=0
+    [ -e "$WORK/clones-uv/marks/pyver-program" ] && PYVER_THREAT=1
+    (cd "$WORK/clones-uv/uvtoml" && in_uvtoml_env "$WORK/clones-uv" "$REAL_UV" run -- python -c pass) >/dev/null 2>&1 || true
+    UVTOML_THREAT=0
+    [ -e "$WORK/clones-uv/marks/uvtoml-python" ] && UVTOML_THREAT=1
     # Run with the config files read (UV_NO_CONFIG unset, with no user uv.toml in
     # XDG_CONFIG_HOME), as in a shell of one's own: uv reads a .python-version only then.
     for sh in bash zsh; do
@@ -1447,6 +1570,39 @@ pip=1" "$(printf '%s\n' "$actual" | tail -n +2)"
 4
 5" "$actual"
         assert_not_exists "$sh/the clone's bin/python did not run" "$C/marks/cfg-python"
+
+        if [ "$PYVER_THREAT" = 1 ]; then
+            echo "[$sh] beside a clone's .python-version that names its program, python, python3 and py run none of its code (the real uv)"
+            actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$C/config" "$sh" -c "
+                . '$PYTHON_SH_SOURCE'
+                unset VIRTUAL_ENV _DEN_VENV_PYTHON
+                cd '$C/pyver' || exit 1
+                python -c 'print(6)'
+                python3 -c 'print(7)'
+                py -c 'print(8)'
+            " 2>/dev/null | tr -d '\r') || true
+            assert_eq "$sh/python, python3 and py beside a .python-version that names a program" "6
+7
+8" "$actual"
+            assert_not_exists "$sh/the program the clone's .python-version names did not run" "$C/marks/pyver-program"
+        fi
+
+        if [ "$UVTOML_THREAT" = 1 ]; then
+            echo "[$sh] below a clone's uv.toml, python, python3 and py run none of its code (the real uv, offline)"
+            actual=$(in_uvtoml_env "$C" "$sh" -c "
+                . '$PYTHON_SH_SOURCE'
+                unset VIRTUAL_ENV _DEN_VENV_PYTHON
+                cd '$C/uvtoml/sub' || exit 1
+                python -c 'print(9)'
+                python3 -c 'print(10)'
+                py -c 'print(11)'
+            " 2>/dev/null | tr -d '\r') || true
+            assert_eq "$sh/python, python3 and py below a uv.toml" "9
+10
+11" "$actual"
+            assert_not_exists "$sh/the python the clone's uv.toml names did not run" "$C/marks/uvtoml-python"
+            assert_eq "$sh/no python was installed from the clone" "" "$(ls "$C/pythons" 2>/dev/null)"
+        fi
     done
 
     echo "[pwsh] in clones, python, python3, py and pip run none of their code (the real uv)"
@@ -1484,6 +1640,43 @@ pip done" "$(printf '%s\n' "$actual" | tail -n +2)"
 4
 5" "$actual"
     assert_not_exists "pwsh/the clone's bin/python did not run" "$C/marks/cfg-python"
+
+    if [ "$PYVER_THREAT" = 1 ]; then
+        echo "[pwsh] beside a clone's .python-version that names its program, python, python3 and py run none of its code (the real uv)"
+        actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$C/config" pwsh -NoProfile -NonInteractive -Command "
+            . '$PYTHON_PS1_REAL_UV'
+            Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
+            Set-Location -LiteralPath '$C/pyver'
+            python -c 'print(6)' 3>\$null
+            python3 -c 'print(7)' 3>\$null
+            py -c 'print(8)' 3>\$null
+        " 2>/dev/null | tr -d '\r') || true
+        assert_eq "pwsh/python, python3 and py beside a .python-version that names a program" "6
+7
+8" "$actual"
+        assert_not_exists "pwsh/the program the clone's .python-version names did not run" "$C/marks/pyver-program"
+    else
+        echo "  SKIP: real-uv .python-version clone checks (uv run here did not run the program the clone's .python-version names)"
+    fi
+
+    if [ "$UVTOML_THREAT" = 1 ]; then
+        echo "[pwsh] below a clone's uv.toml, python, python3 and py run none of its code (the real uv, offline)"
+        actual=$(in_uvtoml_env "$C" pwsh -NoProfile -NonInteractive -Command "
+            . '$PYTHON_PS1_REAL_UV'
+            Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
+            Set-Location -LiteralPath '$C/uvtoml/sub'
+            python -c 'print(9)' 3>\$null
+            python3 -c 'print(10)' 3>\$null
+            py -c 'print(11)' 3>\$null
+        " 2>/dev/null | tr -d '\r') || true
+        assert_eq "pwsh/python, python3 and py below a uv.toml" "9
+10
+11" "$actual"
+        assert_not_exists "pwsh/the python the clone's uv.toml names did not run" "$C/marks/uvtoml-python"
+        assert_eq "pwsh/no python was installed from the clone" "" "$(ls "$C/pythons" 2>/dev/null)"
+    else
+        echo "  SKIP: real-uv uv.toml clone checks (uv run here did not install and run the python the clone's uv.toml names)"
+    fi
 else
     echo "  SKIP: uv-created venv tests (uv not installed, or no Python it can use offline)"
 fi

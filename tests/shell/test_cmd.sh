@@ -756,6 +756,28 @@ finds=$(cmd_code python | grep -o 'python find [-a-z ]*-python' || true)
 assert_eq "cmd/python: uv python find --system --no-config" "python find --system --no-config --no-managed-python
 python find --system --no-config --managed-python" "$finds"
 
+echo "[cmd] python's walk counts a uv.toml, and a .python-version that names a path"
+# uv run reads both from here and above; a .python-version counts when a line
+# holds / or \, comment lines aside. findstr from System32 reads it, so no line
+# of it reaches cmd's parser. Its patterns use only ^, " *", [...], [^...] and
+# .*, which grep -E reads the same way, so they run here on sample lines.
+walk=$(cmd_code python | sed -n '/^:walk$/,/^if defined _m goto direct$/p')
+assert_contains "cmd/python: a uv.toml is a marker" 'if not defined _m if exist "%_d%\uv.toml" set "_m=%_d%\uv.toml"' "$walk"
+pyver=$(printf '%s\n' "$walk" | grep -F '.python-version' || true)
+assert_contains "cmd/python: findstr from System32 reads a .python-version" \
+    'if not defined _m if exist "%_d%\.python-version" "%SystemRoot%\System32\findstr.exe" /r /c:' "$pyver"
+assert_contains "cmd/python: a .python-version that findstr matches is the marker" \
+    '"%_d%\.python-version" >nul 2>&1 && set "_m=%_d%\.python-version"' "$pyver"
+pats=()
+while IFS= read -r p; do pats+=(-e "$p"); done < <(printf '%s\n' "$pyver" | grep -o '/c:"[^"]*"' | sed 's|^/c:"||; s|"$||')
+assert_eq "cmd/python: two findstr patterns" "2" "$((${#pats[@]} / 2))"
+picked=$(printf '%s\n' './tools/py' '  .\tools\py' '/opt/py' 'x/y' '# ./tools/py' '  # .\tools\py' '3.13' 'cpython@3.13' 'pypy3.10' '' |
+    grep -E "${pats[@]}" || true)
+assert_eq "cmd/python: the findstr patterns pick the lines that name a path" "./tools/py
+  .\tools\py
+/opt/py
+x/y" "$picked"
+
 echo "[cmd] pip outside a venv runs nothing"
 # The no-venv branch ends before uv pip: `uv pip` would pick the .venv in or
 # above the current directory and run its python.

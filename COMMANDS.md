@@ -311,12 +311,17 @@ The `python` / `pip` family routes through `uv` (unless uv is absent or
 keeps), except where uv would build or run code that came with a clone:
 
 - `python` / `python3` / `py` run `uv run -- python` and print a line that says
-  so. In a project, that is with a `pyproject.toml`, a `.venv` or a
-  `pyvenv.cfg` in the current directory or one above it, `uv run` builds the
-  project (its build backend is the repository's own code; `python --version`
-  did that too, and left a `.venv` and a `uv.lock` behind) or runs the python
-  of that venv, which a clone may have committed (uv takes a directory that
-  holds a `pyvenv.cfg` for a venv, whatever its name). There a python runs
+  so. In a project, that is with a `pyproject.toml`, a `.venv`, a
+  `pyvenv.cfg`, a `uv.toml` or a `.python-version` that names a path in the
+  current directory or one above it, `uv run` builds the project (its build
+  backend is the repository's own code; `python --version` did that too, and
+  left a `.venv` and a `uv.lock` behind) or runs a python the clone ships: the
+  python of a venv it committed (uv takes a directory that holds a
+  `pyvenv.cfg` for a venv, whatever its name), one a `uv.toml`'s settings have
+  uv install, or the program a `.python-version` names. A `.python-version`
+  names a path when a line of it holds `/` or `\`, comment (`#`) and blank
+  lines aside; one of version requests alone (`3.13`, `cpython@3.13`) is no
+  marker, so a pyenv `~/.python-version` leaves home alone. There a python runs
   directly instead, after a warning line: the active venv's, else the system
   Python uv finds, else one uv installed (`uv python install`). Type
   `uv run python` to use the project. `--version` and `-V` run that python
@@ -342,7 +347,7 @@ and macOS do not have, stays den's in scripts there.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `python` / `python3` / `py` | `uv run -- python`, but in a project (a `pyproject.toml`, `.venv` or `pyvenv.cfg` here or above) and for `--version` / `-V` a python directly; else system python | ✓ | ✓ | ✓ (no `py`) |
+| `python` / `python3` / `py` | `uv run -- python`, but in a project (a `pyproject.toml`, `.venv`, `pyvenv.cfg`, `uv.toml` or path-naming `.python-version` here or above) and for `--version` / `-V` a python directly; else system python | ✓ | ✓ | ✓ (no `py`) |
 | `pip` / `pip3` | in a venv its own pip, else `uv pip`; with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
 | `uv` | injects `--python` for `uv run` inside an active venv | ✓ | ✓ | ✓ |
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |

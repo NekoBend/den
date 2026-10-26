@@ -71,21 +71,44 @@ function pip3 {
 # file's toggle-uv, whose list may not have them: a plain definition then ended
 # with the call, and python found no _DenPyRun.
 
-# _DenPyMarker - the pyproject.toml, .venv or pyvenv.cfg that uv run would find
-# from here: the first one in the current directory or a directory above it
-# ($null when there is none). uv takes a directory that holds a pyvenv.cfg for a
-# venv, whatever its name, and runs the python in it. Windows hands uv the
-# directory as PowerShell has it; Linux and macOS resolve its symbolic links
-# first, so there a linked directory's target is searched as well.
+# _DenPyMarker - the pyproject.toml, .venv, pyvenv.cfg, uv.toml or
+# .python-version that uv run would read from here: the first one in the
+# current directory or a directory above it ($null when there is none). uv
+# takes a directory that holds a pyvenv.cfg for a venv, whatever its name, and
+# runs the python in it; a uv.toml's settings can have it install and run a
+# python the clone ships; and it runs the program a .python-version names to
+# ask its version. A .python-version counts only when it names a path: a line
+# with / or \ in it, comment (#) and blank lines aside. One that holds version
+# requests alone (3.13, cpython@3.13) does not, so a pyenv ~/.python-version
+# leaves home alone. Windows hands uv the directory as PowerShell has it; Linux
+# and macOS resolve its symbolic links first, so there a linked directory's
+# target is searched as well.
 function global:_DenPyMarker {
   $starts = [System.Collections.Generic.List[string]]::new()
   $starts.Add($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath)
   for ($i = 0; $i -lt $starts.Count -and $i -lt 16; $i++) {
     $dir = $starts[$i]
     while ($dir) {
-      foreach ($name in 'pyproject.toml', '.venv', 'pyvenv.cfg') {
+      foreach ($name in 'pyproject.toml', '.venv', 'pyvenv.cfg', 'uv.toml', '.python-version') {
         $path = [System.IO.Path]::Combine($dir, $name)
-        if ([System.IO.File]::Exists($path) -or [System.IO.Directory]::Exists($path)) { return $path }
+        if ($name -ne '.python-version') {
+          if ([System.IO.File]::Exists($path) -or [System.IO.Directory]::Exists($path)) { return $path }
+          continue
+        }
+        if (-not [System.IO.File]::Exists($path)) { continue }
+        if (-not (_OnWindows)) {
+          # A regular file, as uv reads: a link to /dev/zero or a FIFO, whose
+          # size reads 0, would not end. ResolveLinkTarget is .NET 6 (pwsh 7.2).
+          $file = [System.IO.FileInfo]::new($path)
+          try { $target = $file.ResolveLinkTarget($true); if ($target) { $file = $target } } catch { $null = $_ }
+          try { if ($file.Length -eq 0) { continue } } catch { continue }
+        }
+        try { $text = [System.IO.File]::ReadAllText($path) } catch { continue }
+        # uv splits the lines at \n alone.
+        foreach ($line in $text -split "`n") {
+          $line = $line.TrimStart(' ')
+          if (-not $line.StartsWith('#') -and $line.IndexOfAny([char[]]'/\') -ge 0) { return $path }
+        }
       }
       if (-not (_OnWindows)) {
         # ResolveLinkTarget is .NET 6 (pwsh 7.2); before it, links are not followed.
@@ -125,13 +148,12 @@ function global:_DenPyExe {
 
 # _DenPyRun <name> <args> - what python, python3 and py run: uv run python, with
 # the version of the venv va activated, and outside a venv a line that says so.
-# Not where uv run would build or run code that came with a clone: with a
-# pyproject.toml, a .venv or a pyvenv.cfg in this directory or one above it, uv
-# run builds that project (its build backend is the repository's own code) or
-# runs that venv's python, even for `python --version`. There, after a warning,
-# the python _DenPyExe names runs directly, as it does anywhere for --version and
-# -V. With uv gone since den loaded, the python on PATH. Parity with posix
-# python.sh.
+# Not where uv run would build or run code that came with a clone: with one of
+# _DenPyMarker's files in this directory or one above it, uv run builds that
+# project (its build backend is the repository's own code) or runs a python it
+# names, even for `python --version`. There, after a warning, the python
+# _DenPyExe names runs directly, as it does anywhere for --version and -V. With
+# uv gone since den loaded, the python on PATH. Parity with posix python.sh.
 # Returns @{ Exe; Args }, or @{ Error } for the caller to write under its own
 # name; the caller reads them as ['Error'], since reading a missing key as
 # .Error is an error under a caller's Set-StrictMode.

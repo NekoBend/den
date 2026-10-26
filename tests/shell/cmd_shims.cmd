@@ -8,9 +8,10 @@ rem whatever the toggle, and says so without it; there is no find shim, so
 rem typed find is find.exe; no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
-rem python directly, not uv run, under a pyproject.toml, beside a .venv or
-rem below a pyvenv.cfg and for --version / -V; pip runs nothing outside a
-rem venv; path lists PATH; again asks before it re-runs.
+rem python directly, not uv run, under a pyproject.toml, beside a .venv,
+rem below a pyvenv.cfg, a uv.toml or a .python-version that names a path,
+rem and for --version / -V; pip runs nothing outside a venv; path lists
+rem PATH; again asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -233,6 +234,40 @@ cd /d "%T%\cfgvenv\sub" || exit /b 1
 >>"%W%" echo [x]
 call "%BIN%\python.cmd" -c x >"%O%" 2>&1
 call :expect %errorlevel% 0 "python: below a pyvenv.cfg, the system python and a line, not uv run"
+rem A uv.toml counts whatever it holds, and a .python-version when a line
+rem names a path (here with \ and after a comment and a blank line); one of
+rem version requests alone, with a path only in a comment line, does not.
+mkdir "%T%\uvtoml\sub" "%T%\pyver\sub" "%T%\pyveronly" || exit /b 1
+>"%T%\uvtoml\uv.toml" echo python-preference = "only-managed"
+>"%T%\pyver\.python-version" echo # pinned to the one in tools\
+>>"%T%\pyver\.python-version" echo(
+>>"%T%\pyver\.python-version" echo   .\tools\py
+>"%T%\pyveronly\.python-version" echo 3.13
+>>"%T%\pyveronly\.python-version" echo cpython@3.13
+>>"%T%\pyveronly\.python-version" echo   # not .\tools\py
+cd /d "%T%\uvtoml\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\uvtoml\uv.toml
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: below a uv.toml, the system python and a line, not uv run"
+cd /d "%T%\pyver\sub" || exit /b 1
+>"%W%" echo python3: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyver\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python3: below a .python-version that names a path, the system python and a line, not uv run"
+cd /d "%T%\pyveronly" || exit /b 1
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python: beside a .python-version of version requests alone, uv run as before"
 cd /d "%T%\work" || exit /b 1
 >"%W%" echo [@sys]
 >>"%W%" echo [--version]

@@ -67,20 +67,37 @@ pip3() {
     fi
 }
 
-# _den_py_marker → print the pyproject.toml, .venv or pyvenv.cfg that uv run
-# would find from here: the first one in this directory or a directory above
-# it. uv takes a directory that holds a pyvenv.cfg for a venv, whatever its
-# name, and runs the python in it. Fails when there is none. uv starts from the
-# directory the system reports, with its symbolic links resolved (pwd -P).
+# _den_py_marker → print the pyproject.toml, .venv, pyvenv.cfg, uv.toml or
+# .python-version that uv run would read from here: the first one in this
+# directory or a directory above it. uv takes a directory that holds a
+# pyvenv.cfg for a venv, whatever its name, and runs the python in it; a
+# uv.toml's settings can have it install and run a python the clone ships; and
+# it runs the program a .python-version names to ask its version. A
+# .python-version counts only when it names a path: a line with / or \ in it,
+# comment (#) and blank lines aside. One that holds version requests alone
+# (3.13, cpython@3.13) does not, so a pyenv ~/.python-version leaves home
+# alone. Fails when there is none. uv starts from the directory the system
+# reports, with its symbolic links resolved (pwd -P).
 _den_py_marker() {
-    local d f
+    local d f l
     d=$(pwd -P 2>/dev/null) || d=$PWD
     while :; do
-        for f in pyproject.toml .venv pyvenv.cfg; do
-            if [ -e "${d%/}/$f" ]; then
-                printf '%s\n' "${d%/}/$f"
-                return 0
+        for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version; do
+            [ -e "${d%/}/$f" ] || continue
+            if [ "$f" = .python-version ]; then
+                # A regular file, as uv reads: a link to /dev/zero or a FIFO
+                # would not end.
+                [ -f "${d%/}/$f" ] && [ -r "${d%/}/$f" ] || continue
+                while IFS= read -r l || [ -n "$l" ]; do
+                    case ${l#"${l%%[! ]*}"} in
+                        '#'*) ;;
+                        *[/\\]*) printf '%s\n' "${d%/}/$f"; return 0 ;;
+                    esac
+                done < "${d%/}/$f"
+                continue
             fi
+            printf '%s\n' "${d%/}/$f"
+            return 0
         done
         case $d in ''|/) return 1 ;; esac
         d=${d%/*}
@@ -109,11 +126,11 @@ _den_py_exe() {
 # _den_py <name> [args...] → python, python3 and py: uv run python, with the
 # version of the venv va activated, and outside a venv a line on stderr that
 # says so. Not where uv run would build or run code that came with a clone:
-# with a pyproject.toml, a .venv or a pyvenv.cfg in this directory or one above
-# it, uv run builds that project (its build backend is the repository's own
-# code) or runs that venv's python, even for `python --version`. There, after a
-# line on stderr, the python _den_py_exe names runs directly, as it does
-# anywhere for --version and -V.
+# with one of _den_py_marker's files in this directory or one above it, uv run
+# builds that project (its build backend is the repository's own code) or runs
+# a python it names, even for `python --version`. There, after a line on
+# stderr, the python _den_py_exe names runs directly, as it does anywhere for
+# --version and -V.
 _den_py() {
     local name=$1 marker exe
     shift
