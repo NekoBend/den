@@ -560,6 +560,95 @@ flag=True rest=z" "$actual"
     " 2>/dev/null | tr -d '\r')
     assert_eq "pwsh/snippet run typed, then from a script" "STUB-GIT log --oneline --graph
 script: PathInfo" "$actual"
+
+    # snippet pick runs the command saved under the name it picked, not the
+    # line fzf prints back. Windows PowerShell 5.1 pipes text into a program as
+    # ASCII ($OutputEncoding), so each character outside ASCII reached fzf as ?,
+    # and Remove-Item '資料' came back as Remove-Item '??', a wildcard that
+    # removed ab too. pwsh 7 pipes UTF-8, but on Windows it reads what fzf
+    # prints in the console's code page (932 on Japanese Windows), and the
+    # command came back garbled. Each case starts with ab and 資料 and prints
+    # whether each is still there; the encodings must be the same after pick.
+    # The stub fzf logs the lines it reads and prints the first, or FZF_PRINT.
+    PICK_BIN="$WORK/pick-bin"
+    mkdir -p "$PICK_BIN"
+    cat > "$PICK_BIN/fzf" <<'STUB'
+#!/bin/sh
+n=0
+while IFS= read -r l || [ -n "$l" ]; do
+    printf '%s\n' "$l" >> "$FZF_LOG"
+    n=$((n + 1))
+    [ "$n" -eq 1 ] && f=$l
+done
+[ "$n" -gt 0 ] && printf '%s\n' "${FZF_PRINT:-$f}"
+exit 0
+STUB
+    chmod +x "$PICK_BIN/fzf"
+    export FZF_LOG="$WORK/fzf.log"
+
+    reset_store
+    echo "[pwsh] pick runs 資料's snippet under an ASCII \$OutputEncoding and a 932 console, and leaves both"
+    rm -rf "${SQ:?}" "$FZF_LOG"
+    mkdir -p "$SQ"
+    actual=$(cd "$SQ" && PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" "
+        function left { (Test-Path -LiteralPath ab).ToString() + ' ' + (Test-Path -LiteralPath '資料') }
+        snippet save del \"Remove-Item '資料'\"
+        \$null = New-Item -ItemType File ab, '資料'
+        \$OutputEncoding = [Text.Encoding]::ASCII
+        snippet pick
+        'pipe ASCII: ' + (left) + ' ' + \$OutputEncoding.WebName
+        \$OutputEncoding = [Text.UTF8Encoding]::new(\$false)
+        [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance)
+        \$null = New-Item -ItemType File -Force ab, '資料'
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(932)
+        snippet pick
+        'console 932: ' + (left) + ' ' + [Console]::OutputEncoding.CodePage
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet pick: 資料's snippet ran, and only it" "pipe ASCII: True False us-ascii
+console 932: True False 932" "$actual"
+    assert_eq "pwsh/snippet pick: fzf read the list as saved" "del${TAB}Remove-Item '資料'
+del${TAB}Remove-Item '資料'" "$(cat "$FZF_LOG" 2>&1)"
+    # save takes no such name, but the store is a file, which bash, zsh and an
+    # editor share: a name too comes back from fzf as it was saved.
+    reset_store
+    printf '資料\tWrite-Output picked\n' > "$SNIPPET_FILE"
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" "
+        [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance)
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(932)
+        snippet pick
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet pick: a name fzf prints reads as UTF-8 under a 932 console" "picked" "$actual"
+
+    # The command comes from the store even when fzf prints something else, and
+    # by the exact name: bash/zsh tell Pk from pk. It runs with the session's
+    # $OutputEncoding, not pick's. A name no longer in the store runs nothing.
+    reset_store
+    echo "[pwsh] pick takes only the name from fzf's line, matched exactly, and runs it with the session's \$OutputEncoding"
+    printf 'Pk\tWrite-Output upper\npk\tWrite-Output lower\n' > "$SNIPPET_FILE"
+    cat > "$TESTTMP/pick_name.ps1" <<'PS1'
+$OutputEncoding = [Text.Encoding]::ASCII
+snippet save show-it "Write-Output 'from the store'"
+snippet save enc '$OutputEncoding.WebName'
+$env:FZF_PRINT = "show-it`tWrite-Output 'from fzf'"
+snippet pick
+$env:FZF_PRINT = "pk`tWrite-Output lower"
+snippet pick
+$env:FZF_PRINT = "enc`tWrite-Output 'from fzf'"
+snippet pick
+$env:FZF_PRINT = "gone`tWrite-Output 'from fzf'"
+snippet pick
+PS1
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_name.ps1'" 2>"$WORK/pick.err" | tr -d '\r')
+    assert_eq "pwsh/snippet pick: by name, exactly" "from the store
+lower
+us-ascii" "$actual"
+    assert_eq "pwsh/snippet pick: by name, messages" "snippet: saved 'show-it'
+snippet: saved 'enc'
++ Write-Output 'from the store'
++ Write-Output lower
++ \$OutputEncoding.WebName
+snippet pick: no such snippet 'gone' (snippet ls)" "$(tr -d '\r' < "$WORK/pick.err")"
+    unset FZF_LOG
 else
     echo "pwsh not found; skipping pwsh snippet tests"
 fi

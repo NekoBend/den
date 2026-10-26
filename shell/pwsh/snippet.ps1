@@ -39,12 +39,43 @@ function _SnippetName([string]$Line) {
     if ($i -lt 0) { $Line } else { $Line.Substring(0, $i) }
 }
 
-function _SnippetGet([string]$Name) {
+# _SnippetGet <name> [-MatchCase] - the command saved under <name>, or $null.
+# The name matches in any case, as PowerShell compares strings; -MatchCase
+# takes only the exact name, as bash/zsh do (they can save two names that
+# differ only in case).
+function _SnippetGet([string]$Name, [switch]$MatchCase) {
     foreach ($line in _SnippetLines) {
         $i = $line.IndexOf("`t")
-        if ($i -ge 0 -and $line.Substring(0, $i) -eq $Name) { return $line.Substring($i + 1) }
+        if ($i -lt 0) { continue }
+        $n = $line.Substring(0, $i)
+        if ($n -ceq $Name -or (-not $MatchCase -and $n -eq $Name)) { return $line.Substring($i + 1) }
     }
     return $null
+}
+
+# _SnippetPick <line...> - fzf-pick one of these "name<TAB>command" lines and
+# output the name on it (nothing when none is picked); the caller reads that
+# name's command from the store. The command fzf prints back is not run, as it
+# can come back changed: Windows PowerShell 5.1 pipes text into a program as
+# ASCII ($OutputEncoding), so each character outside ASCII went into fzf, and
+# came back, as ?, which Remove-Item and the other commands that take wildcards
+# read as any one character; and on Windows both editions read what fzf prints
+# in the console's code page (932 on Japanese Windows). A name is
+# [A-Za-z0-9_-], which every encoding keeps. Both encodings are UTF-8 for the
+# call, as in cdf (functions.ps1): fzf reads the list, and PowerShell its pick,
+# as UTF-8. The $OutputEncoding set here ends with this function, so the
+# command snippet runs next pipes with the session's own; the console's is put
+# back.
+function _SnippetPick([string[]]$Lines = @()) {
+    $consoleEncoding = [Console]::OutputEncoding
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    try {
+        [Console]::OutputEncoding = $OutputEncoding
+        $sel = $Lines | fzf --no-multi --prompt 'snippet> '
+    } finally {
+        [Console]::OutputEncoding = $consoleEncoding
+    }
+    if ($sel) { _SnippetName ([string]@($sel)[0]) }
 }
 
 # _SnippetQuote <word> [-First] - one word of `snippet save <name> <word...>` as
@@ -176,10 +207,13 @@ function snippet {
             if (-not $lines.Count) {
                 [Console]::Error.WriteLine('snippet: no snippets (use: snippet save <name> <command...>)'); return
             }
-            $sel = $lines | fzf --no-multi --prompt 'snippet> '
-            if (-not $sel) { return }
-            $i = $sel.IndexOf("`t")
-            if ($i -ge 0) { _SnippetExec $sel.Substring($i + 1) (_DenTyped $MyInvocation.CommandOrigin) }
+            $name = _SnippetPick $lines
+            if (-not $name) { return }
+            $c = _SnippetGet $name -MatchCase
+            if ($null -eq $c) {
+                [Console]::Error.WriteLine("snippet pick: no such snippet '$name' (snippet ls)"); return
+            }
+            _SnippetExec $c (_DenTyped $MyInvocation.CommandOrigin)
         }
         '^(-h|--help|help)$' { _SnippetUsage }
         default {
