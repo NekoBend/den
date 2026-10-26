@@ -436,7 +436,7 @@ typed, aliases included.
 
 On zsh, `reload` also deletes the completion dump (`~/.zcompdump`), so the new
 shell's `compinit` takes in completion functions installed since; without it,
-that happens once the dump is a day old (see shell/README.md).
+den's `compinit` does so once the dump is a day old (see shell/README.md).
 
 On pwsh, `reload` cannot replace the running process, so it starts the same
 pwsh with the arguments this session was launched with, in the current
