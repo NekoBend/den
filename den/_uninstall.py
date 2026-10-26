@@ -1,11 +1,12 @@
 """den uninstall - reverse den install, statelessly.
 
 Re-derives what `den install` would deploy (from the bundled content) and, for
-each target file, removes it ONLY if it is byte-identical to den's version; a
-file the user changed is kept and reported (package-manager semantics). The
-rc-file `# ===== den =====` block is stripped, and dirs den created that become
-empty are pruned. With no component (in a terminal) it asks per component,
-mirroring `den install`.
+each target file, removes it ONLY if it is byte-identical to den's version,
+checked again right before the delete; a file the user changed (before the
+prompt or while it was open) is kept and reported (package-manager semantics).
+The rc-file `# ===== den =====` block is stripped, and dirs den created that
+become empty are pruned. With no component (in a terminal) it asks per
+component, mirroring `den install`.
 
   den uninstall [skills|shell] [--yes] [--dry-run]
   den uninstall skills [--tool T]... [--all-tools] [--target DIR]... [--with-parent]
@@ -120,7 +121,10 @@ def _strip_lines(data: bytes, line: str) -> tuple[bytes, bool]:
 class _Remover:
     """Collects the same (dest, content) stages a _Writer would, but on commit
     deletes only the files byte-identical to den's version and keeps the ones
-    the user changed. Also strips rc blocks and prunes emptied dirs.
+    the user changed. Also strips rc blocks and prunes emptied dirs. The bytes
+    are compared when the plan is listed and again right before each delete,
+    so a file saved again while the prompt was open is kept, and commit
+    returns 1.
 
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), as for _Writer: a path below it that reaches a
@@ -150,6 +154,19 @@ class _Remover:
         for d in dirs:
             self._boundaries.add(Path(d))
 
+    def _candidates(self) -> dict[Path, list[bytes]]:
+        """Every content staged for each dest, dests in staging order.
+
+        A dest can be staged more than once, because `den install` can write
+        more than one content there (the --no-den-cli SKILL.md variants, the
+        frontier/weak parents). A file is den's when its bytes match ANY of
+        them -- first-wins would report den's own output as a file the user
+        changed."""
+        candidates: dict[Path, list[bytes]] = {}
+        for dest, content in self._files:
+            candidates.setdefault(dest, []).append(content)
+        return candidates
+
     def _plan(self) -> tuple[list[Path], list[Path], list[tuple[Path, str]], int]:
         """(files to delete, files to keep, rc files to unwire, the number of
         paths refused under a confined root)."""
@@ -159,19 +176,8 @@ class _Remover:
         delete: list[Path] = []
         keep: list[Path] = []
         refused = 0
-        # A dest can be staged more than once, because `den install` can write
-        # more than one content there (the --no-den-cli SKILL.md variants, the
-        # frontier/weak parents). Collect every candidate and delete when the
-        # bytes on disk match ANY of them -- first-wins would report den's own
-        # output as a file the user changed.
-        candidates: dict[Path, list[bytes]] = {}
-        order: list[Path] = []
-        for dest, content in self._files:
-            if dest not in candidates:
-                candidates[dest] = []
-                order.append(dest)
-            candidates[dest].append(content)
-        for dest in order:
+        candidates = self._candidates()
+        for dest in candidates:
             guard = _confined(self._roots, dest)
             if guard is not None and _symlink_component(*guard) is not None:
                 # Left alone, never removed through the link. A link that
@@ -220,10 +226,47 @@ class _Remover:
             _ui.say(f"  unwire {rc}")
         return True
 
+    def _remove(self, delete: list[Path]) -> tuple[list[Path], int]:
+        """Delete the planned files: (the files removed, the number kept
+        because they changed after den checked them). Each one is checked
+        again right before it goes, so what decides the delete is what the
+        file holds now, not what it held when the plan was listed: an edit
+        saved while the prompt was open is kept, and a path below a confined
+        root that reaches a symlink by now is refused."""
+        from ._install import _confined
+        from ._memory import _refuse_symlink
+
+        candidates = self._candidates()
+        removed: list[Path] = []
+        late = 0
+        for d in delete:
+            guard = _confined(self._roots, d)
+            if guard is not None and _refuse_symlink(*guard, "remove", _ERR):
+                late += 1
+                continue
+            try:
+                data = d.read_bytes()
+            except FileNotFoundError:
+                continue  # deleted while the prompt was open: nothing to do
+            except OSError as e:
+                print(f"  warning: {d}: {e}", file=sys.stderr)
+                continue
+            if not any(data == c for c in candidates[d]):
+                late += 1
+                print(f"  kept {d}: it changed after den checked it", file=sys.stderr)
+                continue
+            try:
+                d.unlink()
+            except OSError as e:
+                print(f"  warning: {d}: {e}", file=sys.stderr)
+                continue
+            removed.append(d)
+        return removed, late
+
     def commit(self, *, assume_yes: bool, dry_run: bool) -> int:
         """Delete what _plan found, after one confirmation. 1 when a path was
-        refused (see the class docstring) or a non-interactive run lacks
-        --yes, else 0."""
+        refused (see the class docstring), a file changed after den checked
+        it (see _remove), or a non-interactive run lacks --yes, else 0."""
         delete, keep, unwire, refused = self._plan()
         status = 1 if refused else 0
         if not self._show(delete, keep, unwire, refused):
@@ -241,16 +284,12 @@ class _Remover:
             if not _ui.confirm("Remove them?", default=False):
                 _ui.say("aborted; nothing removed.")
                 return status
-        for d in delete:
-            try:
-                d.unlink()
-            except OSError as e:
-                print(f"  warning: {d}: {e}", file=sys.stderr)
+        removed, late = self._remove(delete)
         for rc, line in unwire:
             _strip_block(rc, line)
-        self._prune(delete)
-        _ui.say(f"removed {len(delete)} file(s); unwired {len(unwire)} rc file(s).")
-        return status
+        self._prune(removed)
+        _ui.say(f"removed {len(removed)} file(s); unwired {len(unwire)} rc file(s).")
+        return 1 if refused or late else 0
 
     @staticmethod
     def _drop_pycache(cur: Path) -> None:

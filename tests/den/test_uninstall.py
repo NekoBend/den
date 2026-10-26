@@ -11,6 +11,10 @@ def _install(tmp_path, *extra):
     assert install_main(["skills", "--target", str(tmp_path), *extra]) == 0
 
 
+def _files(root: Path) -> list[Path]:
+    return sorted(p for p in root.rglob("*") if p.is_file())
+
+
 def test_uninstall_removes_unmodified_keeps_modified(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path)
@@ -115,6 +119,57 @@ def test_uninstall_interactive_confirm_no_keeps(tmp_path, monkeypatch):
     assert skill.is_file()  # declined -> kept
 
 
+def test_uninstall_keeps_a_file_saved_at_the_prompt(tmp_path, monkeypatch, capsys):
+    """den compared the bytes only when it listed the plan, so a file edited
+    while 'Remove them?' was open was deleted on a 'yes', edit and all, and
+    counted as removed. Each file is now read again right before it goes."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    _install(tmp_path)
+    planned = len(_files(tmp_path / "skills"))
+    skill = tmp_path / "skills" / "grounding" / "SKILL.md"
+
+    def confirm(*_a, **_k):
+        skill.write_text(skill.read_text() + "\nMY EDIT\n")  # saved at the prompt
+        return True
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    rc = uninstall_main(["skills", "--target", str(tmp_path)])
+    assert skill.is_file() and skill.read_text().endswith("\nMY EDIT\n")
+    assert _files(tmp_path / "skills") == [skill], "every other file is removed"
+    assert rc == 1, "a file kept because it changed is not removed as asked"
+    out, err = capsys.readouterr()
+    assert f"kept {skill}: it changed after den checked it" in err
+    assert f"removed {planned - 1} file(s)" in out
+
+
+def test_uninstall_target_refuses_a_symlink_put_in_at_the_prompt(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """The symlink rule is checked again right before each delete too: a
+    skill dir swapped for a link while the prompt was open is not removed
+    through."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    repo = tmp_path / "repo"
+    _install(repo)
+    moved = tmp_path / "elsewhere" / "grounding"
+    planned = _files(repo / "skills" / "grounding")
+    after_move = [moved / p.relative_to(repo / "skills" / "grounding") for p in planned]
+
+    def confirm(*_a, **_k):
+        moved.parent.mkdir()
+        (repo / "skills" / "grounding").rename(moved)
+        symlink(moved, repo / "skills" / "grounding")
+        return True
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    rc = uninstall_main(["skills", "--target", str(repo)])
+    assert _files(moved) == after_move, "nothing is removed through the link"
+    assert (repo / "skills" / "grounding").is_symlink()
+    assert not (repo / "skills" / "coding").exists(), "the rest is removed"
+    assert rc == 1
+    assert "grounding is a symlink" in capsys.readouterr().err
+
+
 def test_uninstall_parent_only_with_flag(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path, "--with-parent")
@@ -130,10 +185,6 @@ def test_uninstall_parent_only_with_flag(tmp_path, monkeypatch):
 
 
 # ---- --target workspaces are never removed through a symlink (as on install) ----
-
-
-def _files(root: Path) -> list[Path]:
-    return sorted(p for p in root.rglob("*") if p.is_file())
 
 
 def test_uninstall_target_never_removes_through_a_symlinked_skills_dir(

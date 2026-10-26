@@ -90,7 +90,9 @@ edited is kept and reported (package-manager semantics). It is stateless (no
 manifest): "unchanged" means "matches what this den version installs". It strips
 the rc-file `# ===== den =====` block and prunes dirs den created that became
 empty. It lists the plan and asks once before deleting (`--yes` to skip,
-`--dry-run` to preview only; non-interactive runs require `--yes`). A
+`--dry-run` to preview only; non-interactive runs require `--yes`). Each file
+is compared again right before it is deleted, so one you save while that
+prompt is open is kept and named, and the run exits non-zero. A
 `--target` directory gets the same symlink rule as on install: a path that
 reaches a symlink below it is refused and reported, never removed through,
 and the run exits non-zero. Hooks are per-workspace, so `den uninstall` does
