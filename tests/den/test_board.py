@@ -1300,6 +1300,20 @@ def test_non_utf8_lock_does_not_block_release(tmp_path):
     assert lock.is_file(), "not ours to remove: no readable pid says so"
 
 
+@pytest.mark.parametrize("bad", _BAD_LINES)
+def test_lock_json_cannot_parse_reads_as_an_invalid_lock(tmp_path, bad):
+    # A deep lock raised RecursionError out of _read_lock, and so out of
+    # `den board`, which reads the lock at start and at exit. Run in a new
+    # thread, where the [deep] skip was decided.
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_text(bad)
+    assert _in_a_new_thread(_board._read_lock, tmp_path) is None
+    assert _in_a_new_thread(_board._existing_instance, tmp_path) is None
+    _in_a_new_thread(_board._release_lock, tmp_path)  # must not raise
+    assert lock.is_file(), "left in place, as an unparseable lock always was"
+
+
 def test_main_does_not_serve_when_the_lock_write_raises(tmp_path, monkeypatch, capsys):
     """_write_lock reaches os.open, which raises on a full or read-only
     filesystem (and on O_NOFOLLOW catching a symlink swapped in after the

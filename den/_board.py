@@ -134,8 +134,10 @@ def _read_lock(root: Path) -> dict | None:
     # Decode INSIDE the suppress. Routing this through the guard moved it out of
     # the old handler, so a non-UTF-8 server.json -- a byte a repo can plant --
     # raised UnicodeDecodeError out of `den board` instead of reading, as it
-    # always did, as one more invalid lock.
-    with suppress(ValueError):  # UnicodeDecodeError and JSONDecodeError both
+    # always did, as one more invalid lock. ValueError covers that,
+    # JSONDecodeError and int's digit limit; a lock nested too deep raises
+    # RecursionError, which escaped the same way.
+    with suppress(ValueError, RecursionError):
         info = json.loads(data.decode("utf-8"))
         if isinstance(info, dict):
             return info
