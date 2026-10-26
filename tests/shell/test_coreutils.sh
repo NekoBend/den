@@ -333,9 +333,10 @@ rm -rf "$WORK/wide"
 # terminating error (the try below catches it): the parts so far are not the
 # whole input, so the rest of the line must not run. An -a below 0, empty or
 # not a number is refused before any part is written, as uutils refuses it
-# (-a 0 is no -a, above).
+# (-a 0 is no -a, above). A bare number counts as a cast reads it: PowerShell
+# hands split the text 0x1, which is 1.
 echo "[pwsh] split -a stops at its last suffix, and refuses a bad length"
-rm -rf "$WORK/exh" && mkdir -p "$WORK/exh/l" "$WORK/exh/b" "$WORK/exh/p" "$WORK/exh/fit" "$WORK/exh/bad"
+rm -rf "$WORK/exh" && mkdir -p "$WORK/exh/l" "$WORK/exh/b" "$WORK/exh/p" "$WORK/exh/fit" "$WORK/exh/hex" "$WORK/exh/bad"
 printf '%03d\n' $(seq 1 27) > "$WORK/exh/in.txt"
 actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
     function _CoreutilsBin { }
@@ -343,13 +344,15 @@ actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
     Set-Location '$WORK/exh/b'; try { split -b 4 -a 1 ../in.txt p 6>\$null; 'bytes: went on' } catch { 'bytes: ' + \$_ }
     Set-Location '$WORK/exh/p'; try { Get-Content ../in.txt | split -l 1 -a 1 6>\$null; 'piped: went on' } catch { 'piped: ' + \$_ }
     Set-Location '$WORK/exh/fit'; Get-Content ../in.txt -TotalCount 26 | split -l 1 -a 1 2>&1 6>&1 | ForEach-Object { 'fits: ' + \$_ }
+    Set-Location '$WORK/exh/hex'; Get-Content ../in.txt -TotalCount 26 | split -l 1 -a 0x1 2>&1 6>&1 | ForEach-Object { 'bare 0x1: ' + \$_ }
     Set-Location '$WORK/exh/bad'
     foreach (\$len in '', '-1', 'abc') { split -l 1 -a \$len ../in.txt p 2>&1 6>&1 | ForEach-Object { \"-a '\${len}': \" + \$_ } }
 " < /dev/null 2>&1 | clean)
-assert_eq "pwsh/split -a 1 stops at the 27th part; a bad -a is refused" "lines: output file suffixes exhausted
+assert_eq "pwsh/split -a 1 stops at the 27th part; a bad -a is refused, a bare 0x1 is 1" "lines: output file suffixes exhausted
 bytes: output file suffixes exhausted
 piped: output file suffixes exhausted
 fits: Split into 26 files (xa .. xz)
+bare 0x1: Split into 26 files (xa .. xz)
 -a '': invalid suffix length ''
 -a '-1': invalid suffix length '-1'
 -a 'abc': invalid suffix length 'abc'" "$actual"

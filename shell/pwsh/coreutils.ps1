@@ -273,6 +273,12 @@ function split {
         $i++
       }
     }
+    # A value is read the way a cast to a number reads it in PowerShell:
+    # [string] above turns a bare 0x10, 1kb or 10MB back into that text, and
+    # it still counts, and 1.5 rounds to 2. A blank value or one that is not
+    # a number gives $null: -as [long] makes 0 of a blank, which would pass
+    # for -a 0.
+    function _num([string]$s) { if ($s.Trim() -ne '') { $s -as [long] } }
     # The suffix starts at 2 letters and widens as the names run out, or with
     # -a it is that many letters and no more (see _suffix). -a 0 is no -a, as
     # in GNU split and uutils. An -a below 0, empty or not a number is refused
@@ -281,10 +287,11 @@ function split {
     # and an empty -a used to make a suffix of no letters, and every part
     # went to one file named after the prefix.
     $suffixLen = 2; $widen = $null -eq $suffixArg
-    if (-not $widen -and -not ([int]::TryParse($suffixArg, [ref]$suffixLen) -and $suffixLen -ge 0)) {
-      Write-Error "invalid suffix length '$suffixArg'"; return
+    if (-not $widen) {
+      $suffixLen = _num $suffixArg
+      if ($null -eq $suffixLen -or $suffixLen -lt 0) { Write-Error "invalid suffix length '$suffixArg'"; return }
+      if ($suffixLen -eq 0) { $suffixLen = 2; $widen = $true }
     }
-    if ($suffixLen -eq 0) { $suffixLen = 2; $widen = $true }
     if ($path -eq '') {
       $content = $__piped.ToArray()
       if ($content.Count -eq 0) { Write-Error "usage: [-l N] [-n l/N] [-b SIZE] <file> [prefix]"; return }
