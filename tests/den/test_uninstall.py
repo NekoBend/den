@@ -412,6 +412,28 @@ def test_uninstall_target_never_removes_a_symlinked_or_dangling_parent(
         assert f"refusing to remove {repo.resolve() / name}: it is a symlink" in err
 
 
+def test_uninstall_refusal_fails_the_run_after_a_no(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """Answering 'no' at the prompt is the user's choice, but the refused
+    path is not: the run still exits 1, and nothing is removed."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    repo = tmp_path / "repo"
+    _install(repo, "--with-parent")
+    (repo / "AGENTS.md").unlink()
+    symlink(tmp_path / "nowhere.md", repo / "AGENTS.md")
+    before = _files(repo)
+    assert before, "there is something to remove, so the prompt is reached"
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("den._ui.confirm", lambda *a, **k: False)
+    rc = uninstall_main(["skills", "--target", str(repo), "--with-parent"])
+    assert _files(repo) == before, "nothing is removed after a 'no'"
+    assert rc == 1
+    out, err = capsys.readouterr()
+    assert "aborted; nothing removed." in out
+    assert f"refusing to remove {repo.resolve() / 'AGENTS.md'}: it is a symlink" in err
+
+
 def test_uninstall_target_through_a_symlinked_root_is_the_users_choice(
     tmp_path, monkeypatch, symlink
 ):
