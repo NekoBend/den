@@ -108,9 +108,12 @@ stock alias). Install it with `den install shell
 only). microsoft/coreutils also inlines a `PSConsoleHostReadLine` rewriter into
 your PowerShell profile that retargets typed `ls`/`cat`/... to coreutils before
 the wrappers run, which would defeat the modern-first order; `den install shell`
-removes that block (backing the profile up to `<profile>.den.bak` first, and
-keeping the binary to drive through the tier above), so re-run `den install shell`
-after updating coreutils if the block comes back. The
+removes that block (keeping the binary to drive through the tier above), so
+re-run `den install shell` after updating coreutils if the block comes back.
+Each removal first copies the profile to `<profile>.den.bak`, or to the first
+free `.den.bak.N` when an earlier backup holds something else, with the
+profile's permissions minus execute; when no copy can be made, the block stays
+and the run exits non-zero. The
 wrappers resolve the binary at its fixed install path
 `%ProgramFiles%\coreutils\coreutils.exe` (the installer does not add it to PATH);
 point them elsewhere with `_DEN_COREUTILS=<path>`, or disable the tier with

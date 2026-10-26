@@ -1,7 +1,9 @@
 """Tests for den install shell (den/_shell.py)."""
 
+import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -903,6 +905,79 @@ def test_disable_coreutils_readline_backs_up(tmp_path):
     bak = tmp_path / "p.ps1.den.bak"
     assert bak.is_file()
     assert bak.read_text() == original
+
+
+@pytest.fixture
+def umask_022():
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o600, 0o640], ids=oct)
+def test_disable_coreutils_readline_backup_keeps_the_profile_mode(
+    tmp_path, umask_022, mode
+):
+    """backup.write_bytes made the copy with the umask's mode, so a 0600 profile
+    holding a token got a world-readable .den.bak with the token in it."""
+    prof = tmp_path / "p.ps1"
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(mode)
+    assert _shell._disable_coreutils_readline(prof) is True
+    bak = tmp_path / "p.ps1.den.bak"
+    assert stat.S_IMODE(bak.stat().st_mode) == mode
+    assert "secret" in bak.read_text()
+
+
+def test_disable_coreutils_readline_keeps_an_earlier_backup(tmp_path):
+    # coreutils puts its block back after an update and den strips it again.
+    # Any existing .den.bak used to count as the backup, so the profile as it was
+    # before this edit was saved nowhere; it goes to the first free .den.bak.N.
+    prof = tmp_path / "p.ps1"
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text("the profile the first time\n")
+    current = "a line added since\n\n" + _CU_BLOCK
+    prof.write_text(current)
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert bak.read_text() == "the profile the first time\n"
+    assert (tmp_path / "p.ps1.den.bak.1").read_text() == current
+
+
+def test_disable_coreutils_readline_refuses_a_symlinked_backup(tmp_path, symlink):
+    """A dangling link at the backup name passed `not backup.exists()`, and the
+    write followed it. No edit without a backup either: the profile stays."""
+    outside = tmp_path / "outside" / "stolen.ps1"
+    outside.parent.mkdir()
+    prof = tmp_path / "p.ps1"
+    original = "keep\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    symlink(outside, tmp_path / "p.ps1.den.bak")
+    assert _shell._disable_coreutils_readline(prof) is None
+    assert not outside.exists(), "nothing written through the link"
+    assert prof.read_text() == original
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX profile dir (see conftest)")
+def test_install_shell_fails_when_it_cannot_back_up_the_profile(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    # The coreutils block stays and den's wrappers stay defeated, so a scripted
+    # install must not report success.
+    monkeypatch.setattr(_shell, "_windows", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(_shell.shutil, "which", _stub_which({"pwsh"}))
+    prof = tmp_path / "xdg" / "powershell" / _shell._PWSH_PROFILE
+    prof.parent.mkdir(parents=True)
+    prof.write_text(_CU_BLOCK)
+    outside = tmp_path / "outside.ps1"
+    symlink(outside, prof.with_name(prof.name + ".den.bak"))
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 1
+    assert "60b36fc6" in prof.read_text(), "the block is left in place"
+    assert not outside.exists()
+    assert "is a symlink" in capsys.readouterr().err
 
 
 def test_disable_coreutils_readline_preserves_utf16(tmp_path):

@@ -419,18 +419,25 @@ def _decide_posix_bin(*, want: bool, skip: bool) -> bool:
     )
 
 
-def _disable_coreutils_readline(profile: Path) -> bool:
+def _disable_coreutils_readline(profile: Path) -> bool | None:
     """Remove microsoft/coreutils' PSConsoleHostReadLine integration block(s) from a
     PowerShell profile. coreutils inlines a readline rewriter that retargets typed
     `ls`/`cat`/... to coreutils before den's wrappers see them, defeating den's
     modern-first dispatch. Each block is bracketed by two sentinel comment lines
     carrying a fixed GUID. Removes each open..close PAIR (plus an adjacent blank on
     each side), so content sitting BETWEEN two separate blocks is never touched.
-    Backs the original up to <profile>.den.bak before the first edit. Preserves the
-    file's CRLF/LF ending and its encoding (UTF-8, UTF-8-BOM, or UTF-16; a UTF-16
-    profile is normalized to little-endian, which is what PowerShell writes), and
-    leaves the file untouched if it does not decode. Idempotent: returns True only
-    when it removed a block."""
+    Preserves the file's CRLF/LF ending and its encoding (UTF-8, UTF-8-BOM, or
+    UTF-16; a UTF-16 profile is normalized to little-endian, which is what
+    PowerShell writes), and leaves the file untouched if it does not decode.
+    Idempotent: returns True only when it removed a block.
+
+    Every edit first copies the profile the way `--force` backs up a file it
+    replaces (_Writer._backup): to <profile>.den.bak, or the first free
+    .den.bak.N when an earlier backup holds something else, keeping the
+    profile's permission bits minus execute (a profile can hold a token, and a
+    plain write left a 0600 profile's copy world-readable). None (one line on
+    stderr) when no copy could be made (a symlink or a directory at a backup
+    name, a failed write): the profile is then left as it is."""
     if not profile.is_file():
         return False
     raw = profile.read_bytes()
@@ -462,9 +469,8 @@ def _disable_coreutils_readline(profile: Path) -> bool:
         spans.append((start, end))
     if not spans:
         return False
-    backup = profile.with_suffix(profile.suffix + ".den.bak")
-    if not backup.exists():
-        backup.write_bytes(raw)
+    if _Writer._backup(profile, None) is None:  # ruff: ignore[private-member-access]  # the --force backup, shared
+        return None
     for start, end in reversed(spans):  # deepest-first keeps earlier indices valid
         del lines[start:end]
     new = "\n".join(lines)
@@ -586,11 +592,15 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
     # retargets typed `ls`/`cat`/... to coreutils BEFORE den's wrappers run,
     # defeating den's modern-first dispatch. den drives coreutils through its own
     # tier (coreutils.exe), so strip that block to let the wrappers govern. Done
-    # after the install step so a freshly added block is caught too.
+    # after the install step so a freshly added block is caught too. A block that
+    # stays because the profile could not be backed up first fails the run.
     if not dry_run and (_windows() or shutil.which("pwsh")):
         for prof in (pwsh_dir / _PWSH_PROFILE, pwsh_dir / "profile.ps1"):
-            if _disable_coreutils_readline(prof):
+            removed = _disable_coreutils_readline(prof)
+            if removed:
                 print(f"  [ok] removed coreutils readline integration from {prof}")
+            elif removed is None:
+                rc = rc or 1
 
     return rc
 
