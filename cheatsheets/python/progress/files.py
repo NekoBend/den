@@ -116,8 +116,8 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
            explicit ``Progress`` with ``TransferSpeedColumn``. Same
            ``samefile`` guard, 0o600 destination and ``shutil.copystat`` as
            ``copy_file_tqdm``, and the same limit: the 0o600 holds on POSIX
-           only, and on Windows the destination's ACL, which a new file
-           inherits from its directory, decides who can read it.
+           only. On Windows the destination's ACL, which a new file inherits
+           from its directory, decides who can read it.
     """
     import os
     import shutil

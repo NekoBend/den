@@ -13,6 +13,7 @@ import importlib
 import multiprocessing
 import os
 import queue
+import re
 import runpy
 import shutil
 import stat
@@ -432,21 +433,42 @@ def test_copy_still_writes_into_a_fifo(tmp_path, monkeypatch, copier):
         os.close(reader)
 
 
-def test_copy_notes_say_that_the_0o600_promise_is_posix_only():
+@pytest.mark.parametrize(
+    ("note", "posix", "windows"),
+    [
+        (
+            "module",
+            "On POSIX they are stricter than ``copy2``",
+            "Windows has no such guarantee",
+        ),
+        (
+            "copy_file_tqdm",
+            "On POSIX, ``dst`` is 0o600",
+            "On Windows the 0o600 only keeps a new ``dst`` from being read-only",
+        ),
+        (
+            "copy_file_rich",
+            "the 0o600 holds on POSIX only",
+            "On Windows the destination's ACL",
+        ),
+    ],
+    ids=["module", "tqdm", "rich"],
+)
+def test_copy_notes_say_that_the_0o600_promise_is_posix_only(note, posix, windows):
     # private() narrows the mode only on POSIX. On Windows, os.open's 0o600
     # only keeps a new file from being read-only, and the file takes the ACL
     # it inherits from its directory, yet the notes promised a private
-    # half-written copy on every platform.
-    notes = {
-        "module": files.__doc__,
-        "copy_file_tqdm": files.copy_file_tqdm.__doc__,
-        "copy_file_rich": files.copy_file_rich.__doc__,
-    }
-    for name, note in notes.items():
-        assert note is not None, name
-        assert "0o600" in note, name
-        assert "POSIX" in note, name
-        assert "Windows" in note, name
+    # half-written copy on every platform. Naming both platforms is not
+    # enough ("On POSIX and on Windows they are stricter" does): the promise
+    # has to sit in a sentence that names POSIX and not Windows.
+    doc = files.__doc__ if note == "module" else getattr(files, note).__doc__
+    assert doc is not None
+    sentences = re.split(r"(?<=\.)\s+(?=[A-Z`])", " ".join(doc.split()))
+    promise = [sentence for sentence in sentences if posix in sentence]
+    assert len(promise) == 1, (posix, sentences)
+    assert "Windows" not in promise[0], promise[0]
+    assert any(windows in sentence for sentence in sentences), (windows, sentences)
+    assert "ACL" in doc
 
 
 # --- files.py's own sanity check ------------------------------------------------
