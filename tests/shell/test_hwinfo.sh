@@ -319,30 +319,39 @@ done
 # next shell showed the old names, and only a terminal that was no child of it
 # detected again. Under an OFF, the values toggle-hwinfo saved were inherited
 # too, and the next toggle showed them. refresh-hwinfo now unsets both in its
-# own shell. The machine: a cache that says OLD, and a detection that says NEW
-# (awk, a function that logs each call; PATH holds no GPU tool, as above).
-# HWR_PARENT loads the cache, runs refresh-hwinfo, lists which of those ten
-# variables are still set (an empty one too), and starts HWR_NEXT: as a child,
-# by exec as reload does, or ("hidden") as a child after toggle-hwinfo, then
-# toggles back on. Both take hwinfo.sh as $1; the parent takes the next shell's
-# program as $2 and the way to start it as $3.
+# own shell. The machine: a cache that says OLD for all five names, and a
+# detection that says NEW (awk, a function that logs each call; PATH holds no
+# GPU tool, as above). HWR_PARENT loads the cache, lists which of those ten
+# variables are set (an empty one too) before refresh-hwinfo and which are
+# left after it, and starts HWR_NEXT: as a child, by exec as reload does, or
+# ("hidden") as a child after toggle-hwinfo, then toggles back on. Both take
+# hwinfo.sh as $1; the parent takes the next shell's program as $2 and the way
+# to start it as $3. Before refresh-hwinfo, the five values are set, or under
+# an OFF the five that toggle-hwinfo saved.
 HWR="$WORK/hwinfo-refresh"
 HWR_PARENT="$TESTTMP/hwinfo_refresh_parent.sh"
 HWR_NEXT="$TESTTMP/hwinfo_refresh_next.sh"
+HWR_VALUES="STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL"
+HWR_SAVED="_DEN_SAVED_CPU_INTEL _DEN_SAVED_CPU_AMD _DEN_SAVED_GPU_NVIDIA _DEN_SAVED_GPU_AMD _DEN_SAVED_GPU_INTEL"
 mkdir -p "$HWR"
 cat > "$HWR_PARENT" << 'EOF'
 awk() { echo awk >> "$HWN_LOG"; echo 'intel|NEW CPU'; }
 . "$1"
+# hw_set <label> - which of the ten variables are set, an empty one too
+hw_set() {
+    set_=
+    for v in CPU_INTEL CPU_AMD GPU_NVIDIA GPU_AMD GPU_INTEL; do
+        for n in "STARSHIP_$v" "_DEN_SAVED_$v"; do
+            eval "[ -z \"\${$n+set}\" ]" || set_="$set_ $n"
+        done
+    done
+    echo "$1=[${set_# }]"
+}
 echo "LOAD:CPU=${STARSHIP_CPU_INTEL-} GPU=${STARSHIP_GPU_NVIDIA-}"
 [ "$3" != hidden ] || toggle-hwinfo >/dev/null
+hw_set BEFORE:set
 refresh-hwinfo
-left=
-for v in CPU_INTEL CPU_AMD GPU_NVIDIA GPU_AMD GPU_INTEL; do
-    for n in "STARSHIP_$v" "_DEN_SAVED_$v"; do
-        eval "[ -z \"\${$n+set}\" ]" || left="$left $n"
-    done
-done
-echo "REFRESH:left=[${left# }]"
+hw_set REFRESH:left
 if [ "$3" = exec ]; then exec "$2" "$HWR_NEXT" "$1"; fi
 "$2" "$HWR_NEXT" "$1"
 if [ "$3" = hidden ]; then
@@ -365,8 +374,9 @@ hw_refresh() {
     sh_bin=$(command -v "$1")
     rt="$HWR/rt-$1-$2"
     mkdir -p "$rt"
-    printf '%s\n' "export STARSHIP_CPU_INTEL='OLD CPU'" "export STARSHIP_GPU_NVIDIA='OLD GPU'" \
-        _DEN_HWINFO_CACHED=1 > "$(hwinfo_file "$rt")"
+    printf '%s\n' "export STARSHIP_CPU_INTEL='OLD CPU'" "export STARSHIP_CPU_AMD='OLD AMD CPU'" \
+        "export STARSHIP_GPU_NVIDIA='OLD GPU'" "export STARSHIP_GPU_AMD='OLD AMD GPU'" \
+        "export STARSHIP_GPU_INTEL='OLD INTEL GPU'" _DEN_HWINFO_CACHED=1 > "$(hwinfo_file "$rt")"
     chmod 600 "$(hwinfo_file "$rt")"
     env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD -u STARSHIP_GPU_INTEL \
         -u _DEN_HWINFO_HIDDEN -u _DEN_SAVED_CPU_INTEL -u _DEN_SAVED_CPU_AMD -u _DEN_SAVED_GPU_NVIDIA \
@@ -378,6 +388,7 @@ for sh in bash zsh; do
         echo "[$sh] after refresh-hwinfo, the next shell ($how) detects again"
         actual=$(hw_refresh "$sh" "$how") || true
         assert_eq "$sh/refresh-hwinfo, then the next shell ($how)" "LOAD:CPU=OLD CPU GPU=OLD GPU
+BEFORE:set=[$HWR_VALUES]
 hwinfo cache cleared. Restart shell to refresh.
 REFRESH:left=[]
 NEXT:CPU=NEW CPU GPU=" "$actual"
@@ -387,6 +398,7 @@ _DEN_HWINFO_CACHED=1" "$(cat "$(hwinfo_file "$HWR/rt-$sh-$how")" 2>/dev/null)"
     echo "[$sh] after toggle-hwinfo and refresh-hwinfo, no old name comes back"
     actual=$(hw_refresh "$sh" hidden) || true
     assert_eq "$sh/refresh-hwinfo under an OFF" "LOAD:CPU=OLD CPU GPU=OLD GPU
+BEFORE:set=[$HWR_SAVED]
 hwinfo cache cleared. Restart shell to refresh.
 REFRESH:left=[]
 NEXT:CPU= GPU=
@@ -577,8 +589,9 @@ assert_eq "pwsh/hwinfo.ps1 writes and reads the same line" "1" "$(grep -cF "\$_h
 # refresh-hwinfo in pwsh, likewise: reload starts the new pwsh in this
 # session's environment, so it inherited the old STARSHIP_* values (and, under
 # an OFF, the saved ones) and skipped the cache and the detection. The parent
-# loads a cache that says OLD, runs refresh-hwinfo (after toggle-hwinfo, with
-# -Hide), lists which of the ten variables are still set (an empty one too:
+# loads a cache that says OLD for all five names, runs refresh-hwinfo (after
+# toggle-hwinfo, with -Hide), lists which of the ten variables are set before
+# it and which are left after it (an empty one too:
 # [Environment]::SetEnvironmentVariable(name, $null) leaves one on pwsh 7.6),
 # and starts the next pwsh as reload does: this executable, in this
 # environment. The next one is the Windows machine hw_ps stands in for, with a
@@ -592,13 +605,17 @@ cat > "$HWR_PS_PARENT" << 'PS1'
 param([string]$Dotfiles, [string]$Next, [switch]$Hide)
 . "$Dotfiles/shell/pwsh/_helpers.ps1"
 . "$Dotfiles/shell/pwsh/hwinfo.ps1"
+# Get-HwSet - which of the ten variables are set, an empty one too
+function Get-HwSet {
+  foreach ($v in 'CPU_INTEL', 'CPU_AMD', 'GPU_NVIDIA', 'GPU_AMD', 'GPU_INTEL') {
+    foreach ($n in "STARSHIP_$v", "_DEN_SAVED_$v") { if (Test-Path -LiteralPath "Env:\$n") { $n } }
+  }
+}
 "LOAD:CPU=[$env:STARSHIP_CPU_INTEL] GPU=[$env:STARSHIP_GPU_NVIDIA]"
 if ($Hide) { toggle-hwinfo 6>$null }
+"BEFORE:set=[$(@(Get-HwSet) -join ' ')]"
 refresh-hwinfo 6>&1
-$left = foreach ($v in 'CPU_INTEL', 'CPU_AMD', 'GPU_NVIDIA', 'GPU_AMD', 'GPU_INTEL') {
-  foreach ($n in "STARSHIP_$v", "_DEN_SAVED_$v") { if (Test-Path -LiteralPath "Env:\$n") { $n } }
-}
-"REFRESH:left=[$(@($left) -join ' ')]"
+"REFRESH:left=[$(@(Get-HwSet) -join ' ')]"
 & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -File $Next $Dotfiles
 if ($Hide) {
   toggle-hwinfo 6>$null
@@ -625,7 +642,9 @@ if ($env:_DEN_HWINFO_HIDDEN -eq '1') {
 PS1
 # hw_ps_refresh [-Hide] - that parent's run, then the next pwsh's
 hw_ps_refresh() {
-    printf '%s\n' "\$env:STARSHIP_CPU_INTEL = 'OLD CPU'" "\$env:STARSHIP_GPU_NVIDIA = 'OLD GPU'" > "$HWR_PS_CACHE"
+    printf '%s\n' "\$env:STARSHIP_CPU_INTEL = 'OLD CPU'" "\$env:STARSHIP_CPU_AMD = 'OLD AMD CPU'" \
+        "\$env:STARSHIP_GPU_NVIDIA = 'OLD GPU'" "\$env:STARSHIP_GPU_AMD = 'OLD AMD GPU'" \
+        "\$env:STARSHIP_GPU_INTEL = 'OLD INTEL GPU'" > "$HWR_PS_CACHE"
     (cd "$WORK" && env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
         -u STARSHIP_GPU_INTEL -u _DEN_HWINFO_HIDDEN -u _DEN_SAVED_CPU_INTEL -u _DEN_SAVED_CPU_AMD \
         -u _DEN_SAVED_GPU_NVIDIA -u _DEN_SAVED_GPU_AMD -u _DEN_SAVED_GPU_INTEL \
@@ -635,6 +654,7 @@ hw_ps_refresh() {
 echo "[pwsh] after refresh-hwinfo, the next pwsh (as reload starts it) detects again"
 actual=$(hw_ps_refresh) || true
 assert_eq "pwsh/refresh-hwinfo, then the next pwsh" "LOAD:CPU=[OLD CPU] GPU=[OLD GPU]
+BEFORE:set=[$HWR_VALUES]
 hwinfo cache cleared. Restart shell to refresh.
 REFRESH:left=[]
 NEXT:calls=2 CPU=[i5-NEW] GPU=[]" "$actual"
@@ -643,6 +663,7 @@ assert_eq "pwsh/refresh-hwinfo, then the next pwsh: the new cache" "\$env:STARSH
 echo "[pwsh] after toggle-hwinfo and refresh-hwinfo, no old name comes back"
 actual=$(hw_ps_refresh -Hide) || true
 assert_eq "pwsh/refresh-hwinfo under an OFF" "LOAD:CPU=[OLD CPU] GPU=[OLD GPU]
+BEFORE:set=[$HWR_SAVED]
 hwinfo cache cleared. Restart shell to refresh.
 REFRESH:left=[]
 NEXT:calls=2 CPU=[] GPU=[]
