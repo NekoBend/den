@@ -258,15 +258,17 @@ function split {
       }
     }
     # The suffix starts at 2 letters and widens as the names run out, or with
-    # -a it is that many letters and no more (see _suffix). GNU split and
-    # uutils read -a 0 as no -a; den refuses it, as any other length below 1.
-    # $suffixArg stays $null when -a is not given. It started as '', so an
-    # empty -a ('') read as no -a and widened, where GNU split and uutils
-    # refuse it as they refuse any other -a that is not a number.
+    # -a it is that many letters and no more (see _suffix). -a 0 is no -a, as
+    # in GNU split and uutils. An -a below 0, empty or not a number is refused
+    # before any part is written, as uutils refuses it; $suffixArg is $null
+    # when -a is not given, so an empty -a does not pass for none. Both -a 0
+    # and an empty -a used to make a suffix of no letters, and every part
+    # went to one file named after the prefix.
     $suffixLen = 2; $widen = $null -eq $suffixArg
-    if (-not $widen -and -not ([int]::TryParse($suffixArg, [ref]$suffixLen) -and $suffixLen -ge 1)) {
+    if (-not $widen -and -not ([int]::TryParse($suffixArg, [ref]$suffixLen) -and $suffixLen -ge 0)) {
       Write-Error "invalid suffix length '$suffixArg'"; return
     }
+    if ($suffixLen -eq 0) { $suffixLen = 2; $widen = $true }
     if ($path -eq '') {
       $content = $__piped.ToArray()
       if ($content.Count -eq 0) { Write-Error "usage: [-l N] [-n l/N] [-b SIZE] <file> [prefix]"; return }
