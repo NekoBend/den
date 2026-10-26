@@ -333,8 +333,8 @@ rm -rf "$WORK/wide"
 # terminating error (the try below catches it): the parts so far are not the
 # whole input, so the rest of the line must not run. An -a below 0, empty or
 # not a number is refused before any part is written, as uutils refuses it
-# (-a 0 is no -a, above). A bare number counts as a cast reads it: PowerShell
-# hands split the text 0x1, which is 1.
+# (-a 0 is no -a, above). A bare number counts as a cast reads it: split's
+# [string] cast gets back the text 0x1, which is 1.
 echo "[pwsh] split -a stops at its last suffix, and refuses a bad length"
 rm -rf "$WORK/exh" && mkdir -p "$WORK/exh/l" "$WORK/exh/b" "$WORK/exh/p" "$WORK/exh/fit" "$WORK/exh/hex" "$WORK/exh/bad"
 printf '%03d\n' $(seq 1 27) > "$WORK/exh/in.txt"
