@@ -236,22 +236,39 @@ _ts_project() {
   done
 }
 
-@test "a relative name gets ./ in front, and one that starts with /, ./, ../ or a drive letter goes as given (stub ruff)" {
+@test "the ./ rule: a relative name gets ./ in front; under Git Bash, MSYS2 or Cygwin one that starts with a drive letter and a colon, or with a backslash, goes as given (stub ruff)" {
+  case "$OSTYPE" in
+    msys*|cygwin*) skip "names like C:x.py are paths here, not file names" ;;
+  esac
+  # Under Git Bash, MSYS2 or Cygwin, ./ in front of a name like C:x.py or
+  # \\srv\share\x.py would name a different file; on Linux and macOS such a
+  # name is relative like any other. The script picks the rule by OSTYPE, so
+  # each platform's rule runs here on files with those names.
   _stub ruff
   _stub ty
   mkdir -p "$WORK/proj/sub" "$WORK/proj/C:"
   cd "$WORK/proj"
-  for f in x.py sub/x.py C:/x.py; do
-    printf 'x = 1\n' > "$f"
+  for f in x.py sub/x.py -x.py @x.py C:/x.py 'C:\x.py' C:x.py '\\srv\share\x.py' '\x.py'; do
+    printf 'x = 1\n' > "./$f"
   done
-  given=(x.py sub/x.py ./x.py ../proj/x.py "$WORK/proj/x.py" C:/x.py)
-  shown=(./x.py ./sub/x.py ./x.py ../proj/x.py "$WORK/proj/x.py" C:/x.py)
-  for i in "${!given[@]}"; do
-    rm -f "${WORK:?}"/*.log
-    _run_stubbed "${given[$i]}"
-    [ "$status" -eq 0 ]
-    _each_run_ends_with ruff "${shown[$i]}"
-    _each_run_ends_with ty "${shown[$i]}"
+  given=(x.py sub/x.py -x.py @x.py ./x.py ../proj/x.py "$WORK/proj/x.py"
+    C:/x.py 'C:\x.py' C:x.py '\\srv\share\x.py' '\x.py')
+  posix=(./x.py ./sub/x.py ./-x.py ./@x.py ./x.py ../proj/x.py "$WORK/proj/x.py"
+    ./C:/x.py './C:\x.py' ./C:x.py './\\srv\share\x.py' './\x.py')
+  windows=(./x.py ./sub/x.py ./-x.py ./@x.py ./x.py ../proj/x.py "$WORK/proj/x.py"
+    C:/x.py 'C:\x.py' C:x.py '\\srv\share\x.py' '\x.py')
+  for os in linux-gnu msys cygwin; do
+    for i in "${!given[@]}"; do
+      case $os in
+        linux-gnu) want=${posix[$i]} ;;
+        *) want=${windows[$i]} ;;
+      esac
+      rm -f "${WORK:?}"/*.log
+      run env OSTYPE="$os" PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "${given[$i]}"
+      [ "$status" -eq 0 ]
+      _each_run_ends_with ruff "$want"
+      _each_run_ends_with ty "$want"
+    done
   done
 }
 

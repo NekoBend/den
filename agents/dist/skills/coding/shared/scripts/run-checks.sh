@@ -35,14 +35,24 @@ file="$1"
 
 ext="${file##*.}"
 # Every tool and helper below gets the file as a path that reads as nothing
-# else: a relative name gets ./ in front unless it starts with ./ or ../ (a
-# Windows drive path, C:/x.py, is absolute). Given bare, a name starting
-# with - is an option to the tools and to dirname (ruff took
-# --output-file=victim.py for its flag and overwrote victim.py), ruff and ty
-# read one starting with @ as a file of more arguments, even after --, and
-# awk takes one like a=b.sh for an assignment and reads stdin instead.
+# else: a relative name gets ./ in front unless it starts with ./ or ../.
+# Given bare, a name starting with - is an option to the tools and to
+# dirname (ruff took --output-file=victim.py for its flag and overwrote
+# victim.py), ruff and ty read one starting with @ as a file of more
+# arguments, even after --, and awk takes one like a=b.sh for an assignment
+# and reads stdin instead.
 case "$file" in
-  /*|./*|../*|[A-Za-z]:[/\\]*) ;;
+  /*|./*|../*) ;;
+  # Under Git Bash, MSYS2 or Cygwin, ./ in front of a name that starts with a
+  # drive letter and a colon (C:/x.py, C:x.py) or with a backslash
+  # (\\srv\share\x.py) would name a different file, so it goes as given;
+  # elsewhere such a name is relative like any other.
+  [A-Za-z]:*|\\*)
+    case "${OSTYPE:-}" in
+      msys*|cygwin*) ;;
+      *) file="./$file" ;;
+    esac
+    ;;
   *) file="./$file" ;;
 esac
 passed=0
