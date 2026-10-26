@@ -386,7 +386,7 @@ def test_several_files_each_verified(tmp_path, monkeypatch, capsys):
     formats = [
         c for c in cmds if Path(c[0]).name == "ruff" and c[1:3] == ["format", "--check"]
     ]
-    assert [c[3:] for c in formats] == [[str(a), str(b)]]  # one run for both
+    assert [c[3:] for c in formats] == [["--", str(a), str(b)]]  # one run for both
     out = capsys.readouterr().out
     assert f"== {a}" in out and f"== {b}" in out
     assert out.count("PASS format") == out.count("PASS typecheck") == 2
@@ -441,7 +441,7 @@ def test_a_failing_batch_reports_each_file_as_a_solo_run_would(
     cmds = _respond(monkeypatch, answer)
     assert verify_main([str(a), str(b), str(c)]) == 1
     formats = [x[3:] for x in cmds if x[1:3] == ["format", "--check"]]
-    assert formats == [[str(a), str(b), str(c)], [str(b)]]
+    assert formats == [["--", str(a), str(b), str(c)], ["--", str(b)]]
     out = capsys.readouterr().out
     per_file = out.split("== ")[1:]
     assert "PASS format" in per_file[0]
@@ -456,7 +456,7 @@ def test_a_batch_that_errors_reruns_every_file_alone(tmp_path, monkeypatch, caps
     a, b = _py(tmp_path, "a.py"), _py(tmp_path, "b.py")
 
     def answer(cmd):
-        if Path(cmd[0]).name == "ty" and len(cmd) > 5:
+        if Path(cmd[0]).name == "ty" and str(a) in cmd and str(b) in cmd:
             return 2, "error: something about the batch"
         if Path(cmd[0]).name == "ty" and str(b) in cmd:
             return 1, f"error[x] {b}:1:1 broken"
@@ -465,7 +465,7 @@ def test_a_batch_that_errors_reruns_every_file_alone(tmp_path, monkeypatch, caps
     cmds = _respond(monkeypatch, answer)
     assert verify_main([str(a), str(b)]) == 1
     tys = [x[4:] for x in cmds if Path(x[0]).name == "ty"]
-    assert tys == [[str(a), str(b)], [str(a)], [str(b)]]
+    assert tys == [["--", str(a), str(b)], ["--", str(a)], ["--", str(b)]]
     out = capsys.readouterr().out
     assert "PASS typecheck" in out.split("== ")[1]
     assert "FAIL typecheck" in out.split("== ")[2]
@@ -480,7 +480,88 @@ def test_files_in_different_projects_are_grouped_apart(tmp_path, monkeypatch):
     assert verify_main([str(one), str(two)]) == 0
     tys = [x for x in cmds if Path(x[0]).name == "ty"]
     assert [x[3] for x in tys] == [str(tmp_path / "one"), str(tmp_path / "two")]
-    assert [x[4:] for x in tys] == [[str(one)], [str(two)]]
+    assert [x[4:] for x in tys] == [["--", str(one)], ["--", str(two)]]
+
+
+# ---- files reach the tools as paths, never as options or response files ----
+
+
+def _after_end_of_options(cmd: list[str]) -> list[str]:
+    assert "--" in cmd, f"no `--` before the files: {cmd}"
+    return cmd[cmd.index("--") + 1 :]
+
+
+def test_every_call_passes_files_after_dashdash(tmp_path, monkeypatch):
+    """`den verify *.py` beside a file named `--output-file=victim.py` made
+    ruff overwrite victim.py: the bare names went in among the options. Every
+    call (the settings query, each stage's batch and its solo re-run) now
+    passes `--` before the files, and `@args.py` as `./@args.py`, since ruff
+    and ty read a leading `@` as a response file even after `--`."""
+    names = ["--output-file=victim.py", "-ovictim2.py", "@args.py", "victim.py"]
+    for name in names:
+        (tmp_path / name).write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)  # bare names, as a glob in the cwd gives them
+    monkeypatch.setattr(_verify, "_ruff_config", lambda _f: None)  # ask ruff
+    # every batch fails naming victim.py, so victim.py is re-run alone too
+    runs = _capture(monkeypatch, rc=1, out="victim.py:1:1: flagged")
+    assert verify_main(names) == 1
+    every = [*names[:2], f".{os.sep}@args.py", "victim.py"]
+    assert [_after_end_of_options(c) for c in runs.queries] == [every[:1]]
+    assert [_after_end_of_options(c) for c in runs.cmds] == [every, ["victim.py"]] * 3
+
+
+def _real_tools_workdir(tmp_path: Path, monkeypatch) -> Path:
+    """An empty cwd for a real-tool run, with no user-level ruff config."""
+    for var in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA"):
+        monkeypatch.setenv(var, str(tmp_path / "home"))
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    return work
+
+
+@pytest.mark.skipif(shutil.which("ruff") is None, reason="needs a real ruff")
+def test_real_tools_never_take_a_file_name_for_an_option(tmp_path, monkeypatch, capsys):
+    """The finding's reproduction (ty joins in when installed): next to a
+    file named `--output-file=victim.py`, `den verify *.py` overwrote
+    victim.py with ruff's report; `-ovictim2.py` did the same through the
+    short flag, and `--config=cache-dir='..'#.py` made ruff write its cache
+    into the parent of the working directory."""
+    work = _real_tools_workdir(tmp_path, monkeypatch)
+    victims = {"victim.py": "VALUE = 1\n", "victim2.py": "VALUE = 2\n"}
+    planted = ["--output-file=victim.py", "-ovictim2.py", "--config=cache-dir='..'#.py"]
+    for name, text in victims.items():
+        (work / name).write_text(text)
+    for name in planted:
+        (work / name).write_text("VALUE = 0\n")
+    rc = verify_main(sorted([*victims, *planted]))  # what `*.py` expands to
+    for name, text in victims.items():
+        assert (work / name).read_text() == text, f"{name} was overwritten"
+    assert {p.name for p in tmp_path.iterdir()} <= {"home", "work"}
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "0 failed" in out
+    assert "across 5 files" in out
+
+
+@pytest.mark.skipif(shutil.which("ruff") is None, reason="needs a real ruff")
+def test_real_tools_never_read_a_file_name_as_a_response_file(
+    tmp_path, monkeypatch, capsys
+):
+    """ruff and ty replace an argument `@x` with the lines of the file x,
+    after `--` too: verifying `@args.py` checked the files args.py lists
+    (here one outside the project, its text then quoted in the FAIL detail)
+    instead of @args.py itself."""
+    work = _real_tools_workdir(tmp_path, monkeypatch)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("NOT PYTHON outside-marker\n")
+    (work / "args.py").write_text(f"{outside}\n")
+    (work / "@args.py").write_text("VALUE = 1\n")
+    rc = verify_main(["@args.py"])
+    out = capsys.readouterr().out
+    assert "outside-marker" not in out
+    assert rc == 0, out
+    assert "PASS lint" in out
 
 
 def test_several_files_one_unusable_still_runs_the_rest(tmp_path, monkeypatch, capsys):

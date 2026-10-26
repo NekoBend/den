@@ -380,6 +380,10 @@ that resolves to the working directory itself - a cloned repo shipping its own
 `ruff.exe`, which Windows would otherwise prefer over the installed one - is
 refused and counted as a `SKIP`, never executed; a tool from the project's own
 `.venv` is unaffected.
+Files reach both tools after `--`, and a name starting with `@` as `./@name`,
+so a file named like an option (`--output-file=x.py`, which a `*.py` glob can
+expand to) or like a response file (`@x.py`) is checked as a file, never read
+as more arguments.
 Python only; for other languages the coding and code-audit skills name each language's standard tools.
 
 ## Architecture
