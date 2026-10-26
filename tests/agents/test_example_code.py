@@ -156,8 +156,7 @@ echo "main finished"
         ["main finished: fetched 2 orders"],
     ),
     "captured-failure": (
-        _KEEP
-        + 'result="$(report_orders o1 bad o2)"\necho "main finished: $result"\n',
+        _KEEP + 'result="$(report_orders o1 bad o2)"\necho "main finished: $result"\n',
         7,
         [],
     ),
