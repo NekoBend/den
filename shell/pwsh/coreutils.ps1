@@ -94,13 +94,16 @@ function env {
         if ($__in) { $__piped | & $cmd @cmdArgs } else { & $cmd @cmdArgs }
       }
       finally {
-        # A name that was not set is removed with a real null: PowerShell hands
-        # $null to a .NET string parameter as '', and since .NET 9 (pwsh 7.5)
+        # The names come from GetEnumerator(), not $saved.Keys: a hashtable
+        # answers dot access with a key's value first, so after `env KEYS=x
+        # cmd`, $saved.Keys was the value KEYS had before. A name that was not
+        # set is removed with a real null: PowerShell hands $null to a .NET
+        # string parameter as '', and since .NET 9 (pwsh 7.5)
         # SetEnvironmentVariable sets '' as an empty value, so the name stayed.
-        foreach ($name in @($saved.Keys)) {
-          if ($null -eq $saved[$name]) {
-            [Environment]::SetEnvironmentVariable($name, [System.Management.Automation.Language.NullString]::Value)
-          } else { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
+        foreach ($e in @($saved.GetEnumerator())) {
+          if ($null -eq $e.Value) {
+            [Environment]::SetEnvironmentVariable($e.Key, [System.Management.Automation.Language.NullString]::Value)
+          } else { [Environment]::SetEnvironmentVariable($e.Key, $e.Value) }
         }
       }
     } else {

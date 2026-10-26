@@ -652,6 +652,25 @@ DEN_ENV_SET after: original
 DEN_ENV_NEW after, unset: True
 DEN_ENV_ONCE after, unset: True" "$actual"
 
+# The names env restores are its hashtable's keys, which $saved.Keys is not
+# when one of them is KEYS: a hashtable answers dot access with a key's value
+# first. With `env KEYS=x cmd`, $saved.Keys is the value KEYS had before, so
+# KEYS would keep x, and the variable that value names would be removed in
+# its place. (pwsh says ORIGINAL for $h.Keys after $h['KEYS'] = 'ORIGINAL'.)
+echo "[pwsh] env without coreutils restores a variable named KEYS"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$env:KEYS = \$null
+    env KEYS=temporary bash -c 'echo \"bash saw KEYS=\$KEYS\"'
+    'KEYS after, unset: ' + (\$null -eq \$env:KEYS)
+    \$env:KEYS = 'DEN_ENV_HELD'; \$env:DEN_ENV_HELD = 'kept'
+    env KEYS=temporary bash -c 'true'
+    'KEYS after: ' + \$env:KEYS + ', DEN_ENV_HELD after: ' + \$env:DEN_ENV_HELD
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: KEYS restored, the variable it names kept" "bash saw KEYS=temporary
+KEYS after, unset: True
+KEYS after: DEN_ENV_HELD, DEN_ENV_HELD after: kept" "$actual"
+
 # =============================================================================
 # wc — pipe character count
 # =============================================================================
