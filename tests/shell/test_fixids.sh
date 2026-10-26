@@ -169,6 +169,40 @@ for _list in both uid gid; do
     assert_eq "fixids/hand-cut $_list list: lists removed" "" "$(find "$WORK/tmp" -mindepth 1)"
 done
 
+# The two older stops, which no cut above reaches: the stand-ins below run the
+# real find, which writes every list in full (each ends in a NUL), and then
+# report a failure. One names a list in a message and exits 1, as find does
+# when it cannot write or close a list; the other exits 2 without a message
+# (find's own errors give exit 1, so another status means find was stopped or
+# never ran). A list may then lack paths, so fixids stops before any pass.
+mkdir -p "$TESTTMP/msgfind" "$TESTTMP/rc2find"
+{
+    printf '#!/bin/sh\n"%s" "$@" || exit\n' "$REAL_FIND"
+    cat <<'EOF'
+p=
+for a do
+    [ "$p" != -fprint0 ] || l=$a
+    p=$a
+done
+echo "find: '$l': No space left on device" >&2
+exit 1
+EOF
+} > "$TESTTMP/msgfind/find"
+printf '#!/bin/sh\n"%s" "$@" || exit\nexit 2\n' "$REAL_FIND" > "$TESTTMP/rc2find/find"
+chmod +x "$TESTTMP/msgfind/find" "$TESTTMP/rc2find/find"
+
+echo "[fixids] find naming a list in a message stops the run, though every list ends in a NUL"
+actual=$(fx "$TESTTMP/msgfind" -n --from "$U:$G" --to 2000:2000 "$WORK/t")
+assert_contains "fixids/list named in a message: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 1); nothing was changed" "$actual"
+assert_not_contains "fixids/list named in a message: no pass ran" "would be" "$actual"
+assert_eq "fixids/list named in a message: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+
+echo "[fixids] find exiting 2 stops the run, though every list ends in a NUL"
+actual=$(fx "$TESTTMP/rc2find" -n --from "$U:$G" --to 2000:2000 "$WORK/t")
+assert_contains "fixids/find exit 2: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 2); nothing was changed" "$actual"
+assert_not_contains "fixids/find exit 2: no pass ran" "would be" "$actual"
+assert_eq "fixids/find exit 2: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+
 # An unreadable directory is a walk error, not a list error: the passes still
 # run over what find could read, and the run fails. Root reads any directory.
 echo "[fixids] an unreadable directory still lets the passes run"
