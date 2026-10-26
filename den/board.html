@@ -264,6 +264,16 @@
     }
   };
 
+  // The buttons of board.json that have a string id (a report needs one),
+  // each as {id, label, color} text. den board leaves out malformed buttons;
+  // this keeps the page drawing should one get through. renderButtons,
+  // renderReports and the keys read these fields: a null button threw on the
+  // first one, and an object whose toString is not a function threw in the
+  // DOM or as a lookup key.
+  const readButtons = (list) => (Array.isArray(list) ? list : [])
+    .filter((b) => typeof b?.id === "string")
+    .map((b) => ({ id: b.id, label: asText(b.label), color: asText(b.color) }));
+
   const fmtTime = (iso) => {
     const s = asText(iso);
     const d = new Date(s);
@@ -439,7 +449,7 @@
       $("root").textContent = cfg.root;
       $("foot").textContent = "Reports land in " + cfg.reports_path +
         " - tell your agent to read that file.";
-      buttons = Array.isArray(cfg.buttons) ? cfg.buttons : [];
+      buttons = readButtons(cfg.buttons);
       renderButtons();
     } catch {
       setOffline(true);
