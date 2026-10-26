@@ -459,12 +459,16 @@ longer starts one `cp` (or one parallel item) per file. Each call still pays
 the parallel tool's own startup, GNU parallel's most of all, so for a quick
 copy of small files a plain `cp` stays faster. `pcp` and `pmv` overwrite an
 existing destination file on both shells, read-only or not. Once confirmed,
-`prm` removes hidden entries too on both shells.
+`prm` removes hidden entries too on both shells. `pcp`, `pmv` and `prm` fail
+when any path fails (on pwsh with a terminating error that counts them), so
+`pcp a b dest && prm --force a b` stops before it removes anything.
 `ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a plain `tar`
 wrapper on pwsh; both accept `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
 `.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). The
 threaded forms write the archive only once tar and the compressor have both
-succeeded, so a failed run leaves no truncated archive.
+succeeded, so a failed run leaves no truncated archive. They also leave an
+existing output out of the new archive, so running `ptar backup.tgz .` or
+`ptar all.tgz *` again does not store the previous archive inside the new one.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

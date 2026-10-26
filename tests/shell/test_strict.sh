@@ -918,13 +918,16 @@ Case 'pcp <src> <dest>' { pcp a.txt dest }
 Case 'pcp <srcs> <dest>' { pcp a.txt b.txt sub dest }
 Case 'pcp <glob> <dest>' { pcp '*.txt' dest }
 Case 'pcp, dest not a directory' { pcp a.txt b.txt nodir }
+Case 'pcp, a missing source' { pcp a.txt missing.txt dest }
 Case 'pmv' { pmv }
 Case 'pmv <src> <dest>' { Set-Content -LiteralPath mv1.txt -Value 1; pmv mv1.txt dest }
 Case 'pmv, dest not a directory' { pmv a.txt b.txt nodir }
+Case 'pmv, a missing source' { pmv missing.txt dest }
 Case 'prm' { prm }
 Case 'prm --force, no path' { prm --force }
 Case 'prm --force' { Set-Content -LiteralPath rm1.txt -Value 1; prm --force rm1.txt }
 Case 'prm -Force' { Set-Content -LiteralPath rm2.txt -Value 1; prm -Force rm2.txt }
+Case 'prm -Force, a missing path' { prm -Force missing.txt }
 Case 'prm, declined' { prm a.txt }
 Case 'prm, confirmed' {
     Set-Content -LiteralPath rm3.txt -Value 1

@@ -258,9 +258,38 @@ prm() {
 # shared directory could be swapped for a symlink before the shell opens it.
 # tar leaves that directory out by its unique name: with <out> inside a source
 # (`ptar out.tgz .`), it would otherwise store the half-written archive.
+#
+# tar writes to a pipe here, so unlike `tar czf <out>` it cannot tell that an
+# existing <out> is its own archive: a rerun of `ptar backup.tgz .` stored the
+# previous backup.tgz, files deleted since and all, inside the new one, which
+# grew by a whole copy each time. An existing <out> is moved into the staging
+# directory before tar starts, so tar leaves it out with the rest of that
+# directory; the new archive then replaces it, or on failure it is put back.
+# A source that IS <out> (`ptar all.tgz *` run again) is dropped first, as
+# archive() drops one: moved aside, it would be a name tar cannot find. The
+# steps run in a subshell that only notes INT, TERM and HUP, restores, cleans
+# up and then raises the signal again, the way archive()'s zip/7z branch does
+# (its comments say why); a restore that fails keeps the staging directory and
+# names it instead of removing the only copy of the old archive.
 _ptar_pipe() {
-    local out="$1" comp="$2" copt="$3" dir tmpd rc
+    local out="$1" comp="$2" copt="$3" dir tmpd prev rc sig s
+    local -a keep=()
     shift 3
+    # Names first, as in archive(): '-ef' stats both files, and a glob of
+    # thousands would pay that for each.
+    if [ -e "$out" ] || [ -L "$out" ]; then
+        for s in "$@"; do
+            if [ "${s##*/}" = "${out##*/}" ] && [ "$s" -ef "$out" ]; then
+                continue
+            fi
+            keep+=("$s")
+        done
+        set -- "${keep[@]}"
+        if [ $# -eq 0 ]; then
+            echo "ptar: no source besides the output '$out'" >&2
+            return 1
+        fi
+    fi
     case "$out" in
         */*) dir="${out%/*}" ;;
         *)   dir="." ;;
@@ -270,14 +299,42 @@ _ptar_pipe() {
         echo "ptar: cannot create a temporary directory in '$dir'" >&2
         return 1
     fi
-    ( set -o pipefail; tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive" )
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-        mv -f -- "$tmpd/archive" "$out"
-        rc=$?
-    fi
-    rm -rf -- "$tmpd"
-    return "$rc"
+    (
+        set -o pipefail
+        sig=
+        trap 'sig=INT' INT
+        trap 'sig=TERM' TERM
+        trap 'sig=HUP' HUP
+        prev="$tmpd/previous"
+        rc=1
+        if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$prev"; then
+            if [ -z "$sig" ]; then
+                tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive"
+                rc=$?
+                if [ "$rc" -eq 0 ]; then
+                    mv -f -- "$tmpd/archive" "$out"
+                    rc=$?
+                fi
+            fi
+        fi
+        # Asked of the staging directory, not of a flag or of mv's status, as
+        # in archive(): a move cut short by a signal may still have happened.
+        if [ "$rc" -ne 0 ] && { [ -e "$prev" ] || [ -L "$prev" ]; }; then
+            mv -f -- "$prev" "$out"
+        fi
+        if [ "$rc" -ne 0 ] && { [ -e "$prev" ] || [ -L "$prev" ]; }; then
+            echo "ptar: previous '$out' kept at $prev" >&2
+        else
+            rm -rf -- "$tmpd"
+        fi
+        if [ -n "$sig" ]; then
+            trap - "$sig"
+            # $$ is the parent shell's pid, even in a subshell; the sh
+            # started here is a child of this subshell.
+            kill -s "$sig" "$(exec sh -c 'echo "$PPID"')"
+        fi
+        exit "$rc"
+    )
 }
 
 # ptar → parallel compress using pigz/pbzip2/pxz when available

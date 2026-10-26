@@ -82,7 +82,13 @@ function pcp {
 
     _Batches $sources $jobs | ForEach-Object -Parallel {
         foreach ($p in $_) { Copy-Item -LiteralPath $p -Destination $using:dest -Recurse -Force }
-    } -ThrottleLimit $jobs
+    } -ThrottleLimit $jobs -ErrorVariable failed
+    # A path that failed wrote its error from a parallel worker, and none of
+    # those reached $? or the process status: `pcp a b dest && prm -Force a b`
+    # went on to remove a file that was never copied. -ErrorVariable collects
+    # the workers' errors; any at all is terminating, as ptar's tar check is
+    # (a plain Write-Error inside a function leaves `pwsh -Command` exiting 0).
+    if ($failed.Count) { Write-Error "$($failed.Count) path(s) failed" -ErrorAction Stop }
 }
 
 # pmv → parallel move (like mv, last arg is destination)
@@ -111,7 +117,9 @@ function pmv {
 
     _Batches $sources $jobs | ForEach-Object -Parallel {
         foreach ($p in $_) { Move-Item -LiteralPath $p -Destination $using:dest -Force }
-    } -ThrottleLimit $jobs
+    } -ThrottleLimit $jobs -ErrorVariable failed
+    # Terminating when any path failed: see pcp.
+    if ($failed.Count) { Write-Error "$($failed.Count) path(s) failed" -ErrorAction Stop }
 }
 
 # prm → parallel remove with interactive confirmation by default
@@ -154,7 +162,9 @@ function prm {
     # stopped, leaving the hidden entries and their parent directories behind.
     _Batches $Paths $jobs | ForEach-Object -Parallel {
         foreach ($p in $_) { Remove-Item -LiteralPath $p -Recurse -Force }
-    } -ThrottleLimit $jobs
+    } -ThrottleLimit $jobs -ErrorVariable failed
+    # Terminating when any path failed: see pcp.
+    if ($failed.Count) { Write-Error "$($failed.Count) path(s) failed" -ErrorAction Stop }
 }
 
 # ptar → compress using tar (available on Windows 10+)

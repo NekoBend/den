@@ -468,6 +468,103 @@ for sh in bash zsh; do
     done
     rm -f "$WORK"/src/out.*
 
+    echo "[$sh] ptar: a rerun leaves the previous archive out of the new one"
+    # On the threaded forms tar writes to a pipe, so it could not tell that
+    # <out> was its own archive: a rerun of `ptar backup.tgz .` stored the
+    # previous backup.tgz, files deleted since and all, inside the new one.
+    setup_fixtures
+    for _out in out.tar.xz out.tgz out.tbz2; do
+        $runner "$PARALLEL_SH" "cd '$WORK/src' && ptar $_out . && ptar $_out ." >/dev/null 2>&1
+        assert_success "$sh/ptar $_out rerun exit code" "$?"
+        actual=$(tar tf "$WORK/src/$_out" 2>/dev/null)
+        assert_contains "$sh/ptar $_out rerun stored the files" "subdir/file3.txt" "$actual"
+        assert_not_contains "$sh/ptar $_out rerun left the previous archive out" "$_out" "$actual"
+        assert_eq "$sh/ptar $_out rerun leaves no staging directory" "" "$(ls -A "$WORK/src" | grep '^\.ptar\.' | tr -d '\n')"
+        rm -f "$WORK/src/$_out"
+    done
+
+    echo "[$sh] ptar: a source that is the output itself is left out"
+    # `ptar all.tgz *` run again: the glob holds the old all.tgz.
+    rm -rf "$WORK/glob"
+    mkdir -p "$WORK/glob"
+    echo a > "$WORK/glob/a.txt"; echo b > "$WORK/glob/b.txt"
+    for _out in all.tar.xz all.tgz all.tbz2; do
+        $runner "$PARALLEL_SH" "cd '$WORK/glob' && ptar $_out * && ptar $_out *" >/dev/null 2>&1
+        assert_success "$sh/ptar $_out rerun over a glob holding the output exit code" "$?"
+        assert_eq "$sh/ptar $_out rerun over a glob holding the output" "a.txt b.txt " "$(tar tf "$WORK/glob/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+        rm -f "$WORK/glob/$_out"
+    done
+    $runner "$PARALLEL_SH" "cd '$WORK/glob' && ptar all.tgz a.txt" >/dev/null 2>&1
+    cp "$WORK/glob/all.tgz" "$WORK/all.tgz.before"
+    err=$($runner_err "$PARALLEL_SH" "cd '$WORK/glob' && ptar all.tgz ./all.tgz '$WORK/glob/all.tgz'")
+    assert_contains "$sh/ptar with only the output as a source says so" "no source besides the output" "$err"
+    $runner "$PARALLEL_SH" "cd '$WORK/glob' && ptar all.tgz ./all.tgz" >/dev/null 2>&1
+    assert_failure "$sh/ptar with only the output as a source fails" "$?"
+    assert_eq "$sh/ptar with only the output as a source keeps it" "$(sha256sum < "$WORK/all.tgz.before")" "$(sha256sum < "$WORK/glob/all.tgz")"
+    rm -rf "$WORK/glob" "$WORK/all.tgz.before"
+
+    echo "[$sh] ptar: a previous archive that cannot be put back is kept and named"
+    # The existing output now waits in the staging directory while tar runs.
+    # A pigz stub that fails after putting a directory (holding a 'previous'
+    # directory) where the archive goes makes moving it back fail, as a
+    # directory that turned read-only would, even as root.
+    rm -rf "$WORK/back"
+    mkdir -p "$WORK/back/bin" "$WORK/back/src"
+    echo x > "$WORK/back/src/x"
+    echo PRECIOUS > "$WORK/back/keep.tgz"
+    printf '#!/bin/sh\ncat > /dev/null\nmkdir -p keep.tgz/previous\nexit 3\n' > "$WORK/back/bin/pigz"
+    chmod +x "$WORK/back/bin/pigz"
+    err=$($runner_err "$PARALLEL_SH" "PATH='$WORK/back/bin:$PATH' && cd '$WORK/back' && ptar keep.tgz src")
+    assert_contains "$sh/ptar says where the previous archive was kept" "ptar: previous 'keep.tgz' kept at ./.ptar." "$err"
+    assert_eq "$sh/ptar kept the previous archive it could not put back" "PRECIOUS" "$(cat "$WORK/back"/.ptar.*/previous 2>/dev/null)"
+    rm -rf "$WORK/back"
+
+    # Between moving the existing output aside and putting it back there is
+    # no <out>, so a Ctrl-C (or a TERM) while tar ran must not end the
+    # function there. A pigz stub that waits stands in for a slow run; the
+    # run gets a process group of its own (set -m) and the whole group gets
+    # the signal, as Ctrl-C at a terminal does, with SIGINT at its default
+    # (env --default-signal, coreutils 8.31+), as test_functions.sh does for
+    # archive.
+    for _sig in INT TERM; do
+        echo "[$sh] ptar interrupted by SIG$_sig puts the previous archive back"
+        if ! env --default-signal=INT true 2>/dev/null; then
+            echo "  SKIP: env has no --default-signal"
+            continue
+        fi
+        rm -rf "$WORK/slow"
+        mkdir -p "$WORK/slow/bin" "$WORK/slow/src"
+        echo x > "$WORK/slow/src/x"
+        echo PRECIOUS > "$WORK/slow/keep.tgz"
+        printf '#!/bin/sh\n: > "%s/started"\nsleep 10\n' "$WORK/slow" > "$WORK/slow/bin/pigz"
+        chmod +x "$WORK/slow/bin/pigz"
+        (
+            set -m
+            env --default-signal=INT "$sh" -c "source '$PARALLEL_SH' && PATH='$WORK/slow/bin:$PATH' && cd '$WORK/slow' && ptar keep.tgz src; echo after" > "$WORK/slow.out" 2>&1 &
+            _pid=$!
+            _i=0
+            while [ ! -e "$WORK/slow/started" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+            kill -"$_sig" -- "-$_pid"
+            wait "$_pid"
+            echo "status=$?" >> "$WORK/slow.out"
+        )
+        # SIGTERM ends the outer shell at once (only SIGINT makes it wait for
+        # its child), so the subshell may still be putting things back when
+        # that wait returns: give it up to 5 s to reach the state checked.
+        _i=0
+        while { [ ! -e "$WORK/slow/keep.tgz" ] || grep -q '^\.ptar\.' <<<"$(ls -A "$WORK/slow")"; } && [ "$_i" -lt 50 ]; do
+            sleep 0.1
+            _i=$((_i + 1))
+        done
+        actual=$(cat "$WORK/slow.out")
+        assert_eq "$sh/ptar after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/slow/keep.tgz" 2>/dev/null)"
+        assert_eq "$sh/ptar after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/slow" | grep '^\.ptar\.' | tr -d '\n')"
+        # The signal is raised again, so the caller stops as it would have.
+        assert_not_contains "$sh/ptar after SIG$_sig stops its caller" "after" "$actual"
+        assert_not_contains "$sh/ptar after SIG$_sig does not report success" "status=0" "$actual"
+    done
+    rm -rf "$WORK/slow" "$WORK/slow.out"
+
     echo "[$sh] pcp/pmv/prm hand each job a batch of operands, not one each"
     # One cp/mv/rm per operand made `pcp * dest` over a few thousand small
     # files 10-70x slower than a plain cp. cp, mv and rm stubs on PATH log one
@@ -592,6 +689,32 @@ assert_contains "pwsh/ptar names tar's exit code" "tar exited 2" "$err"
 actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { ptar out.tgz src missing-src 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
 assert_eq "pwsh/ptar failure is a terminating error" "caught" "$actual"
 rm -f "$WORK"/out.*
+
+echo "[pwsh] pcp/pmv/prm: a path that fails is a failure"
+# Each path runs in a ForEach-Object -Parallel worker, and the workers' errors
+# reached neither \$? nor the process status: `pcp missing dest` exited 0, and
+# `pcp a b dest && prm -Force a b` went on to remove a file never copied.
+setup_fixtures
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; pcp src/file1.txt missing.txt dest && prm -Force src/file1.txt" >/dev/null 2>&1
+assert_failure "pwsh/pcp with a missing source exits nonzero" "$?"
+assert_exists "pwsh/pcp with a missing source still copied the others" "$WORK/dest/file1.txt"
+assert_exists "pwsh/pcp failure stops a && chain" "$WORK/src/file1.txt"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; pmv src/file2.txt missing.txt dest" >/dev/null 2>&1
+assert_failure "pwsh/pmv with a missing source exits nonzero" "$?"
+assert_exists "pwsh/pmv with a missing source still moved the others" "$WORK/dest/file2.txt"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; prm -Force src/subdir missing.txt" >/dev/null 2>&1
+assert_failure "pwsh/prm with a missing path exits nonzero" "$?"
+assert_not_exists "pwsh/prm with a missing path still removed the others" "$WORK/src/subdir"
+for _fn in pcp pmv; do
+    err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK'; $_fn missing.txt dest")
+    assert_contains "pwsh/$_fn counts the paths that failed" "$_fn: 1 path(s) failed" "$err"
+    actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { $_fn missing.txt dest 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
+    assert_eq "pwsh/$_fn failure is a terminating error" "caught" "$actual"
+done
+err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK'; prm -Force missing.txt")
+assert_contains "pwsh/prm counts the paths that failed" "prm: 1 path(s) failed" "$err"
+actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { prm -Force missing.txt 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
+assert_eq "pwsh/prm failure is a terminating error" "caught" "$actual"
 
 echo "[pwsh] prm: a confirmed removal takes hidden entries too"
 # Remove-Item without -Force refuses hidden items, so a confirmed prm removed
