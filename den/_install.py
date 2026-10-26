@@ -402,10 +402,12 @@ class _Writer:
         so a scripted caller can exit non-zero instead of reporting a deploy
         that never happened, and a file kept because it changed after it was
         checked; an interactive "no" is the user's own choice and counts 0, as
-        does a file a refresh leaves alone (not den's to replace)."""
+        does a file a refresh leaves alone (not den's to replace). A file
+        staged more than once with the same content (codex, cline and
+        cline-cli share ~/.agents/skills) is handled, named and counted once."""
         refused = 0
         items: list[tuple[Path, bytes, tuple[Path, Path] | None]] = []
-        for dest, content in self._items:
+        for dest, content in dict.fromkeys(self._items):  # each pair once
             guard = _confined(self._roots, dest)
             if guard is not None and _refuse_symlink(*guard, "write", _ERR):
                 refused += 1

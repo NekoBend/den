@@ -413,6 +413,38 @@ def test_install_does_not_recreate_a_listed_file_deleted_at_the_prompt(
         assert rc == 0, "a 'no' is the user's own choice"
 
 
+@pytest.mark.parametrize("change", ["saved again", "deleted", "none, answered no"])
+def test_install_all_tools_names_a_shared_file_once(
+    tmp_path, monkeypatch, capsys, change
+):
+    """codex, cline and cline-cli share ~/.agents/skills, so --all-tools
+    staged each file there three times: a listed file that changed at the
+    prompt was named three times, and one kept after a 'no' counted three."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    assert install_main(["skills", "--all-tools"]) == 0
+    skill = tmp_path / ".agents" / "skills" / "grounding" / "SKILL.md"  # HOME
+    skill.write_text("MINE")
+
+    def confirm(*_a, **_k):
+        if change == "deleted":
+            skill.unlink()
+        elif change == "saved again":
+            skill.write_text("MINE, SAVED AGAIN")
+        return change != "none, answered no"
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    capsys.readouterr()
+    rc = install_main(["skills", "--all-tools"])
+    err = capsys.readouterr().err
+    if change == "deleted":
+        assert err.count(f"did not recreate {skill}:") == 1
+    elif change == "saved again":
+        assert err.count(f"kept {skill}: it changed after den checked it") == 1
+    else:
+        assert "kept 1 modified file(s) as-is" in err
+    assert rc == (0 if change == "none, answered no" else 1)
+
+
 @pytest.mark.real_path_probes
 def test_install_cline_parent_goes_to_cline_rules_dir(tmp_path, monkeypatch):
     # the VS Code extension reads global rules from <Documents>/Cline/Rules and
