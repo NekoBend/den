@@ -204,14 +204,21 @@ def split_by_lines(
            That needs a line break to be the byte 0x0A, as in UTF-8 and the
            ASCII-compatible encodings (``"cp932"`` for Shift-JIS logs,
            EUC-JP, Latin-1). ``encoding`` names the file's encoding only to
-           refuse UTF-16 and UTF-32 (``ValueError``): decode those and split
-           the text, accepting a BOM at the start of every part.
+           check that: one that encodes ``"\\n"`` any other way (UTF-16,
+           UTF-32, EBCDIC such as cp037) raises ``ValueError``. Decode such
+           a file and split the text instead, accepting that UTF-16 and
+           UTF-32 give every part a BOM of its own.
+           A lone CR is not cut at: a file with CR-only line endings (classic
+           Mac OS) has no 0x0A and stays in one part.
     """
     import codecs
 
-    if codecs.lookup(encoding).name.startswith(("utf-16", "utf-32")):
+    # utf-8-sig writes its BOM once, at the start of the file, not per line.
+    nl = "\n".encode(encoding).removeprefix(codecs.BOM_UTF8)
+    if nl != b"\n":
         raise ValueError(
-            f"{encoding} is not ASCII-compatible: split_by_lines cuts at the byte 0x0A"
+            f"{encoding} does not encode a line break as the byte 0x0A,"
+            " where split_by_lines cuts"
         )
     src = Path(path)
     dest = Path(out_dir) if out_dir else src.parent

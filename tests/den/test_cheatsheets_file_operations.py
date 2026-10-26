@@ -91,6 +91,29 @@ def test_split_by_lines_refuses_utf16_and_utf32(fileops, tmp_path, encoding):
     assert not (tmp_path / "parts").exists()
 
 
+@pytest.mark.parametrize("encoding", ["cp037", "cp500"])
+def test_split_by_lines_refuses_ebcdic(fileops, tmp_path, encoding):
+    # EBCDIC encodes "\n" as b"%" (0x25). With no 0x0A to cut at, the binary
+    # split handed the whole file back as one part, without an error.
+    src = tmp_path / "src.txt"
+    src.write_bytes("alpha\nbeta\n".encode(encoding))
+    with pytest.raises(ValueError, match="0x0A"):
+        fileops.split_by_lines(
+            src, lines_per_chunk=1, out_dir=tmp_path / "parts", encoding=encoding
+        )
+    assert not (tmp_path / "parts").exists()
+
+
+def test_split_by_lines_keeps_cr_only_line_endings_in_one_part(fileops, tmp_path):
+    # Only b"\n" is cut at. Read as text, a lone CR ended a line as well; a
+    # classic Mac OS file has no 0x0A, so it stays whole, as the docstring says.
+    data = b"one\rtwo\rthree\r"
+    src = tmp_path / "mac.txt"
+    src.write_bytes(data)
+    parts = fileops.split_by_lines(src, lines_per_chunk=1, out_dir=tmp_path / "parts")
+    assert [part.read_bytes() for part in parts] == [data]
+
+
 # --- write_csv ---------------------------------------------------------------
 
 
