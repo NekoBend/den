@@ -356,6 +356,56 @@ def test_uninstall_reports_a_file_it_cannot_read(tmp_path, monkeypatch, capsys, 
 
 
 @_mode_bits
+def test_uninstall_counts_a_file_it_cannot_read_at_the_delete(
+    tmp_path, monkeypatch, capsys
+):
+    # the check right before each delete counts a read error as not removed
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    _install(tmp_path)
+    planned = len(_files(tmp_path / "skills"))
+    skill = tmp_path / "skills" / "grounding" / "SKILL.md"
+
+    def confirm(*_a, **_k):
+        skill.chmod(0)  # unreadable by the time den deletes it
+        return True
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    try:
+        rc = uninstall_main(["skills", "--target", str(tmp_path)])
+    finally:
+        skill.chmod(0o644)
+    assert skill.is_file()
+    assert rc == 1
+    out, err = capsys.readouterr()
+    assert f"warning: {skill}:" in err
+    assert "1 file(s) not removed; see the warnings above" in err
+    assert f"removed {planned - 1} file(s)" in out
+
+
+@pytest.mark.parametrize("where", ["skills", "shell"])
+def test_uninstall_passes_over_a_directory_where_a_file_would_be(
+    tmp_path, monkeypatch, capsys, where
+):
+    """A directory at one of den's paths, or at ~/.bashrc, is not a file den
+    cannot read: it holds neither den's bytes nor its block, so uninstall
+    leaves it without a word and exits 0."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    if where == "skills":
+        _install(tmp_path)
+        there = tmp_path / "skills" / "grounding" / "SKILL.md"
+        there.unlink()
+        argv = ["skills", "--target", str(tmp_path), "--yes"]
+    else:
+        there = tmp_path / ".bashrc"  # HOME is tmp_path (isolate_user_dirs)
+        argv = ["shell", "--yes"]
+    there.mkdir()
+    capsys.readouterr()
+    assert uninstall_main(argv) == 0
+    assert there.is_dir()
+    assert capsys.readouterr().err == ""
+
+
+@_mode_bits
 def test_uninstall_reports_an_rc_file_it_cannot_read(tmp_path, monkeypatch, capsys):
     """An rc file holding den's block that uninstall could not read was
     taken for one without a block: 'Nothing to remove.', exit 0, and the
@@ -702,19 +752,23 @@ def test_strip_block_names_the_directory_it_cannot_write_a_copy_in(tmp_path):
 
 
 def test_strip_block_leaves_no_copy_when_the_replace_fails(tmp_path, monkeypatch):
-    # the same promise when the rename itself fails (any platform)
+    # the same promise when the rename itself fails (any platform); the copy
+    # is made beside the rc file, so the rename never crosses a filesystem
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
     rc = tmp_path / ".bashrc"
     original = f"export A=1\n\n# ===== den =====\n{line}\n".encode()
     rc.write_bytes(original)
+    copies = []
 
-    def fail(*_a):
+    def fail(self, *_a):
+        copies.append(self)
         raise OSError(errno.EIO, "simulated I/O error")
 
     monkeypatch.setattr(Path, "replace", fail)
     with pytest.raises(OSError, match="simulated"):
         _strip_block(rc, line)
     monkeypatch.undo()
+    assert [c.parent.resolve() for c in copies] == [rc.parent.resolve()]
     assert rc.read_bytes() == original
     assert sorted(tmp_path.iterdir()) == [rc]
 
