@@ -618,6 +618,28 @@ Measure-Object counted 3
 2 with set
 nothing piped in: stdin: not a pipe" "$actual"
 
+# Given the same name twice, env saved the variable again at the second, after
+# the first had already set it, and restored each in turn, so the session kept
+# the first value. A name that had not been set was restored with $null, which
+# PowerShell hands a .NET string parameter as '': since .NET 9 (pwsh 7.5),
+# SetEnvironmentVariable sets '' as an empty value, so the name stayed, set to
+# '' or, given twice, to its first value. Each name now goes back once to what
+# it was before env.
+echo "[pwsh] env without coreutils restores each name once, unset ones too"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$env:DEN_ENV_SET = 'original'
+    env DEN_ENV_SET=first DEN_ENV_SET=second DEN_ENV_NEW=a DEN_ENV_NEW=b bash -c 'echo \"bash saw \$DEN_ENV_SET \$DEN_ENV_NEW\"'
+    'DEN_ENV_SET after: ' + \$env:DEN_ENV_SET
+    'DEN_ENV_NEW after, unset: ' + (\$null -eq \$env:DEN_ENV_NEW)
+    env DEN_ENV_ONCE=x bash -c 'true'
+    'DEN_ENV_ONCE after, unset: ' + (\$null -eq \$env:DEN_ENV_ONCE)
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: a name given twice, and an unset one, restored" "bash saw second b
+DEN_ENV_SET after: original
+DEN_ENV_NEW after, unset: True
+DEN_ENV_ONCE after, unset: True" "$actual"
+
 # =============================================================================
 # wc — pipe character count
 # =============================================================================

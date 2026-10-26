@@ -81,18 +81,26 @@ function env {
       $i++
     }
     if ($null -ne $cmd) {
+      # A name's value is saved the first time the name comes up, and each
+      # name is restored once. Saved again at a repeat (`env A=1 A=2 cmd`),
+      # it was the value the first assignment had just set, and the session
+      # kept it. $saved ignores case, as Windows' variable names do.
       $saved = @{}
       foreach ($kv in $assigns) {
-        $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name)
+        if (-not $saved.ContainsKey($kv.Name)) { $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name) }
         [Environment]::SetEnvironmentVariable($kv.Name, $kv.Value)
       }
       try {
         if ($__in) { $__piped | & $cmd @cmdArgs } else { & $cmd @cmdArgs }
       }
       finally {
-        foreach ($kv in $assigns) {
-          if ($null -eq $saved[$kv.Name]) { [Environment]::SetEnvironmentVariable($kv.Name, $null) }
-          else { [Environment]::SetEnvironmentVariable($kv.Name, $saved[$kv.Name]) }
+        # A name that was not set is removed with a real null: PowerShell hands
+        # $null to a .NET string parameter as '', and since .NET 9 (pwsh 7.5)
+        # SetEnvironmentVariable sets '' as an empty value, so the name stayed.
+        foreach ($name in @($saved.Keys)) {
+          if ($null -eq $saved[$name]) {
+            [Environment]::SetEnvironmentVariable($name, [System.Management.Automation.Language.NullString]::Value)
+          } else { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
         }
       }
     } else {
