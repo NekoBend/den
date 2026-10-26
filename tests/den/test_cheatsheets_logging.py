@@ -1,13 +1,16 @@
 """cheatsheets/python/{logging-config,fastapi-logging}.py: safe production defaults.
 
 The sheets' names have hyphens, so they are loaded from their paths. Every test
-restores the root logger (and the loggers the recipes touch) afterwards.
+restores the root logger (and the loggers the recipes touch) afterwards; the
+sanity check runs in a child process of its own.
 """
 
 import ast
 import importlib.util
 import io
 import logging
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
@@ -176,6 +179,31 @@ def test_setup_rich_logging_does_not_print_frame_locals(restore_logging):
     out = sink.getvalue()
     assert "db connect failed" in out
     assert "hunter2-S3cr3t-Pa55" not in out
+
+
+# --- logging-config.py: the sanity check ----------------------------------------
+
+
+def test_sanity_check_leaves_same_named_logs_in_the_cwd_alone(tmp_path):
+    # It wrote demo.log, demo_dict.log and warnings.log (the setup_level_filter
+    # default, so possibly an app's own log) into the working directory and
+    # then unlinked all three without looking.
+    names = ("demo.log", "demo_dict.log", "warnings.log")
+    for name in names:
+        (tmp_path / name).write_text(f"HISTORICAL {name}\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-X", "utf8", str(SHEETS / "logging-config.py")],
+        cwd=tmp_path,
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "All sanity checks passed." in result.stdout
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(names)
+    for name in names:
+        assert (tmp_path / name).read_text(encoding="utf-8") == f"HISTORICAL {name}\n"
 
 
 # --- fastapi-logging.py ---------------------------------------------------------
