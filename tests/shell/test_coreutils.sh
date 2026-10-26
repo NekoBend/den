@@ -596,6 +596,28 @@ echo "[pwsh] env VAR=val command"
 actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "env FOO=bar pwsh -c 'Write-Output \$env:FOO'" | clean)
 assert_eq "env VAR=val command" "bar" "$actual"
 
+# Without microsoft/coreutils (_CoreutilsBin answers nothing), env dropped what
+# was piped into it, and the command it ran got no input: `'payload' | env X=y
+# <program>` gave the program nothing, and `1..3 | env X=y Measure-Object`
+# counted 0. It now collects the input and pipes it to the command, which sees
+# the variables too; with nothing piped in, the command still gets env's own
+# stdin, not a pipe (the stub from make_stamp_stub in helpers.sh says which).
+echo "[pwsh] env without coreutils passes piped input on to the command"
+ENV_STAMP="$TESTTMP/env-stamp"
+make_stamp_stub "$ENV_STAMP" || abort_suite "cannot write $ENV_STAMP"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    'payload' | env DEN_ENV_T=set bash -c 'read -r l; echo \"bash read \$l, DEN_ENV_T=\$DEN_ENV_T\"'
+    'Measure-Object counted ' + (1..3 | env DEN_ENV_T=set Measure-Object).Count
+    1..2 | env DEN_ENV_T=set ForEach-Object { \"\$_ with \$env:DEN_ENV_T\" }
+    'nothing piped in: ' + (env DEN_ENV_T=set '$ENV_STAMP')
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: piped input reaches the command" "bash read payload, DEN_ENV_T=set
+Measure-Object counted 3
+1 with set
+2 with set
+nothing piped in: stdin: not a pipe" "$actual"
+
 # =============================================================================
 # wc — pipe character count
 # =============================================================================

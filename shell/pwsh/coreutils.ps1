@@ -44,17 +44,26 @@ function df {
 
 # env → list environment variables / run command with modified env
 # Usage: env [VAR=val ...] [command [args ...]], no args = print all
+# Without coreutils, what is piped in is collected, as split's PowerShell
+# version collects it, and piped to the command once it has all arrived: the
+# variables are set around the command only, not while the commands before
+# env still run. It used to be dropped, and the command got no input.
 function env {
   begin {
     $__sp = $null
     $__cu = _CoreutilsBin
+    $__in = $MyInvocation.ExpectingInput
     $__a = $args
-    if ($__cu -and $MyInvocation.ExpectingInput) {
+    $__piped = [System.Collections.Generic.List[object]]::new()
+    if ($__cu -and $__in) {
       $__sp = { & $__cu env @__a }.GetSteppablePipeline()
       $__sp.Begin($true, $ExecutionContext)
     }
   }
-  process { if ($null -ne $__sp) { $__sp.Process($_) } }
+  process {
+    if ($null -ne $__sp) { $__sp.Process($_) }
+    elseif ($__in -and -not $__cu) { $__piped.Add($_) }
+  }
   end {
     if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
     if ($__cu) { & $__cu env @__a; return }
@@ -77,7 +86,9 @@ function env {
         $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name)
         [Environment]::SetEnvironmentVariable($kv.Name, $kv.Value)
       }
-      try { & $cmd @cmdArgs }
+      try {
+        if ($__in) { $__piped | & $cmd @cmdArgs } else { & $cmd @cmdArgs }
+      }
       finally {
         foreach ($kv in $assigns) {
           if ($null -eq $saved[$kv.Name]) { [Environment]::SetEnvironmentVariable($kv.Name, $null) }
