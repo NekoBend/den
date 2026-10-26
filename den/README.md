@@ -297,7 +297,8 @@ seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope
 `install` writes only the hooks den manages (marked by a sentinel) and leaves
 foreign hooks untouched, one added to a group den wrote included: install and
 `uninstall hook` take out only den's own hooks, and a group only when those
-were all it held. A settings file den cannot merge its hooks into (not a JSON
+were all it held; `uninstall hook` leaves a file with nothing of den's in it
+byte-identical. A settings file den cannot merge its hooks into (not a JSON
 object, a `hooks` that is not an object, or one of den's events holding
 something other than a list) is first copied to `<file>.den.bak`, or to the
 first free `.den.bak.N` when an earlier backup holds something else, with the

@@ -680,6 +680,124 @@ def test_install_copilot_flat_json(tmp_path, monkeypatch):
     )
 
 
+# copilot's entries are flat {type, bash} objects. A `bash` that is not text
+# (null, a number) made install, remove and list raise TypeError, and remove
+# rewrote a file with nothing of den's in it, dropping what den never wrote.
+
+_COPILOT = Path(".github") / "hooks" / "den.json"
+_ODD_BASH = pytest.mark.parametrize("bash", [None, 5], ids=["null", "number"])
+
+
+def _copilot_entry(event="session-start", den_dir="/old/proj/.den"):
+    """A copilot entry as an earlier den wrote it."""
+    cmd = f"den hook run --event {event} --tool copilot --den-dir {den_dir}"
+    return {"type": "command", "bash": cmd}
+
+
+def _write_copilot(proj, hooks):
+    cfg = proj / _COPILOT
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"version": 1, "hooks": hooks}))
+    return cfg
+
+
+@_ODD_BASH
+def test_install_copilot_keeps_an_entry_whose_bash_is_not_text(
+    tmp_path, monkeypatch, bash
+):
+    monkeypatch.chdir(tmp_path)
+    odd = {"type": "command", "bash": bash}
+    cfg = _write_copilot(tmp_path, {"sessionStart": [odd, _copilot_entry()]})
+    assert hook_main(["install", "--tool", "copilot"]) == 0
+    first, *den = json.loads(cfg.read_text())["hooks"]["sessionStart"]
+    assert first == odd
+    assert len(den) == 1, "den's own entry is replaced, not duplicated"
+    _assert_pinned(
+        den[0]["bash"],
+        "den hook run --event session-start --tool copilot",
+        tmp_path / ".den",
+    )
+
+
+@_ODD_BASH
+def test_remove_copilot_keeps_an_entry_whose_bash_is_not_text(
+    tmp_path, monkeypatch, bash
+):
+    monkeypatch.chdir(tmp_path)
+    odd = {"type": "command", "bash": bash}
+    cfg = _write_copilot(
+        tmp_path,
+        {
+            "sessionStart": [odd, "not an entry", _copilot_entry()],
+            "postToolUse": [_copilot_entry("post-tool")],
+        },
+    )
+    assert hook_main(["remove", "--tool", "copilot"]) == 0
+    assert json.loads(cfg.read_text()) == {
+        "version": 1,
+        "hooks": {"sessionStart": [odd, "not an entry"]},
+    }
+
+
+@_ODD_BASH
+def test_list_copilot_names_only_dens_entry_beside_a_bash_that_is_not_text(
+    tmp_path, monkeypatch, capsys, bash
+):
+    monkeypatch.chdir(tmp_path)
+    den = _copilot_entry()
+    _write_copilot(tmp_path, {"sessionStart": [{"type": "command", "bash": bash}, den]})
+    assert hook_main(["list", "--tool", "copilot"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        f"copilot  sessionStart  {den['bash']}"
+    ]
+
+
+def test_remove_copilot_leaves_a_file_with_nothing_of_dens_byte_identical(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / _COPILOT
+    cfg.parent.mkdir(parents=True)
+    raw = (
+        b'{"version":1,"hooks":{"sessionStart":[{"type":"command","bash":"echo hi"},'
+        b'"not an entry"],"stop":[],"x":{"bash":"echo y"}}}'
+    )
+    cfg.write_bytes(raw)
+    assert hook_main(["remove", "--tool", "copilot"]) == 0
+    assert cfg.read_bytes() == raw
+
+
+_ODD_COPILOT_HOOKS = {
+    "event-object": {"sessionStart": {"type": "command", "bash": "echo hi"}},
+    "event-null": {"sessionStart": None},
+    "hooks-null": None,
+    "hooks-list": ["echo hi"],
+}
+
+
+@pytest.mark.parametrize(
+    "hooks", list(_ODD_COPILOT_HOOKS.values()), ids=list(_ODD_COPILOT_HOOKS)
+)
+def test_copilot_leaves_or_backs_up_hooks_of_a_shape_den_never_writes(
+    tmp_path, monkeypatch, hooks
+):
+    # As for claude: remove leaves them byte-identical, and install copies the
+    # file before it puts den's entries in their place.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / _COPILOT
+    cfg.parent.mkdir(parents=True)
+    raw = json.dumps({"version": 1, "hooks": hooks}).encode()
+    cfg.write_bytes(raw)
+    assert hook_main(["remove", "--tool", "copilot"]) == 0
+    assert cfg.read_bytes() == raw
+    assert hook_main(["install", "--tool", "copilot"]) == 0
+    assert cfg.with_name(cfg.name + ".den.bak").read_bytes() == raw
+    entries = json.loads(cfg.read_text())["hooks"]["sessionStart"]
+    assert [e["bash"].split(" --den-dir ")[0] for e in entries] == [
+        "den hook run --event session-start --tool copilot"
+    ]
+
+
 def test_run_copilot_sessionstart_additional_context(tmp_path, monkeypatch, capsys):
     _seed(tmp_path, imprint="IMP\n")
     monkeypatch.chdir(tmp_path)

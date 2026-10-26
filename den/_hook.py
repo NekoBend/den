@@ -562,13 +562,15 @@ def _read_json(config: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _is_den_hook(hook: object) -> bool:
-    """Whether a settings_json hook entry is one den wrote: an object whose
-    command carries the marker. list and strip both ask this, so what `den hook
-    list` shows is exactly what install and remove take out."""
+def _is_den_hook(hook: object, key: str = "command") -> bool:
+    """Whether a hook entry is one den wrote: an object whose command (`key`:
+    settings_json's "command", copilot's "bash") is text carrying the marker.
+    list and strip both ask this, so what `den hook list` shows is exactly what
+    install and remove take out, and an entry den never wrote (a command that
+    is null or a number) is neither listed nor taken out, nor makes them raise."""
     if not isinstance(hook, dict):
         return False
-    command = hook.get("command")
+    command = hook.get(key)
     return isinstance(command, str) and _MARKER in command
 
 
@@ -673,31 +675,36 @@ def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
 # --- copilot: flat {version, hooks:{event:[{type,bash}]}}, marker in "bash" --- #
 
 
-def _strip_copilot(hooks: dict) -> dict:
+def _strip_copilot(hooks: object) -> object:
+    """_strip_den_hooks for copilot's flat event lists: only an entry whose
+    `bash` is den's comes out, every other entry stays (one that is not an
+    object, or whose `bash` is not text, included), and an event goes only when
+    den's entries were all it held. A shape den never writes stays as it is, and
+    when nothing of den's is in it, `hooks` itself comes back."""
     if not isinstance(hooks, dict):
-        return {}
-    cleaned: dict[str, list] = {}
+        return hooks
+    cleaned: dict = {}
     for event, arr in hooks.items():
         if not isinstance(arr, list):
+            cleaned[event] = arr
             continue
-        kept = [
-            h for h in arr if isinstance(h, dict) and _MARKER not in h.get("bash", "")
-        ]
-        if kept:
+        kept = [h for h in arr if not _is_den_hook(h, "bash")]
+        if kept or not arr:
             cleaned[event] = kept
-    return cleaned
+    # Equal exactly when nothing came out: the entries kept are the same objects.
+    return hooks if cleaned == hooks else cleaned
 
 
 def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    if not _backup_if_unmergeable(config, spec["events"].values()):
+    entries = {
+        native: [{"type": "command", "bash": _run_command(tool, generic, den_dir)}]
+        for generic, native in spec["events"].items()
+    }
+    if not _backup_if_unmergeable(config, entries):
         return False
     data = _read_json(config)
     data["version"] = data.get("version", 1)
-    hooks = _strip_copilot(data.get("hooks", {}))
-    for generic, native in spec["events"].items():
-        cmd = _run_command(tool, generic, den_dir)
-        hooks.setdefault(native, []).append({"type": "command", "bash": cmd})
-    data["hooks"] = hooks
+    data["hooks"] = _add_den_entries(_strip_copilot(data.get("hooks", {})), entries)
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return True
@@ -712,7 +719,7 @@ def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
         for event, arr in hooks.items()
         if isinstance(arr, list)
         for h in arr
-        if isinstance(h, dict) and _MARKER in h.get("bash", "")
+        if _is_den_hook(h, "bash")
     ]
 
 
@@ -722,7 +729,10 @@ def _remove_copilot(tool: str, spec: dict, config: Path) -> bool:
     data = _read_json(config)
     if "hooks" not in data:
         return True
-    data["hooks"] = _strip_copilot(data["hooks"])
+    cleaned = _strip_copilot(data["hooks"])
+    if cleaned is data["hooks"]:
+        return True  # nothing of den's: leave the file byte-identical
+    data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
     config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
