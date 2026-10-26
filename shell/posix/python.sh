@@ -74,13 +74,16 @@ pip3() {
 # uv.toml's settings can have it install and run a python the clone ships; and
 # it runs the program a .python-version names to ask its version (a
 # .python-versions as well, which it reads the same way). A .python-version
-# counts only when it names a path: a line with / or \ in it, comment (#) and
-# blank lines aside. One that holds version requests alone (3.13,
-# cpython@3.13) does not, so a pyenv ~/.python-version leaves home alone.
-# Fails when there is none. uv starts from the directory the system reports,
-# with its symbolic links resolved (pwd -P).
+# counts only when it names a path, comment (#) and blank lines aside: a line
+# with / or \ in it, or one that, trimmed of white space as uv trims it, names
+# a file or directory in the current directory. uv looks such a name up there,
+# not beside the file, and takes a directory for a venv and runs its python.
+# One that holds version requests alone (3.13, cpython@3.13) does not count,
+# so a pyenv ~/.python-version leaves home alone, unless the current directory
+# holds something of the same name. Fails when there is none. uv starts from
+# the directory the system reports, with its symbolic links resolved (pwd -P).
 _den_py_marker() {
-    local d f l
+    local d f l n t w c rest ws=''
     d=$(pwd -P 2>/dev/null) || d=$PWD
     while :; do
         for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version .python-versions; do
@@ -89,11 +92,43 @@ _den_py_marker() {
                 # A regular file, as uv reads: a link to /dev/zero or a FIFO
                 # would not end.
                 [ -f "${d%/}/$f" ] && [ -r "${d%/}/$f" ] || continue
+                n=0
                 while IFS= read -r l || [ -n "$l" ]; do
+                    case $l in ''|'#'*) continue ;; esac
+                    # A line over 128 characters, or a 65th one, counts without
+                    # the checks below: no version request is that long, nor
+                    # is a file of them, and trimming such lines here would
+                    # take seconds.
+                    n=$((n + 1))
+                    if [ "$n" -gt 64 ] || [ "${#l}" -gt 128 ]; then
+                        printf '%s\n' "${d%/}/$f"
+                        return 0
+                    fi
                     case ${l#"${l%%[! ]*}"} in
-                        '#'*) ;;
+                        '#'*) continue ;;
                         *[/\\]*) printf '%s\n' "${d%/}/$f"; return 0 ;;
                     esac
+                    # uv trims each line with Rust's str::trim, which takes off
+                    # the Unicode White_Space characters: here in UTF-8, each
+                    # followed by a comma.
+                    [ -n "$ws" ] || ws=$(printf ' ,\t,\v,\f,\r,\302\205,\302\240,\341\232\200,\342\200\200,\342\200\201,\342\200\202,\342\200\203,\342\200\204,\342\200\205,\342\200\206,\342\200\207,\342\200\210,\342\200\211,\342\200\212,\342\200\250,\342\200\251,\342\200\257,\342\201\237,\343\200\200,')
+                    t=$l
+                    while :; do
+                        w=$t
+                        rest=$ws
+                        while [ -n "$rest" ]; do
+                            c=${rest%%,*}
+                            rest=${rest#*,}
+                            case $t in "$c"*) t=${t#"$c"} ;; esac
+                            case $t in *"$c") t=${t%"$c"} ;; esac
+                        done
+                        [ "$t" = "$w" ] && break
+                    done
+                    case $t in ''|'#'*) continue ;; esac
+                    if [ -e "$t" ]; then
+                        printf '%s\n' "${d%/}/$f"
+                        return 0
+                    fi
                 done < "${d%/}/$f"
                 continue
             fi

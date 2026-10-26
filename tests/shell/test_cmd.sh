@@ -786,6 +786,23 @@ assert_eq "cmd/python: the findstr patterns pick the lines that name a path" "./
 /opt/py
 x/y" "$picked"
 
+echo "[cmd] python's walk also counts a version file line that names something in the current directory"
+# uv trims the line and looks a bare name up in the current directory, not
+# beside the file, and takes a directory there for a venv. The first for /f
+# drops the spaces and tabs before the line (tokens=* with the default
+# delims, a space and a tab) and skips a comment (eol=#; the default, ;,
+# would skip a line that names ;x); the second cuts it at a tab, and Windows
+# drops the spaces after a name. if exist tests it from the current
+# directory, as uv does, so a drive-relative C:name resolves the same way.
+names=$(printf '%s\n' "$walk" | grep -F 'for /f' || true)
+assert_eq "cmd/python: one for /f line reads the version files" "1" "$(printf '%s\n' "$names" | grep -c 'for /f')"
+assert_contains "cmd/python: for /f reads each version file, with its errors silenced" \
+    'for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f ' "$names"
+assert_contains "cmd/python: a second for /f cuts the line at a tab" \
+    "do for /f \"tokens=1 eol=# delims=$(printf '\t')\" %%n in (\"%%l\") do " "$names"
+assert_contains "cmd/python: a name found from the current directory makes the file the marker" \
+    'do if not defined _m if exist "%%n" set "_m=%_d%\%%f") 2>nul' "$names"
+
 echo "[cmd] pip outside a venv runs nothing"
 # The no-venv branch ends before uv pip: `uv pip` would pick the .venv in or
 # above the current directory and run its python.

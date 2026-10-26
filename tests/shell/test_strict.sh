@@ -120,12 +120,14 @@ fresh_run() {
     : > "$p/tracked/.tracked"
     cp -R "$STUBS/venv-template" "$p/writable"
     chmod o+w "$p/writable/bin/Activate.ps1"
-    mkdir -p "$p/proj" "$p/uvproj" "$p/pvproj" "$p/pvonly" "$p/pvsproj"
+    mkdir -p "$p/proj" "$p/uvproj" "$p/pvproj" "$p/pvonly" "$p/pvsproj" "$p/pvdir/tools" "$p/pvlong"
     : > "$p/proj/pyproject.toml"
     : > "$p/uvproj/uv.toml"
     printf '# pinned\n\n./tools/py\n' > "$p/pvproj/.python-version"
     printf './tools/py\n' > "$p/pvsproj/.python-versions"
     printf '3.13\n' > "$p/pvonly/.python-version"
+    printf ' tools\t\n' > "$p/pvdir/.python-version"
+    printf '%200s3.13\n' '' > "$p/pvlong/.python-version"
     printf '%s\n' ". (Join-Path \$env:STRICT_DEN 'init.ps1')" > "$RUN/profile.ps1"
 }
 
@@ -794,6 +796,8 @@ Case 'python, a uv.toml here' { Set-Location -LiteralPath uvproj; python -c x }
 Case 'python, a .python-version that names a path here' { Set-Location -LiteralPath pvproj; python -c x }
 Case 'python, a .python-version of a version alone here' { Set-Location -LiteralPath pvonly; python -c x }
 Case 'python, a .python-versions that names a path here' { Set-Location -LiteralPath pvsproj; python -c x }
+Case 'python, a .python-version that names a directory here' { Set-Location -LiteralPath pvdir; python -c x }
+Case 'python, a .python-version line over 128 characters here' { Set-Location -LiteralPath pvlong; python -c x }
 Case 'python3, a pyproject.toml here, in a venv' { Set-Location -LiteralPath proj; Invoke-InVenv { python3 -c x } }
 Case 'py, a pyproject.toml here, no python found' {
     $env:STRICT_NO_PYTHON = '1'

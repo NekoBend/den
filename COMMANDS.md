@@ -318,11 +318,18 @@ keeps), except where uv would build or run code that came with a clone:
   left a `.venv` and a `uv.lock` behind) or runs a python the clone ships: the
   python of a venv it committed (uv takes a directory that holds a
   `pyvenv.cfg` for a venv, whatever its name), one a `uv.toml`'s settings have
-  uv install, or the program a `.python-version` names. A `.python-version`
-  names a path when a line of it holds `/` or `\`, comment (`#`) and blank
-  lines aside; one of version requests alone (`3.13`, `cpython@3.13`) is no
-  marker, so a pyenv `~/.python-version` leaves home alone. A
-  `.python-versions`, which uv reads the same way, counts on the same terms.
+  uv install, or the program or venv a `.python-version` names. A
+  `.python-version` names a path when a line of it, comment (`#`) and blank
+  lines aside, holds `/` or `\`, or, trimmed of white space as uv trims it,
+  names a file or directory in the current directory: uv looks such a name up
+  there, not beside the file, and takes a directory for a venv and runs its
+  python. One of version requests alone (`3.13`, `cpython@3.13`) is no
+  marker, so a pyenv `~/.python-version` leaves home alone, unless the
+  current directory holds something of the same name. bash, zsh and pwsh
+  also count a line over 128 characters, or a 65th one, without looking
+  further; cmd trims spaces and tabs only, not the rest of the white space uv
+  trims (`U+00A0` and the like). A `.python-versions`, which uv reads the
+  same way, counts on the same terms.
   There a python runs directly instead: the active venv's own, with no line,
   else, after a warning line, the system Python uv finds, else one uv
   installed (`uv python install`). Type `uv run python` to use the project.

@@ -1120,7 +1120,8 @@ ROUTE_BIN="$R/bin"
 ROUTE_LOG="$R/uvcalls"
 mkdir -p "$ROUTE_BIN" "$R/sys" "$R/managed" "$R/venv/bin" "$R/proj/sub" "$R/vproj/.venv" "$R/cfgvenv/bin" "$R/cfgvenv/sub" \
     "$R/uvtoml/sub" "$R/pyver/sub" "$R/pyverbs" "$R/pyveronly" "$R/nopyvenv/bin" "$R/pyvers/sub" \
-    "$R/pyverzw" "$R/pyverbom"
+    "$R/pyverzw" "$R/pyverbom" "$R/pyverdir/tools" "$R/pyverdir/sub" "$R/pyverdir/sub2/tools" "$R/pyverpad/tools" \
+    "$R/pyver313/3.13" "$R/pyverlong" "$R/pyvermany"
 cat > "$ROUTE_BIN/uv" << EOF
 #!/bin/sh
 echo "\$*" >> "$ROUTE_LOG"
@@ -1154,6 +1155,18 @@ printf './tools/py\n' > "$R/pyvers/.python-versions"
 # both lines were comments.
 printf '\342\200\213#x/tools/py\n' > "$R/pyverzw/.python-version"
 printf '\357\273\277#x/tools/py\n' > "$R/pyverbom/.python-version"
+# uv looks a bare name up in the current directory, not beside the file, and
+# takes a directory for a venv, whose python it runs (pyverdir/; from its
+# sub2/, which holds a tools/ as well, too; from its sub/, which holds none,
+# not). It trims the line of every Unicode White_Space character first
+# (pyverpad/), and a version request that names a directory here counts as
+# well (pyver313/). A line over 128 characters, or a 65th one, counts as it
+# is (pyverlong/, pyvermany/).
+printf 'tools\n' > "$R/pyverdir/.python-version"
+printf '\302\240\t tools \343\200\200\r\n' > "$R/pyverpad/.python-version"
+printf '3.13\n' > "$R/pyver313/.python-version"
+printf '%200s3.13\n' '' > "$R/pyverlong/.python-version"
+for _ in $(seq 65); do printf '3.13\n'; done > "$R/pyvermany/.python-version"
 # uv reads a regular file only: one that links to /dev/zero is skipped, and
 # reading it would not end (pyverzero/).
 mkdir -p "$R/pyverzero"
@@ -1225,6 +1238,31 @@ rc=0" "$actual"
 
     echo "[$sh] beside a .python-version whose path line starts with U+200B, or a byte order mark, and then #: the same"
     for c in pyverzw pyverbom; do
+        actual=$(route_posix "$sh" "$R/$c" "python -c pass")
+        assert_eq "$sh/python beside $c's .python-version runs the system python" "system-python -c pass
+rc=0" "$actual"
+        assert_eq "$sh/python beside $c's .python-version names it" \
+            "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/$c/.python-version" "$(cat "$R/err")"
+    done
+
+    echo "[$sh] beside a .python-version whose line names a directory here, with no / in it: the same"
+    actual=$(route_posix "$sh" "$R/pyverdir" "python -c pass")
+    assert_eq "$sh/python beside a .python-version that names a directory here runs the system python" "system-python -c pass
+rc=0" "$actual"
+    assert_eq "$sh/python beside a .python-version that names a directory here names it" \
+        "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyverdir/.python-version" "$(cat "$R/err")"
+    echo "[$sh] below it, the name counts where the current directory holds it, as uv looks it up there"
+    actual=$(route_posix "$sh" "$R/pyverdir/sub2" "python3 -c pass")
+    assert_eq "$sh/python3 below that .python-version, in a directory that holds the name too, runs the system python" "system-python -c pass
+rc=0" "$actual"
+    assert_eq "$sh/python3 below that .python-version, in a directory that holds the name too, names it" \
+        "python3: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyverdir/.python-version" "$(cat "$R/err")"
+    actual=$(route_posix "$sh" "$R/pyverdir/sub" "python3 -c pass")
+    assert_eq "$sh/python3 below that .python-version, in a directory that does not hold the name, goes through uv run" "mock-uv run -- python -c pass
+rc=0" "$actual"
+
+    echo "[$sh] the name padded with Unicode white space, a version request that names a directory here, a line over 128 characters, a 65th line: the same"
+    for c in pyverpad pyver313 pyverlong pyvermany; do
         actual=$(route_posix "$sh" "$R/$c" "python -c pass")
         assert_eq "$sh/python beside $c's .python-version runs the system python" "system-python -c pass
 rc=0" "$actual"
@@ -1370,6 +1408,25 @@ system-python -c pass" "$actual"
 
 echo "[pwsh] beside a .python-version whose path line starts with U+200B, or a byte order mark, and then #: the same"
 for c in pyverzw pyverbom; do
+    actual=$(route_pwsh "$R/$c" "python -c pass")
+    assert_eq "pwsh/python beside $c's .python-version runs the system python" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/$c/.python-version
+system-python -c pass" "$actual"
+done
+
+echo "[pwsh] beside a .python-version whose line names a directory here, with no / in it: the same"
+actual=$(route_pwsh "$R/pyverdir" "python -c pass")
+assert_eq "pwsh/python beside a .python-version that names a directory here runs the system python" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/pyverdir/.python-version
+system-python -c pass" "$actual"
+echo "[pwsh] below it, the name counts where the current directory holds it, as uv looks it up there"
+actual=$(route_pwsh "$R/pyverdir/sub2" "python3 -c pass")
+assert_eq "pwsh/python3 below that .python-version, in a directory that holds the name too, runs the system python" "WARNING: python3: running $R/sys/python3, not uv run: uv run would build or run code from $R/pyverdir/.python-version
+system-python -c pass" "$actual"
+actual=$(route_pwsh "$R/pyverdir/sub" "python3 -c pass")
+assert_eq "pwsh/python3 below that .python-version, in a directory that does not hold the name, goes through uv run" "HOST: python3 -c pass → uv run -- python -c pass
+mock-uv run -- python -c pass" "$actual"
+
+echo "[pwsh] the name padded with Unicode white space, a version request that names a directory here, a line over 128 characters, a 65th line: the same"
+for c in pyverpad pyver313 pyverlong pyvermany; do
     actual=$(route_pwsh "$R/$c" "python -c pass")
     assert_eq "pwsh/python beside $c's .python-version runs the system python" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $R/$c/.python-version
 system-python -c pass" "$actual"
@@ -1550,21 +1607,27 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
             UV_PYTHON_INSTALL_DIR="$d/pythons" UV_PYTHON_BIN_DIR="$d/bin" UV_CACHE_DIR="$d/uvcache" \
             XDG_CONFIG_HOME="$d/config" "$@"
     }
-    # mk_clones <dir> - six clones under <dir>, each piece of whose code
+    # mk_clones <dir> - seven clones under <dir>, each piece of whose code
     # writes its name to <dir>/marks when it runs: build/ has a pyproject.toml
     # whose build backend is in the repository, venv/ commits a .venv and a
     # .python-version that names a program in the repository, cfg/ commits
     # a pyvenv.cfg and a bin/python at its top, with no pyproject.toml and no
     # .venv, pyver/ commits only the .python-version and its program, pyvers/
-    # the same as a .python-versions, and uvtoml/ is mk_uvtoml_clone's. uv run
-    # built the first, for `python --version` too, and left a .venv and a
-    # uv.lock in it; in the second it ran the .venv's python, and the
-    # .python-version's program when it read that file; below the third it ran
-    # its bin/python, as uv takes a directory with a pyvenv.cfg for a venv; in
-    # the fourth and fifth it ran the program; and in the sixth it installed the
-    # clone's python and ran it.
+    # the same as a .python-versions, uvtoml/ is mk_uvtoml_clone's, and bare/
+    # commits a .python-version that holds the name tools alone, with no /,
+    # and a tools/bin/python. uv run built the first, for `python --version`
+    # too, and left a .venv and a uv.lock in it; in the second it ran the
+    # .venv's python, and the .python-version's program when it read that
+    # file; below the third it ran its bin/python, as uv takes a directory with
+    # a pyvenv.cfg for a venv; in the fourth and fifth it ran the program; in
+    # the sixth it installed the clone's python and ran it; and in the seventh
+    # it took tools/ for a venv and ran its python.
     mk_clones() {
         mk_uvtoml_clone "$1"
+        mkdir -p "$1/bare/tools/bin"
+        printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" bare-python "$WORK/uv_probe/bin/python" > "$1/bare/tools/bin/python"
+        chmod +x "$1/bare/tools/bin/python"
+        printf 'tools\n' > "$1/bare/.python-version"
         mkdir -p "$1/pyver/tools" "$1/pyvers/tools"
         printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" pyver-program "$WORK/uv_probe/bin/python" > "$1/pyver/tools/py"
         printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" pyvers-program "$WORK/uv_probe/bin/python" > "$1/pyvers/tools/py"
@@ -1584,9 +1647,10 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
         printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" cfg-python "$WORK/uv_probe/bin/python" > "$1/cfg/bin/python"
         chmod +x "$1/cfg/bin/python"
     }
-    # pyver/ and uvtoml/ are a threat only while the real uv here runs their
-    # code: plain uv run shows that once, in clones of their own, or their
-    # checks are skipped, as there would be nothing to keep from running.
+    # pyver/, pyvers/, uvtoml/ and bare/ are a threat only while the real uv
+    # here runs their code: plain uv run shows that once, in clones of their
+    # own, or their checks are skipped, as there would be nothing to keep from
+    # running.
     mk_clones "$WORK/clones-uv"
     (cd "$WORK/clones-uv/pyver" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/clones-uv/config" "$REAL_UV" run -- python -c pass) >/dev/null 2>&1 || true
     PYVER_THREAT=0
@@ -1597,6 +1661,9 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
     (cd "$WORK/clones-uv/uvtoml" && in_uvtoml_env "$WORK/clones-uv" "$REAL_UV" run -- python -c pass) >/dev/null 2>&1 || true
     UVTOML_THREAT=0
     [ -e "$WORK/clones-uv/marks/uvtoml-python" ] && UVTOML_THREAT=1
+    (cd "$WORK/clones-uv/bare" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/clones-uv/config" "$REAL_UV" run -- python -c pass) >/dev/null 2>&1 || true
+    BARE_THREAT=0
+    [ -e "$WORK/clones-uv/marks/bare-python" ] && BARE_THREAT=1
     # Run with the config files read (UV_NO_CONFIG unset, with no user uv.toml in
     # XDG_CONFIG_HOME), as in a shell of one's own: uv reads a .python-version only then.
     for sh in bash zsh; do
@@ -1683,6 +1750,22 @@ pip=1" "$(printf '%s\n' "$actual" | tail -n +2)"
 11" "$actual"
             assert_not_exists "$sh/the python the clone's uv.toml names did not run" "$C/marks/uvtoml-python"
             assert_eq "$sh/no python was installed from the clone" "" "$(ls "$C/pythons" 2>/dev/null)"
+        fi
+
+        if [ "$BARE_THREAT" = 1 ]; then
+            echo "[$sh] beside a clone's .python-version that names its tools/ directory with no /, python, python3 and py run none of its code (the real uv)"
+            actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$C/config" "$sh" -c "
+                . '$PYTHON_SH_SOURCE'
+                unset VIRTUAL_ENV _DEN_VENV_PYTHON
+                cd '$C/bare' || exit 1
+                python -c 'print(15)'
+                python3 -c 'print(16)'
+                py -c 'print(17)'
+            " 2>/dev/null | tr -d '\r') || true
+            assert_eq "$sh/python, python3 and py beside a .python-version that names a directory" "15
+16
+17" "$actual"
+            assert_not_exists "$sh/the python of the directory the clone's .python-version names did not run" "$C/marks/bare-python"
         fi
     done
 
@@ -1775,6 +1858,24 @@ pip done" "$(printf '%s\n' "$actual" | tail -n +2)"
         assert_eq "pwsh/no python was installed from the clone" "" "$(ls "$C/pythons" 2>/dev/null)"
     else
         echo "  SKIP: real-uv uv.toml clone checks (uv run here did not install and run the python the clone's uv.toml names)"
+    fi
+
+    if [ "$BARE_THREAT" = 1 ]; then
+        echo "[pwsh] beside a clone's .python-version that names its tools/ directory with no /, python, python3 and py run none of its code (the real uv)"
+        actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$C/config" pwsh -NoProfile -NonInteractive -Command "
+            . '$PYTHON_PS1_REAL_UV'
+            Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
+            Set-Location -LiteralPath '$C/bare'
+            python -c 'print(15)' 3>\$null
+            python3 -c 'print(16)' 3>\$null
+            py -c 'print(17)' 3>\$null
+        " 2>/dev/null | tr -d '\r') || true
+        assert_eq "pwsh/python, python3 and py beside a .python-version that names a directory" "15
+16
+17" "$actual"
+        assert_not_exists "pwsh/the python of the directory the clone's .python-version names did not run" "$C/marks/bare-python"
+    else
+        echo "  SKIP: real-uv bare-name .python-version clone checks (uv run here did not run the python of the directory the clone's .python-version names)"
     fi
 else
     echo "  SKIP: uv-created venv tests (uv not installed, or no Python it can use offline)"

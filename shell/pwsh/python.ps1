@@ -78,15 +78,25 @@ function pip3 {
 # runs the python in it; a uv.toml's settings can have it install and run a
 # python the clone ships; and it runs the program a .python-version names to
 # ask its version (a .python-versions as well, which it reads the same way). A
-# .python-version counts only when it names a path: a line with / or \ in it,
-# comment (#) and blank lines aside. One that holds version requests alone
-# (3.13, cpython@3.13) does not, so a pyenv ~/.python-version leaves home
-# alone. Windows hands uv the directory as PowerShell has it; Linux and macOS
-# resolve its symbolic links first, so there a linked directory's target is
-# searched as well.
+# .python-version counts only when it names a path, comment (#) and blank lines
+# aside: a line with / or \ in it, or one that, trimmed of white space as uv
+# trims it, names a file or directory in the current directory. uv looks such
+# a name up there, not beside the file, and takes a directory for a venv and
+# runs its python. One that holds version requests alone (3.13, cpython@3.13)
+# does not count, so a pyenv ~/.python-version leaves home alone, unless the
+# current directory holds something of the same name. Windows hands uv the
+# directory as PowerShell has it; Linux and macOS resolve its symbolic links
+# first, so there a linked directory's target is searched as well.
 function global:_DenPyMarker {
+  # The directory uv runs in, where it looks a name up: PowerShell's location.
+  $here = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+  # The white space uv trims off a line: Rust's str::trim takes the Unicode
+  # White_Space characters. Listed, as .Trim()'s own set follows the Unicode
+  # tables of the runtime it runs on.
+  $ws = [char[]]@(9, 10, 11, 12, 13, 0x20, 0x85, 0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
+    0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000)
   $starts = [System.Collections.Generic.List[string]]::new()
-  $starts.Add($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath)
+  $starts.Add($here)
   for ($i = 0; $i -lt $starts.Count -and $i -lt 16; $i++) {
     $dir = $starts[$i]
     while ($dir) {
@@ -111,9 +121,27 @@ function global:_DenPyMarker {
         # starts with U+200B or a byte order mark and then # is no comment
         # to uv.
         try { $text = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($path)) } catch { continue }
+        $n = 0
         foreach ($line in $text -split "`n") {
-          $line = $line.TrimStart(' ')
-          if (-not $line.StartsWith('#', [System.StringComparison]::Ordinal) -and $line.IndexOfAny([char[]]'/\') -ge 0) { return $path }
+          if (-not $line -or $line.StartsWith('#', [System.StringComparison]::Ordinal)) { continue }
+          # A line over 128 characters, or a 65th one, counts without the
+          # checks below, as in python.sh, where trimming such lines would
+          # take seconds: no version request is that long, nor is a file of
+          # them.
+          if (++$n -gt 64 -or $line.Length -gt 128) { return $path }
+          $lead = $line.TrimStart(' ')
+          if ($lead.StartsWith('#', [System.StringComparison]::Ordinal)) { continue }
+          if ($lead.IndexOfAny([char[]]'/\') -ge 0) { return $path }
+          $bare = $line.Trim($ws)
+          if (-not $bare -or $bare.StartsWith('#', [System.StringComparison]::Ordinal)) { continue }
+          try {
+            # A drive-relative C:name, on Windows, would resolve here from
+            # this process's own directory on that drive, not from $here as
+            # uv's does: it counts as it is.
+            if ([System.IO.Path]::IsPathRooted($bare)) { return $path }
+            $entry = [System.IO.Path]::Combine($here, $bare)
+            if ([System.IO.File]::Exists($entry) -or [System.IO.Directory]::Exists($entry)) { return $path }
+          } catch { $null = $_ }
         }
       }
       if (-not (_OnWindows)) {
