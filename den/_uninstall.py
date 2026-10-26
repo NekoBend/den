@@ -488,20 +488,16 @@ def _stage_skills(
     names = _skill_names()
     den_free = _den_free_skills()
 
-    def parent_bytes(dest: Path, parent_file: str) -> bytes | None:
-        """The parent content to treat as den-identical at dest. den install
-        writes either profile, so accept whichever one matches the disk;
-        with no match, stage the frontier bytes (the remover then keeps the
-        file and reports it as modified)."""
-        sources = [_parent_source(parent_file, p) for p in ("frontier", "weak")]
-        for src in sources:
-            if (
-                src.is_file()
-                and dest.is_file()
-                and dest.read_bytes() == src.read_bytes()
-            ):
-                return src.read_bytes()
-        return sources[0].read_bytes() if sources[0].is_file() else None
+    def stage_parent(dest: Path) -> None:
+        """Stage both contents `den install` may have written to the parent
+        file `dest`, the frontier and the weak profile: _plan removes it when
+        it matches either, and keeps and reports it otherwise. dest itself
+        is not read here. _plan reads it after the symlink rule, and names a
+        file it cannot read."""
+        for profile in ("frontier", "weak"):
+            src = _parent_source(dest.name, profile)
+            if src.is_file():
+                remover.stage(dest, src.read_bytes())
 
     def do(skills_target: Path, parent_dir: Path, parent_file: str | None) -> None:
         for name in names:
@@ -514,9 +510,7 @@ def _stage_skills(
                 _install_skill(name, skills_target, remover, no_den_cli=True)
         remover.boundary(parent_dir)
         if with_parent and parent_file:
-            content = parent_bytes(parent_dir / parent_file, parent_file)
-            if content is not None:
-                remover.stage(parent_dir / parent_file, content)
+            stage_parent(parent_dir / parent_file)
 
     if not tools and not targets:
         sk, pd, pf = _TOOLS["claude"]
@@ -547,9 +541,7 @@ def _stage_skills(
         remover.confine(root)
         do(root / "skills", root, "AGENTS.md")
         if with_parent:
-            content = parent_bytes(root / "CLAUDE.md", "CLAUDE.md")
-            if content is not None:
-                remover.stage(root / "CLAUDE.md", content)
+            stage_parent(root / "CLAUDE.md")
 
 
 def _parse_skills(

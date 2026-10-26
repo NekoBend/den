@@ -309,6 +309,72 @@ def test_uninstall_parent_only_with_flag(tmp_path, monkeypatch):
     assert not agents.is_file()
 
 
+def test_uninstall_with_parent_keeps_an_edited_parent(tmp_path, monkeypatch, capsys):
+    # both profiles are staged now: a parent matching neither is still kept
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    _install(tmp_path, "--with-parent")
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(agents.read_text() + "\nMY RULE\n")
+    rc = uninstall_main(["skills", "--target", str(tmp_path), "--with-parent", "--yes"])
+    assert rc == 0
+    assert agents.read_text().endswith("\nMY RULE\n")
+    assert not (tmp_path / "CLAUDE.md").exists()
+    assert "Keeping files you changed" in capsys.readouterr().out
+
+
+@_mode_bits
+def test_uninstall_with_parent_refuses_a_linked_unreadable_parent(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """--with-parent read the destination parent while staging, before the
+    symlink rule ran, so an AGENTS.md linked to a file den may not read
+    raised PermissionError out of uninstall. The link is now refused like
+    any other below a --target, without being read."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    repo = tmp_path / "repo"
+    _install(repo, "--with-parent")
+    secret = tmp_path / "secret.md"
+    secret.write_text("not den's\n")
+    (repo / "AGENTS.md").unlink()
+    symlink(secret, repo / "AGENTS.md")
+    secret.chmod(0)
+    try:
+        rc = uninstall_main(["skills", "--target", str(repo), "--with-parent", "--yes"])
+    finally:
+        secret.chmod(0o644)
+    assert (repo / "AGENTS.md").is_symlink()
+    assert secret.read_text() == "not den's\n"
+    assert not (repo / "skills").exists() and not (repo / "CLAUDE.md").exists()
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert f"refusing to remove {repo.resolve() / 'AGENTS.md'}: it is a symlink" in err
+
+
+@_mode_bits
+def test_uninstall_with_parent_reports_a_linked_unreadable_parent_in_a_tool_dir(
+    tmp_path, monkeypatch, symlink, capsys
+):
+    """In a tool dir, which follows links, the same parent is read in the
+    plan, where a file den cannot read is named and fails the run; it no
+    longer raises out of the staging."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert install_main(["skills", "--tool", "claude", "--with-parent"]) == 0
+    parent = tmp_path / ".claude" / "CLAUDE.md"  # HOME is tmp_path
+    secret = tmp_path / "secret.md"
+    secret.write_text("not den's\n")
+    parent.unlink()
+    symlink(secret, parent)
+    secret.chmod(0)
+    try:
+        rc = uninstall_main(["skills", "--tool", "claude", "--with-parent", "--yes"])
+    finally:
+        secret.chmod(0o644)
+    assert parent.is_symlink() and secret.read_text() == "not den's\n"
+    assert not (tmp_path / ".claude" / "skills").exists()
+    assert rc == 1
+    assert f"den uninstall: cannot read {parent}:" in capsys.readouterr().err
+
+
 # ---- --target workspaces are never removed through a symlink (as on install) ----
 
 
