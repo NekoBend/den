@@ -66,12 +66,27 @@ A Pester test for the pure part lives in `Get-Order.Tests.ps1`
 ```powershell
 Describe 'Get-Order' {
     It 'returns a typed object for a well-formed payload' {
-        Mock curl { '{"id":"o1","status":"open","total":"12.50"}' }
+        Mock curl {
+            $global:LASTEXITCODE = 0
+            '{"id":"o1","status":"open","total":"12.50"}'
+        }
         $o = Get-Order -OrderId o1
         $o.Total | Should -BeOfType [decimal]
     }
+
+    It 'throws when curl fails' {
+        Mock curl { $global:LASTEXITCODE = 22 }
+        { Get-Order -OrderId o1 } | Should -Throw '*exit code 22*'
+    }
 }
 ```
+
+A mocked `curl` is a PowerShell command, so calling it leaves
+`$LASTEXITCODE` as it was: unset in a fresh session (an error under
+StrictMode), or the exit code of an earlier native command. Each mock
+therefore sets `$global:LASTEXITCODE` to the exit code it stands for:
+0 for the payload, 22 (curl's `--fail` code for an HTTP error) for the
+failure.
 
 Points a reviewer should recognize from the reference: no
 `Write-Host` in library code, no `Format-*` in the function, the

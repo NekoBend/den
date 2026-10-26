@@ -11,6 +11,9 @@ test guards against, as an outside review (2026-10) found it in the old text:
   function, the trap did not run and the temp file stayed behind.
 - Example 5 and shell-structure.md section 9 ended the script with a bare
   `main "$@"` and said the script could be sourced: sourcing it ran main.
+- examples/powershell.md's Pester mock of curl returned the JSON but left
+  $LASTEXITCODE alone, so Get-Order read whatever the session held: nothing
+  (a StrictMode error) or an earlier native command's exit code.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "agents" / "src" / "skills" / "coding" / "examples"
 REFERENCE = ROOT / "agents" / "src" / "shared" / "reference"
 BASH = shutil.which("bash")
+PWSH = shutil.which("pwsh")
 
 needs_bash = pytest.mark.skipif(
     sys.platform == "win32" or BASH is None, reason="runs the examples under bash"
@@ -209,3 +213,127 @@ def test_main_runs_when_executed_and_not_when_sourced(tmp_path, script, start):
         assert proc.stdout == "defined: function\n"
     else:
         assert proc.stdout == "process_orders ran with: o1 o2\n"
+
+
+# --- examples/powershell.md: the Pester test -----------------------------------
+
+# Stand-ins for the Pester 5 commands the example uses (Pester is not a test
+# dependency). Mock makes a command of the mocked name that runs the mock's
+# body, as Pester's alias to its bootstrap function does: neither touches
+# $LASTEXITCODE. Each It runs once per state the session can be in before it:
+# no native command run yet (unset), an earlier one failed (1) or passed (0).
+# Before each It, curl is a function that throws, so an unmocked call fails
+# the test instead of reaching the network.
+_PESTER = r"""param([string]$Code, [string]$Tests)
+$ErrorActionPreference = 'Stop'
+$script:state = ''
+
+function Describe([string]$Name, [scriptblock]$Fixture) { & $Fixture }
+
+function Mock([string]$CommandName, [scriptblock]$MockWith) {
+    Set-Item -Path "function:global:$CommandName" -Value $MockWith
+}
+
+function It([string]$Name, [scriptblock]$Test) {
+    Set-Item -Path function:global:curl -Value { throw 'curl ran without a mock' }
+    if ($script:state -eq 'unset') {
+        Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
+    } else {
+        $global:LASTEXITCODE = [int]$script:state
+    }
+    try {
+        & $Test
+        "PASS [$script:state] $Name"
+    } catch {
+        "FAIL [$script:state] $Name :: $_"
+    }
+}
+
+function Should {
+    [CmdletBinding(PositionalBinding = $false)]
+    param(
+        [Parameter(ValueFromPipeline)] $ActualValue,
+        $BeOfType,
+        [switch] $Throw,
+        [Parameter(Position = 0)] [string] $ExpectedMessage = '*'
+    )
+    process {
+        if ($Throw) {
+            try { & $ActualValue } catch {
+                if ($_.Exception.Message -notlike $ExpectedMessage) {
+                    throw "threw '$($_.Exception.Message)', not '$ExpectedMessage'"
+                }
+                return
+            }
+            throw 'expected a throw, got none'
+        }
+        if ($null -ne $BeOfType) {
+            # Pester takes a type, or its name with or without [ ] around it.
+            $type = $BeOfType
+            if ($type -is [string]) {
+                $type = ($type -replace '^\[(.*)\]$', '$1') -as [type]
+            }
+            if ($ActualValue -isnot $type) {
+                throw "expected [$type], got $ActualValue"
+            }
+            return
+        }
+        throw 'this stand-in knows only -BeOfType and -Throw'
+    }
+}
+
+. $Code
+foreach ($s in 'unset', '1', '0') {
+    $script:state = $s
+    . $Tests
+}
+"""
+
+
+@pytest.mark.skipif(PWSH is None, reason="runs the example under pwsh")
+def test_pester_example_passes_whatever_lastexitcode_the_session_holds(tmp_path):
+    text = (EXAMPLES / "powershell.md").read_text(encoding="utf-8")
+    code, tests = _fenced(text, "powershell")
+    its = len(re.findall(r"(?m)^\s*It '", tests))
+    assert its, "the Pester block has no It"
+    drive, code_ps1, tests_ps1 = (
+        tmp_path / "drive.ps1",
+        tmp_path / "Get-Order.ps1",
+        tmp_path / "Get-Order.Tests.ps1",
+    )
+    drive.write_text(_PESTER, encoding="utf-8")
+    code_ps1.write_text(code, encoding="utf-8")
+    tests_ps1.write_text(tests, encoding="utf-8")
+    assert PWSH is not None
+    # pwsh on Linux writes its caches under XDG: keep them out of $HOME
+    env = {
+        **os.environ,
+        "POWERSHELL_TELEMETRY_OPTOUT": "1",
+        "POWERSHELL_UPDATECHECK": "Off",
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "XDG_DATA_HOME": str(tmp_path / "data"),
+    }
+    proc = subprocess.run(
+        [
+            PWSH,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(drive),
+            "-Code",
+            str(code_ps1),
+            "-Tests",
+            str(tests_ps1),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    results = [r for r in proc.stdout.splitlines() if r.startswith(("PASS", "FAIL"))]
+    assert [r for r in results if r.startswith("FAIL")] == []
+    assert len(results) == 3 * its, proc.stdout
