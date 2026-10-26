@@ -238,6 +238,57 @@ def test_uninstall_reports_an_rc_file_it_cannot_unwire(tmp_path, capsys):
     assert "2 rc file(s) not unwired; see the warnings above" in err
 
 
+@_mode_bits
+@pytest.mark.parametrize("locked", ["file", "dir"])
+def test_uninstall_reports_a_file_it_cannot_read(tmp_path, monkeypatch, capsys, locked):
+    """A den file that uninstall could not read when it listed the plan was
+    passed over without a word: exit 0, the file still there. A skill dir it
+    may not search raised PermissionError out of the plan instead (3.12, and
+    3.13 under --target). Each file is now named, and the run fails."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    _install(tmp_path)
+    planned = len(_files(tmp_path / "skills"))
+    skill_dir = tmp_path / "skills" / "grounding"
+    stuck = [skill_dir / "SKILL.md"] if locked == "file" else _files(skill_dir)
+    lock = stuck[0] if locked == "file" else skill_dir
+    mode = lock.stat().st_mode
+    lock.chmod(0)
+    try:
+        rc = uninstall_main(["skills", "--target", str(tmp_path), "--yes"])
+    finally:
+        lock.chmod(mode)
+    assert all(p.is_file() for p in stuck)
+    assert rc == 1, "a file den could not read is a failed uninstall"
+    out, err = capsys.readouterr()
+    assert f"removed {planned - len(stuck)} file(s)" in out
+    for p in stuck:
+        assert f"den uninstall: cannot read {p}:" in err
+    assert f"could not read {len(stuck)} file(s) listed above" in err
+
+
+@_mode_bits
+def test_uninstall_reports_an_rc_file_it_cannot_read(tmp_path, monkeypatch, capsys):
+    """An rc file holding den's block that uninstall could not read was
+    taken for one without a block: 'Nothing to remove.', exit 0, and the
+    block stayed. It is now named, and the run fails."""
+    from den._shell import _BASH_LINE, _COMMENT
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    bashrc = tmp_path / ".bashrc"  # HOME is tmp_path (isolate_user_dirs)
+    original = f"export A=1\n\n{_COMMENT}\n{_BASH_LINE}\n"
+    bashrc.write_text(original)
+    bashrc.chmod(0)
+    try:
+        rc = uninstall_main(["shell", "--yes"])
+    finally:
+        bashrc.chmod(0o644)
+    assert bashrc.read_text() == original
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert f"den uninstall: cannot read {bashrc}:" in err
+    assert "could not read 1 file(s) listed above" in err
+
+
 def test_uninstall_parent_only_with_flag(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     _install(tmp_path, "--with-parent")

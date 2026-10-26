@@ -96,9 +96,9 @@ prompt is open is kept and named. A `--target` directory gets the same
 symlink rule as on install: a path that reaches a symlink below it is
 refused and reported, never removed through. The run exits non-zero when it
 refuses such a path, keeps a file saved while the prompt was open, or cannot
-remove a file or rewrite an rc file (each one is named, and the closing count
-holds only what was really removed). Hooks are per-workspace, so
-`den uninstall` does not touch them; use `den uninstall hook`.
+read or remove a file, or read or rewrite an rc file (each one is named, and
+the closing count holds only what was really removed). Hooks are
+per-workspace, so `den uninstall` does not touch them; use `den uninstall hook`.
 
 Being stateless has one cost: when den stops deploying something (a retired
 tool, a renamed skill, a deleted script), the old copy is no longer anything

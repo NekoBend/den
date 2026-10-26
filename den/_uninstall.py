@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -24,17 +25,35 @@ from . import _ui
 _ERR = "den uninstall"
 
 
+def _read_file(path: Path) -> bytes | None:
+    """The bytes of the regular file at `path`; None when there is none there
+    (absent, a dangling link, a directory). OSError when den cannot tell or
+    cannot read it (a permission error, a directory it may not search): the
+    file may well be den's, so the caller reports it instead of passing it
+    over as absent."""
+    try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            return None
+        return path.read_bytes()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
 def _has_block(rc: Path, line: str) -> bool:
+    """Whether `rc` holds den's block. False when there is no regular file
+    there, or one that does not decode; OSError when one is there but cannot
+    be read (see _read_file)."""
     from ._shell import _COMMENT, _decode_rc
 
-    if not rc.is_file():
+    raw = _read_file(rc)
+    if raw is None:
         return False
     try:
         # In the file's own encoding (a UTF-16 PowerShell profile gets den's
         # block in UTF-16, see _shell._wire); UTF-8 is lossless, and
         # `errors="ignore"` would DROP every byte that is not valid UTF-8.
-        text, _codec = _decode_rc(rc.read_bytes())
-    except (OSError, UnicodeDecodeError):
+        text, _codec = _decode_rc(raw)
+    except UnicodeDecodeError:
         return False
     # den-managed only when the marker line is immediately followed by den's
     # exact wire line (what _wire writes, and what _strip_block removes). A
@@ -140,8 +159,8 @@ class _Remover:
 
     commit returns 1 when part of the plan did not happen without the user
     choosing so: a path refused, a file kept because it changed after den
-    checked it, or a file or rc file den failed to remove or rewrite (each
-    named on stderr and left out of the closing count)."""
+    checked it, or a file or rc file den failed to read, remove or rewrite
+    (each named on stderr and left out of the closing count)."""
 
     def __init__(self) -> None:
         self._files: list[tuple[Path, bytes]] = []
@@ -178,35 +197,51 @@ class _Remover:
             candidates.setdefault(dest, []).append(content)
         return candidates
 
-    def _plan(self) -> tuple[list[Path], list[Path], list[tuple[Path, str]], int]:
+    def _plan(
+        self,
+    ) -> tuple[list[Path], list[Path], list[tuple[Path, str]], int, int]:
         """(files to delete, files to keep, rc files to unwire, the number of
-        paths refused under a confined root)."""
+        paths refused under a confined root, the number of files and rc files
+        den could not read). Each refusal and each read error is named on
+        stderr: a file den cannot inspect may well be den's, or hold its
+        block, so it is not passed over as absent."""
         from ._install import _confined
         from ._memory import _refuse_symlink, _symlink_component
 
         delete: list[Path] = []
         keep: list[Path] = []
-        refused = 0
+        refused = unreadable = 0
         candidates = self._candidates()
         for dest in candidates:
-            guard = _confined(self._roots, dest)
-            if guard is not None and _symlink_component(*guard) is not None:
-                # Left alone, never removed through the link. A link that
-                # leads to nothing has nothing behind it to remove, so only a
-                # path that is there is refused (one line each on stderr).
-                if os.path.lexists(dest) and _refuse_symlink(*guard, "remove", _ERR):
-                    refused += 1
-                continue
-            if not dest.is_file():
-                continue
             try:
-                on_disk = dest.read_bytes()
-            except OSError:
+                guard = _confined(self._roots, dest)
+                if guard is not None and _symlink_component(*guard) is not None:
+                    # Left alone, never removed through the link. A link that
+                    # leads to nothing has nothing behind it to remove, so
+                    # only a path that is there is refused (one line each).
+                    if os.path.lexists(dest) and _refuse_symlink(
+                        *guard, "remove", _ERR
+                    ):
+                        refused += 1
+                    continue
+                on_disk = _read_file(dest)
+            except OSError as e:
+                print(f"{_ERR}: cannot read {dest}: {e}", file=sys.stderr)
+                unreadable += 1
+                continue
+            if on_disk is None:
                 continue
             same = any(on_disk == c for c in candidates[dest])
             (delete if same else keep).append(dest)
-        unwire = [(rc, line) for rc, line in self._unwire if _has_block(rc, line)]
-        return delete, keep, unwire, refused
+        unwire: list[tuple[Path, str]] = []
+        for rc, line in self._unwire:
+            try:
+                if _has_block(rc, line):
+                    unwire.append((rc, line))
+            except OSError as e:
+                print(f"{_ERR}: cannot read {rc}: {e}", file=sys.stderr)
+                unreadable += 1
+        return delete, keep, unwire, refused, unreadable
 
     @staticmethod
     def _show(
@@ -214,11 +249,18 @@ class _Remover:
         keep: list[Path],
         unwire: list[tuple[Path, str]],
         refused: int,
+        unreadable: int,
     ) -> bool:
         """Print the plan; False when there is nothing to remove."""
         if refused:
             print(
                 f"  refused {refused} path(s) listed above; nothing was removed there",
+                file=sys.stderr,
+            )
+        if unreadable:
+            print(
+                f"  could not read {unreadable} file(s) listed above;"
+                " they are left as they are",
                 file=sys.stderr,
             )
         if keep:
@@ -227,7 +269,9 @@ class _Remover:
                 _ui.say(f"  {d}", style="yellow")
         if not delete and not unwire:
             _ui.say(
-                "Nothing else to remove." if keep or refused else "Nothing to remove."
+                "Nothing else to remove."
+                if keep or refused or unreadable
+                else "Nothing to remove."
             )
             return False
         _ui.say("To be removed:")
@@ -252,18 +296,18 @@ class _Remover:
         removed: list[Path] = []
         late = failed = 0
         for d in delete:
-            guard = _confined(self._roots, d)
-            if guard is not None and _refuse_symlink(*guard, "remove", _ERR):
-                late += 1
-                continue
             try:
-                data = d.read_bytes()
-            except FileNotFoundError:
-                continue  # deleted while the prompt was open: nothing to do
+                guard = _confined(self._roots, d)
+                if guard is not None and _refuse_symlink(*guard, "remove", _ERR):
+                    late += 1
+                    continue
+                data = _read_file(d)
             except OSError as e:
                 print(f"  warning: {d}: {e}", file=sys.stderr)
                 failed += 1
                 continue
+            if data is None:
+                continue  # gone since the plan was listed: nothing to remove
             if not any(data == c for c in candidates[d]):
                 late += 1
                 print(f"  kept {d}: it changed after den checked it", file=sys.stderr)
@@ -295,9 +339,9 @@ class _Remover:
         """Delete what _plan found, after one confirmation. 1 when part of the
         plan did not happen (see the class docstring) or a non-interactive
         run lacks --yes, else 0."""
-        delete, keep, unwire, refused = self._plan()
-        status = 1 if refused else 0
-        if not self._show(delete, keep, unwire, refused):
+        delete, keep, unwire, refused, unreadable = self._plan()
+        status = 1 if refused or unreadable else 0
+        if not self._show(delete, keep, unwire, refused, unreadable):
             return status
         if dry_run:
             _ui.say("(dry-run; nothing changed)")
@@ -321,7 +365,7 @@ class _Remover:
             not_done.append(f"{unwire_failed} rc file(s) not unwired")
         if not_done:
             print(f"  {', '.join(not_done)}; see the warnings above", file=sys.stderr)
-        return 1 if refused or late or failed or unwire_failed else 0
+        return 1 if status or late or failed or unwire_failed else 0
 
     @staticmethod
     def _drop_pycache(cur: Path) -> None:
