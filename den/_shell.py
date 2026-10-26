@@ -27,10 +27,14 @@ plugin just turns the feature off.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from ._content import shell_dir
@@ -147,6 +151,38 @@ def _copy(src: Path, dst: Path, writer: _Stager, *, dry_run: bool) -> None:
         print(f"  [dry] {dst}")
         return
     writer.stage(dst, src.read_bytes())
+
+
+def _replace_bytes(path: Path, data: bytes) -> None:
+    """Put `data` in place of the file at `path` without truncating it first.
+
+    The bytes go to a new file beside it, which then replaces it in one
+    rename, so a write that fails part-way (a full disk, an I/O error) leaves
+    the file as it was instead of empty or cut short. The new file gets the
+    old one's permission bits. A symlink is followed: its target is replaced
+    and the link stays, as an in-place write would have left it. A file den
+    may not write is refused (PermissionError), as the in-place write refused
+    it, although its directory would let the rename through. Shared with
+    _uninstall, which strips den's block from an rc file this way."""
+    real = path.resolve()
+    mode = stat.S_IMODE(real.stat().st_mode)
+    if not os.access(real, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+    fd, name = tempfile.mkstemp(
+        prefix=f"{real.name}.", suffix=".den-tmp", dir=real.parent
+    )
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.chmod(mode)
+        tmp.replace(real)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 def _bom_codec(raw: bytes) -> tuple[bytes, str]:
