@@ -7,8 +7,12 @@ rem keep its exit code and run their fallback only without it; findw runs fd
 rem whatever the toggle, and says so without it; there is no find shim, so
 rem typed find is find.exe; no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
-rem unchanged; python3 runs a venv's python.exe; path lists PATH; again
-rem asks before it re-runs.
+rem unchanged; python3 runs a venv's python.exe; python and python3 run a
+rem python directly, not uv run, under a pyproject.toml, beside a .venv,
+rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path
+rem or something in the current directory, for --version / -V too, and
+rem elsewhere uv run for those as well; pip runs nothing outside a venv;
+rem path lists PATH; again asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -195,6 +199,248 @@ call "%BIN%\python3.cmd" -V >"%O%" 2>&1
 call :expect %errorlevel% 0 "python3: the venv's python.exe"
 set "VIRTUAL_ENV="
 set "_DEN_VENV_PYTHON="
+
+rem --- python and pip where uv would build or run a clone's code. FAKE_SELF
+rem makes each copy of the stand-in name its folder first; as uv it answers
+rem `uv python find --system --no-config` with FAKE_FIND_SYSTEM or
+rem FAKE_FIND_MANAGED. The line on stderr comes before python's output.
+mkdir "%T%\sys" "%T%\managed" "%T%\proj\sub" "%T%\vproj\.venv" "%T%\cfgvenv\Scripts" "%T%\cfgvenv\sub" || exit /b 1
+copy /y "%T%\tools\fake.exe" "%T%\sys\python.exe" >nul || exit /b 1
+copy /y "%T%\tools\fake.exe" "%T%\managed\python.exe" >nul || exit /b 1
+copy /y "%T%\tools\fake.exe" "%T%\cfgvenv\Scripts\python.exe" >nul || exit /b 1
+>"%T%\proj\pyproject.toml" echo [project]
+rem uv takes a directory that holds a pyvenv.cfg for a venv, whatever its name.
+>"%T%\cfgvenv\pyvenv.cfg" echo home = %T%\sys
+set "FAKE_SELF=1"
+set "FAKE_FIND_SYSTEM=%T%\sys\python.exe"
+set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
+cd /d "%T%\proj\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\proj\pyproject.toml
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: under a pyproject.toml, the system python and a line, not uv run"
+cd /d "%T%\vproj" || exit /b 1
+>"%W%" echo python3: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\vproj\.venv
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python3: beside a .venv, the system python and a line, not uv run"
+cd /d "%T%\cfgvenv\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\cfgvenv\pyvenv.cfg
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: below a pyvenv.cfg, the system python and a line, not uv run"
+rem A uv.toml counts whatever it holds, and a .python-version when a line
+rem names a path (here with \ and after a comment and a blank line); one of
+rem version requests alone, with a path only in a comment line, does not.
+mkdir "%T%\uvtoml\sub" "%T%\pyver\sub" "%T%\pyveronly" || exit /b 1
+>"%T%\uvtoml\uv.toml" echo python-preference = "only-managed"
+>"%T%\pyver\.python-version" echo # pinned to the one in tools\
+>>"%T%\pyver\.python-version" echo(
+>>"%T%\pyver\.python-version" echo   .\tools\py
+>"%T%\pyveronly\.python-version" echo 3.13
+>>"%T%\pyveronly\.python-version" echo cpython@3.13
+>>"%T%\pyveronly\.python-version" echo   # not .\tools\py
+cd /d "%T%\uvtoml\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\uvtoml\uv.toml
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: below a uv.toml, the system python and a line, not uv run"
+cd /d "%T%\pyver\sub" || exit /b 1
+>"%W%" echo python3: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyver\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python3: below a .python-version that names a path, the system python and a line, not uv run"
+rem uv reads a .python-versions the same way.
+mkdir "%T%\pyvers\sub" || exit /b 1
+>"%T%\pyvers\.python-versions" echo ./tools/py
+cd /d "%T%\pyvers\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyvers\.python-versions
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: below a .python-versions that names a path, the system python and a line, not uv run"
+rem uv trims white space alone and keeps a byte order mark: a line that
+rem starts with U+200B, or the mark, and then # names a path to it.
+rem PowerShell writes the bytes, so this file holds no character beyond
+rem ASCII.
+mkdir "%T%\pyverzw" "%T%\pyverbom" || exit /b 1
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$u = New-Object Text.UTF8Encoding $false; [IO.File]::WriteAllBytes($env:T + '\pyverzw\.python-version', $u.GetBytes([string][char]0x200B + '#x/tools/py' + [char]10)); [IO.File]::WriteAllBytes($env:T + '\pyverbom\.python-version', [byte[]](@(0xEF, 0xBB, 0xBF) + $u.GetBytes('#x/tools/py' + [char]10)))" || exit /b 1
+cd /d "%T%\pyverzw" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyverzw\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: beside a .python-version with U+200B before #, the system python and a line, not uv run"
+cd /d "%T%\pyverbom" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyverbom\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: beside a .python-version with a byte order mark before #, the system python and a line, not uv run"
+rem A line that names something in the current directory counts as well,
+rem without the spaces and tabs around it (pyvpad), and a version request
+rem too (pyv313): uv looks a bare name up there, not beside the file, and
+rem takes a directory for a venv. Below the file it counts where the
+rem current directory holds the name (pyvdir\sub2), and not elsewhere
+rem (pyvdir\sub).
+mkdir "%T%\pyvdir\tools" "%T%\pyvdir\sub" "%T%\pyvdir\sub2\tools" "%T%\pyvpad\tools" "%T%\pyv313\3.13" || exit /b 1
+>"%T%\pyvdir\.python-version" echo tools
+>"%T%\pyv313\.python-version" echo 3.13
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "[IO.File]::WriteAllText($env:T + '\pyvpad\.python-version', [string][char]9 + '  tools ' + [char]9 + [char]13 + [char]10)" || exit /b 1
+cd /d "%T%\pyvdir" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyvdir\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: beside a .python-version that names a directory here, the system python and a line, not uv run"
+cd /d "%T%\pyvdir\sub2" || exit /b 1
+>"%W%" echo python3: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyvdir\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python3: below it, in a directory that holds the name too, the system python and a line, not uv run"
+cd /d "%T%\pyvdir\sub" || exit /b 1
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python3: below it, in a directory that does not hold the name, uv run"
+cd /d "%T%\pyvpad" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyvpad\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: beside a .python-version that names a directory here between spaces and tabs, the system python and a line, not uv run"
+cd /d "%T%\pyv313" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\pyv313\.python-version
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: beside a .python-version whose version request names a directory here, the system python and a line, not uv run"
+cd /d "%T%\pyveronly" || exit /b 1
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python: beside a .python-version of version requests alone, uv run as before"
+cd /d "%T%\proj\sub" || exit /b 1
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\proj\pyproject.toml
+>>"%W%" echo [@sys]
+>>"%W%" echo [--version]
+call "%BIN%\python.cmd" --version >"%O%" 2>&1
+call :expect %errorlevel% 0 "python --version: in a project, the system python and a line"
+rem In a venv, its python.exe and no line, in a project too (bash, zsh and
+rem pwsh do the same).
+set "VIRTUAL_ENV=%T%\venv"
+>"%W%" echo [@Scripts]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: in a venv in a project, the venv's python.exe and no line"
+set "VIRTUAL_ENV="
+cd /d "%T%\work" || exit /b 1
+rem stdout only: the line on stderr holds a non-ASCII arrow
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [--version]
+call "%BIN%\python.cmd" --version >"%O%" 2>nul
+call :expect %errorlevel% 0 "python --version: outside a project, uv run as any other call"
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-V]
+call "%BIN%\python3.cmd" -V >"%O%" 2>nul
+call :expect %errorlevel% 0 "python3 -V: outside a project, uv run as any other call"
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python: outside a project, uv run as before"
+cd /d "%T%\proj" || exit /b 1
+set "FAKE_FIND_SYSTEM="
+>"%W%" echo python: running %T%\managed\python.exe, not uv run: uv run would build or run code from %T%\proj\pyproject.toml
+>>"%W%" echo [@managed]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: no system python, one uv installed"
+set "FAKE_FIND_MANAGED="
+>"%W%" echo python: no Python found to run in place of uv run; uv python install installs one
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 1 "python: no python to run, an error and nothing runs"
+set "FAKE_FIND_SYSTEM=%T%\sys\python.exe"
+set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
+>"%W%" echo pip: no venv is active; activate a venv you made (its Scripts\activate), or type uv pip install foo directly
+call "%BIN%\pip.cmd" install foo >"%O%" 2>&1
+call :expect %errorlevel% 1 "pip: no venv, nothing runs"
+set "VIRTUAL_ENV=%T%\venv"
+>"%W%" echo [@tools]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv pip"
+copy /y "%T%\tools\fake.exe" "%T%\venv\Scripts\pip.exe" >nul || exit /b 1
+>"%W%" echo [@Scripts]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>&1
+call :expect %errorlevel% 0 "pip: the venv's own pip.exe"
+del "%T%\venv\Scripts\pip.exe"
+set "VIRTUAL_ENV="
+
+rem --- no python.exe, pip.exe or uv.exe in the current directory runs
+cd /d "%T%\cwd" || exit /b 1
+for %%e in (python pip uv) do copy /y "%SystemRoot%\System32\hostname.exe" "%T%\cwd\%%e.exe" >nul
+copy /y "%T%\tools\fake.exe" "%T%\tools\python.exe" >nul || exit /b 1
+copy /y "%T%\tools\fake.exe" "%T%\tools\pip.exe" >nul || exit /b 1
+set "_DEN_UV_OVERRIDE=0"
+>"%W%" echo [@tools]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: python.exe from PATH, not the current directory"
+>"%W%" echo [@tools]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>&1
+call :expect %errorlevel% 0 "pip: pip.exe from PATH, not the current directory"
+set "_DEN_UV_OVERRIDE="
+>"%W%" echo [@tools]
+>>"%W%" echo [--version]
+call "%BIN%\uv.cmd" --version >"%O%" 2>&1
+call :expect %errorlevel% 0 "uv: uv.exe from PATH, not the current directory"
+del "%T%\tools\python.exe" "%T%\tools\pip.exe"
+set "FAKE_SELF="
+set "FAKE_FIND_SYSTEM="
+set "FAKE_FIND_MANAGED="
+cd /d "%T%\work" || exit /b 1
 
 rem --- path.cmd lists PATH (typed `path` stays cmd's own command)
 call "%BIN%\path.cmd" >"%O%" 2>&1

@@ -35,11 +35,18 @@ _show_uv_only_message() {
     printf '%s → %s\n' "$1" "$2" >&2
 }
 
-# pip → uv pip (an active venv's own pip when it has one)
-# A venv made by uv (vv, vva) has no pip: a PATH lookup then found another
-# Python's pip, which installed there. uv pip installs into the active venv.
+# pip → the active venv's own pip when it has one, else uv pip, which installs
+# into the active venv: a venv made by uv (vv, vva) has no pip, and a PATH
+# lookup then found another Python's pip, which installed there. With no venv
+# active, pip runs nothing: uv pip would pick an environment itself, the .venv
+# in this directory or one above it, and run the python in it, which may be one
+# a cloned repository committed. va activates a venv after checking that it did
+# not come with the clone.
 pip() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/pip" ]; then
+    if [ -z "$VIRTUAL_ENV" ]; then
+        printf 'pip: no venv is active; activate one with va, or type uv pip%s directly\n' "${*:+ $*}" >&2
+        return 1
+    elif [ -x "$VIRTUAL_ENV/bin/pip" ]; then
         "$VIRTUAL_ENV/bin/pip" "$@"
     else
         _show_uv_only_message "pip${*:+ $*}" "uv pip${*:+ $*}"
@@ -47,9 +54,12 @@ pip() {
     fi
 }
 
-# pip3 → uv pip (an active venv's own pip3 when it has one)
+# pip3 → the same, with an active venv's own pip3
 pip3() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/pip3" ]; then
+    if [ -z "$VIRTUAL_ENV" ]; then
+        printf 'pip3: no venv is active; activate one with va, or type uv pip%s directly\n' "${*:+ $*}" >&2
+        return 1
+    elif [ -x "$VIRTUAL_ENV/bin/pip3" ]; then
         "$VIRTUAL_ENV/bin/pip3" "$@"
     else
         _show_uv_only_message "pip3${*:+ $*}" "uv pip${*:+ $*}"
@@ -57,35 +67,133 @@ pip3() {
     fi
 }
 
-# py → uv run python (uses venv version when active)
-py() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ]; then
+# _den_py_marker → print the pyproject.toml, .venv, pyvenv.cfg, uv.toml or
+# .python-version that uv run would read from here: the first one in this
+# directory or a directory above it. uv takes a directory that holds a
+# pyvenv.cfg for a venv, whatever its name, and runs the python in it; a
+# uv.toml's settings can have it install and run a python the clone ships; and
+# it runs the program a .python-version names to ask its version (a
+# .python-versions as well, which it reads the same way). A .python-version
+# counts only when it names a path, comment (#) and blank lines aside: a line
+# with / or \ in it, or one that, trimmed of white space as uv trims it, names
+# a file or directory in the current directory. uv looks such a name up there,
+# not beside the file, and takes a directory for a venv and runs its python.
+# One that holds version requests alone (3.13, cpython@3.13) does not count,
+# so a pyenv ~/.python-version leaves home alone, unless the current directory
+# holds something of the same name. Fails when there is none. uv starts from
+# the directory the system reports, with its symbolic links resolved (pwd -P).
+_den_py_marker() {
+    local d f l n t w c rest ws=''
+    d=$(pwd -P 2>/dev/null) || d=$PWD
+    while :; do
+        for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version .python-versions; do
+            [ -e "${d%/}/$f" ] || continue
+            if [ "$f" = .python-version ] || [ "$f" = .python-versions ]; then
+                # A regular file, as uv reads: a link to /dev/zero or a FIFO
+                # would not end.
+                [ -f "${d%/}/$f" ] && [ -r "${d%/}/$f" ] || continue
+                n=0
+                while IFS= read -r l || [ -n "$l" ]; do
+                    case $l in ''|'#'*) continue ;; esac
+                    # A line over 128 characters, or a 65th one, counts without
+                    # the checks below: no version request is that long, nor
+                    # is a file of them, and trimming such lines here would
+                    # take seconds.
+                    n=$((n + 1))
+                    if [ "$n" -gt 64 ] || [ "${#l}" -gt 128 ]; then
+                        printf '%s\n' "${d%/}/$f"
+                        return 0
+                    fi
+                    case ${l#"${l%%[! ]*}"} in
+                        '#'*) continue ;;
+                        *[/\\]*) printf '%s\n' "${d%/}/$f"; return 0 ;;
+                    esac
+                    # uv trims each line with Rust's str::trim, which takes off
+                    # the Unicode White_Space characters: here in UTF-8, each
+                    # followed by a comma.
+                    [ -n "$ws" ] || ws=$(printf ' ,\t,\v,\f,\r,\302\205,\302\240,\341\232\200,\342\200\200,\342\200\201,\342\200\202,\342\200\203,\342\200\204,\342\200\205,\342\200\206,\342\200\207,\342\200\210,\342\200\211,\342\200\212,\342\200\250,\342\200\251,\342\200\257,\342\201\237,\343\200\200,')
+                    t=$l
+                    while :; do
+                        w=$t
+                        rest=$ws
+                        while [ -n "$rest" ]; do
+                            c=${rest%%,*}
+                            rest=${rest#*,}
+                            case $t in "$c"*) t=${t#"$c"} ;; esac
+                            case $t in *"$c") t=${t%"$c"} ;; esac
+                        done
+                        [ "$t" = "$w" ] && break
+                    done
+                    case $t in ''|'#'*) continue ;; esac
+                    if [ -e "$t" ]; then
+                        printf '%s\n' "${d%/}/$f"
+                        return 0
+                    fi
+                done < "${d%/}/$f"
+                continue
+            fi
+            printf '%s\n' "${d%/}/$f"
+            return 0
+        done
+        case $d in ''|/) return 1 ;; esac
+        d=${d%/*}
+    done
+}
+
+# _den_py_exe → print the python to run in uv run's place when no venv's own
+# runs: the system Python uv finds, else one uv installed (uv python install).
+# Fails when there is none. --system skips the .venv here, and --no-config the
+# .python-version, uv.toml and pyproject.toml here: a .python-version may name
+# a program in the repository, which uv would run to ask its version.
+_den_py_exe() {
+    local p kind
+    for kind in --no-managed-python --managed-python; do
+        p=$(command uv python find --system --no-config "$kind" 2>/dev/null) &&
+            [ -n "$p" ] && [ -x "$p" ] && { printf '%s\n' "$p"; return 0; }
+    done
+    return 1
+}
+
+# _den_py <name> [args...] → python, python3 and py: uv run python, with the
+# version of the venv va activated, and outside a venv a line on stderr that
+# says so. Not where uv run would build or run code that came with a clone:
+# with one of _den_py_marker's files in this directory or one above it, uv run
+# builds that project (its build backend is the repository's own code) or runs
+# a python it names, even for `python --version`. There a python runs directly,
+# for --version and -V too: the active venv's own, with no line, as on cmd,
+# else, after a line on stderr, the one _den_py_exe names. Elsewhere --version
+# and -V go through uv run as well, so they name the python that `python x.py`
+# runs.
+_den_py() {
+    local name=$1 marker exe
+    shift
+    if marker=$(_den_py_marker); then
+        if [ -n "$VIRTUAL_ENV" ]; then
+            for exe in "$VIRTUAL_ENV/bin/python" "$VIRTUAL_ENV/Scripts/python.exe"; do
+                if [ -x "$exe" ]; then
+                    "$exe" "$@"
+                    return
+                fi
+            done
+        fi
+        if ! exe=$(_den_py_exe); then
+            printf '%s: no Python found to run in place of uv run; uv python install installs one\n' "$name" >&2
+            return 1
+        fi
+        printf '%s: running %s, not uv run: uv run would build or run code from %s\n' "$name" "$exe" "$marker" >&2
+        "$exe" "$@"
+    elif [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ]; then
         command uv run --python "$_DEN_VENV_PYTHON" -- python "$@"
     else
-        _show_uv_only_message "py${*:+ $*}" "uv run -- python${*:+ $*}"
+        _show_uv_only_message "$name${*:+ $*}" "uv run -- python${*:+ $*}"
         command uv run -- python "$@"
     fi
 }
 
-# python → uv run python (uses venv version when active)
-python() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ]; then
-        command uv run --python "$_DEN_VENV_PYTHON" -- python "$@"
-    else
-        _show_uv_only_message "python${*:+ $*}" "uv run -- python${*:+ $*}"
-        command uv run -- python "$@"
-    fi
-}
-
-# python3 → uv run python (uses venv version when active)
-python3() {
-    if [ -n "$VIRTUAL_ENV" ] && [ -n "$_DEN_VENV_PYTHON" ]; then
-        command uv run --python "$_DEN_VENV_PYTHON" -- python "$@"
-    else
-        _show_uv_only_message "python3${*:+ $*}" "uv run -- python${*:+ $*}"
-        command uv run -- python "$@"
-    fi
-}
+# python, python3, py → _den_py
+python() { _den_py python "$@"; }
+python3() { _den_py python3 "$@"; }
+py() { _den_py py "$@"; }
 
 fi
 
@@ -215,7 +323,7 @@ vva() {
 # toggle-uv → flip uv python/pip override on/off
 toggle-uv() {
     if [ "${_DEN_UV_OVERRIDE:-1}" = "1" ]; then
-        unset -f uv python python3 pip pip3 py _show_uv_only_message 2>/dev/null
+        unset -f uv python python3 pip pip3 py _show_uv_only_message _den_py _den_py_marker _den_py_exe 2>/dev/null
         export _DEN_UV_OVERRIDE=0
         echo "uv override: OFF (using system python/pip)"
     else

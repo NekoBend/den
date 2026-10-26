@@ -192,14 +192,19 @@ def test_cmd_uv_passes_the_run_arguments_through_as_typed():
     # Windows CI job runs the shim; this pins the shape it relies on: the
     # raw argument text, cut after `run`, goes to uv.exe through delayed
     # expansion (after cmd has parsed the line), and CRLF keeps its goto
-    # label findable in a file this size.
+    # label findable in a file this size. uv.exe is the one on PATH: a bare
+    # uv.exe ran one in the current directory first.
     raw = (_CMD_BIN / "uv.cmd").read_bytes()
     assert raw.count(b"\n") == raw.count(b"\r\n"), "uv.cmd must use CRLF line endings"
     code = _cmd_code("uv")
     assert not [ln for ln in code if ln.lower().split()[0] == "shift"]
     assert "set _raw=%*" in code
     assert 'set "_rest=!_raw:*run=!"' in code
-    assert 'uv.exe run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code
+    where_uv = "%SystemRoot%\\System32\\where.exe $PATH:uv.exe 2^>nul"
+    find_uv = f"for /f \"delims=\" %%p in ('{where_uv}')"
+    assert f'{find_uv} do if not defined _uv set "_uv=%%p"' in code
+    assert '"!_uv!" run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code
+    assert '"%_uv%" %*' in code
 
 
 def test_cmd_touch_handles_every_operand():
@@ -218,13 +223,17 @@ def test_cmd_python3_in_a_venv_runs_the_venvs_python():
     # A Windows venv has python.exe and pythonw.exe but no python3.exe, so the
     # venv branch's `python3.exe %*` skipped the venv and found another Python
     # or the Microsoft Store stub (exit 9009). It runs the venv's python.exe
-    # when the venv has one, and python3.exe only otherwise.
+    # when the venv has one. python3.cmd is python.cmd under another name.
+    python_cmd = (_CMD_BIN / "python.cmd").read_bytes()
+    assert (_CMD_BIN / "python3.cmd").read_bytes() == python_cmd
     code = _cmd_code("python3")
-    venv_python = '"%VIRTUAL_ENV%\\Scripts\\python.exe"'
-    i = code.index(":system")
-    assert code[i + 1] == f"if defined VIRTUAL_ENV if exist {venv_python} goto :venv"
-    assert code[i + 2] == "python3.exe %*"
-    assert code[code.index(":venv") + 1] == f"{venv_python} %*"
+    venv_python = "%VIRTUAL_ENV%\\Scripts\\python.exe"
+    venv_line = (
+        f'if defined VIRTUAL_ENV if exist "{venv_python}" set "_py={venv_python}"'
+    )
+    i = code.index(venv_line)
+    assert code[i + 1] == "if defined _py goto run"
+    assert code[code.index(":run") + 1] == '"%_py%" %*'
 
 
 def test_cmd_shims_with_labels_keep_them_findable():

@@ -55,11 +55,13 @@ for t in bat lsd rg; do stub "$STUBS/modern" "$t"; done
 stub "$STUBS/modern" fd 'echo .'
 # fzf picks the first line it is given.
 stub "$STUBS/fzf" fzf 'n=0; while IFS= read -r l; do n=$((n + 1)); [ "$n" -eq 1 ] && f=$l; done; [ "$n" -gt 0 ] && printf "%s\n" "$f"'
-# uv prints nothing for the completion script completion.ps1 caches, and
-# `uv venv [name]` makes a venv from the template below.
+# uv prints nothing for the completion script completion.ps1 caches,
+# `uv venv [name]` makes a venv from the template below, and `uv python find`
+# names the stub python3 (none while STRICT_NO_PYTHON is set).
 stub "$STUBS/uv" uv "case \"\$1\" in
 generate-shell-completion) exit 0 ;;
 venv) cp -R '$STUBS/venv-template/.' \"\${2:-.venv}\"; exit 0 ;;
+python) if [ \"\$2\" = find ]; then [ -z \"\$STRICT_NO_PYTHON\" ] || exit 2; echo '$STUBS/bin/python3'; exit 0; fi ;;
 esac
 echo \"uv \$*\""
 for t in gitui code 7z unrar sudo ss xdg-open ffmpeg ffprobe pip pip3 python python3 coreutils clear; do
@@ -118,6 +120,14 @@ fresh_run() {
     : > "$p/tracked/.tracked"
     cp -R "$STUBS/venv-template" "$p/writable"
     chmod o+w "$p/writable/bin/Activate.ps1"
+    mkdir -p "$p/proj" "$p/uvproj" "$p/pvproj" "$p/pvonly" "$p/pvsproj" "$p/pvdir/tools" "$p/pvlong"
+    : > "$p/proj/pyproject.toml"
+    : > "$p/uvproj/uv.toml"
+    printf '# pinned\n\n./tools/py\n' > "$p/pvproj/.python-version"
+    printf './tools/py\n' > "$p/pvsproj/.python-versions"
+    printf '3.13\n' > "$p/pvonly/.python-version"
+    printf ' tools\t\n' > "$p/pvdir/.python-version"
+    printf '%200s3.13\n' '' > "$p/pvlong/.python-version"
     printf '%s\n' ". (Join-Path \$env:STRICT_DEN 'init.ps1')" > "$RUN/profile.ps1"
 }
 
@@ -781,6 +791,18 @@ Case 'pip3' { pip3 list }
 Case 'python' { python -V }
 Case 'python3' { python3 -V }
 Case 'py' { py -V }
+Case 'python, a pyproject.toml here' { Set-Location -LiteralPath proj; python -c x }
+Case 'python, a uv.toml here' { Set-Location -LiteralPath uvproj; python -c x }
+Case 'python, a .python-version that names a path here' { Set-Location -LiteralPath pvproj; python -c x }
+Case 'python, a .python-version of a version alone here' { Set-Location -LiteralPath pvonly; python -c x }
+Case 'python, a .python-versions that names a path here' { Set-Location -LiteralPath pvsproj; python -c x }
+Case 'python, a .python-version that names a directory here' { Set-Location -LiteralPath pvdir; python -c x }
+Case 'python, a .python-version line over 128 characters here' { Set-Location -LiteralPath pvlong; python -c x }
+Case 'python3, a pyproject.toml here, in a venv' { Set-Location -LiteralPath proj; Invoke-InVenv { python3 -c x } }
+Case 'py, a pyproject.toml here, no python found' {
+    $env:STRICT_NO_PYTHON = '1'
+    try { Set-Location -LiteralPath proj; py -c x } finally { Remove-Item Env:\STRICT_NO_PYTHON }
+}
 Case 'Show-UvOnlyMessage' { Show-UvOnlyMessage 'pip list ' 'uv pip list ' }
 Case 'va, no .venv' { va }
 Case 'va <venv>, then vd' { va venv; vd }

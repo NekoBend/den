@@ -708,6 +708,115 @@ fi
 fi
 
 # =============================================================================
+# The python, python3, pip and uv shims (run for real by the Windows job:
+# tests/shell/cmd_shims.cmd)
+# =============================================================================
+# cmd_code <shim> - the shim's lines without CRs, rem comments and echo lines.
+cmd_code() {
+    tr -d '\r' < "$CMD_BIN/$1.cmd" | grep -v -i -E '^[[:space:]]*(rem( |$)|(>&2 )?echo[ (])' || true
+}
+
+echo "[cmd] python, python3, pip and uv run no program by a bare name"
+# cmd looks a bare name up in the current directory before PATH, so a
+# python.exe, pip.exe or uv.exe kept at the top of a clone ran instead. In
+# quotes it is still bare: "python.exe" %* runs that one too, and so do a for /f
+# command string ('uv.exe python find') and a line that starts with @.
+bare_re="(^|[[:space:]&|(\"'@])(python3?|pip3?|uv)\.exe"
+bare=""
+for f in python python3 pip uv; do
+    hits=$(cmd_code "$f" | grep -E "$bare_re" || true)
+    [ -z "$hits" ] || bare="$bare$f.cmd: $hits
+"
+done
+assert_eq "cmd/python shims: no bare python.exe, pip.exe or uv.exe" "" "$bare"
+# The check itself: a bare name in each of those forms is caught; a full path
+# and where.exe's $PATH: lookup are not.
+must_catch=('python.exe %*' '"python.exe" %*' 'call "uv.exe" run' '(pip3.exe list)' \
+    "for /f \"delims=\" %%p in ('uv.exe python find') do set x=%%p" '@python.exe %*')
+caught=$(printf '%s\n' "${must_catch[@]}" '"%VIRTUAL_ENV%\Scripts\python.exe" %*' "where.exe \$PATH:uv.exe" |
+    grep -E "$bare_re" || true)
+assert_eq "cmd/python shims: the bare-name check catches each bare form" "$(printf '%s\n' "${must_catch[@]}")" "$caught"
+
+echo "[cmd] python3.cmd is python.cmd under another name"
+cmp -s "$CMD_BIN/python.cmd" "$CMD_BIN/python3.cmd" && same=yes || same=no
+assert_eq "cmd/python3.cmd is a copy of python.cmd" "yes" "$same"
+
+echo "[cmd] the python, pip and uv shims keep CRLF line endings"
+# With LF only, cmd can miss a goto label that straddles a 512-byte block.
+lf=""
+for f in python python3 pip uv; do
+    [ "$(grep -c '' "$CMD_BIN/$f.cmd")" = "$(grep -c $'\r$' "$CMD_BIN/$f.cmd")" ] || lf="$lf $f.cmd"
+done
+assert_eq "cmd/python shims: CRLF" "" "$lf"
+
+echo "[cmd] python asks uv only for a system or uv-installed python, ignoring the config here"
+# --system skips the .venv in and above the current directory, and --no-config
+# the .python-version there, which may name a program uv would run.
+finds=$(cmd_code python | grep -o 'python find [-a-z ]*-python' || true)
+assert_eq "cmd/python: uv python find --system --no-config" "python find --system --no-config --no-managed-python
+python find --system --no-config --managed-python" "$finds"
+
+echo "[cmd] python has no --version or -V case of its own"
+# Outside a project they ran the system python, which named another python
+# than the one `python x.py` runs: they go through uv run as any other call,
+# and in a project the walk sends every call to the python run directly.
+vcase=$(cmd_code python | grep -c -E -- '"(--version|-V)"' || true)
+assert_eq "cmd/python: --version and -V take the same way as any other call" "0" "$vcase"
+
+echo "[cmd] python's walk counts a uv.toml, and a .python-version or .python-versions that names a path"
+# uv run reads them from here and above; a .python-version counts when a line
+# holds / or \, comment lines aside, and so does a .python-versions, which uv
+# reads the same way. findstr from System32 reads it, so no line of it reaches
+# cmd's parser. Its patterns use only ^, " *", [...], [^...] and .*, which
+# grep -E reads the same way, so they run here on sample lines.
+walk=$(cmd_code python | sed -n '/^:walk$/,/^if defined _m goto direct$/p')
+assert_contains "cmd/python: a uv.toml is a marker" 'if not defined _m if exist "%_d%\uv.toml" set "_m=%_d%\uv.toml"' "$walk"
+pyver=$(printf '%s\n' "$walk" | grep -F '.python-version' || true)
+assert_contains "cmd/python: findstr from System32 reads a .python-version or .python-versions" \
+    'for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" "%SystemRoot%\System32\findstr.exe" /r /c:' "$pyver"
+assert_contains "cmd/python: the version file that findstr matches is the marker" \
+    '"%_d%\%%f" >nul 2>&1 && set "_m=%_d%\%%f"' "$pyver"
+pats=()
+while IFS= read -r p; do pats+=(-e "$p"); done < <(printf '%s\n' "$pyver" | grep -o '/c:"[^"]*"' | sed 's|^/c:"||; s|"$||')
+assert_eq "cmd/python: two findstr patterns" "2" "$((${#pats[@]} / 2))"
+picked=$(printf '%s\n' './tools/py' '  .\tools\py' '/opt/py' 'x/y' '# ./tools/py' '  # .\tools\py' '3.13' 'cpython@3.13' 'pypy3.10' '' |
+    grep -E "${pats[@]}" || true)
+assert_eq "cmd/python: the findstr patterns pick the lines that name a path" "./tools/py
+  .\tools\py
+/opt/py
+x/y" "$picked"
+
+echo "[cmd] python's walk also counts a version file line that names something in the current directory"
+# uv trims the line and looks a bare name up in the current directory, not
+# beside the file, and takes a directory there for a venv. The first for /f
+# drops the spaces and tabs before the line (tokens=* with the default
+# delims, a space and a tab) and skips a comment (eol=#; the default, ;,
+# would skip a line that names ;x); the second cuts it at a tab, and Windows
+# drops the spaces after a name. if exist tests it from the current
+# directory, as uv does, so a drive-relative C:name resolves the same way.
+names=$(printf '%s\n' "$walk" | grep -F 'for /f' || true)
+assert_eq "cmd/python: one for /f line reads the version files" "1" "$(printf '%s\n' "$names" | grep -c 'for /f')"
+assert_contains "cmd/python: for /f reads each version file, with its errors silenced" \
+    'for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f ' "$names"
+assert_contains "cmd/python: a second for /f cuts the line at a tab" \
+    "do for /f \"tokens=1 eol=# delims=$(printf '\t')\" %%n in (\"%%l\") do " "$names"
+assert_contains "cmd/python: a name found from the current directory makes the file the marker" \
+    'do if not defined _m if exist "%%n" set "_m=%_d%\%%f") 2>nul' "$names"
+
+echo "[cmd] pip outside a venv runs nothing"
+# The no-venv branch ends before uv pip: `uv pip` would pick the .venv in or
+# above the current directory and run its python.
+refuse=$(cmd_code pip | sed -n '/^if not defined VIRTUAL_ENV goto refuse$/p')
+after=$(cmd_code pip | sed -n '/^:refuse$/,/^:plain$/p' | grep -c -E '%_uv%|%_pip%' || true)
+assert_eq "cmd/pip: no venv goes to the refusal, which runs nothing" "if not defined VIRTUAL_ENV goto refuse 0" "$refuse $after"
+
+echo "[cmd] pip's refusal names no .venv of the current directory"
+# It refuses for a clone that commits a .venv, whose .venv\Scripts\activate is
+# then the clone's own batch file: the message must not send the user there.
+named=$(tr -d '\r' < "$CMD_BIN/pip.cmd" | sed -n '/^:refuse$/,/^:plain$/p' | grep -i -F '.venv' || true)
+assert_eq "cmd/pip: the refusal names no .venv" "" "$named"
+
+# =============================================================================
 # The PowerShell the head / tail / wc shims run
 # =============================================================================
 # A shim hands powershell.exe -Command "<text>" with its arguments in _ARG1 /
