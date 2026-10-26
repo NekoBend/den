@@ -3,7 +3,8 @@
 pytest.importorskip, like an import under `except ImportError`, turns a module
 that CI does not install into skipped tests and a green run. That is how the
 cheatsheet tests went unrun in CI: no job that runs pytest installed rich or
-structlog.
+structlog. A skip mark that looks for a command with shutil.which does the
+same: the tests job installed neither fd, sd, zsh nor ruff.
 """
 
 import ast
@@ -19,7 +20,16 @@ _DIST = {"yaml": "pyyaml"}
 _IMPORT_ERRORS = {"ImportError", "ModuleNotFoundError"}
 _PYTEST = re.compile(r"\bpython3? -m pytest\b(.*)")
 _PIP_INSTALL = re.compile(r"\bpip install\b(.*)")
+_APT_INSTALL = re.compile(r"\bapt-get install\b(.*)")
+_LINK = re.compile(r"\bln -s\S* .* (\S+)$")  # group 1: the link
 _IMPORT_CHECK = re.compile(r"""\bpython3? -c ["']import ([\w., ]+)["']""")
+# What an apt package puts on PATH, where that is not the package's name.
+_APT_COMMANDS = {"fd-find": "fdfind", "ripgrep": "rg"}
+# The commands tests/den's skip marks look for that the ubuntu runner image
+# does not ship: the one-liner tests run fd, rg and sd, the dev image's
+# zshenv tests zsh, and test_verify's real-ruff test ruff. A command that a
+# new skip mark looks for goes here, and into the tests job.
+_SKIP_COMMANDS = {"fd", "rg", "ruff", "sd", "zsh"}
 
 
 def _dist(name: str) -> str:
@@ -87,14 +97,15 @@ def _commands(job: dict) -> list[str]:
 
 def _pytest_jobs() -> dict[str, dict[str, set[str]]]:
     """Per workflow job that runs pytest: the modules its suites are skipped
-    without, and what it pip-installs and imports with `python -c` before its
-    first pytest command."""
+    without, and what it pip-installs, puts on PATH (apt-get install, ln -s)
+    and imports with `python -c` before its first pytest command."""
     jobs = {}
     for workflow in sorted((_ROOT / ".github" / "workflows").glob("*.yml")):
         parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
         for job_id, job in parsed["jobs"].items():
             needed: set[str] = set()
             installed: set[str] = set()
+            on_path: set[str] = set()
             imported: set[str] = set()
             ran_pytest = False
             for line in _commands(job):
@@ -108,12 +119,18 @@ def _pytest_jobs() -> dict[str, dict[str, set[str]]]:
                 elif m := _PIP_INSTALL.search(line):
                     args = [a for a in m.group(1).split() if not a.startswith("-")]
                     installed |= {_dist(re.split(r"[\[<>=!~;@]", a)[0]) for a in args}
+                elif m := _APT_INSTALL.search(line):
+                    args = [a for a in m.group(1).split() if not a.startswith("-")]
+                    on_path |= {_APT_COMMANDS.get(a, a) for a in args}
+                elif m := _LINK.search(line):
+                    on_path.add(m.group(1).strip("'\"").rsplit("/", 1)[-1])
                 elif m := _IMPORT_CHECK.search(line):
                     imported |= {n.strip().split(".")[0] for n in m.group(1).split(",")}
             if ran_pytest:
                 jobs[f"{workflow.name}:{job_id}"] = {
                     "needed": needed,
                     "installed": installed,
+                    "on_path": on_path,
                     "imported": imported,
                 }
     return jobs
@@ -144,3 +161,11 @@ def test_pytest_jobs_import_those_modules_before_pytest():
         if names := sorted(job["needed"] - job["imported"]):
             unchecked[job_id] = names
     assert not unchecked, 'import these in the job with python -c "import ..." first'
+
+
+def test_the_tests_job_installs_the_commands_tests_den_skips_without():
+    # Without them, 11 tests skipped in every run of the tests job and it
+    # stayed green. ruff counts from pip, the rest from apt-get or ln -s.
+    job = _pytest_jobs()["ci.yml:tests"]
+    missing = sorted(_SKIP_COMMANDS - job["on_path"] - job["installed"])
+    assert not missing, "install these in the tests job, before its pytest steps"

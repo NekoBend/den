@@ -117,14 +117,23 @@ jobs:
           # tests skip and the run stays green. tests/den/test_ci_test_deps.py
           # fails when a module some suite skips without is missing from this
           # install or from the import check below.
-          pip install pytest pyyaml rich structlog
+          # ruff: test_verify.py runs den verify against the real ruff and
+          # skips without it. Same pin as the agents job.
+          pip install pytest pyyaml rich structlog ruff==0.16.0
           # ripgrep is the fast backend of find-references.py and
           # check-broken-refs.py, and tests/agents compares it against the
           # Python-walk fallback file by file. The runner image does not ship
           # it, and without it BOTH legs of every parity test would run the
           # fallback and pass without comparing anything, so the tests fail
           # loudly rather than skip: install it here.
-          sudo apt-get update && sudo apt-get install -y ripgrep
+          # fd, sd and zsh: the runner image has none of them, and tests/den
+          # skips without them. test_cheatsheets_one_liners.py runs the sheet's
+          # fd and sd lines, test_docker_image.py the dev image's zsh startup
+          # block. Ubuntu installs fd as fdfind: link it as fd.
+          # tests/den/test_ci_test_deps.py fails when one of these commands, or
+          # ruff, is missing here.
+          sudo apt-get update && sudo apt-get install -y ripgrep fd-find sd zsh
+          sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
       - name: Test deps import
         # importorskip turns a failed install, or a release that breaks on
         # import, into skipped tests as well; importing them here fails the
