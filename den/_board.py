@@ -299,7 +299,8 @@ class _Reactions:
         self._seam = b""  # the last _SEAM_BYTES of them
 
     def snapshot(self) -> dict[str, dict[str, object]]:
-        """Task id -> {button, ts, text} of its latest reaction, read up to now."""
+        """Task id -> {button, ts, text} of its latest reaction, read up to now.
+        ts and text are each a string or None."""
         with self._lock:
             self._refresh()
             return dict(self._by_task)
@@ -359,10 +360,7 @@ class _Reactions:
         for line in _split_jsonl(block):
             # ValueError is JSONDecodeError and also int's digit limit; a line
             # nested too deep raises RecursionError. A line that raised would
-            # be read again, and raise again, on every poll after. A reaction
-            # /api/agent cannot send as strict JSON is skipped too (as in
-            # _list_reports): kept, it would fail every /api/agent for as long
-            # as the file holds it, however much follows it.
+            # be read again, and raise again, on every poll after.
             with suppress(ValueError, RecursionError):
                 rep = json.loads(line)
                 if (
@@ -371,17 +369,21 @@ class _Reactions:
                     and isinstance(rep.get("button"), str)
                     and rep["button"].startswith("task-")
                 ):
-                    reaction = {
+                    # ts and text as the server writes them, strings, or None.
+                    # A reaction stays in every /api/agent for as long as the
+                    # file holds it, however much follows it, and from the
+                    # first poll after a restart. An object whose toString is
+                    # not a function made the page throw on every poll; a nan
+                    # or inf (json.loads makes them of NaN, Infinity and the
+                    # standard 1e400) put JSON the page cannot parse in every
+                    # body, which is why such a reaction used to be skipped,
+                    # leaving its task open. Strings and None always encode.
+                    ts, text = rep.get("ts"), rep.get("text")
+                    self._by_task[rep["re"]] = {
                         "button": rep["button"],
-                        "ts": rep.get("ts"),
-                        "text": rep.get("text"),
+                        "ts": ts if isinstance(ts, str) else None,
+                        "text": text if isinstance(text, str) else None,
                     }
-                    json.dumps(
-                        {"entries": [{"reaction": reaction}]},
-                        ensure_ascii=False,
-                        allow_nan=False,
-                    )
-                    self._by_task[rep["re"]] = reaction
         self._offset += len(block)
         self._seam = (self._seam + block[-_SEAM_BYTES:])[-_SEAM_BYTES:]
 
@@ -633,7 +635,8 @@ class _Handler(BaseHTTPRequestHandler):
                 if not isinstance(entry, dict):
                     continue
                 # Only an entry this response can hold, as in _list_reports.
-                # The reaction joined below was checked when it was read.
+                # The reaction joined below holds strings and None, which
+                # always encode (see _Reactions._take).
                 json.dumps({"entries": [entry]}, ensure_ascii=False, allow_nan=False)
                 if not isinstance(entry.get("id"), str) or not entry["id"]:
                     # Occurrence-salted so duplicate id-less lines stay

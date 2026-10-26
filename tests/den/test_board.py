@@ -869,35 +869,49 @@ def test_lists_leave_out_numbers_strict_json_cannot_carry(served, number):
 
 
 @pytest.mark.parametrize("polled_before", [False, True])
-@pytest.mark.parametrize("number", ["NaN", "1e400"])
-def test_reaction_with_a_number_strict_json_cannot_carry_is_left_out(
-    served, number, polled_before
+@pytest.mark.parametrize(
+    "value",
+    [
+        # Numbers strict JSON cannot carry. Kept, they put NaN or Infinity
+        # into the body, which the page cannot parse; so the reaction was
+        # left out, and its task showed open.
+        "NaN",
+        "1e400",
+        # An object whose toString is not a function: the page threw on it,
+        # and stopped rendering, on every poll.
+        '{"toString": null}',
+        "7",
+    ],
+)
+def test_reaction_keeps_a_ts_and_text_only_when_they_are_strings(
+    served, value, polled_before
 ):
-    # Kept, such a reaction put NaN or Infinity into every /api/agent body,
-    # past the reports window too, since settlement is read over the whole
-    # file. Left out, its task shows as open.
+    # Settlement is read over the whole file, so a reaction stays in every
+    # /api/agent body past the reports window, and after a restart. The
+    # server writes strings to ts and text; anything else is listed as None,
+    # and the task stays answered.
     root, _server, port = served
     task_id = _board._append_agent(root, "task", "press done", None)
     reports = _board._reports_path(root)
     reports.write_text(
-        f'{{"button": "task-done", "re": "{task_id}", "ts": {number}}}\n'
+        f'{{"button": "task-done", "re": "{task_id}", '
+        f'"ts": {value}, "text": {value}}}\n'
     )
 
-    def listed_task():
+    def listed_reaction():
         status, body = _request(port, "GET", "/api/agent")
         assert status == 200
         (task,) = _strict_json(body)["entries"]
-        return task
+        return task.get("reaction")
 
+    reaction = {"button": "task-done", "ts": None, "text": None}
     if polled_before:
-        assert "reaction" not in listed_task()
+        assert listed_reaction() == reaction
     after = reports.stat().st_size
     note = {"button": "note", "text": "x" * _board._MAX_TEXT_LEN}
     while reports.stat().st_size - after <= _board._MAX_LIST_BYTES:
         assert _request(port, "POST", "/api/report", note)[0] == 200
-    assert "reaction" not in listed_task()
-    _react(port, task_id)
-    assert listed_task()["reaction"]["button"] == "task-done"
+    assert listed_reaction() == reaction
 
 
 def _nested(depth):
