@@ -29,7 +29,7 @@ fd PATTERN DIR              # search in specific directory
 
 ```sh
 fd -I -t f -e log -X rm         # delete all .log files (-I: gitignored ones too; -H adds hidden ones)
-fd -e jpg -x mv {} dest/        # move all .jpg to dest/
+fd -e jpg -x mv -n -- {} dest/  # move all .jpg to dest/ (-n: a name already in dest/ is skipped)
 fd -e py -x wc -l               # line count per Python file
 fd -e rs -X rustfmt             # format all Rust files (all at once with -X)
 fd -I -t f -e bak -X rm         # remove all .bak files (-I: gitignored ones too; -H adds hidden ones)
@@ -382,9 +382,16 @@ rg -l0 -F 'unwrap()' -t rust | xargs -0 -r bat       # find risky unwrap() calls
 
 ### Bulk rename files
 
+`mv -n` never overwrites: a file whose new name is taken (README.txt next to
+README.md) is skipped and keeps its old name. GNU mv 9.5 and later skip it
+silently with exit status 0 (9.2 to 9.4 exit 1), so run the same `fd` search
+again to list what was left; `mv --update=none-fail` (GNU 9.5 and later only)
+reports every skip. `fd -x` starts mv itself, so a shell alias such as
+`mv -i` never applies.
+
 ```sh
-fd -e .jpeg -x mv {} {.}.jpg                         # .jpeg → .jpg
-fd -t f -e txt -x mv {} {.}.md                       # .txt → .md
+fd -e .jpeg -x mv -n -- {} {.}.jpg                   # .jpeg → .jpg (-n: skipped if the .jpg exists)
+fd -t f -e txt -x mv -n -- {} {.}.md                 # .txt → .md (-n: skipped if the .md exists)
 fd 'test_' -t f -x rename 's/test_/spec_/' {}        # rename prefix (with rename util)
 ```
 
