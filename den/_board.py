@@ -416,9 +416,11 @@ def _existing_instance(root: Path) -> str | None:
         return None
     # Whatever listens on that port answers. ValueError covers JSONDecodeError,
     # a body that is not UTF-8 and int's digit limit; an answer nested too
-    # deep raises RecursionError, which escaped, and `den board` stopped at
-    # start.
-    with suppress(OSError, ValueError, RecursionError):
+    # deep raises RecursionError. http.client raises HTTPException, which is
+    # not an OSError, on an answer that is not HTTP (BadStatusLine), a header
+    # line past its limit (LineTooLong) and a body cut short (IncompleteRead).
+    # Each of those escaped, and `den board` stopped at start.
+    with suppress(OSError, ValueError, RecursionError, http.client.HTTPException):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_PING_TIMEOUT_S)
         try:
             conn.request("GET", "/api/ping")

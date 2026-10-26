@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import http.client
 import json
@@ -1420,6 +1421,43 @@ def test_existing_instance_survives_non_dict_ping(tmp_path, body):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(b"SSH-2.0-OpenSSH_9.6\r\n", id="not-http"),
+        pytest.param(
+            b"HTTP/1.0 200 OK\r\nX: " + b"a" * 70_000 + b"\r\n\r\n",
+            id="header-line-too-long",
+        ),
+        pytest.param(
+            b"HTTP/1.0 200 OK\r\nContent-Length: 100\r\n\r\n{}", id="body-cut-short"
+        ),
+    ],
+)
+def test_existing_instance_survives_a_ping_answer_http_client_rejects(tmp_path, answer):
+    # http.client raises HTTPException, not an OSError, on each of these: it
+    # escaped _existing_instance, and `den board` stopped at start. A stale
+    # lock can name a port another program listens on now.
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+
+        def answer_once():
+            conn, _address = srv.accept()
+            with conn, contextlib.suppress(OSError):  # the client may hang up
+                conn.recv(65536)
+                conn.sendall(answer)
+
+        thread = threading.Thread(target=answer_once, daemon=True)
+        thread.start()
+        lock = _board._lock_path(tmp_path)
+        lock.parent.mkdir(parents=True)
+        lock.write_text(json.dumps({"pid": 1, "port": srv.getsockname()[1]}))
+        assert _board._existing_instance(tmp_path) is None
+        assert not lock.exists(), "foreign responder -> stale lock cleared"
+        thread.join(timeout=5)
 
 
 # json.loads makes float inf of each, and int() raises OverflowError on it.
