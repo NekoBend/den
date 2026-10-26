@@ -288,12 +288,13 @@ its tool, though: `xz` and `zstd` refuse to decompress an upper-case `.XZ` or
 `.ZST`, and `bzip2` writes `NAME.BZ2.out`. `archive` always writes a fresh
 archive: over an existing `.zip` or `.7z` it replaces the file instead of
 updating it, so files deleted from the sources do not linger, and a source that
-is the output itself (a rerun of `pk all.7z *`) is left out. Every format exits
-non-zero when its archiver fails. A failed or interrupted `.zip`, `.7z` or
-single-file run keeps the existing output as it was; the tar formats replace it
-with whatever tar wrote. Should the existing output fail to go back in place as
-well (its folder turned read-only meanwhile), bash/zsh leave it where it waited
-and say where (`archive: previous 'out.zip' kept at ./.archive.XXXXXX/previous`).
+is the output itself (a rerun of `pk all.7z *`, or on bash/zsh a hard link to
+it under another name) is left out. Every format exits non-zero when its
+archiver fails. A failed or interrupted `.zip`, `.7z` or single-file run keeps
+the existing output as it was; the tar formats replace it with whatever tar
+wrote. Should the existing output fail to go back in place as well (its folder
+turned read-only meanwhile), bash/zsh leave it where it waited and say where
+(`archive: previous 'out.zip' kept at ./.archive.XXXXXX/previous`).
 On pwsh the `.zip` holds hidden files and folders (`.env`, `.git`) too, as
 `zip -r` does, but it stores each source under its own name (a folder as
 `name/`), where `zip -r` keeps the path as given (`alpha/config.txt`). Two
@@ -474,11 +475,12 @@ wrapper on pwsh; both accept `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
 `.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). The
 threaded forms write the archive only once tar and the compressor have both
 succeeded, so a failed run leaves no truncated archive. They also leave an
-existing output out of the new archive, so running `ptar backup.tgz .` or
-`ptar all.tgz *` again does not store the previous archive inside the new one.
-The existing output waits in a staging directory beside it while they run;
-should it fail to go back in place after a failed or interrupted run, they
-leave it there and say where, as `archive` does
+existing output out of the new archive, a hard link to it under another name
+too, so running `ptar backup.tgz .` or `ptar all.tgz *` again does not store
+the previous archive inside the new one. The existing output waits in a
+staging directory beside it while they run; should it fail to go back in
+place after a failed or interrupted run, they leave it there and say where,
+as `archive` does
 (`ptar: previous 'backup.tgz' kept at ./.ptar.XXXXXX/previous`).
 
 | Command | Does | bash/zsh | pwsh | cmd |

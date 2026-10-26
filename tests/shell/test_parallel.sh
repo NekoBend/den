@@ -503,6 +503,25 @@ for sh in bash zsh; do
     assert_eq "$sh/ptar with only the output as a source keeps it" "$(sha256sum < "$WORK/all.tgz.before")" "$(sha256sum < "$WORK/glob/all.tgz")"
     rm -rf "$WORK/glob" "$WORK/all.tgz.before"
 
+    echo "[$sh] ptar: a hard link to the output is left out too"
+    # Under another name: only a source with the output's name was checked,
+    # so latest.tgz, a hard link to backup.tgz, stayed a source, and with
+    # backup.tgz moved aside it still held the previous archive.
+    rm -rf "$WORK/hl"
+    mkdir -p "$WORK/hl"
+    echo a > "$WORK/hl/a.txt"; echo b > "$WORK/hl/b.txt"
+    $runner "$PARALLEL_SH" "cd '$WORK/hl' && ptar backup.tgz a.txt" >/dev/null 2>&1
+    ln "$WORK/hl/backup.tgz" "$WORK/hl/latest.tgz"
+    cp "$WORK/hl/backup.tgz" "$WORK/hl.before"
+    $runner "$PARALLEL_SH" "cd '$WORK/hl' && ptar backup.tgz latest.tgz" >/dev/null 2>"$WORK/hl.err"
+    assert_failure "$sh/ptar with only a hard link to the output as a source fails" "$?"
+    assert_contains "$sh/ptar with only a hard link to the output as a source says so" "no source besides the output" "$(cat "$WORK/hl.err")"
+    assert_eq "$sh/ptar with only a hard link to the output as a source keeps it" "$(sha256sum < "$WORK/hl.before")" "$(sha256sum < "$WORK/hl/backup.tgz")"
+    $runner "$PARALLEL_SH" "cd '$WORK/hl' && ptar backup.tgz *" >/dev/null 2>&1
+    assert_success "$sh/ptar over a glob holding a hard link to the output exit code" "$?"
+    assert_eq "$sh/ptar over a glob holding a hard link to the output" "a.txt b.txt " "$(tar tf "$WORK/hl/backup.tgz" 2>/dev/null | sort | tr '\n' ' ')"
+    rm -rf "$WORK/hl" "$WORK/hl.before" "$WORK/hl.err"
+
     echo "[$sh] ptar: a previous archive that cannot be put back is kept and named"
     # The existing output now waits in the staging directory while tar runs.
     # A pigz stub that fails after putting a directory (holding a 'previous'

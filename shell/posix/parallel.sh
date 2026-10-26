@@ -265,8 +265,9 @@ prm() {
 # grew by a whole copy each time. An existing <out> is moved into the staging
 # directory before tar starts, so tar leaves it out with the rest of that
 # directory; the new archive then replaces it, or on failure it is put back.
-# A source that IS <out> (`ptar all.tgz *` run again) is dropped first, as
-# archive() drops one: moved aside, it would be a name tar cannot find. The
+# A source that IS <out> (`ptar all.tgz *` run again), under its own name or
+# through a link, is dropped first, as archive() drops one: moved aside, it
+# would be a name tar cannot find, and a hard link would still hold it. The
 # steps run in a subshell that only notes INT, TERM and HUP, restores, cleans
 # up and then raises the signal again, the way archive()'s zip/7z branch does
 # (its comments say why); a restore that fails keeps the staging directory and
@@ -275,11 +276,12 @@ _ptar_pipe() {
     local out="$1" comp="$2" copt="$3" dir tmpd prev rc sig s
     local -a keep=()
     shift 3
-    # Names first, as in archive(): '-ef' stats both files, and a glob of
-    # thousands would pay that for each.
+    # Every source is asked, whatever its name, as in archive(): a hard link
+    # to <out> under another name (latest.tgz beside backup.tgz) is the old
+    # archive too, and tar stats each source anyway.
     if [ -e "$out" ] || [ -L "$out" ]; then
         for s in "$@"; do
-            if [ "${s##*/}" = "${out##*/}" ] && [ "$s" -ef "$out" ]; then
+            if [ "$s" -ef "$out" ]; then
                 continue
             fi
             keep+=("$s")

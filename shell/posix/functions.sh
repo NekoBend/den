@@ -716,17 +716,19 @@ archive() {
         # A source that IS the output, as in `pk all.7z *` run again in the
         # folder it archives, is dropped. Moved aside, the old archive is a
         # name that no longer exists, so 7z failed on it (and zip warned); left
-        # in place it would be stored inside the new archive. The names are
-        # compared first, because '-ef' stats both files and a glob of
-        # thousands would pay that for each; '-ef' then settles './all.7z', an
-        # absolute path, a symlink and a hard link alike. eval: array syntax
-        # would stop a POSIX parser reading this file, and an array keeps the
-        # rebuild linear (see the 7z case below for why `set -- "$@" x` is not).
+        # in place it would be stored inside the new archive. '-ef' settles
+        # './all.7z', an absolute path, a symlink and a hard link alike, and
+        # every source is asked, whatever its name: a hard link to the output
+        # under another name (latest.zip beside backup.zip) still holds the
+        # old archive once it is moved aside, and the archiver stats each
+        # source anyway. eval: array syntax would stop a POSIX parser reading
+        # this file, and an array keeps the rebuild linear (see the 7z case
+        # below for why `set -- "$@" x` is not).
         zip|7z)
             if [ -e "$out" ] || [ -L "$out" ]; then
                 eval '_ar_keep=()
                     for _ar_s in "$@"; do
-                        if [ "${_ar_s##*/}" = "${out##*/}" ] && [ "$_ar_s" -ef "$out" ]; then
+                        if [ "$_ar_s" -ef "$out" ]; then
                             continue
                         fi
                         _ar_keep+=("$_ar_s")

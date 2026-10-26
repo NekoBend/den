@@ -551,6 +551,28 @@ STUB
     fi
     rm -rf "$WORK/self" "$WORK/self.before"
 
+    echo "[$sh] archive .zip/.7z leave out a hard link to the output too"
+    # Under another name: only a source with the output's name was checked,
+    # so latest.zip, a hard link to backup.zip, stayed a source, and with
+    # backup.zip moved aside it still held the previous archive.
+    mkdir -p "$WORK/hl"
+    echo a > "$WORK/hl/a.txt"; echo b > "$WORK/hl/b.txt"
+    $run "$FUNCTIONS_SH" "cd '$WORK/hl' && archive backup.zip a.txt" >/dev/null 2>&1
+    ln "$WORK/hl/backup.zip" "$WORK/hl/latest.zip"
+    cp "$WORK/hl/backup.zip" "$WORK/hl.before"
+    actual=$($run "$FUNCTIONS_SH" "cd '$WORK/hl' && archive backup.zip latest.zip" 2>&1)
+    assert_failure "$sh/archive .zip with only a hard link to the output as a source fails" "$?"
+    assert_contains "$sh/archive .zip with only a hard link to the output as a source says so" "no source besides the output" "$actual"
+    assert_eq "$sh/archive .zip with only a hard link to the output as a source keeps it" "$(sha256sum < "$WORK/hl.before")" "$(sha256sum < "$WORK/hl/backup.zip")"
+    $run "$FUNCTIONS_SH" "cd '$WORK/hl' && archive backup.zip *" >/dev/null 2>&1
+    assert_success "$sh/archive .zip over a glob holding a hard link to the output exit code" "$?"
+    assert_eq "$sh/archive .zip over a glob holding a hard link to the output" "a.txt b.txt " "$(unzip -Z1 "$WORK/hl/backup.zip" 2>/dev/null | sort | tr '\n' ' ')"
+    rm -f "$WORK/hl"/*.zip
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/hl' && archive backup.7z a.txt && ln backup.7z latest.7z && archive backup.7z *" >/dev/null 2>&1
+    assert_success "$sh/archive .7z over a glob holding a hard link to the output exit code" "$?"
+    assert_eq "$sh/archive .7z over a glob holding a hard link to the output" "a.txt b.txt " "$(tr '\n' ' ' < "$WORK/hl/backup.7z")"
+    rm -rf "$WORK/hl" "$WORK/hl.before"
+
     # Ctrl-C while the archiver ran ended the function between the move-aside
     # and the restore: <out> was gone, and the old archive sat hidden in the
     # staging directory. A zip stub that waits stands in for a slow zip. The
