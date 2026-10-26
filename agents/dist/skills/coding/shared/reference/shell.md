@@ -78,6 +78,9 @@ fetch_customer_order() {
 `"$var"`, `"${var}"`, `"$(command)"`, `"${array[@]}"`.
 The ONLY exception is inside `[[ ]]` on the right-hand side of `=~` (the regex),
 where quoting changes semantics.
+Elsewhere a quoted expansion matches literally
+(`==` and `!=` inside `[[ ]]`, `case` patterns, `${var#pattern}`):
+leave one unquoted only when you mean a glob.
 
 **Why:** Unquoted variables undergo word splitting and pathname (glob) expansion.
 A filename with spaces or a variable containing `*` silently breaks an unquoted expansion.
