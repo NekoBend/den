@@ -34,6 +34,17 @@ file="$1"
 [ -f "$file" ] || { echo "file not found: $file" >&2; exit 2; }
 
 ext="${file##*.}"
+# Every tool and helper below gets the file as a path that reads as nothing
+# else: a relative name gets ./ in front unless it starts with ./ or ../ (a
+# Windows drive path, C:/x.py, is absolute). Given bare, a name starting
+# with - is an option to the tools and to dirname (ruff took
+# --output-file=victim.py for its flag and overwrote victim.py), ruff and ty
+# read one starting with @ as a file of more arguments, even after --, and
+# awk takes one like a=b.sh for an assignment and reads stdin instead.
+case "$file" in
+  /*|./*|../*|[A-Za-z]:[/\\]*) ;;
+  *) file="./$file" ;;
+esac
 passed=0
 failed=0
 skipped=0
@@ -303,7 +314,7 @@ _ts_unchecked() {
     echo "noCheck: tsc reports no type errors in any file ($2)"
   elif [ "$3" = ts ] && [ "${base#*.d.}" != "$base" ] && _fact skipLibCheck "$4"; then
     echo "skipLibCheck: tsc reports no type errors in declaration files ($2)"
-  elif grep -qi '@ts-nocheck' "$1"; then
+  elif grep -qi -- '@ts-nocheck' "$1"; then
     echo "$2 contains @ts-nocheck, which turns off tsc's type errors when a leading // comment holds it"
   elif [ -n "$js" ] && ! _fact checkJs "$4" && ! awk '
       NR == 1 && /^#!/ { next }

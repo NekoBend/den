@@ -115,6 +115,32 @@ _run_stubbed() {
   run env PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$1"
 }
 
+# _run_bounded <file>: _run_stubbed, stopped after 20 seconds (status 124),
+# so a walk up that never ends fails the test instead of hanging the suite.
+_run_bounded() {
+  run timeout 20 env PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$1"
+}
+
+# _run_real <file>: run the script with the tools on PATH, stopped after 20
+# seconds, and with a home of its own, so no user-level ruff or ty config
+# applies.
+_run_real() {
+  mkdir -p "$WORK/home"
+  run timeout 20 env HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/home/.config" \
+    XDG_CACHE_HOME="$WORK/home/.cache" "$SCRIPT" "$1"
+}
+
+# _each_run_ends_with <tool> <argument>: true when $WORK/<tool>.log holds a
+# run of the stub and the arguments of every run end with <argument>.
+_each_run_ends_with() {
+  local line n=0
+  while IFS= read -r line; do
+    [[ "$line" == *" argv=$2" || "$line" == *" argv="*" $2" ]] || return 1
+    n=$((n + 1))
+  done < "$WORK/$1.log"
+  [ "$n" -gt 0 ]
+}
+
 # _ts_project: $WORK/proj with a tsconfig.json and src/a.ts, src/b.ts.
 _ts_project() {
   mkdir -p "$WORK/proj/src"
@@ -145,6 +171,139 @@ _ts_project() {
   run "$SCRIPT" "$WORK/data.unknownext"
   [ "$status" -eq 2 ]
   [[ "$output" == *"unknown extension"* ]]
+}
+
+@test "a name that starts with - or @ reaches every tool as ./<name> (stub tools)" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: each tool got the name as given, so ruff took
+  # --output-file=victim.py for its flag and overwrote victim.py, and ruff
+  # and ty read @x.py as a response file: a list of more arguments
+  for tool in ruff ty prettier eslint gofmt rustfmt google-java-format checkstyle shfmt shellcheck; do
+    _stub "$tool"
+  done
+  _stub_tsc
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  for ext in py ts go rs java sh; do
+    case $ext in
+      py) tools="ruff ty" ;;
+      ts) tools="prettier eslint" ;;
+      go) tools="gofmt" ;;
+      rs) tools="rustfmt" ;;
+      java) tools="google-java-format checkstyle" ;;
+      sh) tools="shfmt shellcheck" ;;
+    esac
+    for name in "@x.$ext" "-x.$ext" "--output-file=x.$ext"; do
+      printf '\n' > "./$name"
+      rm -f "${WORK:?}"/*.log
+      _run_bounded "$name"
+      [ "$status" -ne 124 ] # the timeout stopped a walk up that never ended
+      [ "$status" -eq 0 ]
+      for tool in $tools; do
+        _each_run_ends_with "$tool" "./$name"
+      done
+    done
+  done
+}
+
+@test "a relative name gets ./ in front, and one that starts with /, ./, ../ or a drive letter goes as given (stub ruff)" {
+  _stub ruff
+  _stub ty
+  mkdir -p "$WORK/proj/sub" "$WORK/proj/C:"
+  cd "$WORK/proj"
+  for f in x.py sub/x.py C:/x.py; do
+    printf 'x = 1\n' > "$f"
+  done
+  given=(x.py sub/x.py ./x.py ../proj/x.py "$WORK/proj/x.py" C:/x.py)
+  shown=(./x.py ./sub/x.py ./x.py ../proj/x.py "$WORK/proj/x.py" C:/x.py)
+  for i in "${!given[@]}"; do
+    rm -f "${WORK:?}"/*.log
+    _run_stubbed "${given[$i]}"
+    [ "$status" -eq 0 ]
+    _each_run_ends_with ruff "${shown[$i]}"
+    _each_run_ends_with ty "${shown[$i]}"
+  done
+}
+
+@test "the walk up for a ruff config ends for a name that starts with - (stub ruff)" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: dirname and cd took -x.py for an option, so the walk started
+  # from '' and went on from '.', which dirname turns into '.' forever; it
+  # stopped only at /
+  _stub ruff
+  _stub ty
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  printf 'x = 1\n' > ./-x.py
+  _run_bounded -x.py
+  [ "$status" -ne 124 ] # the timeout stopped a walk up that never ended
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[lint     ] PASS      ruff check "*"./-x.py"* ]]
+}
+
+@test "Shell: awk reads a file named like a=b.sh, not stdin (stub shfmt)" {
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  # regression: awk takes an operand like a=b.sh for an assignment and reads
+  # stdin instead, so the shebang that picks shfmt's [[zsh]] section came
+  # from stdin (and the script waited there while stdin stayed open)
+  _stub shfmt
+  _stub shellcheck
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  printf 'root = true\n\n[[zsh]]\nindent_style = tab\n' > .editorconfig
+  printf '#!/bin/sh\necho hi\n' > a=b.sh
+  run bash -c 'printf "#!/usr/bin/env zsh\n" | PATH="$1" "$2" a=b.sh' _ "$WORK/bin:/usr/bin:/bin" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s ./a=b.sh"* ]]
+}
+
+@test "Python (ruff): a file named like an option is checked, never taken for one" {
+  command -v ruff >/dev/null 2>&1 || skip "ruff not installed"
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: next to a file named --output-file=victim.py, ruff check took
+  # the name for its flag and overwrote victim.py with its report;
+  # -ovictim2.py did the same through the short flag, and
+  # --config=cache-dir='..'#.py made ruff write its cache into the parent of
+  # the working directory. With no ruff.toml here the walk up for a config
+  # hung before ruff check ran.
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  : > ruff.toml
+  printf 'VALUE = 1\n' > victim.py
+  printf 'VALUE = 2\n' > victim2.py
+  for name in --output-file=victim.py -ovictim2.py "--config=cache-dir='..'#.py"; do
+    printf 'VALUE = 0\n' > "./$name"
+    _run_real "$name"
+    [ "$(cat victim.py)" = "VALUE = 1" ]
+    [ "$(cat victim2.py)" = "VALUE = 2" ]
+    [ "$(cd "$WORK" && shopt -s dotglob && echo *)" = "home proj" ]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[format   ] PASS      ruff format --check ./$name"* ]]
+    [[ "$output" == *"[lint     ] PASS      ruff check ./$name"* ]]
+    [[ "$output" == *"[typecheck] PASS      ty check ./$name"* ||
+      "$output" == *"[typecheck] SKIPPED   ty not installed"* ]]
+  done
+}
+
+@test "Python (ruff): a file named like a response file is checked itself, not the files it lists" {
+  command -v ruff >/dev/null 2>&1 || skip "ruff not installed"
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: ruff and ty replace an argument @x with the lines of the file
+  # x, after -- too, so checking @args.py checked the files args.py lists
+  # (here one outside the project, its text then quoted in the FAIL detail)
+  # instead of @args.py itself
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  printf 'NOT PYTHON outside-marker\n' > "$WORK/outside.txt"
+  printf '%s\n' "$WORK/outside.txt" > args.py
+  printf 'VALUE = 1\n' > ./@args.py
+  _run_real @args.py
+  [[ "$output" != *"outside-marker"* ]]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[format   ] PASS      ruff format --check ./@args.py"* ]]
+  [[ "$output" == *"[lint     ] PASS      ruff check "*"./@args.py"* ]]
+  [[ "$output" == *"[typecheck] PASS      ty check ./@args.py"* ||
+    "$output" == *"[typecheck] SKIPPED   ty not installed"* ]]
 }
 
 @test "clean shell file: all checks pass, summary printed, exit 0" {
