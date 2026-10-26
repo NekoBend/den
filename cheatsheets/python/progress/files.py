@@ -25,9 +25,12 @@ Note:
     a half-written destination is the caller's to clean up. The two copiers
     match ``shutil.copy2``: metadata travels with the bytes and a destination
     that is the source raises ``shutil.SameFileError`` instead of truncating
-    it. They are stricter than ``copy2`` in one way: the destination is 0o600
-    from before the first byte until the copy completes, so a half-written
-    copy of a private file is private too.
+    it. On POSIX they are stricter than ``copy2`` in one way: the destination
+    is 0o600 from before the first byte until the copy completes, so a
+    half-written copy of a private file is private too. Windows has no such
+    guarantee: there 0o600 only keeps a new file from being read-only, and
+    who can read the destination is up to its ACL, which a new file inherits
+    from its directory and an existing one keeps.
 """
 
 from collections.abc import Callable, Iterable
@@ -47,14 +50,17 @@ def copy_file_tqdm(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
            hardlink to the source, or ``out_dir / src.name`` when ``out_dir``
            is the source's own directory) would destroy it and report 0 bytes
            copied.
-           ``dst`` is 0o600 from before its first byte: an existing file is
-           narrowed to it before it is truncated, and one whose mode cannot
-           be changed (another user's file) raises ``PermissionError`` with
-           its old bytes intact. ``shutil.copystat`` at the end gives ``dst``
-           the source's mode and times, as ``shutil.copy2`` does. That is
-           stricter than ``copy2``, which writes into a file with the
+           On POSIX, ``dst`` is 0o600 from before its first byte: an existing
+           file is narrowed to it before it is truncated, and one whose mode
+           cannot be changed (another user's file) raises ``PermissionError``
+           with its old bytes intact. ``shutil.copystat`` at the end gives
+           ``dst`` the source's mode and times, as ``shutil.copy2`` does. That
+           is stricter than ``copy2``, which writes into a file with the
            umask's mode until then: interrupted, its copy of a 0600 secret is
-           left 0644.
+           left 0644. On Windows the 0o600 only keeps a new ``dst`` from being
+           read-only: who can read the copy, half-written or not, is up to its
+           ACL, which a new file inherits from its directory and an existing
+           one keeps.
            ``unit="B", unit_scale=True, unit_divisor=1024`` divides by 1024 but
            labels it "12.3MB/s": tqdm's prefixes never carry the "i".
            64 KiB is ``shutil.copyfileobj``'s block size and keeps the bar
@@ -109,7 +115,9 @@ def copy_file_rich(src: Path, dst: Path, chunk_size: int = 64 * 1024) -> int:
            takes no ``columns`` argument, so the speed readout needs an
            explicit ``Progress`` with ``TransferSpeedColumn``. Same
            ``samefile`` guard, 0o600 destination and ``shutil.copystat`` as
-           ``copy_file_tqdm``.
+           ``copy_file_tqdm``, and the same limit: the 0o600 holds on POSIX
+           only, and on Windows the destination's ACL, which a new file
+           inherits from its directory, decides who can read it.
     """
     import os
     import shutil

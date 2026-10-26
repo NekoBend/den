@@ -429,6 +429,23 @@ def test_copy_still_writes_into_a_fifo(tmp_path, monkeypatch, copier):
         os.close(reader)
 
 
+def test_copy_notes_say_that_the_0o600_promise_is_posix_only():
+    # private() narrows the mode only on POSIX. On Windows, os.open's 0o600
+    # only keeps a new file from being read-only, and the file takes the ACL
+    # it inherits from its directory, yet the notes promised a private
+    # half-written copy on every platform.
+    notes = {
+        "module": files.__doc__,
+        "copy_file_tqdm": files.copy_file_tqdm.__doc__,
+        "copy_file_rich": files.copy_file_rich.__doc__,
+    }
+    for name, note in notes.items():
+        assert note is not None, name
+        assert "0o600" in note, name
+        assert "POSIX" in note, name
+        assert "Windows" in note, name
+
+
 # --- run_thread_rich_per_task: one live task per running item -------------------
 
 
