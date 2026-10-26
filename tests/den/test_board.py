@@ -9,6 +9,7 @@ import socket
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -503,6 +504,476 @@ def test_reaction_joined_server_side(served):
     assert entry["reaction"]["text"] == "ok"
 
 
+def _react(port, task_id):
+    """The user presses Done on the task, with the note "ok"."""
+    body = {"button": "task-done", "text": "ok", "re": task_id}
+    assert _request(port, "POST", "/api/report", body)[0] == 200
+
+
+def _listed_reaction(port):
+    """The reaction of the one task /api/agent lists, or None while it is open."""
+    _status, body = _request(port, "GET", "/api/agent")
+    (task,) = json.loads(body)["entries"]
+    return task.get("reaction")
+
+
+@pytest.mark.parametrize("polled_before", [False, True])
+def test_reaction_outlives_the_reports_window(served, polled_before):
+    # A reaction with more than _MAX_LIST_BYTES of reports after it fell out
+    # of the tail that settlement was joined over, and the page offered Done /
+    # Can't again on a task the user had answered. polled_before: the server
+    # saw the reaction before the flood and from then on reads only what was
+    # appended, or it reads the whole file for the first time after it.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    _react(port, task_id)
+    if polled_before:
+        assert _listed_reaction(port)["button"] == "task-done"
+    reports = _board._reports_path(root)
+    after = reports.stat().st_size
+    note = {"button": "note", "text": "x" * _board._MAX_TEXT_LEN}
+    while reports.stat().st_size - after <= _board._MAX_LIST_BYTES:
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+
+    reaction = _listed_reaction(port)
+    assert reaction is not None, "the answered task is open again"
+    assert (reaction["button"], reaction["text"]) == ("task-done", "ok")
+    # /api/reports keeps its window: the list no longer reaches the reaction.
+    _status, body = _request(port, "GET", "/api/reports?limit=500")
+    assert all(r.get("re") != task_id for r in json.loads(body)["reports"])
+
+
+def test_settlement_follows_a_rewritten_reports_file(served):
+    # The server reads only what was appended since its last poll, so a file
+    # changed in any other way has to be read again from the start.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+    reports = _board._reports_path(root)
+
+    # Edited in place, same size: the user changed the answer by hand.
+    reports.write_bytes(reports.read_bytes().replace(b"task-done", b"task-cant"))
+    assert _listed_reaction(port)["button"] == "task-cant"
+
+    # Changed back further up than the seam reaches, same size, and saved the
+    # way many editors save: a new file renamed over the old one.
+    note = {"button": "note", "text": "y" * 1000}
+    while reports.stat().st_size <= 2 * _board._SEAM_BYTES:
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+    assert _listed_reaction(port)["button"] == "task-cant"
+    saved = reports.with_name("reports.jsonl.new")
+    saved.write_bytes(reports.read_bytes().replace(b"task-cant", b"task-done"))
+    saved.replace(reports)
+    assert _listed_reaction(port)["button"] == "task-done"
+
+
+def test_settlement_follows_a_truncated_or_deleted_reports_file(served):
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    reports = _board._reports_path(root)
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+    reports.write_bytes(b"")
+    assert _listed_reaction(port) is None
+
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+    reports.unlink()  # as den/README.md suggests when a session is done
+    assert _listed_reaction(port) is None
+
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+    # Deleted again, and the new file grew past the old one between polls.
+    reports.unlink()
+    for _ in range(3):
+        note = {"button": "note", "text": "y" * 200}
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+    assert _listed_reaction(port) is None
+
+
+def test_reactions_read_whole_lines_across_chunks(tmp_path, monkeypatch):
+    # A line split across read chunks, multi-byte characters included, is read
+    # whole; a line still missing its newline waits for the next poll; and a
+    # task's latest reaction wins.
+    monkeypatch.setattr(_board, "_READ_CHUNK", 7)
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    text = "caf\u00e9 \u2028 \u7121\u7406"
+    rows = [
+        {"button": "bug", "text": text},
+        {"button": "task-cant", "re": "t1", "text": text},
+        {"button": "task-done", "re": "t2", "text": "ok", "ts": "now"},
+        {"button": "task-done", "re": "t1", "text": "after all"},
+    ]
+    data = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode()
+    cut = len(data) - 10  # inside the last line
+    reports.write_bytes(data[:cut])
+    index = _board._Reactions(tmp_path)
+    t2 = {"button": "task-done", "ts": "now", "text": "ok"}
+    assert index.snapshot() == {
+        "t1": {"button": "task-cant", "ts": None, "text": text},
+        "t2": t2,
+    }
+    with reports.open("ab") as f:
+        f.write(data[cut:])
+    assert index.snapshot() == {
+        "t1": {"button": "task-done", "ts": None, "text": "after all"},
+        "t2": t2,
+    }
+
+
+def test_reactions_read_only_what_was_appended(tmp_path, monkeypatch):
+    # After the first poll, a poll takes in only what was appended since, so
+    # the 5 s poll never reads the whole file again. The file is longer than
+    # the seam: a seam compared anywhere but where it was read would make
+    # every poll start over from byte 0.
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    notes = [{"id": f"n{i}", "button": "note", "text": "x" * 100} for i in range(64)]
+    reports.write_bytes("".join(json.dumps(n) + "\n" for n in notes).encode())
+    assert reports.stat().st_size > _board._SEAM_BYTES
+    index = _board._Reactions(tmp_path)
+    assert index.snapshot() == {}
+
+    taken = []
+    take = _board._Reactions._take
+
+    def record(self, block):
+        taken.append(block)
+        take(self, block)
+
+    monkeypatch.setattr(_board._Reactions, "_take", record)
+    line = json.dumps({"button": "task-done", "re": "t1"}).encode() + b"\n"
+    with reports.open("ab") as f:
+        f.write(line)
+    assert "t1" in index.snapshot()
+    assert taken == [line], "the poll took in only the appended line"
+    assert index._offset == reports.stat().st_size
+    taken.clear()
+    assert "t1" in index.snapshot()
+    assert taken == [], "a poll of an untouched file takes in nothing"
+
+
+# Lines json.loads rejects with something other than JSONDecodeError: an array
+# nested deeper than the parser can recurse (RecursionError), and an int past
+# Python's 4300-digit limit for int(str) (a plain ValueError).
+_DEEP_LINE = "[" * 200_000 + "]" * 200_000
+_BIG_INT_LINE = '{"n": ' + "1" * 5000 + "}"
+
+
+def _in_a_new_thread(func, *args):
+    """func(*args) in a new thread, as the server's handlers run json.loads and
+    json.dumps. A new thread starts near the top of its stack; the thread a
+    test runs in is deep in pytest's, and there both give up sooner."""
+    results = []
+    thread = threading.Thread(target=lambda: results.append(func(*args)))
+    thread.start()
+    thread.join()
+    (result,) = results  # empty when func raised (the thread printed why)
+    return result
+
+
+def _parses(text):
+    try:
+        json.loads(text)
+    except RecursionError:
+        return False
+    return True
+
+
+# CPython 3.14 sizes the recursion limit to the stack, so a big enough stack
+# parses even _DEEP_LINE, which there cannot reach the RecursionError it is for.
+_DEEP_LINE_PARSES = _in_a_new_thread(_parses, _DEEP_LINE)
+_BAD_LINES = [
+    pytest.param(
+        _DEEP_LINE,
+        id="deep",
+        marks=pytest.mark.skipif(
+            _DEEP_LINE_PARSES, reason="a new thread's stack parses _DEEP_LINE here"
+        ),
+    ),
+    pytest.param(_BIG_INT_LINE, id="big-int"),
+]
+
+
+def test_reactions_skip_lines_json_cannot_parse(tmp_path):
+    # Both come before the reaction: a read that raised on them would never
+    # reach it, and would raise again on every poll after.
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    reaction = json.dumps({"button": "task-done", "re": "t1"})
+    reports.write_bytes(f"{_DEEP_LINE}\n{_BIG_INT_LINE}\n{reaction}\n".encode())
+    index = _board._Reactions(tmp_path)
+    assert index.snapshot()["t1"]["button"] == "task-done"
+    assert index.snapshot()["t1"]["button"] == "task-done", "and on the next poll"
+
+
+@pytest.mark.parametrize("bad", _BAD_LINES)
+def test_agent_list_answers_past_a_line_json_cannot_parse(served, bad):
+    # Raised out of the handler, such a line dropped the connection on every
+    # poll for as long as it stayed inside the 512 KiB window.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    with _board._agent_path(root).open("ab") as f:
+        f.write(bad.encode() + b"\n")
+    _react(port, task_id)
+    assert _listed_reaction(port)["button"] == "task-done"
+
+
+@pytest.mark.parametrize("bad", _BAD_LINES)
+def test_report_list_answers_past_a_line_json_cannot_parse(served, bad):
+    root, _server, port = served
+    before = {"button": "note", "text": "before"}
+    assert _request(port, "POST", "/api/report", before)[0] == 200
+    with _board._reports_path(root).open("ab") as f:
+        f.write(bad.encode() + b"\n")
+    after = {"button": "bug", "text": "after"}
+    assert _request(port, "POST", "/api/report", after)[0] == 200
+    status, body = _request(port, "GET", "/api/reports")
+    assert status == 200
+    assert _listed_reports(body) == [("note", "before"), ("bug", "after")]
+
+
+def _listed_reports(body):
+    """(button, text) of each report an /api/reports body lists, leaving out
+    the ones that are not objects: a line that parses lists as itself, and
+    can be nested as deep as a handler could send (so decode it as one)."""
+    reports = _in_a_new_thread(json.loads, body)["reports"]
+    return [(r["button"], r["text"]) for r in reports if isinstance(r, dict)]
+
+
+# The escape of a lone surrogate. json.loads accepts it, but the str it gives
+# back has no UTF-8 encoding. Python's json.dumps writes one for text decoded
+# with surrogateescape: a file name with a byte that is not UTF-8, say.
+_LONE_SURROGATE = '"caf\\udce9"'
+
+
+def test_lists_answer_past_text_utf_8_cannot_carry(served):
+    # Encoding the response raised, and the connection dropped, on every poll
+    # while such a line stayed in the window.
+    root, _server, port = served
+    with _board._agent_path(root).open("a") as f:
+        f.write('{"id": "t1", "type": "task", "text": ' + _LONE_SURROGATE + "}\n")
+    with _board._reports_path(root).open("a") as f:
+        f.write('{"button": "note", "text": ' + _LONE_SURROGATE + "}\n")
+
+    status, body = _request(port, "GET", "/api/agent")
+    assert status == 200
+    (task,) = json.loads(body)["entries"]
+    assert (task["id"], task["text"][:3]) == ("t1", "caf")
+    status, body = _request(port, "GET", "/api/reports")
+    assert status == 200
+    [(button, text)] = _listed_reports(body)
+    assert (button, text[:3]) == ("note", "caf")
+
+
+@pytest.mark.parametrize("polled_before", [False, True])
+def test_reaction_with_text_utf_8_cannot_carry_outlives_the_reports_window(
+    served, polled_before
+):
+    # Such a reaction made /api/agent raise as above, and since settlement is
+    # read over the whole file, it kept doing so past the reports window. The
+    # first poll after the notes reads the file whole, as after a restart.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    reports = _board._reports_path(root)
+    reports.write_text(
+        f'{{"button": "task-done", "re": "{task_id}", "text": {_LONE_SURROGATE}}}\n'
+    )
+    if polled_before:
+        assert _listed_reaction(port)["button"] == "task-done"
+    after = reports.stat().st_size
+    note = {"button": "note", "text": "x" * _board._MAX_TEXT_LEN}
+    while reports.stat().st_size - after <= _board._MAX_LIST_BYTES:
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+    assert _listed_reaction(port)["button"] == "task-done"
+
+
+# json.loads makes float nan and inf of these, 1e400 included, which is
+# standard JSON. json.dumps writes them back as NaN and Infinity, tokens the
+# page's JSON parser rejects; it then showed "Server not reachable".
+_NON_FINITE = ["NaN", "Infinity", "-Infinity", "1e400"]
+
+
+def _strict_json(body):
+    """json.loads that rejects NaN and Infinity, as the browser's JSON.parse does."""
+
+    def refuse(token):
+        raise ValueError(f"not JSON: {token}")
+
+    return json.loads(body, parse_constant=refuse)
+
+
+@pytest.mark.parametrize("number", _NON_FINITE)
+def test_lists_leave_out_numbers_strict_json_cannot_carry(served, number):
+    root, _server, port = served
+    with _board._agent_path(root).open("a") as f:
+        f.write('{"id": "t1", "type": "task", "text": "kept"}\n')
+        f.write(
+            '{"id": "t2", "type": "task", "text": "left out", "n": ' + number + "}\n"
+        )
+    with _board._reports_path(root).open("a") as f:
+        f.write('{"button": "note", "text": "kept"}\n')
+        f.write('{"button": "bug", "text": "left out", "ts": ' + number + "}\n")
+
+    status, body = _request(port, "GET", "/api/agent")
+    assert status == 200
+    assert [e["id"] for e in _strict_json(body)["entries"]] == ["t1"]
+    status, body = _request(port, "GET", "/api/reports")
+    assert status == 200
+    reports = _strict_json(body)["reports"]
+    assert [(r["button"], r["text"]) for r in reports] == [("note", "kept")]
+
+
+@pytest.mark.parametrize("polled_before", [False, True])
+@pytest.mark.parametrize("number", ["NaN", "1e400"])
+def test_reaction_with_a_number_strict_json_cannot_carry_is_left_out(
+    served, number, polled_before
+):
+    # Kept, such a reaction put NaN or Infinity into every /api/agent body,
+    # past the reports window too, since settlement is read over the whole
+    # file. Left out, its task shows as open.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    reports = _board._reports_path(root)
+    reports.write_text(
+        f'{{"button": "task-done", "re": "{task_id}", "ts": {number}}}\n'
+    )
+
+    def listed_task():
+        status, body = _request(port, "GET", "/api/agent")
+        assert status == 200
+        (task,) = _strict_json(body)["entries"]
+        return task
+
+    if polled_before:
+        assert "reaction" not in listed_task()
+    after = reports.stat().st_size
+    note = {"button": "note", "text": "x" * _board._MAX_TEXT_LEN}
+    while reports.stat().st_size - after <= _board._MAX_LIST_BYTES:
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+    assert "reaction" not in listed_task()
+    _react(port, task_id)
+    assert listed_task()["reaction"]["button"] == "task-done"
+
+
+def _nested(depth):
+    return "[" * depth + "]" * depth
+
+
+@pytest.fixture(scope="module")
+def parse_limit():
+    """The deepest array json.loads accepts in a new thread."""
+    if _DEEP_LINE_PARSES:
+        pytest.skip("a new thread's stack parses _DEEP_LINE here")
+    parses, fails = 1, 200_000  # _DEEP_LINE's depth
+    while fails - parses > 1:
+        depth = (parses + fails) // 2
+        if _in_a_new_thread(_parses, _nested(depth)):
+            parses = depth
+        else:
+            fails = depth
+    return parses
+
+
+# json.loads accepts an array nested a few levels short of its limit, and the
+# response nests it deeper still: json.dumps raised, and the connection dropped
+# on every poll. How many levels short depends on the Python and its stack, so
+# the tests below try every depth from 32 levels short up to the limit. What a
+# handler sent is decoded in a new thread too: json.dumps and json.loads reach
+# the same depth, and a handler starts deeper in its stack than a new thread.
+def _near(limit):
+    return range(limit - 32, limit + 1)
+
+
+def test_report_list_answers_past_a_report_nested_near_the_limit(served, parse_limit):
+    root, _server, port = served
+    for depth in _near(parse_limit):
+        _board._reports_path(root).write_text(
+            '{"button": "note", "text": "before"}\n'
+            + _nested(depth)
+            + '\n{"button": "bug", "text": "after"}\n'
+        )
+        status, body = _request(port, "GET", "/api/reports")
+        assert status == 200, f"depth {depth}"
+        assert _listed_reports(body) == [("note", "before"), ("bug", "after")]
+
+
+def test_agent_list_answers_past_an_entry_nested_near_the_limit(served, parse_limit):
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    task_line = _board._agent_path(root).read_text()
+    for depth in _near(parse_limit):
+        entry = '{"type": "note", "x": ' + _nested(depth - 1) + "}\n"
+        _board._agent_path(root).write_text(task_line + entry)
+        status, body = _request(port, "GET", "/api/agent")
+        assert status == 200, f"depth {depth}"
+        assert _in_a_new_thread(json.loads, body)["entries"][0]["id"] == task_id
+
+
+def test_agent_list_answers_past_a_reaction_nested_near_the_limit(served, parse_limit):
+    # Appended, as the server writes reactions, so each poll reads one more.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    for depth in _near(parse_limit):
+        with _board._reports_path(root).open("a") as f:
+            f.write(
+                f'{{"button": "task-done", "re": "{task_id}", '
+                f'"text": {_nested(depth - 1)}}}\n'
+            )
+        status, body = _request(port, "GET", "/api/agent")
+        assert status == 200, f"depth {depth}"
+        assert _in_a_new_thread(json.loads, body)["entries"][0]["id"] == task_id
+
+
+def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    reports.write_text(json.dumps({"button": "task-done", "re": "t1"}) + "\n")
+    index = _board._Reactions(tmp_path)
+    assert "t1" in index.snapshot()
+
+    real_open = Path.open
+
+    def refuse(self, *args, **kwargs):
+        if self == reports:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "open", refuse)
+        assert "t1" in index.snapshot(), "a read that fails once reopens nothing"
+    reports.unlink()
+    assert index.snapshot() == {}, "a deleted file settles nothing"
+
+
+def test_tasks_still_list_with_a_directory_at_reports_jsonl(served):
+    # A cloned repo can ship .den/board/reports.jsonl as a directory. The
+    # tasks still list, open, as they did when the tail read the file.
+    root, _server, port = served
+    _board._append_agent(root, "task", "press done", None)
+    _board._reports_path(root).mkdir()
+    assert _listed_reaction(port) is None
+    assert _listed_reaction(port) is None, "and on the next poll"
+
+
+def test_reactions_close_what_they_open(tmp_path):
+    # Every poll opens reports.jsonl, so one descriptor left behind per poll
+    # (a directory there is the case that does it) runs a long-lived board
+    # out of them.
+    listings = (Path("/proc/self/fd"), Path("/dev/fd"))
+    fd_dir = next((d for d in listings if d.is_dir()), None)
+    if fd_dir is None:
+        pytest.skip("no per-process descriptor listing here")
+    _board._reports_path(tmp_path).mkdir(parents=True)
+    index = _board._Reactions(tmp_path)
+    before = len(list(fd_dir.iterdir()))
+    for _ in range(5):
+        assert index.snapshot() == {}
+    assert len(list(fd_dir.iterdir())) == before
+
+
 def test_derived_ids_of_duplicate_lines_stay_distinct(served):
     root, _server, port = served
     raw = json.dumps({"type": "task", "text": "same"}) + "\n"
@@ -616,6 +1087,21 @@ def test_tail_lines_ignores_symlinked_file(tmp_path, symlink):
     reports = _board._reports_path(proj)
     symlink(outside, reports)
     assert _board._tail_lines(proj, reports, 10_000) == []
+
+
+def test_reactions_ignore_a_symlinked_reports_file(tmp_path, symlink):
+    proj = tmp_path / "repo"
+    reports = _board._reports_path(proj)
+    reports.parent.mkdir(parents=True)
+    reaction = json.dumps({"button": "task-done", "re": "t1"}) + "\n"
+    reports.write_text(reaction)
+    index = _board._Reactions(proj)
+    assert "t1" in index.snapshot()
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(reaction)
+    reports.unlink()
+    symlink(outside, reports)
+    assert index.snapshot() == {}, "a symlinked board file reads as empty"
 
 
 def test_scaffold_refuses_symlinked_config(tmp_path, capsys, symlink):

@@ -263,9 +263,10 @@
   };
 
   const renderTasks = (agent) => {
-    // Settlement comes from the server (task.reaction, joined over the
-    // full reports tail) - never re-derived from the page's 100-report
-    // slice, which forgets old reactions and would reopen answered tasks.
+    // Settlement comes from the server (task.reaction, joined over every
+    // reaction in reports.jsonl) - never re-derived from the page's
+    // 100-report slice, which forgets old reactions and would reopen
+    // answered tasks.
     const all = agent.filter((e) => e.type === "task").slice().reverse();
     const replies = agent.filter((e) => e.type === "reply");
     const tasks = all.filter((t) => !t.reaction)

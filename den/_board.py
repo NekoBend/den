@@ -68,6 +68,10 @@ _MAX_LIST_LIMIT = 500
 _MAX_LIST_BYTES = 512 * 1024
 _MAX_DRAIN_BYTES = 2 * 1024 * 1024
 _MAX_PORT = 65535
+# _Reactions reads reports.jsonl this much at a time, and keeps this much of
+# what it has read to tell an append from a rewrite.
+_READ_CHUNK = 1024 * 1024
+_SEAM_BYTES = 4096
 
 _DEFAULT_CONFIG: dict[str, object] = {
     "title": None,
@@ -245,6 +249,108 @@ def _tail_lines(root: Path, path: Path, max_bytes: int) -> list[str]:
     return _split_jsonl(data)[1:]
 
 
+class _Reactions:
+    """Each task's latest reaction, over the whole of reports.jsonl.
+
+    A reaction is a report whose button starts with "task-" and whose re names
+    the task. /api/agent joins them into the tasks it lists, and the page shows
+    Done / Can't on every task that comes without one. Joined over the 512 KiB
+    tail /api/reports reads, a reaction dropped out once that many bytes of
+    newer reports followed it, and the task it answered came back open.
+    Reading the whole file on every 5s poll would cost what _tail_lines exists
+    to avoid, so this reads it once, then only what was appended since.
+
+    The server is the file's one writer and only appends, but the user can
+    delete it (den/README.md suggests that when a session is done) or edit it.
+    A different file, or other bytes where the last _SEAM_BYTES read were (the
+    seam; a shorter file lacks some), mean more than an append happened, and
+    the index starts over from byte 0. A same-length change further back in
+    the same file goes unseen until the server restarts. Only complete lines
+    count: a line still missing its newline is read again, whole, next poll.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._lock = threading.Lock()  # handlers run in threads
+        self._by_task: dict[str, dict[str, object]] = {}
+        self._ident: tuple[int, int] | None = None  # (st_dev, st_ino) being read
+        self._offset = 0  # bytes taken in so far, always up to a newline
+        self._seam = b""  # the last _SEAM_BYTES of them
+
+    def snapshot(self) -> dict[str, dict[str, object]]:
+        """Task id -> {button, ts, text} of its latest reaction, read up to now."""
+        with self._lock:
+            self._refresh()
+            return dict(self._by_task)
+
+    def _restart(self, ident: tuple[int, int] | None = None) -> None:
+        self._by_task = {}
+        self._ident = ident
+        self._offset = 0
+        self._seam = b""
+
+    def _refresh(self) -> None:
+        path = _reports_path(self._root)
+        if _symlink_component(self._root / ".den", path) is not None:
+            self._restart()  # reads as empty, as in _tail_lines
+            return
+        try:
+            # path.open, as in _tail_lines, not os.open + os.fdopen: FileIO
+            # refuses a directory (a repo can ship one here) and closes an fd
+            # it opened itself, but not one it was handed - a leak per poll.
+            f = path.open("rb")
+        except FileNotFoundError:
+            self._restart()  # deleted: nothing is settled any more
+            return
+        except OSError:
+            return  # unreadable for now: keep what was read, reopen nothing
+        with f, suppress(OSError):
+            st = os.fstat(f.fileno())
+            ident = (st.st_dev, st.st_ino)
+            f.seek(self._offset - len(self._seam))
+            if ident != self._ident or f.read(len(self._seam)) != self._seam:
+                self._restart(ident)
+                f.seek(0)
+            pending = b""
+            while chunk := f.read(_READ_CHUNK):
+                pending += chunk
+                end = pending.rfind(b"\n") + 1
+                if end:
+                    self._take(pending[:end])
+                    pending = pending[end:]
+
+    def _take(self, block: bytes) -> None:
+        """Take in `block`: whole lines, read from _offset on."""
+        for line in _split_jsonl(block):
+            # ValueError is JSONDecodeError and also int's digit limit; a line
+            # nested too deep raises RecursionError. A line that raised would
+            # be read again, and raise again, on every poll after. A reaction
+            # /api/agent cannot send as strict JSON is skipped too (as in
+            # _list_reports): kept, it would fail every /api/agent for as long
+            # as the file holds it, however much follows it.
+            with suppress(ValueError, RecursionError):
+                rep = json.loads(line)
+                if (
+                    isinstance(rep, dict)
+                    and isinstance(rep.get("re"), str)
+                    and isinstance(rep.get("button"), str)
+                    and rep["button"].startswith("task-")
+                ):
+                    reaction = {
+                        "button": rep["button"],
+                        "ts": rep.get("ts"),
+                        "text": rep.get("text"),
+                    }
+                    json.dumps(
+                        {"entries": [{"reaction": reaction}]},
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    )
+                    self._by_task[rep["re"]] = reaction
+        self._offset += len(block)
+        self._seam = (self._seam + block[-_SEAM_BYTES:])[-_SEAM_BYTES:]
+
+
 def _valid_report(button: object, text: object, re_id: object) -> bool:
     if not isinstance(button, str) or not button.strip():
         return False
@@ -334,6 +440,7 @@ class _BoardServer(ThreadingHTTPServer):
         self.board_config = config
         self.board_html = html
         self.append_lock = threading.Lock()
+        self.reactions = _Reactions(root)
 
 
 _PAGE_PATH = Path(__file__).parent / "board.html"
@@ -388,7 +495,11 @@ class _Handler(BaseHTTPRequestHandler):
         return origin is None or origin == f"http://{self.headers.get('Host', '')}"
 
     def _send_json(self, code: int, obj: dict[str, object]) -> None:
-        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        # "replace": json.loads turns the escape of a lone surrogate ("\udce9";
+        # Python's json.dumps writes one for text decoded with surrogateescape)
+        # into a str UTF-8 cannot carry. A strict encode raised on every poll
+        # while such a line stayed in a board file; the page shows "?" instead.
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8", "replace")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -450,35 +561,40 @@ class _Handler(BaseHTTPRequestHandler):
         lines = _tail_lines(root, _reports_path(root), _MAX_LIST_BYTES)
         reports: list[object] = []
         for line in lines[-limit:]:
-            with suppress(json.JSONDecodeError):
-                reports.append(json.loads(line))
+            # Every line json.loads rejects, as in _Reactions._take: one that
+            # raised would fail every poll while it stays in the window. And
+            # every report this response cannot hold: json.loads accepts an
+            # array nested a few levels short of its limit, which _send_json's
+            # json.dumps then has to nest two levels deeper. allow_nan=False
+            # refuses the nan and inf that json.loads makes of NaN, Infinity
+            # and the standard 1e400: json.dumps writes them back as NaN and
+            # Infinity, the page's JSON parser rejects those, and the page
+            # shows the server as unreachable.
+            with suppress(ValueError, RecursionError):
+                report = json.loads(line)
+                json.dumps({"reports": [report]}, ensure_ascii=False, allow_nan=False)
+                reports.append(report)
         return {"reports": reports, "total": len(lines)}
 
     def _list_agent(self) -> dict[str, object]:
         root = self.board.board_root
         lines = _tail_lines(root, _agent_path(root), _MAX_LIST_BYTES)
-        # Settlement is joined HERE, over the full reports tail window - the
-        # page's 100-report slice must never decide whether a task is open
-        # (a reaction older than 100 reports would "reopen" it and invite a
-        # second, conflicting reaction).
-        reactions: dict[str, dict[str, object]] = {}
-        for line in _tail_lines(root, _reports_path(root), _MAX_LIST_BYTES):
-            with suppress(json.JSONDecodeError):
-                rep = json.loads(line)
-                if (
-                    isinstance(rep, dict)
-                    and isinstance(rep.get("re"), str)
-                    and isinstance(rep.get("button"), str)
-                    and rep["button"].startswith("task-")
-                ):
-                    reactions[rep["re"]] = rep
+        # Settlement is joined HERE, over every reaction in reports.jsonl -
+        # neither the page's 100-report slice nor the 512 KiB tail that
+        # /api/reports reads may decide whether a task is open (a reaction
+        # older than either would "reopen" it and invite a second, conflicting
+        # reaction).
+        reactions = self.board.reactions.snapshot()
         entries: list[object] = []
         seen: dict[str, int] = {}
         for line in lines:
-            with suppress(json.JSONDecodeError):
+            with suppress(ValueError, RecursionError):  # as in _list_reports
                 entry = json.loads(line)
                 if not isinstance(entry, dict):
                     continue
+                # Only an entry this response can hold, as in _list_reports.
+                # The reaction joined below was checked when it was read.
+                json.dumps({"entries": [entry]}, ensure_ascii=False, allow_nan=False)
                 if not isinstance(entry.get("id"), str) or not entry["id"]:
                     # Occurrence-salted so duplicate id-less lines stay
                     # distinct; append-only order keeps the salt stable.
@@ -486,12 +602,7 @@ class _Handler(BaseHTTPRequestHandler):
                     seen[line] = n + 1
                     entry["id"] = _derived_id(line if n == 0 else f"{line}#{n}")
                 if entry.get("type") == "task" and entry["id"] in reactions:
-                    r = reactions[entry["id"]]
-                    entry["reaction"] = {
-                        "button": r.get("button"),
-                        "ts": r.get("ts"),
-                        "text": r.get("text"),
-                    }
+                    entry["reaction"] = reactions[entry["id"]]
                 entries.append(entry)
         return {"entries": entries, "total": len(lines)}
 

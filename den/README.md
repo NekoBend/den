@@ -193,7 +193,12 @@ server binds 127.0.0.1 only, refuses non-loopback Host headers (DNS
 rebinding), and refuses browser writes whose Origin is not the board
 itself. Edit `.den/board/board.json` to rename the
 board or change its button set (`{id, label, color}` per button); delete
-`reports.jsonl` (or ask the agent to) when a session is done.
+`reports.jsonl` (or ask the agent to) when a session is done. The page's
+task answers come from one full read of `reports.jsonl` and then only from
+what is appended to it, so after a hand edit that keeps the file's size
+(`task-done` changed to `task-cant`, say), a task can show its old answer
+until you restart `den board`. Agents read the file itself and see the
+edit at once.
 
 ## `den hook memory`
 
