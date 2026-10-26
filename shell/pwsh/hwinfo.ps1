@@ -125,7 +125,10 @@ if ($env:_DEN_HWINFO_HIDDEN -eq '1') {
 # next shell showed the old names again. The prompt shows no CPU or GPU until
 # the next shell; an OFF (_DEN_HWINFO_HIDDEN) stays. Parity with hwinfo.sh.
 function refresh-hwinfo {
-  Remove-Item -Path ([IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'shell-cache', "hwinfo-cache.$env:COMPUTERNAME.ps1")) -Force -ErrorAction SilentlyContinue
+  # -LiteralPath: [ ] in the path are not wildcards. With -Path they were: it
+  # deleted another file they matched, or none, with no error, and the next
+  # shell loaded this cache.
+  Remove-Item -LiteralPath ([IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'shell-cache', "hwinfo-cache.$env:COMPUTERNAME.ps1")) -Force -ErrorAction SilentlyContinue
   # Remove-Item, not SetEnvironmentVariable(name, $null): PowerShell passes that
   # $null as '', and pwsh 7.6 on Linux (.NET 10) then keeps an empty variable.
   foreach ($v in 'CPU_INTEL', 'CPU_AMD', 'GPU_NVIDIA', 'GPU_AMD', 'GPU_INTEL') {

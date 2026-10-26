@@ -640,19 +640,22 @@ if ($env:_DEN_HWINFO_HIDDEN -eq '1') {
   "NEXT-ON:CPU=[$env:STARSHIP_CPU_INTEL] GPU=[$env:STARSHIP_GPU_NVIDIA]"
 }
 PS1
-# hw_ps_refresh [-Hide] - that parent's run, then the next pwsh's
+# hw_ps_refresh <data dir> [-Hide] - that parent's run, then the next pwsh's,
+# with LocalApplicationData (XDG_DATA_HOME) at that directory
 hw_ps_refresh() {
+    local data=$1
+    shift
     printf '%s\n' "\$env:STARSHIP_CPU_INTEL = 'OLD CPU'" "\$env:STARSHIP_CPU_AMD = 'OLD AMD CPU'" \
         "\$env:STARSHIP_GPU_NVIDIA = 'OLD GPU'" "\$env:STARSHIP_GPU_AMD = 'OLD AMD GPU'" \
-        "\$env:STARSHIP_GPU_INTEL = 'OLD INTEL GPU'" > "$HWR_PS_CACHE"
+        "\$env:STARSHIP_GPU_INTEL = 'OLD INTEL GPU'" > "$data/shell-cache/hwinfo-cache.DENTEST.ps1"
     (cd "$WORK" && env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
         -u STARSHIP_GPU_INTEL -u _DEN_HWINFO_HIDDEN -u _DEN_SAVED_CPU_INTEL -u _DEN_SAVED_CPU_AMD \
         -u _DEN_SAVED_GPU_NVIDIA -u _DEN_SAVED_GPU_AMD -u _DEN_SAVED_GPU_INTEL \
-        XDG_DATA_HOME="$HWR_PS/data" COMPUTERNAME=DENTEST \
+        XDG_DATA_HOME="$data" COMPUTERNAME=DENTEST \
         pwsh -NoProfile -NonInteractive -File "$HWR_PS_PARENT" "$DOTFILES" "$HWR_PS_NEXT" "$@" 2>&1 | tr -d '\r')
 }
 echo "[pwsh] after refresh-hwinfo, the next pwsh (as reload starts it) detects again"
-actual=$(hw_ps_refresh) || true
+actual=$(hw_ps_refresh "$HWR_PS/data") || true
 assert_eq "pwsh/refresh-hwinfo, then the next pwsh" "LOAD:CPU=[OLD CPU] GPU=[OLD GPU]
 BEFORE:set=[$HWR_VALUES]
 hwinfo cache cleared. Restart shell to refresh.
@@ -661,7 +664,7 @@ NEXT:calls=2 CPU=[i5-NEW] GPU=[]" "$actual"
 assert_eq "pwsh/refresh-hwinfo, then the next pwsh: the new cache" "\$env:STARSHIP_CPU_INTEL = 'i5-NEW'" \
     "$(tr -d '\r' 2>/dev/null < "$HWR_PS_CACHE")"
 echo "[pwsh] after toggle-hwinfo and refresh-hwinfo, no old name comes back"
-actual=$(hw_ps_refresh -Hide) || true
+actual=$(hw_ps_refresh "$HWR_PS/data" -Hide) || true
 assert_eq "pwsh/refresh-hwinfo under an OFF" "LOAD:CPU=[OLD CPU] GPU=[OLD GPU]
 BEFORE:set=[$HWR_SAVED]
 hwinfo cache cleared. Restart shell to refresh.
@@ -669,6 +672,23 @@ REFRESH:left=[]
 NEXT:calls=2 CPU=[] GPU=[]
 NEXT-ON:CPU=[i5-NEW] GPU=[]
 ON:CPU=[] GPU=[]" "$actual"
+# refresh-hwinfo deleted the cache with Remove-Item -Path, which reads [ and ]
+# in the path as a wildcard: under a LocalApplicationData named data[1], it
+# deleted the file under data1 if there was one, else nothing, with no error
+# either way, and the next pwsh loaded the old names from the cache it left.
+echo "[pwsh] refresh-hwinfo deletes the cache under a directory with [ and ] in its name"
+mkdir -p "$HWR_PS/data[1]/shell-cache" "$HWR_PS/data1/shell-cache"
+echo "data1's cache" > "$HWR_PS/data1/shell-cache/hwinfo-cache.DENTEST.ps1"
+actual=$(hw_ps_refresh "$HWR_PS/data[1]") || true
+assert_eq "pwsh/refresh-hwinfo, [ ] in the cache's path" "LOAD:CPU=[OLD CPU] GPU=[OLD GPU]
+BEFORE:set=[$HWR_VALUES]
+hwinfo cache cleared. Restart shell to refresh.
+REFRESH:left=[]
+NEXT:calls=2 CPU=[i5-NEW] GPU=[]" "$actual"
+assert_eq "pwsh/refresh-hwinfo, [ ] in the cache's path: the new cache" "\$env:STARSHIP_CPU_INTEL = 'i5-NEW'" \
+    "$(tr -d '\r' 2>/dev/null < "$HWR_PS/data[1]/shell-cache/hwinfo-cache.DENTEST.ps1")"
+assert_eq "pwsh/refresh-hwinfo, [ ] in the cache's path: data1's file stays" "data1's cache" \
+    "$(cat "$HWR_PS/data1/shell-cache/hwinfo-cache.DENTEST.ps1" 2>/dev/null)"
 
 # =============================================================================
 # Windows PowerShell 5.1 syntax, over every shell/pwsh/*.ps1
