@@ -564,6 +564,44 @@ def test_real_tools_never_read_a_file_name_as_a_response_file(
     assert "PASS lint" in out
 
 
+# ---- den verify's own `--`: every argument after it is a file ----
+
+
+def test_a_leading_dashdash_is_not_a_file(tmp_path, monkeypatch, capsys):
+    """`den verify -- a.py` checked `--` as a file too: "file not found: --",
+    counted as a failure, exit 1, although a.py passed. A bare `--` was a
+    usage error for the same reason; with no file after it, it is now the
+    same as no arguments."""
+    a = _py(tmp_path, "a.py")
+    runs = _capture(monkeypatch)
+    assert cli_main(["verify", "--", str(a)]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.endswith("summary: 3 passed, 0 failed, 0 skipped\n")
+    assert [_after_end_of_options(c) for c in runs.cmds] == [[str(a)]] * 3
+    assert cli_main(["verify", "--"]) == 0
+    assert "usage: den verify" in capsys.readouterr().out
+
+
+def test_after_a_leading_dashdash_a_name_starting_with_dash_is_a_file(
+    tmp_path, monkeypatch, capsys
+):
+    """`den verify -- -x.py` checks the file named -x.py, and after `--` even
+    `-h` names a file instead of asking for help."""
+    (tmp_path / "-x.py").write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)
+    runs = _capture(monkeypatch)
+    assert cli_main(["verify", "--", "-x.py"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.endswith("summary: 3 passed, 0 failed, 0 skipped\n")
+    assert [_after_end_of_options(c) for c in runs.cmds] == [["-x.py"]] * 3
+    assert cli_main(["verify", "--", "-h"]) == 2
+    captured = capsys.readouterr()
+    assert "usage:" not in captured.out
+    assert captured.err.splitlines() == ["den verify: file not found: -h"]
+
+
 def test_several_files_one_unusable_still_runs_the_rest(tmp_path, monkeypatch, capsys):
     a = _py(tmp_path, "a.py")
     cmds = _capture_cmds(monkeypatch)

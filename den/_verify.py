@@ -314,7 +314,13 @@ def main(argv: list[str] | None = None) -> int:
         with suppress(OSError, ValueError):
             reconfigure(errors="replace")
     args = argv if argv is not None else sys.argv[1:]
-    if not args or args[0] in {"-h", "--help", "help"}:
+    # A leading `--` ends den verify's own options and is not a file: every
+    # argument after it is one, even `-h` or another name that starts with
+    # `-`. With nothing after it, it is the same as no arguments.
+    end_of_options = args[:1] == ["--"]
+    if end_of_options:
+        args = args[1:]
+    if not args or (not end_of_options and args[0] in {"-h", "--help", "help"}):
         _usage()
         return 0
     files = [Path(a) for a in args]
