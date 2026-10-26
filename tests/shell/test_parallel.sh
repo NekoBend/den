@@ -692,7 +692,7 @@ rm -f "$WORK"/out.*
 
 echo "[pwsh] pcp/pmv/prm: a path that fails is a failure"
 # Each path runs in a ForEach-Object -Parallel worker, and the workers' errors
-# reached neither \$? nor the process status: `pcp missing dest` exited 0, and
+# reached neither $? nor the process status: `pcp missing dest` exited 0, and
 # `pcp a b dest && prm -Force a b` went on to remove a file never copied.
 setup_fixtures
 run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; pcp src/file1.txt missing.txt dest && prm -Force src/file1.txt" >/dev/null 2>&1
@@ -717,7 +717,7 @@ actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { prm -Force missin
 assert_eq "pwsh/prm failure is a terminating error" "caught" "$actual"
 
 echo "[pwsh] pcp/pmv/prm/ptar: a refusal is a failure"
-# Each refusal was a plain Write-Error and return, which leaves \$? true and
+# Each refusal was a plain Write-Error and return, which leaves $? true and
 # `pwsh -Command` exiting 0: `pcp a b nodir && prm -Force a b` removed both
 # files after pcp had refused the destination and copied nothing.
 setup_fixtures
