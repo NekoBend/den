@@ -790,6 +790,74 @@ def test_reaction_with_text_utf_8_cannot_carry_outlives_the_reports_window(
     assert _listed_reaction(port)["button"] == "task-done"
 
 
+# json.loads makes float nan and inf of these, 1e400 included, which is
+# standard JSON. json.dumps writes them back as NaN and Infinity, tokens the
+# page's JSON parser rejects; it then showed "Server not reachable".
+_NON_FINITE = ["NaN", "Infinity", "-Infinity", "1e400"]
+
+
+def _strict_json(body):
+    """json.loads that rejects NaN and Infinity, as the browser's JSON.parse does."""
+
+    def refuse(token):
+        raise ValueError(f"not JSON: {token}")
+
+    return json.loads(body, parse_constant=refuse)
+
+
+@pytest.mark.parametrize("number", _NON_FINITE)
+def test_lists_leave_out_numbers_strict_json_cannot_carry(served, number):
+    root, _server, port = served
+    with _board._agent_path(root).open("a") as f:
+        f.write('{"id": "t1", "type": "task", "text": "kept"}\n')
+        f.write(
+            '{"id": "t2", "type": "task", "text": "left out", "n": ' + number + "}\n"
+        )
+    with _board._reports_path(root).open("a") as f:
+        f.write('{"button": "note", "text": "kept"}\n')
+        f.write('{"button": "bug", "text": "left out", "ts": ' + number + "}\n")
+
+    status, body = _request(port, "GET", "/api/agent")
+    assert status == 200
+    assert [e["id"] for e in _strict_json(body)["entries"]] == ["t1"]
+    status, body = _request(port, "GET", "/api/reports")
+    assert status == 200
+    reports = _strict_json(body)["reports"]
+    assert [(r["button"], r["text"]) for r in reports] == [("note", "kept")]
+
+
+@pytest.mark.parametrize("polled_before", [False, True])
+@pytest.mark.parametrize("number", ["NaN", "1e400"])
+def test_reaction_with_a_number_strict_json_cannot_carry_is_left_out(
+    served, number, polled_before
+):
+    # Kept, such a reaction put NaN or Infinity into every /api/agent body,
+    # past the reports window too, since settlement is read over the whole
+    # file. Left out, its task shows as open.
+    root, _server, port = served
+    task_id = _board._append_agent(root, "task", "press done", None)
+    reports = _board._reports_path(root)
+    reports.write_text(
+        f'{{"button": "task-done", "re": "{task_id}", "ts": {number}}}\n'
+    )
+
+    def listed_task():
+        status, body = _request(port, "GET", "/api/agent")
+        assert status == 200
+        (task,) = _strict_json(body)["entries"]
+        return task
+
+    if polled_before:
+        assert "reaction" not in listed_task()
+    after = reports.stat().st_size
+    note = {"button": "note", "text": "x" * _board._MAX_TEXT_LEN}
+    while reports.stat().st_size - after <= _board._MAX_LIST_BYTES:
+        assert _request(port, "POST", "/api/report", note)[0] == 200
+    assert "reaction" not in listed_task()
+    _react(port, task_id)
+    assert listed_task()["reaction"]["button"] == "task-done"
+
+
 def _nested(depth):
     return "[" * depth + "]" * depth
 

@@ -325,9 +325,9 @@ class _Reactions:
             # ValueError is JSONDecodeError and also int's digit limit; a line
             # nested too deep raises RecursionError. A line that raised would
             # be read again, and raise again, on every poll after. A reaction
-            # /api/agent cannot send is skipped too (as in _list_reports):
-            # kept, it would fail every /api/agent for as long as the file
-            # holds it, however much follows it.
+            # /api/agent cannot send as strict JSON is skipped too (as in
+            # _list_reports): kept, it would fail every /api/agent for as long
+            # as the file holds it, however much follows it.
             with suppress(ValueError, RecursionError):
                 rep = json.loads(line)
                 if (
@@ -342,7 +342,9 @@ class _Reactions:
                         "text": rep.get("text"),
                     }
                     json.dumps(
-                        {"entries": [{"reaction": reaction}]}, ensure_ascii=False
+                        {"entries": [{"reaction": reaction}]},
+                        ensure_ascii=False,
+                        allow_nan=False,
                     )
                     self._by_task[rep["re"]] = reaction
         self._offset += len(block)
@@ -563,10 +565,14 @@ class _Handler(BaseHTTPRequestHandler):
             # raised would fail every poll while it stays in the window. And
             # every report this response cannot hold: json.loads accepts an
             # array nested a few levels short of its limit, which _send_json's
-            # json.dumps then has to nest two levels deeper.
+            # json.dumps then has to nest two levels deeper. allow_nan=False
+            # refuses the nan and inf that json.loads makes of NaN, Infinity
+            # and the standard 1e400: json.dumps writes them back as NaN and
+            # Infinity, the page's JSON parser rejects those, and the page
+            # shows the server as unreachable.
             with suppress(ValueError, RecursionError):
                 report = json.loads(line)
-                json.dumps({"reports": [report]}, ensure_ascii=False)
+                json.dumps({"reports": [report]}, ensure_ascii=False, allow_nan=False)
                 reports.append(report)
         return {"reports": reports, "total": len(lines)}
 
@@ -588,7 +594,7 @@ class _Handler(BaseHTTPRequestHandler):
                     continue
                 # Only an entry this response can hold, as in _list_reports.
                 # The reaction joined below was checked when it was read.
-                json.dumps({"entries": [entry]}, ensure_ascii=False)
+                json.dumps({"entries": [entry]}, ensure_ascii=False, allow_nan=False)
                 if not isinstance(entry.get("id"), str) or not entry["id"]:
                     # Occurrence-salted so duplicate id-less lines stay
                     # distinct; append-only order keeps the salt stable.
