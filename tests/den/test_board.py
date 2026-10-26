@@ -351,36 +351,6 @@ def test_missing_page_reports_itself_not_ports(tmp_path, monkeypatch):
         _board.make_server(tmp_path, config, preferred_port=0)
 
 
-def test_existing_instance_survives_non_dict_ping(tmp_path):
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    class NullHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            body = b"null"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
-    srv = HTTPServer(("127.0.0.1", 0), NullHandler)
-    _serve_in_thread(srv)
-    try:
-        lock = tmp_path / ".den" / "board" / "server.json"
-        lock.parent.mkdir(parents=True)
-        lock.write_text(
-            json.dumps({"pid": 1, "port": srv.server_address[1], "root": str(tmp_path)})
-        )
-        assert _board._existing_instance(tmp_path) is None
-        assert not lock.exists(), "foreign responder -> stale lock cleared"
-    finally:
-        srv.shutdown()
-        srv.server_close()
-
-
 def test_report_gets_auto_id_and_re(served):
     root, _server, port = served
     status, body = _request(
@@ -1415,6 +1385,41 @@ def test_lock_json_cannot_parse_reads_as_an_invalid_lock(tmp_path, bad):
     assert _in_a_new_thread(_board._existing_instance, tmp_path) is None
     _in_a_new_thread(_board._release_lock, tmp_path)  # must not raise
     assert lock.is_file(), "left in place, as an unparseable lock always was"
+
+
+@pytest.mark.parametrize("body", [pytest.param("null", id="null"), *_BAD_LINES])
+def test_existing_instance_survives_non_dict_ping(tmp_path, body):
+    # Whatever listens on the port a lock names answers the ping. One nested
+    # too deep raised RecursionError out of _existing_instance, and `den
+    # board` stopped at start. Run in a new thread, where the [deep] skip was
+    # decided.
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            data = body.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    _serve_in_thread(srv)
+    try:
+        lock = tmp_path / ".den" / "board" / "server.json"
+        lock.parent.mkdir(parents=True)
+        lock.write_text(
+            json.dumps({"pid": 1, "port": srv.server_address[1], "root": str(tmp_path)})
+        )
+        assert _in_a_new_thread(_board._existing_instance, tmp_path) is None
+        assert not lock.exists(), "foreign responder -> stale lock cleared"
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 # json.loads makes float inf of each, and int() raises OverflowError on it.

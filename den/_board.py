@@ -414,7 +414,11 @@ def _existing_instance(root: Path) -> str | None:
         # OverflowError: int() of the inf json.loads makes of 1e400 or
         # Infinity. It escaped, and `den board` stopped at start.
         return None
-    with suppress(OSError, ValueError, json.JSONDecodeError):
+    # Whatever listens on that port answers. ValueError covers JSONDecodeError,
+    # a body that is not UTF-8 and int's digit limit; an answer nested too
+    # deep raises RecursionError, which escaped, and `den board` stopped at
+    # start.
+    with suppress(OSError, ValueError, RecursionError):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_PING_TIMEOUT_S)
         try:
             conn.request("GET", "/api/ping")
