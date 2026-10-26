@@ -241,6 +241,29 @@ _ts_project() {
   [[ "$output" == *"[lint     ] PASS      ruff check "*"./-x.py"* ]]
 }
 
+@test "the walks up to / end when cd cannot enter the file's directory (stub tools)" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: after a failed cd each walk up started from '' and went on
+  # from '.', which dirname turns into '.' forever. cd fails on a directory
+  # whose name ends in a newline, which $(dirname ...) drops.
+  for tool in ruff ty prettier eslint rustfmt shfmt shellcheck; do
+    _stub "$tool"
+  done
+  _stub_tsc
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  nl="$WORK/d"$'\n'
+  mkdir "$nl"
+  for ext in py sh rs ts; do
+    printf '\n' > "$nl/x.$ext"
+    _run_bounded "$nl/x.$ext"
+    [ "$status" -ne 124 ] # the timeout stopped a walk up that never ended
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SUMMARY: "*", 0 failed, "* ]]
+  done
+  [[ "$output" == *"[typecheck] SKIPPED   cd cannot enter the directory of $nl/x.ts, so tsc did not check it"* ]]
+}
+
 @test "Shell: awk reads a file named like a=b.sh, not stdin (stub shfmt)" {
   _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
   # regression: awk takes an operand like a=b.sh for an assignment and reads

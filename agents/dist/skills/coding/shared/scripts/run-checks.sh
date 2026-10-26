@@ -124,12 +124,32 @@ project_only() {
   skip "$1" "$2"
 }
 
+# _parent <dir>
+# Prints the directory above <dir>; returns 1 at the top (/) and for a <dir>
+# that is not absolute. A walk up from '' (what a failed cd leaves) or from a
+# relative name never reached /: dirname turns either into '.', and '.' into
+# itself.
+_parent() {
+  local up
+  case "$1" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  up=$(dirname -- "$1")
+  [ "$up" != "$1" ] || return 1
+  printf '%s\n' "$up"
+}
+
 # _find_up <dir> <name>...
 # Prints the nearest directory, from <dir> up to /, that holds a file with
-# one of the names; returns 1 when none does.
+# one of the names; returns 1 when none does, or when <dir> is not absolute.
 _find_up() {
   local dir="$1" name
   shift
+  case "$dir" in
+    /*) ;;
+    *) return 1 ;;
+  esac
   while :; do
     for name in "$@"; do
       if [ -f "$dir/$name" ]; then
@@ -137,8 +157,7 @@ _find_up() {
         return 0
       fi
     done
-    [ "$dir" = "/" ] && return 1
-    dir=$(dirname "$dir")
+    dir=$(_parent "$dir") || return 1
   done
 }
 
@@ -160,7 +179,7 @@ _rel_path() {
         return 0
         ;;
     esac
-    from=$(dirname -- "$from")
+    from=$(_parent "$from") || break
     up="../$up"
   done
   printf '%s%s\n' "$up" "${2#/}"
@@ -170,17 +189,18 @@ _rel_path() {
 # Walk up from the file the way ruff itself discovers config (nearest
 # .ruff.toml / ruff.toml / pyproject.toml with [tool.ruff] wins). When a
 # project config exists we pass NO extra flags, so the project's own settings
-# are never overridden; only a config-less file gets the defaults below.
+# are never overridden; only a config-less file gets the defaults below, and
+# so does a file whose directory cd cannot enter.
 _py_has_ruff_config() {
-  d=$(cd "$(dirname "$1")" && pwd)
+  local d
+  d=$(CDPATH='' cd -- "$(dirname -- "$1")" && pwd) || return 1
   while :; do
     [ -f "$d/.ruff.toml" ] && return 0
     [ -f "$d/ruff.toml" ] && return 0
     if [ -f "$d/pyproject.toml" ] && grep -q '^\[tool\.ruff' "$d/pyproject.toml" 2>/dev/null; then
       return 0
     fi
-    [ "$d" = "/" ] && return 1
-    d=$(dirname "$d")
+    d=$(_parent "$d") || return 1
   done
 }
 
@@ -363,7 +383,10 @@ _ts_typecheck() {
     skip "typecheck" "tsc not installed"
     return 0
   fi
-  dir=$(_abs_dir "$1")
+  if ! dir=$(_abs_dir "$1"); then
+    skip "typecheck" "cd cannot enter the directory of $1, so tsc did not check it"
+    return 0
+  fi
   path="${dir%/}/$(basename -- "$1")"
   if ! conf=$(_find_up "$dir" tsconfig.json); then
     case "$2" in
@@ -539,8 +562,8 @@ _cargo_edition() {
         edition=$(_toml_value "$root/Cargo.toml" workspace.package edition)
         break
       fi
-      [ "$root" = "/" ] && break
-      root=$(_find_up "$(dirname "$root")" Cargo.toml) || break
+      root=$(_parent "$root") || break
+      root=$(_find_up "$root" Cargo.toml) || break
     done
   fi
   case "$edition" in
@@ -619,15 +642,18 @@ _shfmt_lang() {
 # after an .editorconfig with root = true and after the work tree's root
 # (the first directory with a .git); outside a work tree it stops below
 # $HOME, so ~/.editorconfig counts only for a project rooted at $HOME or
-# above.
+# above. A <dir> that is not absolute (cd failed) has none.
 _editorconfig_sets_indent() {
   local dir="$1" root="$1" home=""
+  case "$dir" in
+    /*) ;;
+    *) return 1 ;;
+  esac
   while [ ! -e "$root/.git" ]; do
-    if [ "$root" = / ]; then
+    if ! root=$(_parent "$root"); then
       root=""
       break
     fi
-    root=$(dirname -- "$root")
   done
   [ -n "${HOME:-}" ] && home=$(CDPATH='' cd -P -- "$HOME" 2>/dev/null && pwd -P)
   while :; do
@@ -656,10 +682,10 @@ _editorconfig_sets_indent() {
         2) return 1 ;;
       esac
     fi
-    if [ "$dir" = "$root" ] || [ "$dir" = / ]; then
+    if [ "$dir" = "$root" ]; then
       return 1
     fi
-    dir=$(dirname -- "$dir")
+    dir=$(_parent "$dir") || return 1
   done
 }
 
