@@ -131,24 +131,94 @@ assert_eq "zsh/fresh -u dump, insecure fpath: its functions left out" "compdef-o
 zctool=_zctool / compdef-ok
 zctool=none" "$out"
 
+# ZC_LS prints which _ls a Tab after ls would run: autoload +X loads it
+# without running it. Every planted one is under HOME.
+ZC_LS='autoload +X _ls 2>/dev/null
+    case ${functions_source[_ls]-} in
+        ($HOME/*) echo "_ls: the planted one" ;;
+        (/*) echo "_ls: the system one" ;;
+        (*) echo "_ls: none" ;;
+    esac'
+# zc_plant_ls <file> - write a completion function for ls there
+zc_plant_ls() { printf '#compdef ls\nprint -r -- planted\n' > "$1"; }
+
 # A dump that compinit -i wrote holds no function of such a directory, but -C
 # kept the directory in fpath, ahead of the system's: a completion function
 # put there later under a system function's name (_ls) is the one Tab loaded.
-# autoload +X loads the function a Tab after ls would run, without running it.
 echo "[zsh] init.zsh: a fresh dump that compinit -i wrote, then a planted _ls"
 zc_reset
 mkdir -p "$ZC/home/zfunc"
 chmod 777 "$ZC/home/zfunc"
 zc_run "fpath=(~/zfunc \$fpath); autoload -Uz compinit; compinit -i" "" > /dev/null
-printf '#compdef ls\nprint -r -- planted\n' > "$ZC/home/zfunc/_ls"
-out=$(zc_run "fpath=(~/zfunc \$fpath)" "
-    autoload +X _ls 2>/dev/null
-    case \${functions_source[_ls]-} in
-        (\$HOME/zfunc/*) echo '_ls: the planted one' ;;
-        (/*) echo '_ls: the system one' ;;
-        (*) echo '_ls: none' ;;
-    esac")
+zc_plant_ls "$ZC/home/zfunc/_ls"
+out=$(zc_run "fpath=(~/zfunc \$fpath)" "$ZC_LS")
 assert_eq "zsh/fresh -i dump, planted _ls: the system _ls loaded" "_ls: the system one" "$out"
+
+# compaudit also flags the parent of an fpath directory when others may write
+# to it: a digest <dir>.zwc put there is what autoload reads for the
+# directory. compinit -i left out only the parent, which was not in fpath, so
+# the directory stayed, and its planted digest's _ls was the one Tab loaded.
+echo "[zsh] init.zsh: an fpath directory whose parent others may write to, with a digest planted there"
+zc_reset
+mkdir -p "$ZC/home/p/c" "$ZC/plant"
+zc_plant_ls "$ZC/plant/_ls"
+(cd "$ZC/plant" && zsh -f -c 'zcompile ../home/p/c.zwc _ls')
+chmod 755 "$ZC/home" "$ZC/home/p/c"
+chmod 777 "$ZC/home/p"
+out=$(zc_run "fpath=(~/p/c \$fpath)" "$ZC_LS")
+assert_eq "zsh/writable parent, planted digest: the system _ls loaded" "_ls: the system one" "$out"
+
+# A directory is not left out for holding one that compaudit flags: its own
+# functions are still used.
+echo "[zsh] init.zsh: a directory that holds an fpath directory others may write to"
+zc_reset
+mkdir -p "$ZC/home/zf/sub"
+printf '#compdef zctool\n_zctool() { _files }\n' > "$ZC/home/zf/_zctool"
+chmod 755 "$ZC/home" "$ZC/home/zf"
+chmod 777 "$ZC/home/zf/sub"
+out=$(zc_run "fpath=(~/zf/sub ~/zf \$fpath)" "$ZC_COMPS")
+assert_eq "zsh/a writable directory inside a safe one: the safe one's functions used" "compdef-ok
+zctool=_zctool" "$out"
+
+# compaudit flags a completion file, or a digest, that a user other than you
+# and root owns. compinit -i skipped that file but kept its directory in fpath,
+# so a trusted _ls later in fpath was registered and autoload loaded the
+# flagged one first; a flagged digest kept its directory in fpath the same way.
+# A test cannot make a file someone else owns without root, so these cases
+# simulate the ownership: a compaudit defined before init.zsh (whose autoload
+# keeps it) flags the paths in zc_wdirs and zc_wfiles as the real one flags
+# what someone else owns. Called on its own, it prints them and fails; called
+# from compinit (which sets _i_check), it hands them over in compinit's own
+# variables, and fails.
+ZC_STUB="$WORK/compaudit-stub.zsh"
+cat > "$ZC_STUB" <<'EOF'
+compaudit() {
+    if (( ${+_i_check} )); then
+        _i_wdirs=( $zc_wdirs ) _i_wfiles=( $zc_wfiles ) _i_q=files
+    else
+        print -rl -- $zc_wdirs $zc_wfiles
+    fi
+    return 1
+}
+EOF
+# compaudit names such a file <fpath entry>/<name>, so an entry that ends in a
+# slash gives ~/zfunc//_ls.
+echo "[zsh] init.zsh: a completion file someone else owns (simulated), the system _ls later in fpath"
+for zc_dir in zfunc zfunc/; do
+    zc_reset
+    mkdir -p "$ZC/home/zfunc"
+    zc_plant_ls "$ZC/home/zfunc/_ls"
+    out=$(zc_run "fpath=(~/$zc_dir \$fpath); zc_wfiles=(~/$zc_dir/_ls); . '$ZC_STUB'" "$ZC_LS")
+    assert_eq "zsh/a file someone else owns, fpath entry ~/$zc_dir: the system _ls loaded" "_ls: the system one" "$out"
+done
+
+echo "[zsh] init.zsh: a digest someone else owns (simulated)"
+zc_reset
+mkdir -p "$ZC/home/zd" "$ZC/plant"
+zc_plant_ls "$ZC/plant/_ls"
+(cd "$ZC/plant" && zsh -f -c 'zcompile ../home/zd.zwc _ls')
+out=$(zc_run "fpath=(~/zd \$fpath); zc_wdirs=(~/zd.zwc); . '$ZC_STUB'" "$ZC_LS")
+assert_eq "zsh/a digest someone else owns: the system _ls loaded" "_ls: the system one" "$out"
 
 # reload starts zsh again: deleting the dump too makes that shell's compinit
 # look for new completion functions at once. It must do so with no init cache

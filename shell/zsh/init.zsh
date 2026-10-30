@@ -16,30 +16,50 @@
 # (compdump would rewrite it the same, at about 70 ms against touch's 2). A
 # dump touch cannot date (not yours) only means the full compinit again next
 # time. reload deletes the dump.
-# compaudit flags the fpath directories others may write to (group- or
-# world-writable, or owned by a user other than you and root): a completion
-# function put there would run as you at the next Tab. The full compinit runs
-# with -i, which leaves those directories out of fpath and asks nothing. Plain
-# compinit asks whether to use them, and with no terminal to answer
-# (zsh -i -c, as an editor's environment probe runs it) gives up and writes no
-# dump, so it asks again at every start; -u would use them unchecked. -C
-# skips the audit and keeps fpath as it is, so a dump less than a day old is
-# only loaded after compaudit passes (a few ms); with such a directory in
-# fpath, every shell runs the full compinit. `compaudit` lists them. The
-# dump's age is tested through eval, under zsh's own options: with SH_GLOB set
-# (in ~/.zshrc, above den's line) the glob qualifier is a parse error, and zsh
-# stops reading this file there.
+# compaudit flags what in fpath others may have written: a directory others
+# may write to (group- or world-writable, or owned by a user other than you
+# and root), a file or a digest (<dir>.zwc, which autoload reads in place of
+# the directory) someone else owns, and the parent of an fpath directory when
+# others may write to it (they could put a digest there). A completion
+# function from any of these would run as you at the next Tab. When compaudit
+# fails, the fpath directories it lists come out of fpath, and so do those
+# that hold a file it lists, lie below a directory it lists or have their
+# digest listed; then the full compinit runs with -i, which on its own would
+# leave out only the first kind, and asks nothing. Plain compinit asks whether
+# to use them, and with no terminal to answer (zsh -i -c, as an editor's
+# environment probe runs it) gives up and writes no dump, so it asks again at
+# every start; -u would use them unchecked. -C skips the audit and keeps fpath
+# as it is, so a dump less than a day old is only loaded after compaudit
+# passes (a few ms); while it fails, every shell runs the full compinit.
+# `compaudit` lists what it flags. The dump's age is tested through eval,
+# under zsh's own options: with SH_GLOB set (in ~/.zshrc, above den's line)
+# the glob qualifier is a parse error, and zsh stops reading this file there.
 autoload -Uz compinit compaudit
 if (( ! ${+functions[compdef]} )); then
     () {
         emulate -L zsh
         setopt extendedglob
-        local dump=${ZDOTDIR:-$HOME}/.zcompdump
-        if eval '[[ -n $dump(#qN.mh-24) ]]' && compaudit >/dev/null 2>&1; then
-            compinit -C
+        local dump=${ZDOTDIR:-$HOME}/.zcompdump d f
+        local -a listed kept
+        if compaudit >/dev/null 2>&1; then
+            if eval '[[ -n $dump(#qN.mh-24) ]]'; then
+                compinit -C
+                return
+            fi
         else
-            compinit -i && command touch -- "$dump" 2>/dev/null
+            # One path per line on stdout (its header goes to stderr). A
+            # directory is not taken out for holding a listed directory.
+            listed=( ${(f)"$(compaudit 2>/dev/null)"} )
+            for d in $fpath; do
+                for f in $listed; do
+                    [[ $d == $f || $d == $f/* || $d.zwc == $f ||
+                       ( ${f%/*} == $d && ! -d $f ) ]] && continue 2
+                done
+                kept+=( $d )
+            done
+            fpath=( $kept )
         fi
+        compinit -i && command touch -- "$dump" 2>/dev/null
     }
 fi
 zstyle ':completion:*' menu select
