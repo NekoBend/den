@@ -47,14 +47,23 @@ first, or Ubuntu's `/etc/zsh/zshrc` did, which runs a full `compinit` unless
 above den's line (`source <(kubectl completion zsh)`, say).
 
 While `~/.zcompdump` is less than a day old, den's `compinit -C` loads it as
-it is: no security audit, and no look for completion functions added since. A
-missing or older dump gets the full `compinit -u`, which finds them (an apt
-package, a new tool) and rewrites the dump when they changed; the dump is then
-dated today, so the shells of the next day take `-C` again. `-u` leaves out the
-security audit too, which asked about an `fpath` directory others may write to
-and, where no one could answer (`zsh -i -c`), gave up with no completion and
-no dump. `reload` deletes the dump, so the new shell picks new completion
-functions up at once.
+it is, with no look for completion functions added since, once `compaudit`
+has found nothing wrong in `fpath` (about 4 ms). A missing or older dump gets
+the full `compinit -i`, which finds them (an apt package, a new tool) and
+rewrites the dump when they changed; the dump is then dated today, so the
+shells of the next day take `-C` again. `reload` deletes the dump, so the new
+shell picks new completion functions up at once.
+
+Completion functions in an `fpath` directory others may write to (group- or
+world-writable, or owned by a user other than you and root, as `compaudit`
+judges it) are skipped: anyone who can write there could put a function that
+runs as you at your next Tab. `-i` leaves such directories out of `fpath`
+without asking, so `zsh -i -c` with no terminal to answer still gets
+completion and a dump. `-C` would skip the audit and keep them in `fpath`, so
+while one is there every shell runs the full `compinit -i`, about 8 ms more
+per start than the audit and `-C`. `compaudit` lists them; once a directory is
+yours or root's and not writable by group or others, its functions are used
+again.
 
 ## The wrapper system
 

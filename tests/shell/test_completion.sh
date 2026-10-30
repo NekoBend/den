@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # test_completion.sh - Tests for Tab completion: init.zsh's compinit (zsh) and
 # completion.ps1 (pwsh). The completion itself needs a real terminal, so the zsh
-# tests watch which compinit runs and what happens to ~/.zcompdump, and the pwsh
-# tests ask TabExpansion2, which is what PSReadLine's Tab calls; the rest is
-# PSScriptAnalyzer (CI) plus manual verification on Windows.
+# tests watch which compinit runs, what happens to ~/.zcompdump and which
+# completion functions a Tab would load, and the pwsh tests ask TabExpansion2,
+# which is what PSReadLine's Tab calls; the rest is PSScriptAnalyzer (CI) plus
+# manual verification on Windows.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
@@ -63,6 +64,17 @@ touch -d '23 hours ago' "$ZC/home/.zcompdump"
 zc_run "$ZC_LOGGER" "" > /dev/null
 assert_eq "zsh/fresh dump: compinit -C" "compinit -C" "$(cat "$ZC/compinit.log" 2>/dev/null)"
 
+# -C skips compaudit and keeps fpath as it is, so a completion function put in
+# an fpath directory others may write to ran at the next Tab. A fresh dump is
+# loaded with -C only once compaudit passes; here the full compinit runs.
+echo "[zsh] init.zsh: no -C while an fpath directory others may write to is there"
+zc_reset
+mkdir -p "$ZC/home/zfunc"
+chmod 777 "$ZC/home/zfunc"
+touch -d '23 hours ago' "$ZC/home/.zcompdump"
+zc_run "fpath=(~/zfunc \$fpath); $ZC_LOGGER" "" > /dev/null
+assert_eq "zsh/fresh dump, insecure fpath: compinit -i" "compinit -i" "$(cat "$ZC/compinit.log" 2>/dev/null)"
+
 # -C never looks for completion functions added since the dump was written (an
 # apt package, a new tool), so they stayed out until the dump was deleted by
 # hand. A dump a day old, or none, now gets the full compinit.
@@ -72,8 +84,8 @@ touch -d '25 hours ago' "$ZC/home/.zcompdump"
 zc_run "$ZC_LOGGER" "" > /dev/null
 rm -f "$ZC/home/.zcompdump"
 zc_run "$ZC_LOGGER" "" > /dev/null
-assert_eq "zsh/old and missing dump: full compinit" "compinit -u
-compinit -u" "$(cat "$ZC/compinit.log" 2>/dev/null)"
+assert_eq "zsh/old and missing dump: full compinit" "compinit -i
+compinit -i" "$(cat "$ZC/compinit.log" 2>/dev/null)"
 
 # The full compinit rewrites the dump only when it finds the completion files
 # changed; init.zsh dates it today either way, or every later shell would run
@@ -87,22 +99,56 @@ assert_eq "zsh/full compinit: completion set up, nothing printed" "compdef-ok" "
 assert_eq "zsh/full compinit: the dump is from today" "fresh" \
     "$(find "$ZC/home/.zcompdump" -newermt '1 hour ago' -printf 'fresh\n' 2>/dev/null)"
 
-# The full compinit audited fpath (compaudit), which the -C before it never
-# did: a directory there that others may write to made it ask "Ignore insecure
-# directories and continue [y] or abort compinit [n]?", and with no terminal to
-# answer (zsh -i -c, as an editor's environment probe runs it) it gave up: no
-# completion, and no dump, so every later start did the same. -u uses fpath as
-# it is, as -C does.
+# The full compinit audits fpath (compaudit): a directory there that others may
+# write to made it ask "Ignore insecure directories and continue [y] or abort
+# compinit [n]?", and with no terminal to answer (zsh -i -c, as an editor's
+# environment probe runs it) it gave up: no completion, and no dump, so every
+# later start did the same. -u then used that directory without the audit, so
+# a completion function someone else put there ran at the next Tab. -i leaves
+# it out, asks nothing and writes the dump.
+ZC_COMPS="(( \${+functions[compdef]} )) && echo compdef-ok; echo \"zctool=\${_comps[zctool]-none}\""
 echo "[zsh] init.zsh: an fpath directory others may write to, with no terminal"
 zc_reset
 mkdir -p "$ZC/home/zfunc"
 printf '#compdef zctool\n_zctool() { _files }\n' > "$ZC/home/zfunc/_zctool"
 chmod 777 "$ZC/home/zfunc"
-out=$(zc_run "fpath=(~/zfunc \$fpath)" \
-    "(( \${+functions[compdef]} )) && echo compdef-ok; echo \"zctool=\${_comps[zctool]-none}\"")
-assert_eq "zsh/insecure fpath: completion set up, nothing asked" "compdef-ok
-zctool=_zctool" "$out"
+out=$(zc_run "fpath=(~/zfunc \$fpath)" "$ZC_COMPS")
+assert_eq "zsh/insecure fpath: completion set up without its functions, nothing asked" "compdef-ok
+zctool=none" "$out"
 assert_exists "zsh/insecure fpath: the dump written" "$ZC/home/.zcompdump"
+
+# A dump less than a day old that compinit -u wrote (den's init.zsh ran -u
+# until it took -i) registers the functions of such a directory, and -C loaded
+# it as it was.
+echo "[zsh] init.zsh: a fresh dump that compinit -u wrote, the directory still in fpath"
+zc_reset
+mkdir -p "$ZC/home/zfunc"
+printf '#compdef zctool\n_zctool() { _files }\n' > "$ZC/home/zfunc/_zctool"
+chmod 777 "$ZC/home/zfunc"
+out=$(zc_run "fpath=(~/zfunc \$fpath); autoload -Uz compinit; compinit -u" "$ZC_COMPS")
+out+=" / $(zc_run "fpath=(~/zfunc \$fpath)" "$ZC_COMPS")"
+assert_eq "zsh/fresh -u dump, insecure fpath: its functions left out" "compdef-ok
+zctool=_zctool / compdef-ok
+zctool=none" "$out"
+
+# A dump that compinit -i wrote holds no function of such a directory, but -C
+# kept the directory in fpath, ahead of the system's: a completion function
+# put there later under a system function's name (_ls) is the one Tab loaded.
+# autoload +X loads the function a Tab after ls would run, without running it.
+echo "[zsh] init.zsh: a fresh dump that compinit -i wrote, then a planted _ls"
+zc_reset
+mkdir -p "$ZC/home/zfunc"
+chmod 777 "$ZC/home/zfunc"
+zc_run "fpath=(~/zfunc \$fpath); autoload -Uz compinit; compinit -i" "" > /dev/null
+printf '#compdef ls\nprint -r -- planted\n' > "$ZC/home/zfunc/_ls"
+out=$(zc_run "fpath=(~/zfunc \$fpath)" "
+    autoload +X _ls 2>/dev/null
+    case \${functions_source[_ls]-} in
+        (\$HOME/zfunc/*) echo '_ls: the planted one' ;;
+        (/*) echo '_ls: the system one' ;;
+        (*) echo '_ls: none' ;;
+    esac")
+assert_eq "zsh/fresh -i dump, planted _ls: the system _ls loaded" "_ls: the system one" "$out"
 
 # reload starts zsh again: deleting the dump too makes that shell's compinit
 # look for new completion functions at once. It must do so with no init cache
@@ -134,7 +180,7 @@ touch -d '25 hours ago' "$ZC/home/.zcompdump"
 out=$(zc_run "setopt shglob; $ZC_LOGGER" "hash zsh='$ZC/bin/zsh'; reload")
 assert_eq "zsh/SH_GLOB: reload printed nothing" "" "$out"
 assert_eq "zsh/SH_GLOB: -C for a fresh dump, the full compinit for an old one" "compinit -C
-compinit -u" "$(cat "$ZC/compinit.log" 2>/dev/null)"
+compinit -i" "$(cat "$ZC/compinit.log" 2>/dev/null)"
 assert_not_exists "zsh/SH_GLOB: reload deleted the init cache" "$ZC/home/.cache/shell/zctool-init.zsh"
 assert_not_exists "zsh/SH_GLOB: reload deleted the dump" "$ZC/home/.zcompdump"
 rm -rf "$ZC"
