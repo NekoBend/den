@@ -310,7 +310,92 @@ def test_atomic_write_never_writes_a_private_file_into_a_wider_one(
     assert stat.S_IMODE(secret.stat().st_mode) == 0o600
 
 
-# --- merge_files + atomic_write: what the 0o600 notes promise -------------------
+# --- split_by_size + split_by_lines: the parts of a private file ---------------
+
+SECRET = b"secret-1\nsecret-2\nsecret-3\n"
+SPLITS = [  # each cuts SECRET into one part per line
+    ("split_by_size", {"chunk_bytes": 9}),
+    ("split_by_lines", {"lines_per_chunk": 1}),
+]
+SPLIT_IDS = [recipe for recipe, _ in SPLITS]
+
+
+def _modes_while_written(directory: Path, call) -> dict[str, set[int]]:
+    """Run ``call``; map each file it writes in ``directory`` to its modes then."""
+    modes: dict[str, set[int]] = {}
+
+    def profile(frame, event, arg):
+        # A file object's write method, before the bytes go in.
+        if event != "c_call" or getattr(arg, "__name__", None) != "write":
+            return
+        target = getattr(arg, "__self__", None)
+        name = getattr(target, "name", None)
+        if isinstance(name, (str, os.PathLike)) and Path(name).parent == directory:
+            modes.setdefault(Path(name).name, set()).add(_mode_of(target.fileno()))
+
+    sys.setprofile(profile)
+    try:
+        call()
+    finally:
+        sys.setprofile(None)
+    return modes
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    "leftover", [False, True], ids=["new-parts", "over-a-0o666-part"]
+)
+@pytest.mark.parametrize(("recipe", "kwargs"), SPLITS, ids=SPLIT_IDS)
+def test_split_never_writes_a_private_file_into_a_wider_part(
+    fileops, tmp_path, umask_022, recipe, kwargs, leftover
+):
+    # Every part was written with Path.write_bytes: a new one got 0o666 minus
+    # the umask (0o644) and an old one kept its mode, so every local user
+    # could read the pieces of a 0o600 file, next to it by default.
+    src = tmp_path / "private.log"
+    src.write_bytes(SECRET)
+    src.chmod(0o600)
+    out = tmp_path / "parts"
+    out.mkdir()
+    if leftover:
+        old = out / "private.part0001.log"
+        old.write_bytes(b"a longer part from an earlier run\n")
+        old.chmod(0o666)
+    parts: list[Path] = []
+    modes = _modes_while_written(
+        out, lambda: parts.extend(getattr(fileops, recipe)(src, out_dir=out, **kwargs))
+    )
+    names = [f"private.part{index:04d}.log" for index in range(3)]
+    assert [part.name for part in parts] == names
+    assert modes == {name: {0o600} for name in names}
+    assert [stat.S_IMODE(part.stat().st_mode) for part in parts] == [0o600] * 3
+    assert b"".join(part.read_bytes() for part in parts) == SECRET
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    ("source_mode", "part_mode"),
+    [(0o640, 0o640), (0o444, 0o644)],
+    ids=["group-readable", "read-only"],
+)
+@pytest.mark.parametrize(("recipe", "kwargs"), SPLITS, ids=SPLIT_IDS)
+def test_split_parts_take_the_source_permission_bits(
+    fileops, tmp_path, umask_022, recipe, kwargs, source_mode, part_mode
+):
+    # A part takes the source's bits, as shutil.copy gives its copy, but
+    # stays writable for its owner: parts of a read-only source made
+    # read-only would stop the next run at the first part.
+    src = tmp_path / "data.log"
+    src.write_bytes(SECRET)
+    src.chmod(source_mode)
+    out = tmp_path / "parts"
+    for _ in range(2):  # the second run replaces the parts of the first
+        parts = getattr(fileops, recipe)(src, out_dir=out, **kwargs)
+    assert [stat.S_IMODE(part.stat().st_mode) for part in parts] == [part_mode] * 3
+    assert b"".join(part.read_bytes() for part in parts) == SECRET
+
+
+# --- what the 0o600 notes promise ---------------------------------------------
 
 
 def _sentences(doc: str | None) -> list[str]:
@@ -323,18 +408,20 @@ def _sentences(doc: str | None) -> list[str]:
     [
         ("merge_files", "On POSIX, over an existing ``output`` the temp file is 0o600"),
         ("atomic_write", "On POSIX, over an existing file the temp file is 0o600"),
+        ("split_by_size", "On POSIX each part is created 0o600"),
+        ("split_by_lines", "On POSIX each part is created 0o600"),
     ],
-    ids=["merge_files", "atomic_write"],
+    ids=["merge_files", "atomic_write", "split_by_size", "split_by_lines"],
 )
-def test_temp_file_notes_say_that_the_0o600_promise_is_posix_only(
+def test_private_file_notes_say_that_the_0o600_promise_is_posix_only(
     fileops, recipe, posix
 ):
-    # Both create the temp file 0o600, but on Windows os.open's 0o600 only
-    # keeps it from being read-only: the ACL it inherits from its directory
-    # decides who can read it, and os.replace keeps that ACL. The notes
-    # promised on every platform that private data never sits in a wider
-    # file. The promise has to sit in a sentence that names POSIX and not
-    # Windows.
+    # Each creates its temp file or part 0o600, but on Windows os.open's
+    # 0o600 only keeps it from being read-only: the ACL it inherits from its
+    # directory decides who can read it, and os.replace keeps that ACL. The
+    # merge_files and atomic_write notes promised on every platform that
+    # private data never sits in a wider file. The promise has to sit in a
+    # sentence that names POSIX and not Windows.
     sentences = _sentences(getattr(fileops, recipe).__doc__)
     promise = [sentence for sentence in sentences if posix in sentence]
     assert len(promise) == 1, (posix, sentences)

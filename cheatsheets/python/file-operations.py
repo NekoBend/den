@@ -168,20 +168,56 @@ def split_by_size(
 
     [Best for] Uploading large files in parts, parallel processing.
     [Note] Last chunk may be smaller than ``chunk_bytes``.
+           On POSIX each part is created 0o600, or narrowed to 0o600 before
+           it is truncated, so the parts of a private file are private too;
+           a part whose mode cannot be changed (another user's file) raises
+           ``PermissionError`` with its old bytes intact. Once written, a
+           part takes the source's permission bits, plus write for the owner
+           so that a rerun can replace it. Windows has no such guarantee:
+           there 0o600 only keeps a new part from being read-only, and who
+           can read a part is up to its ACL, which a new file inherits from
+           its directory and an existing one keeps.
     """
+    import os
+    import stat
+
+    def private(name: str, flags: int) -> int:
+        """Open ``name`` 0o600; an existing file is narrowed before it is truncated."""
+        fd = os.open(name, flags & ~os.O_TRUNC, 0o600)
+        try:
+            if os.name == "posix":
+                os.fchmod(fd, 0o600)  # EPERM on another user's file
+            # O_TRUNC's job, once the mode is safe. Like O_TRUNC, it skips a
+            # FIFO or a device, where ftruncate fails with EINVAL.
+            if flags & os.O_TRUNC and stat.S_ISREG(os.fstat(fd).st_mode):
+                os.ftruncate(fd, 0)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def write_part(part_path: Path, data: bytes, mode: int) -> None:
+        """Write ``data`` to a part that stays 0o600 until it is closed."""
+        with open(part_path, "wb", opener=private) as part:
+            part.write(data)
+        os.chmod(part_path, mode)
+
     src = Path(path)
     dest = Path(out_dir) if out_dir else src.parent
     dest.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
 
     with open(src, "rb") as fh:
+        # The source's permission bits, plus write for the owner so that a
+        # rerun can replace the part.
+        mode = (stat.S_IMODE(os.fstat(fh.fileno()).st_mode) & 0o777) | stat.S_IWUSR
         idx = 0
         while True:
             chunk = fh.read(chunk_bytes)
             if not chunk:
                 break
             part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-            part_path.write_bytes(chunk)
+            write_part(part_path, chunk, mode)
             parts.append(part_path)
             idx += 1
 
@@ -215,8 +251,36 @@ def split_by_lines(
            A lone CR is not cut at: a file with CR-only line endings (classic
            Mac OS) has no 0x0A, so it stays in one part and is read into
            memory whole.
+           On POSIX each part is created 0o600 (or narrowed to it before it
+           is truncated) and, once written, takes the source's permission
+           bits plus write for the owner, as in ``split_by_size``, so the
+           parts of a private file are private too. Windows has no such
+           guarantee: who can read a part is up to its ACL there.
     """
     import codecs
+    import os
+    import stat
+
+    def private(name: str, flags: int) -> int:
+        """Open ``name`` 0o600; an existing file is narrowed before it is truncated."""
+        fd = os.open(name, flags & ~os.O_TRUNC, 0o600)
+        try:
+            if os.name == "posix":
+                os.fchmod(fd, 0o600)  # EPERM on another user's file
+            # O_TRUNC's job, once the mode is safe. Like O_TRUNC, it skips a
+            # FIFO or a device, where ftruncate fails with EINVAL.
+            if flags & os.O_TRUNC and stat.S_ISREG(os.fstat(fd).st_mode):
+                os.ftruncate(fd, 0)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def write_part(part_path: Path, data: bytes, mode: int) -> None:
+        """Write ``data`` to a part that stays 0o600 until it is closed."""
+        with open(part_path, "wb", opener=private) as part:
+            part.write(data)
+        os.chmod(part_path, mode)
 
     # utf-8-sig writes its BOM once, at the start of the file, not per line.
     nl = "\n".encode(encoding).removeprefix(codecs.BOM_UTF8)
@@ -238,19 +302,22 @@ def split_by_lines(
     parts: list[Path] = []
 
     with open(src, "rb") as fh:
+        # The source's permission bits, plus write for the owner so that a
+        # rerun can replace the part.
+        mode = (stat.S_IMODE(os.fstat(fh.fileno()).st_mode) & 0o777) | stat.S_IWUSR
         idx = 0
         batch: list[bytes] = []
         for line in fh:
             batch.append(line)
             if len(batch) >= lines_per_chunk:
                 part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-                part_path.write_bytes(b"".join(batch))
+                write_part(part_path, b"".join(batch), mode)
                 parts.append(part_path)
                 batch = []
                 idx += 1
         if batch:
             part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-            part_path.write_bytes(b"".join(batch))
+            write_part(part_path, b"".join(batch), mode)
             parts.append(part_path)
 
     return parts
