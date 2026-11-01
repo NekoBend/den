@@ -177,13 +177,21 @@ PowerShell on Linux and macOS expands a wildcard for a native command itself,
 after the wrapper has seen it (quoted ones too, and `./*` to bare names), so
 the pwsh wrappers look the names up as pwsh will; there write the wildcard
 with a full path (`$PWD/*`), or turn the wrappers off. On Windows, cmd and
-PowerShell pass `*` on as it is and `bat` expands it itself, out of the
-wrappers' sight, so `cat` there hands `bat` a last `--paging=never` after the
-arguments, which wins over any `--paging` before it; cmd's `cat` refuses a
-`--`, after which `bat` would read that word as a file name. `rg` and `fd`
-expand no wildcards themselves, so cmd's `grep` and `findw` hand them `*`
-unexpanded. The `w`-suffix forms and `ripgrep` run the tool as typing its name
-does, without this check.
+PowerShell pass `*` on as it is, and `bat` expands it itself, one word at a
+time: `cat ???* *` beside files named `--`, `--pager=cmd` and
+`--paging=always` could give it the pager options from the first word and a
+`--` from the second. So `cat` there expands each wildcard first (cmd with
+its own `for`, PowerShell as it does on Linux and macOS), runs nothing when a
+match starts with `-` (cmd: write the wildcard as `.\*`; PowerShell:
+`$PWD/*`), and hands `bat` the names in a form its own expansion leaves
+alone: cmd puts each in quotes, PowerShell gives the full path of a name
+that holds `[` or `]`. cmd splits a word at `=`, `,` and `;`, as it does for
+its own commands, so such a name goes in quotes there. `cat` also hands `bat`
+a last `--paging=never` after the names, which wins over any `--paging`
+before it; cmd's `cat` refuses a `--`, after which `bat` would read that word
+as a file name. `rg` and `fd` expand no wildcards themselves, so cmd's `grep`
+and `findw` hand them `*` unexpanded. The `w`-suffix forms and `ripgrep` run
+the tool as typing its name does, without this check.
 
 Ways to get the native command:
 
