@@ -64,8 +64,8 @@ function that runs as you at your next Tab. den takes such directories out
 of `fpath` and runs `compinit -i`, which asks nothing, so `zsh -i -c` with no
 terminal to answer still gets completion and a dump. `-C` would skip the
 audit and keep them in `fpath`, so while one is there every shell runs the
-full `compinit -i`, roughly 12 to 15 ms more per start than the audit and
-`-C`. `compaudit` lists what it flags; once that is yours or root's and not
+full `compinit -i`, about 11 ms more per start than the audit and `-C`.
+`compaudit` lists what it flags; once that is yours or root's and not
 writable by group or others, its functions are used again.
 
 ## The wrapper system
