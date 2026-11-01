@@ -44,16 +44,15 @@ function _SnippetName([string]$Line) {
     if ($i -lt 0) { $Line } else { $Line.Substring(0, $i) }
 }
 
-# _SnippetGet <name> [-MatchCase] - the command saved under <name>, or $null.
-# The name matches in any case, as PowerShell compares strings; -MatchCase
-# takes only the exact name, as bash/zsh do (they can save two names that
-# differ only in case).
-function _SnippetGet([string]$Name, [switch]$MatchCase) {
+# _SnippetGet <name> - the command saved under <name>, or $null. Names compare
+# exactly, case included, here and in save and rm, as in bash/zsh: they can
+# save two names that differ only in case. A line with no tab, which only a
+# hand edit makes, holds no snippet.
+function _SnippetGet([string]$Name) {
     foreach ($line in _SnippetLines) {
         $i = $line.IndexOf("`t")
         if ($i -lt 0) { continue }
-        $n = $line.Substring(0, $i)
-        if ($n -ceq $Name -or (-not $MatchCase -and $n -eq $Name)) { return $line.Substring($i + 1) }
+        if ($line.Substring(0, $i) -ceq $Name) { return $line.Substring($i + 1) }
     }
     return $null
 }
@@ -90,7 +89,7 @@ function _SnippetPick {
     }
     if (-not $sel) { return }
     $name = _SnippetName ([string]@($sel)[0])
-    $c = _SnippetGet $name -MatchCase
+    $c = _SnippetGet $name
     if ($null -eq $c) {
         [Console]::Error.WriteLine("snippet pick: no such snippet '$name' (snippet ls)"); return
     }
@@ -185,7 +184,8 @@ function snippet {
             if ($cmd -match "`n") {
                 [Console]::Error.WriteLine('snippet save: command must be a single line'); return
             }
-            $lines = @(_SnippetLines | Where-Object { (_SnippetName $_) -ne $name })
+            # Replaces the snippet of exactly this name (see _SnippetGet).
+            $lines = @(_SnippetLines | Where-Object { (_SnippetName $_) -cne $name })
             $lines += "$name`t$cmd"
             _SnippetWrite $lines
             # The several-words form prints the line it saved, with the quotes
@@ -213,7 +213,7 @@ function snippet {
             if (-not $__rest.Count) { [Console]::Error.WriteLine('usage: snippet rm <name>'); return }
             $name = [string]$__rest[0]
             $lines = @(_SnippetLines)
-            $kept = @($lines | Where-Object { (_SnippetName $_) -ne $name })
+            $kept = @($lines | Where-Object { (_SnippetName $_) -cne $name })
             if ($kept.Count -eq $lines.Count) {
                 [Console]::Error.WriteLine("snippet rm: no such snippet '$name'"); return
             }

@@ -672,6 +672,48 @@ PS1
 my-name my-c my-lines my-sel my-i my-rest my-sub my-stdin my-cmd my-typed my-line my-outer
 replay depth after: 0" "$actual"
 
+    # Names compare exactly, as in bash/zsh, which save Pk and pk as two
+    # snippets: run and show read the one named, save replaces it and rm
+    # removes it, and the other stays.
+    reset_store
+    echo "[pwsh] run, show, save and rm take the exact name: Pk and pk are two snippets"
+    printf 'Pk\tWrite-Output upper\npk\tWrite-Output lower\n' > "$SNIPPET_FILE"
+    actual=$(run_pwsh "$SNIPPET_PS1" "snippet run pk; snippet run Pk; snippet show pk; snippet show Pk" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet exact name: run and show" "lower
+upper
+Write-Output lower
+Write-Output upper" "$actual"
+    run_pwsh "$SNIPPET_PS1" "snippet save pk 'Write-Output new'" >/dev/null 2>&1
+    assert_eq "pwsh/snippet exact name: save replaces pk, Pk stays" "Pk${TAB}Write-Output upper
+pk${TAB}Write-Output new" "$(cat "$SNIPPET_FILE")"
+    actual=$(run_pwsh_stderr "$SNIPPET_PS1" "snippet rm PK; snippet rm pk")
+    assert_eq "pwsh/snippet exact name: rm messages" "snippet rm: no such snippet 'PK'
+snippet: removed 'pk'" "$actual"
+    assert_eq "pwsh/snippet exact name: rm removes pk, Pk stays" "Pk${TAB}Write-Output upper" "$(cat "$SNIPPET_FILE")"
+
+    # A line with no tab, which only a hand edit makes, holds no snippet: show,
+    # run and pick read past it to the snippet after it, and picking it runs
+    # nothing.
+    reset_store
+    echo "[pwsh] a store line with no tab: show, run and pick find the snippet after it; picking it says no such snippet"
+    printf 'notab\nok\tWrite-Output found\n' > "$SNIPPET_FILE"
+    cat > "$TESTTMP/pick_notab.ps1" <<'PS1'
+snippet show ok
+snippet run ok
+snippet run notab
+$env:FZF_PRINT = "ok`tWrite-Output 'from fzf'"
+snippet pick
+$env:FZF_PRINT = 'notab'
+snippet pick
+PS1
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_notab.ps1'" 2>"$WORK/notab.err" | tr -d '\r')
+    assert_eq "pwsh/snippet no-tab line: output" "Write-Output found
+found
+found" "$actual"
+    assert_eq "pwsh/snippet no-tab line: messages" "+ Write-Output found
+snippet run: no such snippet 'notab' (snippet ls)
++ Write-Output found
+snippet pick: no such snippet 'notab' (snippet ls)" "$(tr -d '\r' < "$WORK/notab.err")"
     unset FZF_LOG
 
     # run and pick replay the line inside a function (_DenReplay). Unlike
