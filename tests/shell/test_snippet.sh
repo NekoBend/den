@@ -538,6 +538,57 @@ flag=True rest=z" "$actual"
     fi
     reset_store
 
+    # A write that fails, as on a full disk or past a quota. ulimit -f caps the
+    # size of the files pwsh writes (in bash's 1024-byte blocks), and with
+    # SIGXFSZ ignored a write past the cap fails instead of ending pwsh. .NET
+    # cannot start under a cap with its code heap mapped twice through a file
+    # (its write-xor-execute default), so DOTNET_EnableWriteXorExecute=0 turns
+    # that off. Under a cap of 1 a store holding PS_PAD fits and one holding
+    # PS_LONG as well does not; a cap of 0 fails every write. save and rm wrote
+    # the store in place, which left it cut short or empty.
+    PS_PAD=$(printf '%0480d' 0)
+    PS_LONG=$(printf '%0600d' 0)
+
+    # pwsh_capped <label> <cap> <store text> <command> - put the store text in
+    # place (through the symlink when the store is one), run the snippet
+    # command under the cap, and check that it ended with "cannot write ...;
+    # it is left as it was", left the store as it was, and took its temporary
+    # file with it.
+    pwsh_capped() {
+        local label=$1 cap=$2 store=$3 cmd=$4 actual
+        printf '%s' "$store" > "$SNIPPET_FILE" && cp "$SNIPPET_FILE" "$WORK/store.before" ||
+            abort_suite "cannot write $SNIPPET_FILE"
+        actual=$( (trap '' XFSZ; ulimit -f "$cap"; DOTNET_EnableWriteXorExecute=0 run_pwsh "$SNIPPET_PS1" \
+            "try { $cmd; 'returned' } catch { 'error: ' + \$_.Exception.Message }") 2>"$WORK/capped.err" | tr -d '\r')
+        assert_contains "pwsh/snippet $label: error" "error: cannot write $SNIPPET_FILE; it is left as it was. " "$actual"
+        assert_eq "pwsh/snippet $label: no saved or removed message" "" "$(tr -d '\r' < "$WORK/capped.err")"
+        assert_eq "pwsh/snippet $label: store kept" "same" "$(cmp -s "$SNIPPET_FILE" "$WORK/store.before" && echo same || wc -c < "$SNIPPET_FILE")"
+        assert_eq "pwsh/snippet $label: no temporary file left" "" "$(ls -A "$SNIPPET_DIR" | grep -v '^snippets$')"
+    }
+
+    echo "[pwsh] save and rm leave the store as it was when a write fails"
+    mkdir -p "$SNIPPET_DIR"
+    pwsh_capped "save, a new store past the cap" 1 "a${TAB}echo $PS_PAD
+last${TAB}echo old
+" "snippet save last 'echo $PS_LONG'"
+    pwsh_capped "save, every write fails" 0 "a${TAB}echo a
+last${TAB}echo old
+" "snippet save last 'echo new'"
+    pwsh_capped "rm, a new store past the cap" 1 "a${TAB}echo $PS_PAD
+b${TAB}echo b
+c${TAB}echo $PS_LONG
+" "snippet rm b"
+    pwsh_capped "rm, every write fails" 0 "a${TAB}echo a
+b${TAB}echo b
+" "snippet rm a"
+    link_store snippets
+    pwsh_capped "save through a symlink, every write fails" 0 "a${TAB}echo a
+" "snippet save b 'echo b'"
+    assert_eq "pwsh/snippet save through a symlink, every write fails: link kept" "link" \
+        "$([ -L "$SNIPPET_FILE" ] && echo link || echo replaced)"
+    rm -f "$SNIPPET_FILE"
+    reset_store
+
     reset_store
     echo "[pwsh] unknown command fails with usage"
     actual=$(run_pwsh "$SNIPPET_PS1" "snippet frobnicate" 2>&1 | tr -d '\r')

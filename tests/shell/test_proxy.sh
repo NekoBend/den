@@ -576,6 +576,59 @@ env=$SECRET_URL" "$actual"
         echo "  SKIP: pwsh/proxy unreadable store (running as root)"
     fi
 
+    # A write that fails, as on a full disk or past a quota. ulimit -f caps the
+    # size of the files pwsh writes (in bash's 1024-byte blocks), and with
+    # SIGXFSZ ignored a write past the cap fails instead of ending pwsh. .NET
+    # cannot start under a cap with its code heap mapped twice through a file
+    # (its write-xor-execute default), so DOTNET_EnableWriteXorExecute=0 turns
+    # that off. Under a cap of 1 a store holding PS_PAD fits and one holding
+    # PS_LONG as well does not; a cap of 0 fails every write. add and rm wrote
+    # the store in place, which left it cut short or empty.
+    PS_PAD=$(printf '%0480d' 0)
+    PS_LONG=$(printf '%0600d' 0)
+
+    # pwsh_capped <label> <cap> <store text> <command> - put the store text in
+    # place (through the symlink when the store is one), run the proxy command
+    # under the cap, and check that it ended with "cannot write ...; it is left
+    # as it was", left the store as it was, and took its temporary file with
+    # it.
+    pwsh_capped() {
+        local label=$1 cap=$2 store=$3 cmd=$4 actual
+        printf '%s' "$store" > "$PROXY_CONF" && cp "$PROXY_CONF" "$WORK/store.before" ||
+            abort_suite "cannot write $PROXY_CONF"
+        actual=$( (trap '' XFSZ; ulimit -f "$cap"; DOTNET_EnableWriteXorExecute=0 run_pwsh "$PROXY_PS1" \
+            "try { $cmd; 'returned' } catch { 'error: ' + \$_.Exception.Message }") 2>"$WORK/capped.err" | tr -d '\r')
+        assert_contains "pwsh/proxy $label: error" "error: cannot write $PROXY_CONF; it is left as it was. " "$actual"
+        assert_eq "pwsh/proxy $label: no saved or removed message" "" "$(tr -d '\r' < "$WORK/capped.err")"
+        assert_eq "pwsh/proxy $label: store kept" "same" "$(cmp -s "$PROXY_CONF" "$WORK/store.before" && echo same || wc -c < "$PROXY_CONF")"
+        assert_eq "pwsh/proxy $label: no temporary file left" "" "$(ls -A "$PROXY_DIR" | grep -v '^proxy\.conf$')"
+    }
+
+    echo "[pwsh] add and rm leave the store as it was when a write fails"
+    mkdir -p "$PROXY_DIR"
+    pwsh_capped "add, a new store past the cap" 1 "a${TAB}http://$PS_PAD${TAB}
+last${TAB}http://old:1${TAB}
+" "proxy add last http://$PS_LONG"
+    pwsh_capped "add, every write fails" 0 "a${TAB}http://a:1${TAB}
+last${TAB}http://old:1${TAB}
+" "proxy add last http://new:1"
+    pwsh_capped "rm, a new store past the cap" 1 "a${TAB}http://$PS_PAD${TAB}
+b${TAB}http://b:1${TAB}
+c${TAB}http://$PS_LONG${TAB}
+" "proxy rm b"
+    pwsh_capped "rm, every write fails" 0 "a${TAB}http://a:1${TAB}
+b${TAB}http://b:1${TAB}
+" "proxy rm a"
+    rm -rf "${DOTS:?}"
+    mkdir -p "$DOTS"
+    reset_conf
+    ln -s "$DOTS/proxy.conf" "$PROXY_CONF"
+    pwsh_capped "add through a symlink, every write fails" 0 "a${TAB}http://a:1${TAB}
+" "proxy add b http://b:1"
+    assert_eq "pwsh/proxy add through a symlink, every write fails: link kept" "link" \
+        "$([ -L "$PROXY_CONF" ] && echo link || echo replaced)"
+    reset_conf
+
     echo "[pwsh] _ProxySecretLine takes only proxy add with a password for one"
     actual=$(run_pwsh "$PROXY_PS1" "Get-Content -LiteralPath '$SECRET_CASES.lines' | ForEach-Object { '{0}: {1}' -f \$(if (_ProxySecretLine \$_) { 'yes' } else { 'no' }), \$_ }" | tr -d '\r')
     assert_eq "pwsh/_ProxySecretLine: which lines hold a proxy add password" "$(secret_want 2)" "$actual"

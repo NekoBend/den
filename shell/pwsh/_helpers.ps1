@@ -605,45 +605,77 @@ function _ResolvePaths([string[]]$Patterns) {
 
 # ========== den's stores ==========
 
+# _DenMakePrivate <dir> <file> - make <dir> 0700 and <file> 0600 (Linux and
+# macOS; a symlink's target gets the mode), for _DenWritePrivate.
+function _DenMakePrivate([string]$Dir, [string]$File) {
+    if ('System.IO.UnixFileMode' -as [type]) {
+        [IO.File]::SetUnixFileMode($Dir, 'UserRead, UserWrite, UserExecute')
+        [IO.File]::SetUnixFileMode($File, 'UserRead, UserWrite')
+    } else {
+        # pwsh before 7.3 (.NET 6 and older) has no such API.
+        $chmod = _ResolveCmd 'chmod' 'App'
+        if (-not $chmod) { throw "chmod not found: cannot make $File private" }
+        & $chmod 700 $Dir
+        if ($LASTEXITCODE -eq 0) { & $chmod 600 $File }
+        if ($LASTEXITCODE -ne 0) { throw "cannot make $File private" }
+    }
+}
+
 # _DenWritePrivate <path> <text> - write text (UTF-8 without a BOM, which posix
 # reads too) to one of den's stores under $XDG_CONFIG_HOME/den, which proxy.ps1
 # and snippet.ps1 share with bash/zsh: proxy.conf may hold a proxy password, and
-# snippets holds saved commands. On Linux and macOS the directory is made 0700
-# and the file 0600 before the text goes in, whatever the umask, so an older
-# den's looser modes are tightened too; a store that is a symlink is written
-# through, and its target gets the mode. On Windows both keep the ACL they
-# inherit from the profile directory. A failure ends the caller, so it prints
-# no "saved" message and the text never lands in a file left readable: the
-# catch rethrows, because a .NET method's exception alone would end only its
-# own statement and the next one would still run.
+# snippets holds saved commands. The text goes to a temporary file beside the
+# store, which then replaces it, as _den_put does in bash/zsh: a write that
+# fails (a full disk, a quota) leaves the store as it was, where a write in
+# place left it cut short or empty. A store that is a symlink is written
+# through instead, so the link stays and its target (created if missing) gets
+# the text; when that write fails, the target may be cut short, so the
+# temporary file, the only whole copy, stays and the error names it. On Linux
+# and macOS the directory is made 0700, and the temporary file and a link's
+# target 0600, before the text goes in, whatever the umask, so an older den's
+# looser modes are tightened too. On Windows the temporary file takes the ACL
+# it inherits from the directory, and File.Replace gives it the store's own. A
+# failure ends the caller, so it prints no "saved" message and the text never
+# lands in a file left readable: the catch throws again, because a .NET
+# method's exception alone would end only its own statement and the next one
+# would still run.
 function _DenWritePrivate([string]$Path, [string]$Text) {
+    $tmp = "$Path.tmp.$PID"
+    $cut = $false
     try {
         $dir = Split-Path -Parent $Path
         if (-not (Test-Path -LiteralPath $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
         # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
-        if (-not ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)) {
-            # Create the file if it is missing, so it can get its mode before
-            # the text goes in. Appending nothing creates it, also as the
-            # target of a symlink that points nowhere yet, for which
-            # Test-Path already says True; an existing file is left as it is.
+        $private = -not ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)
+        # A symlink, also one that points nowhere yet; -1 is no such path.
+        $attrs = [int]([IO.FileInfo]::new($Path).Attributes)
+        $link = $attrs -ne -1 -and ($attrs -band [int][IO.FileAttributes]::ReparsePoint)
+        # Made empty first, so that it has its mode before the text goes in.
+        [IO.File]::WriteAllText($tmp, '')
+        if ($private) { _DenMakePrivate $dir $tmp }
+        [IO.File]::WriteAllText($tmp, $Text, [Text.UTF8Encoding]::new($false))
+        if ($link) {
+            # Appending nothing creates a missing target, so that it has its
+            # mode before the text goes in; an existing one is left as it is.
             [IO.File]::AppendAllText($Path, '')
-            if ('System.IO.UnixFileMode' -as [type]) {
-                [IO.File]::SetUnixFileMode($dir, 'UserRead, UserWrite, UserExecute')
-                [IO.File]::SetUnixFileMode($Path, 'UserRead, UserWrite')
-            } else {
-                # pwsh before 7.3 (.NET 6 and older) has no such API.
-                $chmod = _ResolveCmd 'chmod' 'App'
-                if (-not $chmod) { throw "chmod not found: cannot make $Path private" }
-                & $chmod 700 $dir
-                if ($LASTEXITCODE -eq 0) { & $chmod 600 $Path }
-                if ($LASTEXITCODE -ne 0) { throw "cannot make $Path private" }
-            }
+            if ($private) { _DenMakePrivate $dir $Path }
+            $cut = $true
+            [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
+            $cut = $false
+            try { [IO.File]::Delete($tmp) } catch { }
+        } elseif ([IO.File]::Exists($Path)) {
+            # A $null argument would reach .NET as ''.
+            [IO.File]::Replace($tmp, $Path, [NullString]::Value)
+        } else {
+            [IO.File]::Move($tmp, $Path)
         }
-        [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
     } catch {
-        throw
+        $why = $_.Exception.GetBaseException().Message
+        if ($cut) { throw "cannot write $Path; the whole new store is in $tmp. $why" }
+        try { [IO.File]::Delete($tmp) } catch { }
+        throw "cannot write $Path; it is left as it was. $why"
     }
 }
 
