@@ -50,13 +50,16 @@ _show_uv_only_message() {
 # those, and with none, uv --no-config reads none. The line on stderr says
 # which, and typed uv pip reads them all.
 pip() {
-    local cfg
+    local cfg nl='
+'
     if [ -z "$VIRTUAL_ENV" ]; then
         printf 'pip: no venv is active; activate one with va, or type uv pip%s directly\n' "${*:+ $*}" >&2
         return 1
     elif [ -x "$VIRTUAL_ENV/bin/pip" ]; then
         "$VIRTUAL_ENV/bin/pip" "$@"
-    elif cfg=$(_den_uv_config); then
+    elif cfg=$(_den_uv_config && printf x); then
+        cfg=${cfg%x}
+        cfg=${cfg%"$nl"}
         _show_uv_only_message "pip${*:+ $*}" "uv --config-file $cfg pip${*:+ $*} (reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those)"
         command uv --config-file "$cfg" pip "$@"
     else
@@ -67,13 +70,16 @@ pip() {
 
 # pip3 → the same, with an active venv's own pip3
 pip3() {
-    local cfg
+    local cfg nl='
+'
     if [ -z "$VIRTUAL_ENV" ]; then
         printf 'pip3: no venv is active; activate one with va, or type uv pip%s directly\n' "${*:+ $*}" >&2
         return 1
     elif [ -x "$VIRTUAL_ENV/bin/pip3" ]; then
         "$VIRTUAL_ENV/bin/pip3" "$@"
-    elif cfg=$(_den_uv_config); then
+    elif cfg=$(_den_uv_config && printf x); then
+        cfg=${cfg%x}
+        cfg=${cfg%"$nl"}
         _show_uv_only_message "pip3${*:+ $*}" "uv --config-file $cfg pip${*:+ $*} (reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those)"
         command uv --config-file "$cfg" pip "$@"
     else
@@ -366,6 +372,9 @@ _den_py_marker() {
 # the system file, and --config-file reads one: with both, the user one, and
 # the system one's settings are left out. Fails when there is none. Not one of
 # the overrides that toggle-uv removes: vv and vva ask it with them off as well.
+# UV_CONFIG_FILE's name may end in a newline, which $( ) would drop with the
+# one printed after it: callers capture the path with an x after it, then strip
+# the x and one newline, as _den_py_marker reads pwd -P back.
 _den_uv_config() {
     local f rest
     if [ -n "${UV_CONFIG_FILE-}" ]; then
@@ -477,7 +486,9 @@ _den_uv_venv() {
     fi
     if [ -z "$marker" ]; then
         command uv venv "$@"
-    elif cfg=$(_den_uv_config); then
+    elif cfg=$(_den_uv_config && printf x); then
+        cfg=${cfg%x}
+        cfg=${cfg%"$nl"}
         printf '%s: uv --no-config --config-file %s venv, as %s is %s (reads your uv settings, not a .python-version, uv.toml or pyproject.toml %s, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)\n' "$name" "$cfg" "$marker" "$at" "$there" >&2
         command uv --no-config --config-file "$cfg" venv "$@"
     else

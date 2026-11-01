@@ -1667,6 +1667,15 @@ rc=0" "$actual"
     assert_eq "$sh/pip with UV_NO_CONFIG true runs uv --no-config pip" "mock-uv --no-config pip list
 rc=0" "$actual"
     assert_eq "$sh/pip with UV_NO_CONFIG true says it reads no uv.toml" "pip list → uv --no-config pip list ($PIP_NONE)" "$(cat "$R/err")"
+
+    # uv reads the file UV_CONFIG_FILE names as it is, a newline at its end
+    # too; $( ) dropped it, and pip, pip3 and vv named uv another file.
+    echo "[$sh] pip, pip3 and vv with a UV_CONFIG_FILE whose name ends in a newline: uv --config-file that file"
+    actual=$(route_posix "$sh" "$R/proj" "export VIRTUAL_ENV='$WORK/venv_nopip' UV_CONFIG_FILE='$R/mine.toml$NL'; pip list; pip3 list; vv")
+    assert_eq "$sh/pip, pip3 and vv pass a UV_CONFIG_FILE that ends in a newline as it is" "mock-uv --config-file $R/mine.toml$NL pip list
+mock-uv --config-file $R/mine.toml$NL pip list
+mock-uv --no-config --config-file $R/mine.toml$NL venv
+rc=0" "$actual"
 done
 
 # The same on pwsh. route_pwsh <dir> <command> runs the command in <dir> with
