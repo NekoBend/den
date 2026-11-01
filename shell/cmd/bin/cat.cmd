@@ -15,9 +15,12 @@ rem beside a file named -- too gave it the pager options from the first word
 rem and a -- from the second. So cat expands each word here with cmd's own
 rem for, runs nothing (exit 2) when a match or a word starts with - and names
 rem a file, and hands bat every name in quotes, which bat's expansion (the
-rem wild crate) leaves alone. A word that matches nothing goes on as it is,
-rem and bat says there is no such file. cmd splits a word at = , and ; as
-rem for its own commands: such a name goes in quotes.
+rem wild crate) leaves alone. bat reads a run of backslashes before a quote
+rem as half as many, and an odd one as escaping the quote, so a word that
+rem ends in \ gets that run doubled before its closing quote: label\ would
+rem otherwise run on into the words after it. A word that matches nothing
+rem goes on as it is, and bat says there is no such file. cmd splits a word
+rem at = , and ; as for its own commands: such a name goes in quotes.
 rem bat takes the last --paging it reads, so a second --paging=never goes
 rem after the names. After a typed -- bat would read that word as a file
 rem name, so cat refuses a --.
@@ -93,13 +96,34 @@ exit /b 2
 :run
 setlocal EnableDelayedExpansion
 set "_a="
-for /l %%i in (1,1,%_n%) do set "_a=!_a! "!_w%%i!""
+for /l %%i in (1,1,%_n%) do call :quote %%i
 "!_t!" --style=plain --paging=never!_a! --paging=never
 exit /b %errorlevel%
 
 :type
 type %*
 exit /b %errorlevel%
+
+rem :quote <i> - add _w<i> to _a in quotes, with the run of backslashes it
+rem ends in doubled. bat parses its command line by CommandLineToArgvW's
+rem rules (wild 2.2.1, src/parser.rs:102-121): 2n backslashes before a quote
+rem are n and the quote ends the word, 2n+1 are n and a quote in the word.
+rem So "label\" would swallow its closing quote and run on into the words
+rem after it, den's last --paging=never included, where "label\\" is label\.
+rem Called from :run, where delayed expansion is on: a name is read only as
+rem !var!.
+:quote
+set "_s=!_w%1!"
+set "_x="
+:quote_bs
+if not defined _s goto :quote_end
+if not "!_s:~-1!"=="\" goto :quote_end
+set "_s=!_s:~0,-1!"
+set "_x=!_x!\"
+goto :quote_bs
+:quote_end
+set "_a=!_a! "!_w%1!!_x!""
+exit /b 0
 
 rem :option - the word in _m, which holds * or ? when _p is set: set _lit
 rem when it is an option or an option's value, which bat gets as it is, and

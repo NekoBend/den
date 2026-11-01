@@ -8,8 +8,8 @@ rem whatever the toggle, and says so without it; there is no find shim, so
 rem typed find is find.exe; cat expands each wildcard itself, refuses a name
 rem that starts with - and names a file, a typed --, and an option or an
 rem option's value that holds * or ?, and hands bat every name in quotes,
-rem then a last --paging=never; no where.* or tool in the current directory
-rem runs;
+rem the run of backslashes it ends in doubled, then a last --paging=never;
+rem no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
@@ -193,6 +193,29 @@ type nul >"a&b!c%%d^e (1).txt"
 call "%BIN%\cat.cmd" * >"%O%" 2>&1
 call :expect %errorlevel% 0 "cat: a name with special characters and a blank reaches bat whole"
 cd /d "%T%\work" || exit /b 1
+
+rem bat reads a run of backslashes before a quote as half as many, and an
+rem odd one as escaping the quote: "label\" would swallow its closing quote
+rem and run on into the words after it, den's last --paging=never included.
+rem So cat doubles the run of backslashes a word ends in.
+>"%W%" echo {--style=plain --paging=never "--file-name" "label\\" "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [--file-name]
+>>"%W%" echo [label\]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" --file-name label\ a.txt >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: a value that ends in \ reaches bat whole, and so do the words after it"
+>"%W%" echo {--style=plain --paging=never ".\sub\\" "sub\\\\" "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [.\sub\]
+>>"%W%" echo [sub\\]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" .\sub\ sub\\ a.txt >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: a typed path that ends in \ or \\ reaches bat whole, and so do the words after it"
 set "FAKE_RAW="
 
 rem A typed -- would make bat read the last --paging=never as a file name,
