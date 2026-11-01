@@ -204,32 +204,40 @@ _proxy_add() {
         unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp
         return 1
     }
+    # A store that cannot be read, or a write into the temporary file that
+    # fails (a full disk, a quota), ends the add, and _pa_err says which: the
+    # store is never replaced by one that holds the new entry alone, or by a
+    # copy cut short. A failed write breaks out of the loop, which then ends
+    # with status 0, so a failure of the loop itself is the < redirection.
+    _pa_err=
     if [ -f "$_pa_conf" ]; then
         # Drop any existing entry with this name (compare field 1 literally, no
-        # glob), then the new one is appended below. A store that cannot be
-        # read ends the add, so it is never replaced by the new entry alone.
+        # glob), then the new one is appended below.
         while IFS= read -r _pa_line || [ -n "$_pa_line" ]; do
             if [ "${_pa_line%%"$_pa_tab"*}" != "$_pa_name" ]; then
-                printf '%s\n' "$_pa_line" >> "$_pa_tmp"
+                printf '%s\n' "$_pa_line" >> "$_pa_tmp" || { _pa_err='write'; break; }
             fi
-        done < "$_pa_conf" || {
-            rm -f "$_pa_tmp"
-            echo "proxy add: cannot read $_pa_conf; it is left as it was" >&2
-            unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
-            return 1
-        }
+        done < "$_pa_conf" || _pa_err='read'
     fi
-    printf '%s\t%s\t%s\n' "$_pa_name" "$_pa_url" "$_pa_np" >> "$_pa_tmp"
+    if [ -z "$_pa_err" ] && ! printf '%s\t%s\t%s\n' "$_pa_name" "$_pa_url" "$_pa_np" >> "$_pa_tmp"; then
+        _pa_err='write'
+    fi
+    if [ -n "$_pa_err" ]; then
+        rm -f "$_pa_tmp"
+        echo "proxy add: cannot $_pa_err $_pa_conf; it is left as it was" >&2
+        unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line _pa_err
+        return 1
+    fi
     if ! _den_put "$_pa_tmp" "$_pa_conf"; then
         echo "proxy add: cannot write $_pa_conf" >&2
         if [ -e "$_pa_tmp" ]; then
             echo "proxy add: the whole new store is in $_pa_tmp" >&2
         fi
-        unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
+        unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line _pa_err
         return 1
     fi
     echo "proxy: saved '$_pa_name' -> $(_proxy_show "$_pa_url")" >&2
-    unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line
+    unset _pa_name _pa_url _pa_np _pa_conf _pa_dir _pa_tab _pa_tmp _pa_line _pa_err
 }
 
 _proxy_rm() {
@@ -252,20 +260,29 @@ _proxy_rm() {
         unset _pr_conf _pr_tab _pr_tmp _pr_found
         return 1
     }
+    # A store that cannot be read, or a write into the temporary file that
+    # fails, ends the rm and leaves the store as it was, as in add.
+    _pr_err=
     while IFS= read -r _pr_line || [ -n "$_pr_line" ]; do
         if [ "${_pr_line%%"$_pr_tab"*}" = "$1" ]; then
             _pr_found=1
         else
-            printf '%s\n' "$_pr_line" >> "$_pr_tmp"
+            printf '%s\n' "$_pr_line" >> "$_pr_tmp" || { _pr_err='write'; break; }
         fi
-    done < "$_pr_conf"
+    done < "$_pr_conf" || _pr_err='read'
+    if [ -n "$_pr_err" ]; then
+        rm -f "$_pr_tmp"
+        echo "proxy rm: cannot $_pr_err $_pr_conf; it is left as it was" >&2
+        unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line _pr_err
+        return 1
+    fi
     if [ "$_pr_found" -eq 1 ]; then
         if ! _den_put "$_pr_tmp" "$_pr_conf"; then
             echo "proxy rm: cannot write $_pr_conf" >&2
             if [ -e "$_pr_tmp" ]; then
                 echo "proxy rm: the whole new store is in $_pr_tmp" >&2
             fi
-            unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line
+            unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line _pr_err
             return 1
         fi
         echo "proxy: removed '$1'" >&2
@@ -275,10 +292,10 @@ _proxy_rm() {
     else
         rm -f "$_pr_tmp"
         echo "proxy rm: no such profile '$1'" >&2
-        unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line
+        unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line _pr_err
         return 1
     fi
-    unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line
+    unset _pr_conf _pr_tab _pr_tmp _pr_found _pr_line _pr_err
 }
 
 _proxy_ls() {
