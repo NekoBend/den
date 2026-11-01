@@ -163,6 +163,28 @@ there is silently absent from your `grep` and `find` results. Reach for
 a tree, or pass the tools' own overrides, `rg --no-ignore --hidden` and
 `fd --no-ignore --hidden`.
 
+A file name can also reach a modern tool as an option. A glob such as `*` puts
+the names it matches among the arguments, and `rg`, `fd` and `bat` read a word
+that starts with `-` as an option, some of which run a program (`rg --pre` and
+`--hostname-bin`, `fd -x` and `-X`, `bat --pager` with `--paging=always`): in a
+checkout with a file named `--pre=sh`, a typed `grep needle *` ran `sh` on every
+file `rg` searched. So typed `cat`, `grep` and `find` run nothing when an
+argument starts with `-` and names a file (a symlink that points nowhere
+included); they say which one (bash/zsh: status 2; pwsh: a terminating
+error). Write such a file as `./--pre=sh`
+(a glob as `./*`), or use the native command (`command grep`).
+PowerShell on Linux and macOS expands a wildcard for a native command itself,
+after the wrapper has seen it (quoted ones too, and `./*` to bare names), so
+the pwsh wrappers look the names up as pwsh will; there write the wildcard
+with a full path (`$PWD/*`), or turn the wrappers off. On Windows, cmd and
+PowerShell pass `*` on as it is and `bat` expands it itself, out of the
+wrappers' sight, so `cat` there hands `bat` a last `--paging=never` after the
+arguments, which wins over any `--paging` before it; cmd's `cat` refuses a
+`--`, after which `bat` would read that word as a file name. `rg` and `fd`
+expand no wildcards themselves, so cmd's `grep` and `findw` hand them `*`
+unexpanded. The `w`-suffix forms and `ripgrep` run the tool as typing its name
+does, without this check.
+
 Ways to get the native command:
 
 - **One-off (POSIX):** prefix `command`, e.g. `command ls -la --color=never`.

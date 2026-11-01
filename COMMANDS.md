@@ -207,6 +207,17 @@ text; `fd` ignores it, looks for file names instead and exits 0 when none
 match. Typed `find` is always `find.exe`; `findw` runs `fd`, whatever the
 toggle, and without `fd` says so and exits 1.
 
+Typed `cat`, `grep` and `find` (bash/zsh, pwsh) run nothing and say why
+(bash/zsh: status 2; pwsh: a terminating error) when an argument starts with
+`-` and names a file: a glob such as `*` puts
+such names among the arguments, and `bat`, `rg` and `fd` would read them as
+options, some of which run a program (`rg --pre`, `fd -x`, `bat --pager`).
+Write the file as `./name` (bash/zsh: the glob as `./*`; pwsh on Linux and
+macOS: a full path such as `$PWD/*`), or use the native command. On Windows,
+where `bat` expands wildcards itself, `cat` ends `bat`'s arguments with
+`--paging=never`, and cmd's `cat` refuses a `--` (see shell/README.md, "The
+wrapper system").
+
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `ls` | `lsd` → native `ls` / `dir` | ✓ | ✓ | ✓ |
