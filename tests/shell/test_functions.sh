@@ -568,7 +568,14 @@ STUB
     assert_success "$sh/archive .zip over a glob holding a hard link to the output exit code" "$?"
     assert_eq "$sh/archive .zip over a glob holding a hard link to the output" "a.txt b.txt " "$(unzip -Z1 "$WORK/hl/backup.zip" 2>/dev/null | sort | tr '\n' ' ')"
     rm -f "$WORK/hl"/*.zip
-    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/hl' && archive backup.7z a.txt && ln backup.7z latest.7z && archive backup.7z *" >/dev/null 2>&1
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/hl' && archive backup.7z a.txt" >/dev/null 2>&1
+    ln "$WORK/hl/backup.7z" "$WORK/hl/latest.7z"
+    cp "$WORK/hl/backup.7z" "$WORK/hl.before"
+    actual=$($run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/hl' && archive backup.7z latest.7z" 2>&1)
+    assert_failure "$sh/archive .7z with only a hard link to the output as a source fails" "$?"
+    assert_contains "$sh/archive .7z with only a hard link to the output as a source says so" "no source besides the output" "$actual"
+    assert_eq "$sh/archive .7z with only a hard link to the output as a source keeps it" "$(cat "$WORK/hl.before")" "$(cat "$WORK/hl/backup.7z")"
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/hl' && archive backup.7z *" >/dev/null 2>&1
     assert_success "$sh/archive .7z over a glob holding a hard link to the output exit code" "$?"
     assert_eq "$sh/archive .7z over a glob holding a hard link to the output" "a.txt b.txt " "$(tr '\n' ' ' < "$WORK/hl/backup.7z")"
     rm -rf "$WORK/hl" "$WORK/hl.before"
@@ -743,6 +750,17 @@ STUB
     assert_failure "$sh/archive .7z under set -e with 7z failing fails" "$?"
     assert_eq "$sh/archive .7z under set -e with 7z failing puts the previous archive back" "PRECIOUS" "$(cat "$WORK/strict/keep.7z" 2>/dev/null)"
     assert_eq "$sh/archive .7z under set -e with 7z failing leaves no staging directory" "" "$(ls -A "$WORK/strict" | grep '^\.archive\.' | tr -d '\n')"
+    # A cleanup that fails (an rm that refuses the staging directory) is not
+    # a failed archive: the new archive is already in place, so archive
+    # still succeeds and its caller goes on.
+    rm -f "$WORK/strict/bin/zip" "$WORK/strict/bin/7z" "$WORK/strict/keep.7z"
+    printf '#!/bin/sh\nfor a; do case $a in *.archive.*) exit 1 ;; esac; done\nexec %s "$@"\n' "$(command -v rm)" > "$WORK/strict/bin/rm"
+    chmod +x "$WORK/strict/bin/rm"
+    echo PRECIOUS > "$WORK/strict/keep.zip"
+    actual=$("$sh" -c "$_strict; archive keep.zip src; echo after" 2>&1)
+    assert_success "$sh/archive .zip under set -e with the cleanup failing succeeds" "$?"
+    assert_contains "$sh/archive .zip under set -e with the cleanup failing lets its caller go on" "after" "$actual"
+    assert_eq "$sh/archive .zip under set -e with the cleanup failing published the archive" "src/ src/x " "$(unzip -Z1 "$WORK/strict/keep.zip" 2>/dev/null | sort | tr '\n' ' ')"
     rm -rf "$WORK/strict"
 
     # `set -- "$@" x` per source made the 7z branch quadratic: 20000 sources
@@ -2562,6 +2580,8 @@ assert_contains "pwsh/archive 7z failing archiver exits 1" "status=1" "$actual"
 assert_contains "pwsh/archive 7z names 7z's exit code" "7z exited 2" "$actual"
 assert_eq "pwsh/archive 7z failed run keeps the previous archive" "file1.txt" "$(cat "$WORK/rel.7z")"
 assert_eq "pwsh/archive 7z leaves nothing set aside" "" "$(ls -A "$WORK" | grep '\.previous\.' | tr -d '\n')"
+# The old archive is back in place, so nothing may claim it was kept elsewhere.
+assert_not_contains "pwsh/archive 7z that put the old archive back says nothing of a kept copy" "kept at" "$actual"
 actual=$(pwsh_outcome "\$env:PATH='$WORK/nobin'; archive none.7z src")
 assert_contains "pwsh/archive 7z not installed exits 1" "status=1" "$actual"
 assert_contains "pwsh/archive 7z not installed says so" "7z is not installed" "$actual"
@@ -2616,13 +2636,22 @@ assert_contains "pwsh/archive zip same-name folders exits 1" "status=1" "$actual
 assert_contains "pwsh/archive zip same-name folders names both" "'p1/src' and 'p2/src' would both be stored as 'src'" "$actual"
 assert_not_exists "pwsh/archive zip same-name folders wrote nothing" "$WORK/dirs.zip"
 assert_eq "pwsh/archive zip same-name sources leave no temporary" "" "$(ls -A "$WORK" | grep '\.tmp\.' | tr -d '\n')"
-# One source named twice, in any spelling, is one source and is stored once.
-# (zip -r stores a path given twice in one spelling once, but refuses p1/src
-# next to ./p1/src: "cannot repeat names in zip file".)
+# The same full path, however it is written, is one source and is stored
+# once. (zip -r stores a path given twice in one spelling once, but refuses
+# p1/src next to ./p1/src: "cannot repeat names in zip file".)
 actual=$(pwsh_outcome "archive twice.zip p1/src ./p1/src alpha/config.txt")
 assert_contains "pwsh/archive zip one source named twice exits 0" "status=0" "$actual"
 assert_eq "pwsh/archive zip one source named twice is stored once" "config.txt src/ src/a.txt " "$(unzip -Z1 "$WORK/twice.zip" 2>/dev/null | sort | tr '\n' ' ')"
-rm -rf "$WORK/alpha" "$WORK/beta" "$WORK/p1" "$WORK/p2" "$WORK/both.zip" "$WORK/twice.zip"
+# Its absolute path is the same path. A route through a symlinked parent is
+# another path, so another source, and its clashing name is refused.
+ln -s p1 "$WORK/link"
+actual=$(pwsh_outcome "archive abs.zip p1/src '$WORK/p1/src'")
+assert_contains "pwsh/archive zip one source as a relative and an absolute path exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip one source as a relative and an absolute path is stored once" "src/ src/a.txt " "$(unzip -Z1 "$WORK/abs.zip" 2>/dev/null | sort | tr '\n' ' ')"
+actual=$(pwsh_outcome "archive route.zip p1/src link/src")
+assert_contains "pwsh/archive zip one folder through a symlinked parent exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive zip one folder through a symlinked parent is a second source" "'p1/src' and 'link/src' would both be stored as 'src'" "$actual"
+rm -rf "$WORK/alpha" "$WORK/beta" "$WORK/p1" "$WORK/p2" "$WORK/link" "$WORK/both.zip" "$WORK/twice.zip" "$WORK/abs.zip"
 
 # Windows compares names without regard to case, and its case-sensitive
 # folders (WSL makes them) can still hold config.txt and CONFIG.TXT. The same

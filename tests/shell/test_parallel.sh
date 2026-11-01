@@ -648,6 +648,18 @@ for sh in bash zsh; do
     # And with no staging directory to be had, ptar says so.
     actual=$("$sh" -c "$_strict; ptar nodir/out.tgz src; echo after" 2>&1)
     assert_contains "$sh/ptar under set -e says it cannot create a staging directory" "ptar: cannot create a temporary directory in 'nodir'" "$actual"
+    # A cleanup that fails (an rm that refuses the staging directory) is not
+    # a failed ptar: the new archive is already in place, so ptar still
+    # succeeds and its caller goes on.
+    rm -rf "$WORK/strict/keep.tgz" "$WORK/strict"/.ptar.*
+    printf '#!/bin/sh\nexec gzip -c\n' > "$WORK/strict/bin/pigz"
+    printf '#!/bin/sh\nfor a; do case $a in *.ptar.*) exit 1 ;; esac; done\nexec %s "$@"\n' "$(command -v rm)" > "$WORK/strict/bin/rm"
+    chmod +x "$WORK/strict/bin/rm"
+    echo PRECIOUS > "$WORK/strict/keep.tgz"
+    actual=$("$sh" -c "$_strict; ptar keep.tgz src; echo after" 2>&1)
+    assert_success "$sh/ptar under set -e with the cleanup failing succeeds" "$?"
+    assert_contains "$sh/ptar under set -e with the cleanup failing lets its caller go on" "after" "$actual"
+    assert_eq "$sh/ptar under set -e with the cleanup failing published the archive" "src/ src/x " "$(tar tzf "$WORK/strict/keep.tgz" 2>/dev/null | sort | tr '\n' ' ')"
     rm -rf "$WORK/strict"
 
     # Between moving the existing output aside and putting it back there is
