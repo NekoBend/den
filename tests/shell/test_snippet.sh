@@ -632,7 +632,7 @@ while IFS= read -r l || [ -n "$l" ]; do
     [ "$n" -eq 1 ] && f=$l
 done
 [ "$n" -gt 0 ] && printf '%s\n' "${FZF_PRINT:-$f}"
-exit 0
+exit "${FZF_EXIT:-0}"
 STUB
     chmod +x "$PICK_BIN/fzf"
     export FZF_LOG="$WORK/fzf.log"
@@ -788,6 +788,13 @@ foreach ($out in "clean`n$row", "`n$row", "clean`nctrl-x`n$row", 'clean', "clean
     "case $n"
     snippet pick
 }
+# A query holding a tab after a snippet's name, printed when nothing matched
+# (fzf exits 1): no row was picked, whatever the line looks like.
+$env:FZF_PRINT = "clean`tno-match"
+$env:FZF_EXIT = '1'
+'case 6'
+snippet pick
+Remove-Item Env:FZF_EXIT
 PS1
     actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_query.ps1'" 2>"$WORK/query.err" | tr -d '\r')
     assert_eq "pwsh/snippet pick: the last line fzf prints" "case 1
@@ -797,7 +804,8 @@ ran-dry-run
 case 3
 ran-dry-run
 case 4
-case 5" "$actual"
+case 5
+case 6" "$actual"
     assert_eq "pwsh/snippet pick: the last line fzf prints, messages" "+ Write-Output ran-dry-run
 + Write-Output ran-dry-run
 + Write-Output ran-dry-run" "$(tr -d '\r' < "$WORK/query.err")"

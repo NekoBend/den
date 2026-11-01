@@ -89,10 +89,13 @@ function _SnippetPick {
     try {
         [Console]::OutputEncoding = $OutputEncoding
         $sel = @($lines | fzf --no-multi --prompt 'snippet> ')
+        $fzfExit = $LASTEXITCODE
     } finally {
         [Console]::OutputEncoding = $consoleEncoding
     }
-    if (-not $sel.Count) { return }
+    # fzf exits 1 when nothing matched and 130 when aborted; what it printed
+    # then is a query (--print-query), never a row, even one holding a tab.
+    if ($fzfExit -ne 0 -or -not $sel.Count) { return }
     $picked = [string]$sel[-1]
     $i = $picked.IndexOf("`t")
     if ($i -lt 0) { return }
