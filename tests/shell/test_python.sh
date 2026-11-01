@@ -1294,6 +1294,15 @@ for _ in $(seq 65); do printf '3.13\n'; done > "$R/pyvermany/.python-version"
 # reading it would not end (pyverzero/).
 mkdir -p "$R/pyverzero"
 ln -s /dev/zero "$R/pyverzero/.python-version"
+# A directory whose name ends in a newline, as an archive or a shared folder
+# can name one, with a .python-version that names ./evil (pyvernl<newline>/).
+# $( ) drops a newline at the end of what it captures, so the walk read the
+# directory back as pyvernl/, which is not there, and found no marker. The
+# route directory itself holds none.
+NL=$'\n'
+NLD="$R/pyvernl$NL"
+mkdir -p "$NLD"
+printf './evil\n' > "$NLD/.python-version"
 ln -s "$R/proj/sub" "$R/link"
 # uv starts from the current directory with its symbolic links resolved, and so
 # does python.sh: it names a project found that way under this spelling of $R.
@@ -1428,6 +1437,13 @@ rc=0" "$actual"
     assert_eq "$sh/py through a link runs the system python" "system-python -c pass
 rc=0" "$actual"
     assert_contains "$sh/py through a link names the project" "code from $RP/proj/pyproject.toml" "$(cat "$R/err")"
+
+    echo "[$sh] python --version in a directory whose name ends in a newline, beside a .python-version that names ./evil: the system python"
+    actual=$(route_posix "$sh" "$NLD" "python --version")
+    assert_eq "$sh/python in a directory whose name ends in a newline runs the system python" "system-python --version
+rc=0" "$actual"
+    assert_eq "$sh/python in a directory whose name ends in a newline names its .python-version" \
+        "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyvernl$NL/.python-version" "$(cat "$R/err")"
 
     echo "[$sh] --version and -V outside a project: uv run, as any other call"
     actual=$(route_posix "$sh" "$NOPROJ" "py --version; python -V")
@@ -1596,6 +1612,14 @@ mock-uv --no-config venv --directory $R/pyver
 rc=0" "$actual"
     assert_eq "$sh/vv after a -- or at a directory not there prints no line" "vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)" "$(cat "$R/err")"
     assert_not_exists "$sh/vv's cd runs no cd function or chpwd hook" "$R/hooks"
+
+    echo "[$sh] vv --directory at a directory whose name ends in a newline, from directories with no marker: uv --no-config venv, as the walk starts there"
+    actual=$(route_posix "$sh" "$R" "vv --directory 'pyvernl$NL' v; vv --directory='$NLD'")
+    assert_eq "$sh/vv at a directory whose name ends in a newline runs uv --no-config venv" "mock-uv --no-config venv --directory pyvernl$NL v
+mock-uv --no-config venv --directory=$NLD
+rc=0" "$actual"
+    assert_eq "$sh/vv at a directory whose name ends in a newline names what it found there" "vv: uv --no-config venv, as $RP/pyvernl$NL/.python-version is in or above $RP/pyvernl$NL ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/pyvernl$NL/.python-version is in or above $RP/pyvernl$NL ($VV_NONE_THERE)" "$(cat "$R/err")"
 
     # --no-config skipped your own uv settings too (an index, TLS settings):
     # with a uv.toml of yours, uv --config-file reads it in place of a
@@ -2140,6 +2164,25 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
     (cd "$WORK/dirclones-uv" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/dirclones-uv/config" "$REAL_UV" venv --project proj v0) >/dev/null 2>&1 || true
     PROJECT_THREAT=0
     [ -e "$WORK/dirclones-uv/marks/proj-program" ] && PROJECT_THREAT=1
+    # mk_nl_clone <dir> - in <dir>, which holds no marker, a clone whose
+    # directory's name ends in a newline (clone<newline>/), with a
+    # .python-version that names its ./evil, a program that writes nl-program
+    # to <dir>/marks when it runs. Plain uv run in it, and plain uv venv
+    # --directory at it, ran the program.
+    mk_nl_clone() {
+        mkdir -p "$1/marks" "$1/config" "$1/clone$NL"
+        printf '#!/bin/sh\necho ran >> "%s/marks/nl-program"\nexec "%s" "$@"\n' "$1" "$WORK/uv_probe/bin/python" > "$1/clone$NL/evil"
+        chmod +x "$1/clone$NL/evil"
+        printf './evil\n' > "$1/clone$NL/.python-version"
+    }
+    mk_nl_clone "$WORK/nlclone-uv-run"
+    (cd "$WORK/nlclone-uv-run/clone$NL" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/nlclone-uv-run/config" "$REAL_UV" run -- python --version) >/dev/null 2>&1 || true
+    NL_RUN_THREAT=0
+    [ -e "$WORK/nlclone-uv-run/marks/nl-program" ] && NL_RUN_THREAT=1
+    mk_nl_clone "$WORK/nlclone-uv-venv"
+    (cd "$WORK/nlclone-uv-venv" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/nlclone-uv-venv/config" "$REAL_UV" venv --directory "clone$NL" v0) >/dev/null 2>&1 || true
+    NL_VENV_THREAT=0
+    [ -e "$WORK/nlclone-uv-venv/marks/nl-program" ] && NL_VENV_THREAT=1
     # mk_wheel <dir> <name> <version> - an empty pure-Python wheel of that
     # name and version in <dir>.
     mk_wheel() {
@@ -2413,6 +2456,34 @@ vv=0" "$actual"
             if [ "$PROJECT_THREAT" = 1 ]; then
                 assert_not_exists "$sh/vv with --project ran no program the clone's .python-version names" "$D/marks/proj-program"
             fi
+        fi
+
+        if [ "$NL_RUN_THREAT" = 1 ]; then
+            echo "[$sh] in a clone whose directory's name ends in a newline, python --version runs none of its code (the real uv)"
+            N="$WORK/nlclone-$sh-run"
+            mk_nl_clone "$N"
+            actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$N/config" "$sh" -c "
+                . '$PYTHON_SH_SOURCE'
+                unset VIRTUAL_ENV _DEN_VENV_PYTHON
+                cd '$N/clone$NL' || exit 1
+                python --version >/dev/null 2>&1; echo \"python=\$?\"
+            " 2>/dev/null | tr -d '\r') || true
+            assert_eq "$sh/python --version in a clone whose name ends in a newline" "python=0" "$actual"
+            assert_not_exists "$sh/python --version ran no program the clone's .python-version names" "$N/marks/nl-program"
+        fi
+
+        if [ "$NL_VENV_THREAT" = 1 ]; then
+            echo "[$sh] from a directory with no marker, vv --directory at a clone whose name ends in a newline runs none of its code (the real uv)"
+            N="$WORK/nlclone-$sh-venv"
+            mk_nl_clone "$N"
+            actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$N/config" "$sh" -c "
+                . '$PYTHON_SH_SOURCE'
+                unset VIRTUAL_ENV _DEN_VENV_PYTHON
+                cd '$N' || exit 1
+                vv --directory 'clone$NL' v1 >/dev/null 2>&1; echo \"vv=\$?\"
+            " 2>/dev/null | tr -d '\r') || true
+            assert_eq "$sh/vv --directory at a clone whose name ends in a newline" "vv=0" "$actual"
+            assert_not_exists "$sh/vv --directory ran no program the clone's .python-version names" "$N/marks/nl-program"
         fi
     done
 

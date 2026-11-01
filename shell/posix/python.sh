@@ -284,9 +284,21 @@ if command -v uv >/dev/null 2>&1; then
 # Defined here, with vv and vva, not with the overrides that toggle-uv removes:
 # vv and vva ask it with the overrides off as well.
 _den_py_marker() {
-    local d f l n t w c rest ws='' here=${2-}
+    local d f l n t w c rest ws='' here=${2-} nl='
+'
     d=${1-}
-    [ -n "$d" ] || d=$(pwd -P 2>/dev/null) || d=$PWD
+    # $( ) drops every newline at the end of what it captures, pwd's own and
+    # those of a directory whose name ends in one, which would walk from
+    # another directory: the x after them keeps those of the name, and the
+    # newline before it is pwd's.
+    if [ -z "$d" ]; then
+        if d=$(pwd -P 2>/dev/null && printf x); then
+            d=${d%x}
+            d=${d%"$nl"}
+        else
+            d=$PWD
+        fi
+    fi
     while :; do
         for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version .python-versions; do
             [ -e "${d%/}/$f" ] || continue
@@ -407,7 +419,8 @@ _den_uv_config() {
 # --directory=DIR; uv refuses a second one, and a value that starts with -, so
 # no other option's value is one.
 _den_uv_venv() {
-    local name=$1 marker='' cfg a next='' dir project here start at='here or above' there='here or above'
+    local name=$1 marker='' cfg a next='' dir project here start at='here or above' there='here or above' nl='
+'
     shift
     dir=${UV_WORKING_DIR-${UV_WORKING_DIRECTORY-}}
     project=${UV_PROJECT-}
@@ -431,14 +444,17 @@ _den_uv_venv() {
     # CDPATH entry and no - or +N for a directory it remembers, with the
     # builtin past a cd function, and with zsh's -q, which runs no chpwd hook
     # (zoxide's records the directory). Where cd cannot enter it, uv cannot
-    # either, and stops before it reads anything.
+    # either, and stops before it reads anything. The x keeps the newlines
+    # that end a directory's name, as in _den_py_marker.
     elif here=$(
         case $dir in
             '') ;;
             /*) builtin cd ${ZSH_VERSION:+-q} -P -- "$dir" ;;
             *) builtin cd ${ZSH_VERSION:+-q} -P -- "./$dir" ;;
-        esac >/dev/null 2>&1 && builtin pwd -P
+        esac >/dev/null 2>&1 && builtin pwd -P && printf x
     ); then
+        here=${here%x}
+        here=${here%"$nl"}
         start=$here
         if [ -n "$project" ]; then
             # Made absolute from there and normalized by name, as uv does: .
