@@ -93,7 +93,10 @@ the rc-file `# ===== den =====` block and prunes dirs den created that became
 empty. An rc file is rewritten through a new copy that replaces it, so one
 with a second hard link (a dotfiles repo) is left as it is, block included,
 and named for you to edit by hand: a new copy would split it from its other
-names. It lists the plan and asks once before deleting (`--yes` to skip,
+names. The copy takes the file's owner, group and permission bits and, on
+Linux, its extended attributes and ACLs; a file whose owner, group or
+attributes it cannot take is left and named the same way. It lists the
+plan and asks once before deleting (`--yes` to skip,
 `--dry-run` to preview only; non-interactive runs require `--yes`). Each file
 is compared again right before it is deleted, so one you save, or replace
 with something else (a directory, say), while that prompt is open is kept

@@ -5,6 +5,7 @@ import os
 import shutil
 import signal
 import stat
+import struct
 import sys
 from pathlib import Path
 
@@ -28,6 +29,35 @@ def _hard_link(target: Path, link: Path) -> None:
         os.link(target, link)
     except (OSError, NotImplementedError) as e:
         pytest.skip(f"no hard links here: {e}")
+
+
+# POSIX ACL entries as Linux keeps them in system.posix_acl_*: a tag, the
+# permission bits, and the uid or gid of a named entry (none for the others).
+_ACL_USER_OBJ, _ACL_USER, _ACL_GROUP_OBJ, _ACL_MASK, _ACL_OTHER = 1, 2, 4, 16, 32
+_NO_ID = 0xFFFFFFFF
+
+
+def _posix_acl(*entries: tuple[int, int, int]) -> bytes:
+    """An ACL in its extended attribute form: version 2, then each entry."""
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
+
+
+def _set_xattr(path: Path, name: str, value: bytes) -> None:
+    """os.setxattr, or skip where it cannot work: den carries extended
+    attributes over on Linux only, and a filesystem may keep no ACLs or
+    user.* attributes, or not know the uid an ACL names."""
+    if sys.platform != "linux":
+        pytest.skip("den carries extended attributes over on Linux only")
+    try:
+        os.setxattr(path, name, value)
+    except OSError as e:
+        if e.errno not in {errno.ENOTSUP, errno.EPERM, errno.EINVAL}:
+            raise
+        pytest.skip(f"no {name} here: {e}")
+
+
+def _xattrs(path: Path) -> dict[str, bytes]:
+    return {name: os.getxattr(path, name) for name in os.listxattr(path)}
 
 
 def _install(tmp_path, *extra):
@@ -324,6 +354,51 @@ def test_uninstall_leaves_an_rc_file_with_a_second_hard_link(
     out, err = capsys.readouterr()
     assert "unwired 0 rc file(s)" in out
     assert f"warning: {bashrc}: it has 2 hard links" in err
+    assert "1 rc file(s) not unwired; see the warnings above" in err
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="POSIX owners; root may give a file to anyone",
+)
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_uninstall_leaves_an_rc_file_whose_owner_or_group_a_copy_cannot_take(
+    tmp_path, monkeypatch, capsys, whose
+):
+    """The new copy belongs to den's user and group, so replacing an rc file
+    that belonged to another user, or to a group den's user is not in,
+    changed who may read it. Such a file is now left as it is, block
+    included, and named, and the run fails. Only root can give a file away,
+    so stat reports another uid or gid for ~/.bashrc here; the chown that
+    would carry it over to the copy then fails for real."""
+    from den._shell import _BASH_LINE, _COMMENT
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    bashrc = tmp_path / ".bashrc"  # HOME is tmp_path (isolate_user_dirs)
+    original = f"export A=1\n\n{_COMMENT}\n{_BASH_LINE}\n".encode()
+    bashrc.write_bytes(original)
+    mine = {os.getuid(), os.getgid(), *os.getgroups()}
+    foreign = next(i for i in range(65534, 0, -1) if i not in mine)
+    field = 4 if whose == "owner" else 5  # st_uid, st_gid in the stat tuple
+    real_stat = Path.stat
+
+    def stat_(self, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        if self.name != bashrc.name:  # the copy, a .den-tmp file, is as it is
+            return st
+        fields = list(st)
+        fields[field] = foreign
+        return os.stat_result(fields)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "stat", stat_)
+        rc = uninstall_main(["shell", "--yes"])
+    assert bashrc.read_bytes() == original
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".den-tmp")]
+    assert rc == 1
+    out, err = capsys.readouterr()
+    assert "unwired 0 rc file(s)" in out
+    assert f"warning: {bashrc}: replacing it would change its owner or group (" in err
     assert "1 rc file(s) not unwired; see the warnings above" in err
 
 
@@ -782,6 +857,105 @@ def test_strip_block_keeps_the_rc_files_mode(tmp_path):
     assert _strip_block(rc, line) is True
     assert rc.read_text() == "export A=1\n"
     assert stat.S_IMODE(rc.stat().st_mode) == 0o640
+
+
+def test_strip_block_keeps_the_rc_files_acl_and_extended_attributes(tmp_path):
+    """The new copy took none of the rc file's extended attributes: an ACL
+    entry that let one more user read it was lost, and so was a user.*
+    attribute. The copy now carries them over, byte for byte."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    rc.write_text(f"export A=1\n\n# ===== den =====\n{line}\n")
+    rc.chmod(0o640)
+    acl = _posix_acl(
+        (_ACL_USER_OBJ, 6, _NO_ID),
+        (_ACL_USER, 4, 65534),  # uid 65534 may read it too
+        (_ACL_GROUP_OBJ, 4, _NO_ID),
+        (_ACL_MASK, 4, _NO_ID),
+        (_ACL_OTHER, 0, _NO_ID),
+    )
+    _set_xattr(rc, "system.posix_acl_access", acl)
+    _set_xattr(rc, "user.note", b"the user's own")
+    before = _xattrs(rc)
+    assert _strip_block(rc, line) is True
+    assert rc.read_text() == "export A=1\n"
+    assert _xattrs(rc) == before
+    assert stat.S_IMODE(rc.stat().st_mode) == 0o640
+
+
+def test_strip_block_does_not_give_the_rc_file_its_directorys_default_acl(tmp_path):
+    """A directory's default ACL reaches every new file made in it, so the
+    copy let a user the rc file never named read it (rc files often export
+    tokens). The copy now drops what the old file did not have."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    home = tmp_path / "home"
+    home.mkdir()
+    rc = home / ".bashrc"
+    rc.write_text(f"export A=1\n\n# ===== den =====\n{line}\n")
+    rc.chmod(0o640)
+    default = _posix_acl(
+        (_ACL_USER_OBJ, 7, _NO_ID),
+        (_ACL_USER, 7, 65534),  # uid 65534 gets every new file
+        (_ACL_GROUP_OBJ, 5, _NO_ID),
+        (_ACL_MASK, 7, _NO_ID),
+        (_ACL_OTHER, 5, _NO_ID),
+    )
+    _set_xattr(home, "system.posix_acl_default", default)
+    assert "system.posix_acl_access" not in os.listxattr(rc), "made before the ACL"
+    assert _strip_block(rc, line) is True
+    assert rc.read_text() == "export A=1\n"
+    assert "system.posix_acl_access" not in os.listxattr(rc), "65534 may not read it"
+    assert stat.S_IMODE(rc.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX groups")
+def test_strip_block_keeps_the_rc_files_group(tmp_path):
+    """A new file gets den's user's group (or its directory's), so an rc
+    file the user had given another of their groups changed group. The copy
+    now gets the old file's group. Skipped for a user with one group."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    probe = tmp_path / "probe"
+    probe.touch()
+    others = sorted(set(os.getgroups()) - {probe.stat().st_gid})
+    probe.unlink()
+    if not others:
+        pytest.skip("den's user has no group a new file here would not get")
+    rc = tmp_path / ".bashrc"
+    rc.write_text(f"export A=1\n\n# ===== den =====\n{line}\n")
+    os.chown(rc, -1, others[0])
+    rc.chmod(0o640)
+    assert _strip_block(rc, line) is True
+    assert rc.read_text() == "export A=1\n"
+    assert rc.stat().st_gid == others[0]
+    assert stat.S_IMODE(rc.stat().st_mode) == 0o640
+
+
+@pytest.mark.parametrize("setxattr", ["fails", "does nothing"])
+def test_strip_block_leaves_an_rc_file_whose_attributes_a_copy_cannot_take(
+    tmp_path, monkeypatch, setxattr
+):
+    """When the copy cannot take an extended attribute (a security.* one
+    den's user may not set, say), or does not end up with it, the rc file
+    is left as it is, attribute and block included, and the caller is told,
+    as for a second hard link."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    rc = tmp_path / ".bashrc"
+    original = f"export A=1\n\n# ===== den =====\n{line}\n".encode()
+    rc.write_bytes(original)
+    _set_xattr(rc, "user.note", b"the user's own")
+
+    def refuse(*_a, **_k):
+        if setxattr == "fails":
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    expected = "lose" if setxattr == "fails" else "change"
+    with monkeypatch.context() as m:
+        m.setattr(os, "setxattr", refuse)
+        with pytest.raises(OSError, match=f"would {expected} its extended attributes"):
+            _strip_block(rc, line)
+    assert rc.read_bytes() == original
+    assert os.getxattr(rc, "user.note") == b"the user's own"
+    assert sorted(tmp_path.iterdir()) == [rc], "no copy is left"
 
 
 def test_strip_block_rewrites_the_target_of_a_symlinked_rc_file(tmp_path, symlink):
