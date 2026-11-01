@@ -1258,11 +1258,11 @@ def search_words(symbols: Iterable[str], files: list[Path]) -> list[Hit]:
 
     One pass over the files for any number of symbols: the caller works out
     which symbol a line holds (mentions), and whether it is a definition,
-    from the line itself. Uses ripgrep when it is installed, otherwise reads the files
-    in-process; both get the same file list and the same pattern, and the
-    hits come back sorted by (file, line). Case is ignored in PowerShell
-    files only, so those are searched apart: one ripgrep run per case group,
-    more only when a file list outgrows the command-line budget.
+    from the line itself. Uses ripgrep when it is installed, otherwise reads
+    the files in-process; both get the same file list and the same pattern,
+    and the hits come back sorted by (file, line). Case is ignored in
+    PowerShell files only, so those are searched apart: one ripgrep run per
+    case group, more only when a file list outgrows the command-line budget.
     """
     names = sorted(set(symbols), key=lambda s: (-len(s), s))
     if not names or not files:
