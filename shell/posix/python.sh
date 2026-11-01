@@ -283,7 +283,8 @@ if command -v uv >/dev/null 2>&1; then
 # One that holds version requests alone (3.13, cpython@3.13) does not count,
 # so a pyenv ~/.python-version leaves home alone, unless the current directory
 # holds something of the same name. Fails when there is none. uv starts from
-# the directory the system reports, with its symbolic links resolved (pwd -P).
+# the directory the system reports, with its symbolic links resolved (pwd -P,
+# the builtin, past a pwd function of yours).
 # _den_py_marker <dir> <cwd> → the same for uv started elsewhere (vv and vva,
 # see _den_uv_venv): the walk starts from <dir>, and a bare name is looked up
 # in <cwd>, the directory uv runs in.
@@ -298,7 +299,7 @@ _den_py_marker() {
     # another directory: the x after them keeps those of the name, and the
     # newline before it is pwd's.
     if [ -z "$d" ]; then
-        if d=$(pwd -P 2>/dev/null && printf x); then
+        if d=$(builtin pwd -P 2>/dev/null && printf x); then
             d=${d%x}
             d=${d%"$nl"}
         else

@@ -1438,6 +1438,17 @@ rc=0" "$actual"
 rc=0" "$actual"
     assert_contains "$sh/py through a link names the project" "code from $RP/proj/pyproject.toml" "$(cat "$R/err")"
 
+    # A pwd function of yours replaced the one the walk asks where it starts,
+    # and here named a directory with no marker: python went through uv run
+    # and vv ran plain uv venv in a project.
+    echo "[$sh] python and vv in a project past a pwd function that names another directory: the walk starts here"
+    actual=$(route_posix "$sh" "$R/proj/sub" "pwd() { printf '%s\n' '$NOPROJ'; }; python -c pass; vv")
+    assert_eq "$sh/python and vv past a pwd function find the project" "system-python -c pass
+mock-uv --no-config venv
+rc=0" "$actual"
+    assert_eq "$sh/python and vv past a pwd function name the project" "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/proj/pyproject.toml
+vv: uv --no-config venv, as $RP/proj/pyproject.toml is here or above ($VV_NONE)" "$(cat "$R/err")"
+
     echo "[$sh] python --version in a directory whose name ends in a newline, beside a .python-version that names ./evil: the system python"
     actual=$(route_posix "$sh" "$NLD" "python --version")
     assert_eq "$sh/python in a directory whose name ends in a newline runs the system python" "system-python --version
