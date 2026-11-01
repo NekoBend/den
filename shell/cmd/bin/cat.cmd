@@ -21,6 +21,14 @@ rem for its own commands: such a name goes in quotes.
 rem bat takes the last --paging it reads, so a second --paging=never goes
 rem after the names. After a typed -- bat would read that word as a file
 rem name, so cat refuses a --.
+rem cat's for would make file names of an option or an option's value too:
+rem `cat -l * a.txt` would give bat a file name as the language. So cat
+rem refuses (exit 2) a word that starts with - and holds * or ?, and the
+rem value of an option that takes it from the next word (bat 0.26.1's
+rem --help: --file-name, --language or -l, --map-syntax or -m, ...) when
+rem that holds one. cmd splits an unquoted --file-name=*.py into --file-name
+rem and *.py, so the value case arises from the = form too. [ and ] are no
+rem wildcard to cmd's for, and a quoted word none to bat's expansion.
 rem
 rem This file keeps CRLF line endings: with bare LF, cmd can miss a :label
 rem that a goto or call searches for when it straddles a 512-byte block.
@@ -34,6 +42,7 @@ if not "%_DEN_WRAPPERS%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\wh
 if not defined _t goto :type
 set "_n=0"
 set "_bad="
+set "_val="
 
 :scan
 if not "%~1"=="" goto :word
@@ -41,11 +50,25 @@ if "%1"=="" goto :run
 rem An empty argument (""): bat says it cannot read it.
 set /a "_n+=1"
 set "_w%_n%="
+set "_val="
 shift
 goto :scan
 
 :word
 if "%~1"=="--" goto :dashdash
+rem _p: the word holds * or ?. cmd's for then gives the names it matches,
+rem none of which holds either, and never the word itself; for any other
+rem word it gives just that word.
+set "_f="
+for %%f in ("%~1") do set "_f=%%~f"
+set "_m=%~1"
+set "_p=1"
+setlocal EnableDelayedExpansion
+if "!_f!"=="!_m!" (endlocal & set "_p=") else endlocal
+call :option
+if defined _bad exit /b 2
+if defined _val set "_vo=%~1"
+if defined _lit goto :literal
 set "_k=%_n%"
 for %%f in ("%~1") do (
     set "_m=%%~f"
@@ -55,6 +78,7 @@ if defined _bad exit /b 2
 if not "%_n%"=="%_k%" goto :next
 rem No file matched the wildcard.
 set "_m=%~1"
+:literal
 call :add
 if defined _bad exit /b 2
 :next
@@ -76,6 +100,56 @@ exit /b %errorlevel%
 :type
 type %*
 exit /b %errorlevel%
+
+rem :option - the word in _m, which holds * or ? when _p is set: set _lit
+rem when it is an option or an option's value, which bat gets as it is, and
+rem _val when bat takes this option's value from the next word; refuse (say
+rem why, set _bad) such a word that holds * or ?. A cluster of short options
+rem gives -l, -m, -r or -H the rest of the word, or the next word when it
+rem ends the word (-pl).
+:option
+set "_lit="
+if defined _val goto :option_value
+setlocal EnableDelayedExpansion
+if not "!_m:~0,1!"=="-" goto :option_no
+if "!_m!"=="-" goto :option_no
+if defined _p goto :option_wild
+set "_v="
+for %%o in (--binary --color --completion --decorations --diff-context --file-name --highlight-line --ignored-suffix --italic-text --language --line-range --map-syntax --nonprintable-notation --pager --paging --squeeze-limit --strip-ansi --style --tabs --terminal-width --theme --theme-dark --theme-light --wrap --source --target) do if "!_m!"=="%%o" set "_v=1"
+if "!_m:~1,1!"=="-" goto :option_yes
+set "_i=0"
+:option_short
+set /a "_i+=1"
+set "_c=!_m:~%_i%,1!"
+if not defined _c goto :option_yes
+for %%c in (l m r H) do if "!_c!"=="%%c" goto :option_short_value
+goto :option_short
+:option_short_value
+set /a "_i+=1"
+set "_c=!_m:~%_i%,1!"
+if not defined _c set "_v=1"
+:option_yes
+endlocal & set "_lit=1" & set "_val=%_v%"
+exit /b 0
+:option_no
+endlocal
+exit /b 0
+:option_wild
+>&2 echo(cat: '!_m!' is an option that holds * or ?, which cat would expand as a wildcard: bat did not run.
+>&2 echo(cat: run bat by name for it.
+endlocal
+set "_bad=1"
+exit /b 0
+:option_value
+set "_val="
+set "_lit=1"
+if not defined _p exit /b 0
+setlocal EnableDelayedExpansion
+>&2 echo(cat: '!_m!', the value of !_vo!, holds * or ?, which cat would expand as a wildcard: bat did not run.
+>&2 echo(cat: run bat by name for it.
+endlocal
+set "_bad=1"
+exit /b 0
 
 rem :add - the name in _m: refuse it (say why, set _bad) when it starts with
 rem - and names a file, else keep it as _w<n>.

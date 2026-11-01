@@ -739,6 +739,51 @@ function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
     return $null
 }
 
+# _DenBatWild <args> - for den's cat on Windows: why bat must not run with
+# <args>, else $null. There bat expands each word that holds * ? [ or ] itself
+# (see _DenBatWords), an option and an option's value too, and pwsh hands a
+# word without a blank on unquoted, so nothing keeps bat from expanding one:
+# `cat -l * x` would make a file named like an option the language and read
+# the names after it as options. So den's cat expands file operands only, and
+# refuses a word that starts with - and holds one of those characters
+# (--file-name=*.py), or the value of an option that takes it from the next
+# word when that holds one (--map-syntax '*.h:C++', -l '*'). Turning such a
+# word into a path, as for an operand, would make bat read the option as a
+# file. After a -- (pwsh hands a quoted one on) every word is an operand.
+function _DenBatWild($Words) {
+    # bat 0.26.1's options that take a value, from `bat --help` (bat cache's
+    # --source and --target too): without =value, the next word is the value.
+    # A cluster of short options gives -l, -m, -r or -H the rest of the word,
+    # or the next word when it ends the word (-pl).
+    $long = @('--binary', '--color', '--completion', '--decorations', '--diff-context',
+        '--file-name', '--highlight-line', '--ignored-suffix', '--italic-text', '--language',
+        '--line-range', '--map-syntax', '--nonprintable-notation', '--pager', '--paging',
+        '--squeeze-limit', '--strip-ansi', '--style', '--tabs', '--terminal-width', '--theme',
+        '--theme-dark', '--theme-light', '--wrap', '--source', '--target')
+    $how = 'which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it.'
+    $opt = $null
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        $s = "$w"
+        $wild = $s.IndexOfAny([char[]]'*?[]') -ge 0
+        if ($opt) {
+            if ($wild) { return "'$s', the value of $opt, holds * ? [ or ], $how" }
+            $opt = $null
+            continue
+        }
+        if ($s -eq '--') { break }
+        if ($s.Length -lt 2 -or $s[0] -ne '-') { continue }
+        if ($wild) { return "'$s' is an option that holds * ? [ or ], $how" }
+        if ($s -cin $long) { $opt = $s; continue }
+        if ($s[1] -eq '-') { continue }
+        for ($i = 1; $i -lt $s.Length; $i++) {
+            if ('lmrH'.IndexOf($s[$i]) -lt 0) { continue }
+            if ($i -eq $s.Length - 1) { $opt = $s }
+            break
+        }
+    }
+    return $null
+}
+
 # _DenBatWords <args> - for den's cat on Windows: <args>, with each word that
 # bat would expand itself replaced by what it stands for, so that bat's own
 # expansion does not decide what it reads. On Windows bat expands each word
@@ -746,9 +791,11 @@ function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
 # pwsh hands most words on unquoted), one word at a time: `cat ???* *` beside
 # files named --, --pager=cmd and --paging=always gave bat the pager options
 # from the first word and a -- from the second, which made the last
-# --paging=never a file name. Such a word becomes the names it matches,
-# relative to the current directory as pwsh hands them on in Linux and macOS
-# (_DenOptionFile has refused a match whose name starts with -). A match of a
+# --paging=never a file name. Such a word is a file operand here
+# (_DenBatWild has refused an option or an option's value that holds one), and
+# it becomes the names it matches, relative to the current directory as pwsh
+# hands them on in Linux and macOS (_DenOptionFile has refused a match whose
+# name starts with -). A match of a
 # rooted word, or one whose name holds [ or ], goes as its full path, and
 # whatever bat still makes of a full path is one too. A word that matches
 # nothing, or any such word while the current location is not a folder, goes
@@ -802,12 +849,16 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # options that run a program (bat, fd, rg) runs nothing, with a terminating
     # error, when an argument is a file name the tool would read as an option
     # (_DenOptionFile).
-    # On Windows, bat gets each word it would expand replaced by what it stands
-    # for (_DenBatWords).
+    # On Windows, bat runs nothing either when an option or an option's value
+    # holds a wildcard (_DenBatWild), and gets each other word it would expand
+    # replaced by what it stands for (_DenBatWords).
     $optionCheck = ''
     if ($FuncName -eq $NativeCmd -and $Modern -in @('bat', 'fd', 'rg')) {
         $optionCheck = "`$__o = _DenOptionFile '$FuncName' '$Modern' `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }"
-        if ($Modern -eq 'bat') { $optionCheck += "; if (_OnWindows) { `$__a = @(_DenBatWords `$__a) }" }
+        if ($Modern -eq 'bat') {
+            $optionCheck = "if (_OnWindows) { `$__o = _DenBatWild `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop } }; " +
+                $optionCheck + "; if (_OnWindows) { `$__a = @(_DenBatWords `$__a) }"
+        }
     }
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
     $winNativeSkip = @('find', 'sort', 'more')

@@ -6,9 +6,10 @@ rem and exits with FAKE_RC. Checked: the wrappers run the tool found on PATH,
 rem keep its exit code and run their fallback only without it; findw runs fd
 rem whatever the toggle, and says so without it; there is no find shim, so
 rem typed find is find.exe; cat expands each wildcard itself, refuses a name
-rem that starts with - and names a file, and a typed --, and hands bat every
-rem name in quotes, then a last --paging=never; no where.* or tool in the
-rem current directory runs;
+rem that starts with - and names a file, a typed --, and an option or an
+rem option's value that holds * or ?, and hands bat every name in quotes,
+rem then a last --paging=never; no where.* or tool in the current directory
+rem runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
@@ -107,6 +108,41 @@ call :expect %errorlevel% 0 "cat: no argument, bat reads standard input"
 >>"%W%" echo [--paging=never]
 call "%BIN%\cat.cmd" -n a.txt >"%O%" 2>&1
 call :expect %errorlevel% 0 "cat: an option that names no file reaches bat"
+
+rem cat's for would make file names of an option or an option's value that
+rem holds * or ?: -l * would give bat a.txt as the language. So cat refuses
+rem such a word, and the value of an option that takes it from the next word
+rem (cmd splits an unquoted --file-name=*.py at the =), and bat does not run.
+rem An option or a value without them goes on as it is, and a wildcard after
+rem an option's value, or after -lrust, which holds its value, is a file.
+>"%W%" echo cat: '*.py', the value of --file-name, holds * or ?, which cat would expand as a wildcard: bat did not run.
+>>"%W%" echo cat: run bat by name for it.
+call "%BIN%\cat.cmd" --file-name=*.py - >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses --file-name=*.py, split at the =, and bat does not run"
+>"%W%" echo cat: '--file-name=*.py' is an option that holds * or ?, which cat would expand as a wildcard: bat did not run.
+>>"%W%" echo cat: run bat by name for it.
+call "%BIN%\cat.cmd" "--file-name=*.py" - >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a quoted --file-name=*.py, and bat does not run"
+>"%W%" echo cat: '*', the value of -l, holds * or ?, which cat would expand as a wildcard: bat did not run.
+>>"%W%" echo cat: run bat by name for it.
+call "%BIN%\cat.cmd" -l * a.txt >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses -l *, and bat does not run"
+>"%W%" echo cat: 'a?txt', the value of -pl, holds * or ?, which cat would expand as a wildcard: bat did not run.
+>>"%W%" echo cat: run bat by name for it.
+call "%BIN%\cat.cmd" -pl a?txt a.txt >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses -pl a?txt, and bat does not run"
+>"%W%" echo {--style=plain --paging=never "--file-name" "x.py" "-l" "rust" "-lrust" "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [--file-name]
+>>"%W%" echo [x.py]
+>>"%W%" echo [-l]
+>>"%W%" echo [rust]
+>>"%W%" echo [-lrust]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" --file-name=x.py -l rust -lrust * >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: options and values without * or ? reach bat, and * after them is a file"
 
 rem Beside files named --, --pager=cmd and --paging=always, bat once
 rem expanded ???* to the pager options and then * to a -- that turned the

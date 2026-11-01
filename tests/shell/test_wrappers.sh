@@ -1062,6 +1062,53 @@ for _i in "${!OPT_WIN_WANT[@]}"; do
     _w=${OPT_WIN_WANT[$_i]}
     assert_eq "pwsh, Windows/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
 done
+
+echo "[pwsh, Windows] cat refuses an option or an option's value that holds a wildcard"
+# bat expands an option or an option's value too, and pwsh hands it on
+# unquoted; cat expanded it as a file operand, which made an option a path:
+# `cat '--file-name=*.py' -` gave bat <cwd>/--file-name=*.py as a file, and
+# `cat -l '*' x` gave it a file name as the language. So cat runs nothing
+# when a word that starts with - holds * ? [ or ], or the value of an option
+# that takes it from the next word does (bat --help: --map-syntax, -l, -H,
+# a cluster ending in -l). An option or a value without them goes on as it
+# is, a wildcard after an option's value is a file operand, and after a --
+# every word is one.
+opt_tree wopt a.h || abort_suite "cannot make the tree for the Windows option cases"
+actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
+    function global:_OnWindows { \$true }
+    Test-Opt '$WORK/opt/wopt' { cat '--file-name=*.py' - }
+    Test-Opt '$WORK/opt/wopt' { cat --map-syntax '*.h:C++' data.txt }
+    Test-Opt '$WORK/opt/wopt' { cat -l '*' data.txt }
+    Test-Opt '$WORK/opt/wopt' { cat -pl '*' data.txt }
+    Test-Opt '$WORK/opt/wopt' { cat -H '[1]' data.txt }
+    Test-Opt '$WORK/opt/wopt' { cat --file-name=x.py - }
+    Test-Opt '$WORK/opt/wopt' { cat --map-syntax '.h:C++' -l rust da* }
+    Test-Opt '$WORK/opt/wopt' { cat -lrust -n da* }
+    Test-Opt '$WORK/opt/wopt' { cat '--' '-x*' }
+" < /dev/null 2>&1 | tr -d '\r')
+OPT_WINOPT_WANT=(
+    "cat '--file-name=*.py' -: bat does not run|refused; ran: no"
+    "cat --map-syntax '*.h:C++' data.txt: bat does not run|refused; ran: no"
+    "cat -l '*' data.txt: bat does not run|refused; ran: no"
+    "cat -pl '*' data.txt: bat does not run|refused; ran: no"
+    "cat -H '[1]' data.txt: bat does not run|refused; ran: no"
+    "--file-name=x.py goes on as it is|ran; ran: bat --style=plain --paging=never --file-name=x.py - --paging=never"
+    "values without a wildcard go on as they are, and da* after them is a file|ran; ran: bat --style=plain --paging=never --map-syntax .h:C++ -l rust data.txt --paging=never"
+    "-lrust holds its value, so da* is a file|ran; ran: bat --style=plain --paging=never -lrust -n data.txt --paging=never"
+    "after a quoted -- a wildcard is a file, made a full path when it matches none|ran; ran: bat --style=plain --paging=never -- $WORK/opt/wopt/-x* --paging=never"
+)
+mapfile -t _got <<< "$actual"
+assert_eq "pwsh, Windows/one line per option case" "${#OPT_WINOPT_WANT[@]}" "${#_got[@]}"
+for _i in "${!OPT_WINOPT_WANT[@]}"; do
+    _w=${OPT_WINOPT_WANT[$_i]}
+    assert_eq "pwsh, Windows/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
+done
+
+echo "[pwsh, Windows] the message names the word, the option and bat or catw"
+err=$(cd "$WORK/opt/wopt" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; function global:_OnWindows { \$true }; cat '--file-name=*.py' -" < /dev/null)
+assert_eq "pwsh, Windows/the refusal of cat '--file-name=*.py' -" "cat: '--file-name=*.py' is an option that holds * ? [ or ], which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it." "$err"
+err=$(cd "$WORK/opt/wopt" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; function global:_OnWindows { \$true }; cat -l '*' data.txt" < /dev/null)
+assert_eq "pwsh, Windows/the refusal of cat -l '*' data.txt" "cat: '*', the value of -l, holds * ? [ or ], which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it." "$err"
 unset _sh _run _call _tool _names _i _c _d _w _got
 
 # =============================================================================
