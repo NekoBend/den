@@ -42,6 +42,11 @@ _show_uv_only_message() {
 # in this directory or one above it, and run the python in it, which may be one
 # a cloned repository committed. va activates a venv after checking that it did
 # not come with the clone.
+# uv pip runs with --no-config, as pip reads no uv.toml or pyproject.toml: uv
+# reads them from this directory and the ones above it, and a clone's settings
+# there can have it run a python the clone ships ([pip] python) or install a
+# package from the clone's own files (find-links). --no-config skips the user's
+# own uv.toml as well; the line on stderr says so, and typed uv pip reads them.
 pip() {
     if [ -z "$VIRTUAL_ENV" ]; then
         printf 'pip: no venv is active; activate one with va, or type uv pip%s directly\n' "${*:+ $*}" >&2
@@ -49,8 +54,8 @@ pip() {
     elif [ -x "$VIRTUAL_ENV/bin/pip" ]; then
         "$VIRTUAL_ENV/bin/pip" "$@"
     else
-        _show_uv_only_message "pip${*:+ $*}" "uv pip${*:+ $*}"
-        uv pip "$@"
+        _show_uv_only_message "pip${*:+ $*}" "uv --no-config pip${*:+ $*} (no uv.toml or pyproject.toml settings, a clone's or your own; type uv pip to use them)"
+        command uv --no-config pip "$@"
     fi
 }
 
@@ -62,82 +67,9 @@ pip3() {
     elif [ -x "$VIRTUAL_ENV/bin/pip3" ]; then
         "$VIRTUAL_ENV/bin/pip3" "$@"
     else
-        _show_uv_only_message "pip3${*:+ $*}" "uv pip${*:+ $*}"
-        uv pip "$@"
+        _show_uv_only_message "pip3${*:+ $*}" "uv --no-config pip${*:+ $*} (no uv.toml or pyproject.toml settings, a clone's or your own; type uv pip to use them)"
+        command uv --no-config pip "$@"
     fi
-}
-
-# _den_py_marker → print the pyproject.toml, .venv, pyvenv.cfg, uv.toml or
-# .python-version that uv run would read from here: the first one in this
-# directory or a directory above it. uv takes a directory that holds a
-# pyvenv.cfg for a venv, whatever its name, and runs the python in it; a
-# uv.toml's settings can have it install and run a python the clone ships; and
-# it runs the program a .python-version names to ask its version (a
-# .python-versions as well, which it reads the same way). A .python-version
-# counts only when it names a path, comment (#) and blank lines aside: a line
-# with / or \ in it, or one that, trimmed of white space as uv trims it, names
-# a file or directory in the current directory. uv looks such a name up there,
-# not beside the file, and takes a directory for a venv and runs its python.
-# One that holds version requests alone (3.13, cpython@3.13) does not count,
-# so a pyenv ~/.python-version leaves home alone, unless the current directory
-# holds something of the same name. Fails when there is none. uv starts from
-# the directory the system reports, with its symbolic links resolved (pwd -P).
-_den_py_marker() {
-    local d f l n t w c rest ws=''
-    d=$(pwd -P 2>/dev/null) || d=$PWD
-    while :; do
-        for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version .python-versions; do
-            [ -e "${d%/}/$f" ] || continue
-            if [ "$f" = .python-version ] || [ "$f" = .python-versions ]; then
-                # A regular file, as uv reads: a link to /dev/zero or a FIFO
-                # would not end.
-                [ -f "${d%/}/$f" ] && [ -r "${d%/}/$f" ] || continue
-                n=0
-                while IFS= read -r l || [ -n "$l" ]; do
-                    case $l in ''|'#'*) continue ;; esac
-                    # A line over 128 characters, or a 65th one, counts without
-                    # the checks below: no version request is that long, nor
-                    # is a file of them, and trimming such lines here would
-                    # take seconds.
-                    n=$((n + 1))
-                    if [ "$n" -gt 64 ] || [ "${#l}" -gt 128 ]; then
-                        printf '%s\n' "${d%/}/$f"
-                        return 0
-                    fi
-                    case ${l#"${l%%[! ]*}"} in
-                        '#'*) continue ;;
-                        *[/\\]*) printf '%s\n' "${d%/}/$f"; return 0 ;;
-                    esac
-                    # uv trims each line with Rust's str::trim, which takes off
-                    # the Unicode White_Space characters: here in UTF-8, each
-                    # followed by a comma.
-                    [ -n "$ws" ] || ws=$(printf ' ,\t,\v,\f,\r,\302\205,\302\240,\341\232\200,\342\200\200,\342\200\201,\342\200\202,\342\200\203,\342\200\204,\342\200\205,\342\200\206,\342\200\207,\342\200\210,\342\200\211,\342\200\212,\342\200\250,\342\200\251,\342\200\257,\342\201\237,\343\200\200,')
-                    t=$l
-                    while :; do
-                        w=$t
-                        rest=$ws
-                        while [ -n "$rest" ]; do
-                            c=${rest%%,*}
-                            rest=${rest#*,}
-                            case $t in "$c"*) t=${t#"$c"} ;; esac
-                            case $t in *"$c") t=${t%"$c"} ;; esac
-                        done
-                        [ "$t" = "$w" ] && break
-                    done
-                    case $t in ''|'#'*) continue ;; esac
-                    if [ -e "$t" ]; then
-                        printf '%s\n' "${d%/}/$f"
-                        return 0
-                    fi
-                done < "${d%/}/$f"
-                continue
-            fi
-            printf '%s\n' "${d%/}/$f"
-            return 0
-        done
-        case $d in ''|/) return 1 ;; esac
-        d=${d%/*}
-    done
 }
 
 # _den_py_exe → print the python to run in uv run's place when no venv's own
@@ -308,14 +240,108 @@ vd() {
 
 if command -v uv >/dev/null 2>&1; then
 
+# _den_py_marker → print the pyproject.toml, .venv, pyvenv.cfg, uv.toml or
+# .python-version that uv run would read from here: the first one in this
+# directory or a directory above it. uv takes a directory that holds a
+# pyvenv.cfg for a venv, whatever its name, and runs the python in it; a
+# uv.toml's settings can have it install and run a python the clone ships; and
+# it runs the program a .python-version names to ask its version (a
+# .python-versions as well, which it reads the same way). A .python-version
+# counts only when it names a path, comment (#) and blank lines aside: a line
+# with / or \ in it, or one that, trimmed of white space as uv trims it, names
+# a file or directory in the current directory. uv looks such a name up there,
+# not beside the file, and takes a directory for a venv and runs its python.
+# One that holds version requests alone (3.13, cpython@3.13) does not count,
+# so a pyenv ~/.python-version leaves home alone, unless the current directory
+# holds something of the same name. Fails when there is none. uv starts from
+# the directory the system reports, with its symbolic links resolved (pwd -P).
+# Defined here, with vv and vva, not with the overrides that toggle-uv removes:
+# vv and vva ask it with the overrides off as well.
+_den_py_marker() {
+    local d f l n t w c rest ws=''
+    d=$(pwd -P 2>/dev/null) || d=$PWD
+    while :; do
+        for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version .python-versions; do
+            [ -e "${d%/}/$f" ] || continue
+            if [ "$f" = .python-version ] || [ "$f" = .python-versions ]; then
+                # A regular file, as uv reads: a link to /dev/zero or a FIFO
+                # would not end.
+                [ -f "${d%/}/$f" ] && [ -r "${d%/}/$f" ] || continue
+                n=0
+                while IFS= read -r l || [ -n "$l" ]; do
+                    case $l in ''|'#'*) continue ;; esac
+                    # A line over 128 characters, or a 65th one, counts without
+                    # the checks below: no version request is that long, nor
+                    # is a file of them, and trimming such lines here would
+                    # take seconds.
+                    n=$((n + 1))
+                    if [ "$n" -gt 64 ] || [ "${#l}" -gt 128 ]; then
+                        printf '%s\n' "${d%/}/$f"
+                        return 0
+                    fi
+                    case ${l#"${l%%[! ]*}"} in
+                        '#'*) continue ;;
+                        *[/\\]*) printf '%s\n' "${d%/}/$f"; return 0 ;;
+                    esac
+                    # uv trims each line with Rust's str::trim, which takes off
+                    # the Unicode White_Space characters: here in UTF-8, each
+                    # followed by a comma.
+                    [ -n "$ws" ] || ws=$(printf ' ,\t,\v,\f,\r,\302\205,\302\240,\341\232\200,\342\200\200,\342\200\201,\342\200\202,\342\200\203,\342\200\204,\342\200\205,\342\200\206,\342\200\207,\342\200\210,\342\200\211,\342\200\212,\342\200\250,\342\200\251,\342\200\257,\342\201\237,\343\200\200,')
+                    t=$l
+                    while :; do
+                        w=$t
+                        rest=$ws
+                        while [ -n "$rest" ]; do
+                            c=${rest%%,*}
+                            rest=${rest#*,}
+                            case $t in "$c"*) t=${t#"$c"} ;; esac
+                            case $t in *"$c") t=${t%"$c"} ;; esac
+                        done
+                        [ "$t" = "$w" ] && break
+                    done
+                    case $t in ''|'#'*) continue ;; esac
+                    if [ -e "$t" ]; then
+                        printf '%s\n' "${d%/}/$f"
+                        return 0
+                    fi
+                done < "${d%/}/$f"
+                continue
+            fi
+            printf '%s\n' "${d%/}/$f"
+            return 0
+        done
+        case $d in ''|/) return 1 ;; esac
+        d=${d%/*}
+    done
+}
+
+# _den_uv_venv <name> [args...] → vv and vva: uv venv, but uv --no-config venv,
+# after a line on stderr, where _den_py_marker finds a file, as python runs no
+# uv run there: uv venv runs the program a .python-version names to ask its
+# version, and a uv.toml's or pyproject.toml's settings can have it run a
+# python the clone ships, or install one from the clone's own files and run
+# it, --python 3.13 given or not. --no-config skips those files, and with them
+# the user's own uv.toml and a .python-version that only pins a version: the
+# line says to pick a python with --python, or to type uv venv.
+_den_uv_venv() {
+    local name=$1 marker
+    shift
+    if marker=$(_den_py_marker); then
+        printf '%s: uv --no-config venv, as %s is here or above (no .python-version, uv.toml or pyproject.toml settings, a clone'\''s or your own; pick a python with --python, or type uv venv to use them)\n' "$name" "$marker" >&2
+        command uv --no-config venv "$@"
+    else
+        command uv venv "$@"
+    fi
+}
+
 # vv → uv venv (create only)
 vv() {
-    command uv venv "$@"
+    _den_uv_venv vv "$@"
 }
 
 # vva → uv venv + activate (default: .venv)
 vva() {
-    command uv venv "$@" && va "${1:-.venv}"
+    _den_uv_venv vva "$@" && va "${1:-.venv}"
 }
 
 # ===== Toggles =====
@@ -323,7 +349,7 @@ vva() {
 # toggle-uv → flip uv python/pip override on/off
 toggle-uv() {
     if [ "${_DEN_UV_OVERRIDE:-1}" = "1" ]; then
-        unset -f uv python python3 pip pip3 py _show_uv_only_message _den_py _den_py_marker _den_py_exe 2>/dev/null
+        unset -f uv python python3 pip pip3 py _show_uv_only_message _den_py _den_py_exe 2>/dev/null
         export _DEN_UV_OVERRIDE=0
         echo "uv override: OFF (using system python/pip)"
     else

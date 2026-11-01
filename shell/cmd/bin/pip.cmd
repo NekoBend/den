@@ -9,6 +9,12 @@ rem and run the python in it, which a cloned repository may have committed.
 rem With the uv override off (_DEN_UV_OVERRIDE=0, toggle-uv) or no uv, it is
 rem the first pip.exe on PATH. Programs come from PATH, through System32's
 rem where.exe, or from a full path, never from the current directory.
+rem uv pip runs with --no-config, as pip reads no uv.toml or pyproject.toml:
+rem uv reads them from the current directory and the ones above it, and a
+rem clone's settings there can have it run a python the clone ships ([pip]
+rem python) or install a package from the clone's own files (find-links).
+rem --no-config skips the user's own uv.toml as well; the line on stderr says
+rem so, and typed uv pip reads them.
 rem CRLF line endings: with LF only, cmd can miss a goto label.
 setlocal EnableExtensions DisableDelayedExpansion
 set "_pip="
@@ -18,8 +24,8 @@ if not defined _uv goto plain
 if not defined VIRTUAL_ENV goto refuse
 if exist "%VIRTUAL_ENV%\Scripts\pip.exe" set "_pip=%VIRTUAL_ENV%\Scripts\pip.exe"
 if defined _pip goto run
-echo pip %* → uv pip %* >&2
-"%_uv%" pip %*
+echo pip %* → uv --no-config pip %* (no uv.toml or pyproject.toml settings, a clone's or your own; type uv pip to use them) >&2
+"%_uv%" --no-config pip %*
 exit /b
 :refuse
 if "%~1"=="" goto refuse_bare

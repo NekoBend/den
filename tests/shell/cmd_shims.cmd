@@ -11,7 +11,8 @@ rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
 rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path
 rem or something in the current directory, for --version / -V too, and
-rem elsewhere uv run for those as well; pip runs nothing outside a venv;
+rem elsewhere uv run for those as well; pip runs nothing outside a venv,
+rem and in a venv without pip.exe runs uv pip with --no-config;
 rem path lists PATH; again asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
@@ -403,11 +404,14 @@ set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
 call "%BIN%\pip.cmd" install foo >"%O%" 2>&1
 call :expect %errorlevel% 1 "pip: no venv, nothing runs"
 set "VIRTUAL_ENV=%T%\venv"
+rem --no-config: uv reads no uv.toml or pyproject.toml of a clone here, which
+rem can have it run a python the clone ships or install from the clone's files.
 >"%W%" echo [@tools]
+>>"%W%" echo [--no-config]
 >>"%W%" echo [pip]
 >>"%W%" echo [list]
 call "%BIN%\pip.cmd" list >"%O%" 2>nul
-call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv pip"
+call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv --no-config pip"
 copy /y "%T%\tools\fake.exe" "%T%\venv\Scripts\pip.exe" >nul || exit /b 1
 >"%W%" echo [@Scripts]
 >>"%W%" echo [list]
