@@ -91,9 +91,17 @@ if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
     if ($lines.Count -gt 0) {
       $tmp = $_hwCache + '.tmp.' + [guid]::NewGuid().ToString('N')
       $null = New-Item -ItemType Directory -Path (Split-Path -Parent $_hwCache) -Force -ErrorAction SilentlyContinue
+      # A write that fails (a full disk, a quota) leaves no cache. Set-Content
+      # reported no error when its write failed, and the move put the file in
+      # place cut short: the next start set the CPU from it and not the GPU (a
+      # value set skips the detection above), or stopped on a line cut inside
+      # its quotes. WriteAllText throws instead. It writes what Set-Content
+      # -Encoding UTF8 wrote: a BOM in 5.1 only, and a newline at the end.
       try {
-        $lines -join "`n" | Set-Content -LiteralPath $tmp -Encoding UTF8
+        [IO.File]::WriteAllText($tmp, ($lines -join "`n") + [Environment]::NewLine, [Text.UTF8Encoding]::new($PSVersionTable.PSEdition -eq 'Desktop'))
         Move-Item -LiteralPath $tmp -Destination $_hwCache -Force
+      } catch {
+        $null = $_
       } finally {
         if (Test-Path -LiteralPath $tmp -PathType Leaf) {
           Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue

@@ -586,6 +586,68 @@ actual=$(sed -n 's/^local hw_none = "\(.*\)"$/\1/p' "$DOTFILES/shell/cmd/starshi
 assert_eq "cmd/starship.lua's hw_none" "$HW_NONE_LINE" "$actual"
 assert_eq "pwsh/hwinfo.ps1 writes and reads the same line" "1" "$(grep -cF "\$_hwNone = '$HW_NONE_LINE'" "$HWINFO_PS1")"
 
+# A cache write that fails, as on a full disk or past a quota: ulimit -f caps
+# the size of the files pwsh writes (in 1024-byte blocks, under bash), and with
+# SIGXFSZ ignored a write past the cap fails (EFBIG) instead of ending pwsh.
+# .NET starts under the cap only with DOTNET_EnableWriteXorExecute=0 (without
+# it pwsh stops with "Failed to create CoreCLR"). Set-Content reported no error
+# when its write failed, and the move put the temporary file in place, cut short.
+# Under a cap of 1, with a CPU name of 980 characters the cut fell in the
+# GPU's line before its quote: the next start set the CPU from that cache and
+# not the GPU, and a value set skips the detection, so the GPU stayed off the
+# prompt until refresh-hwinfo or reload. With a CPU name of 473 the cut fell
+# inside the GPU's name, and the next start stopped on a ParserError there.
+# Under a cap of 0 every write fails, and an empty cache was put in place.
+# The start stands in for the Windows machine, as in hw_ps, with an Intel CPU
+# and an NVIDIA GPU (nvidia-smi is a function here, so it is the one that
+# answers) of those long names.
+HWF_PS="$WORK/hwinfo-ps-full"
+HWF_PS_DIR="$HWF_PS/data/shell-cache"
+HWF_PS_CACHE="$HWF_PS_DIR/hwinfo-cache.DENTEST.ps1"
+HWF_PS_START="$TESTTMP/hwinfo_full_start.ps1"
+mkdir -p "$HWF_PS_DIR"
+cat > "$HWF_PS_START" << 'PS1'
+param([string]$Dotfiles, [int]$CpuLength)
+. "$Dotfiles/shell/pwsh/_helpers.ps1"
+Set-Variable -Name IsWindows -Value $true -Scope Global -Force
+function global:_OnWindows { $false }
+$global:HwCalls = 0
+$global:HwCpu = 'i9-' + ('0' * ($CpuLength - 3))
+function global:Get-ItemProperty {
+  $global:HwCalls++
+  [pscustomobject]@{ ProcessorNameString = "Intel(R) Core(TM) $global:HwCpu CPU @ 1.00GHz" }
+}
+function global:nvidia-smi { $global:HwCalls++; 'NVIDIA GeForce RTX-' + ('0' * 600) }
+. "$Dotfiles/shell/pwsh/hwinfo.ps1"
+"calls=$global:HwCalls CPU=$(([string]$env:STARSHIP_CPU_INTEL).Length) GPU=$(([string]$env:STARSHIP_GPU_NVIDIA).Length)"
+PS1
+# hw_ps_full <cap> <CPU name length> - one start of hwinfo.ps1 under that
+# file-size cap (unlimited for none); it prints the detections it ran and the
+# length of the two values it set.
+hw_ps_full() {
+    (cd "$WORK" && env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+        -u STARSHIP_GPU_INTEL -u _DEN_HWINFO_HIDDEN XDG_DATA_HOME="$HWF_PS/data" COMPUTERNAME=DENTEST \
+        DOTNET_EnableWriteXorExecute=0 bash -c "
+            trap '' XFSZ
+            ulimit -f $1
+            pwsh -NoProfile -NonInteractive -File '$HWF_PS_START' '$DOTFILES' $2
+        " 2>&1 | tr -d '\r')
+}
+for hwf in 1:980 1:473 0:980; do
+    cap=${hwf%%:*} len=${hwf#*:}
+    what="pwsh/failed cache write, cap $cap, CPU name $len"
+    echo "[pwsh] a cache write that fails (file size cap $cap, a CPU name of $len) leaves no cache; the next start detects again"
+    rm -f "$HWF_PS_DIR"/*
+    actual=$(hw_ps_full "$cap" "$len") || true
+    assert_eq "$what: the start has both values" "calls=2 CPU=$len GPU=604" "$actual"
+    assert_eq "$what: no cache, no temporary file" "" "$(ls -A "$HWF_PS_DIR")"
+    actual=$(hw_ps_full unlimited "$len") || true
+    assert_eq "$what: the next start detects both values" "calls=2 CPU=$len GPU=604" "$actual"
+    # Two lines: the CPU's (27 + len + 2 bytes) and the GPU's (28 + 604 + 2).
+    assert_eq "$what: the next start writes the whole cache" "2 lines, $((len + 663)) bytes" \
+        "$(wc -l < "$HWF_PS_CACHE" | tr -d ' ') lines, $(wc -c < "$HWF_PS_CACHE" | tr -d ' ') bytes"
+done
+
 # refresh-hwinfo in pwsh, likewise: reload starts the new pwsh in this
 # session's environment, so it inherited the old STARSHIP_* values (and, under
 # an OFF, the saved ones) and skipped the cache and the detection. The parent
