@@ -71,7 +71,9 @@ keep them in `fpath`, so while one is there every shell runs the full
 writable by group or others, its functions are used again. A relative
 `fpath` entry (`zfunc`, not `~/zfunc`) is looked up in whatever directory
 you are in when a Tab first needs a function from it, so den cannot make it
-safe and does not support it.
+safe and does not support it. The audit cannot cover itself: `compaudit` is
+loaded from `fpath` before it runs, as in plain zsh, so a directory others may
+write to ahead of zsh's own in `fpath` can still replace it.
 
 ## The wrapper system
 
