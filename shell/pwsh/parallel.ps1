@@ -84,6 +84,12 @@ function pcp {
     $entries = _CountEntries $sources
     Write-Host "+ pcp: $($sources.Count) paths ($entries entries) → $dest ($jobs jobs)"
 
+    # Ignore, the caller's preference or -ErrorAction Ignore on this call,
+    # dropped the workers' errors before -ErrorVariable saw them, so a failed
+    # copy still returned success. ForEach-Object -Parallel takes no
+    # -ErrorAction of its own; SilentlyContinue keeps the errors as quiet and
+    # still collects them.
+    if ($ErrorActionPreference -eq 'Ignore') { $ErrorActionPreference = 'SilentlyContinue' }
     _Batches $sources $jobs | ForEach-Object -Parallel {
         foreach ($p in $_) { Copy-Item -LiteralPath $p -Destination $using:dest -Recurse -Force }
     } -ThrottleLimit $jobs -ErrorVariable failed
@@ -118,6 +124,8 @@ function pmv {
     $entries = _CountEntries $sources
     Write-Host "+ pmv: $($sources.Count) paths ($entries entries) → $dest ($jobs jobs)"
 
+    # Ignore would hide the workers' errors from -ErrorVariable: see pcp.
+    if ($ErrorActionPreference -eq 'Ignore') { $ErrorActionPreference = 'SilentlyContinue' }
     _Batches $sources $jobs | ForEach-Object -Parallel {
         foreach ($p in $_) { Move-Item -LiteralPath $p -Destination $using:dest -Force }
     } -ThrottleLimit $jobs -ErrorVariable failed
@@ -161,6 +169,8 @@ function prm {
     # (every dotfile on Linux/macOS, Hidden-attribute ones such as .git on
     # Windows), so a confirmed prm deleted everything else in a tree and then
     # stopped, leaving the hidden entries and their parent directories behind.
+    # Ignore would hide the workers' errors from -ErrorVariable: see pcp.
+    if ($ErrorActionPreference -eq 'Ignore') { $ErrorActionPreference = 'SilentlyContinue' }
     _Batches $Paths $jobs | ForEach-Object -Parallel {
         foreach ($p in $_) { Remove-Item -LiteralPath $p -Recurse -Force }
     } -ThrottleLimit $jobs -ErrorVariable failed

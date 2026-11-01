@@ -957,6 +957,26 @@ assert_contains "pwsh/prm counts the errors" "prm: 2 error(s)" "$err"
 actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { prm -Force missing.txt 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
 assert_eq "pwsh/prm failure is a terminating error" "caught" "$actual"
 
+echo "[pwsh] pcp/pmv/prm: a failure under a caller's Ignore is still a failure"
+# Ignore, as the preference or as -ErrorAction Ignore on the call, dropped the
+# workers' errors before -ErrorVariable collected them: the failed call
+# returned success and the step after its && ran.
+for _how in pref param; do
+    for _fn in pcp pmv prm; do
+        setup_fixtures
+        _pre=""; _opt=""
+        if [ "$_how" = pref ]; then _pre="\$ErrorActionPreference = 'Ignore'; "; else _opt="-ErrorAction Ignore "; fi
+        case "$_fn" in
+            pcp) _call="pcp ${_opt}src/file1.txt missing.txt dest" ;;
+            pmv) _call="pmv ${_opt}src/file2.txt missing.txt dest" ;;
+            prm) _call="prm -Force ${_opt}src/subdir missing.txt" ;;
+        esac
+        actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; ${_pre}${_call} && 'CHAIN CONTINUED'" 2>/dev/null | tr -d '\r'; echo "status=${PIPESTATUS[0]}")
+        assert_not_contains "pwsh/$_fn failure under Ignore ($_how) stops a && chain" "CHAIN CONTINUED" "$actual"
+        assert_not_contains "pwsh/$_fn failure under Ignore ($_how) exits nonzero" "status=0" "$actual"
+    done
+done
+
 echo "[pwsh] pcp/pmv/prm/ptar: a refusal is a failure"
 # Each refusal was a plain Write-Error and return, which leaves $? true and
 # `pwsh -Command` exiting 0: `pcp a b nodir && prm -Force a b` removed both
