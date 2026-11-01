@@ -292,6 +292,144 @@ assert_eq "split -b parts reassemble to the file" "$(sha256sum < "$WORK/big/blob
 assert_eq "split -b made four parts" "4" "$(ls "$WORK/big"/part.* | wc -l | tr -d ' ')"
 rm -rf "$WORK/big"
 
+# The suffix kept only the last two letters (or -a's count) of a part's
+# number, so the 677th part was named paa again, and File.Create or
+# Set-Content cut the first part short to write it there: 676 files, paa
+# holding 677, "Split into 677 files (paa .. paa)", from a file's lines, its
+# bytes or piped lines alike. Without -a the names now widen as GNU split's
+# and uutils' do (pyz, then pzaaa; the 677th is pzaba), so the parts in name
+# order are the input again. -a 0 is no -a, as in GNU split and uutils (z
+# below); it sent every part to one file, p. Each part here is one line of
+# three digits, its own number; _CoreutilsBin answers nothing, as on Windows
+# without coreutils.
+echo "[pwsh] split widens the suffix past 676 parts when -a is not given, or is 0"
+rm -rf "$WORK/wide" && mkdir -p "$WORK/wide/l" "$WORK/wide/b" "$WORK/wide/p" "$WORK/wide/z"
+printf '%03d\n' $(seq 1 677) > "$WORK/wide/in.txt"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    Set-Location '$WORK/wide/l'; split -l 1 ../in.txt p 2>&1 6>&1 | ForEach-Object { 'lines: ' + \$_ }
+    Set-Location '$WORK/wide/b'; split -b 4 ../in.txt p 2>&1 6>&1 | ForEach-Object { 'bytes: ' + \$_ }
+    Set-Location '$WORK/wide/p'; Get-Content ../in.txt | split -l 1 2>&1 6>&1 | ForEach-Object { 'piped: ' + \$_ }
+    Set-Location '$WORK/wide/z'; split -l 1 -a 0 ../in.txt p 2>&1 6>&1 | ForEach-Object { 'lines, -a 0: ' + \$_ }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/split without -a, or with -a 0, names the 677th part pzaba" "lines: Split into 677 files (paa .. pzaba)
+bytes: Split into 677 files
+piped: Split into 677 files (xaa .. xzaba)
+lines, -a 0: Split into 677 files (paa .. pzaba)" "$actual"
+want=$(sha256sum < "$WORK/wide/in.txt")
+for m in l b p z; do
+    pre=p; [ "$m" = p ] && pre=x
+    assert_eq "pwsh/split without -a ($m): 677 files" "677" "$(ls "$WORK/wide/$m" | wc -l | tr -d ' ')"
+    assert_eq "pwsh/split without -a ($m): parts 1, 650, 651 and 677" "001 650 651 677" \
+        "$(cd "$WORK/wide/$m" && cat "${pre}aa" "${pre}yz" "${pre}zaaa" "${pre}zaba" 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/ $//')"
+    assert_eq "pwsh/split without -a ($m): the parts in name order are the input" "$want" \
+        "$(cd "$WORK/wide/$m" && cat "$pre"* | tr -d '\r' | sha256sum)"
+done
+rm -rf "$WORK/wide"
+
+# With -a the suffix is that many letters and no more: -a 1 holds 26 parts, a
+# to z, and a 27th stops split, with GNU split's and uutils' "output file
+# suffixes exhausted", instead of being written over the first. The stop is a
+# terminating error (the try below catches it): the parts so far are not the
+# whole input, so the rest of the line must not run. An -a below 0, empty or
+# not a number is refused before any part is written, as uutils refuses it
+# (-a 0 is no -a, above). A bare number counts as a cast reads it: split's
+# [string] cast gets back the text 0x1, which is 1.
+echo "[pwsh] split -a stops at its last suffix, and refuses a bad length"
+rm -rf "$WORK/exh" && mkdir -p "$WORK/exh/l" "$WORK/exh/b" "$WORK/exh/p" "$WORK/exh/fit" "$WORK/exh/hex" "$WORK/exh/bad"
+printf '%03d\n' $(seq 1 27) > "$WORK/exh/in.txt"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    Set-Location '$WORK/exh/l'; try { split -l 1 -a 1 ../in.txt p 6>\$null; 'lines: went on' } catch { 'lines: ' + \$_ }
+    Set-Location '$WORK/exh/b'; try { split -b 4 -a 1 ../in.txt p 6>\$null; 'bytes: went on' } catch { 'bytes: ' + \$_ }
+    Set-Location '$WORK/exh/p'; try { Get-Content ../in.txt | split -l 1 -a 1 6>\$null; 'piped: went on' } catch { 'piped: ' + \$_ }
+    Set-Location '$WORK/exh/fit'; Get-Content ../in.txt -TotalCount 26 | split -l 1 -a 1 2>&1 6>&1 | ForEach-Object { 'fits: ' + \$_ }
+    Set-Location '$WORK/exh/hex'; Get-Content ../in.txt -TotalCount 26 | split -l 1 -a 0x1 2>&1 6>&1 | ForEach-Object { 'bare 0x1: ' + \$_ }
+    Set-Location '$WORK/exh/bad'
+    foreach (\$len in '', '-1', 'abc') { split -l 1 -a \$len ../in.txt p 2>&1 6>&1 | ForEach-Object { \"-a '\${len}': \" + \$_ } }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/split -a 1 stops at the 27th part; a bad -a is refused, a bare 0x1 is 1" "lines: output file suffixes exhausted
+bytes: output file suffixes exhausted
+piped: output file suffixes exhausted
+fits: Split into 26 files (xa .. xz)
+bare 0x1: Split into 26 files (xa .. xz)
+-a '': invalid suffix length ''
+-a '-1': invalid suffix length '-1'
+-a 'abc': invalid suffix length 'abc'" "$actual"
+for m in l b p; do
+    pre=p; [ "$m" = p ] && pre=x
+    assert_eq "pwsh/split -a 1 ($m): the 26 parts that fit, the first kept" "26 files, ${pre}a 001, ${pre}z 026" \
+        "$(cd "$WORK/exh/$m" && printf '%s files, %sa %s, %sz %s' "$(ls | wc -l | tr -d ' ')" \
+            "$pre" "$(cat "${pre}a" 2>/dev/null | tr -d '\r')" "$pre" "$(cat "${pre}z" 2>/dev/null | tr -d '\r')")"
+done
+assert_eq "pwsh/split with a bad -a wrote nothing" "" "$(ls -A "$WORK/exh/bad")"
+rm -rf "$WORK/exh"
+
+# -l, -b and -n are checked as -a is: an empty value, one below 1 or one that
+# is not a number is refused before any part is written, as uutils refuses
+# it, also where another flag decides how the input is cut (-b 4 -l abc).
+# -l '', 0 and -5, -b '' and -n '' passed for the flag not given, and split
+# wrote 1000-line parts (one part here); -l abc did too, after a conversion
+# error, and -b abc and -n abc put that error before den's own. A value is
+# read as a cast reads it, so a bare 0x10 or 1kb still counts, and so does a
+# line count past [int] (-l 99999999999, a conversion error before).
+echo "[pwsh] split refuses an empty or bad -l, -b or -n before writing"
+rm -rf "$WORK/badv" && mkdir -p "$WORK/badv/bad" "$WORK/badv/ok"
+printf '%03d\n' $(seq 1 27) > "$WORK/badv/in.txt"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    Set-Location '$WORK/badv/bad'
+    foreach (\$c in @('-l', ''), @('-l', '0'), @('-l', '-5'), @('-l', 'abc'), @('-b', ''), @('-b', 'abc'), @('-n', ''), @('-n', 'abc')) {
+        split \$c[0] \$c[1] ../in.txt p 2>&1 6>&1 | ForEach-Object { \"\$(\$c[0]) '\$(\$c[1])': \" + \$_ }
+    }
+    Get-Content ../in.txt | split -l '' 2>&1 6>&1 | ForEach-Object { \"piped -l '': \" + \$_ }
+    split -b 4 -l abc ../in.txt p 2>&1 6>&1 | ForEach-Object { \"-b 4 -l 'abc': \" + \$_ }
+    Set-Location '$WORK/badv/ok'
+    split -l 0x10 ../in.txt h 2>&1 6>&1 | ForEach-Object { 'bare -l 0x10: ' + \$_ }
+    split -b 1kb ../in.txt k 2>&1 6>&1 | ForEach-Object { 'bare -b 1kb: ' + \$_ }
+    split -l 99999999999 ../in.txt w 2>&1 6>&1 | ForEach-Object { '-l 99999999999: ' + \$_ }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/split refuses an empty or bad -l, -b or -n, and reads a bare 0x10 or 1kb" "-l '': invalid line count ''
+-l '0': invalid line count '0'
+-l '-5': invalid line count '-5'
+-l 'abc': invalid line count 'abc'
+-b '': invalid byte size ''
+-b 'abc': invalid byte size 'abc'
+-n '': invalid chunk count ''
+-n 'abc': invalid chunk count 'abc'
+piped -l '': invalid line count ''
+-b 4 -l 'abc': invalid line count 'abc'
+bare -l 0x10: Split into 2 files (haa .. hab)
+bare -b 1kb: Split into 1 files
+-l 99999999999: Split into 1 files (waa .. waa)" "$actual"
+assert_eq "pwsh/split with a bad -l, -b or -n wrote nothing" "" "$(ls -A "$WORK/badv/bad")"
+rm -rf "$WORK/badv"
+
+# With -n N, GNU split and uutils give the names the length N parts need from
+# the start (2 letters at least) rather than widening them, and refuse an -a
+# shorter than that before writing anything. So with -n 676 the names stay
+# two letters long to the last part (part 651 is pza, not pzaaa, the name it
+# would get without -n).
+echo "[pwsh] split -n sizes the suffix for N parts"
+rm -rf "$WORK/nsuf" && mkdir -p "$WORK/nsuf/wide" "$WORK/nsuf/short" "$WORK/nsuf/two"
+printf '%03d\n' $(seq 1 677) > "$WORK/nsuf/in.txt"
+printf '%03d\n' $(seq 1 676) > "$WORK/nsuf/in676.txt"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    Set-Location '$WORK/nsuf/wide'; split -n 677 ../in.txt p 2>&1 6>&1 | ForEach-Object { '-n 677: ' + \$_ }
+    Set-Location '$WORK/nsuf/short'; split -n 677 -a 2 ../in.txt p 2>&1 6>&1 | ForEach-Object { '-n 677 -a 2: ' + \$_ }
+    Set-Location '$WORK/nsuf/two'; split -n 676 ../in676.txt p 2>&1 6>&1 | ForEach-Object { '-n 676: ' + \$_ }
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/split -n 677 names three letters long, -n 676 two; -a 2 is refused" "-n 677: Split into 677 files (paaa .. pbaa)
+-n 677 -a 2: the suffix length needs to be at least 3
+-n 676: Split into 676 files (paa .. pzz)" "$actual"
+assert_eq "pwsh/split -n 677: the parts in name order are the input" "$(sha256sum < "$WORK/nsuf/in.txt")" \
+    "$(cd "$WORK/nsuf/wide" && cat p* | sha256sum)"
+assert_eq "pwsh/split -n 677 -a 2 wrote nothing" "" "$(ls -A "$WORK/nsuf/short")"
+assert_eq "pwsh/split -n 676: parts 651 and 676 are pza and pzz" "651 676" \
+    "$(cd "$WORK/nsuf/two" && cat pza pzz 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$WORK/nsuf"
+
 # =============================================================================
 # touch
 # =============================================================================
@@ -512,6 +650,126 @@ assert_contains "env output has =" "=" "$actual"
 echo "[pwsh] env VAR=val command"
 actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "env FOO=bar pwsh -c 'Write-Output \$env:FOO'" | clean)
 assert_eq "env VAR=val command" "bar" "$actual"
+
+# Without microsoft/coreutils (_CoreutilsBin answers nothing), env dropped what
+# was piped into it, and the command it ran got no input: `'payload' | env X=y
+# <program>` gave the program nothing, and `1..3 | env X=y Measure-Object`
+# counted 0. It now collects the input and pipes it to the command, which sees
+# the variables too; with nothing piped in, the command still gets env's own
+# stdin, not a pipe (the stub from make_stamp_stub in helpers.sh says which).
+echo "[pwsh] env without coreutils passes piped input on to the command"
+ENV_STAMP="$TESTTMP/env-stamp"
+make_stamp_stub "$ENV_STAMP" || abort_suite "cannot write $ENV_STAMP"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    'payload' | env DEN_ENV_T=set bash -c 'read -r l; echo \"bash read \$l, DEN_ENV_T=\$DEN_ENV_T\"'
+    'Measure-Object counted ' + (1..3 | env DEN_ENV_T=set Measure-Object).Count
+    1..2 | env DEN_ENV_T=set ForEach-Object { \"\$_ with \$env:DEN_ENV_T\" }
+    'nothing piped in: ' + (env DEN_ENV_T=set '$ENV_STAMP')
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: piped input reaches the command" "bash read payload, DEN_ENV_T=set
+Measure-Object counted 3
+1 with set
+2 with set
+nothing piped in: stdin: not a pipe" "$actual"
+
+# Given the same name twice, env saved the variable again at the second, after
+# the first had already set it, and restored each in turn, so the session kept
+# the first value. A name that had not been set was restored with $null, which
+# PowerShell hands a .NET string parameter as '': since .NET 9 (pwsh 7.5),
+# SetEnvironmentVariable sets '' as an empty value, so the name stayed, set to
+# '' or, given twice, to its first value. Each name now goes back once to what
+# it was before env.
+echo "[pwsh] env without coreutils restores each name once, unset ones too"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$env:DEN_ENV_SET = 'original'
+    env DEN_ENV_SET=first DEN_ENV_SET=second DEN_ENV_NEW=a DEN_ENV_NEW=b bash -c 'echo \"bash saw \$DEN_ENV_SET \$DEN_ENV_NEW\"'
+    'DEN_ENV_SET after: ' + \$env:DEN_ENV_SET
+    'DEN_ENV_NEW after, unset: ' + (\$null -eq \$env:DEN_ENV_NEW)
+    env DEN_ENV_ONCE=x bash -c 'true'
+    'DEN_ENV_ONCE after, unset: ' + (\$null -eq \$env:DEN_ENV_ONCE)
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: a name given twice, and an unset one, restored" "bash saw second b
+DEN_ENV_SET after: original
+DEN_ENV_NEW after, unset: True
+DEN_ENV_ONCE after, unset: True" "$actual"
+
+# The names env restores are its hashtable's keys, which $saved.Keys is not
+# when one of them is KEYS: a hashtable answers dot access with a key's value
+# first. With `env KEYS=x cmd`, $saved.Keys is the value KEYS had before, so
+# KEYS would keep x, and the variable that value names would be removed in
+# its place. (pwsh says ORIGINAL for $h.Keys after $h['KEYS'] = 'ORIGINAL'.)
+echo "[pwsh] env without coreutils restores a variable named KEYS"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$env:KEYS = \$null
+    env KEYS=temporary bash -c 'echo \"bash saw KEYS=\$KEYS\"'
+    'KEYS after, unset: ' + (\$null -eq \$env:KEYS)
+    \$env:KEYS = 'DEN_ENV_HELD'; \$env:DEN_ENV_HELD = 'kept'
+    env KEYS=temporary bash -c 'true'
+    'KEYS after: ' + \$env:KEYS + ', DEN_ENV_HELD after: ' + \$env:DEN_ENV_HELD
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: KEYS restored, the variable it names kept" "bash saw KEYS=temporary
+KEYS after, unset: True
+KEYS after: DEN_ENV_HELD, DEN_ENV_HELD after: kept" "$actual"
+
+# env set its names before the try that restores them. When one could not be
+# set (.NET refuses a name that starts with a NUL character, on every
+# platform), the error ended env inside a try or under $ErrorActionPreference
+# Stop, and the names set before it stayed in the session; with no try, env
+# went on and ran the command without that name, and its restore failed on
+# that name too, a second error. The names are now set inside the try: those
+# set before the failure go back, the command does not run, and the failure is
+# reported once.
+echo "[pwsh] env without coreutils undoes its assignments when a later one fails"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$bad = [string][char]0 + 'DEN_ENV_BAD=x'
+    try { env DEN_ENV_FIRST=set \$bad bash -c 'echo command ran'; 'went on' } catch { 'caught' }
+    'in a try, DEN_ENV_FIRST after, unset: ' + (\$null -eq \$env:DEN_ENV_FIRST)
+    \$Error.Clear()
+    env DEN_ENV_SECOND=set \$bad bash -c 'echo command ran' 2>\$null
+    'no try, DEN_ENV_SECOND after, unset: ' + (\$null -eq \$env:DEN_ENV_SECOND) + ', errors: ' + \$Error.Count
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: a failed assignment undoes the earlier ones" "caught
+in a try, DEN_ENV_FIRST after, unset: True
+no try, DEN_ENV_SECOND after, unset: True, errors: 1" "$actual"
+
+# env runs the command from its own scope, and PowerShell looks a variable up
+# through the scopes of the commands that called it, so a scriptblock or a
+# PowerShell function run through env saw env's variables before the
+# caller's: $first and $set, which came with the try above, and $a, $i,
+# $saved, $cmd, $cmdArgs, $kv and $assigns, there before. env's variables now
+# all have __ names. (No scriptblock here holds an equals sign: env takes one
+# whose text has one for an assignment.)
+echo "[pwsh] env without coreutils leaves the caller's variables to the command"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    foreach (\$n in 'first', 'set', 'a', 'i', 'saved', 'cmd', 'cmdArgs', 'kv', 'assigns') { Set-Variable -Name \$n -Value \"[\$n]\" }
+    function readsVars { \"\$first \$set \$a \$i \$saved \$cmd \$cmdArgs \$kv \$assigns\" }
+    'scriptblock: ' + (env DEN_ENV_T=set { \"\$first \$set \$a \$i \$saved \$cmd \$cmdArgs \$kv \$assigns\" })
+    'function: ' + (env DEN_ENV_T=set readsVars)
+    'piped: ' + (1 | env DEN_ENV_T=set { process { readsVars } })
+    'no assignment: ' + (env readsVars)
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: the command reads the caller's variables, not env's" "scriptblock: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]
+function: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]
+piped: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]
+no assignment: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]" "$actual"
+
+# For the same reason, env's NAME=VALUE test was -match, which set $Matches in
+# env's scope: the command read env's last match (DEN_ENV_T here), not the
+# caller's. It is [regex]::Match now, which sets no variable.
+echo "[pwsh] env without coreutils leaves the caller's \$Matches to the command"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$null = 'caller-text' -match '^(caller)-text\$'
+    'scriptblock: ' + (env DEN_ENV_T=set { \$Matches[1] })
+    'ForEach-Object: ' + (1 | env DEN_ENV_T=set ForEach-Object { \$Matches[1] })
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: the command reads the caller's \$Matches" "scriptblock: caller
+ForEach-Object: caller" "$actual"
 
 # =============================================================================
 # wc — pipe character count

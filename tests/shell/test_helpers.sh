@@ -1758,12 +1758,21 @@ assert_eq "pwsh/reload -File runs once" "1" "$(grep -c . "$WORK/reload_runs.txt"
 
 # When the executable cannot be started, reload warns and the session goes on
 # (it must not exit). Get-Process is shadowed to report a missing executable.
+# The variables reload set for the new shell, here _DEN_RELOAD_DEPTH and
+# VSCODE_NONCE (from a stand-in for VS Code's state), are removed again. They
+# were removed with $null, which PowerShell hands a .NET string parameter as
+# '': since .NET 9 (pwsh 7.5), SetEnvironmentVariable sets '' as an empty
+# value, so they stayed, set to ''.
 echo "[pwsh] reload stays in the session when pwsh cannot be started"
-actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" 'reload' '"STILL-HERE DEPTH-ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 3' |
-    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" \
+    '$Global:__VSCodeState = @{ Nonce = "rl-n" }' 'reload' '"STILL-HERE DEPTH-ENV=[$env:_DEN_RELOAD_DEPTH]"' \
+    '"HANDED-ON UNSET: DEPTH=$($null -eq $env:_DEN_RELOAD_DEPTH) NONCE=$($null -eq $env:VSCODE_NONCE)"' 'exit 3' |
+    rl_env -u _DEN_FORCE_INTERACTIVE -u VSCODE_NONCE timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload start failure warns" "reload: could not start" "$actual"
 assert_contains "pwsh/reload start failure keeps the session" "STILL-HERE DEPTH-ENV=[]" "$actual"
+assert_contains "pwsh/reload start failure removes the variables it set for the new shell" \
+    "HANDED-ON UNSET: DEPTH=True NONCE=True" "$actual"
 assert_contains "pwsh/reload start failure exit code is the session's" "RC=3" "$actual"
 
 # exit in a nested prompt (the debugger's, $Host.EnterNestedPrompt()) only leaves

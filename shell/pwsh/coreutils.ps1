@@ -44,44 +44,88 @@ function df {
 
 # env → list environment variables / run command with modified env
 # Usage: env [VAR=val ...] [command [args ...]], no args = print all
+# Without coreutils, what is piped in is collected, as split's PowerShell
+# version collects it, and piped to the command once it has all arrived: the
+# variables are set around the command only, not while the commands before
+# env still run. It used to be dropped, and the command got no input.
 function env {
   begin {
     $__sp = $null
     $__cu = _CoreutilsBin
+    $__in = $MyInvocation.ExpectingInput
     $__a = $args
-    if ($__cu -and $MyInvocation.ExpectingInput) {
+    $__piped = [System.Collections.Generic.List[object]]::new()
+    if ($__cu -and $__in) {
       $__sp = { & $__cu env @__a }.GetSteppablePipeline()
       $__sp.Begin($true, $ExecutionContext)
     }
   }
-  process { if ($null -ne $__sp) { $__sp.Process($_) } }
+  process {
+    if ($null -ne $__sp) { $__sp.Process($_) }
+    elseif ($__in -and -not $__cu) { $__piped.Add($_) }
+  }
   end {
     if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
     if ($__cu) { & $__cu env @__a; return }
-    $assigns = @(); $cmd = $null; $cmdArgs = @()
-    $i = 0
-    while ($i -lt $__a.Count) {
-      $a = $__a[$i]
-      if ($null -eq $cmd -and $a -match '^([^=]+)=(.*)$') {
-        $assigns += @{ Name = $Matches[1]; Value = $Matches[2] }
-      } elseif ($null -eq $cmd) {
-        $cmd = $a
+    # The command runs from this scope, and PowerShell looks a variable up
+    # through the scopes of the commands that called it, so a scriptblock or
+    # a PowerShell function run here sees env's variables before its
+    # caller's. Every variable env makes in this block has a __ name, as in
+    # begin: named $first, $set, $a, $i, $cmd and the like, they hid the
+    # caller's variables of those names from the command. For the same
+    # reason the NAME=VALUE test is [regex]::Match on the argument's text,
+    # not -match, which sets $Matches in this scope.
+    $__assigns = @(); $__cmd = $null; $__cmdArgs = @()
+    $__i = 0
+    while ($__i -lt $__a.Count) {
+      $__arg = $__a[$__i]
+      $__m = [regex]::Match([string]$__arg, '^([^=]+)=(.*)$')
+      if ($null -eq $__cmd -and $__m.Success) {
+        $__assigns += @{ Name = $__m.Groups[1].Value; Value = $__m.Groups[2].Value }
+      } elseif ($null -eq $__cmd) {
+        $__cmd = $__arg
       } else {
-        $cmdArgs += $a
+        $__cmdArgs += $__arg
       }
-      $i++
+      $__i++
     }
-    if ($null -ne $cmd) {
-      $saved = @{}
-      foreach ($kv in $assigns) {
-        $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name)
-        [Environment]::SetEnvironmentVariable($kv.Name, $kv.Value)
+    if ($null -ne $__cmd) {
+      # A name's value is saved the first time the name comes up, before it
+      # is set, and each name is restored once. Saved again at a repeat
+      # (`env A=1 A=2 cmd`), it was the value the first assignment had just
+      # set, and the session kept it. $__saved ignores case, as Windows'
+      # variable names do.
+      # The names are set inside the try, so that when one cannot be set
+      # (.NET refuses a name that starts with a NUL character, for one), the
+      # ones set before it are restored and the command does not run. Set
+      # before the try, they stayed in the session when the error ended env
+      # (called inside a try, or under $ErrorActionPreference Stop), and
+      # otherwise the command ran without the name that failed. A name whose
+      # set throws was not changed, so if it came up first there it leaves
+      # $__saved: restoring it would throw again, and could stop the restore
+      # of the names after it.
+      $__saved = @{}
+      try {
+        foreach ($__kv in $__assigns) {
+          $__first = -not $__saved.ContainsKey($__kv.Name)
+          if ($__first) { $__saved[$__kv.Name] = [Environment]::GetEnvironmentVariable($__kv.Name) }
+          $__set = $false
+          try { [Environment]::SetEnvironmentVariable($__kv.Name, $__kv.Value); $__set = $true }
+          finally { if ($__first -and -not $__set) { $__saved.Remove($__kv.Name) } }
+        }
+        if ($__in) { $__piped | & $__cmd @__cmdArgs } else { & $__cmd @__cmdArgs }
       }
-      try { & $cmd @cmdArgs }
       finally {
-        foreach ($kv in $assigns) {
-          if ($null -eq $saved[$kv.Name]) { [Environment]::SetEnvironmentVariable($kv.Name, $null) }
-          else { [Environment]::SetEnvironmentVariable($kv.Name, $saved[$kv.Name]) }
+        # The names come from GetEnumerator(), not $__saved.Keys: a hashtable
+        # answers dot access with a key's value first, so after `env KEYS=x
+        # cmd`, $__saved.Keys was the value KEYS had before. A name that was
+        # not set is removed with a real null: PowerShell hands $null to a
+        # .NET string parameter as '', and since .NET 9 (pwsh 7.5)
+        # SetEnvironmentVariable sets '' as an empty value, so the name stayed.
+        foreach ($__e in @($__saved.GetEnumerator())) {
+          if ($null -eq $__e.Value) {
+            [Environment]::SetEnvironmentVariable($__e.Key, [System.Management.Automation.Language.NullString]::Value)
+          } else { [Environment]::SetEnvironmentVariable($__e.Key, $__e.Value) }
         }
       }
     } else {
@@ -226,28 +270,87 @@ function split {
     # `split -n 0` silently fell through to the 1000-line default instead of
     # being refused. The same held for `-b 0`, and for a file literally named
     # "0", which "$path -eq ''" read as "no file, use stdin".
-    $path = ''; $lines = 0; $chunks = ''; $bytes = ''; $prefix = 'x'; $suffixLen = 2; $i = 0
+    $path = ''; $linesArg = $null; $chunks = $null; $bytes = $null; $prefix = 'x'; $suffixArg = $null; $i = 0
     while ($i -lt $__a.Count) {
       $a = [string]$__a[$i]
-      if ($a -eq '-l' -and ($i + 1) -lt $__a.Count) { $lines = [int]$__a[$i + 1]; $i += 2 }
+      if ($a -eq '-l' -and ($i + 1) -lt $__a.Count) { $linesArg = [string]$__a[$i + 1]; $i += 2 }
       elseif ($a -eq '-n' -and ($i + 1) -lt $__a.Count) { $chunks = [string]$__a[$i + 1]; $i += 2 }
       elseif ($a -eq '-b' -and ($i + 1) -lt $__a.Count) { $bytes = [string]$__a[$i + 1]; $i += 2 }
-      elseif ($a -eq '-a' -and ($i + 1) -lt $__a.Count) { $suffixLen = [int]$__a[$i + 1]; $i += 2 }
+      elseif ($a -eq '-a' -and ($i + 1) -lt $__a.Count) { $suffixArg = [string]$__a[$i + 1]; $i += 2 }
       else {
         if ($path -eq '') { $path = $a } else { $prefix = $a }
         $i++
       }
+    }
+    # A value is read the way a cast to a number reads it in PowerShell:
+    # [string] above turns a bare 0x10, 1kb or 10MB back into that text, and
+    # it still counts, and 1.5 rounds to 2. A blank value or one that is not
+    # a number gives $null: -as [long] makes 0 of a blank, which would pass
+    # for -a 0.
+    function _num([string]$s) { if ($s.Trim() -ne '') { $s -as [long] } }
+    # The suffix starts at 2 letters and widens as the names run out, or with
+    # -a it is that many letters and no more (see _suffix). -a 0 is no -a, as
+    # in GNU split and uutils. An -a below 0, empty or not a number is refused
+    # before any part is written, as uutils refuses it; $suffixArg is $null
+    # when -a is not given, so an empty -a does not pass for none. Both -a 0
+    # and an empty -a used to make a suffix of no letters, and every part
+    # went to one file named after the prefix.
+    $suffixLen = 2; $widen = $null -eq $suffixArg
+    if (-not $widen) {
+      $suffixLen = _num $suffixArg
+      if ($null -eq $suffixLen -or $suffixLen -lt 0) { Write-Error "invalid suffix length '$suffixArg'"; return }
+      if ($suffixLen -eq 0) { $suffixLen = 2; $widen = $true }
+    }
+    # -l, -b and -n are checked as -a is, before any part is written: each
+    # one given, whichever decides how the input is cut. They start as $null,
+    # so an empty value does not pass for the flag not given, and a value
+    # below 1 or not a number is refused, as uutils refuses it (-b may end in
+    # K, M or G, and -n start with l/). -l '', 0 and -5, -b '' and -n '' used
+    # to give the 1000-line default, and -l abc a conversion error and then,
+    # outside a try, that default too.
+    $lines = 0; $sz = 0; $n = 0
+    if ($null -ne $linesArg) {
+      $lines = _num $linesArg
+      if ($null -eq $lines -or $lines -lt 1) { Write-Error "invalid line count '$linesArg'"; return }
+    }
+    if ($null -ne $bytes) {
+      $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB }; $num = $bytes; $unit = 1
+      if ($bytes -match '^(\d+)([KMG])$') { $num = $Matches[1]; $unit = $mult[$Matches[2]] }
+      $sz = _num $num
+      if ($null -eq $sz -or $sz -lt 1) { Write-Error "invalid byte size '$bytes'"; return }
+      $sz *= $unit
+    }
+    if ($null -ne $chunks) {
+      $n = _num ($chunks -replace '^l/', '')
+      if ($null -eq $n -or $n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
     }
     if ($path -eq '') {
       $content = $__piped.ToArray()
       if ($content.Count -eq 0) { Write-Error "usage: [-l N] [-n l/N] [-b SIZE] <file> [prefix]"; return }
     }
 
-    # Generate suffix: aa, ab, ... like GNU split
-    function _suffix([int]$idx, [int]$len) {
+    # The suffix of part $idx (from 0): aa, ab, ... az, ba, ... as GNU split
+    # names them. It used to keep only the last $len letters of the number,
+    # so the 677th part was named aa again, and its file replaced the first
+    # part's. Without -a the names do not run out: the first letter stops at
+    # y, then z joins the prefix and the rest is a letter longer (yz, then
+    # zaaa; zyzz, then zzaaaa), as in GNU split and uutils, so the parts still
+    # sort in their order. With -a (or -n, below) there are $suffixLen letters
+    # and no more: after the last name (zz for 2) there is none ($null), and
+    # split stops with a terminating error where GNU split exits 1. The parts
+    # written by then are not the whole input, so the rest of the line
+    # (`&& Remove-Item f`) must not run.
+    function _suffix([long]$idx) {
+      $len = $suffixLen; $lead = ''
+      if ($widen) {
+        # $block: how many names of this length start with a to y.
+        for ($block = 25 * [math]::Pow(26, $len - 1); $idx -ge $block; $block *= 26) {
+          $idx -= $block; $lead += 'z'; $len++
+        }
+      } elseif ($idx -ge [math]::Pow(26, $len)) { return $null }
       $s = ''; for ($j = $len - 1; $j -ge 0; $j--) {
         $s = [char](97 + ($idx % 26)) + $s; $idx = [math]::Floor($idx / 26)
-      }; $s
+      }; $lead + $s
     }
 
     # .NET resolves relative paths against the process directory, which
@@ -260,14 +363,8 @@ function split {
       if (-not [System.IO.File]::Exists($full)) { Write-Error "cannot open '$path' for reading: No such file"; return }
     }
 
-    if ($bytes -ne '') {
-      # Byte splitting
-      $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB }
-      $sz = if ($bytes -match '^(\d+)([KMG])$') { [long]$Matches[1] * $mult[$Matches[2]] } else { [long]$bytes }
-      # A size of 0 advances the write loop by 0 bytes for ever, so it has to be
-      # refused rather than run. It was unreachable while `-b 0` was read as
-      # "-b not given"; the [string] cast above is what makes it reachable.
-      if ($sz -lt 1) { Write-Error "invalid byte size '$bytes'"; return }
+    if ($null -ne $bytes) {
+      # Byte splitting, in parts of $sz bytes (checked above).
       # Streamed through one reusable buffer. ReadAllBytes plus a range slice
       # per part ($data[$a..$b], an object[] of boxed bytes) took about 50x the
       # file size in memory and ran some 250x slower than native split, so a
@@ -280,7 +377,9 @@ function split {
         while ($true) {
           $n = $in.Read($buf, 0, [int][math]::Min([long]$buf.Length, $sz))
           if ($n -le 0) { break }
-          $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
+          $sfx = _suffix $idx
+          if ($null -eq $sfx) { Write-Error 'output file suffixes exhausted' -ErrorAction Stop }
+          $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("$prefix$sfx"))
           try {
             $out.Write($buf, 0, $n)
             $left = $sz - $n
@@ -298,9 +397,14 @@ function split {
       return
     }
 
-    if ($chunks -ne '') {
-      $n = [int]($chunks -replace '^l/', '')
-      if ($n -lt 1) { Write-Error "invalid chunk count '$chunks'"; return }
+    if ($null -ne $chunks) {
+      # With -n N, GNU split and uutils give the names the length N parts need
+      # from the start, 2 letters at least, and do not widen them; an -a
+      # shorter than that is refused before any part is written. den's -n
+      # makes N parts at most, so these names do not run out.
+      $need = 1; while ([math]::Pow(26, $need) -lt $n) { $need++ }
+      if ($widen) { $suffixLen = [math]::Max(2, $need); $widen = $false }
+      elseif ($suffixLen -lt $need) { Write-Error "the suffix length needs to be at least $need"; return }
     }
 
     if ($full) {
@@ -311,7 +415,7 @@ function split {
       # final newline the file did not have. The chunk sizes are den's own:
       # -l N lines per part, -n N parts of ceil(lines/N) lines each.
       $buf = New-Object byte[] 65536
-      if ($chunks -ne '') {
+      if ($null -ne $chunks) {
         # Count the lines first: every LF, plus a last line without one.
         $count = 0; $last = [byte]10
         $in = [System.IO.File]::OpenRead($full)
@@ -333,7 +437,9 @@ function split {
           $p = 0
           while ($p -lt $got) {
             if ($null -eq $out) {
-              $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("${prefix}$(_suffix $idx $suffixLen)"))
+              $sfx = _suffix $idx
+              if ($null -eq $sfx) { Write-Error 'output file suffixes exhausted' -ErrorAction Stop }
+              $out = [System.IO.File]::Create($sess.GetUnresolvedProviderPathFromPSPath("$prefix$sfx"))
               $idx++
             }
             $nl = [Array]::IndexOf($buf, [byte]10, $p, $got - $p)
@@ -349,21 +455,23 @@ function split {
         $in.Dispose()
       }
       if ($idx -eq 0) { Write-Host "Split into 0 files"; return }
-      Write-Host "Split into $idx files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($idx-1) $suffixLen))"
+      Write-Host "Split into $idx files (${prefix}$(_suffix 0) .. ${prefix}$(_suffix ($idx-1)))"
       return
     }
 
     # Piped input arrives as strings, already decoded: it is written back as
     # lines. $content is @() above, so .Count and the slice are strict-safe.
-    if ($chunks -ne '') { $lines = [math]::Ceiling($content.Count / $n) }
+    if ($null -ne $chunks) { $lines = [math]::Ceiling($content.Count / $n) }
     if ($lines -lt 1) { $lines = 1000 }
     $total = [math]::Ceiling($content.Count / $lines)
     for ($idx = 0; $idx -lt $total; $idx++) {
+      $sfx = _suffix $idx
+      if ($null -eq $sfx) { Write-Error 'output file suffixes exhausted' -ErrorAction Stop }
       $start = $idx * $lines
-      $outFile = "${prefix}$(_suffix $idx $suffixLen)"
+      $outFile = "$prefix$sfx"
       $content[$start..([math]::Min($start + $lines, $content.Count) - 1)] | Set-Content -LiteralPath $outFile
     }
-    Write-Host "Split into $total files (${prefix}$(_suffix 0 $suffixLen) .. ${prefix}$(_suffix ($total-1) $suffixLen))"
+    Write-Host "Split into $total files (${prefix}$(_suffix 0) .. ${prefix}$(_suffix ($total-1)))"
   }
 }
 

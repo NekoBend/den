@@ -128,7 +128,10 @@ function reload {
     & $exe @launch
   } catch [System.Management.Automation.CommandNotFoundException], [System.Management.Automation.ApplicationFailedException] {
     $failed = $true
-    foreach ($name in $handOn.Keys) { [Environment]::SetEnvironmentVariable($name, $null) }
+    # Removed with a real null: PowerShell hands $null to a .NET string
+    # parameter as '', and since .NET 9 (pwsh 7.5) SetEnvironmentVariable sets
+    # '' as an empty value, so the names stayed in this session, set to ''.
+    foreach ($name in $handOn.Keys) { [Environment]::SetEnvironmentVariable($name, [System.Management.Automation.Language.NullString]::Value) }
     Write-Warning "reload: could not start ${exe}: $($_.Exception.Message)"
   } finally {
     if (-not $failed) { exit $LASTEXITCODE }
