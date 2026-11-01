@@ -1285,6 +1285,56 @@ def test_a_removed_typescript_enum_is_reported(tmp_path: Path) -> None:
     ]
 
 
+def test_removed_javascript_names_holding_a_dollar_are_reported(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A `$` is part of a JavaScript or TypeScript name, but names were
+    # captured as \w+ and searched between \b: deleting `$fetch`, `users$`
+    # and `$` reported none of their uses, `class Store$` was a removed
+    # `Store`, and `load$()` was reported as a use of the removed `load`.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.ts",
+        "export function $fetch() {}\n"
+        "export const users$ = 1;\n"
+        "export const $ = 2;\n"
+        "export class Store$ {}\n"
+        "export function load() {}\n"
+        "export function keep() {}\n",
+    )
+    imports = 'import { $fetch, users$, $, Store$, load, keep } from "./lib";'
+    write(
+        tmp_path,
+        "app.ts",
+        f"{imports}\n"
+        "$fetch();\n"
+        "console.log(users$, a$fetch);\n"
+        "$(1);\n"
+        "new Store$();\n"
+        "load$(keep);\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.ts", "export function keep() {}\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert report(proc, tmp_path) == [
+            f"app.ts:1:broken_ref:$:{imports}",
+            "app.ts:4:broken_ref:$:$(1);",
+            f"app.ts:1:broken_ref:$fetch:{imports}",
+            "app.ts:2:broken_ref:$fetch:$fetch();",
+            f"app.ts:1:broken_ref:Store$:{imports}",
+            "app.ts:5:broken_ref:Store$:new Store$();",
+            f"app.ts:1:broken_ref:load:{imports}",
+            f"app.ts:1:broken_ref:users$:{imports}",
+            "app.ts:3:broken_ref:users$:console.log(users$, a$fetch);",
+        ]
+
+
 def test_go_and_rust_methods_are_searched_as_members_only(tmp_path: Path) -> None:
     # A Go receiver method, every fn of a Rust impl and a fn nested in a fn
     # were "top-level" names, so deleting their file searched `String`,

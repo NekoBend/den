@@ -126,11 +126,15 @@ def _split(
     Every definition pattern holds the symbol as a whole word, so the
     definition lines are a subset of the word hits: each hit is classified by
     the patterns of its own file's extension instead of searching the tree
-    once more per (extension, pattern) pair.
+    once more per (extension, pattern) pair. A hit counts only where
+    mentions() finds the symbol as a whole word in that file's language,
+    which the search cannot tell: a `$` is part of a JavaScript name.
     """
     defs: list[Result] = []
     uses: list[Result] = []
     for file, lineno, content in search_words([symbol], _files(root, ext_filter)):
+        if not mentions(content, Path(file).suffix, symbol):
+            continue
         if is_definition_hit(file, lineno, content, symbol):
             defs.append((file, lineno, "def", content.strip()))
         else:

@@ -92,6 +92,12 @@ _PS_TYPES = (
     r"\]\s*)*"
 )
 
+# JavaScript and TypeScript, which share the .ts patterns. A name there can
+# hold `$` (`$fetch`, `users$`, or `$` alone), so it ends where neither a word
+# character nor a `$` follows: `\b` ended `class Store$` at `Store`.
+_JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_JS_END = r"(?![\w$])"
+
 # Where a symbol may be defined, per extension. {name} is the symbol.
 DEFINITION_PATTERNS: dict[str, list[str]] = {
     ".py": [
@@ -105,12 +111,12 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
     ],
     ".ts": [
         r"\bfunction\s+{name}\s*[(<]",
-        r"\bclass\s+{name}\b",
-        r"\binterface\s+{name}\b",
+        r"\bclass\s+{name}" + _JS_END,
+        r"\binterface\s+{name}" + _JS_END,
         r"\btype\s+{name}\s*=",
         r"\b(?:const|let|var)\s+{name}\s*[=:]",
-        r"\benum\s+{name}\b",  # `const enum` too
-        r"\bnamespace\s+{name}\b",
+        r"\benum\s+{name}" + _JS_END,  # `const enum` too
+        r"\bnamespace\s+{name}" + _JS_END,
     ],
     ".go": [
         # a generic function or type takes its type parameters in brackets:
@@ -188,12 +194,12 @@ TOP_LEVEL_PATTERNS: dict[str, list[str]] = {
     ],
     ".ts": [
         _TS_PREFIX + r"(?:async\s+)?function\s+{name}\s*[(<]",
-        _TS_PREFIX + r"(?:abstract\s+)?class\s+{name}\b",
-        _TS_PREFIX + r"interface\s+{name}\b",
+        _TS_PREFIX + r"(?:abstract\s+)?class\s+{name}" + _JS_END,
+        _TS_PREFIX + r"interface\s+{name}" + _JS_END,
         _TS_PREFIX + r"type\s+{name}\s*=",
         _TS_PREFIX + r"(?:const|let|var)\s+{name}\s*[=:]",
-        _TS_PREFIX + r"(?:const\s+)?enum\s+{name}\b",
-        _TS_PREFIX + r"namespace\s+{name}\b",
+        _TS_PREFIX + r"(?:const\s+)?enum\s+{name}" + _JS_END,
+        _TS_PREFIX + r"namespace\s+{name}" + _JS_END,
     ],
     # Every Go definition sits at column 0; a method is a member.
     ".go": [p for p in DEFINITION_PATTERNS[".go"] if p != _GO_METHOD],
@@ -244,16 +250,22 @@ _PY_BLOCK_LEVEL = TOP_LEVEL_PATTERNS[".py"][:2]
 # Verb-Noun names at the hyphen, so "function New-Wrapper" becomes a
 # definition of "New" - measured to both flood false broken_refs (a deleted
 # Test-* symbol collides with every Test-Path call) and hide real ones
-# (New-Wrapper deleted stays "defined" through New-WrapperSuffix).
+# (New-Wrapper deleted stays "defined" through New-WrapperSuffix). The
+# default would drop a JavaScript name holding `$` (`$fetch`, `users$`).
 DEFINITION_CAPTURE: dict[str, str] = {
     ".ps1": r"([\w-]+)",
     ".psm1": r"([\w-]+)",
-}
+} | dict.fromkeys(_JS_EXTS, r"([\w$]+)")
 DEFAULT_CAPTURE = r"(\w+)"
+
+# The characters a name is made of, by suffix, where \w is not all of them.
+# None of them may stand right before or after a name that a line mentions.
+NAME_CHARS: dict[str, str] = dict.fromkeys(_JS_EXTS, r"[\w$]")
+DEFAULT_NAME_CHARS = r"\w"
 
 # Extensions that share patterns with the canonical one.
 for _table in (DEFINITION_PATTERNS, TOP_LEVEL_PATTERNS):
-    for _alias in (".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+    for _alias in _JS_EXTS[1:]:
         _table[_alias] = _table[".ts"]
     _table[".psm1"] = _table[".ps1"]
     _table[".bash"] = _table[".sh"]
@@ -710,9 +722,12 @@ def member_definitions(text: str, ext: str) -> list[tuple[int, str, str]]:
 
 
 @functools.cache
-def _word_rx(symbol: str, *, ignore_case: bool, prefix: str) -> re.Pattern[str]:
+def _word_rx(
+    symbol: str, *, ignore_case: bool, prefix: str, name_chars: str
+) -> re.Pattern[str]:
     return re.compile(
-        rf"{prefix}{re.escape(symbol)}\b", re.IGNORECASE if ignore_case else 0
+        rf"{prefix}{re.escape(symbol)}(?!{name_chars})",
+        re.IGNORECASE if ignore_case else 0,
     )
 
 
@@ -720,13 +735,20 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     """Whether `line` (of a file with suffix `ext`) names `symbol`.
 
     As a whole word, or with member=True only as attribute access
-    (MEMBER_ACCESS: `.symbol`, and `::symbol` in Rust).
+    (MEMBER_ACCESS: `.symbol`, and `::symbol` in Rust). A whole word has no
+    character of a name (NAME_CHARS) right before or after it: in a
+    JavaScript or TypeScript file `users$` does not name `users`, and
+    `$fetch()` names `$fetch`.
     """
     ignore_case = ext in CASE_INSENSITIVE_EXTS
     if not ignore_case and symbol not in line:  # the cheap test first
         return False
-    prefix = MEMBER_ACCESS.get(ext, DEFAULT_MEMBER_ACCESS) if member else r"\b"
-    rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix)
+    name_chars = NAME_CHARS.get(ext, DEFAULT_NAME_CHARS)
+    if member:
+        prefix = MEMBER_ACCESS.get(ext, DEFAULT_MEMBER_ACCESS)
+    else:
+        prefix = f"(?<!{name_chars})"
+    rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix, name_chars=name_chars)
     return rx.search(line) is not None
 
 
@@ -1199,12 +1221,40 @@ def _search_walk(
     return hits
 
 
+_WORD_CHAR = re.compile(r"\w")
+
+
+def _search_pattern(names: list[str]) -> str:
+    """The regex for the lines that may hold one of `names` as a whole word.
+
+    A word boundary holds only next to a word character, so it is left off
+    the side of a name that starts or ends with another one (`$fetch`,
+    `users$` in JavaScript): one before `$fetch` needed a letter before the
+    `$`, and no call of it was found. A line found that way may hold the
+    name inside a longer one; mentions() decides, by the file's language.
+    """
+    plain: list[str] = []
+    parts: list[str] = []
+    for name in names:
+        head = _WORD_CHAR.match(name[:1]) is not None
+        tail = _WORD_CHAR.match(name[-1:]) is not None
+        if head and tail:
+            plain.append(re.escape(name))
+        else:
+            parts.append(
+                (r"\b" if head else "") + re.escape(name) + (r"\b" if tail else "")
+            )
+    if plain:
+        parts.insert(0, r"\b(?:" + "|".join(plain) + r")\b")
+    return "|".join(parts)
+
+
 def search_words(symbols: Iterable[str], files: list[Path]) -> list[Hit]:
-    """Every line of `files` holding one of `symbols` as a whole word.
+    """Every line of `files` that may hold one of `symbols` as a whole word.
 
     One pass over the files for any number of symbols: the caller works out
-    which symbol a line holds, and whether it is a definition, from the line
-    itself. Uses ripgrep when it is installed, otherwise reads the files
+    which symbol a line holds (mentions), and whether it is a definition,
+    from the line itself. Uses ripgrep when it is installed, otherwise reads the files
     in-process; both get the same file list and the same pattern, and the
     hits come back sorted by (file, line). Case is ignored in PowerShell
     files only, so those are searched apart: one ripgrep run per case group,
@@ -1213,7 +1263,7 @@ def search_words(symbols: Iterable[str], files: list[Path]) -> list[Hit]:
     names = sorted(set(symbols), key=lambda s: (-len(s), s))
     if not names or not files:
         return []
-    pattern = r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b"
+    pattern = _search_pattern(names)
     rg = find_tool("rg")
     hits: list[Hit] = []
     for ignore_case in (False, True):

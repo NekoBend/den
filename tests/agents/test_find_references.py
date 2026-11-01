@@ -1396,6 +1396,88 @@ def test_typescript_enum_and_namespace_are_definitions(tmp_path: Path) -> None:
     ]
 
 
+def test_javascript_names_holding_a_dollar_are_found(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A `$` is part of a JavaScript or TypeScript name, but names were
+    # captured as \w+ and bounded by \b: `$fetch`, `users$` and `$` were no
+    # definitions and a search for them found no line at all, `class Store$`
+    # defined `Store`, and `load` was found inside `load$`. In a shell file
+    # `$load` still names load: `$` is no part of a shell name.
+    lib = write(
+        tmp_path,
+        "lib.ts",
+        "export function $fetch() {}\n"
+        "export const users$ = 1;\n"
+        "export const $ = 2;\n"
+        "export class Store$ {}\n"
+        "export function load() {}\n",
+    )
+    imports = 'import { $fetch, users$, $, Store$, load } from "./lib";'
+    write(
+        tmp_path,
+        "app.ts",
+        f"{imports}\n"
+        "$fetch();\n"
+        "console.log(users$, a$fetch);\n"
+        "$(1);\n"
+        "new Store$();\n"
+        "load$();\n",
+    )
+    write(tmp_path, "run.sh", "echo $load\n")
+    expected = {
+        "$fetch": (
+            ["lib.ts:1:def:export function $fetch() {}"],
+            [f"app.ts:1:use:{imports}", "app.ts:2:use:$fetch();"],
+        ),
+        "users$": (
+            ["lib.ts:2:def:export const users$ = 1;"],
+            [f"app.ts:1:use:{imports}", "app.ts:3:use:console.log(users$, a$fetch);"],
+        ),
+        "$": (
+            ["lib.ts:3:def:export const $ = 2;"],
+            [f"app.ts:1:use:{imports}", "app.ts:4:use:$(1);"],
+        ),
+        "Store$": (
+            ["lib.ts:4:def:export class Store$ {}"],
+            [f"app.ts:1:use:{imports}", "app.ts:5:use:new Store$();"],
+        ),
+        "Store": ([], []),
+        "load": (
+            ["lib.ts:5:def:export function load() {}"],
+            [f"app.ts:1:use:{imports}", "run.sh:1:use:echo $load"],
+        ),
+    }
+    for env in backends:
+        for symbol, (defs, uses) in expected.items():
+            proc = run("--def", symbol, "--root", str(tmp_path), env=env)
+            assert proc.returncode == 0, proc.stderr
+            assert rows(proc, tmp_path) == defs, symbol
+            proc = run("--uses", symbol, "--root", str(tmp_path), env=env)
+            assert proc.returncode == 0, proc.stderr
+            assert rows(proc, tmp_path) == uses, symbol
+
+        proc = run("--in", str(lib), "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "lib.ts:3:def:export const $ = 2;",
+            f"app.ts:1:use:$:{imports}",
+            "app.ts:4:use:$:$(1);",
+            "lib.ts:1:def:export function $fetch() {}",
+            f"app.ts:1:use:$fetch:{imports}",
+            "app.ts:2:use:$fetch:$fetch();",
+            "lib.ts:4:def:export class Store$ {}",
+            f"app.ts:1:use:Store$:{imports}",
+            "app.ts:5:use:Store$:new Store$();",
+            "lib.ts:5:def:export function load() {}",
+            f"app.ts:1:use:load:{imports}",
+            "run.sh:1:use:load:echo $load",
+            "lib.ts:2:def:export const users$ = 1;",
+            f"app.ts:1:use:users$:{imports}",
+            "app.ts:3:use:users$:console.log(users$, a$fetch);",
+        ]
+
+
 # Rust, Java and C# files whose members, nested functions, comments and
 # literals all look like top-level definitions to a pattern alone.
 BRACED_SOURCES = {
