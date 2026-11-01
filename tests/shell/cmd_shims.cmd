@@ -5,7 +5,8 @@ rem that cmd_fake_tool.ps1 builds: each prints its arguments as [arg] lines
 rem and exits with FAKE_RC. Checked: the wrappers run the tool found on PATH,
 rem keep its exit code and run their fallback only without it; findw runs fd
 rem whatever the toggle, and says so without it; there is no find shim, so
-rem typed find is find.exe; no where.* or tool in the current directory runs;
+rem typed find is find.exe; cat hands bat a last --paging=never and refuses a
+rem typed --; no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
@@ -60,8 +61,29 @@ call :expect %errorlevel% 1 "grep: rg finds nothing, exit 1, no findstr after it
 >>"%W%" echo [--paging=never]
 >>"%W%" echo [a.txt]
 >>"%W%" echo [missing.txt]
+>>"%W%" echo [--paging=never]
 call "%BIN%\cat.cmd" a.txt missing.txt >"%O%" 2>&1
 call :expect %errorlevel% 1 "cat: bat fails, no type after it"
+
+rem bat expands a wildcard itself (cmd does not), so a file named
+rem --paging=always could reach it as an option ahead of a --pager: bat takes
+rem the last --paging, and cat puts --paging=never after the arguments. A
+rem typed -- would make that word a file name, so cat refuses one and bat
+rem does not run.
+set "FAKE_RC="
+>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [*]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" * >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: a wildcard reaches bat before the last --paging=never"
+>"%W%" echo cat: -- would make bat read den's last --paging=never as a file name.
+>>"%W%" echo cat: write a file whose name starts with - as .\-name instead.
+call "%BIN%\cat.cmd" a.txt -- -x.txt >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a typed --, and bat does not run"
+call "%BIN%\cat.cmd" a.txt "--" >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a quoted --, and bat does not run"
+set "FAKE_RC=1"
 
 rem findw is fd, the toggle notwithstanding, and find.exe never runs after
 rem it. There is no find.cmd: typed find is find.exe, which reads a pipe

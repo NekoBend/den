@@ -375,6 +375,26 @@ Case '_DenAddClean' {
     _DenAddClean 'strict-ac', 'nonexistent-strict'
     strict-ac
 }
+Case '_DenOptionFile' {
+    $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
+    $null = New-Item -ItemType File -Path $StrictOpt -Force
+    try {
+        _DenOptionFile 'grep' 'rg' @('alpha', '-strict-opt')
+        _DenOptionFile 'grep' 'rg' @('alpha', '*', $null, @('a.txt', 'b.txt'), '/nonexistent-strict/*')
+        _DenOptionFile 'grep' 'rg' @('alpha', 'a.txt')
+        _DenOptionFile 'grep' 'rg' @()
+        _DenOptionFile 'grep' 'rg' $null
+    } finally { Remove-Item -LiteralPath $StrictOpt -Force }
+}
+Case 'grep, a file name that reads as an option' {
+    $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
+    $null = New-Item -ItemType File -Path $StrictOpt -Force
+    try {
+        try { grep alpha * } catch { $null = $_ }
+        try { grep alpha -strict-opt } catch { $null = $_ }
+        try { 'x' | grep alpha -strict-opt } catch { $null = $_ }
+    } finally { Remove-Item -LiteralPath $StrictOpt -Force }
+}
 Case 'toggle-wrapper' { toggle-wrapper; toggle-wrapper }
 Case 'tgl-wr' { tgl-wr; tgl-wr }
 Case '_DenTrustedCacheOwner' {

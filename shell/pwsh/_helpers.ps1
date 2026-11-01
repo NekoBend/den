@@ -694,8 +694,54 @@ function _DenAddClean([string[]]$Names) {
     }
 }
 
-# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
-function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr) {
+# _DenOptionFile <name> <tool> <args> - for New-Wrapper: why <tool> must not run
+# with <args>, the arguments of den's <name>, else $null. bat, fd and rg have
+# options that run a program (rg --pre and --hostname-bin, fd -x and -X in any
+# spelling, bat --pager with --paging), and they read a word that starts with -
+# as an option, also when it is the name of a file: `grep needle *` beside a
+# file named --pre=sh had rg run sh on every file it searched. So <tool> must
+# not run when one of <args> starts with - and names an existing path, or, on
+# Linux and macOS, when one is a wildcard that stands for such a name: pwsh
+# expands a wildcard for a native command there, after this function has
+# seen it, each name relative to the current directory (./* included: it
+# hands on ./--pre=sh as --pre=sh), so the names are looked up the way pwsh
+# does it. On Windows pwsh expands nothing, and rg and fd do not either; bat
+# does, which its den wrapper counters with a last --paging=never (wrappers.ps1).
+function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
+    $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    $expand = -not (_OnWindows) -and $loc.Provider.Name -eq 'FileSystem'
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        if ($null -eq $w) { continue }
+        $s = "$w"
+        if ($s.Length -gt 1 -and $s[0] -eq '-') {
+            $there = $false
+            try { $there = Test-Path -LiteralPath $s } catch { $null = $_ }
+            if ($there) {
+                return "'$s' names a file, which $Tool would read as an option: $Tool did not run. " +
+                    "Write it as ./$s, or run the native $Name with the wrappers off (tgl-wr)."
+            }
+        }
+        # pwsh expands a rooted pattern (/x/*, ~/x/*) to rooted names.
+        if (-not $expand -or $s.StartsWith('~') -or [System.IO.Path]::IsPathRooted($s) -or
+            -not [WildcardPattern]::ContainsWildcardCharacters($s)) { continue }
+        $items = @()
+        try { $items = @($ExecutionContext.SessionState.InvokeProvider.ChildItem.Get($s, $false)) } catch { $null = $_ }
+        foreach ($i in $items) {
+            if ($i -isnot [System.IO.FileSystemInfo]) { continue }
+            $n = $ExecutionContext.SessionState.Path.NormalizeRelativePath($i.FullName, $loc.ProviderPath)
+            if ($n.StartsWith('-')) {
+                return "'$s' stands for the file '$n', which $Tool would read as an option: $Tool did " +
+                    "not run. Write the wildcard with a full path (`$PWD/$s), or run the native $Name " +
+                    "with the wrappers off (tgl-wr)."
+            }
+        }
+    }
+    return $null
+}
+
+# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr> [modernTail]
+# <modernTail>: flags the modern tool gets after the call's arguments.
+function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr, [string]$ModernTail) {
     # Dispatch order: modern tool -> (Windows) microsoft/coreutils -> native exe on
     # PATH -> PowerShell fallback. The coreutils and native tiers both reuse
     # $NativeCmd as the Unix command name ('ls'/'cat'/'grep'/'find'), so on Windows a
@@ -709,6 +755,14 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # error it writes is the function's ("lt: ..."). With input piped in, it runs
     # as a scriptblock of its own, which sees the call's arguments as $Args and
     # what was piped in as $input, all at once.
+    # A wrapper named after the native command it replaces whose modern tool has
+    # options that run a program (bat, fd, rg) runs nothing, with a terminating
+    # error, when an argument is a file name the tool would read as an option
+    # (_DenOptionFile).
+    $optionCheck = ''
+    if ($FuncName -eq $NativeCmd -and $Modern -in @('bat', 'fd', 'rg')) {
+        $optionCheck = "`$__o = _DenOptionFile '$FuncName' '$Modern' `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }"
+    }
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
     $winNativeSkip = @('find', 'sort', 'more')
     $nativeGuard = if ($NativeCmd -and ($NativeCmd -in $winNativeSkip)) {
@@ -723,8 +777,9 @@ begin {
     `$__sp = `$null
     `$__a = `$args
     if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
+        $optionCheck
         _WrapLog '$FuncName' '$Modern'
-        `$__run = { & '$Modern' $ModernFlags @__a }
+        `$__run = { & '$Modern' $ModernFlags @__a $ModernTail }
     } else {
         `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
         `$__nc = if (-not `$__cu -and ($nativeGuard)) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }
