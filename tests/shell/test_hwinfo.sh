@@ -229,6 +229,53 @@ CPU= GPU=" "$actual"
     assert_eq "$sh/hwinfo runs no cat" "" "$(cat "$HWN/cat.log" 2>/dev/null)"
 done
 
+# A cache write that fails, as on a full disk or past a quota. ulimit -f caps
+# the size of the files the shell writes (in 1024-byte blocks in bash, 512-byte
+# ones in zsh), and with SIGXFSZ ignored a write past the cap fails (EFBIG)
+# instead of ending the shell. Under a cap of 1 the CPU's line (under 512
+# bytes) fits and the GPU's (over 600) is cut short: den put that cache in
+# place, the next start set the CPU from it and not the GPU, and a value set
+# skips the detection, so the GPU stayed off until refresh-hwinfo. Under a cap
+# of 0 every write fails, and den put an empty cache in place. awk is a
+# function here that gives a long Intel CPU name for /proc/cpuinfo and a long
+# GPU name for what nvidia-smi, a stub, prints.
+HWF="$WORK/hwinfo-full"
+mkdir -p "$HWF/bin"
+for t in mktemp mv rm sed hostname; do
+    p=$(command -v "$t") && ln -sf "$p" "$HWF/bin/$t"
+done
+printf '#!/bin/sh\necho stub\n' > "$HWF/bin/nvidia-smi"
+chmod +x "$HWF/bin/nvidia-smi"
+HWF_CPU="i9-$(printf '%0470d' 0)"
+HWF_GPU="RTX-$(printf '%0600d' 0)"
+for sh in bash zsh; do
+    sh_bin=$(command -v "$sh")
+    for cap in 1 0; do
+        rt="$HWF/rt-$sh-$cap"
+        mkdir -p "$rt"
+        # hw_full_start <cap> - one start of hwinfo.sh under that file-size cap
+        # (unlimited for none); it prints the length of the two values it set.
+        hw_full_start() {
+            env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+                -u STARSHIP_GPU_INTEL XDG_RUNTIME_DIR="$rt" PATH="$HWF/bin" "$sh_bin" -c "
+                    awk() { case \"\$*\" in */proc/cpuinfo) echo 'intel|$HWF_CPU' ;; *) echo '$HWF_GPU' ;; esac; }
+                    trap '' XFSZ
+                    ulimit -f $1
+                    . '$HWINFO_SH'
+                    echo \"CPU=\${#STARSHIP_CPU_INTEL} GPU=\${#STARSHIP_GPU_NVIDIA}\"
+                " 2>&1 | grep -v 'write error' || true
+        }
+        echo "[$sh] a cache write that fails (file size cap $cap) leaves no cache; the next start detects again"
+        actual=$(hw_full_start "$cap")
+        assert_eq "$sh/failed cache write, cap $cap: the start has both values" "CPU=473 GPU=604" "$actual"
+        assert_eq "$sh/failed cache write, cap $cap: no cache, no temporary file" "" "$(ls -A "$rt")"
+        actual=$(hw_full_start unlimited)
+        assert_eq "$sh/failed cache write, cap $cap: the next start has both values" "CPU=473 GPU=604" "$actual"
+        assert_eq "$sh/failed cache write, cap $cap: the next start writes the whole cache" "3 _DEN_HWINFO_CACHED=1" \
+            "$(wc -l < "$(hwinfo_file "$rt")") $(sed -n '$p' "$(hwinfo_file "$rt")")"
+    done
+done
+
 # set -C alone opens an existing FIFO or device, or a link to one, so without
 # mktemp a FIFO at the cache's temporary name, or a link to one, made the shell
 # start wait for a reader, and a link to /dev/null was taken, then moved in as
