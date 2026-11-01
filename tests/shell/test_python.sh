@@ -197,6 +197,20 @@ FSM_RUNS=0
 [ -e "$WORK/fsm_ran" ] && FSM_RUNS=1
 rm -f "$WORK/fsm_ran"
 
+# va's git calls turn core.fsmonitor off with an empty value, not false: git
+# 2.36 and later read the key as a boolean first, and an empty value is false
+# (fsmonitor-settings.c, lookup_fsmonitor_settings); git 2.16 to 2.35 read it
+# as the path of a hook alone and take an empty one for none (config.c,
+# git_config_get_fsmonitor), where false names a program, which they run. One
+# git runs here, so the spelling is checked in the code.
+echo "[va] every git call in python.sh and python.ps1 sets core.fsmonitor empty"
+for f in "$PYTHON_SH_GUARDED" "$PYTHON_PS1"; do
+    calls=$(grep -cE '(command git|& \$gitExe) ' "$f" || true)
+    empty=$(grep -cE '(command git|& \$gitExe) -c core\.fsmonitor= ' "$f" || true)
+    assert_eq "va: every git call in ${f##*/} sets core.fsmonitor empty, not false" \
+        "2 git calls, 2 with core.fsmonitor=" "$calls git calls, $empty with core.fsmonitor="
+done
+
 # git reads a repo owned by another user only when safe.directory allows it;
 # this makes it take every repo as one, whatever the tester's own config says.
 GIT_AS_OTHER_OWNER="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1"

@@ -183,11 +183,14 @@ va() {
         # core.fsmonitor= (empty, off): the enclosing repository's .git/config,
         # which an archive or a shared folder can deliver with the tree, may name
         # a program git runs when it reads the index, even for a venv it then
-        # refuses. Empty, not false: git before 2.36 takes the value for the path
-        # of a hook, and an empty one for none. The other programs such a config
-        # can name (hooks, filters, diff.external, core.sshCommand) do not run for
-        # ls-files, and its pager runs on a terminal only, which these calls'
-        # output never is.
+        # refuses. Empty, not false: git 2.36 and later read the key as a boolean
+        # first (fsmonitor-settings.c, lookup_fsmonitor_settings), and an empty
+        # value is false; git 2.16 to 2.35 read it as the path of a hook alone
+        # and take an empty one for none (config.c, git_config_get_fsmonitor),
+        # where false names a program to run. Git before 2.16 has no fsmonitor.
+        # The other programs such a config can name (hooks, filters,
+        # diff.external, core.sshCommand) do not run for ls-files, and its pager
+        # runs on a terminal only, which these calls' output never is.
         if ! tracked="$(command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . ../bin ':(icase)../bin' ../pyvenv.cfg ':(icase)../pyvenv.cfg' 2>/dev/null)"; then
             # Fail closed: only "not a git repository" means nothing to check. Any
             # other failure, such as a checkout git will not open for dubious
