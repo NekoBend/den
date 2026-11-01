@@ -197,10 +197,17 @@ def split_by_size(
         return fd
 
     def write_part(part_path: Path, data: bytes, mode: int) -> None:
-        """Write ``data`` to a part that stays 0o600 until it is closed."""
+        """Write ``data`` to a part that stays 0o600 until its mode is set."""
         with open(part_path, "wb", opener=private) as part:
             part.write(data)
-        os.chmod(part_path, mode)
+            if os.name == "posix":
+                # On the open part: a chmod by name after the close follows
+                # whatever the name is by then, such as a symlink someone
+                # put in a shared out_dir, and would widen that file.
+                part.flush()
+                os.fchmod(part.fileno(), mode)
+        if os.name != "posix":
+            os.chmod(part_path, mode)
 
     src = Path(path)
     dest = Path(out_dir) if out_dir else src.parent
@@ -277,10 +284,17 @@ def split_by_lines(
         return fd
 
     def write_part(part_path: Path, data: bytes, mode: int) -> None:
-        """Write ``data`` to a part that stays 0o600 until it is closed."""
+        """Write ``data`` to a part that stays 0o600 until its mode is set."""
         with open(part_path, "wb", opener=private) as part:
             part.write(data)
-        os.chmod(part_path, mode)
+            if os.name == "posix":
+                # On the open part: a chmod by name after the close follows
+                # whatever the name is by then, such as a symlink someone
+                # put in a shared out_dir, and would widen that file.
+                part.flush()
+                os.fchmod(part.fileno(), mode)
+        if os.name != "posix":
+            os.chmod(part_path, mode)
 
     # utf-8-sig writes its BOM once, at the start of the file, not per line.
     nl = "\n".encode(encoding).removeprefix(codecs.BOM_UTF8)

@@ -396,6 +396,31 @@ def test_split_parts_take_the_source_permission_bits(
     assert b"".join(part.read_bytes() for part in parts) == SECRET
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(("recipe", "kwargs"), SPLITS, ids=SPLIT_IDS)
+def test_split_sets_a_parts_mode_on_the_open_part(
+    fileops, tmp_path, umask_022, monkeypatch, recipe, kwargs
+):
+    # A chmod by name after the close followed whatever the name was by
+    # then: someone able to replace entries in out_dir could swap a part for
+    # a symlink, and a split of a 0o644 source would widen the file it names.
+    src = tmp_path / "data.log"
+    src.write_bytes(SECRET)
+    src.chmod(0o644)
+    out = tmp_path / "parts"
+    chmod = os.chmod
+
+    def by_name(target, *args, **kwargs):
+        if Path(target).parent == out:
+            raise AssertionError(f"a part's mode set by name: {target}")
+        return chmod(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", by_name)
+    parts = getattr(fileops, recipe)(src, out_dir=out, **kwargs)
+    assert [stat.S_IMODE(part.stat().st_mode) for part in parts] == [0o644] * 3
+    assert b"".join(part.read_bytes() for part in parts) == SECRET
+
+
 def _still_open_on(fd: int, path: Path) -> bool:
     """Whether ``fd`` is still open on ``path`` (closed or reused: no)."""
     try:
