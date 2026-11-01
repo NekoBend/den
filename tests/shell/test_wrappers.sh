@@ -981,6 +981,7 @@ OPT_PWSH_CASES+="Test-Opt '$WORK/opt/pq' { grep needle '*' }
 Test-Opt '$WORK/opt/pn' { grep needle (Get-ChildItem -Name) }
 Test-Opt '$WORK/opt/pc' { grep needle data.txt }
 Test-Opt '$WORK/opt/pc' { grep needle \$PWD/--pre* }
+Test-Opt '$WORK/opt/pc' { Set-Location Env:; grep needle '--pre=sh' data.txt }
 Test-Opt '$WORK/opt/pok' { grep -rn foo . }
 Test-Opt '$WORK/opt/pok' { find -e py }
 Test-Opt '$WORK/opt/pok' { cat data.txt }
@@ -1011,6 +1012,7 @@ OPT_PWSH_WANT+=(
     "grep needle (Get-ChildItem -Name) beside --pre=sh: rg does not run|refused; ran: no"
     "beside --pre=sh, grep needle data.txt runs rg|ran; ran: rg needle data.txt"
     "beside --pre=sh, a full path (\$PWD/--pre*) runs rg on it|ran; ran: rg needle $WORK/opt/pc/--pre=sh"
+    "on the Env: drive, grep needle '--pre=sh' beside that file in the folder rg runs in: rg does not run|refused; ran: no"
     "grep -rn foo . runs rg|ran; ran: rg -rn foo ."
     "find -e py runs fd|ran; ran: fd -e py"
     "cat data.txt runs bat with a last --paging=never|ran; ran: bat --style=plain --paging=never data.txt --paging=never"

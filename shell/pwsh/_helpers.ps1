@@ -710,12 +710,16 @@ function _DenAddClean([string[]]$Names) {
 function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
     $loc = $ExecutionContext.SessionState.Path.CurrentLocation
     $expand = (-not (_OnWindows) -or $Tool -eq 'bat') -and $loc.Provider.Name -eq 'FileSystem'
+    # <tool> runs in the session's file-system location, also while the session
+    # is on another drive (Env:, a registry drive), so a name is looked up there,
+    # as a file.
+    $fsBase = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
     foreach ($w in @($Words | ForEach-Object { $_ })) {
         if ($null -eq $w) { continue }
         $s = "$w"
         if ($s.Length -gt 1 -and $s[0] -eq '-') {
             $there = $false
-            try { $there = Test-Path -LiteralPath $s } catch { $null = $_ }
+            try { $there = Test-Path -LiteralPath ('FileSystem::' + [System.IO.Path]::Combine($fsBase, $s)) } catch { $null = $_ }
             if ($there) {
                 return "'$s' names a file, which $Tool would read as an option: $Tool did not run. " +
                     "Write it as ./$s, or run the native $Name with the wrappers off (tgl-wr)."
