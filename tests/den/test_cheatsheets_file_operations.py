@@ -313,6 +313,11 @@ def test_atomic_write_never_writes_a_private_file_into_a_wider_one(
 # --- merge_files + atomic_write: what the 0o600 notes promise -------------------
 
 
+def _sentences(doc: str | None) -> list[str]:
+    assert doc is not None
+    return re.split(r"(?<=\.)\s+(?=[A-Z`])", " ".join(doc.split()))
+
+
 @pytest.mark.parametrize(
     ("recipe", "posix"),
     [
@@ -330,11 +335,23 @@ def test_temp_file_notes_say_that_the_0o600_promise_is_posix_only(
     # promised on every platform that private data never sits in a wider
     # file. The promise has to sit in a sentence that names POSIX and not
     # Windows.
-    doc = getattr(fileops, recipe).__doc__
-    assert doc is not None
-    sentences = re.split(r"(?<=\.)\s+(?=[A-Z`])", " ".join(doc.split()))
+    sentences = _sentences(getattr(fileops, recipe).__doc__)
     promise = [sentence for sentence in sentences if posix in sentence]
     assert len(promise) == 1, (posix, sentences)
     assert "Windows" not in promise[0], promise[0]
     assert any("Windows has no such guarantee" in s for s in sentences), sentences
-    assert "ACL" in doc
+    assert any("ACL" in s for s in sentences), sentences
+
+
+def test_atomic_write_note_says_that_the_directory_fsync_is_posix_only(fileops):
+    # The directory is fsynced only when os.name == "posix", but the note said
+    # "fsynced before the rename and the directory after it" for every
+    # platform. The crash promise rests on the temp file's fsync alone.
+    sentences = _sentences(fileops.atomic_write.__doc__)
+    directory = [s for s in sentences if "fsync" in s and "directory" in s]
+    assert len(directory) == 1, sentences
+    assert directory[0].startswith("On POSIX the directory is fsynced"), directory
+    assert "Windows cannot open a directory to fsync it" in directory[0], directory
+    crash = [s for s in sentences if "never an empty file" in s]
+    assert len(crash) == 1, sentences
+    assert "directory" not in crash[0], crash

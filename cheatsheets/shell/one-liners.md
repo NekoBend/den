@@ -28,11 +28,11 @@ fd PATTERN DIR              # search in specific directory
 ### Find and execute
 
 ```sh
-fd -I -t f -e log -X rm         # delete all .log files (-I: gitignored ones too; -H adds hidden ones)
-fd -e jpg -x mv -n -- {} dest/  # move all .jpg to dest/ (-n: a name already in dest/ is skipped)
-fd -e py -x wc -l               # line count per Python file
-fd -e rs -X rustfmt             # format all Rust files (all at once with -X)
-fd -I -t f -e bak -X rm         # remove all .bak files (-I: gitignored ones too; -H adds hidden ones)
+fd -I -t f -e log -X rm              # delete all .log files (-I: gitignored ones too; -H adds hidden ones)
+fd -t f -e jpg -x mv -n -- {} dest/  # move all .jpg to dest/ (-n: a name already in dest/ is skipped)
+fd -e py -x wc -l                    # line count per Python file
+fd -e rs -X rustfmt                  # format all Rust files (all at once with -X)
+fd -I -t f -e bak -X rm              # remove all .bak files (-I: gitignored ones too; -H adds hidden ones)
 ```
 
 ### Exclude and filter

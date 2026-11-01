@@ -402,9 +402,11 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
            Windows has no such guarantee: there 0o600 only keeps the temp file
            from being read-only, and who can read it is up to the ACL it
            inherits from its directory. ``os.replace`` keeps that ACL, not the
-           old file's. The temp file is fsynced before the rename and the
-           directory after it, so a crash leaves the old content or the new
-           one, never an empty file.
+           old file's. The temp file is fsynced before the rename, so a crash
+           leaves the old content or the new one, never an empty file. On
+           POSIX the directory is fsynced after the rename as well, so the
+           rename is on disk by the time the call returns; Windows cannot
+           open a directory to fsync it, so it gets no such promise.
     """
     import os
     import stat

@@ -125,16 +125,17 @@ def test_fd_never_starts_a_mv_that_overwrites():
         assert re.search(rf"-[xX] mv {flags} -- \{{\}}", command), command
 
 
-def test_bulk_renames_rename_only_files():
+def test_fd_moves_and_renames_only_files():
     # fd -e .jpeg lists directories too: a directory album.jpeg/ became
-    # album.jpg/ along with the photos.
-    renames = [
+    # album.jpg/ along with the photos, and `fd -e jpg -x mv -n -- {} dest/`
+    # moved a directory album.jpg/ into dest/ with everything in it.
+    moves = [
         command
         for command, _ in map(_split, _sh_lines())
-        if re.search(r"-x mv .*\{\.\}", command)
+        if re.search(r"^fd\b.*-[xX] (mv|rename)\b", command)
     ]
-    assert len(renames) == 2, renames
-    for command in renames:
+    assert len(moves) == 4, moves
+    for command in moves:
         assert " -t f " in f" {command} ", command
 
 
@@ -388,6 +389,21 @@ def test_move_to_dest_skips_a_name_already_there(repo):
     assert (repo / "a" / "pic.jpg").read_text(encoding="utf-8") == "FROM A\n"
     assert (dest / "free.jpg").read_text(encoding="utf-8") == "FREE\n", result.stderr
     assert not (repo / "a" / "free.jpg").exists()
+
+
+@needs_tools
+def test_move_to_dest_leaves_a_directory_named_like_a_file_alone(repo):
+    # fd -e jpg lists directories too: album.jpg/ went into dest/ with what
+    # it held, and the run exited 0.
+    dest = repo / "dest"
+    dest.mkdir()
+    (repo / "album.jpg").mkdir()
+    (repo / "album.jpg" / "keep.dat").write_text("KEEP\n", encoding="utf-8")
+    (repo / "photo.jpg").write_text("PHOTO\n", encoding="utf-8")
+    result = _run(_command("move all .jpg to dest/"), repo)
+    assert (repo / "album.jpg" / "keep.dat").is_file(), result.stderr
+    assert not (dest / "album.jpg").exists()
+    assert (dest / "photo.jpg").read_text(encoding="utf-8") == "PHOTO\n"
 
 
 @needs_tools
