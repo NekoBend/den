@@ -45,7 +45,7 @@ if (( ! ${+functions[compdef]} )); then
         emulate -L zsh
         setopt extendedglob
         local dump=${ZDOTDIR:-$HOME}/.zcompdump d f
-        local -a listed kept
+        local -a listed kept fp
         if compaudit >/dev/null 2>&1; then
             if eval '[[ -n $dump(#qN.mh-24) ]]'; then
                 compinit -C
@@ -57,19 +57,23 @@ if (( ! ${+functions[compdef]} )); then
             # nothing. The list it prints on its own reads backslash escapes
             # in a name (a file named with \c ends the list there) and breaks
             # a name at a newline. A directory is not taken out for holding
-            # a listed directory, nor a directory's digest (X/sub.zwc serves
-            # X/sub only). compaudit names a parent ${d:h}: that is . for a
-            # relative entry such as zfunc, which $f/* does not match.
+            # a listed directory, nor for the digest of another fpath entry
+            # (X/sub.zwc, for an fpath entry X/sub, serves X/sub only). Any
+            # other X/name.zwc counts as X's own: zsh reads X/_foo.zwc for a
+            # function _foo, even beside a directory X/_foo. compaudit names a
+            # parent ${d:h}: that is . for a relative entry such as zfunc,
+            # which $f/* does not match.
             # compaudit also adds to fpath the subdirectories of $_compdir
             # (a collection with a Base) and audits them: that fpath comes
             # out first, after its length.
             listed=( ${(0)"$(local _i_check=y; compaudit 2>/dev/null
                 print -rN -- $#fpath $fpath $_i_wdirs $_i_wfiles)"} )
-            for d in ${listed[2,listed[1]+1]}; do
+            fp=( ${listed[2,listed[1]+1]} )
+            for d in $fp; do
                 for f in ${listed[listed[1]+2,-1]}; do
                     [[ $d == $f || $d == $f/* || ${d:h} == $f ||
-                       $d.zwc == $f ||
-                       ( ${f%/*} == $d && ! -d $f && ! -d ${f%.zwc} ) ]] &&
+                       $d.zwc == $f || ( ${f%/*} == $d && ! -d $f &&
+                       ${fp[(Ie)${f%.zwc}]} -eq 0 ) ]] &&
                         continue 2
                 done
                 kept+=( $d )

@@ -257,6 +257,16 @@ zc_plant_ls "$ZC/plant/_ls"
 out=$(zc_run "fpath=(~/zfunc \$fpath); zc_wfiles=(~/zfunc/_ls.zwc); . '$ZC_STUB'" "$ZC_LS")
 assert_eq "zsh/a function's digest someone else owns: the system _ls loaded" "_ls: the system one" "$out"
 
+# zsh reads ~/zfunc/_ls.zwc for _ls even when ~/zfunc/_ls is a directory, so
+# only the digest of another fpath entry keeps the directory that holds it.
+echo "[zsh] init.zsh: a function's digest someone else owns, beside a directory of that name (simulated)"
+zc_reset
+mkdir -p "$ZC/home/zfunc/_ls" "$ZC/plant"
+zc_plant_ls "$ZC/plant/_ls"
+(cd "$ZC/plant" && zsh -f -c 'zcompile ../home/zfunc/_ls.zwc _ls')
+out=$(zc_run "fpath=(~/zfunc \$fpath); zc_wfiles=(~/zfunc/_ls.zwc); . '$ZC_STUB'" "$ZC_LS")
+assert_eq "zsh/a function's digest beside a directory of that name: the system _ls loaded" "_ls: the system one" "$out"
+
 # A directory's digest (~/croot/Sub.zwc) sits in the directory above it but
 # serves only that directory. init.zsh took the one above out of fpath too,
 # as if the digest were a function of its own; where that was the directory
