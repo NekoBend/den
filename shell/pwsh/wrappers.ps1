@@ -89,12 +89,13 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
 # A fallback pipes Get-ChildItem on rather than reading a member off its result:
 # with nothing listed, that reads it off $null, an error under a caller's
 # Set-StrictMode.
-# bat expands the wildcards in its arguments itself on Windows, out of the
-# wrapper's sight, and takes the last --paging it reads: `cat *` beside files
-# named --pager=cmd and --paging=always ran cmd as bat's pager, which ran the
-# files' lines. So cat hands bat one more --paging=never after the arguments.
-# pwsh drops a -- from what it passes on, so no typed -- makes that word a file
-# name.
+# bat expands the wildcards in its arguments itself on Windows, and takes the
+# last --paging it reads: `cat *` beside files named --pager=cmd and
+# --paging=always ran cmd as bat's pager, which ran the files' lines. So on
+# Windows cat expands such a word itself (_DenBatWords, after _DenOptionFile),
+# and on every system it hands bat one more --paging=never after the
+# arguments. pwsh drops a -- from what it passes on, so no typed -- makes that
+# word a file name.
 
 New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'if ($Args.Count) { Get-Content @Args } else { $input }' '--paging=never'
 New-Wrapper 'find'    'fd'  ''                              'find' ''                '_find_ps_fallback @Args'

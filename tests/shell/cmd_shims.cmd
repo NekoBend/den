@@ -5,8 +5,10 @@ rem that cmd_fake_tool.ps1 builds: each prints its arguments as [arg] lines
 rem and exits with FAKE_RC. Checked: the wrappers run the tool found on PATH,
 rem keep its exit code and run their fallback only without it; findw runs fd
 rem whatever the toggle, and says so without it; there is no find shim, so
-rem typed find is find.exe; cat hands bat a last --paging=never and refuses a
-rem typed --; no where.* or tool in the current directory runs;
+rem typed find is find.exe; cat expands each wildcard itself, refuses a name
+rem that starts with - and names a file, and a typed --, and hands bat every
+rem name in quotes, then a last --paging=never; no where.* or tool in the
+rem current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
@@ -65,18 +67,100 @@ call :expect %errorlevel% 1 "grep: rg finds nothing, exit 1, no findstr after it
 call "%BIN%\cat.cmd" a.txt missing.txt >"%O%" 2>&1
 call :expect %errorlevel% 1 "cat: bat fails, no type after it"
 
-rem bat expands a wildcard itself (cmd does not), so a file named
-rem --paging=always could reach it as an option ahead of a --pager: bat takes
-rem the last --paging, and cat puts --paging=never after the arguments. A
-rem typed -- would make that word a file name, so cat refuses one and bat
-rem does not run.
+rem bat expands a wildcard itself, one word at a time (cmd does not), and
+rem reads a name that starts with - as an option. So cat expands each word
+rem with cmd's for and hands bat every name in quotes, which bat's expansion
+rem leaves alone, then a last --paging=never: bat takes the last --paging.
+rem With FAKE_RAW set the stand-in prints its command line in braces, which
+rem shows the quotes. A word that matches nothing goes on as it is, "" stays
+rem an argument, and cat alone or cat - leaves bat to read standard input.
 set "FAKE_RC="
->"%W%" echo [--style=plain]
+set "FAKE_RAW=1"
+>"%W%" echo {--style=plain --paging=never "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
 >>"%W%" echo [--paging=never]
->>"%W%" echo [*]
+>>"%W%" echo [a.txt]
 >>"%W%" echo [--paging=never]
 call "%BIN%\cat.cmd" * >"%O%" 2>&1
-call :expect %errorlevel% 0 "cat: a wildcard reaches bat before the last --paging=never"
+call :expect %errorlevel% 0 "cat: cmd expands the wildcard, and bat gets each name in quotes"
+>"%W%" echo {--style=plain --paging=never "a.txt" "-" "" "zz*" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [-]
+>>"%W%" echo []
+>>"%W%" echo [zz*]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" a.txt - "" zz* >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: -, an empty argument and a wildcard that matches nothing reach bat"
+>"%W%" echo {--style=plain --paging=never --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" <nul >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: no argument, bat reads standard input"
+>"%W%" echo {--style=plain --paging=never "-n" "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [-n]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" -n a.txt >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: an option that names no file reaches bat"
+
+rem Beside files named --, --pager=cmd and --paging=always, bat once
+rem expanded ???* to the pager options and then * to a -- that turned the
+rem last --paging=never into a file name. cat refuses a match that starts
+rem with - and names a file, for either word and for * alone, and bat does
+rem not run.
+mkdir "%T%\opt" || exit /b 1
+cd /d "%T%\opt" || exit /b 1
+type nul >"--"
+type nul >"--pager=cmd"
+type nul >"--paging=always"
+>"notes.txt" echo type nul
+call "%BIN%\cat.cmd" ???* * >"%O%" 2>&1
+call :refused %errorlevel% "cat: ???* * beside --, --pager=cmd and --paging=always, bat does not run"
+call "%BIN%\cat.cmd" * >"%O%" 2>&1
+call :refused %errorlevel% "cat: * beside them, bat does not run"
+
+rem The message names the file and the ways that work: .\ before the name
+rem or the wildcard, which bat reads as a file, or type.
+mkdir "%T%\opt2" || exit /b 1
+cd /d "%T%\opt2" || exit /b 1
+type nul >"-x.txt"
+>"a.txt" echo zzz
+>"%W%" echo cat: '-x.txt' names a file, and bat would read it as an option: bat did not run.
+>>"%W%" echo cat: write it as .\-x.txt (a wildcard as .\*), or run type instead.
+call "%BIN%\cat.cmd" * >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a match named -x.txt and says why"
+call "%BIN%\cat.cmd" -x.txt >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a typed -x.txt that names a file"
+>"%W%" echo {--style=plain --paging=never ".\-x.txt" ".\a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [.\-x.txt]
+>>"%W%" echo [.\a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" .\* >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: .\* hands bat .\-x.txt as a file"
+
+rem A name with characters cmd would parse reaches bat whole.
+mkdir "%T%\spec" || exit /b 1
+cd /d "%T%\spec" || exit /b 1
+type nul >"a&b!c%%d^e (1).txt"
+>"%W%" echo {--style=plain --paging=never "a&b!c%%d^e (1).txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [a^&b!c%%d^^e (1).txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" * >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: a name with special characters and a blank reaches bat whole"
+cd /d "%T%\work" || exit /b 1
+set "FAKE_RAW="
+
+rem A typed -- would make bat read the last --paging=never as a file name,
+rem so cat refuses one and bat does not run.
 >"%W%" echo cat: -- would make bat read den's last --paging=never as a file name.
 >>"%W%" echo cat: write a file whose name starts with - as .\-name instead.
 call "%BIN%\cat.cmd" a.txt -- -x.txt >"%O%" 2>&1
@@ -523,6 +607,15 @@ echo --- want:
 type "%W%"
 echo --- got:
 type "%O%"
+exit /b 0
+
+rem :refused RC LABEL - cat ran nothing: RC is 2, the output says why, and
+rem the stand-in printed nothing (its lines start with { or [).
+:refused
+set "OK="
+"%FINDSTR%" /b /l /c:"cat: '-" "%O%" >nul && if "%~1"=="2" set "OK=1"
+"%FINDSTR%" /b /l /c:"{" /c:"[" "%O%" >nul && set "OK="
+call :check "%~2"
 exit /b 0
 
 rem :check LABEL - passes when OK is defined.

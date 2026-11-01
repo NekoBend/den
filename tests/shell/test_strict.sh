@@ -386,6 +386,15 @@ Case '_DenOptionFile' {
         _DenOptionFile 'grep' 'rg' $null
     } finally { Remove-Item -LiteralPath $StrictOpt -Force }
 }
+Case '_DenBatWords' {
+    $StrictBat = Join-Path $PWD.ProviderPath 'strict-bat[1].txt'
+    [System.IO.File]::WriteAllText($StrictBat, '')
+    try {
+        _DenBatWords @('alpha', 'strict-b*', $null, @('a.txt', 'b.txt'), '/nonexistent-strict/*', 'nomatch-strict*', '-')
+        _DenBatWords @()
+        _DenBatWords $null
+    } finally { Remove-Item -LiteralPath $StrictBat -Force }
+}
 Case 'grep, a file name that reads as an option' {
     $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
     $null = New-Item -ItemType File -Path $StrictOpt -Force
@@ -421,6 +430,7 @@ Case 'Initialize-Cache, not installed' { Initialize-Cache 'nonexistent-strict' @
 
 # ===== wrappers.ps1: modern tool, native command, PowerShell fallback =====
 Case 'cat' { cat a.txt }
+Case 'cat, wildcards' { cat a* nomatch-strict* }
 Case 'cat, piped' { 'x' | cat }
 Case 'find' { find a }
 Case 'grep' { grep alpha a.txt }

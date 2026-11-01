@@ -2,7 +2,9 @@
 # place of lsd, bat, rg, fd, uv, pip and python: a console program that prints
 # each argument it was given as [arg], one per line, and exits with the code in
 # FAKE_RC (0 when unset). With FAKE_SELF set it first prints [@<folder>], the
-# name of the folder it runs from, which tells copies of it apart. As uv, it
+# name of the folder it runs from, which tells copies of it apart. With
+# FAKE_RAW set it first prints its command line as the process got it, after
+# its own name, in braces: {--style=plain "a.txt"}. As uv, it
 # answers `uv python find --system --no-config` with the path in
 # FAKE_FIND_SYSTEM (--no-managed-python) or FAKE_FIND_MANAGED
 # (--managed-python), and fails when that is unset or either flag is missing.
@@ -23,6 +25,13 @@ public static class FakeTool
             if (string.IsNullOrEmpty(found)) { return 2; }
             System.Console.WriteLine(found);
             return 0;
+        }
+        if (!string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("FAKE_RAW")))
+        {
+            string line = System.Environment.CommandLine;
+            int i = line.StartsWith("\"") ? line.IndexOf('"', 1) + 1 : line.IndexOf(' ');
+            if (i <= 0) { i = line.Length; }
+            System.Console.WriteLine("{" + line.Substring(i).Trim() + "}");
         }
         if (!string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("FAKE_SELF")))
         {

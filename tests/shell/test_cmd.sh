@@ -862,6 +862,22 @@ else
 fi
 
 # =============================================================================
+# cat (run for real by the Windows job: tests/shell/cmd_shims.cmd)
+# =============================================================================
+echo "[cmd] cat keeps CRLF line endings"
+# cat.cmd jumps to labels: with LF only, cmd can miss one that straddles a
+# 512-byte block.
+assert_eq "cmd/cat: CRLF" "$(grep -c '' "$CMD_BIN/cat.cmd")" "$(grep -c $'\r$' "$CMD_BIN/cat.cmd")"
+
+echo "[cmd] cat hands bat no argument as it was typed"
+# On Windows bat expands a wildcard itself, one word at a time, and reads a
+# file name that starts with - as an option: `cat ???* *` beside files named
+# --, --pager=cmd and --paging=always gave it the pager options and then a --.
+# cat.cmd expands each word with cmd's for and hands bat the names in quotes,
+# which bat's expansion leaves alone; only type gets the arguments as typed.
+assert_eq "cmd/cat: only type gets %*" "type %*" "$(cmd_code cat | grep -F '%*' || true)"
+
+# =============================================================================
 # Summary
 # =============================================================================
 print_summary "test_cmd"

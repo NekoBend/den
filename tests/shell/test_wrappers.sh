@@ -985,7 +985,9 @@ Test-Opt '$WORK/opt/pok' { grep -rn foo . }
 Test-Opt '$WORK/opt/pok' { find -e py }
 Test-Opt '$WORK/opt/pok' { cat data.txt }
 "
-actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+# Test-Opt <dir> <call> - run <call> in <dir>: 'refused' or 'ran', and what the
+# stand-ins logged.
+OPT_PWSH_FN="
     \$env:_DEN_WRAPPER_LOG = '0'
     function Test-Opt([string]\$Dir, [scriptblock]\$Call) {
         Set-Location -LiteralPath \$Dir
@@ -995,7 +997,8 @@ actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
         }
         \$log = if (Test-Path -LiteralPath '$OPT_LOG') { (Get-Content -LiteralPath '$OPT_LOG') -join '|' } else { 'no' }
         \"\$r; ran: \$log\"
-    }
+    }"
+actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
     $OPT_PWSH_CASES
 " < /dev/null 2>&1 | tr -d '\r')
 # One label and one expected line per Test-Opt line above, in order.
@@ -1022,6 +1025,43 @@ done
 echo "[pwsh] the message names the wildcard, the file and the ways that work"
 err=$(cd "$WORK/opt/pc" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; grep needle *")
 assert_eq "pwsh/the refusal of grep needle *" "grep: '*' stands for the file '--pre=sh', which rg would read as an option: rg did not run. Write the wildcard with a full path (\$PWD/*), or run the native grep with the wrappers off (tgl-wr)." "$err"
+
+echo "[pwsh, Windows] cat expands a wildcard for bat itself and refuses a match named like an option"
+# On Windows pwsh expands no wildcard, and bat expands each word that holds
+# * ? [ or ] itself, one word at a time: `cat ???* *` beside files named --,
+# --pager=sh and --paging=always gave bat the pager options from the first
+# word and a -- from the second, which made the last --paging=never a file
+# name. There cat refuses a match whose name starts with -, and hands bat the
+# names a word matches (a full path for a rooted word or a name that holds [
+# or ]), or the word made a full path when it matches none. An _OnWindows
+# that says true stands in for Windows; the stand-in bat logs what it got.
+opt_tree w4 -- --pager=sh --paging=always notes.txt || abort_suite "cannot make the tree for the Windows cases"
+opt_tree wok 'b[1].txt' || abort_suite "cannot make the tree for the Windows cases"
+actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
+    function global:_OnWindows { \$true }
+    Test-Opt '$WORK/opt/w4' { cat ???* * }
+    Test-Opt '$WORK/opt/w4' { cat * }
+    Test-Opt '$WORK/opt/w4' { cat \$PWD/--pagi* }
+    Test-Opt '$WORK/opt/wok' { cat da* }
+    Test-Opt '$WORK/opt/wok' { cat b* }
+    Test-Opt '$WORK/opt/wok' { cat no*match }
+    Test-Opt '$WORK/opt/wok' { cat data.txt - }
+" < /dev/null 2>&1 | tr -d '\r')
+OPT_WIN_WANT=(
+    "cat ???* * beside --, --pager=sh, --paging=always: bat does not run|refused; ran: no"
+    "cat * beside them: bat does not run|refused; ran: no"
+    "a full path (\$PWD/--pagi*) gets the full path of the match|ran; ran: bat --style=plain --paging=never $WORK/opt/w4/--paging=always --paging=never"
+    "da* gets the name it matches|ran; ran: bat --style=plain --paging=never data.txt --paging=never"
+    "b* gets the full path of b[1].txt|ran; ran: bat --style=plain --paging=never $WORK/opt/wok/b[1].txt --paging=never"
+    "a wildcard that matches nothing goes on as a full path|ran; ran: bat --style=plain --paging=never $WORK/opt/wok/no*match --paging=never"
+    "data.txt and - go on as they are|ran; ran: bat --style=plain --paging=never data.txt - --paging=never"
+)
+mapfile -t _got <<< "$actual"
+assert_eq "pwsh, Windows/one line per case" "${#OPT_WIN_WANT[@]}" "${#_got[@]}"
+for _i in "${!OPT_WIN_WANT[@]}"; do
+    _w=${OPT_WIN_WANT[$_i]}
+    assert_eq "pwsh, Windows/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
+done
 unset _sh _run _call _tool _names _i _c _d _w _got
 
 # =============================================================================
