@@ -2023,6 +2023,22 @@ actual=$($ROUTE_TIMEOUT pwsh -NoProfile -NonInteractive -Command "
 " 2>&1 | tr -d '\r') || true
 assert_eq "pwsh/vv leaves the process's directory alone for another runspace" "runs=[100] moved=[False]" "$actual"
 
+# /proc/self names the process that reads it. A clone's link to
+# /proc/self/cwd leads uv (started in the session's location) back into the
+# clone, while this process, whose directory is elsewhere, would read its own:
+# vv takes --no-config there, as for a marker.
+if [ -d /proc/self ]; then
+    echo "[pwsh] vv --directory through a clone's link to /proc/self/cwd takes uv --no-config venv"
+    mkdir -p "$R/procrel"
+    printf '3.13\n' > "$R/procrel/.python-version"
+    ln -sfn /proc/self/cwd "$R/procrel/work"
+    actual=$(route_pwsh "$R/procrel" "
+        [System.IO.Directory]::SetCurrentDirectory('$NOPROJ')
+        vv --directory work")
+    assert_eq "pwsh/vv --directory through a link to /proc/self/cwd runs uv --no-config venv" "WARNING: vv: uv --no-config venv, as /proc/self is on the way there, which uv reads for its own process ($VV_NONE_THERE)
+mock-uv --no-config venv --directory work" "$actual"
+fi
+
 # PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
 # PowerShell's location, and so its LocationChangedAction, and the process's
 # current directory stay as they were.

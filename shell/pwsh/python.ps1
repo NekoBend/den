@@ -542,6 +542,7 @@ function global:_DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
     # name. Where a name is no directory, uv cannot enter it either, and stops
     # before it reads anything. GetFullPath takes a relative --project from
     # there, normalized by name, as uv does.
+    $procrel = $null
     try {
       $base = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
       if ((_OnWindows) -or -not [System.IO.FileSystemInfo].GetProperty('LinkTarget')) {
@@ -557,7 +558,7 @@ function global:_DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
       }
       else {
         $here = '/'
-        foreach ($path in $base, "$dir") {
+        :paths foreach ($path in $base, "$dir") {
           if ($path.StartsWith('/', [System.StringComparison]::Ordinal)) { $here = '/' }
           $parts = [System.Collections.Generic.List[string]]::new([string[]]$path.Split('/'))
           $links = 0
@@ -570,6 +571,12 @@ function global:_DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
               continue
             }
             $next = $here.TrimEnd('/') + '/' + $part
+            # /proc/self names the process that reads it: here this one, for
+            # uv uv itself, which starts in this location and not in this
+            # process's directory. A way through it (a clone's link to
+            # /proc/self/cwd) leads uv elsewhere than this walk, so vv takes
+            # --no-config, as for a marker.
+            if ($next -cmatch '^/proc/(self|thread-self)$') { $procrel = $next; break paths }
             $target = [System.IO.FileInfo]::new($next).LinkTarget
             if ($target) {
               if (++$links -gt 40) { return }
@@ -597,9 +604,15 @@ function global:_DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
       }
     }
     catch { return }
-    $at = "in or above $start"
     $there = 'there or above'
-    $marker = _DenPyMarker $start $here
+    if ($procrel) {
+      $marker = $procrel
+      $at = 'on the way there, which uv reads for its own process'
+    }
+    else {
+      $at = "in or above $start"
+      $marker = _DenPyMarker $start $here
+    }
   }
   if (-not $marker) { return }
   $cfg = _DenUvConfig
