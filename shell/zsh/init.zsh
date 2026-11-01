@@ -23,9 +23,11 @@
 # others may write to it (they could put a digest there). A completion
 # function from any of these would run as you at the next Tab. When compaudit
 # fails, the fpath directories it lists come out of fpath, and so do those
-# that hold a file it lists, lie below a directory it lists or have their
-# digest listed; then the full compinit runs with -i, which on its own would
-# leave out only the first kind, and asks nothing. Plain compinit asks whether
+# that hold a function file or a function's digest it lists, lie below a
+# directory it lists or have their digest listed; then the full compinit runs
+# with -i, which on its own would leave out only the first kind, and asks
+# nothing. compinit is loaded only after that, never from a directory taken
+# out (preloading it would undo that). Plain compinit asks whether
 # to use them, and with no terminal to answer (zsh -i -c, as an editor's
 # environment probe runs it) gives up and writes no dump, so it asks again at
 # every start; -u would use them unchecked. -C skips the audit and keeps fpath
@@ -52,14 +54,16 @@ if (( ! ${+functions[compdef]} )); then
             # nothing. The list it prints on its own reads backslash escapes
             # in a name (a file named with \c ends the list there) and breaks
             # a name at a newline. A directory is not taken out for holding
-            # a listed directory. compaudit names a parent ${d:h}: that is .
-            # for a relative entry such as zfunc, which $f/* does not match.
+            # a listed directory, nor a directory's digest (X/sub.zwc serves
+            # X/sub only). compaudit names a parent ${d:h}: that is . for a
+            # relative entry such as zfunc, which $f/* does not match.
             listed=( ${(0)"$(local _i_check=y; compaudit 2>/dev/null
                 print -rN -- $_i_wdirs $_i_wfiles)"} )
             for d in $fpath; do
                 for f in $listed; do
                     [[ $d == $f || $d == $f/* || ${d:h} == $f ||
-                       $d.zwc == $f || ( ${f%/*} == $d && ! -d $f ) ]] &&
+                       $d.zwc == $f ||
+                       ( ${f%/*} == $d && ! -d $f && ! -d ${f%.zwc} ) ]] &&
                         continue 2
                 done
                 kept+=( $d )

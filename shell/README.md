@@ -57,19 +57,19 @@ shell picks new completion functions up at once.
 Completion functions others may have written are skipped, as `compaudit`
 judges it: those in an `fpath` directory others may write to (group- or
 world-writable, or owned by a user other than you and root), in one that
-holds a file someone else owns, and in one below a directory others may
-write to or whose digest (`<dir>.zwc`, which zsh reads in place of the
-directory) someone else owns. Anyone who can write there could put a
-function that runs as you at your next Tab. den takes such directories out
-of `fpath` and runs `compinit -i`, which asks nothing, so `zsh -i -c` with no
-terminal to answer still gets completion and a dump. `-C` would skip the
-audit and keep them in `fpath`, so while one is there every shell runs the
-full `compinit -i`, about 11 ms more per start than the audit and `-C`.
-`compaudit` lists what it flags; once that is yours or root's and not
-writable by group or others, its functions are used again. A relative
-`fpath` entry (`zfunc`, not `~/zfunc`) is looked up in whatever directory
-you are in when a Tab first needs a function from it, so den cannot make it
-safe and does not support it.
+holds a completion file or a function's digest someone else owns, and in one
+below a directory others may write to or whose digest (`<dir>.zwc`, which
+zsh reads in place of the directory) someone else owns. Anyone who can write
+there could put a function that runs as you at your next Tab. den takes such
+directories out of `fpath` and runs `compinit -i`, which asks nothing, so
+`zsh -i -c` with no terminal to answer still gets completion and a dump.
+`-C` would skip the audit and keep them in `fpath`, so while one is there
+every shell runs the full `compinit -i`, about 11 ms more per start than the
+audit and `-C`. `compaudit` lists what it flags; once that is yours or
+root's and not writable by group or others, its functions are used again. A
+relative `fpath` entry (`zfunc`, not `~/zfunc`) is looked up in whatever
+directory you are in when a Tab first needs a function from it, so den
+cannot make it safe and does not support it.
 
 ## The wrapper system
 

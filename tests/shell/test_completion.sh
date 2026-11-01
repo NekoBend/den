@@ -247,6 +247,36 @@ zc_plant_ls "$ZC/plant/_ls"
 out=$(zc_run "fpath=(~/zd \$fpath); zc_wdirs=(~/zd.zwc); . '$ZC_STUB'" "$ZC_LS")
 assert_eq "zsh/a digest someone else owns: the system _ls loaded" "_ls: the system one" "$out"
 
+# A function's own digest (~/zfunc/_ls.zwc) is read in place of ~/zfunc/_ls,
+# so one someone else owns still takes its directory out of fpath.
+echo "[zsh] init.zsh: a function's digest someone else owns (simulated)"
+zc_reset
+mkdir -p "$ZC/home/zfunc" "$ZC/plant"
+zc_plant_ls "$ZC/plant/_ls"
+(cd "$ZC/plant" && zsh -f -c 'zcompile ../home/zfunc/_ls.zwc _ls')
+out=$(zc_run "fpath=(~/zfunc \$fpath); zc_wfiles=(~/zfunc/_ls.zwc); . '$ZC_STUB'" "$ZC_LS")
+assert_eq "zsh/a function's digest someone else owns: the system _ls loaded" "_ls: the system one" "$out"
+
+# A directory's digest (~/croot/Sub.zwc) sits in the directory above it but
+# serves only that directory. init.zsh took the one above out of fpath too,
+# as if the digest were a function of its own; where that was the directory
+# that holds compinit (Ubuntu ships Unix.zwc and the rest next to it), the
+# next compinit was "function definition file not found": no completion and
+# no dump, at every start. This case copies compinit and its helpers to
+# ~/croot, in place of the system's directory.
+echo "[zsh] init.zsh: a subdirectory's digest someone else owns (simulated), next to compinit"
+zc_reset
+zc_root=$(zsh -f -c 'print -r -- ${^fpath}/compinit(N[1]:h)')
+mkdir -p "$ZC/home/croot/Sub"
+cp "$zc_root/compinit" "$zc_root/compaudit" "$zc_root/compdump" "$zc_root/compinstall" "$ZC/home/croot/"
+printf '#compdef zctool\nprint -r -- trusted\n' > "$ZC/home/croot/Sub/_zctool"
+(cd "$ZC/home/croot/Sub" && zsh -f -c 'zcompile ../Sub.zwc _zctool')
+out=$(zc_run "zc_roots=( \${^fpath}/compinit(N:h) ); fpath=(~/croot ~/croot/Sub \${fpath:|zc_roots})
+    zc_wdirs=(~/croot/Sub.zwc); . '$ZC_STUB'" "$ZC_COMPS")
+assert_eq "zsh/a subdirectory's digest someone else owns, next to compinit: completion set up without its functions, nothing printed" "compdef-ok
+zctool=none" "$out"
+assert_exists "zsh/a subdirectory's digest someone else owns, next to compinit: the dump written" "$ZC/home/.zcompdump"
+
 # reload starts zsh again: deleting the dump too makes that shell's compinit
 # look for new completion functions at once. It must do so with no init cache
 # to delete as well (zoxide and starship not installed): zsh then printed "no
