@@ -437,13 +437,15 @@ for sh in bash zsh; do
     # output: `ptar backup.tgz dir && prm -f dir` deleted unarchived data.
     setup_fixtures
     echo "PRECIOUS" > "$WORK/keep.tgz"
-    for _out in out.tar.xz out.tgz out.tbz2 keep.tgz; do
+    echo "PRECIOUS" > "$WORK/keep.tar"
+    for _out in out.tar.xz out.tgz out.tbz2 keep.tgz keep.tar; do
         $runner "$PARALLEL_SH" "cd '$WORK' && ptar '$WORK/$_out' src missing-src" >/dev/null 2>&1
         assert_failure "$sh/ptar $_out with a missing source fails" "$?"
     done
     assert_not_exists "$sh/ptar failed .tar.xz leaves no archive" "$WORK/out.tar.xz"
     assert_not_exists "$sh/ptar failed .tgz leaves no archive" "$WORK/out.tgz"
     assert_eq "$sh/ptar failed run keeps an existing output" "PRECIOUS" "$(cat "$WORK/keep.tgz")"
+    assert_eq "$sh/ptar failed .tar run keeps an existing output" "PRECIOUS" "$(cat "$WORK/keep.tar")"
     assert_eq "$sh/ptar failed run leaves no staging directory" "" "$(ls -A "$WORK" | grep '^\.ptar\.' | tr -d '\n')"
     $runner "$PARALLEL_SH" "cd '$WORK' && ptar '$WORK/keep.tgz' src" >/dev/null 2>&1
     assert_success "$sh/ptar .tgz over an existing output exit code" "$?"

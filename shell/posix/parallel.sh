@@ -430,7 +430,10 @@ ptar() {
             ;;
         *.tar)
             echo "+ ptar: archiving → $out (no compression)"
-            tar -cf "$out" -- "$@"
+            # Staged as the compressed forms are, cat in place of a compressor:
+            # tar -cf "$out" truncated the old archive before a missing source
+            # failed the run.
+            _ptar_pipe "$out" cat - "$@"
             ;;
         *)
             echo "ptar: unsupported format '$out'" >&2
