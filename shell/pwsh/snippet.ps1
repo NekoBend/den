@@ -4,7 +4,12 @@
 # snippet saved from bash is usable from pwsh on the same machine, as far as its
 # syntax is (save quotes words in the saving shell's syntax). run/pick
 # Invoke-Expression the command in the CURRENT session (you saved it, so it is
-# trusted). Defining these functions has no side effects, so (like cheat.ps1) it is
+# trusted), from inside a function (_DenReplay, _helpers.ps1). Unlike bash/zsh's
+# eval, which sets the shell's own variables, that keeps a cd and $env: changes
+# but not a variable, function or alias the command makes ($x = 1,
+# function f {...}, Set-Alias) unless it is made global ($global:x,
+# function global:f, -Scope Global), as shell/README.md tells users.
+# Defining these functions has no side effects, so (like cheat.ps1) it is
 # not gated on an interactive session. The store is written by _DenWritePrivate
 # (_helpers.ps1, which init.ps1 loads first): 0600 in a 0700 directory off
 # Windows, and through a symlink, as snippet.sh does.
@@ -39,12 +44,67 @@ function _SnippetName([string]$Line) {
     if ($i -lt 0) { $Line } else { $Line.Substring(0, $i) }
 }
 
+# _SnippetGet <name> - the command saved under <name>, or $null. Names compare
+# exactly, case included, here and in save and rm, as in bash/zsh: they can
+# save two names that differ only in case. A line with no tab, which only a
+# hand edit makes, holds no snippet.
 function _SnippetGet([string]$Name) {
     foreach ($line in _SnippetLines) {
         $i = $line.IndexOf("`t")
-        if ($i -ge 0 -and $line.Substring(0, $i) -eq $Name) { return $line.Substring($i + 1) }
+        if ($i -lt 0) { continue }
+        if ($line.Substring(0, $i) -ceq $Name) { return $line.Substring($i + 1) }
     }
     return $null
+}
+
+# _SnippetPick - fzf-pick one of the saved "name<TAB>command" lines, and output
+# the command the store holds under the name on it. It outputs nothing when no
+# line is picked, and nothing but a message on stderr when fzf or the snippets
+# are missing or that name is no longer in the store. The command fzf prints
+# back is not run, as it can come back changed: Windows PowerShell 5.1 pipes
+# text into a program as ASCII ($OutputEncoding), so each character outside
+# ASCII went into fzf, and came back, as ?, which Remove-Item and the other
+# commands that take wildcards read as any one character; and on Windows both
+# editions read what fzf prints in the console's code page (932 on Japanese
+# Windows). A name is [A-Za-z0-9_-], which every encoding keeps. Both encodings
+# are UTF-8 for the call, as in cdf (functions.ps1): fzf reads the list, and
+# PowerShell its pick, as UTF-8. The $OutputEncoding set here ends with this
+# function, as do its other variables, before snippet runs the command (see
+# snippet); the console's encoding is put back. Only the lines that hold a
+# snippet (see _SnippetGet) go to fzf, and the line picked is the last one fzf
+# prints: FZF_DEFAULT_OPTS can add lines before it, the query (--print-query)
+# or the key pressed (--expect), and with no line picked they are all fzf
+# prints. A query can be another snippet's name, so a line with no tab picks
+# nothing.
+function _SnippetPick {
+    if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
+        [Console]::Error.WriteLine("snippet pick: fzf not found; use 'snippet run <name>'"); return
+    }
+    $lines = @(_SnippetLines | Where-Object { $_.Contains("`t") })
+    if (-not $lines.Count) {
+        [Console]::Error.WriteLine('snippet: no snippets (use: snippet save <name> <command...>)'); return
+    }
+    $consoleEncoding = [Console]::OutputEncoding
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    try {
+        [Console]::OutputEncoding = $OutputEncoding
+        $sel = @($lines | fzf --no-multi --prompt 'snippet> ')
+        $fzfExit = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $consoleEncoding
+    }
+    # fzf exits 1 when nothing matched and 130 when aborted; what it printed
+    # then is a query (--print-query), never a row, even one holding a tab.
+    if ($fzfExit -ne 0 -or -not $sel.Count) { return }
+    $picked = [string]$sel[-1]
+    $i = $picked.IndexOf("`t")
+    if ($i -lt 0) { return }
+    $name = $picked.Substring(0, $i)
+    $c = _SnippetGet $name
+    if ($null -eq $c) {
+        [Console]::Error.WriteLine("snippet pick: no such snippet '$name' (snippet ls)"); return
+    }
+    $c
 }
 
 # _SnippetQuote <word> [-First] - one word of `snippet save <name> <word...>` as
@@ -72,10 +132,12 @@ function _SnippetQuote($Word, [switch]$First) {
 }
 
 # Echo the command (so you see what runs) then Invoke-Expression it in this session,
-# as typed when snippet itself was (<Typed>; see _DenTyped).
-function _SnippetExec([string]$Cmd, [bool]$Typed) {
-    [Console]::Error.WriteLine("+ $Cmd")
-    _DenReplay $Cmd $Typed
+# as typed when snippet itself was (<typed>; see _DenTyped). The command reads
+# variables through this function's scope, so its parameters have names no
+# session uses (see snippet).
+function _SnippetExec([string]$__cmd, [bool]$__typed) {
+    [Console]::Error.WriteLine("+ $__cmd")
+    _DenReplay $__cmd $__typed
 }
 
 function _SnippetUsage {
@@ -93,44 +155,53 @@ function _SnippetUsage {
 }
 
 # snippet - save / list / run named command snippets (alias: snip). Messages go to
-# stderr; data (ls/show) goes to stdout, matching the posix version.
+# stderr; data (ls/show) goes to stdout, matching the posix version. run and pick
+# replay the command from inside this function, through _SnippetExec and
+# _DenReplay, and the command looks a variable up in their scopes and this one
+# before the session's: a variable of theirs would hide the session's of that
+# name, so a saved `Remove-Item -LiteralPath $name` would read the name pick
+# chose. So pick looks the command up in _SnippetPick, whose variables end
+# before it runs, and the variables the three functions hold when it runs are
+# named $__x, which no session uses (PowerShell's own, such as the switch's $_
+# and $Matches, aside).
 function snippet {
-    $stdin = @($input)
-    $sub = if ($args.Count) { [string]$args[0] } else { 'pick' }
+    $__stdin = @($input)
+    $__sub = if ($args.Count) { [string]$args[0] } else { 'pick' }
     # @() at assignment: an if-block that outputs a 1-element array unrolls it to a
-    # scalar string, and then $rest[0] would index the STRING (first char).
-    $rest = @($args | Select-Object -Skip 1)
-    switch -Regex ($sub) {
+    # scalar string, and then $__rest[0] would index the STRING (first char).
+    $__rest = @($args | Select-Object -Skip 1)
+    switch -Regex ($__sub) {
         '^save$' {
-            if ($rest.Count -eq 0) {
+            if ($__rest.Count -eq 0) {
                 [Console]::Error.WriteLine("usage: snippet save <name> '<command>' | <word...>"); return
             }
-            $name = [string]$rest[0]
+            $name = [string]$__rest[0]
             if ($name -notmatch '^[A-Za-z0-9_-]+$') {
                 [Console]::Error.WriteLine('snippet save: name must match [A-Za-z0-9_-]'); return
             }
-            $cmd = if ($rest.Count -ge 3) {
+            $cmd = if ($__rest.Count -ge 3) {
                 # Several words: each quoted again where it needs it (_SnippetQuote).
                 # A $var or $(...) the user left unquoted was expanded before
                 # snippet ran.
-                @(for ($i = 1; $i -lt $rest.Count; $i++) { _SnippetQuote $rest[$i] -First:($i -eq 1) }) -join ' '
-            } elseif ($rest.Count -eq 2) {
+                @(for ($i = 1; $i -lt $__rest.Count; $i++) { _SnippetQuote $__rest[$i] -First:($i -eq 1) }) -join ' '
+            } elseif ($__rest.Count -eq 2) {
                 # One argument: the whole command, saved as typed.
-                [string]$rest[1]
+                [string]$__rest[1]
             } else {
                 # From stdin: take the FIRST line only, like posix `read -r` (no Trim).
-                (($stdin -join "`n") -split "`r?`n")[0]
+                (($__stdin -join "`n") -split "`r?`n")[0]
             }
             if (-not $cmd) { [Console]::Error.WriteLine('snippet save: empty command'); return }
             if ($cmd -match "`n") {
                 [Console]::Error.WriteLine('snippet save: command must be a single line'); return
             }
-            $lines = @(_SnippetLines | Where-Object { (_SnippetName $_) -ne $name })
+            # Replaces the snippet of exactly this name (see _SnippetGet).
+            $lines = @(_SnippetLines | Where-Object { (_SnippetName $_) -cne $name })
             $lines += "$name`t$cmd"
             _SnippetWrite $lines
             # The several-words form prints the line it saved, with the quotes
             # it put back; the others saved what the user gave.
-            if ($rest.Count -ge 3) {
+            if ($__rest.Count -ge 3) {
                 [Console]::Error.WriteLine("snippet: saved '$name' -> $cmd")
             } else {
                 [Console]::Error.WriteLine("snippet: saved '$name'")
@@ -144,16 +215,16 @@ function snippet {
             $lines
         }
         '^(show|cat)$' {
-            if (-not $rest.Count) { [Console]::Error.WriteLine('usage: snippet show <name>'); return }
-            $c = _SnippetGet ([string]$rest[0])
-            if ($null -eq $c) { [Console]::Error.WriteLine("snippet show: no such snippet '$($rest[0])'"); return }
+            if (-not $__rest.Count) { [Console]::Error.WriteLine('usage: snippet show <name>'); return }
+            $c = _SnippetGet ([string]$__rest[0])
+            if ($null -eq $c) { [Console]::Error.WriteLine("snippet show: no such snippet '$($__rest[0])'"); return }
             $c
         }
         '^(rm|remove)$' {
-            if (-not $rest.Count) { [Console]::Error.WriteLine('usage: snippet rm <name>'); return }
-            $name = [string]$rest[0]
+            if (-not $__rest.Count) { [Console]::Error.WriteLine('usage: snippet rm <name>'); return }
+            $name = [string]$__rest[0]
             $lines = @(_SnippetLines)
-            $kept = @($lines | Where-Object { (_SnippetName $_) -ne $name })
+            $kept = @($lines | Where-Object { (_SnippetName $_) -cne $name })
             if ($kept.Count -eq $lines.Count) {
                 [Console]::Error.WriteLine("snippet rm: no such snippet '$name'"); return
             }
@@ -161,29 +232,20 @@ function snippet {
             [Console]::Error.WriteLine("snippet: removed '$name'")
         }
         '^(run|exec)$' {
-            if (-not $rest.Count) { [Console]::Error.WriteLine('usage: snippet run <name>'); return }
-            $c = _SnippetGet ([string]$rest[0])
-            if ($null -eq $c) {
-                [Console]::Error.WriteLine("snippet run: no such snippet '$($rest[0])' (snippet ls)"); return
+            if (-not $__rest.Count) { [Console]::Error.WriteLine('usage: snippet run <name>'); return }
+            $__c = _SnippetGet ([string]$__rest[0])
+            if ($null -eq $__c) {
+                [Console]::Error.WriteLine("snippet run: no such snippet '$($__rest[0])' (snippet ls)"); return
             }
-            _SnippetExec $c (_DenTyped $MyInvocation.CommandOrigin)
+            _SnippetExec $__c (_DenTyped $MyInvocation.CommandOrigin)
         }
         '^pick$' {
-            if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
-                [Console]::Error.WriteLine("snippet pick: fzf not found; use 'snippet run <name>'"); return
-            }
-            $lines = @(_SnippetLines)
-            if (-not $lines.Count) {
-                [Console]::Error.WriteLine('snippet: no snippets (use: snippet save <name> <command...>)'); return
-            }
-            $sel = $lines | fzf --no-multi --prompt 'snippet> '
-            if (-not $sel) { return }
-            $i = $sel.IndexOf("`t")
-            if ($i -ge 0) { _SnippetExec $sel.Substring($i + 1) (_DenTyped $MyInvocation.CommandOrigin) }
+            $__c = _SnippetPick
+            if ($null -ne $__c) { _SnippetExec $__c (_DenTyped $MyInvocation.CommandOrigin) }
         }
         '^(-h|--help|help)$' { _SnippetUsage }
         default {
-            [Console]::Error.WriteLine("snippet: unknown command '$sub'")
+            [Console]::Error.WriteLine("snippet: unknown command '$__sub'")
             _SnippetUsage
         }
     }

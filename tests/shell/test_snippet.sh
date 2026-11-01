@@ -538,6 +538,57 @@ flag=True rest=z" "$actual"
     fi
     reset_store
 
+    # A write that fails, as on a full disk or past a quota. ulimit -f caps the
+    # size of the files pwsh writes (in bash's 1024-byte blocks), and with
+    # SIGXFSZ ignored a write past the cap fails instead of ending pwsh. .NET
+    # cannot start under a cap with its code heap mapped twice through a file
+    # (its write-xor-execute default), so DOTNET_EnableWriteXorExecute=0 turns
+    # that off. Under a cap of 1 a store holding PS_PAD fits and one holding
+    # PS_LONG as well does not; a cap of 0 fails every write. save and rm wrote
+    # the store in place, which left it cut short or empty.
+    PS_PAD=$(printf '%0480d' 0)
+    PS_LONG=$(printf '%0600d' 0)
+
+    # pwsh_capped <label> <cap> <store text> <command> - put the store text in
+    # place (through the symlink when the store is one), run the snippet
+    # command under the cap, and check that it ended with "cannot write ...;
+    # it is left as it was", left the store as it was, and took its temporary
+    # file with it.
+    pwsh_capped() {
+        local label=$1 cap=$2 store=$3 cmd=$4 actual
+        printf '%s' "$store" > "$SNIPPET_FILE" && cp "$SNIPPET_FILE" "$WORK/store.before" ||
+            abort_suite "cannot write $SNIPPET_FILE"
+        actual=$( (trap '' XFSZ; ulimit -f "$cap"; DOTNET_EnableWriteXorExecute=0 run_pwsh "$SNIPPET_PS1" \
+            "try { $cmd; 'returned' } catch { 'error: ' + \$_.Exception.Message }") 2>"$WORK/capped.err" | tr -d '\r')
+        assert_contains "pwsh/snippet $label: error" "error: cannot write $SNIPPET_FILE; it is left as it was. " "$actual"
+        assert_eq "pwsh/snippet $label: no saved or removed message" "" "$(tr -d '\r' < "$WORK/capped.err")"
+        assert_eq "pwsh/snippet $label: store kept" "same" "$(cmp -s "$SNIPPET_FILE" "$WORK/store.before" && echo same || wc -c < "$SNIPPET_FILE")"
+        assert_eq "pwsh/snippet $label: no temporary file left" "" "$(ls -A "$SNIPPET_DIR" | grep -v '^snippets$')"
+    }
+
+    echo "[pwsh] save and rm leave the store as it was when a write fails"
+    mkdir -p "$SNIPPET_DIR"
+    pwsh_capped "save, a new store past the cap" 1 "a${TAB}echo $PS_PAD
+last${TAB}echo old
+" "snippet save last 'echo $PS_LONG'"
+    pwsh_capped "save, every write fails" 0 "a${TAB}echo a
+last${TAB}echo old
+" "snippet save last 'echo new'"
+    pwsh_capped "rm, a new store past the cap" 1 "a${TAB}echo $PS_PAD
+b${TAB}echo b
+c${TAB}echo $PS_LONG
+" "snippet rm b"
+    pwsh_capped "rm, every write fails" 0 "a${TAB}echo a
+b${TAB}echo b
+" "snippet rm a"
+    link_store snippets
+    pwsh_capped "save through a symlink, every write fails" 0 "a${TAB}echo a
+" "snippet save b 'echo b'"
+    assert_eq "pwsh/snippet save through a symlink, every write fails: link kept" "link" \
+        "$([ -L "$SNIPPET_FILE" ] && echo link || echo replaced)"
+    rm -f "$SNIPPET_FILE"
+    reset_store
+
     reset_store
     echo "[pwsh] unknown command fails with usage"
     actual=$(run_pwsh "$SNIPPET_PS1" "snippet frobnicate" 2>&1 | tr -d '\r')
@@ -560,6 +611,243 @@ flag=True rest=z" "$actual"
     " 2>/dev/null | tr -d '\r')
     assert_eq "pwsh/snippet run typed, then from a script" "STUB-GIT log --oneline --graph
 script: PathInfo" "$actual"
+
+    # snippet pick runs the command saved under the name it picked, not the
+    # line fzf prints back. Windows PowerShell 5.1 pipes text into a program as
+    # ASCII ($OutputEncoding), so each character outside ASCII reached fzf as ?,
+    # and Remove-Item '資料' came back as Remove-Item '??', a wildcard that
+    # removed ab too. pwsh 7 pipes UTF-8, but on Windows it reads what fzf
+    # prints in the console's code page (932 on Japanese Windows), and the
+    # command came back garbled. Each case starts with ab and 資料 and prints
+    # whether each is still there; the encodings must be the same after pick.
+    # The stub fzf logs the lines it reads and prints the first, or FZF_PRINT.
+    PICK_BIN="$WORK/pick-bin"
+    mkdir -p "$PICK_BIN"
+    cat > "$PICK_BIN/fzf" <<'STUB'
+#!/bin/sh
+n=0
+while IFS= read -r l || [ -n "$l" ]; do
+    printf '%s\n' "$l" >> "$FZF_LOG"
+    n=$((n + 1))
+    [ "$n" -eq 1 ] && f=$l
+done
+[ "$n" -gt 0 ] && printf '%s\n' "${FZF_PRINT:-$f}"
+exit "${FZF_EXIT:-0}"
+STUB
+    chmod +x "$PICK_BIN/fzf"
+    export FZF_LOG="$WORK/fzf.log"
+
+    reset_store
+    echo "[pwsh] pick runs 資料's snippet under an ASCII \$OutputEncoding and a 932 console, and leaves both"
+    rm -rf "${SQ:?}" "$FZF_LOG"
+    mkdir -p "$SQ"
+    actual=$(cd "$SQ" && PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" "
+        function left { (Test-Path -LiteralPath ab).ToString() + ' ' + (Test-Path -LiteralPath '資料') }
+        snippet save del \"Remove-Item '資料'\"
+        \$null = New-Item -ItemType File ab, '資料'
+        \$OutputEncoding = [Text.Encoding]::ASCII
+        snippet pick
+        'pipe ASCII: ' + (left) + ' ' + \$OutputEncoding.WebName
+        \$OutputEncoding = [Text.UTF8Encoding]::new(\$false)
+        [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance)
+        \$null = New-Item -ItemType File -Force ab, '資料'
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(932)
+        snippet pick
+        'console 932: ' + (left) + ' ' + [Console]::OutputEncoding.CodePage
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet pick: 資料's snippet ran, and only it" "pipe ASCII: True False us-ascii
+console 932: True False 932" "$actual"
+    assert_eq "pwsh/snippet pick: fzf read the list as saved" "del${TAB}Remove-Item '資料'
+del${TAB}Remove-Item '資料'" "$(cat "$FZF_LOG" 2>&1)"
+    # save takes no such name, but the store is a file, which bash, zsh and an
+    # editor share: a name too comes back from fzf as it was saved.
+    reset_store
+    printf '資料\tWrite-Output picked\n' > "$SNIPPET_FILE"
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" "
+        [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance)
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(932)
+        snippet pick
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet pick: a name fzf prints reads as UTF-8 under a 932 console" "picked" "$actual"
+
+    # The command comes from the store even when fzf prints something else, and
+    # by the exact name: bash/zsh tell Pk from pk. It runs with the session's
+    # $OutputEncoding, not pick's. A name no longer in the store runs nothing.
+    reset_store
+    echo "[pwsh] pick takes only the name from fzf's line, matched exactly, and runs it with the session's \$OutputEncoding"
+    printf 'Pk\tWrite-Output upper\npk\tWrite-Output lower\n' > "$SNIPPET_FILE"
+    cat > "$TESTTMP/pick_name.ps1" <<'PS1'
+$OutputEncoding = [Text.Encoding]::ASCII
+snippet save show-it "Write-Output 'from the store'"
+snippet save enc '$OutputEncoding.WebName'
+$env:FZF_PRINT = "show-it`tWrite-Output 'from fzf'"
+snippet pick
+$env:FZF_PRINT = "pk`tWrite-Output lower"
+snippet pick
+$env:FZF_PRINT = "enc`tWrite-Output 'from fzf'"
+snippet pick
+$env:FZF_PRINT = "gone`tWrite-Output 'from fzf'"
+snippet pick
+PS1
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_name.ps1'" 2>"$WORK/pick.err" | tr -d '\r')
+    assert_eq "pwsh/snippet pick: by name, exactly" "from the store
+lower
+us-ascii" "$actual"
+    assert_eq "pwsh/snippet pick: by name, messages" "snippet: saved 'show-it'
+snippet: saved 'enc'
++ Write-Output 'from the store'
++ Write-Output lower
++ \$OutputEncoding.WebName
+snippet pick: no such snippet 'gone' (snippet ls)" "$(tr -d '\r' < "$WORK/pick.err")"
+
+    # A replayed line looks a variable up in the scopes of snippet,
+    # _SnippetExec and _DenReplay before the session's, so a variable of
+    # theirs hid the session's of that name: a picked line read the picked
+    # name as $name. Each name below was one of theirs. A line that set $outer
+    # also set the replay depth _DenReplay puts back.
+    reset_store
+    echo "[pwsh] run and pick: the line reads the session's \$name and the others, not snippet's"
+    cat > "$TESTTMP/pick_scope.ps1" <<'PS1'
+$name = 'my-name'; $c = 'my-c'; $lines = 'my-lines'; $sel = 'my-sel'; $i = 'my-i'; $rest = 'my-rest'
+$sub = 'my-sub'; $stdin = 'my-stdin'; $cmd = 'my-cmd'; $typed = 'my-typed'; $line = 'my-line'; $outer = 'my-outer'
+snippet save probe '"$name $c $lines $sel $i $rest $sub $stdin $cmd $typed $line $outer"'
+snippet run probe
+$env:FZF_PRINT = "probe`tWrite-Output 'from fzf'"
+snippet pick
+snippet save depth '$outer = 7'
+snippet run depth
+"replay depth after: $global:_DenReplayDepth"
+PS1
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_scope.ps1'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet run and pick: the session's variables" "my-name my-c my-lines my-sel my-i my-rest my-sub my-stdin my-cmd my-typed my-line my-outer
+my-name my-c my-lines my-sel my-i my-rest my-sub my-stdin my-cmd my-typed my-line my-outer
+replay depth after: 0" "$actual"
+
+    # Names compare exactly, as in bash/zsh, which save Pk and pk as two
+    # snippets: run and show read the one named, save replaces it and rm
+    # removes it, and the other stays.
+    reset_store
+    echo "[pwsh] run, show, save and rm take the exact name: Pk and pk are two snippets"
+    printf 'Pk\tWrite-Output upper\npk\tWrite-Output lower\n' > "$SNIPPET_FILE"
+    actual=$(run_pwsh "$SNIPPET_PS1" "snippet run pk; snippet run Pk; snippet show pk; snippet show Pk" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet exact name: run and show" "lower
+upper
+Write-Output lower
+Write-Output upper" "$actual"
+    run_pwsh "$SNIPPET_PS1" "snippet save pk 'Write-Output new'" >/dev/null 2>&1
+    assert_eq "pwsh/snippet exact name: save replaces pk, Pk stays" "Pk${TAB}Write-Output upper
+pk${TAB}Write-Output new" "$(cat "$SNIPPET_FILE")"
+    actual=$(run_pwsh_stderr "$SNIPPET_PS1" "snippet rm PK; snippet rm pk")
+    assert_eq "pwsh/snippet exact name: rm messages" "snippet rm: no such snippet 'PK'
+snippet: removed 'pk'" "$actual"
+    assert_eq "pwsh/snippet exact name: rm removes pk, Pk stays" "Pk${TAB}Write-Output upper" "$(cat "$SNIPPET_FILE")"
+
+    # A line with no tab, which only a hand edit makes, holds no snippet: show,
+    # run and pick read past it to the snippet after it, pick does not offer
+    # it, and a line fzf prints without a tab runs nothing.
+    reset_store
+    echo "[pwsh] a store line with no tab: show, run and pick find the snippet after it; pick does not offer it"
+    printf 'notab\nok\tWrite-Output found\n' > "$SNIPPET_FILE"
+    rm -f "$FZF_LOG"
+    cat > "$TESTTMP/pick_notab.ps1" <<'PS1'
+snippet show ok
+snippet run ok
+snippet run notab
+$env:FZF_PRINT = "ok`tWrite-Output 'from fzf'"
+snippet pick
+$env:FZF_PRINT = 'notab'
+snippet pick
+PS1
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_notab.ps1'" 2>"$WORK/notab.err" | tr -d '\r')
+    assert_eq "pwsh/snippet no-tab line: output" "Write-Output found
+found
+found" "$actual"
+    assert_eq "pwsh/snippet no-tab line: messages" "+ Write-Output found
+snippet run: no such snippet 'notab' (snippet ls)
++ Write-Output found" "$(tr -d '\r' < "$WORK/notab.err")"
+    assert_eq "pwsh/snippet no-tab line: fzf reads only the snippet" "ok${TAB}Write-Output found
+ok${TAB}Write-Output found" "$(cat "$FZF_LOG" 2>&1)"
+
+    # The line fzf picked is the last it prints. A user's FZF_DEFAULT_OPTS
+    # can put the query (--print-query) and the key pressed (--expect) before
+    # it, and the query can be another snippet's exact name: pick ran that
+    # snippet, not the one picked. With no line picked, fzf prints the query
+    # alone, which picks nothing. The stub prints FZF_PRINT as fzf would.
+    reset_store
+    echo "[pwsh] pick runs the last line fzf prints, not a query or a key printed before it"
+    printf 'clean\tWrite-Output ran-clean\nclean-dry-run\tWrite-Output ran-dry-run\n' > "$SNIPPET_FILE"
+    cat > "$TESTTMP/pick_query.ps1" <<'PS1'
+# fzf's output: the query, then the row (--print-query); an empty key line
+# (--expect, Enter), then the row; the query and a key, then the row; the
+# query alone, and the query and an empty key line, with no row picked.
+$row = "clean-dry-run`tWrite-Output ran-dry-run"
+$n = 0
+foreach ($out in "clean`n$row", "`n$row", "clean`nctrl-x`n$row", 'clean', "clean`n") {
+    $n++
+    $env:FZF_PRINT = $out
+    "case $n"
+    snippet pick
+}
+# A query holding a tab after a snippet's name, printed when nothing matched
+# (fzf exits 1): no row was picked, whatever the line looks like.
+$env:FZF_PRINT = "clean`tno-match"
+$env:FZF_EXIT = '1'
+'case 6'
+snippet pick
+Remove-Item Env:FZF_EXIT
+PS1
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_query.ps1'" 2>"$WORK/query.err" | tr -d '\r')
+    assert_eq "pwsh/snippet pick: the last line fzf prints" "case 1
+ran-dry-run
+case 2
+ran-dry-run
+case 3
+ran-dry-run
+case 4
+case 5
+case 6" "$actual"
+    assert_eq "pwsh/snippet pick: the last line fzf prints, messages" "+ Write-Output ran-dry-run
++ Write-Output ran-dry-run
++ Write-Output ran-dry-run" "$(tr -d '\r' < "$WORK/query.err")"
+    unset FZF_LOG
+
+    # run and pick replay the line inside a function (_DenReplay). Unlike
+    # bash/zsh's eval, which sets the shell's own variables, that keeps what
+    # the line makes global, $env: and the location, but not a plain variable,
+    # function or alias, whether the line or a script it dot-sources makes it.
+    # The line still reads the session's variables. The docs say so.
+    reset_store
+    echo "[pwsh] a snippet runs inside a function: it reads the session's variables; global, \$env: and cd stay, plain variables, functions and aliases do not"
+    rm -rf "${WORK:?}/scope"
+    mkdir -p "$WORK/scope/to"
+    printf '%s\n' '$dotVar = 1' 'function Dot-Fn { }' > "$WORK/scope/env.ps1"
+    cat > "$TESTTMP/scope.ps1" <<'PS1'
+$v = 'old'
+snippet save plain '"read=$v"; $v = ''new''; $made = 1; function Plain-Fn { }; Set-Alias plain-al Get-Date'
+snippet save dot '. ./env.ps1'
+snippet save glob '$global:g = ''set''; function global:Global-Fn { }; Set-Alias global-al Get-Date -Scope Global'
+snippet save envcd '$env:DEN_SCOPE_PROBE = ''set''; Set-Location ./to'
+foreach ($n in 'plain', 'dot', 'glob', 'envcd') { snippet run $n }
+"v=$v made=$(Test-Path Variable:made) Plain-Fn=$(Test-Path Function:Plain-Fn) plain-al=$(Test-Path Alias:plain-al)"
+"dotVar=$(Test-Path Variable:dotVar) Dot-Fn=$(Test-Path Function:Dot-Fn)"
+"g=$g Global-Fn=$(Test-Path Function:Global-Fn) global-al=$(Test-Path Alias:global-al)"
+"env=$env:DEN_SCOPE_PROBE location=$(Split-Path -Leaf (Get-Location).Path)"
+PS1
+    actual=$(cd "$WORK/scope" && run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/scope.ps1'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet run: what stays in the session" "read=old
+v=old made=False Plain-Fn=False plain-al=False
+dotVar=False Dot-Fn=False
+g=set Global-Fn=True global-al=True
+env=set location=to" "$actual"
+    assert_eq "docs/README: a pwsh snippet runs inside a function" 'PowerShell runs it with `Invoke-Expression` inside a function' \
+        "$(grep -oF -- 'PowerShell runs it with `Invoke-Expression` inside a function' "$DOTFILES/shell/README.md" | head -n 1)"
+    # The shell test image copies only shell/ and tests/shell/, not COMMANDS.md.
+    if [ -f "$DOTFILES/COMMANDS.md" ]; then
+        row=$(grep -F '| `snippet` / `snip` |' "$DOTFILES/COMMANDS.md" | head -n 1)
+        assert_contains "docs/COMMANDS: a pwsh snippet runs inside a function" 'on pwsh a snippet runs inside a function' "$row"
+    else
+        echo "  SKIP: docs/COMMANDS snippet row (no COMMANDS.md in $DOTFILES)"
+    fi
 else
     echo "pwsh not found; skipping pwsh snippet tests"
 fi
