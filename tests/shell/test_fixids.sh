@@ -269,6 +269,54 @@ for _mode in "--from UID" "--to UID:GID" "--to UID"; do
 done
 
 # =============================================================================
+# TMPDIR inside a walked root
+# =============================================================================
+# Every mode makes its list directory under TMPDIR before the walk, and find
+# opens the -fprint0 lists as it reads its arguments. With TMPDIR inside a
+# root (`fixids --force --to U:G /` with the default /tmp, or a TMPDIR under
+# the home being fixed), the walk selected that directory and its lists: -n
+# counted them, and a real run handed chown the list xargs was still reading.
+# The tree is t plus t/tmp as TMPDIR, 7 entries: t/tmp is the user's and is
+# selected, what fixids makes in it is not. chown and chgrp stand-ins print
+# and log each path they are handed.
+mkdir -p "$TESTTMP/chpaths"
+for t in chown chgrp; do
+    printf '#!/bin/sh\nshift 3\nfor p do printf "%%s\\n" "$p"; printf "%%s\\n" "$p" >> "%s"; done\n' "$WORK/chpaths.log" > "$TESTTMP/chpaths/$t"
+done
+chmod +x "$TESTTMP/chpaths/chown" "$TESTTMP/chpaths/chgrp"
+for _mode in "--from UID" "--to UID:GID" "--to UID" "--from UID:GID"; do
+    case $_mode in
+        "--from UID") _args=(--from "$U" --to 2000) _tgt=2000 _more="" ;;
+        "--to UID:GID") _args=(--to 2000:2000) _tgt=2000:2000 _more="" ;;
+        "--to UID") _args=(--to 2000) _tgt=2000 _more="" ;;
+        *) _args=(--from "$U:$G" --to 2000:2000) _tgt=2000:2000 _more="
+fixids: 0 file(s) would be chowned to 2000
+fixids: 0 file(s) would be chgrp'd to 2000" ;;
+    esac
+    echo "[fixids] $_mode with TMPDIR inside the root: the walk leaves out fixids' own lists"
+    setup_tree
+    mkdir "$WORK/t/tmp"
+    actual=$(TMPDIR="$WORK/t/tmp" "$BASH_BIN" "$FIXIDS" -n "${_args[@]}" "$WORK/t" 2>&1; echo "rc=$?")
+    assert_eq "fixids/$_mode, TMPDIR in the root: count" "fixids: 7 file(s) would be chowned to $_tgt$_more
+rc=0" "$actual"
+    rm -f "$WORK/chpaths.log"
+    actual=$(PATH="$TESTTMP/chpaths:$PATH" TMPDIR="$WORK/t/tmp" "$BASH_BIN" "$FIXIDS" "${_args[@]}" "$WORK/t" 2>&1; echo "rc=$?")
+    assert_eq "fixids/$_mode, TMPDIR in the root: real run" "fixids: chowned 7 file(s) to $_tgt
+rc=0" "$actual"
+    assert_not_contains "fixids/$_mode, TMPDIR in the root: no list chowned" "$WORK/t/tmp/" "$(cat "$WORK/chpaths.log" 2>/dev/null)"
+done
+# The roots are canonicalized and TMPDIR is not, so the prune goes by inode.
+echo "[fixids] TMPDIR inside the root through a symlink: the walk still leaves out the lists"
+setup_tree
+mkdir "$WORK/t/tmp"
+ln -s t/tmp "$WORK/tmplink"
+actual=$(TMPDIR="$WORK/tmplink" "$BASH_BIN" "$FIXIDS" -n --to 2000 "$WORK/t" 2>&1; echo "rc=$?")
+assert_eq "fixids/TMPDIR in the root through a symlink: count" "fixids: 7 file(s) would be chowned to 2000
+rc=0" "$actual"
+rm -f "$WORK/tmplink"
+setup_tree
+
+# =============================================================================
 # A real run (root only)
 # =============================================================================
 # Each class gets exactly its change, once: logging chown / chgrp stand-ins
