@@ -3,6 +3,7 @@
 The sheet's name has a hyphen, so it is loaded from its path, not imported.
 """
 
+import errno
 import importlib.util
 import os
 import re
@@ -393,6 +394,45 @@ def test_split_parts_take_the_source_permission_bits(
         parts = getattr(fileops, recipe)(src, out_dir=out, **kwargs)
     assert [stat.S_IMODE(part.stat().st_mode) for part in parts] == [part_mode] * 3
     assert b"".join(part.read_bytes() for part in parts) == SECRET
+
+
+def _still_open_on(fd: int, path: Path) -> bool:
+    """Whether ``fd`` is still open on ``path`` (closed or reused: no)."""
+    try:
+        return os.path.samestat(os.fstat(fd), path.stat())
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(("recipe", "kwargs"), SPLITS, ids=SPLIT_IDS)
+def test_split_leaves_a_part_it_cannot_narrow_alone(
+    fileops, tmp_path, monkeypatch, recipe, kwargs
+):
+    # fchmod fails with EPERM on a part you may write but do not own: the
+    # split must stop there, with that part's old bytes intact and its fd
+    # closed, rather than write the source's bytes into a file it cannot
+    # make private.
+    src = tmp_path / "private.log"
+    src.write_bytes(SECRET)
+    src.chmod(0o600)
+    out = tmp_path / "parts"
+    out.mkdir()
+    theirs = out / "private.part0000.log"
+    theirs.write_bytes(b"OLD CONTENT\n")
+    narrowed: list[int] = []
+
+    def fchmod(fd: int, mode: int) -> None:
+        narrowed.append(fd)
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "fchmod", fchmod)
+    with pytest.raises(PermissionError):
+        getattr(fileops, recipe)(src, out_dir=out, **kwargs)
+    assert theirs.read_bytes() == b"OLD CONTENT\n"
+    assert narrowed
+    assert not [fd for fd in narrowed if _still_open_on(fd, theirs)]
+    assert sorted(path.name for path in out.iterdir()) == [theirs.name]
 
 
 # --- what the 0o600 notes promise ---------------------------------------------
