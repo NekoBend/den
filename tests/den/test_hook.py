@@ -14,6 +14,7 @@ import pytest
 
 from den import _hook
 from den._hook import main as hook_main
+from den._uninstall import main as uninstall_main
 
 
 def _assert_pinned(cmd: str, prefix: str, den_dir) -> None:
@@ -1662,14 +1663,17 @@ def test_install_does_not_take_a_hard_link_to_the_config_for_its_backup(
 ):
     """A hard link at .den.bak is the config under another name. It held the
     unmergeable edit's bytes, so it was reused as the backup, and writing den's
-    hooks into the config changed it too: the edit was kept nowhere."""
+    hooks into the config changed it too: the edit was kept nowhere. The config
+    itself, with its second hard link, is then left as it was (see
+    test_uninstall_hook_leaves_a_hard_linked_config_as_it_was)."""
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / rel
     cfg.parent.mkdir(parents=True)
     cfg.write_text("MY_EDIT {{{")
     hard_link(cfg, cfg.with_name(cfg.name + ".den.bak"))
-    assert hook_main(["install", "--tool", tool]) == 0
+    assert hook_main(["install", "--tool", tool]) == 1
     assert cfg.with_name(cfg.name + ".den.bak.1").read_text() == "MY_EDIT {{{"
+    assert cfg.read_text() == "MY_EDIT {{{"
 
 
 def test_install_refuses_a_symlink_at_a_numbered_backup(tmp_path, monkeypatch, symlink):
@@ -1741,6 +1745,131 @@ def test_install_narrows_a_reused_backup_to_the_config_mode(
     assert hook_main(["install", "--tool", "claude"]) == 0
     assert stat.S_IMODE(bak.stat().st_mode) == want
     assert not cfg.with_name(cfg.name + ".den.bak.1").exists(), "it was reused"
+
+
+# A hook config was truncated and then written in place, so a write that failed
+# part-way (a full disk, an I/O error) left the user's settings empty or cut
+# short. file_size_limit makes the write fail for real after its first bytes.
+
+_JSON_CONFIGS = pytest.mark.parametrize(
+    ("tool", "rel"),
+    [("claude", ".claude/settings.local.json"), ("copilot", ".github/hooks/den.json")],
+)
+_BIG = "x" * 6000  # a value of the user's that takes any rewrite past the limit
+
+
+def _names(directory):
+    return sorted(p.name for p in directory.iterdir())
+
+
+@_JSON_CONFIGS
+def test_install_keeps_the_config_when_the_write_fails_part_way(
+    tmp_path, monkeypatch, capsys, file_size_limit, tool, rel
+):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path, imprint="IMP")  # so install writes nothing but the config
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    original = json.dumps({"keep": _BIG}).encode()
+    cfg.write_bytes(original)
+    with file_size_limit(1024):
+        assert hook_main(["install", "--tool", tool]) == 1
+    assert cfg.read_bytes() == original
+    assert _names(cfg.parent) == [cfg.name], "no temporary copy is left"
+    assert f"den hook install: left {cfg} as it was: " in capsys.readouterr().err
+
+
+@_JSON_CONFIGS
+def test_install_leaves_no_config_when_writing_a_new_one_fails_part_way(
+    tmp_path, monkeypatch, capsys, file_size_limit, tool, rel
+):
+    # A new config cut short would make the tool reject the file, and the next
+    # install back it up as the user's.
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path, imprint="IMP")
+    cfg = tmp_path / rel
+    with file_size_limit(256):
+        assert hook_main(["install", "--tool", tool]) == 1
+    assert not cfg.exists()
+    assert f"den hook install: left {cfg} as it was: " in capsys.readouterr().err
+
+
+@_JSON_CONFIGS
+def test_uninstall_hook_keeps_the_config_when_the_write_fails_part_way(
+    tmp_path, monkeypatch, capsys, file_size_limit, tool, rel
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"keep": _BIG}))
+    assert hook_main(["install", "--tool", tool]) == 0
+    installed = cfg.read_bytes()
+    capsys.readouterr()
+    with file_size_limit(1024):
+        assert uninstall_main(["hook", "--tool", tool]) == 1
+    assert cfg.read_bytes() == installed, "den's hooks included"
+    assert _names(cfg.parent) == [cfg.name], "no temporary copy is left"
+    assert f"den hook: left {cfg} as it was: " in capsys.readouterr().err
+
+
+def test_install_keeps_settings_json_when_moving_den_out_fails_part_way(
+    tmp_path, monkeypatch, capsys, file_size_limit
+):
+    # The committed .claude/settings.json is shared with a team; the move of
+    # den's old entries out of it rewrites it, under install's name.
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path, imprint="IMP")
+    legacy = tmp_path / ".claude" / "settings.json"
+    legacy.parent.mkdir()
+    hooks = {"Stop": [_den_group("claude", "stop")]}
+    original = json.dumps({"keep": "x" * 9000, "hooks": hooks}).encode()
+    legacy.write_bytes(original)
+    with file_size_limit(4096):  # room for den's settings.local.json
+        assert hook_main(["install", "--tool", "claude"]) == 1
+    assert legacy.read_bytes() == original
+    local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    assert "UserPromptSubmit" in local["hooks"]
+    assert f"den hook install: left {legacy} as it was: " in capsys.readouterr().err
+
+
+def test_uninstall_hook_leaves_a_hard_linked_config_as_it_was(
+    tmp_path, monkeypatch, capsys, hard_link
+):
+    """A config is replaced through a new copy now, so one with a second hard
+    link (a dotfiles repo) is left as it was, den's hooks included, and named,
+    as `den uninstall` leaves such an rc file: the copy would take only this
+    name, and the other would keep den's hooks."""
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    installed = cfg.read_bytes()
+    other = tmp_path / "dotfiles-settings.json"
+    hard_link(cfg, other)
+    capsys.readouterr()
+    assert uninstall_main(["hook", "--tool", "claude"]) == 1
+    assert cfg.read_bytes() == installed
+    assert other.samefile(cfg)
+    err = capsys.readouterr().err
+    assert f"den hook: left {cfg} as it was: it has 2 hard links" in err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o600, 0o640], ids=oct)
+def test_install_and_uninstall_keep_the_config_mode(
+    tmp_path, monkeypatch, umask_022, mode
+):
+    # The new copy takes the config's permission bits, as the in-place write
+    # kept them.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"keep": 1}')
+    cfg.chmod(mode)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert stat.S_IMODE(cfg.stat().st_mode) == mode
+    assert uninstall_main(["hook", "--tool", "claude"]) == 0
+    assert stat.S_IMODE(cfg.stat().st_mode) == mode
+    assert json.loads(cfg.read_text()) == {"keep": 1}
 
 
 def test_install_refuses_a_symlinked_backup_outside_the_workspace(

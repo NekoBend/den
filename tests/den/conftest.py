@@ -12,6 +12,7 @@ stay fully covered by the ubuntu jobs, so they are skipped here (only on win32).
 
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -142,6 +143,30 @@ def hard_link():
             pytest.skip(f"no hard links here: {e}")
 
     return _link
+
+
+@pytest.fixture
+def file_size_limit():
+    """`with limit(n):` makes a write that would take a file past `n` bytes
+    fail for real (EFBIG; SIGXFSZ is ignored meanwhile), whichever way the
+    bytes are written: a full disk or an I/O error part-way through a write,
+    in miniature. Skipped where there is no RLIMIT_FSIZE (Windows). Nothing
+    else may write a file past `n` bytes inside it: print through capsys."""
+    resource = pytest.importorskip("resource")
+    import signal
+
+    @contextmanager
+    def _limit(n):
+        soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+        previous = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (n, hard))
+        try:
+            yield
+        finally:
+            resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+            signal.signal(signal.SIGXFSZ, previous)
+
+    return _limit
 
 
 @pytest.fixture(autouse=True)

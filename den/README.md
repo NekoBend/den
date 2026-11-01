@@ -304,7 +304,12 @@ something other than a list) is first copied to `<file>.den.bak`, or to the
 first free `.den.bak.N` when an earlier backup holds something else, with the
 file's permissions minus execute, and den's hooks then take the place of what
 it could not merge into; when no copy can be made, install leaves the file
-alone and exits non-zero. Generic events map to each tool's own names:
+alone and exits non-zero. Install and `uninstall hook` rewrite a settings file
+through a new copy that replaces it in one step, so a write that fails
+part-way leaves the file as it was; the copy takes the file's owner, group and
+permissions, as with an rc file, and a file with a second hard link is left as
+it is and named for you to edit by hand (the command exits non-zero).
+Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
 
 `--all-tools` installs every verified tool: claude, copilot and cline (the

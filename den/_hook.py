@@ -39,6 +39,7 @@ import re
 import shlex
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -562,6 +563,52 @@ def _read_json(config: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _write_config(config: Path, data: dict, prefix: str) -> bool:
+    """Write `data` to the JSON config at `config` without truncating what is
+    there first: an existing file is replaced in one rename
+    (_shell._replace_bytes, which gives the new file the old one's owner,
+    group and permission bits and, on Linux, its extended attributes and
+    ACLs), and a new one is created whole or not at all. Written in place, a
+    write that failed part-way (a full disk, an I/O error) left the user's
+    settings empty or cut short.
+
+    False (one line on stderr, starting with `prefix`, the command that was
+    run) when it cannot be written, and the file is then as it was: a write
+    that failed, or a file _replace_bytes refuses, one with a second hard
+    link among them (a new copy would take only this name), which the user
+    edits by hand, as `den uninstall` leaves such an rc file."""
+    # Imported here: the shell installer is not needed on the per-turn hook path.
+    from ._shell import _replace_bytes
+
+    # Line ends as write_text wrote them: os.linesep (CRLF on Windows).
+    raw = (json.dumps(data, indent=2) + "\n").replace("\n", os.linesep)
+    try:
+        if config.is_file():
+            _replace_bytes(config, raw.encode("utf-8"))
+        else:
+            config.parent.mkdir(parents=True, exist_ok=True)
+            _create_whole(config, raw.encode("utf-8"))
+    except OSError as e:
+        print(f"{prefix}: left {config} as it was: {e}", file=sys.stderr)
+        return False
+    return True
+
+
+def _create_whole(path: Path, data: bytes) -> None:
+    """Create `path` holding `data`, or raise OSError and leave no file there:
+    one a failed write cut short is removed again. A file that appeared there
+    since the caller looked is not written over (O_EXCL)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o666)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        with suppress(OSError):
+            path.unlink()
+        raise
+
+
 def _is_den_hook(hook: object, key: str = "command") -> bool:
     """Whether a hook entry is one den wrote: an object whose command (`key`:
     settings_json's "command", copilot's "bash") is text carrying the marker.
@@ -633,9 +680,7 @@ def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -
         return False
     data = _read_json(config)
     data["hooks"] = _add_den_entries(_strip_den_hooks(data.get("hooks", {})), entries)
-    config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    return _write_config(config, data, _ERR_INSTALL)
 
 
 def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
@@ -656,7 +701,9 @@ def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
     return lines
 
 
-def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
+def _remove_settings_json(
+    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
+) -> bool:
     if not config.is_file():
         return True
     data = _read_json(config)
@@ -668,8 +715,7 @@ def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
     data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    return _write_config(config, data, prefix)
 
 
 # --- copilot: flat {version, hooks:{event:[{type,bash}]}}, marker in "bash" --- #
@@ -705,9 +751,7 @@ def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> bool
     data = _read_json(config)
     data["version"] = data.get("version", 1)
     data["hooks"] = _add_den_entries(_strip_copilot(data.get("hooks", {})), entries)
-    config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    return _write_config(config, data, _ERR_INSTALL)
 
 
 def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
@@ -723,7 +767,9 @@ def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
     ]
 
 
-def _remove_copilot(tool: str, spec: dict, config: Path) -> bool:
+def _remove_copilot(
+    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
+) -> bool:
     if not config.is_file():
         return True
     data = _read_json(config)
@@ -735,8 +781,7 @@ def _remove_copilot(tool: str, spec: dict, config: Path) -> bool:
     data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    return _write_config(config, data, prefix)
 
 
 # --- cline: one executable script per event, named exactly the event name --- #
@@ -820,7 +865,7 @@ def _list_cline(tool: str, spec: dict, config: Path) -> list[str]:
     ]
 
 
-def _remove_cline(tool: str, spec: dict, config: Path) -> bool:
+def _remove_cline(tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK) -> bool:
     if not config.is_dir():
         return True
     for _native, script in _cline_scripts(spec, config):
@@ -932,7 +977,9 @@ def _list_clinerules(tool: str, spec: dict, config: Path) -> list[str]:
     return [f"{tool}  {p.name}  {p}" for p in targets if p.is_file()]
 
 
-def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
+def _remove_clinerules(
+    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
+) -> bool:
     # `config` is ignored by this format (see the section comment above), so the
     # path _resolve_config vetted is not the one being unlinked here. Derive and
     # guard the real one, or the unlinks follow a planted link out of the
@@ -940,7 +987,7 @@ def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
     den_dir = _find_den_dir(Path.cwd())
     if _single_file_clinerules(den_dir):
         return True
-    targets = _clinerules_targets(den_dir)
+    targets = _clinerules_targets(den_dir, prefix)
     if targets is None:
         return False
     for path in targets:
@@ -1002,7 +1049,7 @@ def _strip_legacy(
     legacy = legacy.resolve()
     if not list_fn(tool, spec, legacy):
         return True
-    if not remove_fn(tool, spec, legacy):
+    if not remove_fn(tool, spec, legacy, prefix):
         return False
     done = f"moved them to {moved_to}" if moved_to else "removed them"
     print(f"{prefix}: {legacy} held den's {tool} hooks; {done}", file=sys.stderr)
@@ -1102,7 +1149,8 @@ def _git_exclude(path: Path) -> None:
         )
 
 
-# format -> (install, list, remove)
+# format -> (install, list, remove). remove takes the prefix of the command
+# that was run: install also moves den's entries out of a legacy file with it.
 _FORMATS = {
     "settings_json": (
         _install_settings_json,

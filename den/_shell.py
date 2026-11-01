@@ -438,9 +438,14 @@ def _disable_coreutils_readline(profile: Path) -> bool | None:
     replaces (_Writer._backup): to <profile>.den.bak, or the first free
     .den.bak.N when an earlier backup holds something else, keeping the
     profile's permission bits minus execute (a profile can hold a token, and a
-    plain write left a 0600 profile's copy world-readable). None (one line on
-    stderr) when no copy could be made (a symlink or a directory at a backup
-    name, a failed write): the profile is then left as it is."""
+    plain write left a 0600 profile's copy world-readable). The new text then
+    replaces the profile in one rename (_replace_bytes), never by truncating
+    it, so a write that fails part-way leaves the profile as it was instead of
+    empty or cut short. None (one line on stderr) when no copy could be made
+    (a symlink or a directory at a backup name, a failed write) or the
+    profile could not be replaced (a failed write, or a profile
+    _replace_bytes refuses, such as one with a second hard link): the profile
+    is then left as it is, coreutils' block included."""
     if not profile.is_file():
         return False
     raw = profile.read_bytes()
@@ -477,7 +482,15 @@ def _disable_coreutils_readline(profile: Path) -> bool | None:
     new = "\n".join(ln for i, ln in enumerate(lines) if i not in drop)
     if crlf:
         new = new.replace("\n", "\r\n")
-    profile.write_text(new, encoding=enc, newline="")
+    try:
+        _replace_bytes(profile, new.encode(enc))
+    except OSError as e:
+        print(
+            f"den install shell: left {profile} as it was, coreutils' block"
+            f" included: {e}",
+            file=sys.stderr,
+        )
+        return None
     return True
 
 

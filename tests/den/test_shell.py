@@ -978,12 +978,33 @@ def test_disable_coreutils_readline_does_not_take_a_hard_link_for_its_backup(
 ):
     # A hard link at .den.bak is the profile under another name: reused as the
     # backup, it took the edit too, and the profile as it was survived nowhere.
+    # The profile itself, with its second hard link, is then left as it was.
     prof = tmp_path / "p.ps1"
     original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
     prof.write_text(original)
     hard_link(prof, tmp_path / "p.ps1.den.bak")
-    assert _shell._disable_coreutils_readline(prof) is True
+    assert _shell._disable_coreutils_readline(prof) is None
     assert (tmp_path / "p.ps1.den.bak.1").read_text() == original
+    assert prof.read_text() == original
+
+
+def test_disable_coreutils_readline_keeps_the_profile_when_the_write_fails_part_way(
+    tmp_path, capsys, file_size_limit
+):
+    """The profile was truncated and then written in place, so a write that
+    failed part-way (a full disk, an I/O error) left it empty or cut short:
+    den's own init line, and anything the user keeps there, gone."""
+    prof = tmp_path / "p.ps1"
+    original = "$env:A = 1\n" * 300 + "\n" + _CU_BLOCK
+    prof.write_text(original)
+    # An earlier backup holds these bytes, so the profile is all that is written.
+    (tmp_path / "p.ps1.den.bak").write_text(original)
+    with file_size_limit(1024):
+        assert _shell._disable_coreutils_readline(prof) is None
+    assert prof.read_text() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.ps1", "p.ps1.den.bak"]
+    err = capsys.readouterr().err
+    assert f"den install shell: left {prof} as it was, coreutils' block" in err
 
 
 def test_disable_coreutils_readline_refuses_a_symlinked_backup(tmp_path, symlink):
@@ -1025,6 +1046,32 @@ def test_install_shell_fails_when_it_cannot_back_up_the_profile(
     assert refusals[0].startswith("den install shell: not replacing "), (
         "named after the command that was run"
     )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX profile dir (see conftest)")
+def test_install_shell_fails_when_it_cannot_replace_the_profile(
+    tmp_path, monkeypatch, capsys, hard_link
+):
+    """The profile is replaced through a new copy now, so one with a second
+    hard link (a dotfiles repo) is left as it was, coreutils' block included,
+    as `den uninstall shell` leaves such a profile: the copy would take only
+    this name, and the other would keep the block."""
+    monkeypatch.setattr(_shell, "_windows", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(_shell.shutil, "which", _stub_which({"pwsh"}))
+    prof = tmp_path / "xdg" / "powershell" / _shell._PWSH_PROFILE
+    prof.parent.mkdir(parents=True)
+    prof.write_text(_CU_BLOCK)
+    other = tmp_path / "dotfiles-profile.ps1"
+    hard_link(prof, other)
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 1
+    assert "60b36fc6" in prof.read_text(), "the block is left in place"
+    assert other.samefile(prof)
+    err = capsys.readouterr().err
+    assert f"den install shell: left {prof} as it was, coreutils' block" in err
+    assert "it has 2 hard links" in err
 
 
 def test_disable_coreutils_readline_preserves_utf16(tmp_path):
