@@ -350,8 +350,10 @@ keeps), except where uv would build or run code that came with a clone:
   came with the clone (cmd has no `va`: run the `Scripts\activate` of a venv
   you made), or type `uv pip` yourself.
 - `vv` / `vva` run `uv venv`, but where `python` runs a python directly (the
-  same files, here or above) `uv --no-config venv`, with `--config-file <your
-  uv.toml>` when you have one, after a line that says so: `uv venv` runs the
+  same files, here or above, or, as uv takes them, in or above the directory
+  `--directory` or `--project` names, or `UV_WORKING_DIR` or `UV_PROJECT`)
+  `uv --no-config venv`, with `--config-file <your uv.toml>` when you have
+  one, after a line that says so: `uv venv` runs the
   program a `.python-version` names, and a `uv.toml`'s or `pyproject.toml`'s
   settings can have it run a python the clone ships, or install one from the
   clone's files and run it, `--python` given or not. `--no-config` skips those,

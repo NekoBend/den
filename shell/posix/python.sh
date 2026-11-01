@@ -278,11 +278,15 @@ if command -v uv >/dev/null 2>&1; then
 # so a pyenv ~/.python-version leaves home alone, unless the current directory
 # holds something of the same name. Fails when there is none. uv starts from
 # the directory the system reports, with its symbolic links resolved (pwd -P).
+# _den_py_marker <dir> <cwd> → the same for uv started elsewhere (vv and vva,
+# see _den_uv_venv): the walk starts from <dir>, and a bare name is looked up
+# in <cwd>, the directory uv runs in.
 # Defined here, with vv and vva, not with the overrides that toggle-uv removes:
 # vv and vva ask it with the overrides off as well.
 _den_py_marker() {
-    local d f l n t w c rest ws=''
-    d=$(pwd -P 2>/dev/null) || d=$PWD
+    local d f l n t w c rest ws='' here=${2-}
+    d=${1-}
+    [ -n "$d" ] || d=$(pwd -P 2>/dev/null) || d=$PWD
     while :; do
         for f in pyproject.toml .venv pyvenv.cfg uv.toml .python-version .python-versions; do
             [ -e "${d%/}/$f" ] || continue
@@ -323,7 +327,7 @@ _den_py_marker() {
                         [ "$t" = "$w" ] && break
                     done
                     case $t in ''|'#'*) continue ;; esac
-                    if [ -e "$t" ]; then
+                    if [ -e "${here:+${here%/}/}$t" ]; then
                         printf '%s\n' "${d%/}/$f"
                         return 0
                     fi
@@ -394,16 +398,74 @@ _den_uv_config() {
 # config directory too: the line says to pick a python with --python, or to
 # type uv venv. With a uv.toml of your own (_den_uv_config), --config-file
 # reads it, as --no-config alone would not, and still no .python-version.
+# The walk starts where uv's does. uv first enters the directory --directory
+# names (else UV_WORKING_DIR, else UV_WORKING_DIRECTORY) and reads from there
+# as it would from here. --project (else UV_PROJECT) names the directory its
+# walk starts from instead, or a pyproject.toml in it, taken from the one uv
+# runs in, where a .python-version's bare name is still looked up. The options
+# count as uv 0.13.6 parses them: before a --, as --directory DIR or
+# --directory=DIR; uv refuses a second one, and a value that starts with -, so
+# no other option's value is one.
 _den_uv_venv() {
-    local name=$1 marker cfg
+    local name=$1 marker='' cfg a next='' dir project here start at='here or above' there='here or above'
     shift
-    if ! marker=$(_den_py_marker); then
+    dir=${UV_WORKING_DIR-${UV_WORKING_DIRECTORY-}}
+    project=${UV_PROJECT-}
+    for a in "$@"; do
+        case $next in
+            d) dir=$a; next=''; continue ;;
+            p) project=$a; next=''; continue ;;
+        esac
+        case $a in
+            --) break ;;
+            --directory) next=d ;;
+            --directory=*) dir=${a#--directory=} ;;
+            --project) next=p ;;
+            --project=*) project=${a#--project=} ;;
+        esac
+    done
+    if [ -z "$dir" ] && [ -z "$project" ]; then
+        marker=$(_den_py_marker)
+    # The directory uv runs in, with its symbolic links resolved, as uv reads
+    # it back: a relative one from here, entered as ./DIR so that cd takes no
+    # CDPATH entry and no - or +N for a directory it remembers, with the
+    # builtin past a cd function, and with zsh's -q, which runs no chpwd hook
+    # (zoxide's records the directory). Where cd cannot enter it, uv cannot
+    # either, and stops before it reads anything.
+    elif here=$(
+        case $dir in
+            '') ;;
+            /*) builtin cd ${ZSH_VERSION:+-q} -P -- "$dir" ;;
+            *) builtin cd ${ZSH_VERSION:+-q} -P -- "./$dir" ;;
+        esac >/dev/null 2>&1 && builtin pwd -P
+    ); then
+        start=$here
+        if [ -n "$project" ]; then
+            # Made absolute from there and normalized by name, as uv does: .
+            # and empty names go, and .. takes the name before it with it.
+            case $project in /*) a=$project/ ;; *) a=$here/$project/ ;; esac
+            start=''
+            while [ -n "$a" ]; do
+                case ${a%%/*} in
+                    ''|.) ;;
+                    ..) start=${start%/*} ;;
+                    *) start=$start/${a%%/*} ;;
+                esac
+                a=${a#*/}
+            done
+            case $start in */pyproject.toml) [ -f "$start" ] && start=${start%/*} ;; esac
+            start=${start:-/}
+        fi
+        at="in or above $start" there='there or above'
+        marker=$(_den_py_marker "$start" "$here")
+    fi
+    if [ -z "$marker" ]; then
         command uv venv "$@"
     elif cfg=$(_den_uv_config); then
-        printf '%s: uv --no-config --config-file %s venv, as %s is here or above (reads your uv settings, not a .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)\n' "$name" "$cfg" "$marker" >&2
+        printf '%s: uv --no-config --config-file %s venv, as %s is %s (reads your uv settings, not a .python-version, uv.toml or pyproject.toml %s, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)\n' "$name" "$cfg" "$marker" "$at" "$there" >&2
         command uv --no-config --config-file "$cfg" venv "$@"
     else
-        printf '%s: uv --no-config venv, as %s is here or above (reads no .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)\n' "$name" "$marker" >&2
+        printf '%s: uv --no-config venv, as %s is %s (reads no .python-version, uv.toml or pyproject.toml %s, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)\n' "$name" "$marker" "$at" "$there" >&2
         command uv --no-config venv "$@"
     fi
 }

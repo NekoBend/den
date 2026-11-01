@@ -29,7 +29,9 @@ mkdir -p "$NOPROJ"
 # no user one in XDG_CONFIG_HOME, and no system one (UV_NO_SYSTEM_CONFIG, as
 # /etc/uv/uv.toml lies outside XDG_CONFIG_DIRS).
 export XDG_CONFIG_HOME="$WORK/xdg-config" XDG_CONFIG_DIRS="$WORK/xdg-dirs" UV_NO_SYSTEM_CONFIG=1
-unset UV_CONFIG_FILE UV_NO_CONFIG
+# No UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT either, which move
+# where uv venv reads (see the vv --directory checks).
+unset UV_CONFIG_FILE UV_NO_CONFIG UV_WORKING_DIR UV_WORKING_DIRECTORY UV_PROJECT
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_CONFIG_DIRS"
 # What the lines pip, pip3, vv and vva print say uv reads, with a uv.toml of
 # your own (KEEPS) and without one (NONE).
@@ -37,6 +39,9 @@ PIP_KEEPS="reads your uv settings, not a uv.toml or pyproject.toml here or above
 PIP_NONE="reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those"
 VV_KEEPS="reads your uv settings, not a .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those"
 VV_NONE="reads no .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those"
+# The same for vv and vva when --directory or --project points uv elsewhere.
+VV_KEEPS_THERE="reads your uv settings, not a .python-version, uv.toml or pyproject.toml there or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those"
+VV_NONE_THERE="reads no .python-version, uv.toml or pyproject.toml there or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those"
 
 # --- Setup: mock uv binary ---
 cat > "$WORK/uv" << 'MOCK'
@@ -1517,6 +1522,81 @@ rc=1" "$actual"
 rc=0" "$actual"
     assert_eq "$sh/vv beside a version-only .python-version prints no line" "" "$(cat "$R/err")"
 
+    # uv venv first enters the directory --directory (else UV_WORKING_DIR,
+    # else UV_WORKING_DIRECTORY) names and reads from there; --project (else
+    # UV_PROJECT) moves its walk alone, to that directory taken from the one
+    # uv runs in by name, or to the directory of a pyproject.toml it names,
+    # and uv still looks a .python-version's bare name up where it runs (the
+    # real-uv checks run uv so). vv and vva walked from here alone, so from a
+    # directory with no marker they ran plain uv venv at a clone.
+    echo "[$sh] vv and vva with --directory, from a directory with no marker: uv --no-config venv, as the walk starts there"
+    actual=$(route_posix "$sh" "$NOPROJ" "vv --directory '$R/pyver'; vv --directory=../route/pyverdir v; vva myenv --directory '$R/uvtoml/sub'")
+    assert_eq "$sh/vv and vva with --directory run uv --no-config venv" "mock-uv --no-config venv --directory $R/pyver
+mock-uv --no-config venv --directory=../route/pyverdir v
+mock-uv --no-config venv myenv --directory $R/uvtoml/sub
+rc=1" "$actual"
+    assert_eq "$sh/vv and vva with --directory name what they found there" "vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above $RP/pyverdir ($VV_NONE_THERE)
+vva: uv --no-config venv, as $RP/uvtoml/uv.toml is in or above $RP/uvtoml/sub ($VV_NONE_THERE)
+activate script not found: myenv/bin/activate" "$(cat "$R/err")"
+
+    echo "[$sh] vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT, as uv ranks them and --directory: the same"
+    actual=$(route_posix "$sh" "$NOPROJ" "
+        export UV_WORKING_DIR='$R/pyver'; vv
+        unset UV_WORKING_DIR; export UV_WORKING_DIRECTORY='$R/pyver'; vv
+        export UV_WORKING_DIR='$NOPROJ'; vv; vv --directory '$R/pyver'
+        unset UV_WORKING_DIR UV_WORKING_DIRECTORY; export UV_PROJECT='$R/proj/sub'; vv
+        export XDG_CONFIG_HOME='$UVU'; vv")
+    assert_eq "$sh/vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT runs uv --no-config venv" "mock-uv --no-config venv
+mock-uv --no-config venv
+mock-uv venv
+mock-uv --no-config venv --directory $R/pyver
+mock-uv --no-config venv
+mock-uv --no-config --config-file $UVU/uv/uv.toml venv
+rc=0" "$actual"
+    assert_eq "$sh/vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT names what it found there" "vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+vv: uv --no-config venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_NONE_THERE)
+vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_KEEPS_THERE)" "$(cat "$R/err")"
+
+    # link/ is proj/sub/ under another name: from the directory uv runs in,
+    # .. is proj/, and by name link/.. is the route directory, which holds
+    # no marker. pyverdir/.python-version names tools, which its sub2/ holds
+    # and the directory with no marker does not.
+    echo "[$sh] vv with --project: the walk starts there, as uv takes it, and a bare name is looked up where uv runs"
+    actual=$(route_posix "$sh" "$NOPROJ" "
+        vv --project ../route/proj/pyproject.toml
+        vv --directory '$R/link' --project ..
+        vv --project '$R/link/..'
+        vv --directory '$R/pyverdir/sub2' --project ..
+        vv --project '$R/pyverdir'")
+    assert_eq "$sh/vv with --project runs uv --no-config venv where uv would read a marker" "mock-uv --no-config venv --project ../route/proj/pyproject.toml
+mock-uv --no-config venv --directory $R/link --project ..
+mock-uv venv --project $R/link/..
+mock-uv --no-config venv --directory $R/pyverdir/sub2 --project ..
+mock-uv venv --project $R/pyverdir
+rc=0" "$actual"
+    assert_eq "$sh/vv with --project names what it found there" "vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above $RP/pyverdir ($VV_NONE_THERE)" "$(cat "$R/err")"
+
+    # The cd function and the chpwd hook write to a file: vv's cd sends what
+    # it prints to /dev/null.
+    echo "[$sh] vv after a --, and at a directory that is not there from here: uv venv as typed; its cd runs no cd function, chpwd hook or CDPATH entry"
+    rm -f "$R/hooks"
+    actual=$(route_posix "$sh" "$NOPROJ" "
+        cd() { echo cd-function >> '$R/hooks'; }; chpwd() { echo chpwd-hook >> '$R/hooks'; }; export CDPATH='$R'
+        vv -- --directory '$R/pyver'
+        vv --directory pyver
+        vv --directory '$R/pyver'")
+    assert_eq "$sh/vv after a -- or at a directory not there runs uv venv" "mock-uv venv -- --directory $R/pyver
+mock-uv venv --directory pyver
+mock-uv --no-config venv --directory $R/pyver
+rc=0" "$actual"
+    assert_eq "$sh/vv after a -- or at a directory not there prints no line" "vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)" "$(cat "$R/err")"
+    assert_not_exists "$sh/vv's cd runs no cd function or chpwd hook" "$R/hooks"
+
     # --no-config skipped your own uv settings too (an index, TLS settings):
     # with a uv.toml of yours, uv --config-file reads it in place of a
     # uv.toml or pyproject.toml here or above, as uv pip does not need
@@ -1743,6 +1823,69 @@ actual=$(route_pwsh "$NOPROJ" "vv")
 assert_eq "pwsh/vv outside a project runs uv venv" "mock-uv venv" "$actual"
 actual=$(route_pwsh "$R/pyveronly" "vv")
 assert_eq "pwsh/vv beside a version-only .python-version runs uv venv" "mock-uv venv" "$actual"
+
+# vv and vva walk from where uv venv reads, as on bash and zsh: the directory
+# --directory names, read back with its symbolic links resolved, and
+# --project's, taken from there by name.
+echo "[pwsh] vv and vva with --directory, from a directory with no marker: uv --no-config venv, as the walk starts there"
+actual=$(route_pwsh "$NOPROJ" "vv --directory '$R/pyver'; vv --directory=../route/pyverdir v; vva myenv --directory '$R/uvtoml/sub'")
+assert_eq "pwsh/vv and vva with --directory run uv --no-config venv after a warning" "WARNING: vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+mock-uv --no-config venv --directory $R/pyver
+WARNING: vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above $RP/pyverdir ($VV_NONE_THERE)
+mock-uv --no-config venv --directory=../route/pyverdir v
+WARNING: vva: uv --no-config venv, as $RP/uvtoml/uv.toml is in or above $RP/uvtoml/sub ($VV_NONE_THERE)
+mock-uv --no-config venv myenv --directory $R/uvtoml/sub
+ERROR: activate script not found under 'myenv' (Scripts/ or bin/)" "$actual"
+
+echo "[pwsh] vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT, as uv ranks them and --directory: the same"
+actual=$(route_pwsh "$NOPROJ" "
+    \$env:UV_WORKING_DIR = '$R/pyver'; vv
+    Remove-Item Env:\\UV_WORKING_DIR; \$env:UV_WORKING_DIRECTORY = '$R/pyver'; vv
+    \$env:UV_WORKING_DIR = '$NOPROJ'; vv; vv --directory '$R/pyver'
+    Remove-Item Env:\\UV_WORKING_DIR, Env:\\UV_WORKING_DIRECTORY; \$env:UV_PROJECT = '$R/proj/sub'; vv
+    \$env:XDG_CONFIG_HOME = '$UVU'; vv")
+assert_eq "pwsh/vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT runs uv --no-config venv after a warning" "WARNING: vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+mock-uv --no-config venv
+WARNING: vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+mock-uv --no-config venv
+mock-uv venv
+WARNING: vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+mock-uv --no-config venv --directory $R/pyver
+WARNING: vv: uv --no-config venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_NONE_THERE)
+mock-uv --no-config venv
+WARNING: vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_KEEPS_THERE)
+mock-uv --no-config --config-file $UVU/uv/uv.toml venv" "$actual"
+
+echo "[pwsh] vv with --project: the walk starts there, as uv takes it, and a bare name is looked up where uv runs"
+actual=$(route_pwsh "$NOPROJ" "
+    vv --project ../route/proj/pyproject.toml
+    vv --directory '$R/link' --project ..
+    vv --project '$R/link/..'
+    vv --directory '$R/pyverdir/sub2' --project ..
+    vv --project '$R/pyverdir'")
+assert_eq "pwsh/vv with --project runs uv --no-config venv where uv would read a marker" "WARNING: vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+mock-uv --no-config venv --project ../route/proj/pyproject.toml
+WARNING: vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+mock-uv --no-config venv --directory $R/link --project ..
+mock-uv venv --project $R/link/..
+WARNING: vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above $RP/pyverdir ($VV_NONE_THERE)
+mock-uv --no-config venv --directory $R/pyverdir/sub2 --project ..
+mock-uv venv --project $R/pyverdir" "$actual"
+
+# PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
+# vv sets the process's current directory to read it back and puts it back;
+# PowerShell's location, and so its LocationChangedAction, stays as it was.
+echo "[pwsh] vv after a --, and at a directory that is not there from here; the process's directory is put back"
+actual=$(route_pwsh "$NOPROJ" "
+    \$ExecutionContext.InvokeCommand.LocationChangedAction = { \$global:moved = 'yes' }
+    \$before = [System.IO.Directory]::GetCurrentDirectory()
+    vv -- --directory '$R/pyver'
+    vv --directory pyver
+    \"moved=[\$global:moved] kept=[\$([System.IO.Directory]::GetCurrentDirectory() -eq \$before)]\"")
+assert_eq "pwsh/vv after a -- or at a directory not there, and the process's directory after" "WARNING: vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
+mock-uv --no-config venv --directory $R/pyver
+mock-uv venv --directory pyver
+moved=[] kept=[True]" "$actual"
 
 # --no-config skipped your own uv settings too: with a uv.toml of yours, uv
 # --config-file reads it in place of a uv.toml or pyproject.toml here or
@@ -1976,6 +2119,27 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
     (cd "$WORK/clones-uv/bare" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/clones-uv/config" "$REAL_UV" run -- python -c pass) >/dev/null 2>&1 || true
     BARE_THREAT=0
     [ -e "$WORK/clones-uv/marks/bare-python" ] && BARE_THREAT=1
+    # mk_dir_clones <dir> - two clones in <dir>, which holds no marker, each
+    # with a program that writes its name to <dir>/marks when it runs: clone/
+    # commits a .python-version that names its tools/py from itself, where
+    # uv venv --directory clone runs, and proj/ one that names proj/tools/py,
+    # from <dir>, where uv venv --project proj runs and looks it up. Plain
+    # uv venv so, from <dir>, ran each program.
+    mk_dir_clones() {
+        mkdir -p "$1/marks" "$1/config" "$1/clone/tools" "$1/proj/tools"
+        printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" clone-program "$WORK/uv_probe/bin/python" > "$1/clone/tools/py"
+        printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" proj-program "$WORK/uv_probe/bin/python" > "$1/proj/tools/py"
+        chmod +x "$1/clone/tools/py" "$1/proj/tools/py"
+        printf './tools/py\n' > "$1/clone/.python-version"
+        printf 'proj/tools/py\n' > "$1/proj/.python-version"
+    }
+    mk_dir_clones "$WORK/dirclones-uv"
+    (cd "$WORK/dirclones-uv" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/dirclones-uv/config" "$REAL_UV" venv --directory clone v0) >/dev/null 2>&1 || true
+    DIR_THREAT=0
+    [ -e "$WORK/dirclones-uv/marks/clone-program" ] && DIR_THREAT=1
+    (cd "$WORK/dirclones-uv" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/dirclones-uv/config" "$REAL_UV" venv --project proj v0) >/dev/null 2>&1 || true
+    PROJECT_THREAT=0
+    [ -e "$WORK/dirclones-uv/marks/proj-program" ] && PROJECT_THREAT=1
     # mk_wheel <dir> <name> <version> - an empty pure-Python wheel of that
     # name and version in <dir>.
     mk_wheel() {
@@ -2224,6 +2388,32 @@ vva=0 VE=[v2]" "$actual"
 17" "$actual"
             assert_not_exists "$sh/the python of the directory the clone's .python-version names did not run" "$C/marks/bare-python"
         fi
+
+        if [ "$DIR_THREAT" = 1 ] || [ "$PROJECT_THREAT" = 1 ]; then
+            echo "[$sh] from a directory with no marker, vv and vva at a clone with --directory, --directory=, UV_WORKING_DIR or --project run none of its code (the real uv)"
+            D="$WORK/dirclones-$sh"
+            mk_dir_clones "$D"
+            actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$D/config" "$sh" -c "
+                . '$PYTHON_SH_SOURCE'
+                unset VIRTUAL_ENV _DEN_VENV_PYTHON
+                cd '$D' || exit 1
+                vv --directory clone v1 >/dev/null 2>&1; echo \"vv=\$?\"
+                vv --directory='$D/clone' v2 >/dev/null 2>&1; echo \"vv=\$?\"
+                export UV_WORKING_DIR=clone; vv v3 >/dev/null 2>&1; echo \"vv=\$?\"; unset UV_WORKING_DIR
+                vva v4 --directory clone >/dev/null 2>&1
+                vv --project proj v5 >/dev/null 2>&1; echo \"vv=\$?\"
+            " 2>/dev/null | tr -d '\r') || true
+            assert_eq "$sh/vv at a clone with --directory, --directory=, UV_WORKING_DIR or --project" "vv=0
+vv=0
+vv=0
+vv=0" "$actual"
+            if [ "$DIR_THREAT" = 1 ]; then
+                assert_not_exists "$sh/vv and vva with --directory ran no program the clone's .python-version names" "$D/marks/clone-program"
+            fi
+            if [ "$PROJECT_THREAT" = 1 ]; then
+                assert_not_exists "$sh/vv with --project ran no program the clone's .python-version names" "$D/marks/proj-program"
+            fi
+        fi
     done
 
     if [ "$PIPCFG_THREAT" = 1 ] || [ "$FINDLINKS_THREAT" = 1 ]; then
@@ -2421,6 +2611,34 @@ VE=[v2]" "$actual"
         assert_not_exists "pwsh/the python of the directory the clone's .python-version names did not run" "$C/marks/bare-python"
     else
         echo "  SKIP: real-uv bare-name .python-version clone checks (uv run here did not run the python of the directory the clone's .python-version names)"
+    fi
+
+    if [ "$DIR_THREAT" = 1 ] || [ "$PROJECT_THREAT" = 1 ]; then
+        echo "[pwsh] from a directory with no marker, vv and vva at a clone with --directory, --directory=, UV_WORKING_DIR or --project run none of its code (the real uv)"
+        D="$WORK/dirclones-pwsh"
+        mk_dir_clones "$D"
+        actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$D/config" pwsh -NoProfile -NonInteractive -Command "
+            . '$PYTHON_PS1_REAL_UV'
+            Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
+            Set-Location -LiteralPath '$D'
+            vv --directory clone v1 *>\$null; \"vv=\$LASTEXITCODE\"
+            vv --directory='$D/clone' v2 *>\$null; \"vv=\$LASTEXITCODE\"
+            \$env:UV_WORKING_DIR = 'clone'; vv v3 *>\$null; \"vv=\$LASTEXITCODE\"; Remove-Item Env:\\UV_WORKING_DIR
+            vva v4 --directory clone *>\$null
+            vv --project proj v5 *>\$null; \"vv=\$LASTEXITCODE\"
+        " 2>/dev/null | tr -d '\r') || true
+        assert_eq "pwsh/vv at a clone with --directory, --directory=, UV_WORKING_DIR or --project" "vv=0
+vv=0
+vv=0
+vv=0" "$actual"
+        if [ "$DIR_THREAT" = 1 ]; then
+            assert_not_exists "pwsh/vv and vva with --directory ran no program the clone's .python-version names" "$D/marks/clone-program"
+        fi
+        if [ "$PROJECT_THREAT" = 1 ]; then
+            assert_not_exists "pwsh/vv with --project ran no program the clone's .python-version names" "$D/marks/proj-program"
+        fi
+    else
+        echo "  SKIP: real-uv vv --directory and --project checks (uv venv here did not run the program a clone's .python-version names)"
     fi
 else
     echo "  SKIP: uv-created venv tests (uv not installed, or no Python it can use offline)"

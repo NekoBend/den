@@ -113,18 +113,22 @@ function pip3 {
 # does not count, so a pyenv ~/.python-version leaves home alone, unless the
 # current directory holds something of the same name. Windows hands uv the
 # directory as PowerShell has it; Linux and macOS resolve its symbolic links
-# first, so there a linked directory's target is searched as well. Not one of
-# the overrides that toggle-uv removes: vv and vva ask it with them off as well.
-function global:_DenPyMarker {
-  # The directory uv runs in, where it looks a name up: PowerShell's location.
-  $here = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+# first, so there a linked directory's target is searched as well.
+# _DenPyMarker <dir> <cwd> - the same for uv started elsewhere (vv and vva,
+# see _DenUvVenvOptions): the walk starts from <dir>, and a bare name is
+# looked up in <cwd>, the directory uv runs in. Not one of the overrides that
+# toggle-uv removes: vv and vva ask it with them off as well.
+function global:_DenPyMarker([string]$Start, [string]$Here) {
+  # The directory uv runs in, where it looks a name up: PowerShell's location,
+  # unless vv names another.
+  if (-not $Here) { $Here = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath }
   # The white space uv trims off a line: Rust's str::trim takes the Unicode
   # White_Space characters. Listed, as .Trim()'s own set follows the Unicode
   # tables of the runtime it runs on.
   $ws = [char[]]@(9, 10, 11, 12, 13, 0x20, 0x85, 0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
     0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000)
   $starts = [System.Collections.Generic.List[string]]::new()
-  $starts.Add($here)
+  $starts.Add($(if ($Start) { $Start } else { $Here }))
   for ($i = 0; $i -lt $starts.Count -and $i -lt 16; $i++) {
     $dir = $starts[$i]
     while ($dir) {
@@ -164,10 +168,10 @@ function global:_DenPyMarker {
           if (-not $bare -or $bare.StartsWith('#', [System.StringComparison]::Ordinal)) { continue }
           try {
             # A drive-relative C:name, on Windows, would resolve here from
-            # this process's own directory on that drive, not from $here as
+            # this process's own directory on that drive, not from $Here as
             # uv's does: it counts as it is.
             if ([System.IO.Path]::IsPathRooted($bare)) { return $path }
-            $entry = [System.IO.Path]::Combine($here, $bare)
+            $entry = [System.IO.Path]::Combine($Here, $bare)
             if ([System.IO.File]::Exists($entry) -or [System.IO.Directory]::Exists($entry)) { return $path }
           } catch { $null = $_ }
         }
@@ -480,27 +484,82 @@ function vd {
   Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
 }
 
-# _DenUvVenvOptions <name> - the options vv and vva put before venv: none, but
-# where _DenPyMarker finds a file, as python runs no uv run there,
-# --no-config, after a warning: uv venv runs the program a .python-version
-# names to ask its version, and a uv.toml's or pyproject.toml's settings can
-# have it run a python the clone ships, or install one from the clone's own
-# files and run it, --python 3.13 given or not. --no-config skips those files,
-# and with them a .python-version that only pins a version, yours in uv's
-# config directory too: the warning says to pick a python with --python, or
-# to type uv venv. With a uv.toml of your own (_DenUvConfig), --config-file
-# reads it, as --no-config alone would not, and still no .python-version.
+# _DenUvVenvOptions <name> <args> - the options vv and vva put before venv,
+# given the arguments they put after it: none, but where _DenPyMarker finds a
+# file, as python runs no uv run there, --no-config, after a warning: uv venv
+# runs the program a .python-version names to ask its version, and a
+# uv.toml's or pyproject.toml's settings can have it run a python the clone
+# ships, or install one from the clone's own files and run it, --python 3.13
+# given or not. --no-config skips those files, and with them a
+# .python-version that only pins a version, yours in uv's config directory
+# too: the warning says to pick a python with --python, or to type uv venv.
+# With a uv.toml of your own (_DenUvConfig), --config-file reads it, as
+# --no-config alone would not, and still no .python-version.
+# The walk starts where uv's does. uv first enters the directory --directory
+# names (else UV_WORKING_DIR, else UV_WORKING_DIRECTORY) and reads from there
+# as it would from here. --project (else UV_PROJECT) names the directory its
+# walk starts from instead, or a pyproject.toml in it, taken from the one uv
+# runs in, where a .python-version's bare name is still looked up. The options
+# count as uv 0.13.6 parses them: as --directory DIR or --directory=DIR; uv
+# refuses a second one, and a value that starts with -, so no other option's
+# value is one. PowerShell drops a typed -- from $Args, so uv gets none.
 # Parity with posix python.sh.
-function _DenUvVenvOptions([string]$Name) {
-  $marker = _DenPyMarker
+function _DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
+  $dir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
+  $project = $env:UV_PROJECT
+  for ($i = 0; $i -lt $UvArgs.Count; $i++) {
+    $arg = [string]$UvArgs[$i]
+    if ($arg -ceq '--') { break }
+    if ($arg -ceq '--directory') { $dir = if (++$i -lt $UvArgs.Count) { [string]$UvArgs[$i] } }
+    elseif ($arg -ceq '--project') { $project = if (++$i -lt $UvArgs.Count) { [string]$UvArgs[$i] } }
+    elseif ($arg.StartsWith('--directory=', [System.StringComparison]::Ordinal)) { $dir = $arg.Substring(12) }
+    elseif ($arg.StartsWith('--project=', [System.StringComparison]::Ordinal)) { $project = $arg.Substring(10) }
+  }
+  $at = 'here or above'
+  $there = 'here or above'
+  if (-not $dir -and -not $project) {
+    $marker = _DenPyMarker
+  }
+  else {
+    # .NET's current directory is the process's, which uv's starts from. Set
+    # to this location and then to the --directory, as uv sets its own, it
+    # reads back as uv's does, with its symbolic links resolved on Linux and
+    # macOS, and GetFullPath takes a relative --project from it, normalized by
+    # name, as uv does. It is put back after. Where it cannot enter the
+    # directory, uv cannot either, and stops before it reads anything.
+    $saved = try { [System.IO.Directory]::GetCurrentDirectory() } catch { $null }
+    try {
+      [System.IO.Directory]::SetCurrentDirectory($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath)
+      if ($dir) { [System.IO.Directory]::SetCurrentDirectory($dir) }
+      $here = [System.IO.Directory]::GetCurrentDirectory()
+      $start = $here
+      if ($project) {
+        $start = [System.IO.Path]::GetFullPath($project)
+        $root = [System.IO.Path]::GetPathRoot($start)
+        if ($start.Length -gt $root.Length) {
+          $start = $start.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        }
+        if ([System.IO.Path]::GetFileName($start) -ceq 'pyproject.toml' -and [System.IO.File]::Exists($start)) {
+          $start = [System.IO.Path]::GetDirectoryName($start)
+        }
+      }
+    }
+    catch { return }
+    finally {
+      if ($saved) { try { [System.IO.Directory]::SetCurrentDirectory($saved) } catch { $null = $_ } }
+    }
+    $at = "in or above $start"
+    $there = 'there or above'
+    $marker = _DenPyMarker $start $here
+  }
   if (-not $marker) { return }
   $cfg = _DenUvConfig
   if ($cfg) {
-    Write-Warning "${Name}: uv --no-config --config-file $cfg venv, as $marker is here or above (reads your uv settings, not a .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)"
+    Write-Warning "${Name}: uv --no-config --config-file $cfg venv, as $marker is $at (reads your uv settings, not a .python-version, uv.toml or pyproject.toml $there, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)"
     '--no-config', '--config-file', $cfg
   }
   else {
-    Write-Warning "${Name}: uv --no-config venv, as $marker is here or above (reads no .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)"
+    Write-Warning "${Name}: uv --no-config venv, as $marker is $at (reads no .python-version, uv.toml or pyproject.toml $there, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)"
     '--no-config'
   }
 }
@@ -511,7 +570,7 @@ function vv {
     Write-Error 'uv is not installed'
     return
   }
-  $options = @(_DenUvVenvOptions 'vv')
+  $options = @(_DenUvVenvOptions 'vv' $Args)
   & (_ResolveCmd 'uv' 'App') @options venv @Args
 }
 
@@ -522,7 +581,7 @@ function vva {
     return
   }
   $name = if ($Args.Count -ge 1) { $Args[0] } else { '.venv' }
-  $options = @(_DenUvVenvOptions 'vva')
+  $options = @(_DenUvVenvOptions 'vva' $Args)
   & (_ResolveCmd 'uv' 'App') @options venv @Args
   if ($LASTEXITCODE -eq 0) { va $name }
 }
