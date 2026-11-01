@@ -494,10 +494,12 @@ function _ArNameComparer([bool]$Windows) {
 # under one name throw, naming both. On Windows the names are compared without
 # regard to case (_ArNameComparer): a case-sensitive folder there (WSL makes
 # them) can hold config.txt and CONFIG.TXT, which would extract onto one file.
-# A source named twice, the same full path in any spelling (p1/src and
-# ./p1/src), is one source and is stored once. Only the same path counts:
-# compared without regard to case, config.txt and CONFIG.TXT in such a folder
-# were taken for one source, and one of the two files was silently left out.
+# A source named twice, as the same full path however it is written (p1/src,
+# ./p1/src, the absolute path), is one source and is stored once. Only the
+# same full path counts: another route to the same folder (a symlinked parent)
+# is a second source, refused when its names clash; and compared without
+# regard to case, config.txt and CONFIG.TXT in such a folder were taken for
+# one source, and one of the two files was silently left out.
 # (`zip -r` stores a path given twice in one spelling once, but refuses
 # p1/src next to ./p1/src: "cannot repeat names in zip file".)
 # $Skip is the final output: a source directory that holds it does not

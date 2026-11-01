@@ -751,9 +751,12 @@ archive() {
         # alike, and every source is asked, whatever its name: a hard link to
         # the output under another name (latest.zip beside backup.zip) still
         # holds the old archive once it is moved aside, and the archiver stats
-        # each source anyway. eval: array syntax would stop a POSIX parser
-        # reading this file, and an array keeps the rebuild linear (see the 7z
-        # case below for why `set -- "$@" x` is not).
+        # each source anyway. Only the sources as given are asked: a hard link
+        # to the output inside a source folder is still stored, since the
+        # archivers cannot leave a file out by its inode. eval: array syntax
+        # would stop a POSIX parser reading this file, and an array keeps the
+        # rebuild linear (see the 7z case below for why `set -- "$@" x` is
+        # not).
         tar.gz|tar.bz2|tar.xz|tar.zst|tar|zip|7z)
             # tar shells zstd out for .tar.zst, so the guard is on zstd, not
             # tar; like every check here, it comes before anything is written.

@@ -304,7 +304,9 @@ _ptar_pipe() {
     shift 3
     # Every source is asked, whatever its name, as in archive(): a hard link
     # to <out> under another name (latest.tgz beside backup.tgz) is the old
-    # archive too, and tar stats each source anyway.
+    # archive too, and tar stats each source anyway. Only the sources as given
+    # are asked: a hard link to <out> inside a source folder is still stored,
+    # since tar cannot leave a file out by its inode.
     if [ -e "$out" ] || [ -L "$out" ]; then
         for s in "$@"; do
             if [ "$s" -ef "$out" ]; then
