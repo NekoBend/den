@@ -419,9 +419,12 @@ def _leaves_workspace(path: Path, prefix: str = _ERR_HOOK) -> bool:
     return True
 
 
-def _resolve_config(spec: dict, override: str | None) -> Path | None:
-    """The config file/dir to operate on, or None (after one line on stderr) when
-    the workspace-relative default is unusable.
+def _resolve_config(
+    spec: dict, override: str | None, prefix: str = _ERR_HOOK
+) -> Path | None:
+    """The config file/dir to operate on, or None (after one line on stderr,
+    starting with `prefix`: install passes its own name) when the
+    workspace-relative default is unusable.
 
     An explicit --config is the user's own choice and is taken as given -- but
     RESOLVED, so the paths derived from it are real ones. Dotfiles managers
@@ -436,7 +439,7 @@ def _resolve_config(spec: dict, override: str | None) -> Path | None:
     if override:
         return Path(override).expanduser().resolve()
     config = Path.cwd() / spec["config"]
-    if _leaves_workspace(config):
+    if _leaves_workspace(config, prefix):
         return None
     # No symlink component left, so resolve() only normalizes the path.
     return config.resolve()
@@ -1327,7 +1330,7 @@ def _cmd_install(argv: list[str]) -> int:
             )
             rc = 1
             continue
-        config = _resolve_config(spec, override)
+        config = _resolve_config(spec, override, _ERR_INSTALL)
         if config is None:  # symlinked workspace config: refuse, write nothing
             rc = 1
             continue

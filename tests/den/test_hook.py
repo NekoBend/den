@@ -1306,6 +1306,34 @@ def test_install_refuses_symlinked_config_dir(tmp_path, monkeypatch, capsys, sym
     assert "is a symlink" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("command", "prefix"),
+    [
+        ("den hook install", "den hook install"),
+        ("den install hook", "den hook install"),
+        ("den uninstall hook", "den hook"),
+    ],
+)
+def test_the_workspace_symlink_refusal_names_the_command(
+    tmp_path, monkeypatch, capsys, symlink, command, prefix
+):
+    # Install's refusal said `den hook:`, unlike every other line install
+    # prints, which start with `den hook install:`.
+    from den.cli import main as cli_main
+
+    outside = tmp_path / "home" / ".claude"
+    outside.mkdir(parents=True)
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    symlink(outside, proj / ".claude")
+    monkeypatch.chdir(proj)
+    assert cli_main([*command.split()[1:], "--tool", "claude"]) == 1
+    err = capsys.readouterr().err.splitlines()
+    refusals = [line for line in err if "(the workspace config must stay" in line]
+    assert len(refusals) == 1
+    assert refusals[0].startswith(f"{prefix}: refusing ")
+
+
 @pytest.mark.parametrize("name", ["settings.local.json", "settings.json"])
 def test_install_refuses_symlinked_config_file(tmp_path, monkeypatch, symlink, name):
     # settings.local.json is the file den writes; settings.json is the one it
