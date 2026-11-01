@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import http.client
 import json
 import os
@@ -52,9 +54,14 @@ def _umask():
 
 
 def _request(port, method, path, body=None, headers=None):
+    """(status, body) of one request. The body goes as JSON, or as it is when
+    it is bytes: json.dumps cannot write every body a test sends."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        payload = None if body is None else json.dumps(body).encode()
+        if body is None or isinstance(body, bytes):
+            payload = body
+        else:
+            payload = json.dumps(body).encode()
         all_headers = {} if body is None else {"Content-Type": "application/json"}
         all_headers.update(headers or {})
         conn.request(method, path, body=payload, headers=all_headers)
@@ -343,36 +350,6 @@ def test_missing_page_reports_itself_not_ports(tmp_path, monkeypatch):
     config = _board.ensure_scaffold(tmp_path)
     with pytest.raises(FileNotFoundError):
         _board.make_server(tmp_path, config, preferred_port=0)
-
-
-def test_existing_instance_survives_non_dict_ping(tmp_path):
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    class NullHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            body = b"null"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *args):
-            pass
-
-    srv = HTTPServer(("127.0.0.1", 0), NullHandler)
-    _serve_in_thread(srv)
-    try:
-        lock = tmp_path / ".den" / "board" / "server.json"
-        lock.parent.mkdir(parents=True)
-        lock.write_text(
-            json.dumps({"pid": 1, "port": srv.server_address[1], "root": str(tmp_path)})
-        )
-        assert _board._existing_instance(tmp_path) is None
-        assert not lock.exists(), "foreign responder -> stale lock cleared"
-    finally:
-        srv.shutdown()
-        srv.server_close()
 
 
 def test_report_gets_auto_id_and_re(served):
@@ -697,6 +674,225 @@ _BAD_LINES = [
 ]
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        *_BAD_LINES,
+        pytest.param(b'{"title": "caf\xe9"}\n', id="not-utf-8"),
+        pytest.param("{not json\n", id="invalid"),
+    ],
+)
+def test_scaffold_reads_a_board_json_json_cannot_take_as_invalid(tmp_path, capsys, bad):
+    # Each one but the invalid JSON raised out of ensure_scaffold, and
+    # `den board` stopped with a traceback at start. A cloned repo can ship
+    # board.json. Run in a new thread, where the [deep] skip was decided.
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    data = bad if isinstance(bad, bytes) else bad.encode()
+    cfg_path.write_bytes(data)
+    assert _in_a_new_thread(_board.ensure_scaffold, tmp_path) == _board._DEFAULT_CONFIG
+    assert f"unreadable {cfg_path}" in capsys.readouterr().err
+    assert cfg_path.read_bytes() == data, "an edit is never clobbered"
+
+
+def _deep_buttons(depth):
+    """The buttons of a board.json `depth` levels deep: the object, its buttons
+    and one well-formed button are three levels, and the button's "x" holds
+    the rest. Only buttons den board keeps reach /api/config; nested in the
+    list itself, the depth would be a button it leaves out."""
+    rest = depth - 3
+    return '[{"id": "deep", "label": "Deep", "x": ' + "[" * rest + "]" * rest + "}]"
+
+
+@pytest.mark.parametrize(
+    "buttons",
+    [
+        pytest.param('[{"id": "bug", "label": "Bug", "color": NaN}]', id="NaN"),
+        pytest.param('[{"id": "bug", "label": "Bug", "size": 1e400}]', id="1e400"),
+        pytest.param(_deep_buttons(1000), id="deep"),
+    ],
+)
+def test_scaffold_reads_a_board_json_the_page_cannot_get_as_invalid(
+    tmp_path, capsys, buttons
+):
+    # /api/config sends the buttons as they are. NaN, and the inf json.loads
+    # makes of 1e400, went out as NaN and Infinity, which the page cannot
+    # parse, and buttons nested near json.loads' limit dropped the connection
+    # (see the test below). Either way the page showed no buttons, and no
+    # report could be filed.
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    data = ('{"title": "Rig", "buttons": ' + buttons + "}\n").encode()
+    cfg_path.write_bytes(data)
+    assert _in_a_new_thread(_board.ensure_scaffold, tmp_path) == _board._DEFAULT_CONFIG
+    assert f"unreadable {cfg_path}" in capsys.readouterr().err
+    assert cfg_path.read_bytes() == data, "an edit is never clobbered"
+
+
+def test_scaffold_reads_a_board_json_nested_past_the_bound_as_invalid(tmp_path, capsys):
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    bound = _board._MAX_CONFIG_DEPTH
+    buttons = _deep_buttons(bound)
+    cfg_path.write_text('{"buttons": ' + buttons + "}\n")
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == json.loads(buttons)
+    assert capsys.readouterr().err == ""
+    cfg_path.write_text('{"buttons": ' + _deep_buttons(bound + 1) + "}\n")
+    assert _board.ensure_scaffold(tmp_path) == _board._DEFAULT_CONFIG
+    expected = f"unreadable {cfg_path}: nested deeper than {bound} levels"
+    assert expected in capsys.readouterr().err
+
+
+def test_config_answers_past_a_board_json_nested_near_the_limit(
+    served, capsys, parse_limit
+):
+    # json.loads read such a board.json at start, and /api/config, which nests
+    # the buttons as deep from a server thread further down its stack, could
+    # not send it: json.dumps raised there, and the connection dropped.
+    # ensure_scaffold runs in a new thread, near the top of its stack, as
+    # `den board` runs it.
+    root, server, port = served
+    cfg_path = root / ".den" / "board" / "board.json"
+    for depth in _near(parse_limit):
+        buttons = _deep_buttons(depth)
+        cfg_path.write_text('{"buttons": ' + buttons + "}\n")
+        server.board_config = _in_a_new_thread(_board.ensure_scaffold, root)
+        status, body = _request(port, "GET", "/api/config")
+        assert status == 200, f"depth {depth}"
+        # The config's own buttons while the response can hold them, and the
+        # defaults past that.
+        listed = _in_a_new_thread(_strict_json, body)["buttons"]
+        assert listed == _board._DEFAULT_CONFIG["buttons"] or (
+            f'"buttons": {buttons}'.encode() in body
+        ), f"depth {depth}"
+    capsys.readouterr()
+
+
+# board.json buttons den board leaves out: a button needs to be an object with
+# a string id /api/report takes (not blank, at most 64 characters), and a
+# string label and color when it has them. The page drew a button through
+# conversions that call the value's own toString, which throw on an object
+# whose toString is not a function, and read b.id off a null one; such a
+# button stopped it part way through drawing its buttons or reports. A button
+# whose id /api/report refuses was drawn, and every click on it got a 400.
+_MALFORMED_BUTTONS = [
+    pytest.param("null", id="null"),
+    pytest.param('"bug"', id="string"),
+    pytest.param('["bug", "Bug"]', id="list"),
+    pytest.param('{"label": "Bug"}', id="no-id"),
+    pytest.param('{"id": 7, "label": "Bug"}', id="id-number"),
+    pytest.param('{"id": {"toString": null}, "label": "Bug"}', id="id-object"),
+    pytest.param('{"id": "", "label": "Bug"}', id="id-empty"),
+    pytest.param('{"id": " \\t", "label": "Bug"}', id="id-blank"),
+    pytest.param('{"id": "' + "x" * 65 + '", "label": "Bug"}', id="id-65"),
+    pytest.param('{"id": "bug", "label": {"toString": null}}', id="label-object"),
+    pytest.param('{"id": "bug", "label": 7}', id="label-number"),
+    pytest.param('{"id": "bug", "color": {"toString": null}}', id="color-object"),
+    pytest.param('{"id": "bug", "color": 255}', id="color-number"),
+]
+_NOTE_BUTTON = '{"id": "note", "label": "Note"}'
+_OK_BUTTON = '{"id": "ok", "label": "OK", "color": "#0ca30c"}'
+
+
+@pytest.mark.parametrize("bad", _MALFORMED_BUTTONS)
+def test_scaffold_leaves_out_a_malformed_button(tmp_path, capsys, bad):
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    data = f'{{"title": "Rig", "buttons": [{_NOTE_BUTTON}, {bad}, {_OK_BUTTON}]}}\n'
+    cfg_path.write_text(data)
+    config = _board.ensure_scaffold(tmp_path)
+    assert config["title"] == "Rig"
+    assert config["buttons"] == [json.loads(_NOTE_BUTTON), json.loads(_OK_BUTTON)]
+    assert f"leaving out button 2 of {cfg_path}" in capsys.readouterr().err
+    assert cfg_path.read_text() == data, "an edit is never clobbered"
+
+
+@pytest.mark.parametrize(
+    "buttons",
+    [
+        pytest.param("[null]", id="none-left"),
+        pytest.param('[{"id": {"toString": null}}, 7]', id="none-left-of-two"),
+        pytest.param(
+            '[{"id": "", "label": "Bug"}, {"id": "' + "x" * 65 + '"}]',
+            id="none-left-a-report-takes",
+        ),
+        pytest.param('{"id": "bug", "label": "Bug"}', id="not-a-list"),
+        pytest.param("null", id="null"),
+    ],
+)
+def test_scaffold_falls_back_to_the_default_buttons_when_none_is_left(
+    tmp_path, capsys, buttons
+):
+    # A page without buttons can file no report. Before, a list of buttons it
+    # could not draw left it none, and so did buttons that are not a list.
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    data = '{"title": "Rig", "buttons": ' + buttons + "}\n"
+    cfg_path.write_text(data)
+    expected = {**_board._DEFAULT_CONFIG, "title": "Rig"}
+    assert _board.ensure_scaffold(tmp_path) == expected
+    assert "using the default" in capsys.readouterr().err
+    assert cfg_path.read_text() == data, "an edit is never clobbered"
+
+
+def test_scaffold_names_each_button_it_leaves_out(tmp_path, capsys):
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(f'{{"buttons": [null, {_NOTE_BUTTON}, 7, {_OK_BUTTON}]}}\n')
+    kept = [json.loads(_NOTE_BUTTON), json.loads(_OK_BUTTON)]
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == kept
+    assert f"leaving out buttons 1, 3 of {cfg_path}" in capsys.readouterr().err
+    # Ten are named, and "..." stands for the rest.
+    cfg_path.write_text('{"buttons": [' + "null, " * 12 + _NOTE_BUTTON + "]}\n")
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == kept[:1]
+    named = "leaving out buttons 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ... of"
+    assert named in capsys.readouterr().err
+
+
+def test_scaffold_keeps_buttons_without_a_label_or_color(tmp_path, capsys):
+    # The page draws a button without a label by its id, and one without a
+    # color in the page's own; a null label or color counts as none. Other
+    # fields a button holds are kept as they are. An empty list stays empty.
+    cfg_path = tmp_path / ".den" / "board" / "board.json"
+    cfg_path.parent.mkdir(parents=True)
+    buttons = [
+        {"id": "crash"},
+        {"id": "hang", "label": None, "color": None},
+        {"id": "odd", "label": "Odd", "color": "#b8860b", "keys": [{"n": 1}]},
+    ]
+    cfg_path.write_text(json.dumps({"buttons": buttons}))
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == buttons
+    cfg_path.write_text('{"buttons": []}')
+    assert _board.ensure_scaffold(tmp_path)["buttons"] == []
+    assert capsys.readouterr().err == ""
+
+
+def test_every_button_the_config_sends_files_a_report(served, capsys):
+    # /api/report takes a button only when it is not blank and holds at most
+    # 64 characters. den board sent the page buttons whose id it refuses, and
+    # named none of them: the page drew each one, and every click on it got a
+    # 400 that does not name board.json. A 64-character id is one it takes.
+    root, server, port = served
+    cfg_path = root / ".den" / "board" / "board.json"
+    buttons = [
+        {"id": "", "label": "Empty"},
+        {"id": "note", "label": "Note"},
+        {"id": "   ", "label": "Blank"},
+        {"id": "x" * 64, "label": "Longest"},
+        {"id": "x" * 65, "label": "Too long"},
+    ]
+    cfg_path.write_text(json.dumps({"buttons": buttons}))
+    server.board_config = _board.ensure_scaffold(root)
+    status, body = _request(port, "GET", "/api/config")
+    assert status == 200
+    sent = json.loads(body)["buttons"]
+    for button in sent:
+        report = {"button": button["id"], "text": "filed"}
+        assert _request(port, "POST", "/api/report", report)[0] == 200, button
+    assert sent == [buttons[1], buttons[3]]
+    assert f"leaving out buttons 1, 3, 5 of {cfg_path}" in capsys.readouterr().err
+
+
 def test_reactions_skip_lines_json_cannot_parse(tmp_path):
     # Both come before the reaction: a read that raised on them would never
     # reach it, and would raise again on every poll after.
@@ -736,11 +932,26 @@ def test_report_list_answers_past_a_line_json_cannot_parse(served, bad):
 
 
 def _listed_reports(body):
-    """(button, text) of each report an /api/reports body lists, leaving out
-    the ones that are not objects: a line that parses lists as itself, and
-    can be nested as deep as a handler could send (so decode it as one)."""
+    """(button, text) of each report an /api/reports body lists, and anything
+    else it lists as itself. A report can be nested as deep as a handler could
+    send, so the body is decoded in a new thread, as a handler encodes it."""
     reports = _in_a_new_thread(json.loads, body)["reports"]
-    return [(r["button"], r["text"]) for r in reports if isinstance(r, dict)]
+    return [(r["button"], r["text"]) if isinstance(r, dict) else r for r in reports]
+
+
+def test_report_list_leaves_out_lines_that_are_not_objects(served):
+    # Each one was listed as itself, and the page threw on null's rep.button:
+    # no report rendered while such a line stayed in the window.
+    root, _server, port = served
+    before = {"button": "note", "text": "before"}
+    assert _request(port, "POST", "/api/report", before)[0] == 200
+    with _board._reports_path(root).open("a") as f:
+        f.write("null\n[1]\n")
+    after = {"button": "bug", "text": "after"}
+    assert _request(port, "POST", "/api/report", after)[0] == 200
+    status, body = _request(port, "GET", "/api/reports")
+    assert status == 200
+    assert _listed_reports(body) == [("note", "before"), ("bug", "after")]
 
 
 # The escape of a lone surrogate. json.loads accepts it, but the str it gives
@@ -827,35 +1038,49 @@ def test_lists_leave_out_numbers_strict_json_cannot_carry(served, number):
 
 
 @pytest.mark.parametrize("polled_before", [False, True])
-@pytest.mark.parametrize("number", ["NaN", "1e400"])
-def test_reaction_with_a_number_strict_json_cannot_carry_is_left_out(
-    served, number, polled_before
+@pytest.mark.parametrize(
+    "value",
+    [
+        # Numbers strict JSON cannot carry. Kept, they put NaN or Infinity
+        # into the body, which the page cannot parse; so the reaction was
+        # left out, and its task showed open.
+        "NaN",
+        "1e400",
+        # An object whose toString is not a function: the page threw on it,
+        # and stopped rendering, on every poll.
+        '{"toString": null}',
+        "7",
+    ],
+)
+def test_reaction_keeps_a_ts_and_text_only_when_they_are_strings(
+    served, value, polled_before
 ):
-    # Kept, such a reaction put NaN or Infinity into every /api/agent body,
-    # past the reports window too, since settlement is read over the whole
-    # file. Left out, its task shows as open.
+    # Settlement is read over the whole file, so a reaction stays in every
+    # /api/agent body past the reports window, and after a restart. The
+    # server writes strings to ts and text; anything else is listed as None,
+    # and the task stays answered.
     root, _server, port = served
     task_id = _board._append_agent(root, "task", "press done", None)
     reports = _board._reports_path(root)
     reports.write_text(
-        f'{{"button": "task-done", "re": "{task_id}", "ts": {number}}}\n'
+        f'{{"button": "task-done", "re": "{task_id}", '
+        f'"ts": {value}, "text": {value}}}\n'
     )
 
-    def listed_task():
+    def listed_reaction():
         status, body = _request(port, "GET", "/api/agent")
         assert status == 200
         (task,) = _strict_json(body)["entries"]
-        return task
+        return task.get("reaction")
 
+    reaction = {"button": "task-done", "ts": None, "text": None}
     if polled_before:
-        assert "reaction" not in listed_task()
+        assert listed_reaction() == reaction
     after = reports.stat().st_size
     note = {"button": "note", "text": "x" * _board._MAX_TEXT_LEN}
     while reports.stat().st_size - after <= _board._MAX_LIST_BYTES:
         assert _request(port, "POST", "/api/report", note)[0] == 200
-    assert "reaction" not in listed_task()
-    _react(port, task_id)
-    assert listed_task()["reaction"]["button"] == "task-done"
+    assert listed_reaction() == reaction
 
 
 def _nested(depth):
@@ -889,15 +1114,20 @@ def _near(limit):
 
 def test_report_list_answers_past_a_report_nested_near_the_limit(served, parse_limit):
     root, _server, port = served
+    before, deep, after = ("note", "before"), ("odd", "deep"), ("bug", "after")
     for depth in _near(parse_limit):
+        # An object, as /api/reports lists no other line: the array in it is
+        # what takes the report near the limit.
+        report = '{"button": "odd", "text": "deep", "x": ' + _nested(depth - 1) + "}"
         _board._reports_path(root).write_text(
             '{"button": "note", "text": "before"}\n'
-            + _nested(depth)
+            + report
             + '\n{"button": "bug", "text": "after"}\n'
         )
         status, body = _request(port, "GET", "/api/reports")
         assert status == 200, f"depth {depth}"
-        assert _listed_reports(body) == [("note", "before"), ("bug", "after")]
+        # Listed while the response can hold it, and left out past that.
+        assert _listed_reports(body) in ([before, after], [before, deep, after])
 
 
 def test_agent_list_answers_past_an_entry_nested_near_the_limit(served, parse_limit):
@@ -927,6 +1157,44 @@ def test_agent_list_answers_past_a_reaction_nested_near_the_limit(served, parse_
         assert _in_a_new_thread(json.loads, body)["entries"][0]["id"] == task_id
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(_BIG_INT_LINE, id="big-int"),
+        # As deep as a body may be, at two bytes a level. Where the stack lets
+        # json.loads parse it (CPython 3.14 sizes its limit to the stack), it
+        # is an array, and gets the 400 of every body that is not an object.
+        pytest.param(_nested(_board._MAX_BODY_BYTES // 2), id="deep"),
+    ],
+)
+def test_report_post_answers_a_body_json_cannot_parse(served, body):
+    # The ValueError and the RecursionError escaped do_POST, and the
+    # connection dropped without an answer.
+    root, _server, port = served
+    assert _request(port, "POST", "/api/report", body.encode())[0] == 400
+    assert not _board._reports_path(root).exists()
+    after = {"button": "note", "text": "after"}
+    assert _request(port, "POST", "/api/report", after)[0] == 200
+
+
+@pytest.mark.parametrize("field", ["button", "text", "re"])
+def test_report_post_stores_text_utf_8_cannot_carry(served, field):
+    # A browser's JSON.stringify writes the escape of a lone surrogate, as
+    # _request's json.dumps does here. The strict UTF-8 write in _append_line
+    # raised on what json.loads made of it: the connection dropped, and
+    # nothing was stored.
+    root, _server, port = served
+    body = {"button": "note", "text": "ok", "re": "t1", field: "caf\udce9"}
+    status, answer = _request(port, "POST", "/api/report", body)
+    assert status == 200
+    (line,) = _board._reports_path(root).read_text(encoding="utf-8").splitlines()
+    stored = json.loads(line)
+    assert (stored["id"], stored[field]) == (json.loads(answer)["id"], "caf?")
+    status, listed = _request(port, "GET", "/api/reports")
+    assert status == 200
+    assert json.loads(listed)["reports"] == [stored]
+
+
 def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):
     reports = _board._reports_path(tmp_path)
     reports.parent.mkdir(parents=True)
@@ -946,6 +1214,76 @@ def test_reactions_survive_a_failed_read(tmp_path, monkeypatch):
         assert "t1" in index.snapshot(), "a read that fails once reopens nothing"
     reports.unlink()
     assert index.snapshot() == {}, "a deleted file settles nothing"
+
+
+class _ReadsFailFrom:
+    """An open reports.jsonl whose reads fail from byte `start` on, as on a
+    disk error part way through the file."""
+
+    def __init__(self, f, start):
+        self._f = f
+        self._start = start
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self._f.close()
+
+    def fileno(self):
+        return self._f.fileno()
+
+    def seek(self, *args):
+        return self._f.seek(*args)
+
+    def read(self, size=-1):
+        if self._f.tell() >= self._start:
+            raise OSError(errno.EIO, "Input/output error")
+        return self._f.read(size)
+
+
+@pytest.mark.parametrize("change", ["replaced", "edited", "appended"])
+def test_reactions_survive_a_read_that_fails_part_way(tmp_path, monkeypatch, change):
+    # A file replaced, or edited where its seam was, is read again from byte
+    # 0. The index was cleared before that read, so one that failed part way
+    # left only the lines it had taken in, and answered tasks showed open
+    # until a read got through. An append keeps what it took in.
+    reports = _board._reports_path(tmp_path)
+    reports.parent.mkdir(parents=True)
+    old = (json.dumps({"button": "task-done", "re": "t1"}) + "\n").encode()
+    reports.write_bytes(old)
+    index = _board._Reactions(tmp_path)
+    done = {"button": "task-done", "ts": None, "text": None}
+    cant = {"button": "task-cant", "ts": None, "text": None}
+    assert index.snapshot() == {"t1": done}
+
+    first = (json.dumps({"button": "task-done", "re": "t2"}) + "\n").encode()
+    second = (json.dumps({"button": "task-cant", "re": "t1"}) + "\n").encode()
+    start = len(first)  # a read from the start fails after the first line
+    if change == "replaced":  # as many editors save
+        saved = reports.with_name("reports.jsonl.new")
+        saved.write_bytes(first + second)
+        saved.replace(reports)
+    elif change == "edited":  # in place, from the first line on
+        reports.write_bytes(first + second)
+    else:
+        with reports.open("ab") as f:
+            f.write(first + second)
+        start += len(old)
+    monkeypatch.setattr(_board, "_READ_CHUNK", len(first))  # a line per read
+    real_open = Path.open
+
+    def open_failing(self, *args, **kwargs):
+        f = real_open(self, *args, **kwargs)
+        return _ReadsFailFrom(f, start) if self == reports else f
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "open", open_failing)
+        if change == "appended":
+            assert index.snapshot() == {"t1": done, "t2": done}
+        else:
+            assert index.snapshot() == {"t1": done}, "an answer was dropped"
+    assert index.snapshot() == {"t1": cant, "t2": done}, "the next poll took the rest"
 
 
 def test_tasks_still_list_with_a_directory_at_reports_jsonl(served):
@@ -1230,6 +1568,122 @@ def test_non_utf8_lock_does_not_block_release(tmp_path):
     lock = _board._lock_path(tmp_path)
     lock.parent.mkdir(parents=True)
     lock.write_bytes(b"\xff\xfe not json at all")
+    _board._release_lock(tmp_path)  # must not raise
+    assert lock.is_file(), "not ours to remove: no readable pid says so"
+
+
+@pytest.mark.parametrize("bad", _BAD_LINES)
+def test_lock_json_cannot_parse_reads_as_an_invalid_lock(tmp_path, bad):
+    # A deep lock raised RecursionError out of _read_lock, and so out of
+    # `den board`, which reads the lock at start and at exit. Run in a new
+    # thread, where the [deep] skip was decided.
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_text(bad)
+    assert _in_a_new_thread(_board._read_lock, tmp_path) is None
+    assert _in_a_new_thread(_board._existing_instance, tmp_path) is None
+    _in_a_new_thread(_board._release_lock, tmp_path)  # must not raise
+    assert lock.is_file(), "left in place, as an unparseable lock always was"
+
+
+@pytest.mark.parametrize("body", [pytest.param("null", id="null"), *_BAD_LINES])
+def test_existing_instance_survives_non_dict_ping(tmp_path, body):
+    # Whatever listens on the port a lock names answers the ping. One nested
+    # too deep raised RecursionError out of _existing_instance, and `den
+    # board` stopped at start. Run in a new thread, where the [deep] skip was
+    # decided.
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            data = body.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    _serve_in_thread(srv)
+    try:
+        lock = tmp_path / ".den" / "board" / "server.json"
+        lock.parent.mkdir(parents=True)
+        lock.write_text(
+            json.dumps({"pid": 1, "port": srv.server_address[1], "root": str(tmp_path)})
+        )
+        assert _in_a_new_thread(_board._existing_instance, tmp_path) is None
+        assert not lock.exists(), "foreign responder -> stale lock cleared"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(b"SSH-2.0-OpenSSH_9.6\r\n", id="not-http"),
+        pytest.param(
+            b"HTTP/1.0 200 OK\r\nX: " + b"a" * 70_000 + b"\r\n\r\n",
+            id="header-line-too-long",
+        ),
+        pytest.param(
+            b"HTTP/1.0 200 OK\r\nContent-Length: 100\r\n\r\n{}", id="body-cut-short"
+        ),
+    ],
+)
+def test_existing_instance_survives_a_ping_answer_http_client_rejects(tmp_path, answer):
+    # http.client raises HTTPException, not an OSError, on each of these: it
+    # escaped _existing_instance, and `den board` stopped at start. A stale
+    # lock can name a port another program listens on now.
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+
+        def answer_once():
+            conn, _address = srv.accept()
+            with conn, contextlib.suppress(OSError):  # the client may hang up
+                conn.recv(65536)
+                conn.sendall(answer)
+
+        thread = threading.Thread(target=answer_once, daemon=True)
+        thread.start()
+        lock = _board._lock_path(tmp_path)
+        lock.parent.mkdir(parents=True)
+        lock.write_text(json.dumps({"pid": 1, "port": srv.getsockname()[1]}))
+        assert _board._existing_instance(tmp_path) is None
+        assert not lock.exists(), "foreign responder -> stale lock cleared"
+        thread.join(timeout=5)
+
+
+# json.loads makes float inf of each, and int() raises OverflowError on it.
+_INFINITE = ["1e400", "Infinity", "-Infinity"]
+
+
+@pytest.mark.parametrize("number", _INFINITE)
+def test_den_board_starts_past_a_lock_whose_port_is_infinite(
+    tmp_path, monkeypatch, number
+):
+    # The OverflowError escaped _existing_instance, and `den board` stopped
+    # with a traceback at start.
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_text(f'{{"pid": 1, "port": {number}}}\n')
+    assert _board._existing_instance(tmp_path) is None
+    assert lock.is_file(), "left in place, as an unparseable lock always was"
+    monkeypatch.setattr(_board.time, "sleep", lambda _seconds: None)  # no twin
+    assert _board._acquire(tmp_path, open_browser=False) is None, "did not start"
+    assert lock.read_bytes() == b"", "taken over: the new claim is this one"
+
+
+@pytest.mark.parametrize("number", _INFINITE)
+def test_release_lock_passes_a_lock_whose_pid_is_infinite(tmp_path, number):
+    # The same OverflowError escaped _release_lock, at exit.
+    lock = _board._lock_path(tmp_path)
+    lock.parent.mkdir(parents=True)
+    lock.write_text(f'{{"pid": {number}, "port": 1}}\n')
     _board._release_lock(tmp_path)  # must not raise
     assert lock.is_file(), "not ours to remove: no readable pid says so"
 
