@@ -1696,6 +1696,43 @@ def test_the_base_and_the_changed_file_count_go_to_stderr(tmp_path: Path) -> Non
     assert "merge-base" not in proc.stderr, proc.stderr
 
 
+def test_a_base_that_git_would_read_as_an_option_is_refused(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # --base went to `git diff` as given, so `--base=--output=<file>` made
+    # git write its diff over that file, inside the tree or outside it, list
+    # no changed file and exit 0 with the real broken reference unreported.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    notes = write(tmp_path, "notes.txt", "precious notes\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    git(tmp_path, "tag", "-a", "v1", "-m", "v1")
+    write(tmp_path, "lib.py", "# gone\n")
+    outside = tmp_path_factory.mktemp("outside") / "outside.txt"
+    outside.write_text("keep\n", encoding="utf-8")
+
+    for target in (notes, outside):
+        proc = run(f"--base=--output={target}", "--root", str(tmp_path))
+        assert proc.returncode == 1, proc.stderr
+        assert "an option, not a commit" in proc.stderr, proc.stderr
+        assert proc.stdout == "", proc.stdout
+    assert notes.read_text(encoding="utf-8") == "precious notes\n"
+    assert outside.read_text(encoding="utf-8") == "keep\n"
+
+    proc = run("--base", "no-such-ref", "--root", str(tmp_path))
+    assert proc.returncode == 1, proc.stderr
+    assert "no-such-ref: no such commit" in proc.stderr, proc.stderr
+
+    # an annotated tag and a revision expression still name the commit
+    for base in ("v1", "HEAD~0"):
+        proc = run("--base", base, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert f"base={base}: 1 changed file examined" in proc.stderr, proc.stderr
+        assert report(proc, tmp_path) == ["app.py:1:broken_ref:widget:widget()"]
+
+
 def test_code_audit_tells_the_model_to_pass_a_base_for_committed_changes() -> None:
     skills = SCRIPT.parents[2] / "skills" / "code-audit"
     step3 = (skills / "SKILL.md").read_text(encoding="utf-8")

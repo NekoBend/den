@@ -190,6 +190,26 @@ def _repo_root(root: Path) -> Path:
     return Path(out.removesuffix("\n")).resolve()
 
 
+def _resolve_base(base: str, root: Path) -> str:
+    """The object ID of the commit `base` names. Raise GitError if none.
+
+    The ID, not `base` itself, is what `git diff` and `git show` get. git
+    reads an argument that starts with `-` as an option of its own:
+    `--base=--output=notes.txt` made `git diff` write over notes.txt, list
+    no changed file and end the check with exit 0. Such a base is refused
+    before git sees it.
+    """
+    if base.startswith("-"):
+        raise GitError(f"--base {base}: an option, not a commit")
+    try:
+        out = _run_git_bytes(
+            ["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], root
+        )
+    except GitError:
+        raise GitError(f"--base {base}: no such commit") from None
+    return out.decode("ascii").strip()
+
+
 def _changed_files(
     base: str, root: Path, repo_root: Path, lang_ext: str | None
 ) -> list[tuple[Path, Path]]:
@@ -419,7 +439,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         repo_root = _repo_root(root)
-        changed = _changed_files(args.base, root, repo_root, ext_filter)
+        base = _resolve_base(args.base, root)
+        changed = _changed_files(base, root, repo_root, ext_filter)
     except GitError as exc:
         print(f"git error: {exc}", file=sys.stderr)
         return 1
@@ -434,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"{PROG} base={args.base}: {count} examined{hint}", file=sys.stderr)
 
-    words, members, removed_from = _removed_symbols(changed, args.base, repo_root)
+    words, members, removed_from = _removed_symbols(changed, base, repo_root)
     if removed_from:
         _report(words, members, removed_from, root)
     return 0
