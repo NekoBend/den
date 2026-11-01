@@ -1,5 +1,6 @@
 """Tests for den install shell (den/_shell.py)."""
 
+import errno
 import os
 import re
 import shutil
@@ -1072,6 +1073,173 @@ def test_install_shell_fails_when_it_cannot_replace_the_profile(
     err = capsys.readouterr().err
     assert f"den install shell: left {prof} as it was, coreutils' block" in err
     assert "it has 2 hard links" in err
+
+
+# The backup is a new file, so it took what its directory gives a new file: a
+# setgid directory's group, a default ACL's named users. Once the profile's mode
+# opened the copy's group bits (and the ACL mask with them), they could read a
+# copy of a profile the profile itself kept from them. The copy now takes the
+# profile's owner, group and extended attributes while it is still 0600, as an
+# rc file's replacement does (_match_access), and when it cannot, no copy is
+# left and the profile stays as it is, coreutils' block included.
+
+
+def _xattrs(path):
+    return {name: os.getxattr(path, name) for name in os.listxattr(path)}
+
+
+def test_disable_coreutils_readline_backup_does_not_take_its_directorys_acl(
+    tmp_path, let_65534_in
+):
+    prof = tmp_path / "ps" / "p.ps1"
+    prof.parent.mkdir()
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(0o640)
+    let_65534_in(prof.parent)  # uid 65534 gets every new file
+    assert "system.posix_acl_access" not in os.listxattr(prof), "made before the ACL"
+    assert _shell._disable_coreutils_readline(prof) is True
+    bak = prof.with_name("p.ps1.den.bak")
+    assert "secret" in bak.read_text()
+    assert "system.posix_acl_access" not in os.listxattr(bak), "65534 may not read it"
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o640
+
+
+def test_disable_coreutils_readline_backup_keeps_the_profiles_acl_and_attributes(
+    tmp_path, let_65534_in, set_xattr
+):
+    prof = tmp_path / "p.ps1"
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    let_65534_in(prof)  # uid 65534 may read it too, so its copy as well
+    set_xattr(prof, "user.note", b"the user's own")
+    before = _xattrs(prof)
+    assert _shell._disable_coreutils_readline(prof) is True
+    bak = tmp_path / "p.ps1.den.bak"
+    assert _xattrs(bak) == before
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o640
+
+
+def test_disable_coreutils_readline_opens_the_backup_only_once_its_acl_is_the_profiles(
+    tmp_path, monkeypatch, let_65534_in
+):
+    """The mode is the last thing the copy takes: set while the copy still had
+    its directory's ACL, it let the user that ACL names read it."""
+    prof = tmp_path / "ps" / "p.ps1"
+    prof.parent.mkdir()
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(0o640)
+    let_65534_in(prof.parent)
+    seen = []
+    chmod, fchmod = os.chmod, os.fchmod
+
+    def watched(target):
+        # An open file (fchmod) by the name it was opened as.
+        if isinstance(target, int):
+            name = Path(f"/proc/self/fd/{target}").readlink().name
+        else:
+            name = Path(target).name
+        if name.endswith(".den.bak"):
+            seen.append("system.posix_acl_access" in os.listxattr(target))
+
+    def watch_chmod(target, mode, *args, **kwargs):
+        watched(target)
+        return chmod(target, mode, *args, **kwargs)
+
+    def watch_fchmod(fd, mode):
+        watched(fd)
+        return fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "chmod", watch_chmod)
+    monkeypatch.setattr(os, "fchmod", watch_fchmod)
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert seen == [False], "the copy still had its directory's ACL when opened"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX groups")
+def test_disable_coreutils_readline_backup_keeps_the_profiles_group_in_a_setgid_dir(
+    tmp_path,
+):
+    """A new file in a setgid directory takes the directory's group, which
+    could read the copy of a profile kept from it. Skipped for a user with one
+    group (see the stand-in test below)."""
+    d = tmp_path / "ps"
+    d.mkdir()
+    probe = d / "probe"
+    probe.touch()
+    own = probe.stat().st_gid
+    probe.unlink()
+    others = sorted(set(os.getgroups()) - {own})
+    if not others:
+        pytest.skip("den's user has no second group to give the directory")
+    prof = d / "p.ps1"
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(0o640)
+    os.chown(d, -1, others[0])
+    d.chmod(0o2775)
+    assert _shell._disable_coreutils_readline(prof) is True
+    bak = d / "p.ps1.den.bak"
+    assert bak.stat().st_gid == own
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="POSIX owners; root may give a file to anyone",
+)
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_disable_coreutils_readline_keeps_the_profile_if_a_copy_cannot_take_its_owner(
+    tmp_path, capsys, foreign_stat, whose
+):
+    # Only root gives a file away, so stat reports another owner or group for
+    # the profile here, and the chown that would carry it to the copy fails.
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    foreign_stat(prof.name, whose)
+    assert _shell._disable_coreutils_readline(prof) is None
+    assert prof.read_text() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.ps1"], "no copy is left"
+    assert (
+        f"den install shell: not replacing {prof}: cannot back it up: copying it"
+        " would change its owner or group ("
+    ) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("setxattr", ["fails", "does nothing"])
+def test_disable_coreutils_readline_keeps_the_profile_if_a_copy_cannot_take_its_xattrs(
+    tmp_path, monkeypatch, capsys, set_xattr, setxattr
+):
+    prof = tmp_path / "p.ps1"
+    original = "keep\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    set_xattr(prof, "user.note", b"the user's own")
+
+    def refuse(*_a, **_k):
+        if setxattr == "fails":
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "setxattr", refuse)
+    assert _shell._disable_coreutils_readline(prof) is None
+    assert prof.read_text() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.ps1"], "no copy is left"
+    expected = "lose" if setxattr == "fails" else "change"
+    assert f"copying it would {expected} its extended attributes or ACL" in (
+        capsys.readouterr().err
+    )
+
+
+def test_disable_coreutils_readline_leaves_no_cut_backup_when_its_write_fails(
+    tmp_path, capsys, file_size_limit
+):
+    # A copy cut short at .den.bak looked like the profile's backup.
+    prof = tmp_path / "p.ps1"
+    original = "$env:A = 1\n" * 300 + "\n" + _CU_BLOCK
+    prof.write_text(original)
+    with file_size_limit(1024):
+        assert _shell._disable_coreutils_readline(prof) is None
+    assert prof.read_text() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.ps1"], "no copy is left"
+    err = capsys.readouterr().err
+    assert f"den install shell: not replacing {prof}: cannot back it up: " in err
 
 
 def test_disable_coreutils_readline_preserves_utf16(tmp_path):

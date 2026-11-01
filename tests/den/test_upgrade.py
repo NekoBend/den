@@ -794,6 +794,72 @@ def test_install_force_narrows_a_reused_backup_to_the_files_permissions(
     assert not skill.with_name("SKILL.md.den.bak.1").exists(), "it was reused"
 
 
+@pytest.mark.parametrize("where", ["target", "tool"])
+@pytest.mark.parametrize("mode", [0o640, 0o750], ids=oct)
+def test_install_force_backup_keeps_the_files_acl(
+    tmp_path, monkeypatch, let_65534_in, mode, where
+):
+    """The backup took none of the file's ACL, only what its directory gives a
+    new file. It now carries the ACL over under its own mode: a backed-up
+    executable is not executable, and the ACL's owner, mask and other entries
+    lose execute with it (a file a default ACL reached at deploy has one)."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    let_65534_in(skill)  # uid 65534 may read it too, so its copy as well
+    skill.chmod(mode)
+    # What that ACL becomes under the backup's mode, read off a scratch file.
+    ref = tmp_path / "acl-under-the-backups-mode"
+    ref.touch()
+    acl = "system.posix_acl_access"
+    os.setxattr(ref, acl, os.getxattr(skill, acl))
+    ref.chmod(mode & 0o666)
+    want = os.getxattr(ref, acl)
+    ref.unlink()
+    assert install_main([*args, "--force"]) == 0
+    backup = skill.with_name("SKILL.md.den.bak")
+    assert backup.read_text() == "MINE\n"
+    assert backup.stat().st_mode & 0o777 == mode & 0o666
+    assert os.getxattr(backup, acl) == want
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="POSIX owners; root may give a file to anyone",
+)
+@pytest.mark.parametrize("where", ["target", "tool"])
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_install_force_keeps_a_file_whose_owner_or_group_a_backup_cannot_take(
+    tmp_path, monkeypatch, capsys, foreign_stat, whose, where
+):
+    """A backup that belongs to den's user or group, not the file's, may be
+    read by others than the file; --force then leaves the file, as for any
+    backup it cannot make. Only root gives a file away, so stat reports
+    another owner or group here, and the chown to the copy fails."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    foreign_stat(skill.name, whose)
+    capsys.readouterr()
+    assert install_main([*args, "--force"]) == 1
+    assert skill.read_text() == "MINE\n", "not replaced without a backup"
+    assert not list(skill.parent.glob("SKILL.md.den.bak*")), "no copy is left"
+    refusals = [
+        ln for ln in capsys.readouterr().err.splitlines() if "not replacing" in ln
+    ]
+    assert len(refusals) == 1
+    assert refusals[0].startswith(f"den install: not replacing {skill}: ")
+    assert "copying it would change its owner or group (" in refusals[0]
+
+
 def test_install_force_refuses_to_back_up_through_a_symlink(
     tmp_path, monkeypatch, symlink, capsys
 ):

@@ -1937,6 +1937,54 @@ def test_install_writes_the_config_with_the_platforms_line_ends(
     assert not [ln for ln in lines if b"\n" in ln or b"\r" in ln]
 
 
+# The backup of a config den cannot merge into is a new file, which took its
+# directory's default ACL (or a setgid directory's group): once the config's
+# mode opened the copy's group bits, the user that ACL names could read a copy
+# of a config kept from them. The copy now takes the config's owner, group and
+# extended attributes first, and when it cannot, install leaves the config.
+
+
+@_JSON_CONFIGS
+def test_install_backup_does_not_take_its_directorys_acl(
+    tmp_path, monkeypatch, let_65534_in, tool, rel
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('{"token": "secret", // not json\n')
+    cfg.chmod(0o640)
+    let_65534_in(cfg.parent)  # uid 65534 gets every new file
+    assert hook_main(["install", "--tool", tool]) == 0
+    bak = cfg.with_name(cfg.name + ".den.bak")
+    assert "secret" in bak.read_text()
+    assert "system.posix_acl_access" not in os.listxattr(bak), "65534 may not read it"
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="POSIX owners; root may give a file to anyone",
+)
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_install_leaves_a_config_whose_owner_or_group_a_backup_cannot_take(
+    tmp_path, monkeypatch, capsys, foreign_stat, whose
+):
+    # Only root gives a file away, so stat reports another owner or group for
+    # the config here, and the chown that would carry it to the copy fails.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text("not json {{{")
+    foreign_stat(cfg.name, whose)
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    assert cfg.read_text() == "not json {{{", "not overwritten without a backup"
+    assert _names(cfg.parent) == [cfg.name], "no copy is left"
+    refusals = _refusals(capsys.readouterr().err)
+    assert len(refusals) == 1
+    assert refusals[0].startswith(f"den hook install: not replacing {cfg}: ")
+    assert "copying it would change its owner or group (" in refusals[0]
+
+
 def test_install_refuses_a_symlinked_backup_outside_the_workspace(
     tmp_path, monkeypatch, symlink
 ):

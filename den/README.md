@@ -42,7 +42,9 @@ they were listed: one you save again or delete while that prompt is open
 stays as you left it, and the run exits non-zero.
 Pass `--force` to overwrite without asking; each file it overwrites is first
 copied to `<file>.den.bak` (`.den.bak.1`, `.2`, ... when an earlier backup
-holds something else; the copy keeps the file's permissions minus execute).
+holds something else; the copy takes the file's owner, group and, on Linux,
+its ACL and extended attributes, and its permissions minus execute, and a file
+it cannot copy that way is not overwritten).
 Non-interactive runs skip the changed files and exit non-zero,
 so a scripted install cannot mistake a full skip for success. `den install hook`
 into a tool's settings file merges (it preserves foreign hooks and other keys).
@@ -302,7 +304,8 @@ byte-identical. A settings file den cannot merge its hooks into (not a JSON
 object, a `hooks` that is not an object, or one of den's events holding
 something other than a list) is first copied to `<file>.den.bak`, or to the
 first free `.den.bak.N` when an earlier backup holds something else, with the
-file's permissions minus execute, and den's hooks then take the place of what
+file's owner, group and permissions minus execute (and, on Linux, its ACL),
+and den's hooks then take the place of what
 it could not merge into; when no copy can be made, install leaves the file
 alone and exits non-zero. Install and `uninstall hook` rewrite a settings file
 through a new copy that replaces it in one step, so a write that fails

@@ -202,29 +202,38 @@ def _replace_bytes(path: Path, data: bytes) -> None:
         raise
 
 
-def _match_access(copy: Path, original: Path, st: os.stat_result) -> None:
-    """Give `copy` the owner, group and permission bits of `original`, whose
-    stat is `st`, and on Linux its extended attributes, ACLs included,
-    without any the copy took from its directory (a default ACL).
+def _match_access(
+    copy: Path | int,
+    original: Path,
+    st: os.stat_result,
+    mode: int | None = None,
+    *,
+    doing: str = "replacing it",
+) -> None:
+    """Give `copy` (a path, or a file open for writing) the owner and group
+    of `original`, whose stat is `st`, and on Linux its extended attributes,
+    ACLs included, without any the copy took from its directory (a default
+    ACL); then, last, the permission bits `mode`, the original's unless the
+    caller passes its own (_install._Writer._backup drops execute).
 
     An in-place write kept all of these. A new file starts with den's own
-    owner and group and its directory's default ACL instead, which can hand
-    a file that holds a token to other users, or take access away from the
-    ones it was shared with. OSError when the copy cannot take one of them:
-    only root gives a file to another user, and only a member of a group
-    gives a file to that group. Windows DACLs and macOS ACLs are not read
-    here, as Python has no call for them."""
+    owner and group (or a setgid directory's group) and its directory's
+    default ACL instead, which can hand a file that holds a token to other
+    users, or take access away from the ones it was shared with. OSError,
+    worded after `doing` (what den was doing to the original), when the copy
+    cannot take one of them: only root gives a file to another user, and
+    only a member of a group gives a file to that group. Windows DACLs and
+    macOS ACLs are not read here, as Python has no call for them."""
     if sys.platform != "win32":
-        now = copy.stat()
+        now = os.fstat(copy) if isinstance(copy, int) else copy.stat()
         if (now.st_uid, now.st_gid) != (st.st_uid, st.st_gid):
             try:
                 os.chown(copy, st.st_uid, st.st_gid)
             except OSError as e:
                 raise OSError(
-                    f"replacing it would change its owner or group ({e.strerror});"
+                    f"{doing} would change its owner or group ({e.strerror});"
                     " edit it by hand"
                 ) from e
-    want: dict[str, bytes] = {}
     if sys.platform == "linux":  # the one platform with os.listxattr
         try:
             want = _xattrs(original)
@@ -236,24 +245,32 @@ def _match_access(copy: Path, original: Path, st: os.stat_result) -> None:
                     os.setxattr(copy, name, value)
         except OSError as e:
             raise OSError(
-                "replacing it would lose its extended attributes or ACL"
+                f"{doing} would lose its extended attributes or ACL"
                 f" ({e.strerror}); edit it by hand"
             ) from e
+        # Checked before the mode is set: a mode other than the original's (a
+        # backup's, without execute) rewrites the ACL's owner, mask and other
+        # entries to match, and the original's own mode leaves them as they are.
+        if _xattrs(copy) != want:
+            raise OSError(
+                f"{doing} would change its extended attributes or ACL; edit it by hand"
+            )
     # Last: after chown, which may clear set-id bits, and after the ACL is the
-    # old file's. Until then the copy keeps mkstemp's 0600, whose group bits
-    # mask every named entry of a default ACL it took from its directory;
-    # the old file's mode before that would let such a user read the copy.
-    copy.chmod(stat.S_IMODE(st.st_mode))
-    if sys.platform == "linux" and _xattrs(copy) != want:
-        raise OSError(
-            "replacing it would change its extended attributes or ACL; edit it by hand"
-        )
+    # old file's. Until then the copy keeps the 0600 it was made with, whose
+    # group bits mask every named entry of a default ACL it took from its
+    # directory; the old file's mode before that would let such a user read
+    # the copy.
+    final = stat.S_IMODE(st.st_mode) if mode is None else mode
+    if isinstance(copy, int):
+        os.fchmod(copy, final)  # the open file, not whatever has its name now
+    else:
+        copy.chmod(final)
 
 
-def _xattrs(path: Path) -> dict[str, bytes]:
-    """The extended attributes of `path` by name, its POSIX ACL among them
-    (system.posix_acl_access); none on a filesystem that keeps none, and
-    none off Linux, where Python cannot list them."""
+def _xattrs(path: Path | int) -> dict[str, bytes]:
+    """The extended attributes of `path` (or of an open file) by name, its
+    POSIX ACL among them (system.posix_acl_access); none on a filesystem
+    that keeps none, and none off Linux, where Python cannot list them."""
     if sys.platform != "linux":
         return {}
     try:
@@ -436,16 +453,19 @@ def _disable_coreutils_readline(profile: Path) -> bool | None:
 
     Every edit first copies the profile the way `--force` backs up a file it
     replaces (_Writer._backup): to <profile>.den.bak, or the first free
-    .den.bak.N when an earlier backup holds something else, keeping the
-    profile's permission bits minus execute (a profile can hold a token, and a
-    plain write left a 0600 profile's copy world-readable). The new text then
-    replaces the profile in one rename (_replace_bytes), never by truncating
-    it, so a write that fails part-way leaves the profile as it was instead of
-    empty or cut short. None (one line on stderr) when no copy could be made
-    (a symlink or a directory at a backup name, a failed write) or the
-    profile could not be replaced (a failed write, or a profile
-    _replace_bytes refuses, such as one with a second hard link): the profile
-    is then left as it is, coreutils' block included."""
+    .den.bak.N when an earlier backup holds something else, with the
+    profile's owner, group and, on Linux, extended attributes and ACL (not
+    its directory's), and its permission bits minus execute (a profile can
+    hold a token, and a plain write left a 0600 profile's copy
+    world-readable). The new text then replaces the profile in one rename
+    (_replace_bytes), never by truncating it, so a write that fails part-way
+    leaves the profile as it was instead of empty or cut short. None (one
+    line on stderr) when no copy could be made (a symlink or a directory at a
+    backup name, a failed write, a copy that cannot take the profile's owner,
+    group or extended attributes) or the profile could not be replaced (a
+    failed write, or a profile _replace_bytes refuses, such as one with a
+    second hard link): the profile is then left as it is, coreutils' block
+    included."""
     if not profile.is_file():
         return False
     raw = profile.read_bytes()

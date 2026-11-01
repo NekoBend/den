@@ -33,6 +33,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
@@ -358,11 +359,23 @@ class _Writer:
         --force saved) is never replaced, and one holding these very bytes is
         reused, unless it is a hard link to `dest`: that is `dest` under
         another name, which the write that follows changes too, so it holds
-        no copy at all. It keeps the file's permission bits minus execute, so a
+        no copy at all. A copy that is reused loses whatever permission bits
+        it allows beyond the file's.
+
+        A new copy gets what decides who may read the file
+        (_shell._match_access): its owner and group and, on Linux, its
+        extended attributes, ACL included, without the ones it would take from
+        its directory (a setgid directory's group, a default ACL), while it is
+        still 0600; then the file's permission bits minus execute, so a
         private file's copy stays private and a backed-up ~/.local/bin helper
-        is not left executable on PATH; a copy that is reused loses whatever
-        it allows beyond them. A symlink (or anything not a regular file) at a
-        backup name refuses the backup instead of writing through it."""
+        is not left executable on PATH. When it cannot take them (only root
+        gives a file to another user, or to a group it is not in), or its
+        write fails, no copy is left. A symlink (or anything not a regular
+        file) at a backup name refuses the backup instead of writing through
+        it."""
+        # Imported here: _shell imports this module.
+        from ._shell import _match_access
+
         # Under a confined root, `guard` holds the resolved path commit()
         # already checked for symlinked components; the copy is its sibling.
         real = guard[1] if guard is not None else dest
@@ -392,13 +405,19 @@ class _Writer:
                 n += 1
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
             fd = os.open(bak, flags, 0o600)
-            fchmod = getattr(os, "fchmod", None)  # not on Windows before 3.13
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
-                if fchmod is not None:
-                    fchmod(fh.fileno(), mode)
-            if fchmod is None:
-                _chmod_no_follow(bak, mode)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    # Through the open file where it can be (no fchmod on
+                    # Windows before 3.13), not the name, which could be a
+                    # link by now.
+                    copy = fh.fileno() if hasattr(os, "fchmod") else bak
+                    _match_access(copy, dest, st, mode, doing="copying it")
+            except BaseException:
+                with suppress(OSError):
+                    bak.unlink()
+                raise
         except OSError as exc:
             print(
                 f"{prefix}: not replacing {dest}: cannot back it up: {exc}",

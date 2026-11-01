@@ -525,9 +525,11 @@ def _backup_if_unmergeable(config: Path, events: Iterable[str]) -> bool:
     one that holds these very bytes is reused. An earlier backup proves nothing
     about the file there now: den never writes an unmergeable file itself, so a
     backup it made before holds an earlier edit, and taking it for this one let
-    install overwrite the new edit with no copy anywhere. The copy keeps the
-    config's permission bits minus execute, so a private settings file does not
-    get a world-readable backup.
+    install overwrite the new edit with no copy anywhere. The copy takes the
+    config's owner, group and, on Linux, extended attributes and ACL (not its
+    directory's), and its permission bits minus execute, so a private settings
+    file does not get a backup others can read; a config whose owner, group or
+    extended attributes the copy cannot take gets no backup.
 
     False (one line on stderr) when no backup could be made, and the caller must
     not write: writing den's hooks over a file we could not preserve is exactly

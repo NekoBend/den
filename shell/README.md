@@ -112,7 +112,8 @@ removes that block (keeping the binary to drive through the tier above), so
 re-run `den install shell` after updating coreutils if the block comes back.
 Each removal first copies the profile to `<profile>.den.bak`, or to the first
 free `.den.bak.N` when an earlier backup holds something else, with the
-profile's permissions minus execute; when no copy can be made, the block stays
+profile's owner, group and permissions minus execute (and, on Linux, its
+ACL); when no copy can be made, the block stays
 and the run exits non-zero. The edited profile then replaces the old one in
 one step, as `den uninstall shell` replaces it, so a write that fails part-way
 leaves the profile as it was; a profile with a second hard link is left as it

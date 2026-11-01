@@ -10,7 +10,9 @@ Some tests, though, exercise POSIX behavior specifically: they mock
 stay fully covered by the ubuntu jobs, so they are skipped here (only on win32).
 """
 
+import errno
 import os
+import struct
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -167,6 +169,100 @@ def file_size_limit():
             signal.signal(signal.SIGXFSZ, previous)
 
     return _limit
+
+
+# POSIX ACL entries as Linux keeps them in system.posix_acl_*: a tag, the
+# permission bits, and the uid or gid of a named entry (none for the others).
+_ACL_USER_OBJ, _ACL_USER, _ACL_GROUP_OBJ, _ACL_MASK, _ACL_OTHER = 1, 2, 4, 16, 32
+_NO_ID = 0xFFFFFFFF
+
+
+def _posix_acl(*entries: tuple[int, int, int]) -> bytes:
+    """An ACL in its extended attribute form: version 2, then each entry."""
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
+
+
+@pytest.fixture
+def set_xattr():
+    """`set(path, name, value)`: os.setxattr, or skip where it cannot work:
+    den carries extended attributes over on Linux only, and a filesystem may
+    keep no ACLs or user.* attributes, or not know the uid an ACL names."""
+
+    def _set(path, name, value):
+        if sys.platform != "linux":
+            pytest.skip("den carries extended attributes over on Linux only")
+        try:
+            os.setxattr(path, name, value)
+        except OSError as e:
+            if e.errno not in {errno.ENOTSUP, errno.EPERM, errno.EINVAL}:
+                raise
+            pytest.skip(f"no {name} here: {e}")
+
+    return _set
+
+
+@pytest.fixture
+def let_65534_in(set_xattr):
+    """`grant(path)`: an ACL entry for uid 65534, a user the tests never run
+    as. On a directory it goes in the default ACL (rwx, under an rwx mask),
+    which every file made in it afterwards takes; on a file, in the file's
+    own ACL (read, under a read mask, as for a 0640 file)."""
+
+    def _grant(path):
+        if Path(path).is_dir():
+            set_xattr(
+                path,
+                "system.posix_acl_default",
+                _posix_acl(
+                    (_ACL_USER_OBJ, 7, _NO_ID),
+                    (_ACL_USER, 7, 65534),
+                    (_ACL_GROUP_OBJ, 5, _NO_ID),
+                    (_ACL_MASK, 7, _NO_ID),
+                    (_ACL_OTHER, 5, _NO_ID),
+                ),
+            )
+        else:
+            set_xattr(
+                path,
+                "system.posix_acl_access",
+                _posix_acl(
+                    (_ACL_USER_OBJ, 6, _NO_ID),
+                    (_ACL_USER, 4, 65534),
+                    (_ACL_GROUP_OBJ, 4, _NO_ID),
+                    (_ACL_MASK, 4, _NO_ID),
+                    (_ACL_OTHER, 0, _NO_ID),
+                ),
+            )
+
+    return _grant
+
+
+@pytest.fixture
+def foreign_stat(monkeypatch):
+    """`stand_in(name, whose)`: Path.stat reports another user ("owner") or
+    a group den's user is not in ("group") for every file called `name`, as
+    for a file that belongs to them; other files stat as they are. A chown
+    that would carry that owner or group over to a copy then fails for real,
+    since only root gives a file away, and a test needs no second group."""
+    mine = {os.getuid(), os.getgid(), *os.getgroups()}
+    foreign = next(i for i in range(65534, 0, -1) if i not in mine)
+    fields_of: dict[str, int] = {}
+    real_stat = Path.stat
+
+    def stat_(self, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        field = fields_of.get(self.name)
+        if field is None:
+            return st
+        fields = list(st)
+        fields[field] = foreign
+        return os.stat_result(fields)
+
+    def _stand_in(name, whose):
+        fields_of[name] = 4 if whose == "owner" else 5  # st_uid, st_gid
+        monkeypatch.setattr(Path, "stat", stat_)
+
+    return _stand_in
 
 
 @pytest.fixture(autouse=True)
