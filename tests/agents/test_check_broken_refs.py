@@ -1291,7 +1291,7 @@ def test_removed_javascript_names_holding_a_dollar_are_reported(
     # A `$` is part of a JavaScript or TypeScript name, but names were
     # captured as \w+ and searched between \b: deleting `$fetch`, `users$`
     # and `$` reported none of their uses, `class Store$` was a removed
-    # `Store`, and `load$()` was reported as a use of the removed `load`.
+    # `Store`, and `load$($load)` was reported as a use of the removed `load`.
     init_repo(tmp_path)
     write(
         tmp_path,
@@ -1312,7 +1312,7 @@ def test_removed_javascript_names_holding_a_dollar_are_reported(
         "console.log(users$, a$fetch);\n"
         "$(1);\n"
         "new Store$();\n"
-        "load$(keep);\n",
+        "load$($load, keep);\n",
     )
     git(tmp_path, "add", "-A")
     git(tmp_path, "commit", "-q", "-m", "base")
@@ -1787,8 +1787,11 @@ def test_a_base_that_git_would_read_as_an_option_is_refused(
     assert proc.returncode == 1, proc.stderr
     assert f"{tree}: not a commit" in proc.stderr, proc.stderr
 
-    # an annotated tag and a revision expression still name the commit
-    for base in ("v1", "HEAD~0"):
+    # an annotated tag and a revision expression still name the commit, and
+    # so does a tag named like a file: git takes its object ID, never the
+    # name, which `git diff notes.txt` found ambiguous and refused
+    git(tmp_path, "tag", "notes.txt")
+    for base in ("v1", "HEAD~0", "notes.txt"):
         proc = run("--base", base, "--root", str(tmp_path))
         assert proc.returncode == 0, proc.stderr
         assert f"base={base}: 1 changed file examined" in proc.stderr, proc.stderr
