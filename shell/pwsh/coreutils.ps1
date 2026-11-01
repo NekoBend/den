@@ -72,13 +72,16 @@ function env {
     # a PowerShell function run here sees env's variables before its
     # caller's. Every variable env makes in this block has a __ name, as in
     # begin: named $first, $set, $a, $i, $cmd and the like, they hid the
-    # caller's variables of those names from the command.
+    # caller's variables of those names from the command. For the same
+    # reason the NAME=VALUE test is [regex]::Match on the argument's text,
+    # not -match, which sets $Matches in this scope.
     $__assigns = @(); $__cmd = $null; $__cmdArgs = @()
     $__i = 0
     while ($__i -lt $__a.Count) {
       $__arg = $__a[$__i]
-      if ($null -eq $__cmd -and $__arg -match '^([^=]+)=(.*)$') {
-        $__assigns += @{ Name = $Matches[1]; Value = $Matches[2] }
+      $__m = [regex]::Match([string]$__arg, '^([^=]+)=(.*)$')
+      if ($null -eq $__cmd -and $__m.Success) {
+        $__assigns += @{ Name = $__m.Groups[1].Value; Value = $__m.Groups[2].Value }
       } elseif ($null -eq $__cmd) {
         $__cmd = $__arg
       } else {

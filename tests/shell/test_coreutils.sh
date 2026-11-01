@@ -758,6 +758,19 @@ function: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]
 piped: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]
 no assignment: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]" "$actual"
 
+# For the same reason, env's NAME=VALUE test was -match, which set $Matches in
+# env's scope: the command read env's last match (DEN_ENV_T here), not the
+# caller's. It is [regex]::Match now, which sets no variable.
+echo "[pwsh] env without coreutils leaves the caller's \$Matches to the command"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    \$null = 'caller-text' -match '^(caller)-text\$'
+    'scriptblock: ' + (env DEN_ENV_T=set { \$Matches[1] })
+    'ForEach-Object: ' + (1 | env DEN_ENV_T=set ForEach-Object { \$Matches[1] })
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: the command reads the caller's \$Matches" "scriptblock: caller
+ForEach-Object: caller" "$actual"
+
 # =============================================================================
 # wc — pipe character count
 # =============================================================================
