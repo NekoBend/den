@@ -214,7 +214,7 @@ function ptar {
     # tar cannot find.
     $sess = $ExecutionContext.SessionState.Path
     $outFull = $sess.GetUnresolvedProviderPathFromPSPath($Output)
-    $cmp = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    $cmp = if ($env:OS -eq 'Windows_NT' -or $IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
     $srcs = @($Sources | Where-Object {
         -not [string]::Equals($sess.GetUnresolvedProviderPathFromPSPath($_), $outFull, $cmp)
     })
