@@ -314,7 +314,10 @@ turned read-only meanwhile, or such a directory stands there), bash/zsh leave
 it where it waited and say where
 (`archive: previous 'out.zip' kept at ./.archive.XXXXXX/previous`), and so
 does pwsh for the tar formats (`.archive.<random>/previous`) and for a `.7z`
-(`out.7z.previous.<random>`, beside it).
+(`out.7z.previous.<random>`, beside it). These staging folders are private
+(`0700`) on Linux and macOS whatever the umask, as `mktemp -d` makes them on
+bash/zsh, and pwsh stops before it moves anything into one that it did not just
+make as a plain folder of its own.
 On pwsh the `.zip` holds hidden files and folders (`.env`, `.git`) too, as
 `zip -r` does, but it stores each source under its own name (a folder as
 `name/`), where `zip -r` keeps the path as given (`alpha/config.txt`). Two
@@ -511,6 +514,7 @@ it there and says where, as `archive` does
 (`ptar: previous 'backup.tgz' kept at ./.ptar.XXXXXX/previous`). On bash/zsh,
 a signal that comes before the new archive is in place puts the old one back,
 as with `archive`.
+The staging directory is private on pwsh as on bash/zsh.
 A directory that another program makes at the output while tar runs fails the
 run instead of taking in either archive, with the same BSD mv exception as
 `archive`.

@@ -745,11 +745,10 @@ function archive {
       $stageFull = $sess.GetUnresolvedProviderPathFromPSPath($stage)
       $tmpFull = $sess.GetUnresolvedProviderPathFromPSPath($tmp)
       $prevFull = $sess.GetUnresolvedProviderPathFromPSPath($prev)
-      if ([System.IO.Directory]::Exists($stageFull) -or [System.IO.File]::Exists($stageFull)) {
-        Write-Error "cannot create a temporary directory '$stage'" -ErrorAction Stop
-      }
-      try { $null = [System.IO.Directory]::CreateDirectory($stageFull) }
-      catch { Write-Error "cannot create a temporary directory '$stage': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop }
+      # Private (0700) on Linux and macOS before anything goes in, as the
+      # posix twin's mktemp -d makes it: see _DenNewPrivateDir.
+      try { _DenNewPrivateDir $stageFull }
+      catch { Write-Error "cannot create a temporary directory '$stage': $($_.Exception.Message)" -ErrorAction Stop }
       $aside = $false
       if ($null -ne (Get-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue)) {
         try { [System.IO.File]::Move($outFull, $prevFull) }

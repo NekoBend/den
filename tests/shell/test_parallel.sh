@@ -904,6 +904,31 @@ else
 fi
 rm -rf "$WORK/cs"
 
+echo "[pwsh] ptar makes its staging folder private, whatever the umask"
+# Made with the umask's mode (0777 under umask 000), the staging folder let
+# another user who can write to the output's folder plant a symlink where tar
+# writes the new archive, or delete the previous one waiting there. A tar
+# stub notes the mode of the folder it is told to write into. A folder that
+# is not a plain one of this user's (a mkdir stub leaves a symlink to another
+# folder at the name) is refused before anything goes in.
+rm -rf "$WORK/pv"
+mkdir -p "$WORK/pv/bin" "$WORK/pv/src" "$WORK/pv/elsewhere"
+echo x > "$WORK/pv/src/x"
+printf '#!/bin/sh\nprev=\nfor a; do [ "$prev" = -f ] && stat -c %%a "$(dirname "$a")" > "%s/mode"; prev=$a; done\nexec %s "$@"\n' "$WORK/pv" "$(command -v tar)" > "$WORK/pv/bin/tar"
+chmod +x "$WORK/pv/bin/tar"
+actual=$(umask 000; run_pwsh "$PARALLEL_PS1" "\$env:PATH = '$WORK/pv/bin:' + \$env:PATH; Set-Location '$WORK/pv'; ptar out.tgz src" 2>&1; echo "status=$?")
+assert_contains "pwsh/ptar under umask 000 exits 0" "status=0" "$actual"
+assert_eq "pwsh/ptar under umask 000 stages in a 0700 folder" "700" "$(cat "$WORK/pv/mode" 2>/dev/null)"
+echo PRECIOUS > "$WORK/pv/keep.tgz"
+printf '#!/bin/sh\nln -s "%s/elsewhere" "$4"\n' "$WORK/pv" > "$WORK/pv/bin/mkdir"
+chmod +x "$WORK/pv/bin/mkdir"
+actual=$(run_pwsh "$PARALLEL_PS1" "\$env:PATH = '$WORK/pv/bin:' + \$env:PATH; Set-Location '$WORK/pv'; ptar keep.tgz src" 2>&1 | tr -d '\r'; echo "status=${PIPESTATUS[0]}")
+assert_contains "pwsh/ptar with a staging folder that is not its own fails" "status=1" "$actual"
+assert_contains "pwsh/ptar with a staging folder that is not its own says why" "not a plain directory owned by this user" "$actual"
+assert_eq "pwsh/ptar with a staging folder that is not its own keeps the old archive" "PRECIOUS" "$(cat "$WORK/pv/keep.tgz" 2>/dev/null)"
+assert_eq "pwsh/ptar put nothing in the folder that symlink leads to" "" "$(ls -A "$WORK/pv/elsewhere")"
+rm -rf "$WORK/pv"
+
 echo "[pwsh] pcp/pmv/prm: a path that fails is a failure"
 # Each path runs in a ForEach-Object -Parallel worker, and the workers' errors
 # reached neither $? nor the process status: `pcp missing dest` exited 0, and

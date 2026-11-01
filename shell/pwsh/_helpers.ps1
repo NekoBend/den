@@ -638,6 +638,46 @@ function _DenWritePrivate([string]$Path, [string]$Text) {
     }
 }
 
+# ========== archive's and ptar's staging folders ==========
+
+# _DenNewPrivateDir <full path> - make a new, empty folder at <path> for
+# archive's and ptar's staging (the previous archive waits in it while tar
+# writes the new one there), or throw. On Linux and macOS it is
+# `mkdir -m 700`, as `mktemp -d` is for the bash/zsh twins: made with the
+# umask's mode instead (0775 under umask 002, 0777 under 000), the folder let
+# another user who can write to the output's directory plant a symlink where
+# tar writes the new archive, or delete the previous one. mkdir also fails
+# when anything is at <path> already, where .NET's CreateDirectory takes an
+# existing folder, or a symlink to one, as made; and what it made must be a
+# plain directory (no symlink) this user owns, or nothing goes into it. On
+# Windows the folder is made after a check that nothing is at <path>, and
+# keeps the ACL it inherits.
+function _DenNewPrivateDir([string]$Path) {
+    if (-not $Path) { throw 'no path given' }
+    # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
+    if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+        if ([System.IO.Directory]::Exists($Path) -or [System.IO.File]::Exists($Path)) {
+            throw "'$Path' already exists"
+        }
+        try { $null = [System.IO.Directory]::CreateDirectory($Path) }
+        catch { throw $_.Exception.GetBaseException().Message }
+        return
+    }
+    if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { throw '/bin/sh not found' }
+    # mkdir says why it failed on stderr; the checks after it, on stdout. The
+    # script holds no double quotes, which pwsh before 7.3 strips from a
+    # native command's arguments (see _DenLegacyArgPassing): IFS= and set -f
+    # keep an unquoted $1 one word, as quotes would.
+    $script = 'IFS=; set -f; mkdir -m 700 -- $1 || exit 1; ' +
+        '[ -d $1 ] && [ ! -h $1 ] && [ -O $1 ] && exit 0; ' +
+        'echo not a plain directory owned by this user; exit 1'
+    $why = & /bin/sh -c $script _ $Path
+    if ($LASTEXITCODE -ne 0) {
+        if ($why) { throw "$why" }
+        throw "mkdir -m 700 failed"
+    }
+}
+
 # ========== names that differ only in case ==========
 
 # _DenOneEntry <a> <b> - for two full paths spelled alike but for case: $true
