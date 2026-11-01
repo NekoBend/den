@@ -1292,6 +1292,7 @@ def test_removed_javascript_names_holding_a_dollar_are_reported(
     # captured as \w+ and searched between \b: deleting `$fetch`, `users$`
     # and `$` reported none of their uses, `class Store$` was a removed
     # `Store`, and `load$($load)` was reported as a use of the removed `load`.
+    # The `$` of a template literal's `${` is no use of `$` or `users$`.
     init_repo(tmp_path)
     write(
         tmp_path,
@@ -1312,7 +1313,8 @@ def test_removed_javascript_names_holding_a_dollar_are_reported(
         "console.log(users$, a$fetch);\n"
         "$(1);\n"
         "new Store$();\n"
-        "load$($load, keep);\n",
+        "load$($load, keep);\n"
+        "const s = `${n} users${n}`;\n",
     )
     git(tmp_path, "add", "-A")
     git(tmp_path, "commit", "-q", "-m", "base")

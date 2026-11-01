@@ -723,11 +723,10 @@ def member_definitions(text: str, ext: str) -> list[tuple[int, str, str]]:
 
 @functools.cache
 def _word_rx(
-    symbol: str, *, ignore_case: bool, prefix: str, name_chars: str
+    symbol: str, *, ignore_case: bool, prefix: str, suffix: str
 ) -> re.Pattern[str]:
     return re.compile(
-        rf"{prefix}{re.escape(symbol)}(?!{name_chars})",
-        re.IGNORECASE if ignore_case else 0,
+        f"{prefix}{re.escape(symbol)}{suffix}", re.IGNORECASE if ignore_case else 0
     )
 
 
@@ -738,7 +737,9 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     (MEMBER_ACCESS: `.symbol`, and `::symbol` in Rust). A whole word has no
     character of a name (NAME_CHARS) right before or after it: in a
     JavaScript or TypeScript file `users$` does not name `users`, and
-    `$fetch()` names `$fetch`.
+    `$fetch()` names `$fetch`. There a `$` right before a `{` opens the
+    `${...}` of a template literal and ends no name: `${x}` does not name
+    `$`, nor does `users${x}` name `users$`.
     """
     ignore_case = ext in CASE_INSENSITIVE_EXTS
     if not ignore_case and symbol not in line:  # the cheap test first
@@ -748,7 +749,10 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
         prefix = MEMBER_ACCESS.get(ext, DEFAULT_MEMBER_ACCESS)
     else:
         prefix = f"(?<!{name_chars})"
-    rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix, name_chars=name_chars)
+    suffix = f"(?!{name_chars})"
+    if ext in _JS_EXTS and symbol.endswith("$"):
+        suffix += r"(?!\{)"
+    rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix, suffix=suffix)
     return rx.search(line) is not None
 
 

@@ -1402,8 +1402,9 @@ def test_javascript_names_holding_a_dollar_are_found(
     # A `$` is part of a JavaScript or TypeScript name, but names were
     # captured as \w+ and bounded by \b: `$fetch`, `users$` and `$` were no
     # definitions and a search for them found no line at all, `class Store$`
-    # defined `Store`, and `load` was found inside `load$` and `$load`. In a
-    # shell file `$load` still names load: `$` is no part of a shell name.
+    # defined `Store`, and `load` was found inside `load$` and `$load`. The
+    # `$` of a template literal's `${` ends no name. In a shell file `$load`
+    # still names load: `$` is no part of a shell name.
     lib = write(
         tmp_path,
         "lib.ts",
@@ -1422,7 +1423,8 @@ def test_javascript_names_holding_a_dollar_are_found(
         "console.log(users$, a$fetch);\n"
         "$(1);\n"
         "new Store$();\n"
-        "load$($load);\n",
+        "load$($load);\n"
+        "const s = `${n} users${n}`;\n",
     )
     write(tmp_path, "run.sh", "echo $load\n")
     expected = {
