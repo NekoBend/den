@@ -723,6 +723,30 @@ def test_install_force_never_replaces_an_earlier_backup(
     assert not skill.with_name("SKILL.md.den.bak.2").exists()
 
 
+@pytest.mark.parametrize("where", ["target", "tool"])
+def test_install_force_backs_up_beside_a_hard_link_to_the_file(
+    tmp_path, monkeypatch, capsys, hard_link, where
+):
+    """A hard link at .den.bak is the file under another name. It holds the
+    file's very bytes, so it was reused as the backup, and the write that
+    followed changed it too: the edit was kept nowhere. The copy goes to the
+    first free .den.bak.N instead."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    deployed = skill.read_text()
+    skill.write_text("MINE\n")
+    hard_link(skill, skill.with_name("SKILL.md.den.bak"))
+    capsys.readouterr()
+    assert install_main([*args, "--force"]) == 0
+    assert skill.read_text() == deployed
+    assert skill.with_name("SKILL.md.den.bak.1").read_text() == "MINE\n"
+    assert "SKILL.md.den.bak.1" in capsys.readouterr().err
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 @pytest.mark.parametrize("where", ["target", "tool"])
 @pytest.mark.parametrize(

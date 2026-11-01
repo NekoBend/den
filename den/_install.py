@@ -356,16 +356,20 @@ class _Writer:
         The copy is <dest>.den.bak, or the first free one of .den.bak.1, .2,
         ...: an earlier backup holding something else (the edit an earlier
         --force saved) is never replaced, and one holding these very bytes is
-        reused. It keeps the file's permission bits minus execute, so a private
-        file's copy stays private and a backed-up ~/.local/bin helper is not
-        left executable on PATH. A symlink (or anything not a regular file) at
-        a backup name refuses the backup instead of writing through it."""
+        reused, unless it is a hard link to `dest`: that is `dest` under
+        another name, which the write that follows changes too, so it holds
+        no copy at all. It keeps the file's permission bits minus execute, so a
+        private file's copy stays private and a backed-up ~/.local/bin helper
+        is not left executable on PATH. A symlink (or anything not a regular
+        file) at a backup name refuses the backup instead of writing through
+        it."""
         # Under a confined root, `guard` holds the resolved path commit()
         # already checked for symlinked components; the copy is its sibling.
         real = guard[1] if guard is not None else dest
         try:
             data = dest.read_bytes()
-            mode = stat.S_IMODE(dest.stat().st_mode) & 0o666
+            st = dest.stat()
+            mode = stat.S_IMODE(st.st_mode) & 0o666
             n = 0
             while True:
                 bak = real.with_name(real.name + ".den.bak" + (f".{n}" if n else ""))
@@ -378,7 +382,7 @@ class _Writer:
                     return None
                 if not bak.exists():
                     break
-                if bak.read_bytes() == data:
+                if not os.path.samestat(bak.stat(), st) and bak.read_bytes() == data:
                     return bak
                 n += 1
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW

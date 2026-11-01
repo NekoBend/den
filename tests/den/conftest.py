@@ -10,6 +10,7 @@ Some tests, though, exercise POSIX behavior specifically: they mock
 stay fully covered by the ubuntu jobs, so they are skipped here (only on win32).
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -126,6 +127,20 @@ def symlink(tmp_path):
         pytest.skip("creating symlinks is not permitted here")
     probe.unlink()
     target.unlink()
+    return _link
+
+
+@pytest.fixture
+def hard_link():
+    """`link(target, path)` (os.link), or skip where this filesystem cannot
+    make a hard link."""
+
+    def _link(target, path):
+        try:
+            os.link(target, path)
+        except (OSError, NotImplementedError) as e:
+            pytest.skip(f"no hard links here: {e}")
+
     return _link
 
 

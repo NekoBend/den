@@ -1653,6 +1653,25 @@ def test_install_reuses_a_backup_that_holds_the_same_bytes(tmp_path, monkeypatch
     assert not (proj / ".claude" / "settings.local.json.den.bak.1").exists()
 
 
+@pytest.mark.parametrize(
+    ("tool", "rel"),
+    [("claude", ".claude/settings.local.json"), ("copilot", ".github/hooks/den.json")],
+)
+def test_install_does_not_take_a_hard_link_to_the_config_for_its_backup(
+    tmp_path, monkeypatch, hard_link, tool, rel
+):
+    """A hard link at .den.bak is the config under another name. It held the
+    unmergeable edit's bytes, so it was reused as the backup, and writing den's
+    hooks into the config changed it too: the edit was kept nowhere."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("MY_EDIT {{{")
+    hard_link(cfg, cfg.with_name(cfg.name + ".den.bak"))
+    assert hook_main(["install", "--tool", tool]) == 0
+    assert cfg.with_name(cfg.name + ".den.bak.1").read_text() == "MY_EDIT {{{"
+
+
 def test_install_refuses_a_symlink_at_a_numbered_backup(tmp_path, monkeypatch, symlink):
     """The numbered names get the guard .den.bak has: a repo can ship
     `settings.local.json.den.bak.1` as a dangling link next to a regular

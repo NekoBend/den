@@ -955,6 +955,19 @@ def test_disable_coreutils_readline_keeps_an_earlier_backup(tmp_path):
     assert (tmp_path / "p.ps1.den.bak.1").read_text() == current
 
 
+def test_disable_coreutils_readline_does_not_take_a_hard_link_for_its_backup(
+    tmp_path, hard_link
+):
+    # A hard link at .den.bak is the profile under another name: reused as the
+    # backup, it took the edit too, and the profile as it was survived nowhere.
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    hard_link(prof, tmp_path / "p.ps1.den.bak")
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert (tmp_path / "p.ps1.den.bak.1").read_text() == original
+
+
 def test_disable_coreutils_readline_refuses_a_symlinked_backup(tmp_path, symlink):
     """A dangling link at the backup name passed `not backup.exists()`, and the
     write followed it. No edit without a backup either: the profile stays."""
