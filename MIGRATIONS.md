@@ -11,18 +11,20 @@ This file is the list of those leftovers. Nothing here is urgent - the
 files are inert, not harmful - except where a note says otherwise. Run the
 cleanup once per machine that has been running den for a while.
 
-Check what a machine actually has before deleting:
+Check what a machine actually has before deleting. The `sh` recipes here
+call `command find`: typed at a den prompt, `find` runs `fd`, which takes
+none of these arguments.
 
 ```sh
 ls -d ~/.gemini/skills ~/.cline/skills 2>/dev/null
 ls -d ~/.claude/skills/code-review ~/.agents/skills/code-review \
       ~/.copilot/skills/code-review ~/.codex/skills/code-review 2>/dev/null
-find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
-     \( -name verify-imports.py -o -name doc-coverage.py \) 2>/dev/null
+command find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
+             \( -name verify-imports.py -o -name doc-coverage.py \) 2>/dev/null
 ls -d ~/.claude/skills/translate ~/.agents/skills/translate \
       ~/.copilot/skills/translate ~/.codex/skills/translate 2>/dev/null
-find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
-     \( -name go.md -o -name java.md -o -name csharp.md \) 2>/dev/null
+command find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
+             \( -name go.md -o -name java.md -o -name csharp.md \) 2>/dev/null
 ```
 
 On Windows, also check for the cmd shim that section 8 deletes:
@@ -97,8 +99,8 @@ deleted from the repository. Every skill deployed before that still
 carries them under its own `shared/scripts/`.
 
 ```sh
-find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
-     \( -name verify-imports.py -o -name doc-coverage.py \) -delete
+command find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
+             \( -name verify-imports.py -o -name doc-coverage.py \) -delete
 ```
 
 ## 5. translate retired; Go / Java / C# references dropped (2026-08, #64)
@@ -125,8 +127,8 @@ Deployed machines keep the old copies:
 ```sh
 rm -rf ~/.claude/skills/translate ~/.agents/skills/translate \
        ~/.copilot/skills/translate ~/.codex/skills/translate
-find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
-     \( -name go.md -o -name java.md -o -name csharp.md \) -delete
+command find ~/.claude/skills ~/.agents/skills ~/.copilot/skills ~/.codex/skills \
+             \( -name go.md -o -name java.md -o -name csharp.md \) -delete
 ```
 
 Codex registers skills by path, so also re-print and replace the
