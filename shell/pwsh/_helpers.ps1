@@ -749,7 +749,8 @@ function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
 # (--file-name=*.py), or the value of an option that takes it from the next
 # word when that holds one (--map-syntax '*.h:C++', -l '*'). Turning such a
 # word into a path, as for an operand, would make bat read the option as a
-# file. After a -- (pwsh hands a quoted one on) every word is an operand.
+# file. After a -- every word is an operand (den's cat has refused a -- by
+# then: _DenBatDashDash).
 function _DenBatWild($Words) {
     # bat 0.26.1's options that take a value, from `bat --help` (bat cache's
     # --source and --target too): without =value, the next word is the value.
@@ -779,6 +780,22 @@ function _DenBatWild($Words) {
             if ('lmrH'.IndexOf($s[$i]) -lt 0) { continue }
             if ($i -eq $s.Length - 1) { $opt = $s }
             break
+        }
+    }
+    return $null
+}
+
+# _DenBatDashDash <args> - for den's cat: why bat must not run with <args>,
+# else $null. cat hands bat a last --paging=never after <args>, which wins over
+# any --paging a file name put before it, but after a -- bat reads every word
+# as a file name, that one too. pwsh drops a bare -- typed to a function, but a
+# quoted '--', a second --, or one in a variable or an array reaches <args>.
+# So cat refuses a -- on every system, as cmd's cat does.
+function _DenBatDashDash($Words) {
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        if ("$w" -ceq '--') {
+            return "'--' would make bat read den's last --paging=never as a file name: bat did not run. " +
+                'Write a file whose name starts with - as ./-name instead, or run bat or catw by name.'
         }
     }
     return $null
@@ -849,6 +866,8 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # options that run a program (bat, fd, rg) runs nothing, with a terminating
     # error, when an argument is a file name the tool would read as an option
     # (_DenOptionFile).
+    # bat runs nothing either when a -- reaches the wrapper, after which it
+    # would read the last --paging=never as a file name (_DenBatDashDash).
     # On Windows, bat runs nothing either when an option or an option's value
     # holds a wildcard (_DenBatWild), and gets each other word it would expand
     # replaced by what it stands for (_DenBatWords).
@@ -856,7 +875,8 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     if ($FuncName -eq $NativeCmd -and $Modern -in @('bat', 'fd', 'rg')) {
         $optionCheck = "`$__o = _DenOptionFile '$FuncName' '$Modern' `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }"
         if ($Modern -eq 'bat') {
-            $optionCheck = "if (_OnWindows) { `$__o = _DenBatWild `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop } }; " +
+            $optionCheck = "`$__o = _DenBatDashDash `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }; " +
+                "if (_OnWindows) { `$__o = _DenBatWild `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop } }; " +
                 $optionCheck + "; if (_OnWindows) { `$__a = @(_DenBatWords `$__a) }"
         }
     }

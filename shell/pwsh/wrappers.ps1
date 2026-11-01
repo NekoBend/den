@@ -95,9 +95,10 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
 # Windows cat expands such a word itself (_DenBatWords), after it has refused
 # an option or an option's value that holds a wildcard (_DenBatWild) and a
 # name that starts with - (_DenOptionFile), and on every system it hands bat
-# one more --paging=never after the arguments. pwsh drops a bare -- typed to
-# cat, but a quoted '--' reaches bat, which then reads that last word as a
-# file name and reports it missing; the checks before it do not rely on it.
+# one more --paging=never after the arguments. After a -- bat would read that
+# last word as a file name, so on every system cat refuses a -- that reaches
+# it (_DenBatDashDash): pwsh drops a bare -- typed to cat, but a quoted '--'
+# or a second -- reaches it.
 
 New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'if ($Args.Count) { Get-Content @Args } else { $input }' '--paging=never'
 New-Wrapper 'find'    'fd'  ''                              'find' ''                '_find_ps_fallback @Args'

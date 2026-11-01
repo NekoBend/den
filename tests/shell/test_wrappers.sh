@@ -1071,8 +1071,8 @@ echo "[pwsh, Windows] cat refuses an option or an option's value that holds a wi
 # when a word that starts with - holds * ? [ or ], or the value of an option
 # that takes it from the next word does (bat --help: --map-syntax, -l, -H,
 # a cluster ending in -l). An option or a value without them goes on as it
-# is, a wildcard after an option's value is a file operand, and after a --
-# every word is one.
+# is, and a wildcard after an option's value is a file operand. A quoted --
+# is refused before any of this (see the next block).
 opt_tree wopt a.h || abort_suite "cannot make the tree for the Windows option cases"
 actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
     function global:_OnWindows { \$true }
@@ -1095,7 +1095,7 @@ OPT_WINOPT_WANT=(
     "--file-name=x.py goes on as it is|ran; ran: bat --style=plain --paging=never --file-name=x.py - --paging=never"
     "values without a wildcard go on as they are, and da* after them is a file|ran; ran: bat --style=plain --paging=never --map-syntax .h:C++ -l rust data.txt --paging=never"
     "-lrust holds its value, so da* is a file|ran; ran: bat --style=plain --paging=never -lrust -n data.txt --paging=never"
-    "after a quoted -- a wildcard is a file, made a full path when it matches none|ran; ran: bat --style=plain --paging=never -- $WORK/opt/wopt/-x* --paging=never"
+    "a quoted -- before a wildcard: bat does not run|refused; ran: no"
 )
 mapfile -t _got <<< "$actual"
 assert_eq "pwsh, Windows/one line per option case" "${#OPT_WINOPT_WANT[@]}" "${#_got[@]}"
@@ -1109,6 +1109,36 @@ err=$(cd "$WORK/opt/wopt" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRA
 assert_eq "pwsh, Windows/the refusal of cat '--file-name=*.py' -" "cat: '--file-name=*.py' is an option that holds * ? [ or ], which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it." "$err"
 err=$(cd "$WORK/opt/wopt" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; function global:_OnWindows { \$true }; cat -l '*' data.txt" < /dev/null)
 assert_eq "pwsh, Windows/the refusal of cat -l '*' data.txt" "cat: '*', the value of -l, holds * ? [ or ], which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it." "$err"
+
+echo "[pwsh] cat refuses a -- that reaches it, on every system"
+# cat hands bat a last --paging=never after the arguments, and after a -- bat
+# reads every word as a file name, that one too. pwsh drops a bare -- typed to
+# a function, but a quoted '--', a second --, or one in a variable or an array
+# reaches cat, and it reached bat. So cat refuses each, here as on Windows
+# (above), as cmd's cat does; a bare -- still runs bat, without it.
+opt_tree pdd || abort_suite "cannot make the tree for the -- cases"
+actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
+    Test-Opt '$WORK/opt/pdd' { cat '--' data.txt }
+    Test-Opt '$WORK/opt/pdd' { cat -- -- data.txt }
+    Test-Opt '$WORK/opt/pdd' { \$d = '--'; cat \$d data.txt }
+    Test-Opt '$WORK/opt/pdd' { cat data.txt @('-n', '--') }
+    Test-Opt '$WORK/opt/pdd' { cat -- data.txt }
+" < /dev/null 2>&1 | tr -d '\r')
+OPT_DD_WANT=(
+    "cat '--' data.txt: bat does not run|refused; ran: no"
+    "cat -- -- data.txt (pwsh drops the first): bat does not run|refused; ran: no"
+    "cat \$d data.txt, \$d = '--': bat does not run|refused; ran: no"
+    "cat data.txt @('-n', '--'): bat does not run|refused; ran: no"
+    "a bare -- is pwsh's, and bat runs without it|ran; ran: bat --style=plain --paging=never data.txt --paging=never"
+)
+mapfile -t _got <<< "$actual"
+assert_eq "pwsh/one line per -- case" "${#OPT_DD_WANT[@]}" "${#_got[@]}"
+for _i in "${!OPT_DD_WANT[@]}"; do
+    _w=${OPT_DD_WANT[$_i]}
+    assert_eq "pwsh/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
+done
+err=$(cd "$WORK/opt/pdd" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; cat '--' data.txt" < /dev/null)
+assert_eq "pwsh/the refusal of cat '--' data.txt" "cat: '--' would make bat read den's last --paging=never as a file name: bat did not run. Write a file whose name starts with - as ./-name instead, or run bat or catw by name." "$err"
 unset _sh _run _call _tool _names _i _c _d _w _got
 
 # =============================================================================

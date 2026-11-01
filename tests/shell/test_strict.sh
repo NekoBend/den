@@ -403,6 +403,13 @@ Case '_DenBatWild' {
     _DenBatWild @()
     _DenBatWild $null
 }
+Case '_DenBatDashDash' {
+    _DenBatDashDash @('a.txt', '--')
+    _DenBatDashDash @('a.txt', $null, @('-n', '--'), '')
+    _DenBatDashDash @('a.txt', '-', '---')
+    _DenBatDashDash @()
+    _DenBatDashDash $null
+}
 Case 'grep, a file name that reads as an option' {
     $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
     $null = New-Item -ItemType File -Path $StrictOpt -Force
@@ -440,6 +447,7 @@ Case 'Initialize-Cache, not installed' { Initialize-Cache 'nonexistent-strict' @
 Case 'cat' { cat a.txt }
 Case 'cat, wildcards' { cat a* nomatch-strict* }
 Case 'cat, an option with a wildcard' { try { cat -l '*' a.txt } catch { $null = $_ } }
+Case 'cat, a quoted --' { try { cat '--' a.txt } catch { $null = $_ } }
 Case 'cat, piped' { 'x' | cat }
 Case 'find' { find a }
 Case 'grep' { grep alpha a.txt }
