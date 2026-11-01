@@ -1773,7 +1773,19 @@ def test_a_base_that_git_would_read_as_an_option_is_refused(
 
     proc = run("--base", "no-such-ref", "--root", str(tmp_path))
     assert proc.returncode == 1, proc.stderr
-    assert "no-such-ref: no such commit" in proc.stderr, proc.stderr
+    assert "no-such-ref: not a commit" in proc.stderr, proc.stderr
+    git_exe = shutil.which("git")
+    assert git_exe is not None
+    tree = subprocess.run(
+        [git_exe, "rev-parse", "HEAD^{tree}"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    proc = run("--base", tree, "--root", str(tmp_path))
+    assert proc.returncode == 1, proc.stderr
+    assert f"{tree}: not a commit" in proc.stderr, proc.stderr
 
     # an annotated tag and a revision expression still name the commit
     for base in ("v1", "HEAD~0"):

@@ -206,7 +206,7 @@ def _resolve_base(base: str, root: Path) -> str:
             ["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], root
         )
     except GitError:
-        raise GitError(f"--base {base}: no such commit") from None
+        raise GitError(f"--base {base}: not a commit") from None
     return out.decode("ascii").strip()
 
 
