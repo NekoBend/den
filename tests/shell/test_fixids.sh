@@ -317,6 +317,33 @@ rm -f "$WORK/tmplink"
 setup_tree
 
 # =============================================================================
+# A chown or chgrp that fails
+# =============================================================================
+# chown and chgrp go on past a file they cannot change, and so does xargs,
+# which then exits 123. awk is last in the pass's pipeline, so fixids reads
+# xargs' status from PIPESTATUS, reports it and fails the run; with the wrong
+# index the failure went unreported and fixids exited 0. Stand-ins that fail
+# every call take the place of a chown that fails (a real one fails only for
+# a non-root user, and CI runs the suites as root). --from with another uid
+# and the tree's gid puts every file in the gid-only class, so chgrp runs.
+mkdir -p "$TESTTMP/chfail"
+for t in chown chgrp; do
+    printf '#!/bin/sh\nexit 1\n' > "$TESTTMP/chfail/$t"
+done
+chmod +x "$TESTTMP/chfail/chown" "$TESTTMP/chfail/chgrp"
+for _mode in "--to UID" "--from UID:GID" "--from OTHER:GID"; do
+    case $_mode in
+        "--to UID") _args=(--to 2000) _verb=chowned ;;
+        "--from UID:GID") _args=(--from "$U:$G" --to 2000:2000) _verb=chowned ;;
+        *) _args=(--from "$((U + 1)):$G" --to "2000:$NEWG") _verb="chgrp'd" ;;
+    esac
+    echo "[fixids] $_mode: a $_verb pass whose calls fail is reported, and the run fails"
+    actual=$(fx "$TESTTMP/chfail" "${_args[@]}" "$WORK/t")
+    assert_contains "fixids/$_mode, failing calls: reported" "fixids: some files could not be $_verb (xargs exit 123)" "$actual"
+    assert_eq "fixids/$_mode, failing calls: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+done
+
+# =============================================================================
 # A real run (root only)
 # =============================================================================
 # Each class gets exactly its change, once: logging chown / chgrp stand-ins
