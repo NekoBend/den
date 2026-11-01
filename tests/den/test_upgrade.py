@@ -810,7 +810,12 @@ def test_install_force_refuses_to_back_up_through_a_symlink(
     assert install_main(["skills", "--target", str(ws), "--force"]) == 1
     assert outside.read_text() == "not den's\n"
     assert skill.read_text() == "MINE\n", "not replaced without a backup"
-    assert "symlink" in capsys.readouterr().err
+    err = capsys.readouterr().err.splitlines()
+    refusals = [line for line in err if "not replacing" in line]
+    assert len(refusals) == 1
+    # the prefix --force keeps now that hook and shell pass their own
+    assert refusals[0].startswith("den install: not replacing ")
+    assert refusals[0].endswith("SKILL.md.den.bak is a symlink")
 
 
 @pytest.mark.parametrize("flag", ["--no-extras", "--bin", "--no-bin"])

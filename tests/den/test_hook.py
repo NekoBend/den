@@ -248,6 +248,30 @@ def test_install_backs_up_non_utf8_config(tmp_path, monkeypatch):
     assert bak.is_file() and bak.read_bytes() == b"\xff\xfe not utf-8 \x00"
 
 
+@pytest.mark.parametrize(
+    ("tool", "rel", "content"),
+    [
+        ("claude", ".claude/settings.local.json", {"permissions": {"allow": ["x"]}}),
+        ("copilot", ".github/hooks/den.json", {"version": 1}),
+    ],
+)
+def test_install_merges_into_an_object_without_hooks(
+    tmp_path, monkeypatch, capsys, tool, rel, content
+):
+    # The most common settings file has no `hooks` key yet. It is mergeable:
+    # no backup, and no line saying den could not merge into it.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps(content))
+    assert hook_main(["install", "--tool", tool]) == 0
+    assert not list(cfg.parent.glob(cfg.name + ".den.bak*"))
+    assert "can merge" not in capsys.readouterr().err
+    data = json.loads(cfg.read_text())
+    assert data.items() >= content.items()
+    assert data["hooks"]
+
+
 def test_install_surfaces_existing_imprint(tmp_path, monkeypatch, capsys):
     _seed(tmp_path, imprint="SUSPICIOUS RULE\n")  # pre-existing, not seeded by us
     monkeypatch.chdir(tmp_path)
