@@ -118,6 +118,7 @@ def _cmd_code(name: str) -> list[str]:
 
 # The wrapper shims and the modern tool each one prefers. findw.cmd is not
 # here: it has no native fallback and ignores the toggle (see its own test).
+# Nor is cat.cmd, which expands wildcards for bat itself (see its own test).
 _CMD_WRAPPERS = {
     "ls": "lsd",
     "la": "lsd",
@@ -125,7 +126,6 @@ _CMD_WRAPPERS = {
     "lla": "lsd",
     "lt": "lsd",
     "llt": "lsd",
-    "cat": "bat",
     "grep": "rg",
 }
 
@@ -146,6 +146,62 @@ def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
         assert 'if defined _t "%_t%" ' in joined, name
         assert "if not defined _t " in joined, name
         assert code[-1] == "exit /b %errorlevel%", name
+
+
+def test_cmd_cat_expands_wildcards_and_hands_bat_quoted_names():
+    # On Windows bat expands a wildcard itself (the wild crate), one word at a
+    # time, and reads a file name that starts with - as an option: beside
+    # files named --, --pager=cmd and --paging=always, `cat ???* *` gave it
+    # the pager options and then a --, which made the last --paging=never a
+    # file name. cat.cmd expands each word with cmd's for and hands bat every
+    # name in quotes, which wild leaves alone (tests/shell/cmd_shims.cmd runs
+    # it on Windows). cmd cannot run here; this pins the shape: bat is looked
+    # up on PATH only, the branch is on whether it was found, only type gets
+    # the arguments as typed, each name reaches bat in quotes (:quote, see
+    # the next test), both ways end with the exit code of whichever ran, and
+    # the file keeps CRLF line endings (with bare LF, cmd can miss a label
+    # that straddles a 512-byte block).
+    code = _cmd_code("cat")
+    joined = "\n".join(code)
+    assert not any("&&" in ln and "||" in ln for ln in code)
+    assert "where.exe $PATH:bat.exe" in joined
+    assert "if not defined _t goto :type" in joined
+    assert [ln for ln in code if "%*" in ln] == ["type %*"]
+    assert "for /l %%i in (1,1,%_n%) do call :quote %%i" in joined
+    run = code.index('"!_t!" --style=plain --paging=never!_a! --paging=never')
+    assert code[run + 1] == "exit /b %errorlevel%"
+    assert code[code.index("type %*") + 1] == "exit /b %errorlevel%"
+    raw = (_CMD_BIN / "cat.cmd").read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n"), "cat.cmd must use CRLF line endings"
+
+
+def test_cmd_cat_doubles_the_backslashes_a_name_ends_in():
+    # bat parses its command line by CommandLineToArgvW's rules (wild 2.2.1,
+    # src/parser.rs): 2n backslashes before a quote are n and the quote ends
+    # the word, 2n+1 are n and a quote in the word. cat.cmd hands bat every
+    # name in quotes, so `cat --file-name label\ notes.txt` gave bat
+    # "--file-name" "label\" "notes.txt" --paging=never, which it read as
+    # --file-name with the one value label" notes.txt --paging=never, and no
+    # file. cat.cmd's :quote doubles the run of backslashes a name ends in
+    # (tests/shell/cmd_shims.cmd runs it on Windows); cmd cannot run here,
+    # so this pins the routine.
+    code = _cmd_code("cat")
+    q = code.index(":quote")
+    assert code[q : q + 12] == [
+        ":quote",
+        'set "_s=!_w%1!"',
+        'set "_x="',
+        ":quote_bs",
+        "if not defined _s goto :quote_end",
+        'if not "!_s:~-1!"=="\\" goto :quote_end',
+        'set "_s=!_s:~0,-1!"',
+        'set "_x=!_x!\\"',
+        "goto :quote_bs",
+        ":quote_end",
+        'set "_a=!_a! "!_w%1!!_x!""',
+        "exit /b 0",
+    ]
+    assert "call :quote %%i" in "\n".join(code)
 
 
 def test_cmd_find_is_find_exe_and_fd_is_findw():

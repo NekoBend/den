@@ -694,8 +694,165 @@ function _DenAddClean([string[]]$Names) {
     }
 }
 
-# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
-function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr) {
+# _DenOptionFile <name> <tool> <args> - for New-Wrapper: why <tool> must not run
+# with <args>, the arguments of den's <name>, else $null. bat, fd and rg have
+# options that run a program (rg --pre and --hostname-bin, fd -x and -X in any
+# spelling, bat --pager with --paging), and they read a word that starts with -
+# as an option, also when it is the name of a file: `grep needle *` beside a
+# file named --pre=sh had rg run sh on every file it searched. So <tool> must
+# not run when one of <args> starts with - and names an existing path, or
+# when one is a wildcard that stands for such a name and the wildcard is
+# expanded: by pwsh, for a native command on Linux and macOS, after this
+# function has seen it, each name relative to the current directory (./*
+# included: it hands on ./--pre=sh as --pre=sh); by den's cat on Windows, for
+# bat (_DenBatWords), in the same way. So the names are looked up the way pwsh
+# does it. On Windows pwsh expands nothing, and rg and fd do not either.
+function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
+    $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    $expand = (-not (_OnWindows) -or $Tool -eq 'bat') -and $loc.Provider.Name -eq 'FileSystem'
+    # <tool> runs in the session's file-system location, also while the session
+    # is on another drive (Env:, a registry drive), so a name is looked up there,
+    # as a file.
+    $fsBase = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        if ($null -eq $w) { continue }
+        $s = "$w"
+        if ($s.Length -gt 1 -and $s[0] -eq '-') {
+            $there = $false
+            try { $there = Test-Path -LiteralPath ('FileSystem::' + [System.IO.Path]::Combine($fsBase, $s)) } catch { $null = $_ }
+            if ($there) {
+                return "'$s' names a file, which $Tool would read as an option: $Tool did not run. " +
+                    "Write it as ./$s, or run the native $Name with the wrappers off (tgl-wr)."
+            }
+        }
+        # pwsh expands a rooted pattern (/x/*, ~/x/*) to rooted names.
+        if (-not $expand -or $s.StartsWith('~') -or [System.IO.Path]::IsPathRooted($s) -or
+            -not [WildcardPattern]::ContainsWildcardCharacters($s)) { continue }
+        $items = @()
+        try { $items = @($ExecutionContext.SessionState.InvokeProvider.ChildItem.Get($s, $false)) } catch { $null = $_ }
+        foreach ($i in $items) {
+            if ($i -isnot [System.IO.FileSystemInfo]) { continue }
+            $n = $ExecutionContext.SessionState.Path.NormalizeRelativePath($i.FullName, $loc.ProviderPath)
+            if ($n.StartsWith('-')) {
+                return "'$s' stands for the file '$n', which $Tool would read as an option: $Tool did " +
+                    "not run. Write the wildcard with a full path (`$PWD/$s), or run the native $Name " +
+                    "with the wrappers off (tgl-wr)."
+            }
+        }
+    }
+    return $null
+}
+
+# _DenBatWild <args> - for den's cat on Windows: why bat must not run with
+# <args>, else $null. There bat expands each word that holds * ? [ or ] itself
+# (see _DenBatWords), an option and an option's value too, and pwsh hands a
+# word without a blank on unquoted, so nothing keeps bat from expanding one:
+# `cat -l * x` would make a file named like an option the language and read
+# the names after it as options. So den's cat expands file operands only, and
+# refuses a word that starts with - and holds one of those characters
+# (--file-name=*.py), or the value of an option that takes it from the next
+# word when that holds one (--map-syntax '*.h:C++', -l '*'). Turning such a
+# word into a path, as for an operand, would make bat read the option as a
+# file. After a -- every word is an operand (den's cat has refused a -- by
+# then: _DenBatDashDash).
+function _DenBatWild($Words) {
+    # bat 0.26.1's options that take a value, from `bat --help` (bat cache's
+    # --source and --target too): without =value, the next word is the value.
+    # A cluster of short options gives -l, -m, -r or -H the rest of the word,
+    # or the next word when it ends the word (-pl).
+    $long = @('--binary', '--color', '--completion', '--decorations', '--diff-context',
+        '--file-name', '--highlight-line', '--ignored-suffix', '--italic-text', '--language',
+        '--line-range', '--map-syntax', '--nonprintable-notation', '--pager', '--paging',
+        '--squeeze-limit', '--strip-ansi', '--style', '--tabs', '--terminal-width', '--theme',
+        '--theme-dark', '--theme-light', '--wrap', '--source', '--target')
+    $how = 'which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it.'
+    $opt = $null
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        $s = "$w"
+        $wild = $s.IndexOfAny([char[]]'*?[]') -ge 0
+        if ($opt) {
+            if ($wild) { return "'$s', the value of $opt, holds * ? [ or ], $how" }
+            $opt = $null
+            continue
+        }
+        if ($s -eq '--') { break }
+        if ($s.Length -lt 2 -or $s[0] -ne '-') { continue }
+        if ($wild) { return "'$s' is an option that holds * ? [ or ], $how" }
+        if ($s -cin $long) { $opt = $s; continue }
+        if ($s[1] -eq '-') { continue }
+        for ($i = 1; $i -lt $s.Length; $i++) {
+            if ('lmrH'.IndexOf($s[$i]) -lt 0) { continue }
+            if ($i -eq $s.Length - 1) { $opt = $s }
+            break
+        }
+    }
+    return $null
+}
+
+# _DenBatDashDash <args> - for den's cat: why bat must not run with <args>,
+# else $null. cat hands bat a last --paging=never after <args>, which wins over
+# any --paging a file name put before it, but after a -- bat reads every word
+# as a file name, that one too. pwsh drops a bare -- typed to a function, but a
+# quoted '--', a second --, or one in a variable or an array reaches <args>.
+# So cat refuses a -- on every system, as cmd's cat does.
+function _DenBatDashDash($Words) {
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        if ("$w" -ceq '--') {
+            return "'--' would make bat read den's last --paging=never as a file name: bat did not run. " +
+                'Write a file whose name starts with - as ./-name instead, or run bat or catw by name.'
+        }
+    }
+    return $null
+}
+
+# _DenBatWords <args> - for den's cat on Windows: <args>, with each word that
+# bat would expand itself replaced by what it stands for, so that bat's own
+# expansion does not decide what it reads. On Windows bat expands each word
+# that holds * ? [ or ] (the wild crate, which leaves a quoted word alone, but
+# pwsh hands most words on unquoted), one word at a time: `cat ???* *` beside
+# files named --, --pager=cmd and --paging=always gave bat the pager options
+# from the first word and a -- from the second, which made the last
+# --paging=never a file name. Such a word is a file operand here
+# (_DenBatWild has refused an option or an option's value that holds one), and
+# it becomes the names it matches, relative to the current directory as pwsh
+# hands them on in Linux and macOS (_DenOptionFile has refused a match whose
+# name starts with -). A match of a
+# rooted word, or one whose name holds [ or ], goes as its full path, and
+# whatever bat still makes of a full path is one too. A word that matches
+# nothing, or any such word while the current location is not a folder, goes
+# on made a full path from the folder bat runs in. So no name bat reads
+# starts with -.
+function _DenBatWords($Words) {
+    $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    $fs = $loc.Provider.Name -eq 'FileSystem'
+    $base = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        if ($null -eq $w) { $w; continue }
+        $s = "$w"
+        if ($s.IndexOfAny([char[]]'*?[]') -lt 0) { $w; continue }
+        $rooted = $s.StartsWith('~') -or [System.IO.Path]::IsPathRooted($s)
+        $items = @()
+        if ($fs) {
+            try { $items = @($ExecutionContext.SessionState.InvokeProvider.ChildItem.Get($s, $false)) } catch { $null = $_ }
+        }
+        $names = @(foreach ($i in $items) {
+            if ($i -isnot [System.IO.FileSystemInfo]) { continue }
+            $n = $i.FullName
+            if (-not $rooted) {
+                $r = $ExecutionContext.SessionState.Path.NormalizeRelativePath($n, $loc.ProviderPath)
+                if (-not $r.StartsWith('-') -and $r.IndexOfAny([char[]]'[]') -lt 0) { $n = $r }
+            }
+            $n
+        })
+        if ($names.Count) { $names; continue }
+        if ($rooted) { $s; continue }
+        try { [System.IO.Path]::Combine($base, $s) } catch { $s }
+    }
+}
+
+# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr> [modernTail]
+# <modernTail>: flags the modern tool gets after the call's arguments.
+function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr, [string]$ModernTail) {
     # Dispatch order: modern tool -> (Windows) microsoft/coreutils -> native exe on
     # PATH -> PowerShell fallback. The coreutils and native tiers both reuse
     # $NativeCmd as the Unix command name ('ls'/'cat'/'grep'/'find'), so on Windows a
@@ -709,6 +866,24 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # error it writes is the function's ("lt: ..."). With input piped in, it runs
     # as a scriptblock of its own, which sees the call's arguments as $Args and
     # what was piped in as $input, all at once.
+    # A wrapper named after the native command it replaces whose modern tool has
+    # options that run a program (bat, fd, rg) runs nothing, with a terminating
+    # error, when an argument is a file name the tool would read as an option
+    # (_DenOptionFile).
+    # bat runs nothing either when a -- reaches the wrapper, after which it
+    # would read the last --paging=never as a file name (_DenBatDashDash).
+    # On Windows, bat runs nothing either when an option or an option's value
+    # holds a wildcard (_DenBatWild), and gets each other word it would expand
+    # replaced by what it stands for (_DenBatWords).
+    $optionCheck = ''
+    if ($FuncName -eq $NativeCmd -and $Modern -in @('bat', 'fd', 'rg')) {
+        $optionCheck = "`$__o = _DenOptionFile '$FuncName' '$Modern' `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }"
+        if ($Modern -eq 'bat') {
+            $optionCheck = "`$__o = _DenBatDashDash `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }; " +
+                "if (_OnWindows) { `$__o = _DenBatWild `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop } }; " +
+                $optionCheck + "; if (_OnWindows) { `$__a = @(_DenBatWords `$__a) }"
+        }
+    }
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
     $winNativeSkip = @('find', 'sort', 'more')
     $nativeGuard = if ($NativeCmd -and ($NativeCmd -in $winNativeSkip)) {
@@ -723,8 +898,9 @@ begin {
     `$__sp = `$null
     `$__a = `$args
     if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
+        $optionCheck
         _WrapLog '$FuncName' '$Modern'
-        `$__run = { & '$Modern' $ModernFlags @__a }
+        `$__run = { & '$Modern' $ModernFlags @__a $ModernTail }
     } else {
         `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
         `$__nc = if (-not `$__cu -and ($nativeGuard)) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }

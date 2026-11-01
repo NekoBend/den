@@ -375,6 +375,50 @@ Case '_DenAddClean' {
     _DenAddClean 'strict-ac', 'nonexistent-strict'
     strict-ac
 }
+Case '_DenOptionFile' {
+    $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
+    $null = New-Item -ItemType File -Path $StrictOpt -Force
+    try {
+        _DenOptionFile 'grep' 'rg' @('alpha', '-strict-opt')
+        _DenOptionFile 'grep' 'rg' @('alpha', '*', $null, @('a.txt', 'b.txt'), '/nonexistent-strict/*')
+        _DenOptionFile 'grep' 'rg' @('alpha', 'a.txt')
+        _DenOptionFile 'grep' 'rg' @()
+        _DenOptionFile 'grep' 'rg' $null
+    } finally { Remove-Item -LiteralPath $StrictOpt -Force }
+}
+Case '_DenBatWords' {
+    $StrictBat = Join-Path $PWD.ProviderPath 'strict-bat[1].txt'
+    [System.IO.File]::WriteAllText($StrictBat, '')
+    try {
+        _DenBatWords @('alpha', 'strict-b*', $null, @('a.txt', 'b.txt'), '/nonexistent-strict/*', 'nomatch-strict*', '-')
+        _DenBatWords @()
+        _DenBatWords $null
+    } finally { Remove-Item -LiteralPath $StrictBat -Force }
+}
+Case '_DenBatWild' {
+    _DenBatWild @('--file-name=*.py', '-')
+    _DenBatWild @('-pl', '*', 'a.txt')
+    _DenBatWild @('--style', 'plain', '-lrust', '-n', $null, @('a.txt', 'b.txt'), '-l', '', '--', '-x*')
+    _DenBatWild @('-l')
+    _DenBatWild @()
+    _DenBatWild $null
+}
+Case '_DenBatDashDash' {
+    _DenBatDashDash @('a.txt', '--')
+    _DenBatDashDash @('a.txt', $null, @('-n', '--'), '')
+    _DenBatDashDash @('a.txt', '-', '---')
+    _DenBatDashDash @()
+    _DenBatDashDash $null
+}
+Case 'grep, a file name that reads as an option' {
+    $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
+    $null = New-Item -ItemType File -Path $StrictOpt -Force
+    try {
+        try { grep alpha * } catch { $null = $_ }
+        try { grep alpha -strict-opt } catch { $null = $_ }
+        try { 'x' | grep alpha -strict-opt } catch { $null = $_ }
+    } finally { Remove-Item -LiteralPath $StrictOpt -Force }
+}
 Case 'toggle-wrapper' { toggle-wrapper; toggle-wrapper }
 Case 'tgl-wr' { tgl-wr; tgl-wr }
 Case '_DenTrustedCacheOwner' {
@@ -401,6 +445,9 @@ Case 'Initialize-Cache, not installed' { Initialize-Cache 'nonexistent-strict' @
 
 # ===== wrappers.ps1: modern tool, native command, PowerShell fallback =====
 Case 'cat' { cat a.txt }
+Case 'cat, wildcards' { cat a* nomatch-strict* }
+Case 'cat, an option with a wildcard' { try { cat -l '*' a.txt } catch { $null = $_ } }
+Case 'cat, a quoted --' { try { cat '--' a.txt } catch { $null = $_ } }
 Case 'cat, piped' { 'x' | cat }
 Case 'find' { find a }
 Case 'grep' { grep alpha a.txt }

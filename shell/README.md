@@ -163,6 +163,50 @@ there is silently absent from your `grep` and `find` results. Reach for
 a tree, or pass the tools' own overrides, `rg --no-ignore --hidden` and
 `fd --no-ignore --hidden`.
 
+A file name can also reach a modern tool as an option. A glob such as `*` puts
+the names it matches among the arguments, and `rg`, `fd` and `bat` read a word
+that starts with `-` as an option, some of which run a program (`rg --pre` and
+`--hostname-bin`, `fd -x` and `-X`, `bat --pager` with `--paging=always`): in a
+checkout with a file named `--pre=sh`, a typed `grep needle *` ran `sh` on every
+file `rg` searched. So typed `cat`, `grep` and `find` run nothing when an
+argument starts with `-` and names a file (a symlink that points nowhere
+included); they say which one (bash/zsh: status 2; pwsh: a terminating
+error). Write such a file as `./--pre=sh`
+(a glob as `./*`), or use the native command (`command grep`).
+PowerShell on Linux and macOS expands a wildcard for a native command itself,
+after the wrapper has seen it (quoted ones too, and `./*` to bare names), so
+the pwsh wrappers look the names up as pwsh will; there write the wildcard
+with a full path (`$PWD/*`), or turn the wrappers off. On Windows, cmd and
+PowerShell pass `*` on as it is, and `bat` expands it itself, one word at a
+time: `cat ???* *` beside files named `--`, `--pager=cmd` and
+`--paging=always` could give it the pager options from the first word and a
+`--` from the second. So `cat` there expands each wildcard first (cmd with
+its own `for`, PowerShell as it does on Linux and macOS), runs nothing when a
+match starts with `-` (cmd: write the wildcard as `.\*`; PowerShell:
+`$PWD/*`), and hands `bat` the names in a form its own expansion leaves
+alone: cmd puts each in quotes, PowerShell gives the full path of a name
+that holds `[` or `]`. cmd doubles the backslashes a word ends in (`dir\`),
+which `bat` would otherwise read as escaping the closing quote. cmd splits a
+word at `=`, `,` and `;`, as it does for its own commands, so such a name
+goes in quotes there. `cat` also hands `bat` a last `--paging=never` after
+the names, which wins over any `--paging` before it, and refuses a `--`,
+after which `bat` would read that word as a file name. PowerShell's `cat`
+does both on every system; it drops a bare `--` typed to `cat`, but a quoted
+`'--'`, or a second `--`, reaches it. `cat` there expands file names only:
+`bat` would expand an option or an option's value too, and expanding one as a
+name would make it a file. So it runs nothing
+when a word that starts with `-` holds a wildcard character
+(`--file-name=*.py`), or when the value of an option that takes it from the
+next word does (`-l '*'`, `--map-syntax '*.h:C++'`; the options `bat --help`
+lists with a value); run `bat` (PowerShell: or `catw`) by name for those. The
+wildcard characters are `*` and `?` in cmd, whose `for` takes `[` and `]` as
+they are and whose quotes keep `bat` from expanding them, and `* ? [ ]` in
+PowerShell. cmd splits an unquoted `--file-name=*.py` into `--file-name` and
+`*.py`, so there the rule for values covers it.
+`rg` and `fd` expand no wildcards themselves, so cmd's `grep`
+and `findw` hand them `*` unexpanded. The `w`-suffix forms and `ripgrep` run
+the tool as typing its name does, without this check.
+
 Ways to get the native command:
 
 - **One-off (POSIX):** prefix `command`, e.g. `command ls -la --color=never`.
