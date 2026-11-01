@@ -597,15 +597,25 @@ function extract {
     $global:LASTEXITCODE = 0
     $ok = $true
     switch -Regex ($Path) {
-      '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
-      '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
-      '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
-      # tar shells zstd out for these, so the guard is on zstd, not tar.
+      # tar is resolved like every tool below (see the 7z comment): a bare
+      # `tar` that is not installed raised only a non-terminating
+      # CommandNotFound and left $LASTEXITCODE at 0, so the archive counted as
+      # extracted, and `extract a.tgz && Remove-Item a.tgz` deleted it.
+      '\.tar\.gz$|\.tgz$'    { $t = _ArTool 'tar'; if ($t) { & $t xzf $Path } else { Write-Error 'tar is not installed'; $ok = $false }; break }
+      '\.tar\.bz2$|\.tbz2$'  { $t = _ArTool 'tar'; if ($t) { & $t xjf $Path } else { Write-Error 'tar is not installed'; $ok = $false }; break }
+      '\.tar\.xz$|\.txz$'    { $t = _ArTool 'tar'; if ($t) { & $t xJf $Path } else { Write-Error 'tar is not installed'; $ok = $false }; break }
+      # tar shells zstd out for these, so zstd is checked as well as tar.
       # tar spawns zstd itself, in its own process, so a PowerShell function
       # cannot shadow that one and there is no path to hand tar; the resolved
       # path is only used where THIS shell does the invoking.
-      '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -xf $Path } else { Write-Error 'zstd is not installed'; $ok = $false }; break }
-      '\.tar$'                { tar xf $Path; break }
+      '\.tar\.zst$|\.tzst$'   {
+        $t = _ArTool 'tar'
+        if (-not $t) { Write-Error 'tar is not installed'; $ok = $false }
+        elseif (_ArTool 'zstd') { & $t --zstd -xf $Path }
+        else { Write-Error 'zstd is not installed'; $ok = $false }
+        break
+      }
+      '\.tar$'                { $t = _ArTool 'tar'; if ($t) { & $t xf $Path } else { Write-Error 'tar is not installed'; $ok = $false }; break }
       # Single file: each tool writes the decompressed file next to the
       # archive. gzip/bzip2/xz consume the archive and zstd keeps it — that is
       # each tool's own default, and the POSIX twin behaves the same way. The
@@ -676,13 +686,20 @@ function archive {
   # archive while archive, and `pwsh -Command`, reported success.
   $ran = $null
   $global:LASTEXITCODE = 0
+  # tar is resolved before any branch runs it, as 7z is: a bare `tar` that was
+  # not installed raised only a non-terminating CommandNotFound and left
+  # $LASTEXITCODE at 0, so archive reported success with nothing written, and
+  # `archive out.tgz src && Remove-Item -Recurse src` deleted the sources.
+  if ($Output -match '\.tar$|\.tar\.(gz|bz2|xz|zst)$|\.t(gz|bz2|xz|zst)$' -and -not ($tar = _ArTool 'tar')) {
+    Write-Error 'tar is not installed' -ErrorAction Stop
+  }
   switch -Regex ($Output) {
-    '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; $ran = 'tar'; break }
-    '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; $ran = 'tar'; break }
-    '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; $ran = 'tar'; break }
+    '\.tar\.gz$|\.tgz$'    { & $tar czf $Output -- @Sources; $ran = 'tar'; break }
+    '\.tar\.bz2$|\.tbz2$'  { & $tar cjf $Output -- @Sources; $ran = 'tar'; break }
+    '\.tar\.xz$|\.txz$'    { & $tar cJf $Output -- @Sources; $ran = 'tar'; break }
     # tar shells zstd out for these, so the guard is on zstd, not tar.
-    '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -cf $Output -- @Sources; $ran = 'tar' } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
-    '\.tar$'                { tar cf $Output -- @Sources; $ran = 'tar'; break }
+    '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { & $tar --zstd -cf $Output -- @Sources; $ran = 'tar' } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
+    '\.tar$'                { & $tar cf $Output -- @Sources; $ran = 'tar'; break }
     # Single-file compression. Every '.tar.*' form and its 't*' alias is
     # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and these
     # four tools compress exactly ONE file: several sources or a directory is a

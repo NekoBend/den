@@ -2540,6 +2540,36 @@ assert_contains "pwsh/extract names the missing 7z" "7z is not installed" "$actu
 assert_contains "pwsh/extract names the missing unrar" "unrar is not installed" "$actual"
 rm -f "$WORK/x.7z" "$WORK/y.rar"
 
+# tar was run by bare name in both: with no tar on PATH the CommandNotFound
+# was non-terminating, $LASTEXITCODE stayed 0, and extract and archive
+# reported success, so `archive out.tgz src && Remove-Item -Recurse src`
+# deleted the sources with no archive written. In a try/catch the
+# CommandNotFound also ended extract's loop, so later archives went unseen.
+echo "[pwsh] extract and archive count a missing tar as a failure"
+setup_fixtures
+mkdir -p "$WORK/notar" "$WORK/out"
+(cd "$WORK" && tar cf a.tar src && tar czf a.tgz src && tar --zstd -cf a.tzst src)
+actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; Set-Location out; extract ../a.tar ../a.tgz ../a.tzst")
+assert_contains "pwsh/extract without tar exits 1" "status=1" "$actual"
+assert_contains "pwsh/extract without tar counts every tar archive" "3 of 3 archives failed" "$actual"
+assert_contains "pwsh/extract names the missing tar" "tar is not installed" "$actual"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; Set-Location out; extract ../a.tgz 2>\$null && Remove-Item ../a.tgz")
+assert_contains "pwsh/extract without tar stops a && chain" "status=1" "$actual"
+assert_exists "pwsh/extract without tar keeps the archive a && chain would remove" "$WORK/a.tgz"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; Set-Location out; try { extract ../a.tar ../missing.zip } catch { 'caught: ' + \$_ }")
+assert_contains "pwsh/extract without tar still reaches the next archive" "'../missing.zip' is not a file" "$actual"
+assert_contains "pwsh/extract without tar counts the next archive" "caught: 2 of 2 archives failed" "$actual"
+assert_eq "pwsh/extract without tar wrote nothing" "" "$(ls -A "$WORK/out")"
+for _out in out.tar out.tgz out.tar.bz2 out.txz out.tar.zst; do
+    actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; archive $_out src 2>\$null && Remove-Item -Recurse src")
+    assert_contains "pwsh/archive $_out without tar exits 1" "status=1" "$actual"
+    assert_exists "pwsh/archive $_out without tar keeps the sources a && chain would remove" "$WORK/src/file1.txt"
+    assert_not_exists "pwsh/archive $_out without tar wrote nothing" "$WORK/$_out"
+done
+actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; archive out.tgz src")
+assert_contains "pwsh/archive names the missing tar" "tar is not installed" "$actual"
+rm -rf "$WORK/notar" "$WORK/out" "$WORK"/a.t*
+
 # --- xt / pk: short names for extract / archive ---
 # Aliases, so the call IS extract / archive: named parameters, $?, the
 # terminating summary and the "extract:" / "archive:" prefix all come from the
