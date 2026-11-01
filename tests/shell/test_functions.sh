@@ -573,6 +573,49 @@ STUB
     assert_eq "$sh/archive .7z over a glob holding a hard link to the output" "a.txt b.txt " "$(tr '\n' ' ' < "$WORK/hl/backup.7z")"
     rm -rf "$WORK/hl" "$WORK/hl.before"
 
+    # tar cannot tell that it is reading its own archive when it compresses
+    # (it writes to the compressor through a pipe), so `archive all.tgz *` or
+    # `archive all.tgz .` run again in the folder it archives stored the old
+    # all.tgz, and the one being written, inside the new one; and a failed tar
+    # left a cut archive where the old one had been. Each tar format runs over
+    # a glob twice, then over '.', then with a missing source. The plain .tar
+    # (GNU tar leaves itself out) takes the same staged path.
+    echo "[$sh] archive tar formats leave their own output out, and a failed run keeps the old one"
+    for ext in tgz tar.bz2 txz tar.zst tar; do
+        rm -rf "$WORK/own" "$WORK/own.before"
+        mkdir -p "$WORK/own"
+        echo a > "$WORK/own/a.txt"; echo b > "$WORK/own/b.txt"
+        $run "$FUNCTIONS_SH" "cd '$WORK/own' && archive all.$ext * && archive all.$ext *" >/dev/null 2>&1
+        assert_success "$sh/archive .$ext rerun over a glob holding the output exit code" "$?"
+        assert_eq "$sh/archive .$ext rerun over a glob holding the output" "a.txt b.txt " "$(tar tf "$WORK/own/all.$ext" 2>/dev/null | sort | tr '\n' ' ')"
+        $run "$FUNCTIONS_SH" "cd '$WORK/own' && archive all.$ext ." >/dev/null 2>&1
+        assert_success "$sh/archive .$ext over its own folder exit code" "$?"
+        assert_eq "$sh/archive .$ext over its own folder leaves itself and the staging directory out" "./ ./a.txt ./b.txt " "$(tar tf "$WORK/own/all.$ext" 2>/dev/null | sort | tr '\n' ' ')"
+        # Built in a 0700 directory, the archive still lands with the umask.
+        : > "$WORK/own/ref"
+        assert_eq "$sh/archive .$ext lands with the umask's mode" "$(stat -c %a "$WORK/own/ref")" "$(stat -c %a "$WORK/own/all.$ext")"
+        cp "$WORK/own/all.$ext" "$WORK/own.before"
+        $run "$FUNCTIONS_SH" "cd '$WORK/own' && archive all.$ext a.txt missing" >/dev/null 2>&1
+        assert_failure "$sh/archive .$ext with a missing source fails" "$?"
+        assert_eq "$sh/archive .$ext failed run keeps the previous archive" "$(sha256sum < "$WORK/own.before")" "$(sha256sum < "$WORK/own/all.$ext")"
+        assert_eq "$sh/archive .$ext leaves no staging directory" "" "$(ls -A "$WORK/own" | grep '^\.archive\.' | tr -d '\n')"
+    done
+    # The staged tar publishes through _ar_rename too: a directory made at
+    # the output while tar runs takes in neither archive (a gzip stub, which
+    # tar runs for -z, makes it).
+    rm -rf "$WORK/own" "$WORK/own.before"
+    mkdir -p "$WORK/own/bin" "$WORK/own/src"
+    echo x > "$WORK/own/src/x"
+    echo PRECIOUS > "$WORK/own/keep.tgz"
+    printf '#!/bin/sh\n%s "$@"\nmkdir keep.tgz\n' "$(command -v gzip)" > "$WORK/own/bin/gzip"
+    chmod +x "$WORK/own/bin/gzip"
+    actual=$($run "$FUNCTIONS_SH" "PATH='$WORK/own/bin:$PATH' && cd '$WORK/own' && archive keep.tgz src" 2>&1)
+    assert_failure "$sh/archive .tgz with a directory made at the output fails" "$?"
+    assert_contains "$sh/archive .tgz with a directory made at the output says where the previous archive is" "archive: previous 'keep.tgz' kept at ./.archive." "$actual"
+    assert_eq "$sh/archive .tgz with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/own"/.archive.*/previous 2>/dev/null)"
+    assert_eq "$sh/archive .tgz put nothing in the directory made at the output" "" "$(ls -A "$WORK/own/keep.tgz")"
+    rm -rf "$WORK/own"
+
     # Ctrl-C while the archiver ran ended the function between the move-aside
     # and the restore: <out> was gone, and the old archive sat hidden in the
     # staging directory. A zip stub that waits stands in for a slow zip. The
@@ -831,10 +874,19 @@ assert_contains "bash/archive crafted glob tar.gz stored the file" "$CRAFTED_SRC
 
 echo "[bash] archive treats every argument after the output as a source"
 setup_crafted
+err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt")
 run_bash "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
 assert_failure "bash/archive does not honour -C as a tar option" "$?"
+# tar looked for a file called -C, and the failed run left no archive.
+assert_contains "bash/archive looked for a file called -C" "-C: Cannot stat" "$err"
+assert_not_exists "bash/archive failed run with -C left no archive" "$WORK/out2.tar.gz"
+# With a file of that name there, both are stored, and tar did not chdir.
+: > "$WORK/crafted/-C"
+run_bash "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
+assert_success "bash/archive with a file called -C exit code" "$?"
 actual=$(tar tzf "$WORK/out2.tar.gz" 2>/dev/null)
 assert_contains "bash/archive stored the source that followed it" "bait.txt" "$actual"
+assert_contains "bash/archive stored the file called -C" "-C" "$actual"
 assert_not_contains "bash/archive did not chdir for -C" "crafted" "$actual"
 
 echo "[bash] archive neutralizes an option-shaped source name (zip)"
@@ -1892,10 +1944,19 @@ assert_contains "zsh/archive crafted glob tar.gz stored the file" "$CRAFTED_SRC"
 
 echo "[zsh] archive treats every argument after the output as a source"
 setup_crafted
+err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt")
 run_zsh "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
 assert_failure "zsh/archive does not honour -C as a tar option" "$?"
+# tar looked for a file called -C, and the failed run left no archive.
+assert_contains "zsh/archive looked for a file called -C" "-C: Cannot stat" "$err"
+assert_not_exists "zsh/archive failed run with -C left no archive" "$WORK/out2.tar.gz"
+# With a file of that name there, both are stored, and tar did not chdir.
+: > "$WORK/crafted/-C"
+run_zsh "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
+assert_success "zsh/archive with a file called -C exit code" "$?"
 actual=$(tar tzf "$WORK/out2.tar.gz" 2>/dev/null)
 assert_contains "zsh/archive stored the source that followed it" "bait.txt" "$actual"
+assert_contains "zsh/archive stored the file called -C" "-C" "$actual"
 assert_not_contains "zsh/archive did not chdir for -C" "crafted" "$actual"
 
 echo "[zsh] archive neutralizes an option-shaped source name (zip)"
@@ -2436,6 +2497,44 @@ assert_contains "pwsh/archive zip with a missing source exits 1" "status=1" "$ac
 assert_eq "pwsh/archive zip failed run keeps the existing output" "PRECIOUS" "$(cat "$WORK/keep.zip")"
 assert_eq "pwsh/archive zip failed run leaves no temporary" "" "$(ls -A "$WORK" | grep '\.tmp\.' | tr -d '\n')"
 rm -f "$WORK"/bad.tar* "$WORK/keep.zip"
+
+# GNU tar cannot tell that it is reading its own archive when it compresses,
+# so the tar formats, which ran `tar czf <out>`, stored the old archive (and
+# the one being written) in a rerun over their own folder, and a failed tar
+# left a cut archive where the old one had been.
+echo "[pwsh] archive tar formats leave their own output out, and a failed run keeps the old one"
+for ext in tgz tar.bz2 txz tar.zst tar; do
+    rm -rf "$WORK/own" "$WORK/own.before"
+    mkdir -p "$WORK/own"
+    echo a > "$WORK/own/a.txt"; echo b > "$WORK/own/b.txt"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/own'; archive all.$ext a.txt b.txt; archive all.$ext (Get-ChildItem -Name)" >/dev/null 2>&1
+    assert_success "pwsh/archive .$ext rerun over a list holding the output exit code" "$?"
+    assert_eq "pwsh/archive .$ext rerun over a list holding the output" "a.txt b.txt " "$(tar tf "$WORK/own/all.$ext" 2>/dev/null | sort | tr '\n' ' ')"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/own'; archive all.$ext ." >/dev/null 2>&1
+    assert_success "pwsh/archive .$ext over its own folder exit code" "$?"
+    assert_eq "pwsh/archive .$ext over its own folder leaves itself out" "./ ./a.txt ./b.txt " "$(tar tf "$WORK/own/all.$ext" 2>/dev/null | sort | tr '\n' ' ')"
+    cp "$WORK/own/all.$ext" "$WORK/own.before"
+    actual=$(pwsh_outcome "Set-Location own; archive all.$ext a.txt missing")
+    assert_contains "pwsh/archive .$ext with a missing source exits 1" "status=1" "$actual"
+    assert_contains "pwsh/archive .$ext with a missing source names tar's exit code" "tar exited 2" "$actual"
+    assert_not_contains "pwsh/archive .$ext put the old archive back and says nothing of a kept copy" "kept at" "$actual"
+    assert_eq "pwsh/archive .$ext failed run keeps the previous archive" "$(sha256sum < "$WORK/own.before")" "$(sha256sum < "$WORK/own/all.$ext")"
+    assert_eq "pwsh/archive .$ext leaves nothing behind" "" "$(ls -A "$WORK/own" | grep '^\.archive\.' | tr -d '\n')"
+done
+# A directory made at the output while tar runs (a gzip stub, which tar runs
+# for -z, makes it) takes in neither archive.
+rm -rf "$WORK/own" "$WORK/own.before"
+mkdir -p "$WORK/own/bin" "$WORK/own/src"
+echo x > "$WORK/own/src/x"
+echo PRECIOUS > "$WORK/own/keep.tgz"
+printf '#!/bin/sh\n%s "$@"\nmkdir keep.tgz\n' "$(command -v gzip)" > "$WORK/own/bin/gzip"
+chmod +x "$WORK/own/bin/gzip"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/own/bin:' + \$env:PATH; Set-Location own; archive keep.tgz src")
+assert_contains "pwsh/archive .tgz with a directory made at the output exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive .tgz with a directory made at the output says where the previous archive is" "archive: previous 'keep.tgz' kept at .archive." "$actual"
+assert_eq "pwsh/archive .tgz with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/own"/.archive.*/previous 2>/dev/null)"
+assert_eq "pwsh/archive .tgz put nothing in the directory made at the output" "" "$(ls -A "$WORK/own/keep.tgz")"
+rm -rf "$WORK/own"
 
 # 7z is not in the test image; a stub stands in with 7z's update semantics
 # (the names already in <out> stay and the sources are added), exiting 2 when

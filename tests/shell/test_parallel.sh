@@ -483,6 +483,40 @@ for sh in bash zsh; do
         rm -f "$WORK/src/$_out"
     done
 
+    echo "[$sh] ptar: the single-threaded fallbacks leave their own output out too"
+    # Without pigz or pbzip2, ptar ran `tar czf <out>` or `tar cjf <out>`,
+    # which cannot tell that it is reading its own archive either (its
+    # compressor is a pipe too): a rerun stored the old archive inside the new
+    # one, and a failed run left a cut archive where the old one had been. A
+    # PATH with tar, gzip and bzip2 but none of the threaded tools, and no xz,
+    # takes the fallbacks.
+    rm -rf "$WORK/fb"
+    mkdir -p "$WORK/fb/bin" "$WORK/fb/d"
+    for _t in tar gzip bzip2 mktemp mv rm sh cat; do ln -s "$(command -v "$_t")" "$WORK/fb/bin/$_t"; done
+    echo a > "$WORK/fb/d/a.txt"; echo b > "$WORK/fb/d/b.txt"
+    for _out in all.tgz all.tbz2; do
+        actual=$($runner "$PARALLEL_SH" "PATH='$WORK/fb/bin' && cd '$WORK/fb/d' && ptar $_out * && ptar $_out *" 2>&1)
+        assert_success "$sh/ptar $_out fallback rerun over a glob holding the output exit code" "$?"
+        assert_contains "$sh/ptar $_out ran the fallback" "(using standard)" "$actual"
+        assert_eq "$sh/ptar $_out fallback rerun over a glob holding the output" "a.txt b.txt " "$(tar tf "$WORK/fb/d/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+        $runner "$PARALLEL_SH" "PATH='$WORK/fb/bin' && cd '$WORK/fb/d' && ptar $_out ." >/dev/null 2>&1
+        assert_success "$sh/ptar $_out fallback over its own folder exit code" "$?"
+        assert_eq "$sh/ptar $_out fallback over its own folder leaves itself out" "./ ./a.txt ./b.txt " "$(tar tf "$WORK/fb/d/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+        cp "$WORK/fb/d/$_out" "$WORK/fb/before"
+        $runner "$PARALLEL_SH" "PATH='$WORK/fb/bin' && cd '$WORK/fb/d' && ptar $_out a.txt missing" >/dev/null 2>&1
+        assert_failure "$sh/ptar $_out fallback with a missing source fails" "$?"
+        assert_eq "$sh/ptar $_out fallback failed run keeps the previous archive" "$(sha256sum < "$WORK/fb/before")" "$(sha256sum < "$WORK/fb/d/$_out")"
+        assert_eq "$sh/ptar $_out fallback leaves no staging directory" "" "$(ls -A "$WORK/fb/d" | grep '^\.ptar\.' | tr -d '\n')"
+        rm -f "$WORK/fb/d/$_out" "$WORK/fb/before"
+    done
+    # With no xz at all, .txz fails, and what was there stays.
+    echo PRECIOUS > "$WORK/fb/d/keep.txz"
+    $runner "$PARALLEL_SH" "PATH='$WORK/fb/bin' && cd '$WORK/fb/d' && ptar keep.txz a.txt" >/dev/null 2>&1
+    assert_failure "$sh/ptar .txz with no xz fails" "$?"
+    assert_eq "$sh/ptar .txz with no xz keeps what was there" "PRECIOUS" "$(cat "$WORK/fb/d/keep.txz")"
+    assert_eq "$sh/ptar .txz with no xz leaves no staging directory" "" "$(ls -A "$WORK/fb/d" | grep '^\.ptar\.' | tr -d '\n')"
+    rm -rf "$WORK/fb"
+
     echo "[$sh] ptar: a source that is the output itself is left out"
     # `ptar all.tgz *` run again: the glob holds the old all.tgz.
     rm -rf "$WORK/glob"
@@ -786,6 +820,44 @@ assert_contains "pwsh/ptar names tar's exit code" "tar exited 2" "$err"
 actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { ptar out.tgz src missing-src 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
 assert_eq "pwsh/ptar failure is a terminating error" "caught" "$actual"
 rm -f "$WORK"/out.*
+
+echo "[pwsh] ptar: a rerun leaves the previous archive out, and a failed run keeps it"
+# pwsh's ptar ran `tar czf <out>`, and GNU tar cannot tell that it is reading
+# its own archive when it compresses: a rerun of `ptar backup.tgz .` stored
+# the old archive (and the one being written) inside the new one, and a
+# failed tar left a cut archive where the old one had been.
+for _out in all.tgz all.tbz2 all.txz all.tar; do
+    rm -rf "$WORK/own" "$WORK/own.before"
+    mkdir -p "$WORK/own"
+    echo a > "$WORK/own/a.txt"; echo b > "$WORK/own/b.txt"
+    run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/own'; ptar $_out a.txt b.txt; ptar $_out (Get-ChildItem -Name)" >/dev/null 2>&1
+    assert_success "pwsh/ptar $_out rerun over a list holding the output exit code" "$?"
+    assert_eq "pwsh/ptar $_out rerun over a list holding the output" "a.txt b.txt " "$(tar tf "$WORK/own/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+    run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/own'; ptar $_out ." >/dev/null 2>&1
+    assert_success "pwsh/ptar $_out over its own folder exit code" "$?"
+    assert_eq "pwsh/ptar $_out over its own folder leaves itself out" "./ ./a.txt ./b.txt " "$(tar tf "$WORK/own/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+    cp "$WORK/own/$_out" "$WORK/own.before"
+    err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK/own'; ptar $_out a.txt missing")
+    assert_contains "pwsh/ptar $_out with a missing source names tar's exit code" "tar exited 2" "$err"
+    assert_not_contains "pwsh/ptar $_out put the old archive back and says nothing of a kept copy" "kept at" "$err"
+    assert_eq "pwsh/ptar $_out failed run keeps the previous archive" "$(sha256sum < "$WORK/own.before")" "$(sha256sum < "$WORK/own/$_out")"
+    assert_eq "pwsh/ptar $_out leaves nothing behind" "" "$(ls -A "$WORK/own" | grep '^\.ptar\.' | tr -d '\n')"
+done
+err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK/own'; ptar all.tar ./all.tar")
+assert_contains "pwsh/ptar with only the output as a source says so" "no source besides the output" "$err"
+# A directory made at the output while tar runs (a gzip stub, which tar runs
+# for -z, makes it) takes in neither archive.
+rm -rf "$WORK/own" "$WORK/own.before"
+mkdir -p "$WORK/own/bin" "$WORK/own/src"
+echo x > "$WORK/own/src/x"
+echo PRECIOUS > "$WORK/own/keep.tgz"
+printf '#!/bin/sh\n%s "$@"\nmkdir keep.tgz\n' "$(command -v gzip)" > "$WORK/own/bin/gzip"
+chmod +x "$WORK/own/bin/gzip"
+err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "\$env:PATH='$WORK/own/bin:' + \$env:PATH; Set-Location '$WORK/own'; ptar keep.tgz src")
+assert_contains "pwsh/ptar with a directory made at the output says where the previous archive is" "ptar: previous 'keep.tgz' kept at .ptar." "$err"
+assert_eq "pwsh/ptar with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/own"/.ptar.*/previous 2>/dev/null)"
+assert_eq "pwsh/ptar put nothing in the directory made at the output" "" "$(ls -A "$WORK/own/keep.tgz")"
+rm -rf "$WORK/own"
 
 echo "[pwsh] pcp/pmv/prm: a path that fails is a failure"
 # Each path runs in a ForEach-Object -Parallel worker, and the workers' errors

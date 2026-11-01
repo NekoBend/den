@@ -681,25 +681,94 @@ function archive {
   if (Test-Path -LiteralPath $Output -PathType Container) {
     Write-Error "output '$Output' is a directory" -ErrorAction Stop
   }
-  # The tar branches name their tool in $ran, and its exit code is checked
-  # after the switch: a source tar could not read used to leave a partial
-  # archive while archive, and `pwsh -Command`, reported success.
-  $ran = $null
   $global:LASTEXITCODE = 0
-  # tar is resolved before any branch runs it, as 7z is: a bare `tar` that was
-  # not installed raised only a non-terminating CommandNotFound and left
-  # $LASTEXITCODE at 0, so archive reported success with nothing written, and
-  # `archive out.tgz src && Remove-Item -Recurse src` deleted the sources.
-  if ($Output -match '\.tar$|\.tar\.(gz|bz2|xz|zst)$|\.t(gz|bz2|xz|zst)$' -and -not ($tar = _ArTool 'tar')) {
-    Write-Error 'tar is not installed' -ErrorAction Stop
-  }
   switch -Regex ($Output) {
-    '\.tar\.gz$|\.tgz$'    { & $tar czf $Output -- @Sources; $ran = 'tar'; break }
-    '\.tar\.bz2$|\.tbz2$'  { & $tar cjf $Output -- @Sources; $ran = 'tar'; break }
-    '\.tar\.xz$|\.txz$'    { & $tar cJf $Output -- @Sources; $ran = 'tar'; break }
-    # tar shells zstd out for these, so the guard is on zstd, not tar.
-    '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { & $tar --zstd -cf $Output -- @Sources; $ran = 'tar' } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
-    '\.tar$'                { & $tar cf $Output -- @Sources; $ran = 'tar'; break }
+    # tar, through the program _ArTool resolves: a bare `tar` that was not
+    # installed raised only a non-terminating CommandNotFound and left
+    # $LASTEXITCODE at 0, so archive reported success with nothing written,
+    # and `archive out.tgz src && Remove-Item -Recurse src` deleted the
+    # sources. tar's own exit code is checked too: a source it could not read
+    # used to leave a partial archive while archive reported success.
+    #
+    # GNU tar cannot tell that it is reading its own archive when it
+    # compresses (it writes to the compressor through a pipe), so a rerun in
+    # the folder it archives (`archive all.tgz .`, or a list holding the old
+    # all.tgz) stored the old archive, and the one being written, inside the
+    # new one, and a failed tar left a cut archive where the old one had been.
+    # As in the POSIX twin, tar writes into a staging folder beside the
+    # output, which it leaves out by its random name (letters and digits, so
+    # no pattern to tar), and an existing output waits in that folder while
+    # tar runs. The new archive takes the output's name only once tar has
+    # succeeded; on failure the old one is put back, or, when even that fails,
+    # kept there and named. The folder is made before tar starts, so nothing
+    # new appears in a folder tar is reading (GNU tar exits 1 on "file changed
+    # as we read it"). The renames are File.Move, which never replaces
+    # anything (Move-Item puts a file INTO a directory found at its
+    # destination, so a directory made at the output while tar ran would have
+    # taken the archive in and reported success), and which every PowerShell
+    # has.
+    '\.tar\.gz$|\.tgz$|\.tar\.bz2$|\.tbz2$|\.tar\.xz$|\.txz$|\.tar\.zst$|\.tzst$|\.tar$' {
+      $flag = if     ($Output -match '\.tar\.gz$|\.tgz$')   { '-z' }
+              elseif ($Output -match '\.tar\.bz2$|\.tbz2$') { '-j' }
+              elseif ($Output -match '\.tar\.xz$|\.txz$')   { '-J' }
+              elseif ($Output -match '\.tar\.zst$|\.tzst$') { '--zstd' }
+              else                                         { $null }
+      $tarPath = _ArTool 'tar'
+      if (-not $tarPath) { Write-Error 'tar is not installed' -ErrorAction Stop }
+      # tar shells zstd out for these, so zstd is checked as well as tar.
+      if ($flag -eq '--zstd' -and -not (_ArTool 'zstd')) { Write-Error 'zstd is not installed' -ErrorAction Stop }
+      # A source that IS the output (a rerun over a list, or a glob, that holds
+      # it) would be a missing name once the output is moved aside.
+      try { $srcs = @(_ArDropOutput $Sources $Output) }
+      catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+      $stageName = '.archive.' + ([System.IO.Path]::GetRandomFileName() -replace '\.', '')
+      $parent = Split-Path -Path $Output -Parent
+      $stage = if ($parent) { Join-Path $parent $stageName } else { $stageName }
+      $tmp = Join-Path $stage 'archive'
+      $prev = Join-Path $stage 'previous'
+      # .NET resolves relative paths against the process directory, which
+      # Set-Location never updates.
+      $sess = $ExecutionContext.SessionState.Path
+      $outFull = $sess.GetUnresolvedProviderPathFromPSPath($Output)
+      $stageFull = $sess.GetUnresolvedProviderPathFromPSPath($stage)
+      $tmpFull = $sess.GetUnresolvedProviderPathFromPSPath($tmp)
+      $prevFull = $sess.GetUnresolvedProviderPathFromPSPath($prev)
+      if ([System.IO.Directory]::Exists($stageFull) -or [System.IO.File]::Exists($stageFull)) {
+        Write-Error "cannot create a temporary directory '$stage'" -ErrorAction Stop
+      }
+      try { $null = [System.IO.Directory]::CreateDirectory($stageFull) }
+      catch { Write-Error "cannot create a temporary directory '$stage': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop }
+      $aside = $false
+      if ($null -ne (Get-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue)) {
+        try { [System.IO.File]::Move($outFull, $prevFull) }
+        catch {
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Error "cannot move '$Output' aside: $($_.Exception.GetBaseException().Message)" -ErrorAction Stop
+        }
+        $aside = $true
+      }
+      $tarArgs = @('-c')
+      if ($flag) { $tarArgs += $flag }
+      $tarArgs += @('-f', $tmp, "--exclude=$stageName", '--') + $srcs
+      $done = $false
+      try {
+        & $tarPath @tarArgs
+        if ($LASTEXITCODE -ne 0) { Write-Error "tar exited $LASTEXITCODE" -ErrorAction Stop }
+        try { [System.IO.File]::Move($tmpFull, $outFull) }
+        catch { Write-Error "cannot put the archive at '$Output': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop }
+        $done = $true
+      } finally {
+        if (-not $done -and $aside) { try { [System.IO.File]::Move($prevFull, $outFull) } catch { } }
+        if (-not $done -and $aside -and $null -ne (Get-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue)) {
+          # Not terminating: the error on its way out is the one that failed.
+          Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+          Write-Error "previous '$Output' kept at $prev" -ErrorAction Continue
+        } else {
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+        }
+      }
+      break
+    }
     # Single-file compression. Every '.tar.*' form and its 't*' alias is
     # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and these
     # four tools compress exactly ONE file: several sources or a directory is a
@@ -858,7 +927,6 @@ function archive {
     }
     default                 { Write-Error "unsupported format '$Output'" -ErrorAction Stop }
   }
-  if ($ran -and $LASTEXITCODE -ne 0) { Write-Error "$ran exited $LASTEXITCODE" -ErrorAction Stop }
 }
 
 # xt / pk → short names for extract / archive. Aliases (as `snip` is for

@@ -281,12 +281,14 @@ _ptar_rename() {
 # tar leaves that directory out by its unique name: with <out> inside a source
 # (`ptar out.tgz .`), it would otherwise store the half-written archive.
 #
-# tar writes to a pipe here, so unlike `tar czf <out>` it cannot tell that an
-# existing <out> is its own archive: a rerun of `ptar backup.tgz .` stored the
-# previous backup.tgz, files deleted since and all, inside the new one, which
-# grew by a whole copy each time. An existing <out> is moved into the staging
-# directory before tar starts, so tar leaves it out with the rest of that
-# directory; the new archive then replaces it, or on failure it is put back.
+# tar writes to a pipe here, so it cannot tell that an existing <out> is its
+# own archive (nor can `tar czf <out>`, whose compressor is a pipe as well;
+# only an uncompressed `tar cf` notices): a rerun of `ptar backup.tgz .` stored
+# the previous backup.tgz, files deleted since and all, inside the new one,
+# which grew by a whole copy each time. An existing <out> is moved into the
+# staging directory before tar starts, so tar leaves it out with the rest of
+# that directory; the new archive then replaces it, or on failure it is put
+# back. The threaded forms and the single-threaded fallbacks all go this way.
 # A source that IS <out> (`ptar all.tgz *` run again), under its own name or
 # through a link, is dropped first, as archive() drops one: moved aside, it
 # would be a name tar cannot find, and a hard link would still hold it. The
@@ -400,7 +402,7 @@ ptar() {
                 _ptar_pipe "$out" pigz -p"$jobs" "$@"
             else
                 echo "+ ptar: compressing → $out (using standard)"
-                tar czf "$out" -- "$@"
+                _ptar_pipe "$out" gzip -c "$@"
             fi
             ;;
         *.tar.bz2|*.tbz2)
@@ -409,7 +411,7 @@ ptar() {
                 _ptar_pipe "$out" pbzip2 -p"$jobs" "$@"
             else
                 echo "+ ptar: compressing → $out (using standard)"
-                tar cjf "$out" -- "$@"
+                _ptar_pipe "$out" bzip2 -c "$@"
             fi
             ;;
         *.tar.xz|*.txz)
@@ -421,7 +423,7 @@ ptar() {
                 _ptar_pipe "$out" xz -T"$jobs" "$@"
             else
                 echo "+ ptar: compressing → $out (using standard)"
-                tar cJf "$out" -- "$@"
+                _ptar_pipe "$out" xz -c "$@"
             fi
             ;;
         *.tar)

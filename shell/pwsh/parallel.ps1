@@ -186,18 +186,87 @@ function ptar {
 
     Write-Host "+ ptar: compressing → $Output"
 
-    # `--` before the sources, as the posix twin does: a source that starts
-    # with '-' is a file, never a tar option.
-    $global:LASTEXITCODE = 0
-    switch -Regex ($Output) {
-        '\.tar\.gz$|\.tgz$'   { tar czf $Output -- @Sources; break }
-        '\.tar\.bz2$|\.tbz2$' { tar cjf $Output -- @Sources; break }
-        '\.tar\.xz$|\.txz$'   { tar cJf $Output -- @Sources; break }
-        '\.tar$'               { tar cf  $Output -- @Sources; break }
+    $flag = switch -Regex ($Output) {
+        '\.tar\.gz$|\.tgz$'   { '-z'; break }
+        '\.tar\.bz2$|\.tbz2$' { '-j'; break }
+        '\.tar\.xz$|\.txz$'   { '-J'; break }
+        '\.tar$'               { ''; break }
         default                { Write-Error "unsupported format '$Output'" -ErrorAction Stop }
     }
-    # tar's own status: a source it could not read left a partial archive and
-    # ptar still succeeded. Terminating, because a plain Write-Error inside a
-    # function leaves `pwsh -Command` exiting 0 (posix parity: tar's status).
-    if ($LASTEXITCODE -ne 0) { Write-Error "tar exited $LASTEXITCODE" -ErrorAction Stop }
+    if (Test-Path -LiteralPath $Output -PathType Container) {
+        Write-Error "output '$Output' is a directory" -ErrorAction Stop
+    }
+    # GNU tar cannot tell that it is reading its own archive when it
+    # compresses (it writes to the compressor through a pipe), so a rerun of
+    # `ptar backup.tgz .` stored the previous archive, and the one being
+    # written, inside the new one, and a failed tar left a cut archive where
+    # the old one had been. As in the posix twin and in archive, tar writes
+    # into a staging folder beside the output, which it leaves out by its
+    # random name (letters and digits, so no pattern to tar), and an existing
+    # output waits in that folder while tar runs. The new archive takes the
+    # output's name only once tar has succeeded; on failure the old one is put
+    # back, or, when even that fails, kept there and named. The folder is made
+    # before tar starts, so nothing new appears in a folder tar is reading
+    # (GNU tar exits 1 on "file changed as we read it"). File.Move never
+    # replaces anything, so neither archive can land INSIDE a directory made
+    # at the output meanwhile. A source that is the output itself
+    # (`ptar all.tgz *` run again) is dropped first: moved aside, it is a name
+    # tar cannot find.
+    $sess = $ExecutionContext.SessionState.Path
+    $outFull = $sess.GetUnresolvedProviderPathFromPSPath($Output)
+    $cmp = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    $srcs = @($Sources | Where-Object {
+        -not [string]::Equals($sess.GetUnresolvedProviderPathFromPSPath($_), $outFull, $cmp)
+    })
+    if ($srcs.Count -eq 0) { Write-Error "no source besides the output '$Output'" -ErrorAction Stop }
+    $stageName = '.ptar.' + ([System.IO.Path]::GetRandomFileName() -replace '\.', '')
+    $parent = Split-Path -Path $Output -Parent
+    $stage = if ($parent) { Join-Path $parent $stageName } else { $stageName }
+    $tmp = Join-Path $stage 'archive'
+    $prev = Join-Path $stage 'previous'
+    # .NET resolves relative paths against the process directory, which
+    # Set-Location never updates (hence $outFull above too).
+    $stageFull = $sess.GetUnresolvedProviderPathFromPSPath($stage)
+    $tmpFull = $sess.GetUnresolvedProviderPathFromPSPath($tmp)
+    $prevFull = $sess.GetUnresolvedProviderPathFromPSPath($prev)
+    if ([System.IO.Directory]::Exists($stageFull) -or [System.IO.File]::Exists($stageFull)) {
+        Write-Error "cannot create a temporary directory '$stage'" -ErrorAction Stop
+    }
+    try { $null = [System.IO.Directory]::CreateDirectory($stageFull) }
+    catch { Write-Error "cannot create a temporary directory '$stage': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop }
+    $aside = $false
+    if ($null -ne (Get-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue)) {
+        try { [System.IO.File]::Move($outFull, $prevFull) }
+        catch {
+            Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Error "cannot move '$Output' aside: $($_.Exception.GetBaseException().Message)" -ErrorAction Stop
+        }
+        $aside = $true
+    }
+    # `--` before the sources, as the posix twin does: a source that starts
+    # with '-' is a file, never a tar option.
+    $tarArgs = @('-c')
+    if ($flag) { $tarArgs += $flag }
+    $tarArgs += @('-f', $tmp, "--exclude=$stageName", '--') + $srcs
+    $global:LASTEXITCODE = 0
+    $done = $false
+    try {
+        tar @tarArgs
+        # tar's own status: a source it could not read left a partial archive
+        # and ptar still succeeded. Terminating, because a plain Write-Error
+        # inside a function leaves `pwsh -Command` exiting 0 (posix parity).
+        if ($LASTEXITCODE -ne 0) { Write-Error "tar exited $LASTEXITCODE" -ErrorAction Stop }
+        try { [System.IO.File]::Move($tmpFull, $outFull) }
+        catch { Write-Error "cannot put the archive at '$Output': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop }
+        $done = $true
+    } finally {
+        if (-not $done -and $aside) { try { [System.IO.File]::Move($prevFull, $outFull) } catch { } }
+        if (-not $done -and $aside -and $null -ne (Get-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue)) {
+            # Not terminating: the error on its way out is the one that failed.
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            Write-Error "previous '$Output' kept at $prev" -ErrorAction Continue
+        } else {
+            Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
