@@ -354,6 +354,97 @@ def test_install_interactive_decline_is_not_a_failure(tmp_path, monkeypatch):
     assert skill.read_text() == "MINE"
 
 
+def test_install_keeps_a_listed_file_saved_again_at_the_prompt(
+    tmp_path, monkeypatch, capsys
+):
+    """The 'yes' covers the files as they were listed. One saved again while
+    the prompt was open used to be overwritten all the same, its newer edit
+    lost with no backup; it is now kept and named, and the run fails."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    install_main(["skills", "--target", str(tmp_path)])
+    skill = tmp_path / "skills" / "grounding" / "SKILL.md"
+    other = tmp_path / "skills" / "coding" / "SKILL.md"
+    skill.write_text(skill.read_text() + "\nFIRST EDIT\n")
+    other.write_text("MINE")
+
+    def confirm(*_a, **_k):
+        assert "SECOND" not in skill.read_text()
+        skill.write_text(skill.read_text() + "SECOND EDIT\n")  # saved at the prompt
+        return True
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    rc = install_main(["skills", "--target", str(tmp_path)])
+    assert skill.read_text().endswith("\nFIRST EDIT\nSECOND EDIT\n")
+    assert other.read_text() != "MINE", "an approved file left as listed is replaced"
+    assert rc == 1, "a file kept because it changed is not a deploy"
+    assert f"kept {skill}: it changed after den checked it" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("answer", ["yes", "no"])
+def test_install_does_not_recreate_a_listed_file_deleted_at_the_prompt(
+    tmp_path, monkeypatch, capsys, answer
+):
+    """A listed file deleted while 'Overwrite them?' was open was no longer a
+    file when den came to write it, so the check against the bytes it was
+    listed with was skipped and den's copy was written in its place, on a
+    'no' as on a 'yes'. The deletion is a change made after the listing: the
+    file stays deleted, and after a 'yes' the run fails."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    install_main(["skills", "--target", str(tmp_path)])
+    skill = tmp_path / "skills" / "grounding" / "SKILL.md"
+    other = tmp_path / "skills" / "coding" / "SKILL.md"
+    skill.write_text("MINE")
+    other.write_text("MINE TOO")
+
+    def confirm(*_a, **_k):
+        skill.unlink()  # deleted at the prompt
+        return answer == "yes"
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    rc = install_main(["skills", "--target", str(tmp_path)])
+    assert not skill.exists(), "the deleted file is not written again"
+    err = capsys.readouterr().err
+    if answer == "yes":
+        assert other.read_text() != "MINE TOO", "an approved file as listed is replaced"
+        assert rc == 1, "a file left deleted is not a deploy"
+        assert f"did not recreate {skill}: it was deleted after den checked it" in err
+    else:
+        assert other.read_text() == "MINE TOO"
+        assert rc == 0, "a 'no' is the user's own choice"
+
+
+@pytest.mark.parametrize("change", ["saved again", "deleted", "none, answered no"])
+def test_install_all_tools_names_a_shared_file_once(
+    tmp_path, monkeypatch, capsys, change
+):
+    """codex, cline and cline-cli share ~/.agents/skills, so --all-tools
+    staged each file there three times: a listed file that changed at the
+    prompt was named three times, and one kept after a 'no' counted three."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    assert install_main(["skills", "--all-tools"]) == 0
+    skill = tmp_path / ".agents" / "skills" / "grounding" / "SKILL.md"  # HOME
+    skill.write_text("MINE")
+
+    def confirm(*_a, **_k):
+        if change == "deleted":
+            skill.unlink()
+        elif change == "saved again":
+            skill.write_text("MINE, SAVED AGAIN")
+        return change != "none, answered no"
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    capsys.readouterr()
+    rc = install_main(["skills", "--all-tools"])
+    err = capsys.readouterr().err
+    if change == "deleted":
+        assert err.count(f"did not recreate {skill}:") == 1
+    elif change == "saved again":
+        assert err.count(f"kept {skill}: it changed after den checked it") == 1
+    else:
+        assert "kept 1 modified file(s) as-is" in err
+    assert rc == (0 if change == "none, answered no" else 1)
+
+
 @pytest.mark.real_path_probes
 def test_install_cline_parent_goes_to_cline_rules_dir(tmp_path, monkeypatch):
     # the VS Code extension reads global rules from <Documents>/Cline/Rules and

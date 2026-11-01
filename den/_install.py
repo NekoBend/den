@@ -204,6 +204,24 @@ def _chmod_no_follow(path: Path, mode: int) -> None:
     path.chmod(mode)
 
 
+def _confined(roots: list[Path], dest: Path) -> tuple[Path, Path] | None:
+    """(resolved root, dest under it) when `dest` lies in one of `roots`, the
+    --target workspaces _Writer.confine and _uninstall._Remover.confine take.
+
+    The root is resolved first: a symlink in the root's OWN path is the
+    user's choice of where the workspace lives, only links below it are
+    the workspace's. One helper for install and uninstall, so the rule
+    cannot drift between the two."""
+    for root in roots:
+        try:
+            rel = dest.relative_to(root)
+        except ValueError:
+            continue
+        real = root.resolve()
+        return real, real / rel
+    return None
+
+
 _ERR = "den install"
 
 
@@ -230,8 +248,10 @@ class _Writer:
     written was deleted while uv ran, and is treated the same way.
 
     Only what was listed and approved (or is still den's) is ever replaced
-    without --force: a file that changes between the listing and its write is
-    kept.
+    without --force, and a listed file only while it holds the bytes it was
+    listed with: a file that changes between the listing and its write (an
+    edit saved while the prompt was open) is kept, and one deleted in that
+    time is not created again.
 
     A root passed to confine() is a workspace den does not control (--target,
     typically a cloned repo), so a symlink anywhere below it - CLAUDE.md ->
@@ -263,21 +283,6 @@ class _Writer:
     def confine(self, root: Path) -> None:
         """Refuse every staged path below `root` that reaches a symlink."""
         self._roots.append(root)
-
-    def _confined(self, dest: Path) -> tuple[Path, Path] | None:
-        """(resolved root, dest under it) when `dest` lies in a confined root.
-
-        The root is resolved first: a symlink in the root's OWN path is the
-        user's choice of where the workspace lives, only links below it are
-        the workspace's."""
-        for root in self._roots:
-            try:
-                rel = dest.relative_to(root)
-            except ValueError:
-                continue
-            real = root.resolve()
-            return real, real / rel
-        return None
 
     @staticmethod
     def _ensure_mode(dest: Path) -> None:
@@ -397,19 +402,20 @@ class _Writer:
         so a scripted caller can exit non-zero instead of reporting a deploy
         that never happened, and a file kept because it changed after it was
         checked; an interactive "no" is the user's own choice and counts 0, as
-        does a file a refresh leaves alone (not den's to replace)."""
+        does a file a refresh leaves alone (not den's to replace). A file
+        staged more than once with the same content (codex, cline and
+        cline-cli share ~/.agents/skills) is handled, named and counted once."""
         refused = 0
         items: list[tuple[Path, bytes, tuple[Path, Path] | None]] = []
-        for dest, content in self._items:
-            guard = self._confined(dest)
+        for dest, content in dict.fromkeys(self._items):  # each pair once
+            guard = _confined(self._roots, dest)
             if guard is not None and _refuse_symlink(*guard, "write", _ERR):
                 refused += 1
                 continue
             items.append((dest, content, guard))
-        changed = self._changed(items)
-        overwrite, silently_skipped = self._ask(changed)
-        listed = set(changed)
-        approved = listed if overwrite else set()
+        listed = self._changed(items)
+        overwrite, silently_skipped = self._ask(list(listed))
+        approved = set(listed) if overwrite else set()
         kept = late = 0
         backed_up: list[tuple[Path, Path]] = []
         missing: list[Path] = []
@@ -425,12 +431,16 @@ class _Writer:
                     self._ensure_mode(dest)
                     continue
                 if not self._owns(dest, data):
-                    if not self.force and dest not in listed:
-                        late += 1
-                        print(
-                            f"  kept {dest}: it changed after den checked it",
-                            file=sys.stderr,
+                    # Not what the user was shown: missing from the list, or
+                    # approved but saved again since it was listed.
+                    if not self.force and (
+                        dest not in listed
+                        or (
+                            dest in approved
+                            and hashlib.sha256(data).hexdigest() != listed[dest]
                         )
+                    ):
+                        late += self._late(dest)
                         continue
                     if not self.force and dest not in approved:
                         kept += 1
@@ -441,6 +451,15 @@ class _Writer:
                             refused += 1
                             continue
                         backed_up.append((dest, bak))
+            elif dest in listed and not self.force:
+                # Listed, then deleted (or replaced by something that is not
+                # a file) before it was written: the answer covered the file
+                # as it was listed, so the path stays as the user left it.
+                if dest in approved:
+                    late += self._late(dest)
+                else:
+                    kept += 1
+                continue
             if guard is None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
@@ -452,16 +471,31 @@ class _Writer:
         late = late if self.owned is None else 0  # a refresh keeps it on purpose
         return refused + (kept if silently_skipped else 0) + late
 
+    @staticmethod
+    def _late(dest: Path) -> int:
+        """1, after one line on stderr: `dest` changed after den listed and
+        checked it (saved again, deleted, or replaced), so it was left as
+        the user left it."""
+        if os.path.lexists(dest):
+            print(f"  kept {dest}: it changed after den checked it", file=sys.stderr)
+        else:
+            print(
+                f"  did not recreate {dest}: it was deleted after den checked it",
+                file=sys.stderr,
+            )
+        return 1
+
     def _changed(
         self, items: list[tuple[Path, bytes, tuple[Path, Path] | None]]
-    ) -> list[Path]:
+    ) -> dict[Path, str]:
         """The staged files that exist, differ, and are not den's: the list
-        _ask shows."""
-        changed = []
+        _ask shows, each with the SHA-256 of the bytes it was listed with
+        (commit replaces an approved file only while it still holds them)."""
+        changed: dict[Path, str] = {}
         for dest, content, _guard in items:
             data = dest.read_bytes() if dest.is_file() else None
             if data is not None and data != content and not self._owns(dest, data):
-                changed.append(dest)
+                changed[dest] = hashlib.sha256(data).hexdigest()
         return changed
 
     def _report(

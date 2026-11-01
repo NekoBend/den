@@ -27,10 +27,14 @@ plugin just turns the feature off.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from ._content import shell_dir
@@ -147,6 +151,118 @@ def _copy(src: Path, dst: Path, writer: _Stager, *, dry_run: bool) -> None:
         print(f"  [dry] {dst}")
         return
     writer.stage(dst, src.read_bytes())
+
+
+def _replace_bytes(path: Path, data: bytes) -> None:
+    """Put `data` in place of the file at `path` without truncating it first.
+
+    The bytes go to a new file beside it, which then replaces it in one
+    rename, so a write that fails part-way (a full disk, an I/O error) leaves
+    the file as it was instead of empty or cut short. The new file gets what
+    decides who may use the old one (_match_access): its owner, group and
+    permission bits and, on Linux, its extended attributes, ACLs included. A
+    symlink is followed: its target is replaced and the link stays, as an
+    in-place write would have left it. Shared with _uninstall, which strips
+    den's block from an rc file this way.
+
+    Refused with OSError, the file left as it is: a file den may not write
+    (PermissionError), as the in-place write refused it, although its
+    directory would let the rename through; a file with a second hard link,
+    since the new file would take only this name, and the others would keep
+    the old content and no longer be the same file; and a file whose owner,
+    group or extended attributes the new file cannot take."""
+    real = path.resolve()
+    st = real.stat()
+    if not os.access(real, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+    if st.st_nlink > 1:
+        raise OSError(
+            f"it has {st.st_nlink} hard links, and replacing it would split"
+            " them; edit it by hand"
+        )
+    try:
+        fd, name = tempfile.mkstemp(
+            prefix=f"{real.name}.", suffix=".den-tmp", dir=real.parent
+        )
+    except OSError as e:  # name the directory, not a copy that was never made
+        raise OSError(
+            e.errno, f"cannot create a temporary file in {real.parent}: {e.strerror}"
+        ) from e
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        _match_access(tmp, real, st)
+        tmp.replace(real)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink()
+        raise
+
+
+def _match_access(copy: Path, original: Path, st: os.stat_result) -> None:
+    """Give `copy` the owner, group and permission bits of `original`, whose
+    stat is `st`, and on Linux its extended attributes, ACLs included,
+    without any the copy took from its directory (a default ACL).
+
+    An in-place write kept all of these. A new file starts with den's own
+    owner and group and its directory's default ACL instead, which can hand
+    a file that holds a token to other users, or take access away from the
+    ones it was shared with. OSError when the copy cannot take one of them:
+    only root gives a file to another user, and only a member of a group
+    gives a file to that group. Windows DACLs and macOS ACLs are not read
+    here, as Python has no call for them."""
+    if sys.platform != "win32":
+        now = copy.stat()
+        if (now.st_uid, now.st_gid) != (st.st_uid, st.st_gid):
+            try:
+                os.chown(copy, st.st_uid, st.st_gid)
+            except OSError as e:
+                raise OSError(
+                    f"replacing it would change its owner or group ({e.strerror});"
+                    " edit it by hand"
+                ) from e
+    want: dict[str, bytes] = {}
+    if sys.platform == "linux":  # the one platform with os.listxattr
+        try:
+            want = _xattrs(original)
+            have = _xattrs(copy)
+            for name in have.keys() - want.keys():
+                os.removexattr(copy, name)
+            for name, value in want.items():
+                if have.get(name) != value:
+                    os.setxattr(copy, name, value)
+        except OSError as e:
+            raise OSError(
+                "replacing it would lose its extended attributes or ACL"
+                f" ({e.strerror}); edit it by hand"
+            ) from e
+    # Last: after chown, which may clear set-id bits, and after the ACL is the
+    # old file's. Until then the copy keeps mkstemp's 0600, whose group bits
+    # mask every named entry of a default ACL it took from its directory;
+    # the old file's mode before that would let such a user read the copy.
+    copy.chmod(stat.S_IMODE(st.st_mode))
+    if sys.platform == "linux" and _xattrs(copy) != want:
+        raise OSError(
+            "replacing it would change its extended attributes or ACL; edit it by hand"
+        )
+
+
+def _xattrs(path: Path) -> dict[str, bytes]:
+    """The extended attributes of `path` by name, its POSIX ACL among them
+    (system.posix_acl_access); none on a filesystem that keeps none, and
+    none off Linux, where Python cannot list them."""
+    if sys.platform != "linux":
+        return {}
+    try:
+        names = os.listxattr(path)
+    except OSError as e:
+        if e.errno == errno.ENOTSUP:
+            return {}
+        raise
+    return {name: os.getxattr(path, name) for name in names}
 
 
 def _bom_codec(raw: bytes) -> tuple[bytes, str]:
