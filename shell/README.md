@@ -189,7 +189,19 @@ that holds `[` or `]`. cmd splits a word at `=`, `,` and `;`, as it does for
 its own commands, so such a name goes in quotes there. `cat` also hands `bat`
 a last `--paging=never` after the names, which wins over any `--paging`
 before it; cmd's `cat` refuses a `--`, after which `bat` would read that word
-as a file name. `rg` and `fd` expand no wildcards themselves, so cmd's `grep`
+as a file name (PowerShell drops a bare `--` typed to `cat`, but a quoted
+`'--'` reaches `bat`, which then says that last word is missing). `cat` there
+expands file names only: `bat` would expand an option or an option's value
+too, and expanding one as a name would make it a file. So it runs nothing
+when a word that starts with `-` holds a wildcard character
+(`--file-name=*.py`), or when the value of an option that takes it from the
+next word does (`-l '*'`, `--map-syntax '*.h:C++'`; the options `bat --help`
+lists with a value); run `bat` (PowerShell: or `catw`) by name for those. The
+wildcard characters are `*` and `?` in cmd, whose `for` takes `[` and `]` as
+they are and whose quotes keep `bat` from expanding them, and `* ? [ ]` in
+PowerShell. cmd splits an unquoted `--file-name=*.py` into `--file-name` and
+`*.py`, so there the rule for values covers it.
+`rg` and `fd` expand no wildcards themselves, so cmd's `grep`
 and `findw` hand them `*` unexpanded. The `w`-suffix forms and `ripgrep` run
 the tool as typing its name does, without this check.
 

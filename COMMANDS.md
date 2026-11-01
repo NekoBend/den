@@ -216,8 +216,11 @@ Write the file as `./name` (bash/zsh: the glob as `./*`; pwsh: a full path
 such as `$PWD/*`; cmd: `.\*`), or use the native command. On Windows, where
 `bat` would expand a wildcard itself, `cat` expands it first, hands `bat` the
 names in a form its own expansion leaves alone, and ends `bat`'s arguments
-with `--paging=never`; cmd's `cat` refuses a `--` (see shell/README.md, "The
-wrapper system").
+with `--paging=never`; cmd's `cat` refuses a `--`. It expands file names
+only, and runs nothing when an option, or the value of an option that takes
+it from the next word, holds a wildcard character (`--file-name=*.py`,
+`-l '*'`): run `bat` by name for those (see shell/README.md, "The wrapper
+system").
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
