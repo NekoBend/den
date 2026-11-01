@@ -1242,6 +1242,34 @@ def test_disable_coreutils_readline_leaves_no_cut_backup_when_its_write_fails(
     assert f"den install shell: not replacing {prof}: cannot back it up: " in err
 
 
+def test_disable_coreutils_readline_gives_the_backup_its_access_through_the_open_file(
+    tmp_path, monkeypatch, symlink
+):
+    """The copy's owner, group, attributes and mode go to the open file, not
+    to whatever has its name by then: in a directory others may write, the
+    name can be swapped for a link once the copy exists, and the link's
+    target must not get the profile's mode."""
+    prof = tmp_path / "p.ps1"
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(0o640)
+    outside = tmp_path / "outside"
+    outside.write_text("someone else's\n")
+    outside.chmod(0o600)
+    match_access = _shell._match_access
+
+    def swap_then_match(copy, original, st, *args, **kwargs):
+        if kwargs.get("doing") == "copying it":  # the backup's, not the replace's
+            bak = tmp_path / "p.ps1.den.bak"
+            bak.unlink()
+            symlink(outside, bak)
+        return match_access(copy, original, st, *args, **kwargs)
+
+    monkeypatch.setattr(_shell, "_match_access", swap_then_match)
+    _shell._disable_coreutils_readline(prof)
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o600
+    assert outside.read_text() == "someone else's\n"
+
+
 # A copy that holds the profile's bytes was reused as its backup whatever
 # decided who could read it: one another user owns, one in a group the profile
 # is not in, or one an older den made beside a default ACL, which took that ACL
