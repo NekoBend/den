@@ -26,8 +26,11 @@
 # that hold a function file or a function's digest it lists, lie below a
 # directory it lists or have their digest listed; then the full compinit runs
 # with -i, which on its own would leave out only the first kind, and asks
-# nothing. compinit is loaded only after that, never from a directory taken
-# out (preloading it would undo that). Plain compinit asks whether
+# nothing. When $_compdir names a collection with a Base, compaudit adds its
+# subdirectories to fpath: they are judged the same way, and that compinit
+# runs with _compdir empty, so its own compaudit cannot add them back.
+# compinit is loaded only after that, never from a directory taken out
+# (preloading it would undo that). Plain compinit asks whether
 # to use them, and with no terminal to answer (zsh -i -c, as an editor's
 # environment probe runs it) gives up and writes no dump, so it asks again at
 # every start; -u would use them unchecked. -C skips the audit and keeps fpath
@@ -57,10 +60,13 @@ if (( ! ${+functions[compdef]} )); then
             # a listed directory, nor a directory's digest (X/sub.zwc serves
             # X/sub only). compaudit names a parent ${d:h}: that is . for a
             # relative entry such as zfunc, which $f/* does not match.
+            # compaudit also adds to fpath the subdirectories of $_compdir
+            # (a collection with a Base) and audits them: that fpath comes
+            # out first, after its length.
             listed=( ${(0)"$(local _i_check=y; compaudit 2>/dev/null
-                print -rN -- $_i_wdirs $_i_wfiles)"} )
-            for d in $fpath; do
-                for f in $listed; do
+                print -rN -- $#fpath $fpath $_i_wdirs $_i_wfiles)"} )
+            for d in ${listed[2,listed[1]+1]}; do
+                for f in ${listed[listed[1]+2,-1]}; do
                     [[ $d == $f || $d == $f/* || ${d:h} == $f ||
                        $d.zwc == $f ||
                        ( ${f%/*} == $d && ! -d $f && ! -d ${f%.zwc} ) ]] &&
@@ -69,6 +75,10 @@ if (( ! ${+functions[compdef]} )); then
                 kept+=( $d )
             done
             fpath=( $kept )
+            # compinit's own compaudit would add them back: an empty
+            # _compdir stops that, for this compinit only (it and compdump
+            # do not read _compdir).
+            local _compdir=
         fi
         compinit -i && command touch -- "$dump" 2>/dev/null
     }

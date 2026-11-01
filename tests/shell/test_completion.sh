@@ -277,6 +277,89 @@ assert_eq "zsh/a subdirectory's digest someone else owns, next to compinit: comp
 zctool=none" "$out"
 assert_exists "zsh/a subdirectory's digest someone else owns, next to compinit: the dump written" "$ZC/home/.zcompdump"
 
+# When $_compdir names a collection with a Base (see compinit's manual), the
+# full compaudit adds its subdirectories to fpath. compinit runs compaudit
+# again: the subdirectories init.zsh had taken out came back, and autoload
+# read a digest planted next to one of them. ZC_TOOL prints whether ~/coll/Sub
+# is in fpath and which _zctool a Tab after zctool would run: the one in
+# ~/coll/Sub, the planted one in the digest next to it (newer, so autoload
+# reads it in place of the directory), or none.
+ZC_TOOL='(( ${fpath[(I)$HOME/coll/Sub]} )) && echo "Sub: in fpath" || echo "Sub: out of fpath"
+    autoload +X _zctool 2>/dev/null
+    case ${functions[_zctool]-} in
+        (*planted*) echo "_zctool: the planted one" ;;
+        (*trusted*) echo "_zctool: the one in Sub" ;;
+        (*) echo "_zctool: none" ;;
+    esac'
+# zc_coll <mode of ~/coll> - a collection ~/coll with a Base and a Sub whose
+# _zctool is an hour old
+zc_coll() {
+    mkdir -p "$ZC/home/coll/Base" "$ZC/home/coll/Sub"
+    printf '#compdef zctool\nprint -r -- trusted\n' > "$ZC/home/coll/Sub/_zctool"
+    touch -d '1 hour ago' "$ZC/home/coll/Sub/_zctool"
+    chmod 755 "$ZC/home"
+    chmod "$1" "$ZC/home/coll"
+}
+# zc_plant_digest - a digest ~/coll/Sub.zwc, newer than ~/coll/Sub/_zctool
+zc_plant_digest() {
+    mkdir -p "$ZC/plant"
+    printf '#compdef zctool\nprint -r -- planted\n' > "$ZC/plant/_zctool"
+    (cd "$ZC/plant" && zsh -f -c 'zcompile ../home/coll/Sub.zwc _zctool')
+}
+# A compaudit that runs the real one, then flags the digests in zc_wdirs whose
+# directory is in fpath, as the real one flags a digest someone else owns.
+# The real one comes from a file that defines compaudit and then calls it, so
+# it is copied only after a first call: a copy made before would define the
+# real compaudit over this one when it ran. Called on its own, it prints the
+# list and fails, and leaves fpath as it is.
+ZC_STUB_WRAP="$WORK/compaudit-wrap.zsh"
+cat > "$ZC_STUB_WRAP" <<'EOF'
+autoload -Uz compaudit
+compaudit >/dev/null 2>&1
+functions -c compaudit zc_real_compaudit
+compaudit() {
+    if (( ! ${+_i_check} )); then
+        ( local _i_check=y _i_q
+          local -a _i_wdirs _i_wfiles
+          compaudit "$@"
+          print -l - $_i_wdirs $_i_wfiles
+          (( $#_i_wdirs + $#_i_wfiles == 0 )) )
+        return
+    fi
+    zc_real_compaudit "$@"
+    local e
+    for e in $zc_wdirs; do
+        (( ${fpath[(Ie)${e%.zwc}]} )) && _i_wdirs+=( $e )
+    done
+    (( $#_i_wdirs + $#_i_wfiles )) || return 0
+    [[ -n $_i_q ]] || _i_q=directories
+    return 1
+}
+EOF
+
+echo "[zsh] init.zsh: _compdir names a collection nobody else may write to"
+zc_reset
+zc_coll 755
+out=$(zc_run "_compdir=~/coll" "$ZC_TOOL")
+assert_eq "zsh/_compdir names a safe collection: its subdirectories used" "Sub: in fpath
+_zctool: the one in Sub" "$out"
+
+echo "[zsh] init.zsh: _compdir names a collection others may write to, with a digest planted there"
+zc_reset
+zc_coll 777
+zc_plant_digest
+out=$(zc_run "_compdir=~/coll" "$ZC_TOOL")
+assert_eq "zsh/_compdir names a writable collection, planted digest: its subdirectories left out" "Sub: out of fpath
+_zctool: none" "$out"
+
+echo "[zsh] init.zsh: _compdir names a collection, a digest someone else owns (simulated) for its Sub in fpath"
+zc_reset
+zc_coll 755
+zc_plant_digest
+out=$(zc_run "_compdir=~/coll; fpath=(~/coll/Sub \$fpath); zc_wdirs=(~/coll/Sub.zwc); . '$ZC_STUB_WRAP'" "$ZC_TOOL")
+assert_eq "zsh/_compdir names a collection, Sub's digest someone else owns: Sub left out" "Sub: out of fpath
+_zctool: none" "$out"
+
 # reload starts zsh again: deleting the dump too makes that shell's compinit
 # look for new completion functions at once. It must do so with no init cache
 # to delete as well (zoxide and starship not installed): zsh then printed "no
