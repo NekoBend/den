@@ -66,7 +66,10 @@ terminal to answer still gets completion and a dump. `-C` would skip the
 audit and keep them in `fpath`, so while one is there every shell runs the
 full `compinit -i`, about 11 ms more per start than the audit and `-C`.
 `compaudit` lists what it flags; once that is yours or root's and not
-writable by group or others, its functions are used again.
+writable by group or others, its functions are used again. A relative
+`fpath` entry (`zfunc`, not `~/zfunc`) is looked up in whatever directory
+you are in when a Tab first needs a function from it, so den cannot make it
+safe and does not support it.
 
 ## The wrapper system
 

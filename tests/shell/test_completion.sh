@@ -168,6 +168,20 @@ chmod 777 "$ZC/home/p"
 out=$(zc_run "fpath=(~/p/c \$fpath)" "$ZC_LS")
 assert_eq "zsh/writable parent, planted digest: the system _ls loaded" "_ls: the system one" "$out"
 
+# compaudit names that parent ${dir:h}, which is . for a relative entry with
+# no slash (c, not ~/c). init.zsh compared the names as they are: c is not
+# below ., so it stayed in fpath, and a digest c.zwc planted in a current
+# directory others may write to was what autoload read.
+echo "[zsh] init.zsh: a relative fpath entry in a current directory others may write to, with a digest planted there"
+zc_reset
+mkdir -p "$ZC/home/w/c" "$ZC/plant"
+zc_plant_ls "$ZC/plant/_ls"
+(cd "$ZC/plant" && zsh -f -c 'zcompile ../home/w/c.zwc _ls')
+chmod 755 "$ZC/home/w/c"
+chmod 777 "$ZC/home/w"
+out=$(zc_run "cd ~/w; fpath=(c \$fpath)" "$ZC_LS")
+assert_eq "zsh/relative entry, writable current directory, planted digest: the system _ls loaded" "_ls: the system one" "$out"
+
 # A directory is not left out for holding one that compaudit flags: its own
 # functions are still used.
 echo "[zsh] init.zsh: a directory that holds an fpath directory others may write to"

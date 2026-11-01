@@ -52,13 +52,15 @@ if (( ! ${+functions[compdef]} )); then
             # nothing. The list it prints on its own reads backslash escapes
             # in a name (a file named with \c ends the list there) and breaks
             # a name at a newline. A directory is not taken out for holding
-            # a listed directory.
+            # a listed directory. compaudit names a parent ${d:h}: that is .
+            # for a relative entry such as zfunc, which $f/* does not match.
             listed=( ${(0)"$(local _i_check=y; compaudit 2>/dev/null
                 print -rN -- $_i_wdirs $_i_wfiles)"} )
             for d in $fpath; do
                 for f in $listed; do
-                    [[ $d == $f || $d == $f/* || $d.zwc == $f ||
-                       ( ${f%/*} == $d && ! -d $f ) ]] && continue 2
+                    [[ $d == $f || $d == $f/* || ${d:h} == $f ||
+                       $d.zwc == $f || ( ${f%/*} == $d && ! -d $f ) ]] &&
+                        continue 2
                 done
                 kept+=( $d )
             done
