@@ -70,12 +70,17 @@ function _SnippetGet([string]$Name) {
 # are UTF-8 for the call, as in cdf (functions.ps1): fzf reads the list, and
 # PowerShell its pick, as UTF-8. The $OutputEncoding set here ends with this
 # function, as do its other variables, before snippet runs the command (see
-# snippet); the console's encoding is put back.
+# snippet); the console's encoding is put back. Only the lines that hold a
+# snippet (see _SnippetGet) go to fzf, and the line picked is the last one fzf
+# prints: FZF_DEFAULT_OPTS can add lines before it, the query (--print-query)
+# or the key pressed (--expect), and with no line picked they are all fzf
+# prints. A query can be another snippet's name, so a line with no tab picks
+# nothing.
 function _SnippetPick {
     if (-not (Get-Command fzf -ErrorAction SilentlyContinue)) {
         [Console]::Error.WriteLine("snippet pick: fzf not found; use 'snippet run <name>'"); return
     }
-    $lines = @(_SnippetLines)
+    $lines = @(_SnippetLines | Where-Object { $_.Contains("`t") })
     if (-not $lines.Count) {
         [Console]::Error.WriteLine('snippet: no snippets (use: snippet save <name> <command...>)'); return
     }
@@ -83,12 +88,15 @@ function _SnippetPick {
     $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
     try {
         [Console]::OutputEncoding = $OutputEncoding
-        $sel = $lines | fzf --no-multi --prompt 'snippet> '
+        $sel = @($lines | fzf --no-multi --prompt 'snippet> ')
     } finally {
         [Console]::OutputEncoding = $consoleEncoding
     }
-    if (-not $sel) { return }
-    $name = _SnippetName ([string]@($sel)[0])
+    if (-not $sel.Count) { return }
+    $picked = [string]$sel[-1]
+    $i = $picked.IndexOf("`t")
+    if ($i -lt 0) { return }
+    $name = $picked.Substring(0, $i)
     $c = _SnippetGet $name
     if ($null -eq $c) {
         [Console]::Error.WriteLine("snippet pick: no such snippet '$name' (snippet ls)"); return

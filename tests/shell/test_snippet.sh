@@ -692,11 +692,12 @@ snippet: removed 'pk'" "$actual"
     assert_eq "pwsh/snippet exact name: rm removes pk, Pk stays" "Pk${TAB}Write-Output upper" "$(cat "$SNIPPET_FILE")"
 
     # A line with no tab, which only a hand edit makes, holds no snippet: show,
-    # run and pick read past it to the snippet after it, and picking it runs
-    # nothing.
+    # run and pick read past it to the snippet after it, pick does not offer
+    # it, and a line fzf prints without a tab runs nothing.
     reset_store
-    echo "[pwsh] a store line with no tab: show, run and pick find the snippet after it; picking it says no such snippet"
+    echo "[pwsh] a store line with no tab: show, run and pick find the snippet after it; pick does not offer it"
     printf 'notab\nok\tWrite-Output found\n' > "$SNIPPET_FILE"
+    rm -f "$FZF_LOG"
     cat > "$TESTTMP/pick_notab.ps1" <<'PS1'
 snippet show ok
 snippet run ok
@@ -712,8 +713,43 @@ found
 found" "$actual"
     assert_eq "pwsh/snippet no-tab line: messages" "+ Write-Output found
 snippet run: no such snippet 'notab' (snippet ls)
-+ Write-Output found
-snippet pick: no such snippet 'notab' (snippet ls)" "$(tr -d '\r' < "$WORK/notab.err")"
++ Write-Output found" "$(tr -d '\r' < "$WORK/notab.err")"
+    assert_eq "pwsh/snippet no-tab line: fzf reads only the snippet" "ok${TAB}Write-Output found
+ok${TAB}Write-Output found" "$(cat "$FZF_LOG" 2>&1)"
+
+    # The line fzf picked is the last it prints. A user's FZF_DEFAULT_OPTS
+    # can put the query (--print-query) and the key pressed (--expect) before
+    # it, and the query can be another snippet's exact name: pick ran that
+    # snippet, not the one picked. With no line picked, fzf prints the query
+    # alone, which picks nothing. The stub prints FZF_PRINT as fzf would.
+    reset_store
+    echo "[pwsh] pick runs the last line fzf prints, not a query or a key printed before it"
+    printf 'clean\tWrite-Output ran-clean\nclean-dry-run\tWrite-Output ran-dry-run\n' > "$SNIPPET_FILE"
+    cat > "$TESTTMP/pick_query.ps1" <<'PS1'
+# fzf's output: the query, then the row (--print-query); an empty key line
+# (--expect, Enter), then the row; the query and a key, then the row; the
+# query alone, and the query and an empty key line, with no row picked.
+$row = "clean-dry-run`tWrite-Output ran-dry-run"
+$n = 0
+foreach ($out in "clean`n$row", "`n$row", "clean`nctrl-x`n$row", 'clean', "clean`n") {
+    $n++
+    $env:FZF_PRINT = $out
+    "case $n"
+    snippet pick
+}
+PS1
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_query.ps1'" 2>"$WORK/query.err" | tr -d '\r')
+    assert_eq "pwsh/snippet pick: the last line fzf prints" "case 1
+ran-dry-run
+case 2
+ran-dry-run
+case 3
+ran-dry-run
+case 4
+case 5" "$actual"
+    assert_eq "pwsh/snippet pick: the last line fzf prints, messages" "+ Write-Output ran-dry-run
++ Write-Output ran-dry-run
++ Write-Output ran-dry-run" "$(tr -d '\r' < "$WORK/query.err")"
     unset FZF_LOG
 
     # run and pick replay the line inside a function (_DenReplay). Unlike
