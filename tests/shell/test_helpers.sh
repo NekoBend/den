@@ -1810,6 +1810,17 @@ assert_contains "pwsh/reload --% warns" "not restarting: its launch arguments ho
 assert_eq "pwsh/reload --% starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
 assert_contains "pwsh/reload --% exit code" "RC=6" "$actual"
 
+# Windows compares names without regard to case, but whether backup.tgz and
+# BACKUP.TGZ are one file depends on the folder (a case-sensitive one, as WSL
+# makes, holds both). _DenOneEntry asks the folder's listing at each level
+# where two spellings differ: two names it holds exactly are two files, a
+# spelling it does not hold is its only variant there, and a folder with
+# several variants but not the spelling cannot tell. Linux cannot make a
+# case-insensitive folder, so the second case is a spelling Linux does not
+# have (SUB), resolved through the listing as Windows would.
+echo "[pwsh] _DenOneEntry asks the folder whether two spellings but for case are one file"
+rm -rf "$WORK/oe"
+
 # =============================================================================
 # Summary
 # =============================================================================

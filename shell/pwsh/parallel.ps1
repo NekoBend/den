@@ -211,12 +211,25 @@ function ptar {
     # replaces anything, so neither archive can land INSIDE a directory made
     # at the output meanwhile. A source that is the output itself
     # (`ptar all.tgz *` run again) is dropped first: moved aside, it is a name
-    # tar cannot find.
+    # tar cannot find. On Windows one spelled like the output but for case is
+    # the output in an ordinary folder, but a file of its own in a
+    # case-sensitive one (WSL makes them), and was dropped without a word
+    # there: _DenOneEntry asks the folder, and a source it cannot tell about
+    # is refused, naming both.
     $sess = $ExecutionContext.SessionState.Path
     $outFull = $sess.GetUnresolvedProviderPathFromPSPath($Output)
-    $cmp = if ($env:OS -eq 'Windows_NT' -or $IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
-    $srcs = @($Sources | Where-Object {
-        -not [string]::Equals($sess.GetUnresolvedProviderPathFromPSPath($_), $outFull, $cmp)
+    $onWindows = ($env:OS -eq 'Windows_NT' -or $IsWindows)
+    $outThere = $null -ne (Get-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue)
+    $srcs = @(foreach ($s in $Sources) {
+        $full = $sess.GetUnresolvedProviderPathFromPSPath($s)
+        if ($full -ceq $outFull) { continue }
+        if ($onWindows -and $outThere -and
+            [string]::Equals($full, $outFull, [System.StringComparison]::OrdinalIgnoreCase) -and
+            $null -ne (Get-Item -LiteralPath $s -Force -ErrorAction SilentlyContinue)) {
+            $one = try { _DenOneEntry $full $outFull } catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+            if ($one) { continue }
+        }
+        $s
     })
     if ($srcs.Count -eq 0) { Write-Error "no source besides the output '$Output'" -ErrorAction Stop }
     $stageName = '.ptar.' + ([System.IO.Path]::GetRandomFileName() -replace '\.', '')

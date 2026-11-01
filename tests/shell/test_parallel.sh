@@ -869,6 +869,41 @@ assert_eq "pwsh/ptar with a directory made at the output keeps the previous arch
 assert_eq "pwsh/ptar put nothing in the directory made at the output" "" "$(ls -A "$WORK/own/keep.tgz")"
 rm -rf "$WORK/own"
 
+echo "[pwsh] ptar on Windows drops a source spelled like the output but for case only when it is the output"
+# Windows takes BACKUP.TGZ for backup.tgz in an ordinary folder, but a
+# case-sensitive one (WSL makes them) holds the two as files of their own,
+# and ptar left BACKUP.TGZ out of the archive without a word. The folder is
+# asked now (_DenOneEntry). Linux's file system stands in for a
+# case-sensitive folder, and $env:OS = 'Windows_NT' selects Windows' rule,
+# as test_functions.sh does for archive.
+rm -rf "$WORK/cs"
+mkdir -p "$WORK/cs/src"
+echo x > "$WORK/cs/src/x"
+echo upper > "$WORK/cs/BACKUP.TGZ"
+tar czf "$WORK/cs/backup.tgz" -C "$WORK/cs" src
+actual=$(run_pwsh "$PARALLEL_PS1" "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; ptar backup.tgz BACKUP.TGZ src" 2>&1; echo "status=$?")
+assert_contains "pwsh/ptar on Windows with a source that differs from the output only in case exits 0" "status=0" "$actual"
+assert_eq "pwsh/ptar on Windows keeps a source that differs from the output only in case" "BACKUP.TGZ src/ src/x " "$(tar tzf "$WORK/cs/backup.tgz" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+actual=$(run_pwsh "$PARALLEL_PS1" "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; ptar backup.tgz BACKUP.TGZ" 2>&1; echo "status=$?")
+assert_contains "pwsh/ptar on Windows with only that source exits 0" "status=0" "$actual"
+assert_eq "pwsh/ptar on Windows with only that source archives it" "BACKUP.TGZ " "$(tar tzf "$WORK/cs/backup.tgz" 2>/dev/null | tr '\n' ' ')"
+# A folder that cannot be listed cannot say whether the two are one file:
+# the source is refused, naming both, before anything is moved. Root lists
+# any folder.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: root can list any folder"
+else
+    echo PRECIOUS > "$WORK/cs/backup.tgz"
+    chmod 311 "$WORK/cs"
+    actual=$(run_pwsh "$PARALLEL_PS1" "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; ptar backup.tgz BACKUP.TGZ src" 2>&1 | tr -d '\r'; echo "status=${PIPESTATUS[0]}")
+    chmod 755 "$WORK/cs"
+    assert_contains "pwsh/ptar on Windows that cannot list the folder fails" "status=1" "$actual"
+    assert_contains "pwsh/ptar on Windows that cannot list the folder names both" "cannot tell whether '$WORK/cs/BACKUP.TGZ' and '$WORK/cs/backup.tgz' are one file" "$actual"
+    assert_eq "pwsh/ptar on Windows that cannot list the folder keeps the old archive" "PRECIOUS" "$(cat "$WORK/cs/backup.tgz" 2>/dev/null)"
+    assert_eq "pwsh/ptar on Windows that cannot list the folder leaves no staging folder" "" "$(ls -A "$WORK/cs" | grep '^\.ptar\.' | tr -d '\n')"
+fi
+rm -rf "$WORK/cs"
+
 echo "[pwsh] pcp/pmv/prm: a path that fails is a failure"
 # Each path runs in a ForEach-Object -Parallel worker, and the workers' errors
 # reached neither $? nor the process status: `pcp missing dest` exited 0, and

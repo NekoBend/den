@@ -2689,6 +2689,47 @@ actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "(_ArNameComparer \$true).Equals('co
 assert_eq "pwsh/archive's name rule ignores case on Windows only" "True False True " "$actual"
 rm -rf "$WORK/cs" "$WORK"/cs?.zip
 
+# Windows takes BACKUP.ZIP for backup.zip in an ordinary folder, but a
+# case-sensitive one holds the two as files of their own, and archive took
+# such a source for the output: the zip and tar formats left it out without a
+# word, as the zip did a file of that name inside a source folder, and a
+# single file was refused as its own output. The folder is asked now
+# (_DenOneEntry), and one that cannot be listed (root lists any) refuses the
+# source, naming both. Linux's file system stands in for a case-sensitive
+# folder, with Windows' rule selected as above.
+echo "[pwsh] archive on Windows takes a name that differs from the output only in case for the output only when it is"
+mkdir -p "$WORK/cs/src"
+echo x > "$WORK/cs/src/x"
+for _n in BACKUP.ZIP BACKUP.TGZ DATA.GZ; do echo upper > "$WORK/cs/$_n"; done
+for _n in backup.zip backup.tgz data.gz; do echo old > "$WORK/cs/$_n"; done
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive backup.zip BACKUP.ZIP src")
+assert_contains "pwsh/archive zip on Windows with a source that differs from the output only in case exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip on Windows keeps a source that differs from the output only in case" "BACKUP.ZIP src/ src/x " "$(unzip -Z1 "$WORK/cs/backup.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive backup.tgz BACKUP.TGZ src")
+assert_contains "pwsh/archive tgz on Windows with a source that differs from the output only in case exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive tgz on Windows keeps a source that differs from the output only in case" "BACKUP.TGZ src/ src/x " "$(tar tzf "$WORK/cs/backup.tgz" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive data.gz DATA.GZ")
+assert_contains "pwsh/archive gz on Windows from a file that differs from the output only in case exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive gz on Windows compresses that file" "upper" "$(gzip -dc "$WORK/cs/data.gz" 2>/dev/null)"
+# In a zip of the folder that holds the output, only the output is left out.
+# (The other pairs would be refused as one name in the zip: see above.)
+rm -f "$WORK/cs/BACKUP.TGZ" "$WORK/cs/backup.tgz" "$WORK/cs/DATA.GZ" "$WORK/cs/data.gz"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive backup.zip .")
+assert_contains "pwsh/archive zip on Windows of the folder holding the output exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip on Windows leaves only the output itself out of that folder" "cs/ cs/BACKUP.ZIP cs/src/ cs/src/x " "$(unzip -Z1 "$WORK/cs/backup.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: root can list any folder"
+else
+    echo PRECIOUS > "$WORK/cs/backup.zip"
+    chmod 311 "$WORK/cs"
+    actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive backup.zip BACKUP.ZIP src")
+    chmod 755 "$WORK/cs"
+    assert_contains "pwsh/archive zip on Windows that cannot list the folder fails" "status=1" "$actual"
+    assert_contains "pwsh/archive zip on Windows that cannot list the folder names both" "cannot tell whether '$WORK/cs/BACKUP.ZIP' and '$WORK/cs/backup.zip' are one file" "$actual"
+    assert_eq "pwsh/archive zip on Windows that cannot list the folder keeps the old archive" "PRECIOUS" "$(cat "$WORK/cs/backup.zip" 2>/dev/null)"
+fi
+rm -rf "$WORK/cs"
+
 # Below a folder, only the platform's separators become '/'. On Linux a '\'
 # is part of a name, and turning it into '/' as well stored a file 'a\b.txt'
 # and a file 'b.txt' in a folder 'a' under one entry name, of which

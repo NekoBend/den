@@ -289,7 +289,11 @@ its tool, though: `xz` and `zstd` refuse to decompress an upper-case `.XZ` or
 archive: over an existing `.zip` or `.7z` it replaces the file instead of
 updating it, so files deleted from the sources do not linger, and a source that
 is the output itself (a rerun of `pk all.7z *`, or on bash/zsh a hard link to
-it under another name) is left out. The tar formats leave their own output out
+it under another name) is left out. On Windows, pwsh asks the folder whether a
+source spelled like the output but for case is the output: a case-sensitive
+folder (WSL makes them) can hold `BACKUP.ZIP` beside `backup.zip` as a file of
+its own, which is then archived, and a folder pwsh cannot list makes it stop
+and name both. The tar formats leave their own output out
 too: GNU tar cannot tell that it is reading its own archive when it
 compresses, so `archive all.tgz .` or `archive all.tgz *` run again in the
 folder it archives used to store the previous archive inside the new one. Only
@@ -496,7 +500,10 @@ have succeeded, so a failed run leaves no truncated archive and an existing
 output as it was. Every form also leaves an existing output out of the new
 archive (on bash/zsh a hard link to it under another name too), so running
 `ptar backup.tgz .` or `ptar all.tgz *` again does not store the previous
-archive inside the new one. Only the sources as given are checked: a hard link
+archive inside the new one.
+On Windows a source spelled like the output but for case is left out only when
+it is the output, as with `archive`.
+Only the sources as given are checked: a hard link
 to the output inside a source folder is still stored, as with `archive`. The
 existing output waits in a staging directory beside it while tar runs; should
 it fail to go back in place after a failed or interrupted run, `ptar` leaves

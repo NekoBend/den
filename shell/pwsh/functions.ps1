@@ -369,10 +369,12 @@ function _ArSameFile([string]$A, [string]$B) {
     & /bin/sh -c 'test "$1" -ef "$2"' _ $fa $fb
     return ($LASTEXITCODE -eq 0)
   }
-  # Windows. The case-insensitive compare settles the spellings people type,
-  # NTFS being case-insensitive, and is only the fast path: Windows has hard
-  # links and symlinks too, and no -ef to ask about them.
-  if ($fa -eq $fb) { return $true }
+  # Windows. The exact compare is only the fast path: Windows has hard links
+  # and symlinks too, and no -ef to ask about them. Spellings that differ
+  # only in case are asked of the folder below (_DenOneEntry): taken as one
+  # file outright, they made a case-sensitive folder's BACKUP.ZIP the output
+  # backup.zip, and archive left that file out without a word.
+  if ($fa -ceq $fb) { return $true }
   if (-not (Test-Path -LiteralPath $fb)) { return $false }
   $ia = Get-Item -LiteralPath $fa -Force -ErrorAction SilentlyContinue
   $ib = Get-Item -LiteralPath $fb -Force -ErrorAction SilentlyContinue
@@ -387,9 +389,13 @@ function _ArSameFile([string]$A, [string]$B) {
     throw 'a symlinked source or output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1'
   }
   # A symlink names another path: compare what each one actually points at.
+  # Two spellings of one path but for case are one file in an ordinary folder
+  # and two in a case-sensitive one; _DenOneEntry tells which, and throws
+  # (naming both) when it cannot.
   $ra = _ArLinkTarget $ia
   $rb = _ArLinkTarget $ib
-  if ($ra -eq $rb) { return $true }
+  if ($ra -ceq $rb) { return $true }
+  if ($ra -eq $rb -and (_DenOneEntry $ra $rb)) { return $true }
   # A hard link is one file under several names, and on Windows .Target
   # enumerates the OTHER names for LinkType 'HardLink'. They come back
   # volume-relative, so both sides are compared with the root dropped;
@@ -462,8 +468,8 @@ function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
 # 7z fail on the old archive once it was moved aside, and the zip writer stored
 # the previous archive inside the new one. Only a source with the output's
 # leaf name reaches _ArSameFile, which forks on Linux/macOS; it then settles
-# './all.7z', a full path, case on a case-insensitive volume and links, as the
-# POSIX twin's '-ef' does.
+# './all.7z', a full path, case on Windows (by the folder: see _DenOneEntry)
+# and links, as the POSIX twin's '-ef' does, and throws when it cannot tell.
 function _ArDropOutput([string[]]$Sources = @(), [string]$Output = '') {
   $leaf = ($Output -split '[\\/]')[-1]
   $kept = @(foreach ($s in $Sources) {
@@ -503,7 +509,10 @@ function _ArNameComparer([bool]$Windows) {
 # (`zip -r` stores a path given twice in one spelling once, but refuses
 # p1/src next to ./p1/src: "cannot repeat names in zip file".)
 # $Skip is the final output: a source directory that holds it does not
-# archive the old archive into the new one. Every path is listed before $Dest
+# archive the old archive into the new one. On Windows a file whose name
+# differs from it only in case is left out only when it is the output (see
+# _DenOneEntry): in a case-sensitive folder it is a file of its own, and it
+# used to be left out without a word. Every path is listed before $Dest
 # is created, so the zip being written is never one of its own entries. Any
 # unreadable source throws, and the caller discards $Dest.
 function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = '') {
@@ -511,6 +520,7 @@ function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = 
   Add-Type -AssemblyName System.IO.Compression
   $sess = $ExecutionContext.SessionState.Path
   $skipFull = if ($Skip) { $sess.GetUnresolvedProviderPathFromPSPath($Skip) } else { '' }
+  $skipThere = $skipFull -and (Test-Path -LiteralPath $skipFull)
   $onWindows = ($env:OS -eq 'Windows_NT' -or $IsWindows)
   # The separators of the file system the paths come from. On Linux and macOS
   # a '\' is part of a name: turned into '/' as well, a file 'a\b.txt' and a
@@ -535,7 +545,7 @@ function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = 
       $rel = if ($full.Length -gt $root.Length) { $full.Substring($root.Length + 1) } else { $c.Name }
       $name = "$($item.Name)/" + $rel.Replace($sep, [char]'/')
       if ($c.PSIsContainer) { $entries.Add(@($null, "$name/", $full)); continue }
-      $isOutput = if ($onWindows) { $full -eq $skipFull } else { $full -ceq $skipFull }
+      $isOutput = ($full -ceq $skipFull) -or ($onWindows -and $skipThere -and $full -eq $skipFull -and (_DenOneEntry $full $skipFull))
       if (-not $isOutput) { $entries.Add(@($c, $name, $full)) }
     }
   }

@@ -638,6 +638,52 @@ function _DenWritePrivate([string]$Path, [string]$Text) {
     }
 }
 
+# ========== names that differ only in case ==========
+
+# _DenOneEntry <a> <b> - for two full paths spelled alike but for case: $true
+# when they name one directory entry, $false when they name two, and a throw
+# when that cannot be told; the caller has seen that both exist. Windows
+# compares names without regard to case, but how many files two such
+# spellings are depends on the folder: an ordinary one finds its one entry
+# under either, while a case-sensitive one (WSL makes them) can hold
+# backup.tgz and BACKUP.TGZ as two files. So at each level where the
+# spellings differ, the folder's own listing is asked: a spelling it holds
+# exactly is that entry, and one it does not hold is its only name that
+# differs from it in case. A folder it cannot list, or one that holds several
+# such names but not this one, cannot tell.
+function _DenOneEntry([string]$A, [string]$B) {
+    # GetPathRoot('') is $null, and its .Length an error under strict mode.
+    if (-not $A -or -not $B) { return $false }
+    $seps = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $root = [System.IO.Path]::GetPathRoot($A)
+    $pa = $A.Substring($root.Length).Split($seps, [System.StringSplitOptions]::RemoveEmptyEntries)
+    $pb = $B.Substring($root.Length).Split($seps, [System.StringSplitOptions]::RemoveEmptyEntries)
+    if ($pa.Count -ne $pb.Count) { return $false }
+    $dir = $root
+    for ($i = 0; $i -lt $pa.Count; $i++) {
+        $name = $pa[$i]
+        if ($name -cne $pb[$i]) {
+            try {
+                $held = @(foreach ($e in [System.IO.Directory]::EnumerateFileSystemEntries($dir)) {
+                    $n = [System.IO.Path]::GetFileName($e)
+                    if ([string]::Equals($n, $name, [System.StringComparison]::OrdinalIgnoreCase)) { $n }
+                })
+            } catch {
+                throw "cannot tell whether '$A' and '$B' are one file: $($_.Exception.GetBaseException().Message)"
+            }
+            $ea = if ($held -ccontains $name) { $name } elseif ($held.Count -eq 1) { $held[0] }
+            $eb = if ($held -ccontains $pb[$i]) { $pb[$i] } elseif ($held.Count -eq 1) { $held[0] }
+            if ($null -eq $ea -or $null -eq $eb) {
+                throw "cannot tell whether '$A' and '$B' are one file: '$dir' holds several names that differ from them only in case"
+            }
+            if ($ea -cne $eb) { return $false }
+            $name = $ea
+        }
+        $dir = [System.IO.Path]::Combine($dir, $name)
+    }
+    return $true
+}
+
 # ========== wrapper generator ==========
 
 # The functions these generators define, and the coreutils.ps1 ones that can hand
