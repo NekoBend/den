@@ -486,7 +486,7 @@ see shell/README.md for what each shell can and cannot catch.
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `toggle-hwinfo` / `tgl-hw` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
-| `refresh-hwinfo` | clear the per-boot hardware cache so it re-detects | ✓ | ✓ | — |
+| `refresh-hwinfo` | clear the per-boot hardware cache and this shell's values, so the next shell re-detects | ✓ | ✓ | — |
 
 On cmd the CPU/GPU names come from the cache file pwsh's hwinfo keeps,
 `%LOCALAPPDATA%\shell-cache\hwinfo-cache.<COMPUTERNAME>.ps1`, which cmd reads as
@@ -494,10 +494,14 @@ text and never runs. Only without it does a new cmd window detect them (through
 Windows PowerShell, the way pwsh's hwinfo does, so both shells show the same
 names) and write the file for the next one, a "nothing recognized" result
 included; without starship nothing is detected. cmd has no `refresh-hwinfo`:
-pwsh's, or deleting that file, makes the next window detect again. bash, zsh
-and pwsh cache a "nothing recognized" result too (pwsh with the line cmd
-writes), so no shell detects again at each start; their `refresh-hwinfo` makes
-the next shell try again.
+pwsh's, or deleting that file, makes the next window detect again if it
+inherits no `STARSHIP_*` value. A cmd that inherits one (started from a shell
+that still has them, say) uses the inherited values as they are, without
+reading the file or detecting. bash, zsh and pwsh cache a "nothing recognized"
+result too (pwsh with the line cmd writes), so no shell detects again at each
+start; their `refresh-hwinfo` makes the next shell try again, a `reload` or a
+child shell included: it unsets the values in the shell it runs in too, so the
+prompt shows no CPU or GPU until then.
 
 ## History, session, editor
 

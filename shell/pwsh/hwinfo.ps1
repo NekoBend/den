@@ -91,9 +91,17 @@ if (-not ($env:STARSHIP_CPU_INTEL -or $env:STARSHIP_CPU_AMD -or
     if ($lines.Count -gt 0) {
       $tmp = $_hwCache + '.tmp.' + [guid]::NewGuid().ToString('N')
       $null = New-Item -ItemType Directory -Path (Split-Path -Parent $_hwCache) -Force -ErrorAction SilentlyContinue
+      # A write that fails (a full disk, a quota) leaves no cache. Set-Content
+      # reported no error when its write failed, and the move put the file in
+      # place cut short: the next start set the CPU from it and not the GPU (a
+      # value set skips the detection above), or stopped on a line cut inside
+      # its quotes. WriteAllText throws instead. It writes what Set-Content
+      # -Encoding UTF8 wrote: a BOM in 5.1 only, and a newline at the end.
       try {
-        $lines -join "`n" | Set-Content -LiteralPath $tmp -Encoding UTF8
+        [IO.File]::WriteAllText($tmp, ($lines -join "`n") + [Environment]::NewLine, [Text.UTF8Encoding]::new($PSVersionTable.PSEdition -eq 'Desktop'))
         Move-Item -LiteralPath $tmp -Destination $_hwCache -Force
+      } catch {
+        $null = $_
       } finally {
         if (Test-Path -LiteralPath $tmp -PathType Leaf) {
           Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
@@ -119,8 +127,21 @@ if ($env:_DEN_HWINFO_HIDDEN -eq '1') {
 }
 
 # refresh-hwinfo → clear hardware info cache
+# It clears this session's STARSHIP_CPU_*/STARSHIP_GPU_* values, and the ones
+# toggle-hwinfo saved, too: reload's new pwsh and a child shell inherit them,
+# and an inherited value skips both the cache and the detection above, so the
+# next shell showed the old names again. The prompt shows no CPU or GPU until
+# the next shell; an OFF (_DEN_HWINFO_HIDDEN) stays. Parity with hwinfo.sh.
 function refresh-hwinfo {
-  Remove-Item -Path ([IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'shell-cache', "hwinfo-cache.$env:COMPUTERNAME.ps1")) -Force -ErrorAction SilentlyContinue
+  # -LiteralPath: [ ] in the path are not wildcards. With -Path they were: it
+  # deleted another file they matched, or none, with no error, and the next
+  # shell loaded this cache.
+  Remove-Item -LiteralPath ([IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'shell-cache', "hwinfo-cache.$env:COMPUTERNAME.ps1")) -Force -ErrorAction SilentlyContinue
+  # Remove-Item, not SetEnvironmentVariable(name, $null): PowerShell passes that
+  # $null as '', and pwsh 7.6 on Linux (.NET 10) then keeps an empty variable.
+  foreach ($v in 'CPU_INTEL', 'CPU_AMD', 'GPU_NVIDIA', 'GPU_AMD', 'GPU_INTEL') {
+    Remove-Item -LiteralPath "Env:\STARSHIP_$v", "Env:\_DEN_SAVED_$v" -ErrorAction Ignore
+  }
   Write-Host 'hwinfo cache cleared. Restart shell to refresh.'
 }
 
