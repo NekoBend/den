@@ -1304,6 +1304,13 @@ NLD="$R/pyvernl$NL"
 mkdir -p "$NLD"
 printf './evil\n' > "$NLD/.python-version"
 ln -s "$R/proj/sub" "$R/link"
+# rlink/ is link/ with a relative target, deep/a/up/ a link whose target
+# climbs with .., and loop/ a link to itself. The system takes a .. after a
+# link from where the link led, and enters no loop: neither does uv.
+ln -s proj/sub "$R/rlink"
+mkdir -p "$R/deep/a"
+ln -s ../../proj/sub "$R/deep/a/up"
+ln -s loop "$R/loop"
 # uv starts from the current directory with its symbolic links resolved, and so
 # does python.sh: it names a project found that way under this spelling of $R.
 RP=$(cd "$R" && pwd -P)
@@ -1631,6 +1638,28 @@ rc=0" "$actual"
 vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
 vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above $RP/pyverdir ($VV_NONE_THERE)" "$(cat "$R/err")"
 
+    # uv enters --directory as the system does: through each link, a .. after
+    # one going up from where it led. By name, link/.. and deep/a/up/.. are
+    # the route directory and deep/a/, which hold no marker; loop/ is never
+    # entered.
+    echo "[$sh] vv --directory through symbolic links, and from inside one: the walk starts where the system takes uv"
+    actual=$(route_posix "$sh" "$NOPROJ" "
+        vv --directory '$R/link/..'
+        vv --directory '$R/rlink/..'
+        vv --directory '$R/deep/a/up/..'
+        vv --directory '$R/loop'
+        cd '$R/link'; vv --directory ..")
+    assert_eq "$sh/vv --directory through links runs uv --no-config venv where the system takes uv" "mock-uv --no-config venv --directory $R/link/..
+mock-uv --no-config venv --directory $R/rlink/..
+mock-uv --no-config venv --directory $R/deep/a/up/..
+mock-uv venv --directory $R/loop
+mock-uv --no-config venv --directory ..
+rc=0" "$actual"
+    assert_eq "$sh/vv --directory through links names what it found there" "vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)" "$(cat "$R/err")"
+
     # The cd function and the chpwd hook write to a file: vv's cd sends what
     # it prints to /dev/null.
     echo "[$sh] vv after a --, and at a directory that is not there from here: uv venv as typed; its cd runs no cd function, chpwd hook or CDPATH entry"
@@ -1939,10 +1968,65 @@ WARNING: vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above
 mock-uv --no-config venv --directory $R/pyverdir/sub2 --project ..
 mock-uv venv --project $R/pyverdir" "$actual"
 
+# vv works out where uv runs name by name, as the system enters a directory
+# for it (see the same checks on bash and zsh). .NET's SetCurrentDirectory,
+# which vv used, takes a path by name first: it read <link>/.. back as the
+# directory that holds the link, here one with no marker.
+echo "[pwsh] vv --directory through symbolic links, and from inside one: the walk starts where the system takes uv"
+actual=$(route_pwsh "$NOPROJ" "
+    vv --directory '$R/link/..'
+    vv --directory '$R/rlink/..'
+    vv --directory '$R/deep/a/up/..'
+    vv --directory '$R/loop'
+    Set-Location -LiteralPath '$R/link'; vv --directory ..")
+assert_eq "pwsh/vv --directory through links walks where the system takes uv" "WARNING: vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+mock-uv --no-config venv --directory $R/link/..
+WARNING: vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+mock-uv --no-config venv --directory $R/rlink/..
+WARNING: vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+mock-uv --no-config venv --directory $R/deep/a/up/..
+mock-uv venv --directory $R/loop
+WARNING: vv: uv --no-config venv, as $RP/proj/pyproject.toml is in or above $RP/proj ($VV_NONE_THERE)
+mock-uv --no-config venv --directory .." "$actual"
+
+# The process's current directory is one for all its runspaces: vv set it to
+# read uv's directory back, and a runspace that ran meanwhile
+# (ForEach-Object -Parallel, Start-ThreadJob) found itself there. Here one
+# runspace works out vv's options over and over while another watches.
+echo "[pwsh] vv works out uv's directory without moving the process's, which another runspace would see"
+actual=$($ROUTE_TIMEOUT pwsh -NoProfile -NonInteractive -Command "
+    \$sync = [hashtable]::Synchronized(@{ Ready = \$false; Done = \$false; Moved = 0; Runs = 0 })
+    1..2 | ForEach-Object -ThrottleLimit 2 -Parallel {
+        \$s = \$using:sync
+        \$clock = [System.Diagnostics.Stopwatch]::StartNew()
+        if (\$_ -eq 1) {
+            try {
+                . '$PYTHON_PS1_ROUTE'
+                \$WarningPreference = 'SilentlyContinue'
+                Set-Location -LiteralPath '$NOPROJ'
+                while (-not \$s.Ready -and \$clock.Elapsed.TotalSeconds -lt 60) { Start-Sleep -Milliseconds 1 }
+                for (\$i = 0; \$i -lt 100; \$i++) {
+                    if (@(_DenUvVenvOptions 'vv' @('--directory', '$R/pyver')) -ccontains '--no-config') { \$s.Runs++ }
+                }
+            }
+            finally { \$s.Done = \$true }
+        }
+        else {
+            \$before = [System.IO.Directory]::GetCurrentDirectory()
+            \$s.Ready = \$true
+            while (-not \$s.Done -and \$clock.Elapsed.TotalSeconds -lt 60) {
+                if ([System.IO.Directory]::GetCurrentDirectory() -ne \$before) { \$s.Moved++ }
+            }
+        }
+    }
+    \"runs=[\$(\$sync.Runs)] moved=[\$(\$sync.Moved -gt 0)]\"
+" 2>&1 | tr -d '\r') || true
+assert_eq "pwsh/vv leaves the process's directory alone for another runspace" "runs=[100] moved=[False]" "$actual"
+
 # PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
-# vv sets the process's current directory to read it back and puts it back;
-# PowerShell's location, and so its LocationChangedAction, stays as it was.
-echo "[pwsh] vv after a --, and at a directory that is not there from here; the process's directory is put back"
+# PowerShell's location, and so its LocationChangedAction, and the process's
+# current directory stay as they were.
+echo "[pwsh] vv after a --, and at a directory that is not there from here; the process's directory stays"
 actual=$(route_pwsh "$NOPROJ" "
     \$ExecutionContext.InvokeCommand.LocationChangedAction = { \$global:moved = 'yes' }
     \$before = [System.IO.Directory]::GetCurrentDirectory()
@@ -2191,9 +2275,11 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
     # commits a .python-version that names its tools/py from itself, where
     # uv venv --directory clone runs, and proj/ one that names proj/tools/py,
     # from <dir>, where uv venv --project proj runs and looks it up. Plain
-    # uv venv so, from <dir>, ran each program.
+    # uv venv so, from <dir>, ran each program. via/ links to clone/deep/:
+    # via/.. is clone/ to the system and to uv, and <dir> by name.
     mk_dir_clones() {
-        mkdir -p "$1/marks" "$1/config" "$1/clone/tools" "$1/proj/tools"
+        mkdir -p "$1/marks" "$1/config" "$1/clone/tools" "$1/clone/deep" "$1/proj/tools"
+        ln -s clone/deep "$1/via"
         printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" clone-program "$WORK/uv_probe/bin/python" > "$1/clone/tools/py"
         printf '#!/bin/sh\necho ran >> "%s/marks/%s"\nexec "%s" "$@"\n' "$1" proj-program "$WORK/uv_probe/bin/python" > "$1/proj/tools/py"
         chmod +x "$1/clone/tools/py" "$1/proj/tools/py"
@@ -2207,6 +2293,10 @@ PATH=[True] PROMPT=[PS> ]" "$actual"
     (cd "$WORK/dirclones-uv" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/dirclones-uv/config" "$REAL_UV" venv --project proj v0) >/dev/null 2>&1 || true
     PROJECT_THREAT=0
     [ -e "$WORK/dirclones-uv/marks/proj-program" ] && PROJECT_THREAT=1
+    mk_dir_clones "$WORK/linkclones-uv"
+    (cd "$WORK/linkclones-uv" && env -u UV_NO_CONFIG XDG_CONFIG_HOME="$WORK/linkclones-uv/config" "$REAL_UV" venv --directory via/.. v0) >/dev/null 2>&1 || true
+    LINK_THREAT=0
+    [ -e "$WORK/linkclones-uv/marks/clone-program" ] && LINK_THREAT=1
     # mk_nl_clone <dir> - in <dir>, which holds no marker, a clone whose
     # directory's name ends in a newline (clone<newline>/), with a
     # .python-version that names its ./evil, a program that writes nl-program
@@ -2501,6 +2591,22 @@ vv=0" "$actual"
             fi
         fi
 
+        if [ "$LINK_THREAT" = 1 ]; then
+            echo "[$sh] from a directory with no marker, vv at a link's .. that the system takes into a clone runs none of its code (the real uv)"
+            D="$WORK/linkclones-$sh"
+            mk_dir_clones "$D"
+            actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$D/config" "$sh" -c "
+                . '$PYTHON_SH_SOURCE'
+                unset VIRTUAL_ENV _DEN_VENV_PYTHON
+                cd '$D' || exit 1
+                vv --directory via/.. v1 >/dev/null 2>&1; echo \"vv=\$?\"
+                vv --directory '$D/via/..' v2 >/dev/null 2>&1; echo \"vv=\$?\"
+            " 2>/dev/null | tr -d '\r') || true
+            assert_eq "$sh/vv at a link's .. into a clone" "vv=0
+vv=0" "$actual"
+            assert_not_exists "$sh/vv at a link's .. into a clone ran no program the clone's .python-version names" "$D/marks/clone-program"
+        fi
+
         if [ "$NL_RUN_THREAT" = 1 ]; then
             echo "[$sh] in a clone whose directory's name ends in a newline, python --version runs none of its code (the real uv)"
             N="$WORK/nlclone-$sh-run"
@@ -2753,6 +2859,26 @@ vv=0" "$actual"
         fi
     else
         echo "  SKIP: real-uv vv --directory and --project checks (uv venv here did not run the program a clone's .python-version names)"
+    fi
+
+    # .NET's SetCurrentDirectory takes a path by name before it enters it, so
+    # vv once read via/.. back as the directory with no marker.
+    if [ "$LINK_THREAT" = 1 ]; then
+        echo "[pwsh] from a directory with no marker, vv at a link's .. that the system takes into a clone runs none of its code (the real uv)"
+        D="$WORK/linkclones-pwsh"
+        mk_dir_clones "$D"
+        actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$D/config" pwsh -NoProfile -NonInteractive -Command "
+            . '$PYTHON_PS1_REAL_UV'
+            Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
+            Set-Location -LiteralPath '$D'
+            vv --directory via/.. v1 *>\$null; \"vv=\$LASTEXITCODE\"
+            vv --directory '$D/via/..' v2 *>\$null; \"vv=\$LASTEXITCODE\"
+        " 2>/dev/null | tr -d '\r') || true
+        assert_eq "pwsh/vv at a link's .. into a clone" "vv=0
+vv=0" "$actual"
+        assert_not_exists "pwsh/vv at a link's .. into a clone ran no program the clone's .python-version names" "$D/marks/clone-program"
+    else
+        echo "  SKIP: real-uv vv at a link's .. check (uv venv here did not run the program a clone's .python-version names)"
     fi
 else
     echo "  SKIP: uv-created venv tests (uv not installed, or no Python it can use offline)"

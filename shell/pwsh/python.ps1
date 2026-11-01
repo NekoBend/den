@@ -521,20 +521,67 @@ function _DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
     $marker = _DenPyMarker
   }
   else {
-    # .NET's current directory is the process's, which uv's starts from. Set
-    # to this location and then to the --directory, as uv sets its own, it
-    # reads back as uv's does, with its symbolic links resolved on Linux and
-    # macOS, and GetFullPath takes a relative --project from it, normalized by
-    # name, as uv does. It is put back after. Where it cannot enter the
-    # directory, uv cannot either, and stops before it reads anything.
-    $saved = try { [System.IO.Directory]::GetCurrentDirectory() } catch { $null }
+    # The directory uv runs in, as the system reads it back to uv, worked out
+    # without setting the process's current directory, which every runspace
+    # of the process shares (ForEach-Object -Parallel, Start-ThreadJob). uv
+    # starts in this location and enters the --directory from there. Windows
+    # keeps a directory by name, as GetFullPath makes it; Windows PowerShell
+    # 5.1, whose .NET has no GetFullPath(path, basePath), takes a \name or a
+    # C:name from the process's own drive and directory there. Linux and
+    # macOS resolve each symbolic link on the way, and a .. after one goes up
+    # from where it led (.NET's SetCurrentDirectory takes a path by name
+    # first, and read <link>/.. back as the directory that holds the link):
+    # read here name by name, each link replaced with its target
+    # (FileSystemInfo.LinkTarget, .NET 6, pwsh 7.2), at most 40 to a path, as
+    # Linux follows. pwsh 7.0 and 7.1 have no LinkTarget and take the path by
+    # name. Where a name is no directory, uv cannot enter it either, and stops
+    # before it reads anything. GetFullPath takes a relative --project from
+    # there, normalized by name, as uv does.
     try {
-      [System.IO.Directory]::SetCurrentDirectory($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath)
-      if ($dir) { [System.IO.Directory]::SetCurrentDirectory($dir) }
-      $here = [System.IO.Directory]::GetCurrentDirectory()
+      $base = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+      if ((_OnWindows) -or -not [System.IO.FileSystemInfo].GetProperty('LinkTarget')) {
+        $here = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+          [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($base, "$dir"))
+        }
+        else { [System.IO.Path]::GetFullPath("$dir", $base) }
+        if (-not [System.IO.Directory]::Exists($here)) { return }
+        $root = [System.IO.Path]::GetPathRoot($here)
+        if ($here.Length -gt $root.Length) {
+          $here = $here.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        }
+      }
+      else {
+        $here = '/'
+        foreach ($path in $base, "$dir") {
+          if ($path.StartsWith('/', [System.StringComparison]::Ordinal)) { $here = '/' }
+          $parts = [System.Collections.Generic.List[string]]::new([string[]]$path.Split('/'))
+          $links = 0
+          while ($parts.Count -gt 0) {
+            $part = $parts[0]
+            $parts.RemoveAt(0)
+            if (-not $part -or $part -ceq '.') { continue }
+            if ($part -ceq '..') {
+              $here = $here.Substring(0, [Math]::Max(1, $here.LastIndexOf('/')))
+              continue
+            }
+            $next = $here.TrimEnd('/') + '/' + $part
+            $target = [System.IO.FileInfo]::new($next).LinkTarget
+            if ($target) {
+              if (++$links -gt 40) { return }
+              if ($target.StartsWith('/', [System.StringComparison]::Ordinal)) { $here = '/' }
+              $parts.InsertRange(0, [string[]]$target.Split('/'))
+            }
+            elseif ([System.IO.Directory]::Exists($next)) { $here = $next }
+            else { return }
+          }
+        }
+      }
       $start = $here
       if ($project) {
-        $start = [System.IO.Path]::GetFullPath($project)
+        $start = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+          [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($here, $project))
+        }
+        else { [System.IO.Path]::GetFullPath($project, $here) }
         $root = [System.IO.Path]::GetPathRoot($start)
         if ($start.Length -gt $root.Length) {
           $start = $start.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
@@ -545,9 +592,6 @@ function _DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
       }
     }
     catch { return }
-    finally {
-      if ($saved) { try { [System.IO.Directory]::SetCurrentDirectory($saved) } catch { $null = $_ } }
-    }
     $at = "in or above $start"
     $there = 'there or above'
     $marker = _DenPyMarker $start $here
