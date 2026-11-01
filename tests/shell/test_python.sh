@@ -1307,6 +1307,11 @@ ln -s "$R/proj/sub" "$R/link"
 # uv starts from the current directory with its symbolic links resolved, and so
 # does python.sh: it names a project found that way under this spelling of $R.
 RP=$(cd "$R" && pwd -P)
+# A venv that vva's mock uv leaves in a directory with no marker (sete/myenv/),
+# outside a git checkout, for vva under set -e.
+mkdir -p "$R/sete/myenv/bin"
+printf 'VIRTUAL_ENV=%s/sete/myenv; export VIRTUAL_ENV\n' "$R" > "$R/sete/myenv/bin/activate"
+printf 'version_info = 3.13.1\n' > "$R/sete/myenv/pyvenv.cfg"
 # Your own uv settings, which pip, vv and vva have uv read in place of a
 # uv.toml or pyproject.toml here or above (--config-file): a user uv.toml in
 # an XDG_CONFIG_HOME (uvuser/), one in a HOME's .config (uvhome/), which uv
@@ -1558,6 +1563,14 @@ mock-uv venv --directory $NOPROJ v
 after
 rc=0" "$actual"
     assert_eq "$sh/vv under set -e with no marker prints no line" "" "$(cat "$R/err")"
+    # vva runs va, whose git fails outside a checkout, and va assigned git's
+    # message plainly to name a failure it then found none of.
+    echo "[$sh] vva under set -e, outside a git checkout: uv venv, then va activates, and the shell goes on"
+    actual=$(route_posix "$sh" "$R/sete" "set -e; vva myenv; echo \"after VE=[\${VIRTUAL_ENV#'$R/'}] PY=[\$_DEN_VENV_PYTHON]\"") || true
+    assert_eq "$sh/vva under set -e outside a checkout activates the venv" "mock-uv venv myenv
+after VE=[sete/myenv] PY=[3.13.1]
+rc=0" "$actual"
+    assert_eq "$sh/vva under set -e outside a checkout prints no line" "" "$(cat "$R/err")"
 
     # uv venv first enters the directory --directory (else UV_WORKING_DIR,
     # else UV_WORKING_DIRECTORY) names and reads from there; --project (else

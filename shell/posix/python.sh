@@ -202,8 +202,10 @@ va() {
             # other failure, such as a checkout git will not open for dubious
             # ownership, leaves a committed venv possible. Any line of git's, as
             # trace lines may come first, and only from its start, as other
-            # messages quote a path that may hold the same words.
-            why="$nl$(LC_ALL=C command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . 2>&1 >/dev/null)"
+            # messages quote a path that may hold the same words. git fails
+            # here, and a plain assignment takes its status: || keeps a shell
+            # under set -e (errexit) going, as for vva outside a checkout.
+            why="$nl$(LC_ALL=C command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . 2>&1 >/dev/null)" || :
             case "$why" in
                 *"${nl}fatal: "[Nn]"ot a git repository"*) tracked="" ;;
                 *)
