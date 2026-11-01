@@ -143,7 +143,9 @@ va() {
     # the way pyvenv.cfg below already is. A venv you create is untracked; a venv
     # COMMITTED to a repo (git tracks .venv happily, even force-added past a
     # .gitignore) is code that arrived with the clone, and `va` in a fresh checkout
-    # would run it. Not a git repo, or no git, means nothing to check: pass.
+    # would run it. Not a git repo, or no git, means nothing to check: pass. So the
+    # check covers git checkouts only: a venv that came in an archive or a shared
+    # folder is sourced as it is, as `source` would source it.
     # A venv tool makes bin/ and bin/activate a real directory and file. A symlink
     # there reads the script from elsewhere, and git reports only the link itself,
     # not a tracked file behind it: refuse it. A symlinked venv directory (.venv ->

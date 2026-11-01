@@ -369,7 +369,7 @@ and macOS do not have, stays den's in scripts there.
 |---|---|:---:|:---:|:---:|
 | `python` / `python3` / `py` | `uv run -- python`, but in a project (a `pyproject.toml`, `.venv`, `pyvenv.cfg`, `uv.toml` or path-naming `.python-version` / `.python-versions` here or above) a python directly; else system python | ✓ | ✓ | ✓ (no `py`) |
 | `pip` / `pip3` | in a venv its own pip, else `uv --no-config pip`; with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
-| `uv` | injects `--python` for `uv run` inside an active venv | ✓ | ✓ | ✓ |
+| `uv` | injects `--python` for `uv run` inside an active venv; `uv run` itself is not guarded: it builds and runs the project, as uv does | ✓ | ✓ | ✓ |
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
@@ -384,12 +384,16 @@ cmd has no `va`, and a venv activated in cmd (`activate.bat`) leaves `uv run` as
 typed. The arguments after `run` reach uv unchanged, quoted `&` `|` `<` `>` and
 `=` `,` `;` `!` included.
 
-`va` refuses a venv it cannot trust and prints the command to source it yourself:
+`va` refuses these venvs and prints the command to source one yourself:
 one whose `bin/` (`Scripts/`) or activate script git tracks, or is a symlink, one
 whose `pyvenv.cfg` git tracks, one whose activate script is world-writable, one
 in a repository git will not read (dubious ownership), and one that is itself a git
 repository (a committed `HEAD`, `objects/` and `refs/`). That last check needs git
 2.38 or later; older git reads such a repository and finds nothing tracked.
+What git tracks is how `va` tells a venv that came with the tree, so it can tell
+only in a git checkout: outside one, a venv that came in an archive or a shared
+folder is sourced as it is, as `source` would source it. Activate only a venv you
+made there.
 
 ## Media (ffmpeg)
 

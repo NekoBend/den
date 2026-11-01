@@ -287,7 +287,9 @@ function va {
   # is checked the way pyvenv.cfg below already is. A venv you create is untracked;
   # a venv COMMITTED to a repo (git tracks .venv happily, even force-added past a
   # .gitignore) is code that arrived with the clone. Not a git repo, or no git,
-  # means nothing to check: pass. Parity with posix python.sh.
+  # means nothing to check: pass. So the check covers git checkouts only: a venv
+  # that came in an archive or a shared folder is dot-sourced as it is, as a
+  # typed . would dot-source it. Parity with posix python.sh.
   # A venv tool makes Scripts/ or bin/ and the activate script a real directory
   # and file. A symlink or junction there reads the script from elsewhere, and git
   # reports only the link itself, not a tracked file behind it: refuse it. A
