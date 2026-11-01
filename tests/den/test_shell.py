@@ -118,6 +118,7 @@ def _cmd_code(name: str) -> list[str]:
 
 # The wrapper shims and the modern tool each one prefers. findw.cmd is not
 # here: it has no native fallback and ignores the toggle (see its own test).
+# Nor is cat.cmd, which expands wildcards for bat itself (see its own test).
 _CMD_WRAPPERS = {
     "ls": "lsd",
     "la": "lsd",
@@ -125,7 +126,6 @@ _CMD_WRAPPERS = {
     "lla": "lsd",
     "lt": "lsd",
     "llt": "lsd",
-    "cat": "bat",
     "grep": "rg",
 }
 
@@ -146,6 +146,33 @@ def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
         assert 'if defined _t "%_t%" ' in joined, name
         assert "if not defined _t " in joined, name
         assert code[-1] == "exit /b %errorlevel%", name
+
+
+def test_cmd_cat_expands_wildcards_and_hands_bat_quoted_names():
+    # On Windows bat expands a wildcard itself (the wild crate), one word at a
+    # time, and reads a file name that starts with - as an option: beside
+    # files named --, --pager=cmd and --paging=always, `cat ???* *` gave it
+    # the pager options and then a --, which made the last --paging=never a
+    # file name. cat.cmd expands each word with cmd's for and hands bat every
+    # name in quotes, which wild leaves alone (tests/shell/cmd_shims.cmd runs
+    # it on Windows). cmd cannot run here; this pins the shape: bat is looked
+    # up on PATH only, the branch is on whether it was found, only type gets
+    # the arguments as typed, each name reaches bat in quotes, both ways end
+    # with the exit code of whichever ran, and the file keeps CRLF line
+    # endings (with bare LF, cmd can miss a label that straddles a 512-byte
+    # block).
+    code = _cmd_code("cat")
+    joined = "\n".join(code)
+    assert not any("&&" in ln and "||" in ln for ln in code)
+    assert "where.exe $PATH:bat.exe" in joined
+    assert "if not defined _t goto :type" in joined
+    assert [ln for ln in code if "%*" in ln] == ["type %*"]
+    assert 'set "_a=!_a! "!_w%%i!""' in joined
+    run = code.index('"!_t!" --style=plain --paging=never!_a! --paging=never')
+    assert code[run + 1] == "exit /b %errorlevel%"
+    assert code[code.index("type %*") + 1] == "exit /b %errorlevel%"
+    raw = (_CMD_BIN / "cat.cmd").read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n"), "cat.cmd must use CRLF line endings"
 
 
 def test_cmd_find_is_find_exe_and_fd_is_findw():
