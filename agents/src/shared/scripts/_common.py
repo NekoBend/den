@@ -76,8 +76,17 @@ _PY_ASSIGNMENT = r"^(?!(?:else|try|finally|except|lambda)\b){name}\s*(?::[^=]+)?
 
 # What may stand before a PowerShell variable's `$`: type constraints and
 # attributes such as `[int]`, `[string[]]` or `[ValidateRange(1, 9)]`, with
-# brackets nested up to three deep (`[List[string[]]]`).
-_PS_TYPES = r"(?:\[(?:[^\[\]]|\[(?:[^\[\]]|\[[^\[\]]*\])*\])*\]\s*)*"
+# brackets nested up to three deep (`[List[string[]]]`). A quoted string in
+# them is read as one piece, so a bracket inside it is text:
+# `[ValidateSet("[")]`. Two quotes in a row are an escaped quote, never the
+# end of one string and the start of the next, which also keeps the match
+# linear on a long run of quotes.
+_PS_QUOTED = r"""'(?:[^']|'')*'(?!')|"(?:[^"`]|`.|"")*"(?!")"""
+_PS_PIECE = r"(?:" + _PS_QUOTED + r"""|[^\[\]'"])"""
+_PS_TYPES = (
+    r"(?:\[(?:" + _PS_PIECE + r"|\[(?:" + _PS_PIECE + r"|\[" + _PS_PIECE + r"*\])*\])*"
+    r"\]\s*)*"
+)
 
 # Where a symbol may be defined, per extension. {name} is the symbol.
 DEFINITION_PATTERNS: dict[str, list[str]] = {

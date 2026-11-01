@@ -1266,6 +1266,59 @@ def test_typed_powershell_assignments_are_definitions(tmp_path: Path) -> None:
     ]
 
 
+def test_a_quoted_bracket_in_an_attribute_keeps_a_typed_assignment(
+    tmp_path: Path,
+) -> None:
+    # Every `[` and `]` before the `$` was taken for a bracket, quoted or
+    # not, so the `[` in `[ValidateSet("[")]` left the attribute open and the
+    # assignment was no definition: --def found nothing, --uses listed it as
+    # a use and --in left it out. Two quotes in a row are one escaped quote.
+    lines = {
+        "Delimiter": '[ValidateSet("[")][string]$Delimiter = "["',
+        "Name": "[ValidatePattern('^[^\\]]+$')][string]$Name = 'abc'",
+        "Quote": "[ValidateSet('it''s [')][string]$Quote = 'x'",
+        "Escaped": '[ValidateSet("a`"[", "b""[")][string]$Escaped = "x"',
+    }
+    lib = write(tmp_path, "lib.ps1", "".join(f"{line}\n" for line in lines.values()))
+    uses = "Write-Output " + " ".join(f"${symbol}" for symbol in lines)
+    write(tmp_path, "run.ps1", f"{uses}\n")
+    defs = {
+        symbol: f"lib.ps1:{lineno}:def:{line}"
+        for lineno, (symbol, line) in enumerate(lines.items(), 1)
+    }
+    for symbol, expected in defs.items():
+        proc = run("--def", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [expected], symbol
+        proc = run("--uses", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [f"run.ps1:1:use:{uses}"], symbol
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert [r for r in rows(proc, tmp_path) if ":def:" in r] == [
+        defs[symbol] for symbol in sorted(defs)
+    ]
+
+
+def test_a_line_of_quotes_is_matched_in_linear_time() -> None:
+    # A quote pair read both as an escaped quote and as the end of one
+    # string and the start of the next gave a line of n pairs 2**n ways to
+    # split, and a failed match tried every one: 24 pairs took two seconds.
+    # The child process is killed when the timeout expires, so a slow match
+    # fails this test instead of hanging the suite.
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+        "import _common\n"
+        "for body in (\"''\", '\"\"', \"'a'\", '\"a\"'):\n"
+        "    line = '[' + body * 40 + '$x = 1'\n"
+        "    assert _common.top_level_definitions(line, '.ps1') == []\n"
+        "    assert not _common.is_definition_line(line, '.ps1', 'x')\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=60)
+
+
 def test_typescript_enum_and_namespace_are_definitions(tmp_path: Path) -> None:
     status = write(
         tmp_path,

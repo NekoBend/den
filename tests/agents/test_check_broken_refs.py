@@ -1203,6 +1203,38 @@ def test_a_removed_typed_powershell_assignment_is_reported(tmp_path: Path) -> No
     ]
 
 
+def test_a_quoted_bracket_in_an_attribute_hides_no_removed_assignment(
+    tmp_path: Path,
+) -> None:
+    # The `[` in `[ValidateSet("[")]` was taken for a bracket and left the
+    # attribute open, so deleting the variable while run.ps1 still reads it
+    # reported only $Level, whose attribute holds no bracket.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.ps1",
+        '[ValidateSet("[")][string]$Delimiter = "["\n'
+        "[ValidatePattern('^[^\\]]+$')][string]$Name = 'abc'\n"
+        "[ValidateRange(1, 10)][int]$Level = 5\n"
+        "function Get-Thing {\n"
+        "}\n",
+    )
+    uses = "Write-Output $Delimiter $Name $Level"
+    write(tmp_path, "run.ps1", f"{uses}\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.ps1", "function Get-Thing {\n}\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        f"run.ps1:1:broken_ref:Delimiter:{uses}",
+        f"run.ps1:1:broken_ref:Level:{uses}",
+        f"run.ps1:1:broken_ref:Name:{uses}",
+    ]
+
+
 def test_a_removed_typescript_enum_is_reported(tmp_path: Path) -> None:
     init_repo(tmp_path)
     write(tmp_path, "status.ts", "export enum OrderStatus { Open }\n")
