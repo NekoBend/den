@@ -12,7 +12,8 @@ rem python directly, not uv run, under a pyproject.toml, beside a .venv,
 rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path
 rem or something in the current directory, for --version / -V too, and
 rem elsewhere uv run for those as well; pip runs nothing outside a venv,
-rem and in a venv without pip.exe runs uv pip with --no-config;
+rem and in a venv without pip.exe runs uv pip with --config-file and your
+rem own uv.toml, or with --no-config without one;
 rem path lists PATH; again asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
@@ -404,14 +405,69 @@ set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
 call "%BIN%\pip.cmd" install foo >"%O%" 2>&1
 call :expect %errorlevel% 1 "pip: no venv, nothing runs"
 set "VIRTUAL_ENV=%T%\venv"
-rem --no-config: uv reads no uv.toml or pyproject.toml of a clone here, which
-rem can have it run a python the clone ships or install from the clone's files.
+rem uv reads no uv.toml or pyproject.toml of a clone here, which can have it
+rem run a python the clone ships or install from the clone's files: pip has
+rem it read your own uv.toml alone (--config-file), or none (--no-config).
+rem Yours is the one UV_CONFIG_FILE names, even under UV_NO_CONFIG, else,
+rem unless UV_NO_CONFIG is true, %APPDATA%\uv\uv.toml, else, unless
+rem UV_NO_SYSTEM_CONFIG is true, %SYSTEMDRIVE%\ProgramData\uv\uv.toml.
+set "_APPDATA=%APPDATA%"
+set "_SYSTEMDRIVE=%SYSTEMDRIVE%"
+set "APPDATA=%T%\appdata"
+set "SYSTEMDRIVE=%T%\sysdrive"
+set "UV_CONFIG_FILE="
+set "UV_NO_CONFIG="
+set "UV_NO_SYSTEM_CONFIG="
+mkdir "%T%\appdata\uv" "%T%\sysdrive\ProgramData\uv" || exit /b 1
 >"%W%" echo [@tools]
 >>"%W%" echo [--no-config]
 >>"%W%" echo [pip]
 >>"%W%" echo [list]
 call "%BIN%\pip.cmd" list >"%O%" 2>nul
-call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv --no-config pip"
+call :expect %errorlevel% 0 "pip: a venv without pip.exe and no uv.toml of yours, uv --no-config pip"
+type nul >"%T%\sysdrive\ProgramData\uv\uv.toml"
+>"%W%" echo [@tools]
+>>"%W%" echo [--config-file]
+>>"%W%" echo [%T%\sysdrive\ProgramData\uv\uv.toml]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv --config-file pip with the system uv.toml"
+set "UV_NO_SYSTEM_CONFIG=On"
+>"%W%" echo [@tools]
+>>"%W%" echo [--no-config]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: UV_NO_SYSTEM_CONFIG true, uv --no-config pip"
+type nul >"%T%\appdata\uv\uv.toml"
+>"%W%" echo [@tools]
+>>"%W%" echo [--config-file]
+>>"%W%" echo [%T%\appdata\uv\uv.toml]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv --config-file pip with your uv.toml"
+set "UV_NO_CONFIG=TRUE"
+>"%W%" echo [@tools]
+>>"%W%" echo [--no-config]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: UV_NO_CONFIG true, uv --no-config pip"
+set "UV_CONFIG_FILE=%T%\mine.toml"
+>"%W%" echo [@tools]
+>>"%W%" echo [--config-file]
+>>"%W%" echo [%T%\mine.toml]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: UV_CONFIG_FILE, under UV_NO_CONFIG too, uv --config-file pip with that file"
+set "UV_CONFIG_FILE="
+set "UV_NO_CONFIG="
+set "UV_NO_SYSTEM_CONFIG="
+set "APPDATA=%_APPDATA%"
+set "SYSTEMDRIVE=%_SYSTEMDRIVE%"
 copy /y "%T%\tools\fake.exe" "%T%\venv\Scripts\pip.exe" >nul || exit /b 1
 >"%W%" echo [@Scripts]
 >>"%W%" echo [list]

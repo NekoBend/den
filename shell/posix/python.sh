@@ -42,32 +42,42 @@ _show_uv_only_message() {
 # in this directory or one above it, and run the python in it, which may be one
 # a cloned repository committed. va activates a venv after checking that it did
 # not come with the clone.
-# uv pip runs with --no-config, as pip reads no uv.toml or pyproject.toml: uv
-# reads them from this directory and the ones above it, and a clone's settings
-# there can have it run a python the clone ships ([pip] python) or install a
-# package from the clone's own files (find-links). --no-config skips the user's
-# own uv.toml as well; the line on stderr says so, and typed uv pip reads them.
+# uv pip reads only your own uv settings, as pip reads no uv.toml or
+# pyproject.toml: uv reads them from this directory and the ones above it, and
+# a clone's settings there can have it run a python the clone ships ([pip]
+# python) or install a package from the clone's own files (find-links). uv
+# --config-file reads the one file _den_uv_config names in place of all of
+# those, and with none, uv --no-config reads none. The line on stderr says
+# which, and typed uv pip reads them all.
 pip() {
+    local cfg
     if [ -z "$VIRTUAL_ENV" ]; then
         printf 'pip: no venv is active; activate one with va, or type uv pip%s directly\n' "${*:+ $*}" >&2
         return 1
     elif [ -x "$VIRTUAL_ENV/bin/pip" ]; then
         "$VIRTUAL_ENV/bin/pip" "$@"
+    elif cfg=$(_den_uv_config); then
+        _show_uv_only_message "pip${*:+ $*}" "uv --config-file $cfg pip${*:+ $*} (reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those)"
+        command uv --config-file "$cfg" pip "$@"
     else
-        _show_uv_only_message "pip${*:+ $*}" "uv --no-config pip${*:+ $*} (no uv.toml or pyproject.toml settings, a clone's or your own; type uv pip to use them)"
+        _show_uv_only_message "pip${*:+ $*}" "uv --no-config pip${*:+ $*} (reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those)"
         command uv --no-config pip "$@"
     fi
 }
 
 # pip3 → the same, with an active venv's own pip3
 pip3() {
+    local cfg
     if [ -z "$VIRTUAL_ENV" ]; then
         printf 'pip3: no venv is active; activate one with va, or type uv pip%s directly\n' "${*:+ $*}" >&2
         return 1
     elif [ -x "$VIRTUAL_ENV/bin/pip3" ]; then
         "$VIRTUAL_ENV/bin/pip3" "$@"
+    elif cfg=$(_den_uv_config); then
+        _show_uv_only_message "pip3${*:+ $*}" "uv --config-file $cfg pip${*:+ $*} (reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those)"
+        command uv --config-file "$cfg" pip "$@"
     else
-        _show_uv_only_message "pip3${*:+ $*}" "uv --no-config pip${*:+ $*} (no uv.toml or pyproject.toml settings, a clone's or your own; type uv pip to use them)"
+        _show_uv_only_message "pip3${*:+ $*}" "uv --no-config pip${*:+ $*} (reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those)"
         command uv --no-config pip "$@"
     fi
 }
@@ -325,22 +335,73 @@ _den_py_marker() {
     done
 }
 
-# _den_uv_venv <name> [args...] → vv and vva: uv venv, but uv --no-config venv,
-# after a line on stderr, where _den_py_marker finds a file, as python runs no
-# uv run there: uv venv runs the program a .python-version names to ask its
-# version, and a uv.toml's or pyproject.toml's settings can have it run a
-# python the clone ships, or install one from the clone's own files and run
-# it, --python 3.13 given or not. --no-config skips those files, and with them
-# the user's own uv.toml and a .python-version that only pins a version: the
-# line says to pick a python with --python, or to type uv venv.
+# _den_uv_config → print the uv.toml of your own that uv reads besides a
+# project's, for uv --config-file to read in place of them all: the file
+# UV_CONFIG_FILE names (uv reads it even under UV_NO_CONFIG); else, unless
+# UV_NO_CONFIG is true, the user one, $XDG_CONFIG_HOME/uv/uv.toml (an absolute
+# XDG_CONFIG_HOME only, as uv takes) or ~/.config/uv/uv.toml; else, unless
+# UV_NO_SYSTEM_CONFIG is true, the system one, uv/uv.toml in the first of
+# $XDG_CONFIG_DIRS (/etc/xdg) that has one, else /etc/uv/uv.toml. uv reads an
+# XDG_CONFIG_DIRS entry that is not absolute from the current directory, where
+# a clone can ship one: such entries are skipped here. uv merges the user and
+# the system file, and --config-file reads one: with both, the user one, and
+# the system one's settings are left out. Fails when there is none. Not one of
+# the overrides that toggle-uv removes: vv and vva ask it with them off as well.
+_den_uv_config() {
+    local f rest
+    if [ -n "${UV_CONFIG_FILE-}" ]; then
+        printf '%s\n' "$UV_CONFIG_FILE"
+        return 0
+    fi
+    # The values uv takes for true, in any case.
+    case ${UV_NO_CONFIG-} in [1Yy]|[Yy][Ee][Ss]|[Tt]|[Tt][Rr][Uu][Ee]|[Oo][Nn]) return 1 ;; esac
+    case ${XDG_CONFIG_HOME-} in
+        /*) f=$XDG_CONFIG_HOME/uv/uv.toml ;;
+        *) f=$HOME/.config/uv/uv.toml ;;
+    esac
+    if [ -f "$f" ]; then
+        printf '%s\n' "$f"
+        return 0
+    fi
+    case ${UV_NO_SYSTEM_CONFIG-} in [1Yy]|[Yy][Ee][Ss]|[Tt]|[Tt][Rr][Uu][Ee]|[Oo][Nn]) return 1 ;; esac
+    rest=${XDG_CONFIG_DIRS:-/etc/xdg}:
+    while [ -n "$rest" ]; do
+        f=${rest%%:*}
+        rest=${rest#*:}
+        case $f in /*) ;; *) continue ;; esac
+        if [ -f "$f/uv/uv.toml" ]; then
+            printf '%s\n' "$f/uv/uv.toml"
+            return 0
+        fi
+    done
+    if [ -f /etc/uv/uv.toml ]; then
+        printf '%s\n' /etc/uv/uv.toml
+        return 0
+    fi
+    return 1
+}
+
+# _den_uv_venv <name> [args...] → vv and vva: uv venv, but where
+# _den_py_marker finds a file, as python runs no uv run there, uv --no-config
+# venv after a line on stderr: uv venv runs the program a .python-version
+# names to ask its version, and a uv.toml's or pyproject.toml's settings can
+# have it run a python the clone ships, or install one from the clone's own
+# files and run it, --python 3.13 given or not. --no-config skips those files,
+# and with them a .python-version that only pins a version, yours in uv's
+# config directory too: the line says to pick a python with --python, or to
+# type uv venv. With a uv.toml of your own (_den_uv_config), --config-file
+# reads it, as --no-config alone would not, and still no .python-version.
 _den_uv_venv() {
-    local name=$1 marker
+    local name=$1 marker cfg
     shift
-    if marker=$(_den_py_marker); then
-        printf '%s: uv --no-config venv, as %s is here or above (no .python-version, uv.toml or pyproject.toml settings, a clone'\''s or your own; pick a python with --python, or type uv venv to use them)\n' "$name" "$marker" >&2
-        command uv --no-config venv "$@"
-    else
+    if ! marker=$(_den_py_marker); then
         command uv venv "$@"
+    elif cfg=$(_den_uv_config); then
+        printf '%s: uv --no-config --config-file %s venv, as %s is here or above (reads your uv settings, not a .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)\n' "$name" "$cfg" "$marker" >&2
+        command uv --no-config --config-file "$cfg" venv "$@"
+    else
+        printf '%s: uv --no-config venv, as %s is here or above (reads no .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)\n' "$name" "$marker" >&2
+        command uv --no-config venv "$@"
     fi
 }
 

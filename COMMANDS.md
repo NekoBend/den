@@ -337,23 +337,35 @@ keeps), except where uv would build or run code that came with a clone:
   outside a project, so they name the python that `python x.py` runs, and the
   python run directly inside one.
 - `pip` / `pip3` run only inside an active venv: the venv's own pip when it has
-  one, else `uv --no-config pip`, which installs into that venv (a venv made by
-  uv, `vv` / `vva`, has no pip). pip reads no `uv.toml` or `pyproject.toml`,
-  and uv reads them in the current directory and above, where a clone's
-  settings can have uv run a python the clone ships or install a package from
-  the clone's own files: `--no-config` skips them, and your own uv settings as
-  well, as a line on stderr says; type `uv pip` to use them. With no venv
-  active they run nothing and say so, since `uv pip` would pick the `.venv` in
-  or above the current directory itself and run its python: activate one with
-  `va`, which refuses a venv that came with the clone (cmd has no `va`: run
-  the `Scripts\activate` of a venv you made), or type `uv pip` yourself.
-- `vv` / `vva` run `uv venv`, but `uv --no-config venv`, after a line that says
-  so, where `python` runs a python directly (the same files, here or above):
-  `uv venv` runs the program a `.python-version` names, and a `uv.toml`'s or
-  `pyproject.toml`'s settings can have it run a python the clone ships, or
-  install one from the clone's files and run it, `--python` given or not.
-  `--no-config` also skips a `.python-version` that only pins a version, and
-  your own uv settings: pick a python with `--python`, or type `uv venv`.
+  one, else `uv pip`, which installs into that venv (a venv made by uv, `vv` /
+  `vva`, has no pip). pip reads no `uv.toml` or `pyproject.toml`, and uv reads
+  them in the current directory and above, where a clone's settings can have
+  uv run a python the clone ships or install a package from the clone's own
+  files. So den runs `uv --config-file <your uv.toml> pip`, which reads your
+  own uv settings in their place, or, when you have no uv.toml,
+  `uv --no-config pip`, which reads none; a line on stderr says which, and
+  typed `uv pip` reads them all. With no venv active they run nothing and say
+  so, since `uv pip` would pick the `.venv` in or above the current directory
+  itself and run its python: activate one with `va`, which refuses a venv that
+  came with the clone (cmd has no `va`: run the `Scripts\activate` of a venv
+  you made), or type `uv pip` yourself.
+- `vv` / `vva` run `uv venv`, but where `python` runs a python directly (the
+  same files, here or above) `uv --no-config venv`, with `--config-file <your
+  uv.toml>` when you have one, after a line that says so: `uv venv` runs the
+  program a `.python-version` names, and a `uv.toml`'s or `pyproject.toml`'s
+  settings can have it run a python the clone ships, or install one from the
+  clone's files and run it, `--python` given or not. `--no-config` skips those,
+  and also a `.python-version` that only pins a version, your global one
+  (`uv python pin --global`) too: pick a python with `--python`, or type
+  `uv venv`.
+- Your uv.toml is the one uv reads besides a project's: the one
+  `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
+  (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows
+  `%APPDATA%\uv\uv.toml`), else, unless `UV_NO_SYSTEM_CONFIG` is true, the
+  system one (`uv/uv.toml` in the first `$XDG_CONFIG_DIRS` directory that has
+  one, `/etc/xdg` by default, else `/etc/uv/uv.toml`; on Windows
+  `%SYSTEMDRIVE%\ProgramData\uv\uv.toml`). uv merges a user and a system
+  uv.toml, and `--config-file` reads one: with both, the user one alone.
 
 Inside a venv `va` activated on bash/zsh/pwsh, `python` / `python3` / `py` run
 through `uv run --python <venv version>` outside a project. Inside a venv on cmd,
@@ -368,7 +380,7 @@ and macOS do not have, stays den's in scripts there.
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `python` / `python3` / `py` | `uv run -- python`, but in a project (a `pyproject.toml`, `.venv`, `pyvenv.cfg`, `uv.toml` or path-naming `.python-version` / `.python-versions` here or above) a python directly; else system python | ✓ | ✓ | ✓ (no `py`) |
-| `pip` / `pip3` | in a venv its own pip, else `uv --no-config pip`; with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
+| `pip` / `pip3` | in a venv its own pip, else `uv pip` with your own uv.toml alone (`--config-file`, or `--no-config` without one); with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
 | `uv` | injects `--python` for `uv run` inside an active venv; `uv run` itself is not guarded: it builds and runs the project, as uv does | ✓ | ✓ | ✓ |
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |
 | `vd` | deactivate the active venv | ✓ | ✓ | — |

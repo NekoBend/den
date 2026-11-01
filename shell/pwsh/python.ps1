@@ -38,11 +38,13 @@ function Show-UvOnlyMessage {
 # in this directory or one above it, and run the python in it, which may be one
 # a cloned repository committed. va activates a venv after checking that it did
 # not come with the clone. Parity with posix python.sh.
-# uv pip runs with --no-config, as pip reads no uv.toml or pyproject.toml: uv
-# reads them from this directory and the ones above it, and a clone's settings
-# there can have it run a python the clone ships ([pip] python) or install a
-# package from the clone's own files (find-links). --no-config skips the user's
-# own uv.toml as well; the line says so, and typed uv pip reads them.
+# uv pip reads only your own uv settings, as pip reads no uv.toml or
+# pyproject.toml: uv reads them from this directory and the ones above it, and
+# a clone's settings there can have it run a python the clone ships ([pip]
+# python) or install a package from the clone's own files (find-links). uv
+# --config-file reads the one file _DenUvConfig names in place of all of
+# those, and with none, uv --no-config reads none. The line says which, and
+# typed uv pip reads them all.
 function pip {
   if (-not $env:VIRTUAL_ENV) {
     Write-Error "no venv is active; activate one with va, or type $((@('uv', 'pip') + $Args) -join ' ') directly"
@@ -53,8 +55,17 @@ function pip {
   if ($venvPip) { & $venvPip @Args; return }
   $uv = _ResolveCmd 'uv' 'App'
   if (-not $uv) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
-  Show-UvOnlyMessage "pip $($Args -join ' ')" "$((@('uv', '--no-config', 'pip') + $Args) -join ' ') (no uv.toml or pyproject.toml settings, a clone's or your own; type uv pip to use them)"
-  & $uv --no-config pip @Args
+  $cfg = _DenUvConfig
+  if ($cfg) {
+    $options = @('--config-file', $cfg)
+    $reads = 'reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
+  }
+  else {
+    $options = @('--no-config')
+    $reads = 'reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
+  }
+  Show-UvOnlyMessage "pip $($Args -join ' ')" "$((@('uv') + $options + @('pip') + $Args) -join ' ') ($reads)"
+  & $uv @options pip @Args
 }
 
 # pip3 → the same, with an active venv's own pip3
@@ -68,8 +79,17 @@ function pip3 {
   if ($venvPip) { & $venvPip @Args; return }
   $uv = _ResolveCmd 'uv' 'App'
   if (-not $uv) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
-  Show-UvOnlyMessage "pip3 $($Args -join ' ')" "$((@('uv', '--no-config', 'pip') + $Args) -join ' ') (no uv.toml or pyproject.toml settings, a clone's or your own; type uv pip to use them)"
-  & $uv --no-config pip @Args
+  $cfg = _DenUvConfig
+  if ($cfg) {
+    $options = @('--config-file', $cfg)
+    $reads = 'reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
+  }
+  else {
+    $options = @('--no-config')
+    $reads = 'reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
+  }
+  Show-UvOnlyMessage "pip3 $($Args -join ' ')" "$((@('uv') + $options + @('pip') + $Args) -join ' ') ($reads)"
+  & $uv @options pip @Args
 }
 
 # The three helpers python, python3 and py call are defined global:. toggle-uv
@@ -165,6 +185,56 @@ function global:_DenPyMarker {
   return $null
 }
 
+# _DenUvConfig - the uv.toml of your own that uv reads besides a project's,
+# for uv --config-file to read in place of them all ($null when there is
+# none): the file UV_CONFIG_FILE names (uv reads it even under UV_NO_CONFIG);
+# else, unless UV_NO_CONFIG is true, the user one, uv\uv.toml in %APPDATA% on
+# Windows, and elsewhere $XDG_CONFIG_HOME/uv/uv.toml (an absolute
+# XDG_CONFIG_HOME only, as uv takes) or ~/.config/uv/uv.toml; else, unless
+# UV_NO_SYSTEM_CONFIG is true, the system one, uv\uv.toml in
+# %SYSTEMDRIVE%\ProgramData on Windows, and elsewhere uv/uv.toml in the first
+# of $XDG_CONFIG_DIRS (/etc/xdg) that has one, else /etc/uv/uv.toml. uv reads
+# an XDG_CONFIG_DIRS entry that is not absolute from the current directory,
+# where a clone can ship one: such entries are skipped here. uv merges the
+# user and the system file, and --config-file reads one: with both, the user
+# one, and the system one's settings are left out. Not one of the overrides
+# that toggle-uv removes: vv and vva ask it with them off as well. Parity with
+# posix python.sh.
+function global:_DenUvConfig {
+  if ($env:UV_CONFIG_FILE) { return $env:UV_CONFIG_FILE }
+  # The values uv takes for true, in any case.
+  $truthy = '1', 'y', 'yes', 't', 'true', 'on'
+  if ($env:UV_NO_CONFIG -and $truthy -ccontains $env:UV_NO_CONFIG.ToLowerInvariant()) { return $null }
+  if (_OnWindows) {
+    # Without APPDATA, uv asks Windows for the roaming application data folder.
+    $base = if ($env:APPDATA) { $env:APPDATA } else { [Environment]::GetFolderPath('ApplicationData') }
+  }
+  elseif ($env:XDG_CONFIG_HOME -and $env:XDG_CONFIG_HOME.StartsWith('/', [System.StringComparison]::Ordinal)) {
+    $base = $env:XDG_CONFIG_HOME
+  }
+  else {
+    $userHome = if ($env:HOME) { $env:HOME } else { [Environment]::GetFolderPath('UserProfile') }
+    $base = [System.IO.Path]::Combine($userHome, '.config')
+  }
+  if ($base) {
+    $path = [System.IO.Path]::Combine($base, 'uv', 'uv.toml')
+    if ([System.IO.File]::Exists($path)) { return $path }
+  }
+  if ($env:UV_NO_SYSTEM_CONFIG -and $truthy -ccontains $env:UV_NO_SYSTEM_CONFIG.ToLowerInvariant()) { return $null }
+  if (_OnWindows) {
+    $system = @(if ($env:SYSTEMDRIVE) { [System.IO.Path]::Combine("$env:SYSTEMDRIVE\", 'ProgramData', 'uv', 'uv.toml') })
+  }
+  else {
+    $dirs = if ($env:XDG_CONFIG_DIRS) { $env:XDG_CONFIG_DIRS } else { '/etc/xdg' }
+    $system = @($dirs.Split(':') | Where-Object { $_.StartsWith('/', [System.StringComparison]::Ordinal) } |
+        ForEach-Object { [System.IO.Path]::Combine($_, 'uv', 'uv.toml') }) + '/etc/uv/uv.toml'
+  }
+  foreach ($path in $system) {
+    if ([System.IO.File]::Exists($path)) { return $path }
+  }
+  return $null
+}
+
 # _DenPyExe - the python to run in uv run's place when no venv's own runs: the
 # system Python uv finds, else one uv installed (uv python install); $null when
 # there is none. --system skips the .venv here, and --no-config the
@@ -252,7 +322,7 @@ function py {
 # them, or its next call would take the OFF branch again and change nothing.
 # toggle-uv's ON sets it to 1 before it reads this file. Parity with python.sh,
 # down to the helpers python, python3 and py call: the same names as toggle-uv,
-# which keeps _DenPyMarker for vv and vva.
+# which keeps _DenPyMarker and _DenUvConfig for vv and vva.
 if ($env:_DEN_UV_OVERRIDE -eq '0') {
   foreach ($_uvOverride in 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun') {
     Remove-Item "Function:\$_uvOverride" -ErrorAction SilentlyContinue
@@ -407,19 +477,28 @@ function vd {
 }
 
 # _DenUvVenvOptions <name> - the options vv and vva put before venv: none, but
-# --no-config, after a warning, where _DenPyMarker finds a file, as python runs
-# no uv run there: uv venv runs the program a .python-version names to ask its
-# version, and a uv.toml's or pyproject.toml's settings can have it run a
-# python the clone ships, or install one from the clone's own files and run
-# it, --python 3.13 given or not. --no-config skips those files, and with them
-# the user's own uv.toml and a .python-version that only pins a version: the
-# warning says to pick a python with --python, or to type uv venv. Parity with
-# posix python.sh.
+# where _DenPyMarker finds a file, as python runs no uv run there,
+# --no-config, after a warning: uv venv runs the program a .python-version
+# names to ask its version, and a uv.toml's or pyproject.toml's settings can
+# have it run a python the clone ships, or install one from the clone's own
+# files and run it, --python 3.13 given or not. --no-config skips those files,
+# and with them a .python-version that only pins a version, yours in uv's
+# config directory too: the warning says to pick a python with --python, or
+# to type uv venv. With a uv.toml of your own (_DenUvConfig), --config-file
+# reads it, as --no-config alone would not, and still no .python-version.
+# Parity with posix python.sh.
 function _DenUvVenvOptions([string]$Name) {
   $marker = _DenPyMarker
   if (-not $marker) { return }
-  Write-Warning "${Name}: uv --no-config venv, as $marker is here or above (no .python-version, uv.toml or pyproject.toml settings, a clone's or your own; pick a python with --python, or type uv venv to use them)"
-  '--no-config'
+  $cfg = _DenUvConfig
+  if ($cfg) {
+    Write-Warning "${Name}: uv --no-config --config-file $cfg venv, as $marker is here or above (reads your uv settings, not a .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)"
+    '--no-config', '--config-file', $cfg
+  }
+  else {
+    Write-Warning "${Name}: uv --no-config venv, as $marker is here or above (reads no .python-version, uv.toml or pyproject.toml here or above, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)"
+    '--no-config'
+  }
 }
 
 # vv → uv venv (create only)
@@ -455,8 +534,9 @@ function toggle-uv {
   # loaded before. That holds also in a session whose toggle-uv came from an
   # older python.ps1, whose list names no helper. A new helper goes here and in
   # the list above, and is defined global: too. _DenPyMarker, which python
-  # calls, is not on the list: vv and vva ask it with the overrides off as well,
-  # and ON defines it global: when it reads the file.
+  # calls, and _DenUvConfig, which pip and pip3 call, are not on the list: vv
+  # and vva ask them with the overrides off as well, and ON defines them
+  # global: when it reads the file.
   $overrides = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun'
   if ($env:_DEN_UV_OVERRIDE -ne '0') {
     foreach ($name in $overrides) { Remove-Item "Function:\$name" -ErrorAction SilentlyContinue }
