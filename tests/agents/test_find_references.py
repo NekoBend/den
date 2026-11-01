@@ -1144,6 +1144,59 @@ def test_an_annotation_over_several_lines_is_one_definition(
     assert "other.py" not in proc.stdout, proc.stdout
 
 
+def test_a_backslash_after_the_name_keeps_an_assignment_a_definition(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A backslash that joins the name's line to the next (`LIMITS \` then
+    # `: dict[str, int] = {}`) put itself between the name and its `:` or
+    # `=`, which the assignment pattern did not allow: --def found nothing,
+    # --uses listed the first line as a use and --in left the name out. A
+    # comparison joined the same way is still no definition.
+    lib = write(
+        tmp_path,
+        "lib.py",
+        "LIMITS \\\n: dict[str, int] = {}\nV \\\n= 7\nSAME \\\n== 3\n",
+    )
+    (tmp_path / "win.py").write_bytes(b"WIN \\\r\n= 8\r\n")
+    write(
+        tmp_path, "app.py", "from lib import LIMITS, V\nprint(LIMITS, V, SAME, WIN)\n"
+    )
+    expected_defs = {
+        "LIMITS": ["lib.py:1:def:LIMITS \\"],
+        "V": ["lib.py:3:def:V \\"],
+        "WIN": ["win.py:1:def:WIN \\"],
+        "SAME": [],
+    }
+    for env in backends:
+        for symbol, expected in expected_defs.items():
+            proc = run("--def", symbol, "--root", str(tmp_path), env=env)
+            assert proc.returncode == 0, proc.stderr
+            assert rows(proc, tmp_path) == expected, symbol
+        proc = run("--uses", "LIMITS", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "app.py:1:use:from lib import LIMITS, V",
+            "app.py:2:use:print(LIMITS, V, SAME, WIN)",
+        ]
+        proc = run("--uses", "SAME", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "app.py:2:use:print(LIMITS, V, SAME, WIN)",
+            "lib.py:5:use:SAME \\",
+        ]
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:1:def:LIMITS \\",
+        "app.py:1:use:LIMITS:from lib import LIMITS, V",
+        "app.py:2:use:LIMITS:print(LIMITS, V, SAME, WIN)",
+        "lib.py:3:def:V \\",
+        "app.py:1:use:V:from lib import LIMITS, V",
+        "app.py:2:use:V:print(LIMITS, V, SAME, WIN)",
+    ]
+
+
 def test_python_definitions_survive_a_syntax_error() -> None:
     # Where the tokenizer gives up, the rest of the file is read by
     # indentation: column 0 is module level, an indented def is a method.

@@ -71,8 +71,12 @@ _GO_METHOD = r"^func\s*\(\s*(?:\w+\s+)?\*?\s*\w+\s*(?:\[[^\]]*\]\s*)?\)\s*{name}
 # compares. The annotation is taken to end at its first `=`, so a bare one
 # holding an `=` of its own (`X: Annotated[int, Field(gt=0)]`) still counts.
 # The keywords a colon can follow at the start of a statement are no names:
-# `else: x = 1` defines no `else`.
-_PY_ASSIGNMENT = r"^(?!(?:else|try|finally|except|lambda)\b){name}\s*(?::[^=]+)?=(?!=)"
+# `else: x = 1` defines no `else`. A backslash may join the name's line to
+# the next one (`X \` then `: int = 3`, or `X \` then `= 3`).
+_PY_ASSIGNMENT = (
+    r"^(?!(?:else|try|finally|except|lambda)\b){name}(?:\s|\\\r?\n)*"
+    r"(?::[^=]+)?=(?!=)"
+)
 
 # What may stand before a PowerShell variable's `$`: type constraints and
 # attributes such as `[int]`, `[string[]]` or `[ValidateRange(1, 9)]`, with
@@ -452,9 +456,11 @@ def _python_definitions(text: str, *, member: bool) -> list[tuple[int, str, str]
     return _scan(picked)
 
 
+# A Python line that can start an assignment whose `=` is on a later line:
+# the name, then the colon of an annotation or a backslash that ends the line.
 @functools.cache
-def _annotation_start(symbol: str) -> re.Pattern[str]:
-    return re.compile(rf"^{re.escape(symbol)}\s*:")
+def _assignment_start(symbol: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(symbol)}\s*(?::|\\\r?$)")
 
 
 @functools.lru_cache(maxsize=8)
@@ -468,8 +474,9 @@ def is_definition_hit(file: str, lineno: int, line: str, symbol: str) -> bool:
     """Whether line `lineno` of `file`, which reads `line`, may define `symbol`.
 
     is_definition_line decides from the line alone, except where a Python
-    line starts an annotation without its `=`: an annotated assignment can
-    run onto later lines (`LIMITS: dict[` ... `] = {}`), so the statement
+    line starts an annotation without its `=` or ends in a backslash after
+    the name: an assignment can run onto later lines (`LIMITS: dict[` ...
+    `] = {}`, or `LIMITS` and a backslash, then `= {}`), so the statement
     that starts there is read from the file and matched whole, as
     _python_definitions matches it. Such a line that starts no statement
     (a continuation line, a line inside a string) defines nothing.
@@ -477,7 +484,7 @@ def is_definition_hit(file: str, lineno: int, line: str, symbol: str) -> bool:
     ext = Path(file).suffix
     if is_definition_line(line, ext, symbol):
         return True
-    if ext != ".py" or not _annotation_start(symbol).match(line):
+    if ext != ".py" or not _assignment_start(symbol).match(line):
         return False
     lines, statements = _file_statements(file)
     entry = statements.get(lineno)

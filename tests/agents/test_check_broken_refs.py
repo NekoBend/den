@@ -970,6 +970,40 @@ def test_a_removed_annotation_over_several_lines_is_reported(tmp_path: Path) -> 
     ]
 
 
+def test_a_removed_assignment_with_a_backslash_after_its_name_is_reported(
+    tmp_path: Path,
+) -> None:
+    # A backslash between the name and its `:` or `=` (`LIMITS \` then
+    # `: dict[str, int] = {}`) hid the assignment, so deleting it reported
+    # only the CONTROL next to it, whose line break sits inside brackets.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "LIMITS \\\n"
+        ": dict[str, int] = {}\n"
+        "V \\\n"
+        "= 7\n"
+        "CONTROL: dict[\n"
+        "    str, int\n"
+        "] = {}\n",
+    )
+    imports = "from lib import CONTROL, LIMITS, V"
+    write(tmp_path, "caller.py", f"{imports}\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# moved\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        f"caller.py:1:broken_ref:CONTROL:{imports}",
+        f"caller.py:1:broken_ref:LIMITS:{imports}",
+        f"caller.py:1:broken_ref:V:{imports}",
+    ]
+
+
 def test_a_keyword_before_a_colon_is_not_a_removed_name(tmp_path: Path) -> None:
     # `else: LEVEL = 2` has the shape of an annotated assignment (`name:
     # annotation = value`). Taken for one, removing such lines made else, try,
