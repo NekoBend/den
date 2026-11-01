@@ -1924,6 +1924,19 @@ def test_install_and_uninstall_keep_the_config_mode(
     assert json.loads(cfg.read_text()) == {"keep": 1}
 
 
+@_JSON_CONFIGS
+def test_install_writes_the_config_with_the_platforms_line_ends(
+    tmp_path, monkeypatch, tool, rel
+):
+    # The bytes now go to a new copy; write_text wrote os.linesep (CRLF on
+    # Windows), and the copy keeps that.
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", tool]) == 0
+    lines = (tmp_path / rel).read_bytes().split(os.linesep.encode())
+    assert len(lines) > 2
+    assert not [ln for ln in lines if b"\n" in ln or b"\r" in ln]
+
+
 def test_install_refuses_a_symlinked_backup_outside_the_workspace(
     tmp_path, monkeypatch, symlink
 ):
