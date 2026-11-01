@@ -538,6 +538,50 @@ for sh in bash zsh; do
     assert_eq "$sh/ptar kept the previous archive it could not put back" "PRECIOUS" "$(cat "$WORK/back"/.ptar.*/previous 2>/dev/null)"
     rm -rf "$WORK/back"
 
+    echo "[$sh] ptar: a directory made at the output while tar runs takes in neither archive"
+    # ptar refuses a directory at <out> before it starts, but another program
+    # can make one there while tar runs, and the old archive is out of the way
+    # then. mv moved the new archive INTO that directory, ptar reported
+    # success, and the old archive went with the staging directory. A pigz
+    # stub that makes an empty directory at <out> stands in for that program.
+    # The same runs again with a BSD-like mv (no --version, no -T): once with
+    # the directory there before the rename, once with it made by mv's own
+    # call, after the check (the race the check cannot close).
+    rm -rf "$WORK/race"
+    mkdir -p "$WORK/race/bin" "$WORK/race/bsd" "$WORK/race/src"
+    echo x > "$WORK/race/src/x"
+    printf '#!/bin/sh\ngzip -c\nmkdir keep.tgz\n' > "$WORK/race/bin/pigz"
+    chmod +x "$WORK/race/bin/pigz"
+    printf '#!/bin/sh\ncase "$1" in --version|-*T*) echo "mv: illegal option" >&2; exit 64 ;; esac\nif [ -n "${MKDIR_AT-}" ] && [ "$4" = "$MKDIR_AT" ] && [ ! -e "$4" ]; then mkdir "$4"; fi\nexec %s "$@"\n' "$(command -v mv)" > "$WORK/race/bsd/mv"
+    chmod +x "$WORK/race/bsd/mv"
+    for _mv in gnu bsd bsd-late; do
+        case $_mv in
+            gnu) _path="$WORK/race/bin:$PATH" _env= ;;
+            bsd) _path="$WORK/race/bin:$WORK/race/bsd:$PATH" _env= ;;
+            *) _path="$WORK/race/bsd:$PATH" _env="MKDIR_AT=keep.tgz" ;;
+        esac
+        rm -rf "$WORK/race/keep.tgz" "$WORK/race"/.ptar.*
+        echo PRECIOUS > "$WORK/race/keep.tgz"
+        $runner "$PARALLEL_SH" "PATH='$_path' && export $_env PATH && cd '$WORK/race' && ptar keep.tgz src" >/dev/null 2>"$WORK/race.err"
+        assert_failure "$sh/ptar ($_mv mv) with a directory made at the output fails" "$?"
+        assert_contains "$sh/ptar ($_mv mv) with a directory made at the output says where the previous archive is" "ptar: previous 'keep.tgz' kept at ./.ptar." "$(cat "$WORK/race.err")"
+        assert_eq "$sh/ptar ($_mv mv) with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/race"/.ptar.*/previous 2>/dev/null)"
+        if [ "$_mv" = bsd-late ]; then
+            # mv itself made the directory, so the new archive is in it, and
+            # ptar says so.
+            assert_contains "$sh/ptar ($_mv mv) says where the new archive went" "ptar: output 'keep.tgz' is a directory; 'archive' went into it" "$(cat "$WORK/race.err")"
+        else
+            assert_eq "$sh/ptar ($_mv mv) put nothing in the directory made at the output" "" "$(ls -A "$WORK/race/keep.tgz")"
+        fi
+    done
+    # With no previous archive, the run that used to report success fails.
+    rm -rf "$WORK/race/keep.tgz" "$WORK/race"/.ptar.*
+    $runner "$PARALLEL_SH" "PATH='$WORK/race/bin:$PATH' && cd '$WORK/race' && ptar keep.tgz src" >/dev/null 2>&1
+    assert_failure "$sh/ptar with a directory made at a new output fails" "$?"
+    assert_eq "$sh/ptar with a directory made at a new output put nothing in it" "" "$(ls -A "$WORK/race/keep.tgz")"
+    assert_eq "$sh/ptar with a directory made at a new output leaves no staging directory" "" "$(ls -A "$WORK/race" | grep '^\.ptar\.' | tr -d '\n')"
+    rm -rf "$WORK/race" "$WORK/race.err"
+
     # The steps run in a subshell, which inherits a caller's `set -e`. A
     # failing tar or mv in plain sight ended it before the restore: the
     # previous archive stayed in the staging directory, and nothing said so.

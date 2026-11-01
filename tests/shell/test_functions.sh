@@ -630,6 +630,47 @@ STUB
     assert_eq "$sh/archive .zip kept the previous archive it could not put back" "PRECIOUS" "$(cat "$WORK/back"/.archive.*/previous 2>/dev/null)"
     rm -rf "$WORK/back"
 
+    # archive refuses a directory at <out> before it starts, but another
+    # program can make one there while the archiver runs. mv then moved a file
+    # INTO it: a failed zip's restore put the previous archive there and said
+    # nothing, and a single-file publish put the new archive there and
+    # reported success. Stubs make an empty directory at <out>. The same runs
+    # again with a BSD-like mv (no --version, no -T), and once with the
+    # directory made by mv's own call, after the check.
+    echo "[$sh] archive: a directory made at the output while the archiver runs takes in neither archive"
+    rm -rf "$WORK/race"
+    mkdir -p "$WORK/race/bin" "$WORK/race/bsd" "$WORK/race/src"
+    echo x > "$WORK/race/src/x"
+    printf '#!/bin/sh\nmkdir keep.zip\nexit 3\n' > "$WORK/race/bin/zip"
+    printf '#!/bin/sh\n%s "$@"\nmkdir keep.gz\n' "$(command -v gzip)" > "$WORK/race/bin/gzip"
+    printf '#!/bin/sh\ncase "$1" in --version|-*T*) echo "mv: illegal option" >&2; exit 64 ;; esac\nif [ -n "${MKDIR_AT-}" ] && [ "$4" = "$MKDIR_AT" ] && [ ! -e "$4" ]; then mkdir "$4"; fi\nexec %s "$@"\n' "$(command -v mv)" > "$WORK/race/bsd/mv"
+    chmod +x "$WORK/race/bin/zip" "$WORK/race/bin/gzip" "$WORK/race/bsd/mv"
+    for _mv in gnu bsd; do
+        _path="$WORK/race/bin:$PATH"
+        [ "$_mv" = bsd ] && _path="$WORK/race/bin:$WORK/race/bsd:$PATH"
+        rm -rf "$WORK/race/keep.zip" "$WORK/race/keep.gz" "$WORK/race"/.archive.*
+        echo PRECIOUS > "$WORK/race/keep.zip"
+        actual=$($run "$FUNCTIONS_SH" "PATH='$_path' && cd '$WORK/race' && archive keep.zip src" 2>&1)
+        assert_eq "$sh/archive .zip ($_mv mv) with a directory made at the output exits with zip's code" "3" "$?"
+        assert_contains "$sh/archive .zip ($_mv mv) with a directory made at the output says where the previous archive is" "archive: previous 'keep.zip' kept at ./.archive." "$actual"
+        assert_eq "$sh/archive .zip ($_mv mv) with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/race"/.archive.*/previous 2>/dev/null)"
+        assert_eq "$sh/archive .zip ($_mv mv) put nothing in the directory made at the output" "" "$(ls -A "$WORK/race/keep.zip")"
+        rm -rf "$WORK/race"/.archive.*
+        $run "$FUNCTIONS_SH" "PATH='$_path' && cd '$WORK/race' && archive keep.gz src/x" >/dev/null 2>&1
+        assert_failure "$sh/archive .gz ($_mv mv) with a directory made at the output fails" "$?"
+        assert_eq "$sh/archive .gz ($_mv mv) put nothing in the directory made at the output" "" "$(ls -A "$WORK/race/keep.gz")"
+        assert_eq "$sh/archive .gz ($_mv mv) with a directory made at the output leaves no staging directory" "" "$(ls -A "$WORK/race" | grep '^\.archive\.' | tr -d '\n')"
+    done
+    # mv's own call makes the directory, after the check: the step fails and
+    # says where the file went (zip fails here on a source that is missing).
+    rm -rf "$WORK/race/keep.zip" "$WORK/race/keep.gz" "$WORK/race"/.archive.*
+    echo PRECIOUS > "$WORK/race/keep.zip"
+    actual=$($run "$FUNCTIONS_SH" "PATH='$WORK/race/bsd:$PATH' && export MKDIR_AT=keep.zip && cd '$WORK/race' && archive keep.zip missing" 2>&1)
+    assert_failure "$sh/archive .zip (BSD mv, late directory) fails" "$?"
+    assert_contains "$sh/archive .zip (BSD mv, late directory) says where the previous archive went" "archive: output 'keep.zip' is a directory; 'previous' went into it" "$actual"
+    assert_eq "$sh/archive .zip (BSD mv, late directory) still has the previous archive" "PRECIOUS" "$(cat "$WORK/race/keep.zip/previous" 2>/dev/null)"
+    rm -rf "$WORK/race"
+
     # The steps run in a subshell, which inherits a caller's `set -e`. A
     # failing archiver, rm or mv in plain sight ended it before the restore:
     # the previous archive stayed in the staging directory, and nothing said

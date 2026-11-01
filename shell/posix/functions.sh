@@ -590,6 +590,30 @@ _ar_stage() {
     fi
 }
 
+# _ar_rename <from> <to> → rename <from> to <to> for archive(), and fail
+# rather than move it INTO a directory at <to>. archive refuses a directory
+# at the output before it starts, but another program can make one there while
+# the archiver runs, and a plain `mv` then put the archive inside it: the new
+# one, with success reported, or the previous one, with nothing said. GNU mv's
+# -T takes <to> as the name to replace, never as a folder. BSD mv has no -T:
+# there a directory is refused before the move, and one made during it fails
+# the step and says where <from> went.
+_ar_rename() {
+    if command mv --version >/dev/null 2>&1; then
+        command mv -fT -- "$1" "$2"
+        return
+    fi
+    if [ -d "$2" ]; then
+        echo "archive: output '$2' is a directory" >&2
+        return 1
+    fi
+    command mv -f -- "$1" "$2" || return
+    if [ -d "$2" ]; then
+        echo "archive: output '$2' is a directory; '${1##*/}' went into it" >&2
+        return 1
+    fi
+}
+
 # archive → create archive (format auto-detected from output filename)
 # NOTE: './' normalisation on $out is required, and so is the end-of-options
 # marker in front of the sources: every argument after $out is a source, never
@@ -690,10 +714,11 @@ archive() {
             # outputs do -- 'umask -S' gives the directory form, so strip the
             # execute bits it carries.
             chmod "$(umask -S)" "$_ar_tmp" 2>/dev/null && chmod a-x "$_ar_tmp" 2>/dev/null
-            # Publishing can fail too (a read-only directory, a full disk).
-            # Report that, and take the staging directory with it on every exit
-            # path rather than leaving one behind for the caller to find.
-            mv -f -- "$_ar_tmp" "$out"
+            # Publishing can fail too (a read-only directory, a full disk, a
+            # directory made at $out meanwhile: see _ar_rename). Report that,
+            # and take the staging directory with it on every exit path rather
+            # than leaving one behind for the caller to find.
+            _ar_rename "$_ar_tmp" "$out"
             _ar_rc=$?
             rm -rf -- "$_ar_tmpd"
             return "$_ar_rc"
@@ -810,10 +835,11 @@ archive() {
                 # Tested by what is in the staging directory rather than by a
                 # flag: a move-aside cut short may still have moved the file.
                 if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
-                    mv -f -- "$_ar_prev" "$out" || true
+                    _ar_rename "$_ar_prev" "$out" || true
                 fi
                 # The restore can fail as well: the directory turned read-only
-                # while the archiver ran, or a second Ctrl-C stopped mv. The
+                # while the archiver ran, another program made a directory at
+                # $out (see _ar_rename), or a second Ctrl-C stopped mv. The
                 # staging directory then holds the only copy of the old
                 # archive, and removing it with the rest lost that archive, so
                 # it is kept and named instead. Asked of the directory once

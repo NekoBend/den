@@ -244,6 +244,28 @@ prm() {
     printf '%s\0' "${items[@]}" | _parallel_exec "$jobs" "${#items[@]}" "$gnu" rm "$flags" --
 }
 
+# _ptar_rename <from> <to> → rename <from> to <to> for ptar, and fail rather
+# than move it INTO a directory at <to>, as _ar_rename in functions.sh does
+# for archive() (its comment says how). ptar refuses a directory at <out>
+# before it starts, but one made there while tar ran got the new archive
+# inside it, ptar reported success, and the previous archive went with the
+# staging directory.
+_ptar_rename() {
+    if command mv --version >/dev/null 2>&1; then
+        command mv -fT -- "$1" "$2"
+        return
+    fi
+    if [ -d "$2" ]; then
+        echo "ptar: output '$2' is a directory" >&2
+        return 1
+    fi
+    command mv -f -- "$1" "$2" || return
+    if [ -d "$2" ]; then
+        echo "ptar: output '$2' is a directory; '${1##*/}' went into it" >&2
+        return 1
+    fi
+}
+
 # _ptar_pipe <out> <compressor> <compressor-option> <src...>
 # `tar | compressor > out` for ptar. Without pipefail a pipeline's status is
 # the compressor's, so a source tar could not read (a typo, a permission)
@@ -271,7 +293,9 @@ prm() {
 # steps run in a subshell that only notes INT, TERM and HUP, restores, cleans
 # up and then raises the signal again, the way archive()'s zip/7z branch does
 # (its comments say why); a restore that fails keeps the staging directory and
-# names it instead of removing the only copy of the old archive.
+# names it instead of removing the only copy of the old archive. The new
+# archive and the old one go back to <out> through _ptar_rename, never into a
+# directory found there.
 _ptar_pipe() {
     local out="$1" comp="$2" copt="$3" dir tmpd prev rc sig s
     local -a keep=()
@@ -318,7 +342,7 @@ _ptar_pipe() {
         if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$prev"; then
             if [ -z "$sig" ]; then
                 if tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive"; then
-                    if mv -f -- "$tmpd/archive" "$out"; then
+                    if _ptar_rename "$tmpd/archive" "$out"; then
                         rc=0
                     else
                         rc=$?
@@ -331,7 +355,7 @@ _ptar_pipe() {
         # Asked of the staging directory, not of a flag or of mv's status, as
         # in archive(): a move cut short by a signal may still have happened.
         if [ "$rc" -ne 0 ] && { [ -e "$prev" ] || [ -L "$prev" ]; }; then
-            mv -f -- "$prev" "$out" || true
+            _ptar_rename "$prev" "$out" || true
         fi
         if [ "$rc" -ne 0 ] && { [ -e "$prev" ] || [ -L "$prev" ]; }; then
             echo "ptar: previous '$out' kept at $prev" >&2
@@ -358,8 +382,9 @@ ptar() {
     local out="$1"
     shift
 
-    # A directory at the output path is not an output: the staged rename in
-    # _ptar_pipe would move the archive INTO it and report success.
+    # A directory at the output path is not an output. Refused here, with a
+    # message of ptar's own, before anything runs; _ptar_rename also refuses
+    # one that appears while tar runs.
     if [ -d "$out" ]; then
         echo "ptar: output '$out' is a directory" >&2
         return 1
