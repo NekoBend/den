@@ -860,6 +860,31 @@ def test_install_force_keeps_a_file_whose_owner_or_group_a_backup_cannot_take(
     assert "copying it would change its owner or group (" in refusals[0]
 
 
+@pytest.mark.parametrize("where", ["target", "tool"])
+def test_install_force_does_not_reuse_a_backup_that_took_its_directorys_acl(
+    tmp_path, monkeypatch, let_65534_in, where
+):
+    """A copy an older den made beside a default ACL took that ACL, so the
+    user it names could read it; it held the file's bytes, so --force reused
+    it. It is now passed over, and the copy goes to .den.bak.1."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    skill.chmod(0o640)
+    backup = skill.with_name("SKILL.md.den.bak")
+    backup.write_text("MINE\n")
+    let_65534_in(backup)
+    assert install_main([*args, "--force"]) == 0
+    second = skill.with_name("SKILL.md.den.bak.1")
+    assert second.read_text() == "MINE\n"
+    assert "system.posix_acl_access" not in os.listxattr(second)
+    assert second.stat().st_mode & 0o777 == 0o640
+
+
 def test_install_force_refuses_to_back_up_through_a_symlink(
     tmp_path, monkeypatch, symlink, capsys
 ):

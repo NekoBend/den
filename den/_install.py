@@ -359,8 +359,11 @@ class _Writer:
         --force saved) is never replaced, and one holding these very bytes is
         reused, unless it is a hard link to `dest`: that is `dest` under
         another name, which the write that follows changes too, so it holds
-        no copy at all. A copy that is reused loses whatever permission bits
-        it allows beyond the file's.
+        no copy at all. Nor is it reused unless its owner, group and extended
+        attributes are the file's (an older den's copy took its directory's
+        group and default ACL): a copy someone else may read is passed over
+        like one holding something else. A copy that is reused loses whatever
+        permission bits it allows beyond the file's.
 
         A new copy gets what decides who may read the file
         (_shell._match_access): its owner and group and, on Linux, its
@@ -374,7 +377,7 @@ class _Writer:
         file) at a backup name refuses the backup instead of writing through
         it."""
         # Imported here: _shell imports this module.
-        from ._shell import _match_access
+        from ._shell import _match_access, _xattrs
 
         # Under a confined root, `guard` holds the resolved path commit()
         # already checked for symlinked components; the copy is its sibling.
@@ -383,6 +386,7 @@ class _Writer:
             data = dest.read_bytes()
             st = dest.stat()
             mode = stat.S_IMODE(st.st_mode) & 0o666
+            want = _xattrs(dest)
             n = 0
             while True:
                 bak = real.with_name(real.name + ".den.bak" + (f".{n}" if n else ""))
@@ -396,7 +400,12 @@ class _Writer:
                 if not bak.exists():
                     break
                 held = bak.stat()
-                if not os.path.samestat(held, st) and bak.read_bytes() == data:
+                if (
+                    not os.path.samestat(held, st)
+                    and (held.st_uid, held.st_gid) == (st.st_uid, st.st_gid)
+                    and _xattrs(bak) == want
+                    and bak.read_bytes() == data
+                ):
                     # It allows no more than the file: an older den made its
                     # copies with the umask's mode, world-readable.
                     if stat.S_IMODE(held.st_mode) & ~mode:

@@ -522,7 +522,8 @@ def _backup_if_unmergeable(config: Path, events: Iterable[str]) -> bool:
 
     The copy is the one `--force` makes (_Writer._backup): <config>.den.bak, or
     the first free .den.bak.N when an earlier backup holds something else, and
-    one that holds these very bytes is reused. An earlier backup proves nothing
+    one that holds these very bytes, with the config's owner, group and
+    extended attributes, is reused. An earlier backup proves nothing
     about the file there now: den never writes an unmergeable file itself, so a
     backup it made before holds an earlier edit, and taking it for this one let
     install overwrite the new edit with no copy anywhere. The copy takes the

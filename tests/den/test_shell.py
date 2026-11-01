@@ -1242,6 +1242,68 @@ def test_disable_coreutils_readline_leaves_no_cut_backup_when_its_write_fails(
     assert f"den install shell: not replacing {prof}: cannot back it up: " in err
 
 
+# A copy that holds the profile's bytes was reused as its backup whatever
+# decided who could read it: one another user owns, one in a group the profile
+# is not in, or one an older den made beside a default ACL, which took that ACL
+# and let the user it names read it. Such a copy is now passed over like one
+# holding something else, and the backup goes to the first free .den.bak.N.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX owners")
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_disable_coreutils_readline_does_not_reuse_a_backup_with_another_owner(
+    tmp_path, foreign_stat, whose
+):
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    prof.chmod(0o600)
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text(original)
+    bak.chmod(0o600)
+    foreign_stat(bak.name, whose)  # stat says someone else's
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert (tmp_path / "p.ps1.den.bak.1").read_text() == original
+    assert bak.read_text() == original, "left as it is"
+
+
+@pytest.mark.parametrize("extra", ["acl", "attribute"])
+def test_disable_coreutils_readline_does_not_reuse_a_backup_with_other_xattrs(
+    tmp_path, let_65534_in, set_xattr, extra
+):
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    prof.chmod(0o640)
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text(original)
+    if extra == "acl":
+        let_65534_in(bak)  # as a copy made beside a default ACL
+    else:
+        set_xattr(bak, "user.note", b"not the profile's")
+    bak.chmod(0o640)
+    assert _shell._disable_coreutils_readline(prof) is True
+    new = tmp_path / "p.ps1.den.bak.1"
+    assert new.read_text() == original
+    assert os.listxattr(new) == []
+    assert stat.S_IMODE(new.stat().st_mode) == 0o640
+
+
+def test_disable_coreutils_readline_reuses_a_backup_with_the_profiles_acl(
+    tmp_path, let_65534_in
+):
+    # The same ACL on both is no reason to make another copy.
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    let_65534_in(prof)
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text(original)
+    let_65534_in(bak)
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert not (tmp_path / "p.ps1.den.bak.1").exists(), "it was reused"
+
+
 def test_disable_coreutils_readline_preserves_utf16(tmp_path):
     prof = tmp_path / "p.ps1"
     prof.write_bytes(

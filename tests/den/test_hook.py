@@ -1985,6 +1985,26 @@ def test_install_leaves_a_config_whose_owner_or_group_a_backup_cannot_take(
     assert "copying it would change its owner or group (" in refusals[0]
 
 
+def test_install_does_not_reuse_a_backup_that_took_its_directorys_acl(
+    tmp_path, monkeypatch, let_65534_in
+):
+    # An older den's copy took its directory's default ACL, so the user it
+    # names could read it; it held the config's bytes, so it was reused.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"token": "secret", // not json\n')
+    cfg.chmod(0o640)
+    bak = cfg.with_name(cfg.name + ".den.bak")
+    bak.write_bytes(cfg.read_bytes())
+    let_65534_in(bak)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    new = cfg.with_name(cfg.name + ".den.bak.1")
+    assert "secret" in new.read_text()
+    assert "system.posix_acl_access" not in os.listxattr(new)
+    assert stat.S_IMODE(new.stat().st_mode) == 0o640
+
+
 def test_install_refuses_a_symlinked_backup_outside_the_workspace(
     tmp_path, monkeypatch, symlink
 ):
