@@ -572,12 +572,16 @@ function _DenTyped([string]$Origin, [int]$Hops = 0) {
 # session's variables, and the location, $env: and what it makes global
 # ($global:x, function global:f, -Scope Global) stay, but a variable, function
 # or alias it makes otherwise, itself or in a script it dot-sources, ends with
-# it (shell/README.md, Command snippets, tells users so).
-function _DenReplay([string]$Line, [bool]$Typed) {
-    $outer = $global:_DenReplayDepth
+# it (shell/README.md, Command snippets, tells users so). A variable of this
+# function's, or of a function that calls it, hides the session's of that name
+# from the line, and a variable the line sets lands here: so this function's
+# own are named $__x, which no session uses, as are snippet's and _SnippetExec's
+# (see snippet).
+function _DenReplay([string]$__line, [bool]$__typed) {
+    $__outer = $global:_DenReplayDepth
     $global:_DenReplayDepth = 0
-    if ($Typed) { $global:_DenReplayDepth = @(Get-PSCallStack).Count }
-    try { Invoke-Expression $Line } finally { $global:_DenReplayDepth = $outer }
+    if ($__typed) { $global:_DenReplayDepth = @(Get-PSCallStack).Count }
+    try { Invoke-Expression $__line } finally { $global:_DenReplayDepth = $__outer }
 }
 
 # ========== path operands ==========

@@ -648,6 +648,30 @@ snippet: saved 'enc'
 + Write-Output lower
 + \$OutputEncoding.WebName
 snippet pick: no such snippet 'gone' (snippet ls)" "$(tr -d '\r' < "$WORK/pick.err")"
+
+    # A replayed line looks a variable up in the scopes of snippet,
+    # _SnippetExec and _DenReplay before the session's, so a variable of
+    # theirs hid the session's of that name: a picked line read the picked
+    # name as $name. Each name below was one of theirs. A line that set $outer
+    # also set the replay depth _DenReplay puts back.
+    reset_store
+    echo "[pwsh] run and pick: the line reads the session's \$name and the others, not snippet's"
+    cat > "$TESTTMP/pick_scope.ps1" <<'PS1'
+$name = 'my-name'; $c = 'my-c'; $lines = 'my-lines'; $sel = 'my-sel'; $i = 'my-i'; $rest = 'my-rest'
+$sub = 'my-sub'; $stdin = 'my-stdin'; $cmd = 'my-cmd'; $typed = 'my-typed'; $line = 'my-line'; $outer = 'my-outer'
+snippet save probe '"$name $c $lines $sel $i $rest $sub $stdin $cmd $typed $line $outer"'
+snippet run probe
+$env:FZF_PRINT = "probe`tWrite-Output 'from fzf'"
+snippet pick
+snippet save depth '$outer = 7'
+snippet run depth
+"replay depth after: $global:_DenReplayDepth"
+PS1
+    actual=$(PATH="$PICK_BIN:$PATH" run_pwsh "$SNIPPET_PS1" ". '$TESTTMP/pick_scope.ps1'" 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/snippet run and pick: the session's variables" "my-name my-c my-lines my-sel my-i my-rest my-sub my-stdin my-cmd my-typed my-line my-outer
+my-name my-c my-lines my-sel my-i my-rest my-sub my-stdin my-cmd my-typed my-line my-outer
+replay depth after: 0" "$actual"
+
     unset FZF_LOG
 
     # run and pick replay the line inside a function (_DenReplay). Unlike
