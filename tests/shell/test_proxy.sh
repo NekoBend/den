@@ -28,6 +28,45 @@ SECRET_URL='http://alice:S3cr:et@x@proxy.corp:8080'
 SHOWN_URL='http://alice:***@proxy.corp:8080'
 TAB=$(printf '\t')
 
+# A write into the temporary store that fails, as on a full disk or past a
+# quota. ulimit -f caps the size of the files the shell writes (in 1024-byte
+# blocks in bash, 512-byte ones in zsh), and with SIGXFSZ ignored a write past
+# the cap fails (EFBIG) instead of ending the shell. A cap of 0 fails every
+# write; under a cap of 1, a record holding PAD (under 512 bytes) fits and one
+# holding LONG (over 600 bytes) after it is cut short, in either shell.
+PAD=$(printf '%0480d' 0)
+LONG=$(printf '%0600d' 0)
+NL='
+'
+STORE_BEFORE="$WORK/store.before"
+
+# store_sum <file> - its size and its names (field 1), and ", changed" when its
+# bytes differ from STORE_BEFORE's.
+store_sum() {
+    printf '%s bytes, names: %s' "$(wc -c < "$1")" "$(cut -f1 "$1" | paste -sd' ' -)"
+    cmp -s "$1" "$STORE_BEFORE" || printf ', changed'
+}
+
+# capped_case <shell> <label> <cap> <store text> <command> - put the store text
+# in place, run the proxy command under the cap in a subshell, and check that it
+# failed with "cannot write ...; it is left as it was", left the store as it
+# was, and took its temporary file with it. The shell's own "write error" line
+# is left out of what it printed.
+capped_case() {
+    local sh=$1 label=$2 cap=$3 store=$4 cmd=$5 who actual
+    # The message starts with the command's first two words: proxy add.
+    who=$(printf '%s\n' "$cmd" | cut -d' ' -f1,2)
+    mkdir -p "$PROXY_DIR"
+    printf '%s' "$store" > "$PROXY_CONF" && cp "$PROXY_CONF" "$STORE_BEFORE" ||
+        abort_suite "cannot write $PROXY_CONF"
+    actual=$("run_$sh" "$PROXY_SH" "(trap '' XFSZ; ulimit -f $cap; $cmd) 2>&1; echo rc=\$?" |
+        grep -v 'write error' | tr -d '\r')
+    assert_eq "$sh/$label: message and status" "$who: cannot write $PROXY_CONF; it is left as it was
+rc=1" "$actual"
+    assert_eq "$sh/$label: store kept" "$(store_sum "$STORE_BEFORE")" "$(store_sum "$PROXY_CONF")"
+    assert_eq "$sh/$label: no temporary file left" "" "$(cd "$PROXY_DIR" && ls -A | grep -v '^proxy\.conf$')"
+}
+
 # proxy_suite <shell> — run the same checks under bash and zsh. Each subcommand
 # is chained inside ONE shell invocation because `on`/`off` only touch the
 # current shell's env (a fresh `run_*` would not see a prior `on`).
@@ -156,6 +195,38 @@ env=$SECRET_URL" "$actual"
     else
         echo "  SKIP: $sh/unreadable store (running as root)"
     fi
+
+    # rm said there was no such profile.
+    echo "[$sh] rm leaves a store it cannot read as it was, and says so"
+    printf 'a\thttp://a:1\t\n' > "$PROXY_CONF"
+    if [ "$(id -u)" -ne 0 ] && chmod 200 "$PROXY_CONF" 2>/dev/null && [ ! -r "$PROXY_CONF" ]; then
+        actual=$("$run" "$PROXY_SH" "proxy rm a 2>&1; echo rc=\$?" | tr -d '\r')
+        chmod 600 "$PROXY_CONF"
+        assert_contains "$sh/unreadable store, rm: message" "proxy rm: cannot read $PROXY_CONF; it is left as it was" "$actual"
+        assert_contains "$sh/unreadable store, rm: rc" "rc=1" "$actual"
+        assert_eq "$sh/unreadable store, rm: kept" "a${TAB}http://a:1${TAB}" "$(cat "$PROXY_CONF")"
+    else
+        echo "  SKIP: $sh/unreadable store, rm (running as root)"
+    fi
+
+    # A write into the temporary store that fails (capped_case, above): add
+    # and rm put what they had written, or an empty file, in place of the
+    # store and said they had saved or removed the profile, with status 0. An
+    # add whose last copy failed kept the store but said it could not read it.
+    echo "[$sh] add and rm leave the store as it was when a write into the new one fails"
+    capped_case "$sh" "add, the new line cut short" 1 \
+        "a${TAB}http://$PAD${TAB}${NL}last${TAB}http://old:1${TAB}${NL}" "proxy add last http://$LONG"
+    capped_case "$sh" "add, a copied line cut short" 1 \
+        "a${TAB}http://$PAD${TAB}${NL}b${TAB}http://$LONG${TAB}${NL}c${TAB}http://c:1${TAB}${NL}" "proxy add c http://new:1"
+    capped_case "$sh" "add, every write fails" 0 \
+        "a${TAB}http://a:1${TAB}${NL}last${TAB}http://old:1${TAB}${NL}" "proxy add last http://new:1"
+    capped_case "$sh" "add, the last copy fails" 0 \
+        "a${TAB}http://a:1${TAB}${NL}b${TAB}http://b:1${TAB}${NL}" "proxy add a http://new:1"
+    capped_case "$sh" "rm, a copied line cut short" 1 \
+        "a${TAB}http://$PAD${TAB}${NL}b${TAB}http://b:1${TAB}${NL}c${TAB}http://$LONG${TAB}${NL}" "proxy rm b"
+    capped_case "$sh" "rm, every write fails" 0 \
+        "a${TAB}http://a:1${TAB}${NL}b${TAB}http://b:1${TAB}${NL}" "proxy rm a"
+    reset_conf
 
     echo "[$sh] add and rm write through a symlinked proxy.conf, as pwsh does"
     rm -rf "${DOTS:?}"

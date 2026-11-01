@@ -41,6 +41,45 @@ FAILCAT="$TESTTMP/failcat"
 mkdir -p "$FAILCAT" && printf '#!/bin/sh\nhead -c 5 "$1"\nexit 1\n' > "$FAILCAT/cat" &&
     chmod 755 "$FAILCAT/cat" || abort_suite "cannot write $FAILCAT/cat"
 
+# A write into the temporary store that fails, as on a full disk or past a
+# quota. ulimit -f caps the size of the files the shell writes (in 1024-byte
+# blocks in bash, 512-byte ones in zsh), and with SIGXFSZ ignored a write past
+# the cap fails (EFBIG) instead of ending the shell. A cap of 0 fails every
+# write; under a cap of 1, a record holding PAD (under 512 bytes) fits and one
+# holding LONG (over 600 bytes) after it is cut short, in either shell.
+PAD=$(printf '%0480d' 0)
+LONG=$(printf '%0600d' 0)
+NL='
+'
+STORE_BEFORE="$WORK/store.before"
+
+# store_sum <file> - its size and its names (field 1), and ", changed" when its
+# bytes differ from STORE_BEFORE's.
+store_sum() {
+    printf '%s bytes, names: %s' "$(wc -c < "$1")" "$(cut -f1 "$1" | paste -sd' ' -)"
+    cmp -s "$1" "$STORE_BEFORE" || printf ', changed'
+}
+
+# capped_case <shell> <label> <cap> <store text> <command> - put the store text
+# in place, run the snippet command under the cap in a subshell, and check that
+# it failed with "cannot write ...; it is left as it was", left the store as it
+# was, and took its temporary file with it. The shell's own "write error" line
+# is left out of what it printed.
+capped_case() {
+    local sh=$1 label=$2 cap=$3 store=$4 cmd=$5 who actual
+    # The message starts with the command's first two words: snippet save.
+    who=$(printf '%s\n' "$cmd" | cut -d' ' -f1,2)
+    mkdir -p "$SNIPPET_DIR"
+    printf '%s' "$store" > "$SNIPPET_FILE" && cp "$SNIPPET_FILE" "$STORE_BEFORE" ||
+        abort_suite "cannot write $SNIPPET_FILE"
+    actual=$("run_$sh" "$SNIPPET_SH" "(trap '' XFSZ; ulimit -f $cap; $cmd) 2>&1; echo rc=\$?" |
+        grep -v 'write error' | tr -d '\r')
+    assert_eq "$sh/$label: message and status" "$who: cannot write $SNIPPET_FILE; it is left as it was
+rc=1" "$actual"
+    assert_eq "$sh/$label: store kept" "$(store_sum "$STORE_BEFORE")" "$(store_sum "$SNIPPET_FILE")"
+    assert_eq "$sh/$label: no temporary file left" "" "$(cd "$SNIPPET_DIR" && ls -A | grep -v '^snippets$')"
+}
+
 # The several-words form of save: the shell takes the quotes off each word
 # before snippet sees it, and run evals the saved line, so the words that need
 # quotes must get them back. sq_fixture makes a directory holding "My File.txt"
@@ -293,6 +332,39 @@ c${TAB}echo c" "$(cat "$SNIPPET_DIR/$left" 2>&1)"
     else
         echo "  SKIP: $sh/unreadable store (running as root)"
     fi
+    reset_store
+
+    # rm said there was no such snippet.
+    echo "[$sh] rm leaves a store it cannot read as it was, and says so"
+    printf 'a\techo a\n' > "$SNIPPET_FILE"
+    if [ "$(id -u)" -ne 0 ] && chmod 200 "$SNIPPET_FILE" 2>/dev/null && [ ! -r "$SNIPPET_FILE" ]; then
+        actual=$("$run" "$SNIPPET_SH" "snippet rm a 2>&1; echo rc=\$?" | tr -d '\r')
+        chmod 600 "$SNIPPET_FILE"
+        assert_contains "$sh/unreadable store, rm: message" "snippet rm: cannot read $SNIPPET_FILE; it is left as it was" "$actual"
+        assert_contains "$sh/unreadable store, rm: rc" "rc=1" "$actual"
+        assert_eq "$sh/unreadable store, rm: kept" "a${TAB}echo a" "$(cat "$SNIPPET_FILE")"
+    else
+        echo "  SKIP: $sh/unreadable store, rm (running as root)"
+    fi
+    reset_store
+
+    # A write into the temporary store that fails (capped_case, above): save
+    # and rm put what they had written, or an empty file, in place of the
+    # store and said they had saved or removed the snippet, with status 0. A
+    # save whose last copy failed kept the store but said it could not read it.
+    echo "[$sh] save and rm leave the store as it was when a write into the new one fails"
+    capped_case "$sh" "save, the new line cut short" 1 \
+        "a${TAB}echo $PAD${NL}last${TAB}echo old${NL}" "snippet save last 'echo $LONG'"
+    capped_case "$sh" "save, a copied line cut short" 1 \
+        "a${TAB}echo $PAD${NL}b${TAB}echo $LONG${NL}c${TAB}echo c${NL}" "snippet save c 'echo new'"
+    capped_case "$sh" "save, every write fails" 0 \
+        "a${TAB}echo a${NL}b${TAB}echo b${NL}last${TAB}echo old${NL}" "snippet save last 'echo new'"
+    capped_case "$sh" "save, the last copy fails" 0 \
+        "a${TAB}echo a${NL}b${TAB}echo b${NL}" "snippet save a 'echo new'"
+    capped_case "$sh" "rm, a copied line cut short" 1 \
+        "a${TAB}echo $PAD${NL}b${TAB}echo b${NL}c${TAB}echo $LONG${NL}" "snippet rm b"
+    capped_case "$sh" "rm, every write fails" 0 \
+        "a${TAB}echo a${NL}b${TAB}echo b${NL}" "snippet rm a"
     reset_store
 
     echo "[$sh] pick without fzf falls back gracefully"
