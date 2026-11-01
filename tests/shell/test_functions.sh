@@ -623,44 +623,52 @@ STUB
     assert_eq "$sh/archive .tgz put nothing in the directory made at the output" "" "$(ls -A "$WORK/own/keep.tgz")"
     rm -rf "$WORK/own"
 
-    # Ctrl-C while the archiver ran ended the function between the move-aside
-    # and the restore: <out> was gone, and the old archive sat hidden in the
-    # staging directory. A zip stub that waits stands in for a slow zip. The
-    # run gets a process group of its own (set -m), and the whole group gets
-    # the signal, as Ctrl-C at a terminal does. A shell started with SIGINT
-    # ignored (a background job of a non-interactive shell) cannot trap it, so
-    # the run starts with SIGINT at its default (env --default-signal,
-    # coreutils 8.31+).
-    for _sig in INT TERM; do
-        echo "[$sh] archive .zip interrupted by SIG$_sig puts the previous archive back"
-        if ! env --default-signal=INT true 2>/dev/null; then
-            echo "  SKIP: env has no --default-signal"
-            continue
-        fi
-        rm -rf "$WORK/slow"
-        mkdir -p "$WORK/slow/bin" "$WORK/slow/src"
-        echo x > "$WORK/slow/src/x"
-        echo PRECIOUS > "$WORK/slow/keep.zip"
-        printf '#!/bin/sh\n: > "%s/started"\nsleep 10\n' "$WORK/slow" > "$WORK/slow/bin/zip"
-        chmod +x "$WORK/slow/bin/zip"
-        (
-            set -m
-            env --default-signal=INT "$sh" -c "source '$FUNCTIONS_SH' && PATH='$WORK/slow/bin:$PATH' && cd '$WORK/slow' && archive keep.zip src; echo after" > "$WORK/slow.out" 2>&1 &
-            _pid=$!
-            _i=0
-            while [ ! -e "$WORK/slow/started" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
-            kill -"$_sig" -- "-$_pid"
-            wait "$_pid"
-            echo "status=$?" >> "$WORK/slow.out"
-        )
-        actual=$(cat "$WORK/slow.out")
-        assert_eq "$sh/archive .zip after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/slow/keep.zip" 2>/dev/null)"
-        assert_eq "$sh/archive .zip after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/slow" | grep '^\.archive\.' | tr -d '\n')"
-        # The signal is raised again, so the caller stops as it would have.
-        assert_not_contains "$sh/archive .zip after SIG$_sig stops its caller" "after" "$actual"
-        assert_not_contains "$sh/archive .zip after SIG$_sig does not report success" "status=0" "$actual"
-    done
-    rm -rf "$WORK/slow" "$WORK/slow.out"
+    # Between the move-aside and the restore there is no <out>, so a Ctrl-C
+    # (or a TERM or HUP) while the archiver runs must not end the function
+    # there; and an archiver that finishes all the same must not have its
+    # archive published, with the old one deleted, before the signal is
+    # raised again. Stubs stand in for the archivers: zip and 7z write the
+    # output they are given, and tar (for .tgz) runs the real one; then each
+    # sends the signal to its whole process group, as Ctrl-C at a terminal
+    # does, ignores it itself, and exits 0. The run gets a process group of
+    # its own (set -m), with SIGINT at its default (env --default-signal,
+    # coreutils 8.31+): a shell started with SIGINT ignored, as a background
+    # job of a non-interactive shell is, cannot trap it. Its output is read
+    # through a pipe, which ends only when every process of the run has, the
+    # subshell that puts things back included, so no timing decides what the
+    # checks see.
+    if ! env --default-signal=INT true 2>/dev/null; then
+        echo "[$sh] archive that gets a signal while the archiver runs"
+        echo "  SKIP: env has no --default-signal"
+    else
+        rm -rf "$WORK/sig"
+        mkdir -p "$WORK/sig/bin"
+        printf '#!/bin/sh\ntrap "" INT TERM HUP\necho NEW > "$2"\nkill -s "$SIG" 0\nexit 0\n' > "$WORK/sig/bin/zip"
+        cp "$WORK/sig/bin/zip" "$WORK/sig/bin/7z"
+        printf '#!/bin/sh\ntrap "" INT TERM HUP\n%s "$@" || exit\nkill -s "$SIG" 0\nexit 0\n' "$(command -v tar)" > "$WORK/sig/bin/tar"
+        chmod +x "$WORK/sig/bin/zip" "$WORK/sig/bin/7z" "$WORK/sig/bin/tar"
+        for _fmt in zip 7z tgz; do
+            for _sig in INT TERM HUP; do
+                echo "[$sh] archive .$_fmt that gets SIG$_sig while the archiver runs puts the previous archive back"
+                rm -rf "$WORK/sig/run"
+                mkdir -p "$WORK/sig/run/src"
+                echo x > "$WORK/sig/run/src/x"
+                echo PRECIOUS > "$WORK/sig/run/keep.$_fmt"
+                actual=$(
+                    set -m
+                    env --default-signal=INT SIG="$_sig" "$sh" -c "source '$FUNCTIONS_SH' && PATH='$WORK/sig/bin:$PATH' && cd '$WORK/sig/run' && archive keep.$_fmt src; echo after" 2>&1 &
+                    wait "$!"
+                    echo "status=$?"
+                )
+                assert_eq "$sh/archive .$_fmt after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/sig/run/keep.$_fmt" 2>/dev/null)"
+                assert_eq "$sh/archive .$_fmt after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/sig/run" | grep '^\.archive\.' | tr -d '\n')"
+                # The signal is raised again, so the caller stops as it would have.
+                assert_not_contains "$sh/archive .$_fmt after SIG$_sig stops its caller" "after" "$actual"
+                assert_not_contains "$sh/archive .$_fmt after SIG$_sig does not report success" "status=0" "$actual"
+            done
+        done
+        rm -rf "$WORK/sig"
+    fi
 
     # When zip failed and the old archive could not be moved back either (the
     # directory turned read-only while zip ran), the staging directory, the

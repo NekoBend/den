@@ -345,7 +345,15 @@ _ptar_pipe() {
         rc=1
         if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$prev"; then
             if [ -z "$sig" ]; then
-                if tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive"; then
+                # The signal is asked about again once tar and the compressor
+                # are done, before anything is published: one that did not
+                # stop them (sent to this shell alone, or ignored by them)
+                # still makes this an interrupted run, and the old archive goes
+                # back as after a failure. Unasked, the new archive replaced
+                # it and the old one was deleted just before the signal was
+                # raised again.
+                if tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive" &&
+                    [ -z "$sig" ]; then
                     if _ptar_rename "$tmpd/archive" "$out"; then
                         rc=0
                     else

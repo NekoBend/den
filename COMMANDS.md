@@ -298,6 +298,9 @@ folder (`sub/latest.zip` when archiving `.`) is still stored, since the
 archivers cannot leave a file out by its inode. Every format exits non-zero
 when its archiver fails or is not installed (tar included). A failed or
 interrupted run keeps the existing output as it was, whatever the format. On
+bash/zsh a Ctrl-C, TERM or HUP that comes before the new archive is in place
+interrupts the run even when the archiver finishes all the same: the old
+archive is put back, and the signal is then raised again so the caller stops. On
 bash/zsh, and for the tar formats on pwsh, a directory that another program
 makes at the output while the archiver runs fails the run instead of taking
 in either archive (with BSD mv, which has no `-T`, one made in the instant
@@ -498,9 +501,12 @@ to the output inside a source folder is still stored, as with `archive`. The
 existing output waits in a staging directory beside it while tar runs; should
 it fail to go back in place after a failed or interrupted run, `ptar` leaves
 it there and says where, as `archive` does
-(`ptar: previous 'backup.tgz' kept at ./.ptar.XXXXXX/previous`). A directory
-that another program makes at the output while tar runs fails the run instead
-of taking in either archive, with the same BSD mv exception as `archive`.
+(`ptar: previous 'backup.tgz' kept at ./.ptar.XXXXXX/previous`). On bash/zsh,
+a signal that comes before the new archive is in place puts the old one back,
+as with `archive`.
+A directory that another program makes at the output while tar runs fails the
+run instead of taking in either archive, with the same BSD mv exception as
+`archive`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

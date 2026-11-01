@@ -665,50 +665,46 @@ for sh in bash zsh; do
     rm -rf "$WORK/strict"
 
     # Between moving the existing output aside and putting it back there is
-    # no <out>, so a Ctrl-C (or a TERM) while tar ran must not end the
-    # function there. A pigz stub that waits stands in for a slow run; the
-    # run gets a process group of its own (set -m) and the whole group gets
-    # the signal, as Ctrl-C at a terminal does, with SIGINT at its default
-    # (env --default-signal, coreutils 8.31+), as test_functions.sh does for
-    # archive.
-    for _sig in INT TERM; do
-        echo "[$sh] ptar interrupted by SIG$_sig puts the previous archive back"
-        if ! env --default-signal=INT true 2>/dev/null; then
-            echo "  SKIP: env has no --default-signal"
-            continue
-        fi
-        rm -rf "$WORK/slow"
-        mkdir -p "$WORK/slow/bin" "$WORK/slow/src"
-        echo x > "$WORK/slow/src/x"
-        echo PRECIOUS > "$WORK/slow/keep.tgz"
-        printf '#!/bin/sh\n: > "%s/started"\nsleep 10\n' "$WORK/slow" > "$WORK/slow/bin/pigz"
-        chmod +x "$WORK/slow/bin/pigz"
-        (
-            set -m
-            env --default-signal=INT "$sh" -c "source '$PARALLEL_SH' && PATH='$WORK/slow/bin:$PATH' && cd '$WORK/slow' && ptar keep.tgz src; echo after" > "$WORK/slow.out" 2>&1 &
-            _pid=$!
-            _i=0
-            while [ ! -e "$WORK/slow/started" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
-            kill -"$_sig" -- "-$_pid"
-            wait "$_pid"
-            echo "status=$?" >> "$WORK/slow.out"
-        )
-        # SIGTERM ends the outer shell at once (only SIGINT makes it wait for
-        # its child), so the subshell may still be putting things back when
-        # that wait returns: give it up to 5 s to reach the state checked.
-        _i=0
-        while { [ ! -e "$WORK/slow/keep.tgz" ] || grep -q '^\.ptar\.' <<<"$(ls -A "$WORK/slow")"; } && [ "$_i" -lt 50 ]; do
-            sleep 0.1
-            _i=$((_i + 1))
+    # no <out>, so a Ctrl-C (or a TERM or HUP) while tar runs must not end the
+    # function there; and a run whose tar and compressor finish all the same
+    # must not publish the new archive, deleting the old one, before the
+    # signal is raised again. A tar stub runs the real tar, then sends the
+    # signal to its whole process group, as Ctrl-C at a terminal does,
+    # ignores it itself and exits 0; a pigz stub ignores it too. The run gets
+    # a process group of its own (set -m), with SIGINT at its default (env
+    # --default-signal, coreutils 8.31+), as test_functions.sh does for
+    # archive, and its output is read through a pipe, which ends only when
+    # every process of the run has, the subshell that puts things back
+    # included: no timing decides what the checks see.
+    if ! env --default-signal=INT true 2>/dev/null; then
+        echo "[$sh] ptar that gets a signal while tar runs"
+        echo "  SKIP: env has no --default-signal"
+    else
+        rm -rf "$WORK/sig"
+        mkdir -p "$WORK/sig/bin"
+        printf '#!/bin/sh\ntrap "" INT TERM HUP\n%s "$@" || exit\nkill -s "$SIG" 0\nexit 0\n' "$(command -v tar)" > "$WORK/sig/bin/tar"
+        printf '#!/bin/sh\ntrap "" INT TERM HUP\nexec %s -c\n' "$(command -v gzip)" > "$WORK/sig/bin/pigz"
+        chmod +x "$WORK/sig/bin/tar" "$WORK/sig/bin/pigz"
+        for _sig in INT TERM HUP; do
+            echo "[$sh] ptar that gets SIG$_sig while tar runs puts the previous archive back"
+            rm -rf "$WORK/sig/run"
+            mkdir -p "$WORK/sig/run/src"
+            echo x > "$WORK/sig/run/src/x"
+            echo PRECIOUS > "$WORK/sig/run/keep.tgz"
+            actual=$(
+                set -m
+                env --default-signal=INT SIG="$_sig" "$sh" -c "source '$PARALLEL_SH' && PATH='$WORK/sig/bin:$PATH' && cd '$WORK/sig/run' && ptar keep.tgz src; echo after" 2>&1 &
+                wait "$!"
+                echo "status=$?"
+            )
+            assert_eq "$sh/ptar after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/sig/run/keep.tgz" 2>/dev/null)"
+            assert_eq "$sh/ptar after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/sig/run" | grep '^\.ptar\.' | tr -d '\n')"
+            # The signal is raised again, so the caller stops as it would have.
+            assert_not_contains "$sh/ptar after SIG$_sig stops its caller" "after" "$actual"
+            assert_not_contains "$sh/ptar after SIG$_sig does not report success" "status=0" "$actual"
         done
-        actual=$(cat "$WORK/slow.out")
-        assert_eq "$sh/ptar after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/slow/keep.tgz" 2>/dev/null)"
-        assert_eq "$sh/ptar after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/slow" | grep '^\.ptar\.' | tr -d '\n')"
-        # The signal is raised again, so the caller stops as it would have.
-        assert_not_contains "$sh/ptar after SIG$_sig stops its caller" "after" "$actual"
-        assert_not_contains "$sh/ptar after SIG$_sig does not report success" "status=0" "$actual"
-    done
-    rm -rf "$WORK/slow" "$WORK/slow.out"
+        rm -rf "$WORK/sig"
+    fi
 
     echo "[$sh] pcp/pmv/prm hand each job a batch of operands, not one each"
     # One cp/mv/rm per operand made `pcp * dest` over a few thousand small

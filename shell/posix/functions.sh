@@ -802,9 +802,18 @@ archive() {
                 _ar_rc=1
                 if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$_ar_prev"; then
                     if [ -z "$_ar_sig" ]; then
+                        # Each branch asks about the signal again once the
+                        # archiver is done, before the new archive counts as
+                        # published (tar's rename; zip and 7z wrote $out
+                        # itself): a signal that did not stop the archiver
+                        # (sent to this shell alone, or ignored by it) still
+                        # makes this an interrupted run, and the old archive
+                        # goes back as after a failure. Unasked, the new
+                        # archive stayed and the old one was deleted just
+                        # before the signal was raised again.
                         case "$_ar_fmt" in
                             zip)
-                                if zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@"; then
+                                if zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@" && [ -z "$_ar_sig" ]; then
                                     _ar_rc=0
                                 else
                                     _ar_rc=$?
@@ -831,7 +840,7 @@ archive() {
                                 # is sourced by those two only), which a POSIX
                                 # parser reading the file would reject.
                                 eval 'set -- "${@/#-/./-}"; set -- "${@/#@/./@}"'
-                                if 7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@"; then
+                                if 7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@" && [ -z "$_ar_sig" ]; then
                                     _ar_rc=0
                                 else
                                     _ar_rc=$?
@@ -847,6 +856,7 @@ archive() {
                                 esac
                                 if tar -c ${_ar_z:+"$_ar_z"} -f "$_ar_tmpd/archive" \
                                     --exclude="${_ar_tmpd##*/}" -- "$@" &&
+                                    [ -z "$_ar_sig" ] &&
                                     _ar_rename "$_ar_tmpd/archive" "$out"; then
                                     _ar_rc=0
                                 else
