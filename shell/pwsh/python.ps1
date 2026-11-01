@@ -504,7 +504,12 @@ function vd {
 # refuses a second one, and a value that starts with -, so no other option's
 # value is one. PowerShell drops a typed -- from $Args, so uv gets none.
 # Parity with posix python.sh.
-function _DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
+# _DenUvVenvOptions, vv and vva are defined global:, as the helpers python
+# calls are (see above): toggle-uv ON dot-sources this file inside itself, and
+# in a session whose toggle-uv came from an older python.ps1, a plain
+# definition ended with the call, and that file's vv, which reads a clone's
+# settings, stayed.
+function global:_DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
   $dir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
   $project = $env:UV_PROJECT
   for ($i = 0; $i -lt $UvArgs.Count; $i++) {
@@ -609,7 +614,7 @@ function _DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
 }
 
 # vv → uv venv (create only)
-function vv {
+function global:vv {
   if (-not (_ResolveCmd 'uv' 'App')) {
     Write-Error 'uv is not installed'
     return
@@ -619,7 +624,7 @@ function vv {
 }
 
 # vva → uv venv + activate (default: .venv)
-function vva {
+function global:vva {
   if (-not (_ResolveCmd 'uv' 'App')) {
     Write-Error 'uv is not installed'
     return
@@ -643,7 +648,7 @@ function toggle-uv {
   # the list above, and is defined global: too. _DenPyMarker, which python
   # calls, and _DenUvConfig, which pip and pip3 call, are not on the list: vv
   # and vva ask them with the overrides off as well, and ON defines them
-  # global: when it reads the file.
+  # global: when it reads the file, as it does vv, vva and _DenUvVenvOptions.
   $overrides = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun'
   if ($env:_DEN_UV_OVERRIDE -ne '0') {
     foreach ($name in $overrides) { Remove-Item "Function:\$name" -ErrorAction SilentlyContinue }

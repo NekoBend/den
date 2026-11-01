@@ -2038,6 +2038,35 @@ mock-uv --no-config venv --directory $R/pyver
 mock-uv venv --directory pyver
 moved=[] kept=[True]" "$actual"
 
+# vv, vva and _DenUvVenvOptions are global: as well. In a session that loaded
+# 8e5eeba's python.ps1, whose toggle-uv copies none of them, ON defined them
+# inside itself after an update in place, and that file's vv and vva, which
+# run uv venv as typed, stayed. The old files come from git, as above.
+OLD_VV_DIR="$WORK/old-python-ps1-vv"
+mkdir -p "$OLD_VV_DIR"
+echo "[pwsh] toggle-uv OFF then ON in a session that loaded 8e5eeba's python.ps1, after an update in place: vv and vva are the updated ones"
+if git -C "$DOTFILES" show "$OLD_PY_PS1_COMMIT:shell/pwsh/python.ps1" > "$OLD_VV_DIR/python.ps1" 2>/dev/null &&
+    git -C "$DOTFILES" show "$OLD_PY_PS1_COMMIT:shell/pwsh/_helpers.ps1" > "$OLD_VV_DIR/_helpers.ps1" 2>/dev/null; then
+    {
+        echo "\$env:PATH = '$ROUTE_BIN' + [IO.Path]::PathSeparator + \$env:PATH"
+        echo ". '$OLD_VV_DIR/_helpers.ps1'"
+        echo ". '$OLD_VV_DIR/python.ps1'"
+    } > "$OLD_VV_DIR/session.ps1"
+    actual=$(run_pwsh "$OLD_VV_DIR/session.ps1" "
+        $PS_SET_PROFILE
+        Set-Location -LiteralPath '$R/proj'
+        Copy-Item -LiteralPath '$PYTHON_PS1' -Destination '$OLD_VV_DIR/python.ps1' -Force
+        toggle-uv *>\$null
+        toggle-uv *>\$null
+        vv 3>\$null
+        vva v 3>\$null 2>\$null
+    " 2>&1 | tr -d '\r') || true
+    assert_eq "pwsh/vv and vva after an update from 8e5eeba's python.ps1 run uv --no-config venv in a project" "mock-uv --no-config venv
+mock-uv --no-config venv v" "$actual"
+else
+    echo "  SKIP: pwsh/vv and vva after an update from 8e5eeba's python.ps1 (no git, or no commit $OLD_PY_PS1_COMMIT, at $DOTFILES)"
+fi
+
 # --no-config skipped your own uv settings too: with a uv.toml of yours, uv
 # --config-file reads it in place of a uv.toml or pyproject.toml here or
 # above, and uv venv still takes --no-config, to read no .python-version.
