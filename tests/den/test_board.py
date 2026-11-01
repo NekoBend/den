@@ -769,10 +769,12 @@ def test_config_answers_past_a_board_json_nested_near_the_limit(
 
 
 # board.json buttons den board leaves out: a button needs to be an object with
-# a string id, and a string label and color when it has them. The page drew a
-# button through conversions that call the value's own toString, which throw
-# on an object whose toString is not a function, and read b.id off a null one;
-# such a button stopped it part way through drawing its buttons or reports.
+# a string id /api/report takes (not blank, at most 64 characters), and a
+# string label and color when it has them. The page drew a button through
+# conversions that call the value's own toString, which throw on an object
+# whose toString is not a function, and read b.id off a null one; such a
+# button stopped it part way through drawing its buttons or reports. A button
+# whose id /api/report refuses was drawn, and every click on it got a 400.
 _MALFORMED_BUTTONS = [
     pytest.param("null", id="null"),
     pytest.param('"bug"', id="string"),
@@ -780,6 +782,9 @@ _MALFORMED_BUTTONS = [
     pytest.param('{"label": "Bug"}', id="no-id"),
     pytest.param('{"id": 7, "label": "Bug"}', id="id-number"),
     pytest.param('{"id": {"toString": null}, "label": "Bug"}', id="id-object"),
+    pytest.param('{"id": "", "label": "Bug"}', id="id-empty"),
+    pytest.param('{"id": " \\t", "label": "Bug"}', id="id-blank"),
+    pytest.param('{"id": "' + "x" * 65 + '", "label": "Bug"}', id="id-65"),
     pytest.param('{"id": "bug", "label": {"toString": null}}', id="label-object"),
     pytest.param('{"id": "bug", "label": 7}', id="label-number"),
     pytest.param('{"id": "bug", "color": {"toString": null}}', id="color-object"),
@@ -807,6 +812,10 @@ def test_scaffold_leaves_out_a_malformed_button(tmp_path, capsys, bad):
     [
         pytest.param("[null]", id="none-left"),
         pytest.param('[{"id": {"toString": null}}, 7]', id="none-left-of-two"),
+        pytest.param(
+            '[{"id": "", "label": "Bug"}, {"id": "' + "x" * 65 + '"}]',
+            id="none-left-a-report-takes",
+        ),
         pytest.param('{"id": "bug", "label": "Bug"}', id="not-a-list"),
         pytest.param("null", id="null"),
     ],
@@ -856,6 +865,32 @@ def test_scaffold_keeps_buttons_without_a_label_or_color(tmp_path, capsys):
     cfg_path.write_text('{"buttons": []}')
     assert _board.ensure_scaffold(tmp_path)["buttons"] == []
     assert capsys.readouterr().err == ""
+
+
+def test_every_button_the_config_sends_files_a_report(served, capsys):
+    # /api/report takes a button only when it is not blank and holds at most
+    # 64 characters. den board sent the page buttons whose id it refuses, and
+    # named none of them: the page drew each one, and every click on it got a
+    # 400 that does not name board.json. A 64-character id is one it takes.
+    root, server, port = served
+    cfg_path = root / ".den" / "board" / "board.json"
+    buttons = [
+        {"id": "", "label": "Empty"},
+        {"id": "note", "label": "Note"},
+        {"id": "   ", "label": "Blank"},
+        {"id": "x" * 64, "label": "Longest"},
+        {"id": "x" * 65, "label": "Too long"},
+    ]
+    cfg_path.write_text(json.dumps({"buttons": buttons}))
+    server.board_config = _board.ensure_scaffold(root)
+    status, body = _request(port, "GET", "/api/config")
+    assert status == 200
+    sent = json.loads(body)["buttons"]
+    for button in sent:
+        report = {"button": button["id"], "text": "filed"}
+        assert _request(port, "POST", "/api/report", report)[0] == 200, button
+    assert sent == [buttons[1], buttons[3]]
+    assert f"leaving out buttons 1, 3, 5 of {cfg_path}" in capsys.readouterr().err
 
 
 def test_reactions_skip_lines_json_cannot_parse(tmp_path):

@@ -222,11 +222,22 @@ def _depth(value: object) -> int:
     return depth
 
 
+def _valid_button_id(button: object) -> bool:
+    """Whether /api/report takes `button` as a report's button: a string that
+    is not blank and holds at most _MAX_BUTTON_LEN characters. The board.json
+    filter uses the same test, so the page gets no button it cannot file."""
+    return (
+        isinstance(button, str)
+        and bool(button.strip())
+        and len(button) <= _MAX_BUTTON_LEN
+    )
+
+
 def _well_formed(button: object) -> bool:
-    """Whether `button` is a well-formed board.json button: an object with a
-    string id, and a string label and color when it has them (a null counts
-    as none)."""
-    if not isinstance(button, dict) or not isinstance(button.get("id"), str):
+    """Whether `button` is a well-formed board.json button: an object with an
+    id /api/report takes (_valid_button_id), and a string label and color
+    when it has them (a null counts as none)."""
+    if not isinstance(button, dict) or not _valid_button_id(button.get("id")):
         return False
     return all(
         value is None or isinstance(value, str)
@@ -242,7 +253,10 @@ def _usable_buttons(cfg_path: Path, buttons: object) -> object:
     toString, which throw on an object whose toString is not a function
     ({"toString": null}), and it read b.id off a null button. Such a button
     stopped the page part way through drawing its buttons or its reports
-    list, or both. An empty list stays empty: nothing in it was left out.
+    list, or both. A button whose id /api/report refuses (blank, or longer
+    than 64 characters) was drawn, but every click on it got a 400 that does
+    not name board.json. An empty list stays empty: nothing in it was left
+    out.
     """
     if not isinstance(buttons, list):
         print(
@@ -260,7 +274,8 @@ def _usable_buttons(cfg_path: Path, buttons: object) -> object:
     fallback = "" if kept else "; using the default buttons"
     print(
         f"den board: leaving out button{plural} {named} of {cfg_path} (a button "
-        f"needs a string id, and a string label and color if it has them){fallback}",
+        f"needs a non-blank string id of at most {_MAX_BUTTON_LEN} characters, "
+        f"and a string label and color if it has them){fallback}",
         file=sys.stderr,
     )
     return kept or _DEFAULT_CONFIG["buttons"]
@@ -472,9 +487,7 @@ class _Reactions:
 
 
 def _valid_report(button: object, text: object, re_id: object) -> bool:
-    if not isinstance(button, str) or not button.strip():
-        return False
-    if len(button) > _MAX_BUTTON_LEN:
+    if not _valid_button_id(button):
         return False
     if not isinstance(text, str) or len(text) > _MAX_TEXT_LEN:
         return False
