@@ -756,6 +756,24 @@ finds=$(cmd_code python | grep -o 'python find [-a-z ]*-python' || true)
 assert_eq "cmd/python: uv python find --system --no-config" "python find --system --no-config --no-managed-python
 python find --system --no-config --managed-python" "$finds"
 
+echo "[cmd] pip runs uv pip with your own uv.toml, or with --no-config without one"
+# pip reads no uv.toml or pyproject.toml, and uv pip reads a clone's from the
+# current directory and above, whose settings can have uv run a python the
+# clone ships or install a package from the clone's own files. --config-file
+# reads the one file it names in place of those, and --no-config reads none.
+uvpip=$(cmd_code pip | grep -F '"%_uv%"' || true)
+assert_eq "cmd/pip: uv --no-config pip, or uv --config-file pip" '"%_uv%" --no-config pip %*
+"%_uv%" --config-file "%_cfg%" pip %*' "$uvpip"
+# The file is the one uv reads besides a project's, in uv's order: the one
+# UV_CONFIG_FILE names, else, unless UV_NO_CONFIG is true, the user one, else,
+# unless UV_NO_SYSTEM_CONFIG is true, the system one.
+cfgs=$(cmd_code pip | grep -o -E 'set "_cfg=[^"]*"|UV_NO_(SYSTEM_)?CONFIG' || true)
+assert_eq "cmd/pip: the uv.toml it reads, in uv's order" 'set "_cfg=%UV_CONFIG_FILE%"
+UV_NO_CONFIG
+set "_cfg=%APPDATA%\uv\uv.toml"
+UV_NO_SYSTEM_CONFIG
+set "_cfg=%SYSTEMDRIVE%\ProgramData\uv\uv.toml"' "$cfgs"
+
 echo "[cmd] python has no --version or -V case of its own"
 # Outside a project they ran the system python, which named another python
 # than the one `python x.py` runs: they go through uv run as any other call,

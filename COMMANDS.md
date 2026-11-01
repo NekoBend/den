@@ -355,11 +355,36 @@ keeps), except where uv would build or run code that came with a clone:
   python run directly inside one.
 - `pip` / `pip3` run only inside an active venv: the venv's own pip when it has
   one, else `uv pip`, which installs into that venv (a venv made by uv, `vv` /
-  `vva`, has no pip). With no venv active they run nothing and say so, since
-  `uv pip` would pick the `.venv` in or above the current directory itself and
-  run its python: activate one with `va`, which refuses a venv that came with
-  the clone (cmd has no `va`: run the `Scripts\activate` of a venv you made),
-  or type `uv pip` yourself.
+  `vva`, has no pip). pip reads no `uv.toml` or `pyproject.toml`, and uv reads
+  them in the current directory and above, where a clone's settings can have
+  uv run a python the clone ships or install a package from the clone's own
+  files. So den runs `uv --config-file <your uv.toml> pip`, which reads your
+  own uv settings in their place, or, when you have no uv.toml,
+  `uv --no-config pip`, which reads none; a line on stderr says which, and
+  typed `uv pip` reads them all. With no venv active they run nothing and say
+  so, since `uv pip` would pick the `.venv` in or above the current directory
+  itself and run its python: activate one with `va`, which refuses a venv that
+  came with the clone (cmd has no `va`: run the `Scripts\activate` of a venv
+  you made), or type `uv pip` yourself.
+- `vv` / `vva` run `uv venv`, but where `python` runs a python directly (the
+  same files, here or above, or, as uv takes them, in or above the directory
+  `--directory` or `--project` names, or `UV_WORKING_DIR` or `UV_PROJECT`)
+  `uv --no-config venv`, with `--config-file <your uv.toml>` when you have
+  one, after a line that says so: `uv venv` runs the
+  program a `.python-version` names, and a `uv.toml`'s or `pyproject.toml`'s
+  settings can have it run a python the clone ships, or install one from the
+  clone's files and run it, `--python` given or not. `--no-config` skips those,
+  and also a `.python-version` that only pins a version, your global one
+  (`uv python pin --global`) too: pick a python with `--python`, or type
+  `uv venv`.
+- Your uv.toml is the one uv reads besides a project's: the one
+  `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
+  (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows
+  `%APPDATA%\uv\uv.toml`), else, unless `UV_NO_SYSTEM_CONFIG` is true, the
+  system one (`uv/uv.toml` in the first `$XDG_CONFIG_DIRS` directory that has
+  one, `/etc/xdg` by default, else `/etc/uv/uv.toml`; on Windows
+  `%SYSTEMDRIVE%\ProgramData\uv\uv.toml`). uv merges a user and a system
+  uv.toml, and `--config-file` reads one: with both, the user one alone.
 
 Inside a venv `va` activated on bash/zsh/pwsh, `python` / `python3` / `py` run
 through `uv run --python <venv version>` outside a project. Inside a venv on cmd,
@@ -374,8 +399,8 @@ and macOS do not have, stays den's in scripts there.
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `python` / `python3` / `py` | `uv run -- python`, but in a project (a `pyproject.toml`, `.venv`, `pyvenv.cfg`, `uv.toml` or path-naming `.python-version` / `.python-versions` here or above) a python directly; else system python | ✓ | ✓ | ✓ (no `py`) |
-| `pip` / `pip3` | in a venv its own pip, else `uv pip`; with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
-| `uv` | injects `--python` for `uv run` inside an active venv | ✓ | ✓ | ✓ |
+| `pip` / `pip3` | in a venv its own pip, else `uv pip` with your own uv.toml alone (`--config-file`, or `--no-config` without one); with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
+| `uv` | injects `--python` for `uv run` inside an active venv; `uv run` itself is not guarded: it builds and runs the project, as uv does | ✓ | ✓ | ✓ |
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
@@ -390,12 +415,17 @@ cmd has no `va`, and a venv activated in cmd (`activate.bat`) leaves `uv run` as
 typed. The arguments after `run` reach uv unchanged, quoted `&` `|` `<` `>` and
 `=` `,` `;` `!` included.
 
-`va` refuses a venv it cannot trust and prints the command to source it yourself:
+`va` refuses these venvs and prints the command to source one yourself:
 one whose `bin/` (`Scripts/`) or activate script git tracks, or is a symlink, one
 whose `pyvenv.cfg` git tracks, one whose activate script is world-writable, one
 in a repository git will not read (dubious ownership), and one that is itself a git
 repository (a committed `HEAD`, `objects/` and `refs/`). That last check needs git
 2.38 or later; older git reads such a repository and finds nothing tracked.
+What git tracks is how `va` tells a venv that came with the tree, so it can tell
+only in a git checkout: outside one, a venv that came in an archive or a shared
+folder is sourced as it is, as `source` would source it. Activate only a venv you
+made there. `va` runs git with `core.fsmonitor` off, so a `.git/config` that came
+with such a tree starts no program.
 
 ## Media (ffmpeg)
 

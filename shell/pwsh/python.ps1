@@ -38,6 +38,13 @@ function Show-UvOnlyMessage {
 # in this directory or one above it, and run the python in it, which may be one
 # a cloned repository committed. va activates a venv after checking that it did
 # not come with the clone. Parity with posix python.sh.
+# uv pip reads only your own uv settings, as pip reads no uv.toml or
+# pyproject.toml: uv reads them from this directory and the ones above it, and
+# a clone's settings there can have it run a python the clone ships ([pip]
+# python) or install a package from the clone's own files (find-links). uv
+# --config-file reads the one file _DenUvConfig names in place of all of
+# those, and with none, uv --no-config reads none. The line says which, and
+# typed uv pip reads them all.
 function pip {
   if (-not $env:VIRTUAL_ENV) {
     Write-Error "no venv is active; activate one with va, or type $((@('uv', 'pip') + $Args) -join ' ') directly"
@@ -46,9 +53,19 @@ function pip {
   $venvPip = @('Scripts/pip.exe', 'bin/pip') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
   if ($venvPip) { & $venvPip @Args; return }
-  if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
-  Show-UvOnlyMessage "pip $($Args -join ' ')" "uv pip $($Args -join ' ')"
-  & uv pip @Args
+  $uv = _ResolveCmd 'uv' 'App'
+  if (-not $uv) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
+  $cfg = _DenUvConfig
+  if ($cfg) {
+    $options = @('--config-file', $cfg)
+    $reads = 'reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
+  }
+  else {
+    $options = @('--no-config')
+    $reads = 'reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
+  }
+  Show-UvOnlyMessage "pip $($Args -join ' ')" "$((@('uv') + $options + @('pip') + $Args) -join ' ') ($reads)"
+  & $uv @options pip @Args
 }
 
 # pip3 → the same, with an active venv's own pip3
@@ -60,9 +77,19 @@ function pip3 {
   $venvPip = @('Scripts/pip3.exe', 'bin/pip3') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
   if ($venvPip) { & $venvPip @Args; return }
-  if (-not (_ResolveCmd 'uv' 'App')) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
-  Show-UvOnlyMessage "pip3 $($Args -join ' ')" "uv pip $($Args -join ' ')"
-  & uv pip @Args
+  $uv = _ResolveCmd 'uv' 'App'
+  if (-not $uv) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
+  $cfg = _DenUvConfig
+  if ($cfg) {
+    $options = @('--config-file', $cfg)
+    $reads = 'reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
+  }
+  else {
+    $options = @('--no-config')
+    $reads = 'reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
+  }
+  Show-UvOnlyMessage "pip3 $($Args -join ' ')" "$((@('uv') + $options + @('pip') + $Args) -join ' ') ($reads)"
+  & $uv @options pip @Args
 }
 
 # The three helpers python, python3 and py call are defined global:. toggle-uv
@@ -87,16 +114,21 @@ function pip3 {
 # current directory holds something of the same name. Windows hands uv the
 # directory as PowerShell has it; Linux and macOS resolve its symbolic links
 # first, so there a linked directory's target is searched as well.
-function global:_DenPyMarker {
-  # The directory uv runs in, where it looks a name up: PowerShell's location.
-  $here = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+# _DenPyMarker <dir> <cwd> - the same for uv started elsewhere (vv and vva,
+# see _DenUvVenvOptions): the walk starts from <dir>, and a bare name is
+# looked up in <cwd>, the directory uv runs in. Not one of the overrides that
+# toggle-uv removes: vv and vva ask it with them off as well.
+function global:_DenPyMarker([string]$Start, [string]$Here) {
+  # The directory uv runs in, where it looks a name up: PowerShell's location,
+  # unless vv names another.
+  if (-not $Here) { $Here = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath }
   # The white space uv trims off a line: Rust's str::trim takes the Unicode
   # White_Space characters. Listed, as .Trim()'s own set follows the Unicode
   # tables of the runtime it runs on.
   $ws = [char[]]@(9, 10, 11, 12, 13, 0x20, 0x85, 0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
     0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000)
   $starts = [System.Collections.Generic.List[string]]::new()
-  $starts.Add($here)
+  $starts.Add($(if ($Start) { $Start } else { $Here }))
   for ($i = 0; $i -lt $starts.Count -and $i -lt 16; $i++) {
     $dir = $starts[$i]
     while ($dir) {
@@ -136,10 +168,10 @@ function global:_DenPyMarker {
           if (-not $bare -or $bare.StartsWith('#', [System.StringComparison]::Ordinal)) { continue }
           try {
             # A drive-relative C:name, on Windows, would resolve here from
-            # this process's own directory on that drive, not from $here as
+            # this process's own directory on that drive, not from $Here as
             # uv's does: it counts as it is.
             if ([System.IO.Path]::IsPathRooted($bare)) { return $path }
-            $entry = [System.IO.Path]::Combine($here, $bare)
+            $entry = [System.IO.Path]::Combine($Here, $bare)
             if ([System.IO.File]::Exists($entry) -or [System.IO.Directory]::Exists($entry)) { return $path }
           } catch { $null = $_ }
         }
@@ -153,6 +185,56 @@ function global:_DenPyMarker {
       }
       $dir = [System.IO.Path]::GetDirectoryName($dir)
     }
+  }
+  return $null
+}
+
+# _DenUvConfig - the uv.toml of your own that uv reads besides a project's,
+# for uv --config-file to read in place of them all ($null when there is
+# none): the file UV_CONFIG_FILE names (uv reads it even under UV_NO_CONFIG);
+# else, unless UV_NO_CONFIG is true, the user one, uv\uv.toml in %APPDATA% on
+# Windows, and elsewhere $XDG_CONFIG_HOME/uv/uv.toml (an absolute
+# XDG_CONFIG_HOME only, as uv takes) or ~/.config/uv/uv.toml; else, unless
+# UV_NO_SYSTEM_CONFIG is true, the system one, uv\uv.toml in
+# %SYSTEMDRIVE%\ProgramData on Windows, and elsewhere uv/uv.toml in the first
+# of $XDG_CONFIG_DIRS (/etc/xdg) that has one, else /etc/uv/uv.toml. uv reads
+# an XDG_CONFIG_DIRS entry that is not absolute from the current directory,
+# where a clone can ship one: such entries are skipped here. uv merges the
+# user and the system file, and --config-file reads one: with both, the user
+# one, and the system one's settings are left out. Not one of the overrides
+# that toggle-uv removes: vv and vva ask it with them off as well. Parity with
+# posix python.sh.
+function global:_DenUvConfig {
+  if ($env:UV_CONFIG_FILE) { return $env:UV_CONFIG_FILE }
+  # The values uv takes for true, in any case.
+  $truthy = '1', 'y', 'yes', 't', 'true', 'on'
+  if ($env:UV_NO_CONFIG -and $truthy -ccontains $env:UV_NO_CONFIG.ToLowerInvariant()) { return $null }
+  if (_OnWindows) {
+    # Without APPDATA, uv asks Windows for the roaming application data folder.
+    $base = if ($env:APPDATA) { $env:APPDATA } else { [Environment]::GetFolderPath('ApplicationData') }
+  }
+  elseif ($env:XDG_CONFIG_HOME -and $env:XDG_CONFIG_HOME.StartsWith('/', [System.StringComparison]::Ordinal)) {
+    $base = $env:XDG_CONFIG_HOME
+  }
+  else {
+    $userHome = if ($env:HOME) { $env:HOME } else { [Environment]::GetFolderPath('UserProfile') }
+    $base = [System.IO.Path]::Combine($userHome, '.config')
+  }
+  if ($base) {
+    $path = [System.IO.Path]::Combine($base, 'uv', 'uv.toml')
+    if ([System.IO.File]::Exists($path)) { return $path }
+  }
+  if ($env:UV_NO_SYSTEM_CONFIG -and $truthy -ccontains $env:UV_NO_SYSTEM_CONFIG.ToLowerInvariant()) { return $null }
+  if (_OnWindows) {
+    $system = @(if ($env:SYSTEMDRIVE) { [System.IO.Path]::Combine("$env:SYSTEMDRIVE\", 'ProgramData', 'uv', 'uv.toml') })
+  }
+  else {
+    $dirs = if ($env:XDG_CONFIG_DIRS) { $env:XDG_CONFIG_DIRS } else { '/etc/xdg' }
+    $system = @($dirs.Split(':') | Where-Object { $_.StartsWith('/', [System.StringComparison]::Ordinal) } |
+        ForEach-Object { [System.IO.Path]::Combine($_, 'uv', 'uv.toml') }) + '/etc/uv/uv.toml'
+  }
+  foreach ($path in $system) {
+    if ([System.IO.File]::Exists($path)) { return $path }
   }
   return $null
 }
@@ -243,9 +325,10 @@ function py {
 # or a child pwsh inherits its OFF: drop the overrides again, as toggle-uv left
 # them, or its next call would take the OFF branch again and change nothing.
 # toggle-uv's ON sets it to 1 before it reads this file. Parity with python.sh,
-# down to the helpers python, python3 and py call: the same names as toggle-uv.
+# down to the helpers python, python3 and py call: the same names as toggle-uv,
+# which keeps _DenPyMarker and _DenUvConfig for vv and vva.
 if ($env:_DEN_UV_OVERRIDE -eq '0') {
-  foreach ($_uvOverride in 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun') {
+  foreach ($_uvOverride in 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun') {
     Remove-Item "Function:\$_uvOverride" -ErrorAction SilentlyContinue
   }
   Remove-Variable _uvOverride -ErrorAction SilentlyContinue
@@ -278,7 +361,9 @@ function va {
   # is checked the way pyvenv.cfg below already is. A venv you create is untracked;
   # a venv COMMITTED to a repo (git tracks .venv happily, even force-added past a
   # .gitignore) is code that arrived with the clone. Not a git repo, or no git,
-  # means nothing to check: pass. Parity with posix python.sh.
+  # means nothing to check: pass. So the check covers git checkouts only: a venv
+  # that came in an archive or a shared folder is dot-sourced as it is, as a
+  # typed . would dot-source it. Parity with posix python.sh.
   # A venv tool makes Scripts/ or bin/ and the activate script a real directory
   # and file. A symlink or junction there reads the script from elsewhere, and git
   # reports only the link itself, not a tracked file behind it: refuse it. A
@@ -307,9 +392,20 @@ function va {
     # empty index (nothing tracked) and a core.fsmonitor it runs. Git then refuses,
     # and the refusal below fails closed. Git before 2.38 ignores the key and
     # cannot be kept out of such a repository.
+    # core.fsmonitor= (empty, off): the enclosing repository's .git/config, which
+    # an archive or a shared folder can deliver with the tree, may name a program
+    # git runs when it reads the index, even for a venv it then refuses. Empty,
+    # not false: git 2.36 and later read the key as a boolean first
+    # (fsmonitor-settings.c, lookup_fsmonitor_settings), and an empty value is
+    # false; git 2.16 to 2.35 read it as the path of a hook alone and take an
+    # empty one for none (config.c, git_config_get_fsmonitor), where false names
+    # a program to run. Git before 2.16 has no fsmonitor. The other programs
+    # such a config can name (hooks, filters, diff.external, core.sshCommand)
+    # do not run for ls-files, and its pager runs on a terminal only, which
+    # these calls' output never is.
     $activateDir = Split-Path -Parent $activatePath
     $pathspecs = @('.') + ('Scripts', 'bin', 'pyvenv.cfg' | ForEach-Object { "../$_"; ":(icase)../$_" })
-    $tracked = & $gitExe -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
+    $tracked = & $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
     if ($LASTEXITCODE -ne 0) {
       # Fail closed: only "not a git repository" means nothing to check. Any other
       # failure, such as a checkout git will not open for dubious ownership, leaves
@@ -318,7 +414,7 @@ function va {
       # other messages quote a path that may hold the same words.
       $lcAll = $env:LC_ALL
       $env:LC_ALL = 'C'
-      try { $why = @(& $gitExe -c safe.bareRepository=explicit -C $activateDir ls-files -- . 2>&1 | ForEach-Object { "$_" }) }
+      try { $why = @(& $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- . 2>&1 | ForEach-Object { "$_" }) }
       catch { $why = @("$_") }
       finally { $env:LC_ALL = $lcAll }
       if (-not ($why -match '^fatal: not a git repository')) {
@@ -388,23 +484,167 @@ function vd {
   Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
 }
 
+# _DenUvVenvOptions <name> <args> - the options vv and vva put before venv,
+# given the arguments they put after it: none, but where _DenPyMarker finds a
+# file, as python runs no uv run there, --no-config, after a warning: uv venv
+# runs the program a .python-version names to ask its version, and a
+# uv.toml's or pyproject.toml's settings can have it run a python the clone
+# ships, or install one from the clone's own files and run it, --python 3.13
+# given or not. --no-config skips those files, and with them a
+# .python-version that only pins a version, yours in uv's config directory
+# too: the warning says to pick a python with --python, or to type uv venv.
+# With a uv.toml of your own (_DenUvConfig), --config-file reads it, as
+# --no-config alone would not, and still no .python-version.
+# The walk starts where uv's does. uv first enters the directory --directory
+# names (else UV_WORKING_DIR, else UV_WORKING_DIRECTORY) and reads from there
+# as it would from here. --project (else UV_PROJECT) names the directory its
+# walk starts from instead, or a pyproject.toml in it, taken from the one uv
+# runs in, where a .python-version's bare name is still looked up. The options
+# count as uv 0.13.6 parses them: as --directory DIR or --directory=DIR; uv
+# refuses a second one, and a value that starts with -, so no other option's
+# value is one. PowerShell drops a typed -- from $Args, so uv gets none.
+# Parity with posix python.sh.
+# _DenUvVenvOptions, vv and vva are defined global:, as the helpers python
+# calls are (see above): toggle-uv ON dot-sources this file inside itself, and
+# in a session whose toggle-uv came from an older python.ps1, a plain
+# definition ended with the call, and that file's vv, which reads a clone's
+# settings, stayed.
+function global:_DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @()) {
+  $dir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
+  $project = $env:UV_PROJECT
+  for ($i = 0; $i -lt $UvArgs.Count; $i++) {
+    $arg = [string]$UvArgs[$i]
+    if ($arg -ceq '--') { break }
+    if ($arg -ceq '--directory') { $dir = if (++$i -lt $UvArgs.Count) { [string]$UvArgs[$i] } }
+    elseif ($arg -ceq '--project') { $project = if (++$i -lt $UvArgs.Count) { [string]$UvArgs[$i] } }
+    elseif ($arg.StartsWith('--directory=', [System.StringComparison]::Ordinal)) { $dir = $arg.Substring(12) }
+    elseif ($arg.StartsWith('--project=', [System.StringComparison]::Ordinal)) { $project = $arg.Substring(10) }
+  }
+  $at = 'here or above'
+  $there = 'here or above'
+  if (-not $dir -and -not $project) {
+    $marker = _DenPyMarker
+  }
+  else {
+    # The directory uv runs in, as the system reads it back to uv, worked out
+    # without setting the process's current directory, which every runspace
+    # of the process shares (ForEach-Object -Parallel, Start-ThreadJob). uv
+    # starts in this location and enters the --directory from there. Windows
+    # keeps a directory by name, as GetFullPath makes it; Windows PowerShell
+    # 5.1, whose .NET has no GetFullPath(path, basePath), takes a \name or a
+    # C:name from the process's own drive and directory there. Linux and
+    # macOS resolve each symbolic link on the way, and a .. after one goes up
+    # from where it led (.NET's SetCurrentDirectory takes a path by name
+    # first, and read <link>/.. back as the directory that holds the link):
+    # read here name by name, each link replaced with its target
+    # (FileSystemInfo.LinkTarget, .NET 6, pwsh 7.2), at most 40 to a path, as
+    # Linux follows. pwsh 7.0 and 7.1 have no LinkTarget and take the path by
+    # name. Where a name is no directory, uv cannot enter it either, and stops
+    # before it reads anything. GetFullPath takes a relative --project from
+    # there, normalized by name, as uv does.
+    $procrel = $null
+    try {
+      $base = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+      if ((_OnWindows) -or -not [System.IO.FileSystemInfo].GetProperty('LinkTarget')) {
+        $here = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+          [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($base, "$dir"))
+        }
+        else { [System.IO.Path]::GetFullPath("$dir", $base) }
+        if (-not [System.IO.Directory]::Exists($here)) { return }
+        $root = [System.IO.Path]::GetPathRoot($here)
+        if ($here.Length -gt $root.Length) {
+          $here = $here.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        }
+      }
+      else {
+        $here = '/'
+        :paths foreach ($path in $base, "$dir") {
+          if ($path.StartsWith('/', [System.StringComparison]::Ordinal)) { $here = '/' }
+          $parts = [System.Collections.Generic.List[string]]::new([string[]]$path.Split('/'))
+          $links = 0
+          while ($parts.Count -gt 0) {
+            $part = $parts[0]
+            $parts.RemoveAt(0)
+            if (-not $part -or $part -ceq '.') { continue }
+            if ($part -ceq '..') {
+              $here = $here.Substring(0, [Math]::Max(1, $here.LastIndexOf('/')))
+              continue
+            }
+            $next = $here.TrimEnd('/') + '/' + $part
+            # /proc/self names the process that reads it: here this one, for
+            # uv uv itself, which starts in this location and not in this
+            # process's directory. A way through it (a clone's link to
+            # /proc/self/cwd) leads uv elsewhere than this walk, so vv takes
+            # --no-config, as for a marker.
+            if ($next -cmatch '^/proc/(self|thread-self)$') { $procrel = $next; break paths }
+            $target = [System.IO.FileInfo]::new($next).LinkTarget
+            if ($target) {
+              if (++$links -gt 40) { return }
+              if ($target.StartsWith('/', [System.StringComparison]::Ordinal)) { $here = '/' }
+              $parts.InsertRange(0, [string[]]$target.Split('/'))
+            }
+            elseif ([System.IO.Directory]::Exists($next)) { $here = $next }
+            else { return }
+          }
+        }
+      }
+      $start = $here
+      if ($project) {
+        $start = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+          [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($here, $project))
+        }
+        else { [System.IO.Path]::GetFullPath($project, $here) }
+        $root = [System.IO.Path]::GetPathRoot($start)
+        if ($start.Length -gt $root.Length) {
+          $start = $start.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        }
+        if ([System.IO.Path]::GetFileName($start) -ceq 'pyproject.toml' -and [System.IO.File]::Exists($start)) {
+          $start = [System.IO.Path]::GetDirectoryName($start)
+        }
+      }
+    }
+    catch { return }
+    $there = 'there or above'
+    if ($procrel) {
+      $marker = $procrel
+      $at = 'on the way there, which uv reads for its own process'
+    }
+    else {
+      $at = "in or above $start"
+      $marker = _DenPyMarker $start $here
+    }
+  }
+  if (-not $marker) { return }
+  $cfg = _DenUvConfig
+  if ($cfg) {
+    Write-Warning "${Name}: uv --no-config --config-file $cfg venv, as $marker is $at (reads your uv settings, not a .python-version, uv.toml or pyproject.toml $there, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)"
+    '--no-config', '--config-file', $cfg
+  }
+  else {
+    Write-Warning "${Name}: uv --no-config venv, as $marker is $at (reads no .python-version, uv.toml or pyproject.toml $there, which a clone can ship, nor your global .python-version; pick a python with --python, or type uv venv to read those)"
+    '--no-config'
+  }
+}
+
 # vv → uv venv (create only)
-function vv {
+function global:vv {
   if (-not (_ResolveCmd 'uv' 'App')) {
     Write-Error 'uv is not installed'
     return
   }
-  & (_ResolveCmd 'uv' 'App') venv @Args
+  $options = @(_DenUvVenvOptions 'vv' $Args)
+  & (_ResolveCmd 'uv' 'App') @options venv @Args
 }
 
 # vva → uv venv + activate (default: .venv)
-function vva {
+function global:vva {
   if (-not (_ResolveCmd 'uv' 'App')) {
     Write-Error 'uv is not installed'
     return
   }
   $name = if ($Args.Count -ge 1) { $Args[0] } else { '.venv' }
-  & (_ResolveCmd 'uv' 'App') venv @Args
+  $options = @(_DenUvVenvOptions 'vva' $Args)
+  & (_ResolveCmd 'uv' 'App') @options venv @Args
   if ($LASTEXITCODE -eq 0) { va $name }
 }
 
@@ -418,8 +658,11 @@ function toggle-uv {
   # in place python runs with that file's helpers, not the ones this session
   # loaded before. That holds also in a session whose toggle-uv came from an
   # older python.ps1, whose list names no helper. A new helper goes here and in
-  # the list above, and is defined global: too.
-  $overrides = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun'
+  # the list above, and is defined global: too. _DenPyMarker, which python
+  # calls, and _DenUvConfig, which pip and pip3 call, are not on the list: vv
+  # and vva ask them with the overrides off as well, and ON defines them
+  # global: when it reads the file, as it does vv, vva and _DenUvVenvOptions.
+  $overrides = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun'
   if ($env:_DEN_UV_OVERRIDE -ne '0') {
     foreach ($name in $overrides) { Remove-Item "Function:\$name" -ErrorAction SilentlyContinue }
     $env:_DEN_UV_OVERRIDE = '0'

@@ -9,6 +9,17 @@ rem and run the python in it, which a cloned repository may have committed.
 rem With the uv override off (_DEN_UV_OVERRIDE=0, toggle-uv) or no uv, it is
 rem the first pip.exe on PATH. Programs come from PATH, through System32's
 rem where.exe, or from a full path, never from the current directory.
+rem uv pip reads only your own uv settings, as pip reads no uv.toml or
+rem pyproject.toml: uv reads them from the current directory and the ones
+rem above it, and a clone's settings there can have it run a python the clone
+rem ships ([pip] python) or install a package from the clone's own files
+rem (find-links). uv --config-file reads one file in place of all of those:
+rem the one UV_CONFIG_FILE names (uv reads it even under UV_NO_CONFIG); else,
+rem unless UV_NO_CONFIG is true, %APPDATA%\uv\uv.toml; else, unless
+rem UV_NO_SYSTEM_CONFIG is true, %SYSTEMDRIVE%\ProgramData\uv\uv.toml, which
+rem uv merges with the user one and --config-file leaves out when there are
+rem both. With none, uv --no-config reads none. The line on stderr says
+rem which, and typed uv pip reads them all.
 rem CRLF line endings: with LF only, cmd can miss a goto label.
 setlocal EnableExtensions DisableDelayedExpansion
 set "_pip="
@@ -18,8 +29,22 @@ if not defined _uv goto plain
 if not defined VIRTUAL_ENV goto refuse
 if exist "%VIRTUAL_ENV%\Scripts\pip.exe" set "_pip=%VIRTUAL_ENV%\Scripts\pip.exe"
 if defined _pip goto run
-echo pip %* → uv pip %* >&2
-"%_uv%" pip %*
+set "_cfg=%UV_CONFIG_FILE%"
+if defined _cfg goto uvpip
+rem The values uv takes for true, in any case.
+for %%v in (1 y yes t true on) do if /i "%UV_NO_CONFIG%"=="%%v" goto uvpip
+if defined APPDATA if exist "%APPDATA%\uv\uv.toml" set "_cfg=%APPDATA%\uv\uv.toml"
+if defined _cfg goto uvpip
+for %%v in (1 y yes t true on) do if /i "%UV_NO_SYSTEM_CONFIG%"=="%%v" goto uvpip
+if defined SYSTEMDRIVE if exist "%SYSTEMDRIVE%\ProgramData\uv\uv.toml" set "_cfg=%SYSTEMDRIVE%\ProgramData\uv\uv.toml"
+:uvpip
+if defined _cfg goto uvpip_cfg
+echo pip %* → uv --no-config pip %* (reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those) >&2
+"%_uv%" --no-config pip %*
+exit /b
+:uvpip_cfg
+echo pip %* → uv --config-file "%_cfg%" pip %* (reads your uv settings, not a uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those) >&2
+"%_uv%" --config-file "%_cfg%" pip %*
 exit /b
 :refuse
 if "%~1"=="" goto refuse_bare
