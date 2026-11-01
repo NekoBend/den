@@ -360,7 +360,8 @@ class _Writer:
         another name, which the write that follows changes too, so it holds
         no copy at all. It keeps the file's permission bits minus execute, so a
         private file's copy stays private and a backed-up ~/.local/bin helper
-        is not left executable on PATH. A symlink (or anything not a regular
+        is not left executable on PATH; a copy that is reused loses whatever
+        it allows beyond them. A symlink (or anything not a regular
         file) at a backup name refuses the backup instead of writing through
         it."""
         # Under a confined root, `guard` holds the resolved path commit()
@@ -382,7 +383,12 @@ class _Writer:
                     return None
                 if not bak.exists():
                     break
-                if not os.path.samestat(bak.stat(), st) and bak.read_bytes() == data:
+                held = bak.stat()
+                if not os.path.samestat(held, st) and bak.read_bytes() == data:
+                    # It allows no more than the file: an older den made its
+                    # copies with the umask's mode, world-readable.
+                    if stat.S_IMODE(held.st_mode) & ~mode:
+                        _chmod_no_follow(bak, stat.S_IMODE(held.st_mode) & mode)
                     return bak
                 n += 1
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW

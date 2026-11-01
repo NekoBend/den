@@ -941,6 +941,24 @@ def test_disable_coreutils_readline_backup_keeps_the_profile_mode(
     assert "secret" in bak.read_text()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_disable_coreutils_readline_narrows_a_reused_backup_to_the_profile_mode(
+    tmp_path, umask_022
+):
+    # A 0644 copy an older den made of a 0600 profile holds the profile's bytes
+    # again once coreutils puts its block back; it was reused as it was.
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    prof.chmod(0o600)
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text(original)
+    bak.chmod(0o644)
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o600
+    assert not (tmp_path / "p.ps1.den.bak.1").exists(), "it was reused"
+
+
 def test_disable_coreutils_readline_keeps_an_earlier_backup(tmp_path):
     # coreutils puts its block back after an update and den strips it again.
     # Any existing .den.bak used to count as the backup, so the profile as it was

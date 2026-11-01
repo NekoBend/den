@@ -1713,6 +1713,36 @@ def test_install_backup_keeps_the_config_mode(tmp_path, monkeypatch, umask_022, 
     assert "secret" in bak.read_text()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    ("held", "mode", "want"),
+    [
+        (0o644, 0o600, 0o600),
+        (0o604, 0o640, 0o600),
+        (0o755, 0o644, 0o644),
+        (0o400, 0o600, 0o400),  # a narrower copy is not widened
+    ],
+    ids=["world-readable", "other-readable", "executable", "narrower"],
+)
+def test_install_narrows_a_reused_backup_to_the_config_mode(
+    tmp_path, monkeypatch, umask_022, held, mode, want
+):
+    """A backup that holds the config's bytes is reused, and it kept whatever
+    mode it had: a world-readable copy an older den made of a 0600 config
+    stayed so while install named it as the backup."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"token": "secret", // not json\n')
+    cfg.chmod(mode)
+    bak = cfg.with_name(cfg.name + ".den.bak")
+    bak.write_bytes(cfg.read_bytes())
+    bak.chmod(held)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert stat.S_IMODE(bak.stat().st_mode) == want
+    assert not cfg.with_name(cfg.name + ".den.bak.1").exists(), "it was reused"
+
+
 def test_install_refuses_a_symlinked_backup_outside_the_workspace(
     tmp_path, monkeypatch, symlink
 ):

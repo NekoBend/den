@@ -771,6 +771,29 @@ def test_install_force_backup_keeps_the_files_permissions(
     assert backup.stat().st_mode & 0o777 == want
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("where", ["target", "tool"])
+def test_install_force_narrows_a_reused_backup_to_the_files_permissions(
+    tmp_path, monkeypatch, where
+):
+    """A backup that holds the file's bytes is reused, and it kept whatever
+    mode it had, a world-readable one included beside a private file."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    skill.chmod(0o600)
+    backup = skill.with_name("SKILL.md.den.bak")
+    backup.write_text("MINE\n")
+    backup.chmod(0o644)
+    assert install_main([*args, "--force"]) == 0
+    assert backup.stat().st_mode & 0o777 == 0o600
+    assert not skill.with_name("SKILL.md.den.bak.1").exists(), "it was reused"
+
+
 def test_install_force_refuses_to_back_up_through_a_symlink(
     tmp_path, monkeypatch, symlink, capsys
 ):
