@@ -187,16 +187,17 @@ zctool=_zctool" "$out"
 # A test cannot make a file someone else owns without root, so these cases
 # simulate the ownership: a compaudit defined before init.zsh (whose autoload
 # keeps it) flags the paths in zc_wdirs and zc_wfiles as the real one flags
-# what someone else owns. Called on its own, it prints them and fails; called
-# from compinit (which sets _i_check), it hands them over in compinit's own
-# variables, and fails.
+# what someone else owns. Called on its own, it prints them as compaudit does
+# (print -l, which reads backslash escapes) and fails; called with _i_check
+# set (by compinit, and by init.zsh for the list), it hands them over in
+# _i_wdirs and _i_wfiles, as compaudit does for compinit, and fails.
 ZC_STUB="$WORK/compaudit-stub.zsh"
 cat > "$ZC_STUB" <<'EOF'
 compaudit() {
     if (( ${+_i_check} )); then
         _i_wdirs=( $zc_wdirs ) _i_wfiles=( $zc_wfiles ) _i_q=files
     else
-        print -rl -- $zc_wdirs $zc_wfiles
+        print -l - $zc_wdirs $zc_wfiles
     fi
     return 1
 }
@@ -211,6 +212,18 @@ for zc_dir in zfunc zfunc/; do
     out=$(zc_run "fpath=(~/$zc_dir \$fpath); zc_wfiles=(~/$zc_dir/_ls); . '$ZC_STUB'" "$ZC_LS")
     assert_eq "zsh/a file someone else owns, fpath entry ~/$zc_dir: the system _ls loaded" "_ls: the system one" "$out"
 done
+
+# Whoever owns that file can name a second one there. init.zsh read the list
+# compaudit prints, and print turns \x2f in _a\x2f\c into a slash and stops at
+# \c: the list ended at ~/zfunc/_a/, ~/zfunc stayed in fpath, and its flagged
+# _ls was the one Tab loaded.
+echo "[zsh] init.zsh: a file someone else owns (simulated), next to a second one named with backslash escapes"
+zc_reset
+mkdir -p "$ZC/home/zfunc"
+zc_plant_ls "$ZC/home/zfunc/_ls"
+: > "$ZC/home/zfunc/_a\\x2f\\c"
+out=$(zc_run "fpath=(~/zfunc \$fpath); zc_wfiles=(~/zfunc/'_a\\x2f\\c' ~/zfunc/_ls); . '$ZC_STUB'" "$ZC_LS")
+assert_eq "zsh/a second flagged file named with backslash escapes: the system _ls loaded" "_ls: the system one" "$out"
 
 echo "[zsh] init.zsh: a digest someone else owns (simulated)"
 zc_reset

@@ -47,9 +47,14 @@ if (( ! ${+functions[compdef]} )); then
                 return
             fi
         else
-            # One path per line on stdout (its header goes to stderr). A
-            # directory is not taken out for holding a listed directory.
-            listed=( ${(f)"$(compaudit 2>/dev/null)"} )
+            # compaudit's list as compinit gets it: with _i_check set,
+            # compaudit leaves it in _i_wdirs and _i_wfiles and prints
+            # nothing. The list it prints on its own reads backslash escapes
+            # in a name (a file named with \c ends the list there) and breaks
+            # a name at a newline. A directory is not taken out for holding
+            # a listed directory.
+            listed=( ${(0)"$(local _i_check=y; compaudit 2>/dev/null
+                print -rN -- $_i_wdirs $_i_wfiles)"} )
             for d in $fpath; do
                 for f in $listed; do
                     [[ $d == $f || $d == $f/* || $d.zwc == $f ||
