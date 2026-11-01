@@ -145,6 +145,42 @@ fi
 # repository here": the refusal git prints for another reason quotes that path.
 NAGR="$WORK/not a git repository"
 
+# Two checkouts whose .git/config names a core.fsmonitor program, as one that
+# came in an archive or a shared folder can: git runs it when it reads the
+# index, and va's own git check ran it, before it refused the committed venv
+# in fsm_tracked/ and for the venv the user made in fsm_mine/. The program
+# leaves a marker. FSM_RUNS is 1 when a plain git ls-files here runs it, so
+# the checks below have something to keep from running.
+FSM_HOOK="$WORK/fsm_hook"
+printf '#!/bin/sh\necho ran >> "%s"\nexit 1\n' "$WORK/fsm_ran" > "$FSM_HOOK"
+chmod +x "$FSM_HOOK"
+for d in fsm_tracked fsm_mine; do
+    mkdir -p "$WORK/$d/.venv/bin"
+    : > "$WORK/$d/.venv/bin/activate"
+    printf '%s\n' '$env:VIRTUAL_ENV = "fakevenv"' > "$WORK/$d/.venv/bin/Activate.ps1"
+    printf 'version_info = 3.12.0\n' > "$WORK/$d/.venv/pyvenv.cfg"
+done
+(
+    cd "$WORK/fsm_tracked" || exit 1
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add -f .venv
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+    git config core.fsmonitor "$FSM_HOOK"
+) >/dev/null 2>&1
+(
+    cd "$WORK/fsm_mine" || exit 1
+    git init -q .
+    printf '.venv/\n' > .gitignore
+    git -c user.email=t@example.com -c user.name=t add .gitignore
+    git -c user.email=t@example.com -c user.name=t commit -q -m "ignore venv"
+    git config core.fsmonitor "$FSM_HOOK"
+) >/dev/null 2>&1
+rm -f "$WORK/fsm_ran"
+git -C "$WORK/fsm_mine" ls-files >/dev/null 2>&1 || true
+FSM_RUNS=0
+[ -e "$WORK/fsm_ran" ] && FSM_RUNS=1
+rm -f "$WORK/fsm_ran"
+
 # git reads a repo owned by another user only when safe.directory allows it;
 # this makes it take every repo as one, whatever the tester's own config says.
 GIT_AS_OTHER_OWNER="GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1"
@@ -355,6 +391,21 @@ for sh in bash zsh; do
         assert_not_exists "$sh/va runs no fsmonitor of a venv repository" "$WORK/embed_fsmonitor_ran"
     else
         echo "  SKIP: $sh/va venv repository (git before 2.38 has no safe.bareRepository)"
+    fi
+
+    if [ "$FSM_RUNS" -eq 1 ]; then
+        echo "[$sh] va runs no core.fsmonitor program the checkout's .git/config names"
+        rm -f "$WORK/fsm_ran"
+        actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/fsm_tracked' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+        assert_contains "$sh/va still refuses a committed venv there" "venv content is tracked by git" "$actual"
+        assert_contains "$sh/va activates nothing from the committed venv there" "rc=1 PY=[]" "$actual"
+        assert_not_exists "$sh/va runs no core.fsmonitor program before it refuses" "$WORK/fsm_ran"
+        rm -f "$WORK/fsm_ran"
+        actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/fsm_mine' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
+        assert_eq "$sh/va activates the user's venv there" "rc=0 PY=[3.12.0]" "$actual"
+        assert_not_exists "$sh/va runs no core.fsmonitor program for the user's venv" "$WORK/fsm_ran"
+    else
+        echo "  SKIP: $sh/va and core.fsmonitor (git here ran no core.fsmonitor program for ls-files)"
     fi
 
     echo "[$sh] va takes only git's own fatal line as 'not a git repository'"
@@ -954,6 +1005,31 @@ if [ "$GIT_HAS_SAFE_BARE" -eq 1 ]; then
     assert_not_exists "pwsh/va runs no fsmonitor of a venv repository" "$WORK/embed_fsmonitor_ran"
 else
     echo "  SKIP: pwsh/va venv repository (git before 2.38 has no safe.bareRepository)"
+fi
+
+if [ "$FSM_RUNS" -eq 1 ]; then
+    echo "[pwsh] va runs no core.fsmonitor program the checkout's .git/config names"
+    rm -f "$WORK/fsm_ran"
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        Set-Location '$WORK/fsm_tracked'
+        \$env:VIRTUAL_ENV = \$null
+        va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+        \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+    " | tr -d '\r')
+    assert_contains "pwsh/va still refuses a committed venv there" "venv content is tracked by git" "$actual"
+    assert_contains "pwsh/va activates nothing from the committed venv there" "VE=[] PY=[]" "$actual"
+    assert_not_exists "pwsh/va runs no core.fsmonitor program before it refuses" "$WORK/fsm_ran"
+    rm -f "$WORK/fsm_ran"
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        Set-Location '$WORK/fsm_mine'
+        \$env:VIRTUAL_ENV = \$null
+        va *>\$null
+        \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
+    " | tr -d '\r')
+    assert_eq "pwsh/va activates the user's venv there" "VE=[fakevenv] PY=[3.12.0]" "$actual"
+    assert_not_exists "pwsh/va runs no core.fsmonitor program for the user's venv" "$WORK/fsm_ran"
+else
+    echo "  SKIP: pwsh/va and core.fsmonitor (git here ran no core.fsmonitor program for ls-files)"
 fi
 
 echo "[pwsh] va still refuses a committed bin/ next to the Scripts/ it activates"

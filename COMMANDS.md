@@ -393,7 +393,8 @@ repository (a committed `HEAD`, `objects/` and `refs/`). That last check needs g
 What git tracks is how `va` tells a venv that came with the tree, so it can tell
 only in a git checkout: outside one, a venv that came in an archive or a shared
 folder is sourced as it is, as `source` would source it. Activate only a venv you
-made there.
+made there. `va` runs git with `core.fsmonitor` off, so a `.git/config` that came
+with such a tree starts no program.
 
 ## Media (ffmpeg)
 

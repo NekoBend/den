@@ -318,9 +318,16 @@ function va {
     # empty index (nothing tracked) and a core.fsmonitor it runs. Git then refuses,
     # and the refusal below fails closed. Git before 2.38 ignores the key and
     # cannot be kept out of such a repository.
+    # core.fsmonitor= (empty, off): the enclosing repository's .git/config, which
+    # an archive or a shared folder can deliver with the tree, may name a program
+    # git runs when it reads the index, even for a venv it then refuses. Empty,
+    # not false: git before 2.36 takes the value for the path of a hook, and an
+    # empty one for none. The other programs such a config can name (hooks,
+    # filters, diff.external, core.sshCommand) do not run for ls-files, and its
+    # pager runs on a terminal only, which these calls' output never is.
     $activateDir = Split-Path -Parent $activatePath
     $pathspecs = @('.') + ('Scripts', 'bin', 'pyvenv.cfg' | ForEach-Object { "../$_"; ":(icase)../$_" })
-    $tracked = & $gitExe -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
+    $tracked = & $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
     if ($LASTEXITCODE -ne 0) {
       # Fail closed: only "not a git repository" means nothing to check. Any other
       # failure, such as a checkout git will not open for dubious ownership, leaves
@@ -329,7 +336,7 @@ function va {
       # other messages quote a path that may hold the same words.
       $lcAll = $env:LC_ALL
       $env:LC_ALL = 'C'
-      try { $why = @(& $gitExe -c safe.bareRepository=explicit -C $activateDir ls-files -- . 2>&1 | ForEach-Object { "$_" }) }
+      try { $why = @(& $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- . 2>&1 | ForEach-Object { "$_" }) }
       catch { $why = @("$_") }
       finally { $env:LC_ALL = $lcAll }
       if (-not ($why -match '^fatal: not a git repository')) {

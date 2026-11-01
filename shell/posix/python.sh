@@ -170,13 +170,21 @@ va() {
         # with an empty index (nothing tracked) and a core.fsmonitor it runs. Git
         # then refuses, and the refusal below fails closed. Git before 2.38 ignores
         # the key and cannot be kept out of such a repository.
-        if ! tracked="$(command git -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . ../bin ':(icase)../bin' ../pyvenv.cfg ':(icase)../pyvenv.cfg' 2>/dev/null)"; then
+        # core.fsmonitor= (empty, off): the enclosing repository's .git/config,
+        # which an archive or a shared folder can deliver with the tree, may name
+        # a program git runs when it reads the index, even for a venv it then
+        # refuses. Empty, not false: git before 2.36 takes the value for the path
+        # of a hook, and an empty one for none. The other programs such a config
+        # can name (hooks, filters, diff.external, core.sshCommand) do not run for
+        # ls-files, and its pager runs on a terminal only, which these calls'
+        # output never is.
+        if ! tracked="$(command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . ../bin ':(icase)../bin' ../pyvenv.cfg ':(icase)../pyvenv.cfg' 2>/dev/null)"; then
             # Fail closed: only "not a git repository" means nothing to check. Any
             # other failure, such as a checkout git will not open for dubious
             # ownership, leaves a committed venv possible. Any line of git's, as
             # trace lines may come first, and only from its start, as other
             # messages quote a path that may hold the same words.
-            why="$nl$(LC_ALL=C command git -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . 2>&1 >/dev/null)"
+            why="$nl$(LC_ALL=C command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . 2>&1 >/dev/null)"
             case "$why" in
                 *"${nl}fatal: "[Nn]"ot a git repository"*) tracked="" ;;
                 *)
