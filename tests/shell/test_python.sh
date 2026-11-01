@@ -1549,6 +1549,16 @@ rc=1" "$actual"
 rc=0" "$actual"
     assert_eq "$sh/vv beside a version-only .python-version prints no line" "" "$(cat "$R/err")"
 
+    # The walk fails where it finds no marker, and vv assigned what it printed
+    # plainly: under set -e the shell ended there, and uv venv never ran.
+    echo "[$sh] vv under set -e, with no marker here or where --directory points: uv venv, and the shell goes on"
+    actual=$(route_posix "$sh" "$NOPROJ" "set -e; vv; vv --directory '$NOPROJ' v; echo after") || true
+    assert_eq "$sh/vv under set -e with no marker runs uv venv" "mock-uv venv
+mock-uv venv --directory $NOPROJ v
+after
+rc=0" "$actual"
+    assert_eq "$sh/vv under set -e with no marker prints no line" "" "$(cat "$R/err")"
+
     # uv venv first enters the directory --directory (else UV_WORKING_DIR,
     # else UV_WORKING_DIRECTORY) names and reads from there; --project (else
     # UV_PROJECT) moves its walk alone, to that directory taken from the one

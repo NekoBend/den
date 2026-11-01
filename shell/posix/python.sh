@@ -447,8 +447,10 @@ _den_uv_venv() {
             --project=*) project=${a#--project=} ;;
         esac
     done
+    # _den_py_marker fails where it finds none, and a plain assignment takes its
+    # status: under set -e (errexit) the shell would end there, before uv venv.
     if [ -z "$dir" ] && [ -z "$project" ]; then
-        marker=$(_den_py_marker)
+        marker=$(_den_py_marker) || marker=''
     # The directory uv runs in, with its symbolic links resolved, as uv reads
     # it back: a relative one from here, entered as ./DIR so that cd takes no
     # CDPATH entry and no - or +N for a directory it remembers, with the
@@ -483,7 +485,7 @@ _den_uv_venv() {
             start=${start:-/}
         fi
         at="in or above $start" there='there or above'
-        marker=$(_den_py_marker "$start" "$here")
+        marker=$(_den_py_marker "$start" "$here") || marker=''
     fi
     if [ -z "$marker" ]; then
         command uv venv "$@"
