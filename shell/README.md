@@ -185,14 +185,16 @@ its own `for`, PowerShell as it does on Linux and macOS), runs nothing when a
 match starts with `-` (cmd: write the wildcard as `.\*`; PowerShell:
 `$PWD/*`), and hands `bat` the names in a form its own expansion leaves
 alone: cmd puts each in quotes, PowerShell gives the full path of a name
-that holds `[` or `]`. cmd splits a word at `=`, `,` and `;`, as it does for
-its own commands, so such a name goes in quotes there. `cat` also hands `bat`
-a last `--paging=never` after the names, which wins over any `--paging`
-before it; cmd's `cat` refuses a `--`, after which `bat` would read that word
-as a file name (PowerShell drops a bare `--` typed to `cat`, but a quoted
-`'--'` reaches `bat`, which then says that last word is missing). `cat` there
-expands file names only: `bat` would expand an option or an option's value
-too, and expanding one as a name would make it a file. So it runs nothing
+that holds `[` or `]`. cmd doubles the backslashes a word ends in (`dir\`),
+which `bat` would otherwise read as escaping the closing quote. cmd splits a
+word at `=`, `,` and `;`, as it does for its own commands, so such a name
+goes in quotes there. `cat` also hands `bat` a last `--paging=never` after
+the names, which wins over any `--paging` before it, and refuses a `--`,
+after which `bat` would read that word as a file name. PowerShell's `cat`
+does both on every system; it drops a bare `--` typed to `cat`, but a quoted
+`'--'`, or a second `--`, reaches it. `cat` there expands file names only:
+`bat` would expand an option or an option's value too, and expanding one as a
+name would make it a file. So it runs nothing
 when a word that starts with `-` holds a wildcard character
 (`--file-name=*.py`), or when the value of an option that takes it from the
 next word does (`-l '*'`, `--map-syntax '*.h:C++'`; the options `bat --help`
