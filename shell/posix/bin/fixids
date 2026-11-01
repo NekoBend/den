@@ -224,7 +224,10 @@ warn_walk() {
 # PIPESTATUS (awk is last in the pipe, so xargs' status would otherwise be
 # lost behind awk's exit 0) and mark the whole run failed. stdbuf -oL keeps
 # each parallel worker's lines whole (block-buffered output can split lines
-# mid-path when workers interleave, garbling the count).
+# mid-path when workers interleave, garbling the count). uutils' stdbuf
+# (/usr/bin/stdbuf on Ubuntu 26.04) leaves a directory under TMPDIR on every
+# call, one per batch, so the pass runs with TMPDIR set to the list
+# directory, which is removed on exit.
 run_pass() {
 	local verb=$1 quiet=$2 cmd=$3 tgt=$4 list=$5
 	if [ "$dry" -eq 1 ]; then
@@ -234,7 +237,7 @@ run_pass() {
 		echo "$prog: $n file(s) would be $verb to $tgt"
 		return 0
 	fi
-	xargs -0 -r -P "$jobs" -n 256 stdbuf -oL "$cmd" -h -c "$tgt" <"$list" |
+	TMPDIR=$tmpd xargs -0 -r -P "$jobs" -n 256 stdbuf -oL "$cmd" -h -c "$tgt" <"$list" |
 		awk -v prog="$prog" -v verbose="$verbose" -v tty="$tty" \
 			-v verb="$verb" -v quiet="$quiet" -v tgt="$tgt" '
 			{

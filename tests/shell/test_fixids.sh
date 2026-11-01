@@ -316,6 +316,27 @@ rc=0" "$actual"
 rm -f "$WORK/tmplink"
 setup_tree
 
+# uutils' stdbuf (/usr/bin/stdbuf on Ubuntu 26.04) leaves a directory under
+# TMPDIR on every call, one per batch of 256 paths, and fixids left them all
+# in TMPDIR (where a TMPDIR inside the root then had them chowned by the next
+# run). A stand-in stdbuf does the same, then runs the logging chown above;
+# what it leaves must go with the lists.
+mkdir -p "$TESTTMP/leakbuf"
+printf '#!/bin/sh\nmktemp -d "${TMPDIR:-/tmp}/.tmpXXXXXX" >/dev/null || exit 125\nshift\nexec "$@"\n' > "$TESTTMP/leakbuf/stdbuf"
+chmod +x "$TESTTMP/leakbuf/stdbuf"
+for _mode in "--to UID" "--from UID:GID"; do
+    case $_mode in
+        "--to UID") _args=(--to 2000) _tgt=2000 ;;
+        *) _args=(--from "$U:$G" --to 2000:2000) _tgt=2000:2000 ;;
+    esac
+    echo "[fixids] $_mode: what stdbuf leaves in TMPDIR is removed with the lists"
+    rm -rf "${WORK:?}/tmp"
+    actual=$(fx "$TESTTMP/leakbuf:$TESTTMP/chpaths" "${_args[@]}" "$WORK/t")
+    assert_eq "fixids/$_mode, leaking stdbuf: real run" "fixids: chowned 6 file(s) to $_tgt
+rc=0" "$actual"
+    assert_eq "fixids/$_mode, leaking stdbuf: TMPDIR left empty" "" "$(find "$WORK/tmp" -mindepth 1)"
+done
+
 # =============================================================================
 # A chown or chgrp that fails
 # =============================================================================
