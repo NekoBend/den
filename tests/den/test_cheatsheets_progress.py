@@ -7,11 +7,15 @@ without it these tests are skipped.
 """
 
 import asyncio
+import builtins
 import errno
 import importlib
 import multiprocessing
 import os
 import queue
+import re
+import runpy
+import shutil
 import stat
 import sys
 import time
@@ -427,6 +431,92 @@ def test_copy_still_writes_into_a_fifo(tmp_path, monkeypatch, copier):
         assert os.read(reader, 4096) == src.read_bytes()
     finally:
         os.close(reader)
+
+
+@pytest.mark.parametrize(
+    ("note", "posix", "windows"),
+    [
+        (
+            "module",
+            "On POSIX they are stricter than ``copy2``",
+            "Windows has no such guarantee",
+        ),
+        (
+            "copy_file_tqdm",
+            "On POSIX, ``dst`` is 0o600",
+            "On Windows the 0o600 only keeps a new ``dst`` from being read-only",
+        ),
+        (
+            "copy_file_rich",
+            "the 0o600 holds on POSIX only",
+            "On Windows the destination's ACL",
+        ),
+    ],
+    ids=["module", "tqdm", "rich"],
+)
+def test_copy_notes_say_that_the_0o600_promise_is_posix_only(note, posix, windows):
+    # private() narrows the mode only on POSIX. On Windows, os.open's 0o600
+    # only keeps a new file from being read-only, and the file takes the ACL
+    # it inherits from its directory, yet the notes promised a private
+    # half-written copy on every platform. Naming both platforms is not
+    # enough ("On POSIX and on Windows they are stricter" does): the promise
+    # has to sit in a sentence that names POSIX and not Windows.
+    doc = files.__doc__ if note == "module" else getattr(files, note).__doc__
+    assert doc is not None
+    sentences = re.split(r"(?<=\.)\s+(?=[A-Z`])", " ".join(doc.split()))
+    promise = [sentence for sentence in sentences if posix in sentence]
+    assert len(promise) == 1, (posix, sentences)
+    assert "Windows" not in promise[0], promise[0]
+    assert any(windows in sentence for sentence in sentences), (windows, sentences)
+    assert "ACL" in doc
+
+
+# --- files.py's own sanity check ------------------------------------------------
+
+
+def _run_sanity_check(os_module: types.ModuleType = os) -> None:
+    """Run files.py as a script, its ``import os`` statements giving ``os_module``."""
+    real_import = builtins.__import__
+
+    def sheet_import(name, *args, **kwargs):
+        return os_module if name == "os" else real_import(name, *args, **kwargs)
+
+    runpy.run_path(
+        str(PROGRESS_DIR / "files.py"),
+        init_globals={"__builtins__": {**vars(builtins), "__import__": sheet_import}},
+        run_name="__main__",
+    )
+
+
+def test_sanity_check_passes_with_windows_file_modes(monkeypatch, capsys):
+    # Windows keeps no permission bits, only a read-only flag: chmod(0o640)
+    # leaves the source writable, and stat reports a writable file as 0o666.
+    # The sanity check still wanted 0o640 on each copy, so `python files.py`
+    # stopped at the first copier there.
+    _stand_in_tqdm(monkeypatch)
+    real_chmod = os.chmod
+
+    def chmod(path, mode, **kwargs):
+        real_chmod(path, 0o666 if mode & stat.S_IWRITE else 0o444, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", chmod)
+    windows = types.ModuleType("os")  # what the sheet sees; the rest stays POSIX
+    windows.__dict__.update(vars(os), name="nt")
+    try:
+        _run_sanity_check(windows)
+    except SystemExit as stop:
+        pytest.fail(f"the sanity check stopped: {stop}")
+    assert "All sanity checks passed." in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_sanity_check_still_checks_the_copy_mode_on_posix(monkeypatch):
+    # Where there are permission bits, a copy without the source's mode
+    # must still stop the sanity check.
+    _stand_in_tqdm(monkeypatch)
+    monkeypatch.setattr(shutil, "copystat", lambda src, dst: None)
+    with pytest.raises(SystemExit, match="expected 0o640"):
+        _run_sanity_check()
 
 
 # --- run_thread_rich_per_task: one live task per running item -------------------

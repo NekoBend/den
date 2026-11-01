@@ -113,12 +113,37 @@ def test_delete_recipes_say_that_hidden_files_need_h():
 
 def test_fd_never_starts_a_mv_that_overwrites():
     # fd -x starts mv itself (a shell alias such as mv -i never applies), and
-    # `-x mv {} {.}.md` replaced an existing notes.md with notes.txt.
+    # `-x mv {} {.}.md` replaced an existing notes.md with notes.txt. -n alone
+    # still moved notes.txt into a directory named notes.md, so a rename needs
+    # -T too. A move into dest/ must not have it: dest/ itself would become
+    # the new name, and every file would be skipped.
     commands = [command for command, _ in map(_split, _sh_lines())]
     moves = [command for command in commands if re.search(r"-[xX] mv\b", command)]
     assert len(moves) == 3, moves
     for command in moves:
-        assert re.search(r"-[xX] mv -n -- \{\}", command), command
+        flags = "-n" if command.endswith("/") else "-n -T"
+        assert re.search(rf"-[xX] mv {flags} -- \{{\}}", command), command
+
+
+def test_fd_moves_and_renames_only_files():
+    # fd -e .jpeg lists directories too: a directory album.jpeg/ became
+    # album.jpg/ along with the photos, and `fd -e jpg -x mv -n -- {} dest/`
+    # moved a directory album.jpg/ into dest/ with everything in it.
+    moves = [
+        command
+        for command, _ in map(_split, _sh_lines())
+        if re.search(r"^fd\b.*-[xX] (mv|rename)\b", command)
+    ]
+    assert len(moves) == 4, moves
+    for command in moves:
+        assert " -t f " in f" {command} ", command
+
+
+def test_rename_prefix_rewrites_only_the_file_name():
+    # A Perl rename applies the expression to the whole path fd hands it:
+    # 's/test_/spec_/' aimed ./test_dir/test_a.py at ./spec_dir/test_a.py.
+    words = shlex.split(_command("rename prefix"))
+    assert words[words.index("rename") + 1] == "s{(^|/)test_([^/]*)$}{$1spec_$2}"
 
 
 XH_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
@@ -264,6 +289,92 @@ def test_bulk_rename_skips_a_name_that_is_taken(repo, comment, taken, free):
 
 
 @needs_tools
+@pytest.mark.parametrize(
+    "via_symlink", [False, True], ids=["directory", "symlink-to-directory"]
+)
+@pytest.mark.parametrize(
+    ("comment", "source", "target"),
+    [
+        (".jpeg → .jpg", "photo.jpeg", "photo.jpg"),
+        (".txt → .md", "notes.txt", "notes.md"),
+    ],
+    ids=["jpeg", "txt"],
+)
+def test_bulk_rename_skips_a_name_taken_by_a_directory(
+    repo, comment, source, target, via_symlink
+):
+    # mv takes a directory as its last operand (or a symlink to one) for the
+    # place to move into, -n or not: notes.txt next to a directory notes.md
+    # ended up as notes.md/notes.txt, and the run exited 0.
+    (repo / source).write_text("SOURCE\n", encoding="utf-8")
+    directory = repo / ("elsewhere" if via_symlink else target)
+    directory.mkdir()
+    if via_symlink:
+        (repo / target).symlink_to(directory.name, target_is_directory=True)
+    result = _run(_command(comment), repo)  # exit status: see above
+    assert [path.name for path in directory.iterdir()] == [], result.stderr
+    assert (repo / source).read_text(encoding="utf-8") == "SOURCE\n"
+
+
+@needs_tools
+@pytest.mark.parametrize(
+    ("comment", "directory", "renamed"),
+    [
+        (".jpeg → .jpg", "album.jpeg", "album.jpg"),
+        (".txt → .md", "album.txt", "album.md"),
+    ],
+    ids=["jpeg", "txt"],
+)
+def test_bulk_rename_leaves_a_directory_named_like_a_file_alone(
+    repo, comment, directory, renamed
+):
+    # fd -e .jpeg lists directories too: album.jpeg/ became album.jpg/.
+    (repo / directory).mkdir()
+    (repo / directory / "keep.dat").write_text("KEEP\n", encoding="utf-8")
+    result = _run(_command(comment), repo)
+    assert (repo / directory / "keep.dat").is_file(), result.stderr
+    assert not (repo / renamed).exists()
+
+
+@pytest.fixture
+def perl_rename(tmp_path) -> None:
+    """Skip unless ``rename`` is a Perl rename (util-linux's takes other operands)."""
+    exe = shutil.which("rename")
+    if exe is None:
+        pytest.skip("needs a Perl rename")
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    (probe / "x_a").touch()
+    subprocess.run(
+        [exe, "s/_a$/_b/", "x_a"],
+        cwd=probe,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    if not (probe / "x_b").exists():
+        pytest.skip("rename is not a Perl rename")
+
+
+@needs_tools
+@pytest.mark.usefixtures("perl_rename")
+def test_rename_prefix_renames_the_file_not_its_directory(repo):
+    # 's/test_/spec_/' changed the first test_ in the path: ./test_dir/test_a.py
+    # went into an existing spec_dir/ under its old name, and a_test_c.py,
+    # which has no test_ prefix, became a_spec_c.py.
+    (repo / "test_dir").mkdir()
+    (repo / "test_dir" / "test_a.py").write_text("A\n", encoding="utf-8")
+    (repo / "spec_dir").mkdir()
+    (repo / "test_b.py").write_text("B\n", encoding="utf-8")
+    (repo / "a_test_c.py").write_text("C\n", encoding="utf-8")
+    result = _run(_command("rename prefix"), repo)
+    assert list((repo / "spec_dir").iterdir()) == [], result.stderr
+    assert (repo / "test_dir" / "spec_a.py").read_text(encoding="utf-8") == "A\n"
+    assert (repo / "spec_b.py").read_text(encoding="utf-8") == "B\n"
+    assert (repo / "a_test_c.py").read_text(encoding="utf-8") == "C\n"
+
+
+@needs_tools
 def test_move_to_dest_skips_a_name_already_there(repo):
     # `fd -e jpg -x mv {} dest/` replaced a dest/pic.jpg that was already
     # there, and of a/pic.jpg and b/pic.jpg only one survived.
@@ -278,6 +389,21 @@ def test_move_to_dest_skips_a_name_already_there(repo):
     assert (repo / "a" / "pic.jpg").read_text(encoding="utf-8") == "FROM A\n"
     assert (dest / "free.jpg").read_text(encoding="utf-8") == "FREE\n", result.stderr
     assert not (repo / "a" / "free.jpg").exists()
+
+
+@needs_tools
+def test_move_to_dest_leaves_a_directory_named_like_a_file_alone(repo):
+    # fd -e jpg lists directories too: album.jpg/ went into dest/ with what
+    # it held, and the run exited 0.
+    dest = repo / "dest"
+    dest.mkdir()
+    (repo / "album.jpg").mkdir()
+    (repo / "album.jpg" / "keep.dat").write_text("KEEP\n", encoding="utf-8")
+    (repo / "photo.jpg").write_text("PHOTO\n", encoding="utf-8")
+    result = _run(_command("move all .jpg to dest/"), repo)
+    assert (repo / "album.jpg" / "keep.dat").is_file(), result.stderr
+    assert not (dest / "album.jpg").exists()
+    assert (dest / "photo.jpg").read_text(encoding="utf-8") == "PHOTO\n"
 
 
 @needs_tools
