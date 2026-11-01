@@ -607,7 +607,8 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
     # defeating den's modern-first dispatch. den drives coreutils through its own
     # tier (coreutils.exe), so strip that block to let the wrappers govern. Done
     # after the install step so a freshly added block is caught too. A block that
-    # stays because the profile could not be backed up first fails the run.
+    # stays because the profile could not be backed up first, or then replaced,
+    # fails the run.
     if not dry_run and (_windows() or shutil.which("pwsh")):
         for prof in (pwsh_dir / _PWSH_PROFILE, pwsh_dir / "profile.ps1"):
             removed = _disable_coreutils_readline(prof)

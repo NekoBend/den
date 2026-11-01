@@ -361,9 +361,8 @@ class _Writer:
         no copy at all. It keeps the file's permission bits minus execute, so a
         private file's copy stays private and a backed-up ~/.local/bin helper
         is not left executable on PATH; a copy that is reused loses whatever
-        it allows beyond them. A symlink (or anything not a regular
-        file) at a backup name refuses the backup instead of writing through
-        it."""
+        it allows beyond them. A symlink (or anything not a regular file) at a
+        backup name refuses the backup instead of writing through it."""
         # Under a confined root, `guard` holds the resolved path commit()
         # already checked for symlinked components; the copy is its sibling.
         real = guard[1] if guard is not None else dest
