@@ -67,24 +67,30 @@ function env {
   end {
     if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
     if ($__cu) { & $__cu env @__a; return }
-    $assigns = @(); $cmd = $null; $cmdArgs = @()
-    $i = 0
-    while ($i -lt $__a.Count) {
-      $a = $__a[$i]
-      if ($null -eq $cmd -and $a -match '^([^=]+)=(.*)$') {
-        $assigns += @{ Name = $Matches[1]; Value = $Matches[2] }
-      } elseif ($null -eq $cmd) {
-        $cmd = $a
+    # The command runs from this scope, and PowerShell looks a variable up
+    # through the scopes of the commands that called it, so a scriptblock or
+    # a PowerShell function run here sees env's variables before its
+    # caller's. Every variable env makes in this block has a __ name, as in
+    # begin: named $first, $set, $a, $i, $cmd and the like, they hid the
+    # caller's variables of those names from the command.
+    $__assigns = @(); $__cmd = $null; $__cmdArgs = @()
+    $__i = 0
+    while ($__i -lt $__a.Count) {
+      $__arg = $__a[$__i]
+      if ($null -eq $__cmd -and $__arg -match '^([^=]+)=(.*)$') {
+        $__assigns += @{ Name = $Matches[1]; Value = $Matches[2] }
+      } elseif ($null -eq $__cmd) {
+        $__cmd = $__arg
       } else {
-        $cmdArgs += $a
+        $__cmdArgs += $__arg
       }
-      $i++
+      $__i++
     }
-    if ($null -ne $cmd) {
+    if ($null -ne $__cmd) {
       # A name's value is saved the first time the name comes up, before it
       # is set, and each name is restored once. Saved again at a repeat
       # (`env A=1 A=2 cmd`), it was the value the first assignment had just
-      # set, and the session kept it. $saved ignores case, as Windows'
+      # set, and the session kept it. $__saved ignores case, as Windows'
       # variable names do.
       # The names are set inside the try, so that when one cannot be set
       # (.NET refuses a name that starts with a NUL character, for one), the
@@ -93,30 +99,30 @@ function env {
       # (called inside a try, or under $ErrorActionPreference Stop), and
       # otherwise the command ran without the name that failed. A name whose
       # set throws was not changed, so if it came up first there it leaves
-      # $saved: restoring it would throw again, and could stop the restore of
-      # the names after it.
-      $saved = @{}
+      # $__saved: restoring it would throw again, and could stop the restore
+      # of the names after it.
+      $__saved = @{}
       try {
-        foreach ($kv in $assigns) {
-          $first = -not $saved.ContainsKey($kv.Name)
-          if ($first) { $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name) }
-          $set = $false
-          try { [Environment]::SetEnvironmentVariable($kv.Name, $kv.Value); $set = $true }
-          finally { if ($first -and -not $set) { $saved.Remove($kv.Name) } }
+        foreach ($__kv in $__assigns) {
+          $__first = -not $__saved.ContainsKey($__kv.Name)
+          if ($__first) { $__saved[$__kv.Name] = [Environment]::GetEnvironmentVariable($__kv.Name) }
+          $__set = $false
+          try { [Environment]::SetEnvironmentVariable($__kv.Name, $__kv.Value); $__set = $true }
+          finally { if ($__first -and -not $__set) { $__saved.Remove($__kv.Name) } }
         }
-        if ($__in) { $__piped | & $cmd @cmdArgs } else { & $cmd @cmdArgs }
+        if ($__in) { $__piped | & $__cmd @__cmdArgs } else { & $__cmd @__cmdArgs }
       }
       finally {
-        # The names come from GetEnumerator(), not $saved.Keys: a hashtable
+        # The names come from GetEnumerator(), not $__saved.Keys: a hashtable
         # answers dot access with a key's value first, so after `env KEYS=x
-        # cmd`, $saved.Keys was the value KEYS had before. A name that was not
-        # set is removed with a real null: PowerShell hands $null to a .NET
-        # string parameter as '', and since .NET 9 (pwsh 7.5)
+        # cmd`, $__saved.Keys was the value KEYS had before. A name that was
+        # not set is removed with a real null: PowerShell hands $null to a
+        # .NET string parameter as '', and since .NET 9 (pwsh 7.5)
         # SetEnvironmentVariable sets '' as an empty value, so the name stayed.
-        foreach ($e in @($saved.GetEnumerator())) {
-          if ($null -eq $e.Value) {
-            [Environment]::SetEnvironmentVariable($e.Key, [System.Management.Automation.Language.NullString]::Value)
-          } else { [Environment]::SetEnvironmentVariable($e.Key, $e.Value) }
+        foreach ($__e in @($__saved.GetEnumerator())) {
+          if ($null -eq $__e.Value) {
+            [Environment]::SetEnvironmentVariable($__e.Key, [System.Management.Automation.Language.NullString]::Value)
+          } else { [Environment]::SetEnvironmentVariable($__e.Key, $__e.Value) }
         }
       }
     } else {

@@ -736,6 +736,28 @@ assert_eq "pwsh/env without coreutils: a failed assignment undoes the earlier on
 in a try, DEN_ENV_FIRST after, unset: True
 no try, DEN_ENV_SECOND after, unset: True, errors: 1" "$actual"
 
+# env runs the command from its own scope, and PowerShell looks a variable up
+# through the scopes of the commands that called it, so a scriptblock or a
+# PowerShell function run through env saw env's variables before the
+# caller's: $first and $set, which came with the try above, and $a, $i,
+# $saved, $cmd, $cmdArgs, $kv and $assigns, there before. env's variables now
+# all have __ names. (No scriptblock here holds an equals sign: env takes one
+# whose text has one for an assignment.)
+echo "[pwsh] env without coreutils leaves the caller's variables to the command"
+actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "
+    function _CoreutilsBin { }
+    foreach (\$n in 'first', 'set', 'a', 'i', 'saved', 'cmd', 'cmdArgs', 'kv', 'assigns') { Set-Variable -Name \$n -Value \"[\$n]\" }
+    function readsVars { \"\$first \$set \$a \$i \$saved \$cmd \$cmdArgs \$kv \$assigns\" }
+    'scriptblock: ' + (env DEN_ENV_T=set { \"\$first \$set \$a \$i \$saved \$cmd \$cmdArgs \$kv \$assigns\" })
+    'function: ' + (env DEN_ENV_T=set readsVars)
+    'piped: ' + (1 | env DEN_ENV_T=set { process { readsVars } })
+    'no assignment: ' + (env readsVars)
+" < /dev/null 2>&1 | clean)
+assert_eq "pwsh/env without coreutils: the command reads the caller's variables, not env's" "scriptblock: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]
+function: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]
+piped: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]
+no assignment: [first] [set] [a] [i] [saved] [cmd] [cmdArgs] [kv] [assigns]" "$actual"
+
 # =============================================================================
 # wc — pipe character count
 # =============================================================================
