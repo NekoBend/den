@@ -224,7 +224,7 @@ def _match_access(copy: Path, original: Path, st: os.stat_result) -> None:
                     f"replacing it would change its owner or group ({e.strerror});"
                     " edit it by hand"
                 ) from e
-    copy.chmod(stat.S_IMODE(st.st_mode))  # after chown, which may clear set-id bits
+    want: dict[str, bytes] = {}
     if sys.platform == "linux":  # the one platform with os.listxattr
         try:
             want = _xattrs(original)
@@ -234,17 +234,20 @@ def _match_access(copy: Path, original: Path, st: os.stat_result) -> None:
             for name, value in want.items():
                 if have.get(name) != value:
                     os.setxattr(copy, name, value)
-            same = _xattrs(copy) == want
         except OSError as e:
             raise OSError(
                 "replacing it would lose its extended attributes or ACL"
                 f" ({e.strerror}); edit it by hand"
             ) from e
-        if not same:
-            raise OSError(
-                "replacing it would change its extended attributes or ACL;"
-                " edit it by hand"
-            )
+    # Last: after chown, which may clear set-id bits, and after the ACL is the
+    # old file's. Until then the copy keeps mkstemp's 0600, whose group bits
+    # mask every named entry of a default ACL it took from its directory;
+    # the old file's mode before that would let such a user read the copy.
+    copy.chmod(stat.S_IMODE(st.st_mode))
+    if sys.platform == "linux" and _xattrs(copy) != want:
+        raise OSError(
+            "replacing it would change its extended attributes or ACL; edit it by hand"
+        )
 
 
 def _xattrs(path: Path) -> dict[str, bytes]:

@@ -908,6 +908,40 @@ def test_strip_block_does_not_give_the_rc_file_its_directorys_default_acl(tmp_pa
     assert stat.S_IMODE(rc.stat().st_mode) == 0o640
 
 
+def test_strip_block_opens_the_copy_only_once_its_acl_is_the_old_files(
+    tmp_path, monkeypatch
+):
+    """The copy took its directory's default ACL, and giving it the rc file's
+    mode before dropping that ACL let the user it names read the copy, rc
+    content and all, until the ACL went. The mode is now set last."""
+    line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
+    home = tmp_path / "home"
+    home.mkdir()
+    rc = home / ".bashrc"
+    rc.write_text(f"export A=1\n\n# ===== den =====\n{line}\n")
+    rc.chmod(0o640)
+    default = _posix_acl(
+        (_ACL_USER_OBJ, 7, _NO_ID),
+        (_ACL_USER, 7, 65534),  # uid 65534 gets every new file
+        (_ACL_GROUP_OBJ, 5, _NO_ID),
+        (_ACL_MASK, 7, _NO_ID),
+        (_ACL_OTHER, 5, _NO_ID),
+    )
+    _set_xattr(home, "system.posix_acl_default", default)
+    seen = []
+    chmod = Path.chmod
+
+    def watch(self, mode, *args, **kwargs):
+        if self.name.endswith(".den-tmp"):
+            seen.append("system.posix_acl_access" in os.listxattr(self))
+        return chmod(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", watch)
+    assert _strip_block(rc, line) is True
+    assert seen == [False], "the copy still had its directory's ACL when opened"
+    assert stat.S_IMODE(rc.stat().st_mode) == 0o640
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX groups")
 def test_strip_block_keeps_the_rc_files_group(tmp_path):
     """A new file gets den's user's group (or its directory's), so an rc
