@@ -1255,6 +1255,8 @@ def test_disable_coreutils_readline_gives_the_backup_its_access_through_the_open
     outside = tmp_path / "outside"
     outside.write_text("someone else's\n")
     outside.chmod(0o600)
+    # Windows keeps only the read-only bit, so compare with what it reports.
+    outside_mode = stat.S_IMODE(outside.stat().st_mode)
     match_access = _shell._match_access
 
     def swap_then_match(copy, original, st, *args, **kwargs):
@@ -1266,7 +1268,7 @@ def test_disable_coreutils_readline_gives_the_backup_its_access_through_the_open
 
     monkeypatch.setattr(_shell, "_match_access", swap_then_match)
     _shell._disable_coreutils_readline(prof)
-    assert stat.S_IMODE(outside.stat().st_mode) == 0o600
+    assert stat.S_IMODE(outside.stat().st_mode) == outside_mode
     assert outside.read_text() == "someone else's\n"
 
 
