@@ -14,7 +14,7 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 
 | Stage | Contents |
 | --- | --- |
-| `system` | apt base (build-essential, git, curl, zsh, tmux, fzf, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
+| `system` | apt base (build-essential, git, curl, gpgv, zsh, tmux, fzf, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
 | `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, nvm + Node |
 | `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; rsync built from source; rclone |
@@ -79,7 +79,7 @@ Override any of these with `--build-arg NAME=value`.
 | `NVM_VERSION` | `v0.40.7` | Exact nvm release, including the `v` prefix. |
 | `NODE_MAJOR` | `22` | Node major version; nvm installs it and makes it the default. |
 | `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. |
-| `RSYNC_VERSION` | `3.5.1` | Exact rsync release, built from source into `~/.local`. |
+| `RSYNC_VERSION` | `3.5.1` | Exact rsync release, built from source into `~/.local`. Its tarball must be signed by a pinned rsync release key. |
 | `RCLONE_VERSION` | `current` | `current`, or an exact rclone release including the `v` prefix. |
 | `TZ` | `Asia/Tokyo` | IANA time zone name. The container also exports it as `TZ`. |
 

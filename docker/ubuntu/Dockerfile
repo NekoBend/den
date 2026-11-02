@@ -10,9 +10,10 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # 1. OS packages and user. Compilers remain available for development.
+# gpgv checks the rsync tarball's signature in the utilities stage.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl fzf git less libssl-dev \
+        build-essential ca-certificates curl fzf git gpgv less libssl-dev \
         openssh-client pkg-config procps python3 tmux unzip util-linux wget xz-utils zip zsh \
     && rm -rf /var/lib/apt/lists/*
 
@@ -153,9 +154,38 @@ ARG RSYNC_VERSION=3.5.1
 RUN <<'INSTALL_RSYNC'
 build_dir=$(mktemp -d)
 trap 'rm -rf "$build_dir"' EXIT
+rsync_src=https://download.samba.org/pub/rsync/src
+# rsync publishes no checksum file, only a signature (.asc) per tarball, so
+# the tarball is checked against the rsync release keys pinned here by their
+# primary key fingerprints: Andrew Tridgell's, who signs the releases from
+# 3.4.0 (rsync.samba.org/download.html), and Zen Dodd's, who has had release
+# authority since 3.5.1 (NEWS) and signed it. A release signed by any other
+# key fails the build until that key is checked and added here. The keys
+# come from keys.openpgp.org, but only the fingerprint check below decides
+# whether a signature counts.
+release_keys=(
+    9FEF112DCE19A0DC7E882CB81BB24997A8535F6F
+    C0E1054505704F757D925AB26A64E8AA2EFBCF5D
+)
+for fingerprint in "${release_keys[@]}"; do
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+        "https://keys.openpgp.org/vks/v1/by-fingerprint/$fingerprint" -o "$build_dir/key.asc"
+    # gpgv reads binary keys only: drop the armor's header lines (up to the
+    # first empty line) and its checksum line, and decode the rest.
+    sed -e '1,/^$/d' -e '/^=/,$d' "$build_dir/key.asc" | base64 -d >> "$build_dir/release-keys.gpg"
+done
 curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    "https://download.samba.org/pub/rsync/src/rsync-${RSYNC_VERSION}.tar.gz" \
+    "$rsync_src/rsync-${RSYNC_VERSION}.tar.gz" \
     -o "$build_dir/rsync.tar.gz"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+    "$rsync_src/rsync-${RSYNC_VERSION}.tar.gz.asc" \
+    -o "$build_dir/rsync.tar.gz.asc"
+gpgv --status-fd 1 --keyring "$build_dir/release-keys.gpg" \
+    "$build_dir/rsync.tar.gz.asc" "$build_dir/rsync.tar.gz" > "$build_dir/gpgv.status"
+# The last field of VALIDSIG is the primary key fingerprint of the signing key.
+signer=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $NF }' "$build_dir/gpgv.status")
+[[ " ${release_keys[*]} " == *" $signer "* ]] \
+    || { echo "rsync-${RSYNC_VERSION}.tar.gz has no signature by a pinned rsync release key" >&2; exit 1; }
 tar -xzf "$build_dir/rsync.tar.gz" -C "$build_dir"
 cd "$build_dir/rsync-${RSYNC_VERSION}"
 ./configure --prefix="$HOME/.local"
