@@ -63,13 +63,14 @@ rem requests use (ASCII letters and digits, spaces, tabs and
 rem . @ + - _ < > = ! ~ , *) counts as well: uv trims other white space
 rem too (U+00A0, U+3000, VT, FF and the like), and for /f reads a name
 rem outside ASCII in the console code page, which garbles it for if exist
-rem unless that is UTF-8. In the third line below, the second for /f skips
-rem a line that starts with # (it has no delims to skip before it looks),
-rem and the third has those characters for delims, so it leaves a token
-rem only where another character is; the x before the line and its eol=,
-rem (both of them delims) keep the line's first character from being read
-rem as a comment. findstr and for /f read the file, so no line of it
-rem reaches cmd's parser; the tab in delims= is a tab.
+rem unless that is UTF-8. In the last of the three lines below that read a
+rem version file, the second for /f skips a line that starts with # (it
+rem has no delims to skip before it looks), and the third has those
+rem characters for delims, so it leaves a token only where another
+rem character is; the x before the line and its eol=, (both of them
+rem delims) keep the line's first character from being read as a
+rem comment. findstr and for /f read the file, so no line of it reaches
+rem cmd's parser; the tab in delims= is a tab.
 set "_d=%CD%"
 :walk
 if "%_d:~-1%"=="\" set "_d=%_d:~0,-1%"
