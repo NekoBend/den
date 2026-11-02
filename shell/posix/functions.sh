@@ -445,7 +445,8 @@ dg() {
 # digest → dg under its older name; every form works the same.
 digest() { dg "$@"; }
 
-# mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)
+# mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin),
+# or resize an existing file and keep its content up to that size.
 mkfile() {
     if [ -z "$1" ] || [ -z "$2" ]; then
         echo "usage: mkfile <size> <path>  (e.g. mkfile 10M test.bin)" >&2

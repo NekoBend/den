@@ -909,7 +909,29 @@ mkfile_posix_cases() {
     assert_success "$sh/mkfile 010 and 1k exit 0" "$?"
     assert_eq "$sh/mkfile 010 is ten bytes" "10" "$(stat -c%s "$d/ten.bin" 2>/dev/null)"
     assert_eq "$sh/mkfile 1k is 1024 bytes" "1024" "$(stat -c%s "$d/kib.bin" 2>/dev/null)"
+
+    echo "[$sh] mkfile resizes an existing file and keeps its leading bytes"
+    # truncate -s changes only the length: growing pads with zeros, shrinking
+    # cuts the tail, and the bytes before the new end stay. pwsh does the same.
+    cp "$d/orig.bin" "$d/grow.bin"
+    cp "$d/orig.bin" "$d/shrink.bin"
+    $run "$FUNCTIONS_SH" "mkfile 1K '$d/grow.bin' && mkfile 9 '$d/shrink.bin'" >/dev/null 2>&1
+    assert_success "$sh/mkfile on existing files exits 0" "$?"
+    mkfile_assert_resized "$sh" "$d"
     rm -rf "$d"
+}
+
+# mkfile_assert_resized <label> <dir>: grow.bin and shrink.bin started as
+# orig.bin (15 bytes); grow.bin is now 1K and shrink.bin 9 bytes.
+mkfile_assert_resized() {
+    local sh="$1" d="$2"
+    assert_eq "$sh/mkfile grows an existing file to 1K" "1024" "$(stat -c%s "$d/grow.bin" 2>/dev/null)"
+    cmp -s -n 15 "$d/orig.bin" "$d/grow.bin"
+    assert_success "$sh/mkfile keeps a grown file's content" "$?"
+    assert_eq "$sh/mkfile pads a grown file with zeros" "0" \
+        "$(tail -c +16 "$d/grow.bin" | tr -d '\000' | wc -c | tr -d ' ')"
+    assert_eq "$sh/mkfile shrinks an existing file to 9 bytes" "9" "$(stat -c%s "$d/shrink.bin" 2>/dev/null)"
+    assert_eq "$sh/mkfile keeps a shrunk file's leading bytes" "IMPORTANT" "$(cat "$d/shrink.bin" 2>/dev/null)"
 }
 mkfile_posix_cases bash
 
@@ -2589,6 +2611,15 @@ run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 010 '$d/ten.bin'; mkfile 1k '$d/kib.b
 assert_success "pwsh/mkfile 010 and 1k exit 0" "$?"
 assert_eq "pwsh/mkfile 010 is ten bytes" "10" "$(stat -c%s "$d/ten.bin" 2>/dev/null)"
 assert_eq "pwsh/mkfile 1k is 1024 bytes" "1024" "$(stat -c%s "$d/kib.bin" 2>/dev/null)"
+
+echo "[pwsh] mkfile resizes an existing file and keeps its leading bytes"
+# File.Create emptied an existing file before SetLength, so a grown or shrunk
+# file came back all zeros, where the posix mkfile (truncate -s) keeps it.
+cp "$d/orig.bin" "$d/grow.bin"
+cp "$d/orig.bin" "$d/shrink.bin"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 1K '$d/grow.bin'; mkfile 9 '$d/shrink.bin'" >/dev/null 2>&1
+assert_success "pwsh/mkfile on existing files exits 0" "$?"
+mkfile_assert_resized pwsh "$d"
 
 # A length the target cannot take (/dev/null refuses any) made SetLength throw
 # after the file was open, and nothing closed the stream: under Stop the caller

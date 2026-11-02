@@ -251,7 +251,8 @@ function dg {
 # digest → dg under its older name; every form works the same.
 Set-Alias digest dg
 
-# mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)
+# mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin),
+# or resize an existing file and keep its content up to that size.
 function mkfile {
   param(
     [Parameter(Mandatory)][string]$Size,
@@ -278,7 +279,10 @@ function mkfile {
     # .NET resolves relative paths against the process directory, which
     # Set-Location never updates; resolve against the PowerShell location first.
     $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
-    $fs = [System.IO.File]::Create($Path)
+    # OpenOrCreate, not Create: an existing file keeps its content up to the
+    # new length, as truncate -s keeps it in the posix mkfile. Create emptied
+    # it first, so a resized file came back all zeros.
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::OpenOrCreate)
     $fs.SetLength($bytes)
   } catch {
     Write-Error "'$Path': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop
