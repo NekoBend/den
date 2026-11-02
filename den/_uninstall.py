@@ -213,8 +213,8 @@ class _Remover:
         there. The symlink is named on stderr the first time (and added to
         `named`); every other path below it is refused without another line.
         OSError when a component cannot be inspected."""
+        from ._fsafe import _symlink_component
         from ._install import _confined
-        from ._memory import _symlink_component
 
         guard = _confined(self._roots, dest)
         if guard is None:

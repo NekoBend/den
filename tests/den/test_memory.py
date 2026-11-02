@@ -73,22 +73,6 @@ def test_add_checkpoints_previous_content(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# den dir resolution
-# --------------------------------------------------------------------------- #
-
-
-def test_find_den_dir_uses_cwd_when_absent(tmp_path):
-    assert _memory._find_den_dir(tmp_path) == tmp_path / ".den"
-
-
-def test_find_den_dir_discovers_ancestor(tmp_path):
-    (tmp_path / ".den").mkdir()
-    sub = tmp_path / "a" / "b"
-    sub.mkdir(parents=True)
-    assert _memory._find_den_dir(sub) == tmp_path / ".den"
-
-
-# --------------------------------------------------------------------------- #
 # show / save / path
 # --------------------------------------------------------------------------- #
 

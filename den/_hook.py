@@ -47,12 +47,12 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
 from ._exe import find_tool
+from ._fsafe import _find_den_dir, _symlink_component, _write_guarded
 from ._memory import (
     _CLINERULES_IMPRINT,
     _CLINERULES_MEMORY,
     _clinerules_dir,
     _do_checkpoint,
-    _find_den_dir,
     _first_line,
     _foreign_history,
     _history_dir,
@@ -61,8 +61,6 @@ from ._memory import (
     _read_text_or_empty,
     _snap_stamp,
     _snapshots,
-    _symlink_component,
-    _write_guarded,
     mirror_to_clinerules,
     utf8_stdout,
 )

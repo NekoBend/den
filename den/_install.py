@@ -40,7 +40,7 @@ from typing import Protocol
 from . import _ui
 from ._content import cheatsheets_dir, dist_dir, shared_dir, skills_dir
 from ._exe import find_tool
-from ._memory import _NOFOLLOW, _refuse_symlink, _write_guarded
+from ._fsafe import _NOFOLLOW, _refuse_symlink, _write_guarded
 
 # tool -> (skills_dir, parent_dir, parent_file). The cline (VS Code extension)
 # parent_dir is dynamic -- see _tool_paths/_cline_rules_dir; the value here is
