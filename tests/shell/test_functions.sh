@@ -864,6 +864,77 @@ run_bash "$FUNCTIONS_SH" "cd '$WORK' && mkfile 1K -dashfile" >/dev/null 2>&1
 assert_exists "bash/mkfile leading-dash created" "$WORK/-dashfile"
 rm -f "$WORK/-dashfile"
 
+# mkfile's refusals and failures, the same for bash and zsh: $1 is the shell.
+# The size is digits with an optional K, M, G or T, as pwsh takes it, checked
+# before truncate runs: truncate read -1 as "one byte shorter" and went on.
+# A failure is mkfile's status: a trailing unset used to turn every one into
+# 0, so `mkfile 10X f && ...` and `mkfile 1K nodir/f && ...` went on.
+mkfile_posix_cases() {
+    local sh="$1" run="run_$1" d="$WORK/mkfile" size out
+    rm -rf "$d"
+    mkdir -p "$d/nobin"
+    printf 'IMPORTANT DATA\n' > "$d/orig.bin"
+
+    echo "[$sh] mkfile refuses a size that is not digits with an optional K, M, G or T"
+    for size in -1 10X 1KB 99999999999T; do
+        cp "$d/orig.bin" "$d/keep.bin"
+        out=$($run "$FUNCTIONS_SH" "mkfile '$size' '$d/keep.bin' && echo chain-ran" 2>/dev/null)
+        assert_failure "$sh/mkfile $size exits nonzero" "$?"
+        assert_eq "$sh/mkfile $size stops a && chain" "" "$out"
+        cmp -s "$d/orig.bin" "$d/keep.bin"
+        assert_success "$sh/mkfile $size keeps the file as it was" "$?"
+    done
+
+    echo "[$sh] mkfile fails when truncate does: no such folder, a read-only file, no truncate"
+    out=$($run "$FUNCTIONS_SH" "mkfile 1K '$d/nodir/x.bin' && echo chain-ran" 2>/dev/null)
+    assert_failure "$sh/mkfile into a missing folder exits nonzero" "$?"
+    assert_eq "$sh/mkfile into a missing folder stops a && chain" "" "$out"
+    # root ignores the mode bits, so there it is skipped.
+    : > "$d/ro.bin"
+    if [ "$(id -u)" -ne 0 ] && chmod 444 "$d/ro.bin" 2>/dev/null && [ ! -w "$d/ro.bin" ]; then
+        out=$($run "$FUNCTIONS_SH" "mkfile 1K '$d/ro.bin' && echo chain-ran" 2>/dev/null)
+        assert_failure "$sh/mkfile on a read-only file exits nonzero" "$?"
+        assert_eq "$sh/mkfile on a read-only file stops a && chain" "" "$out"
+        chmod 644 "$d/ro.bin"
+    else
+        echo "  SKIP: $sh/mkfile on a read-only file (running as root)"
+    fi
+    out=$($run "$FUNCTIONS_SH" "PATH='$d/nobin'; mkfile 1K '$d/x.bin' && echo chain-ran" 2>/dev/null)
+    assert_failure "$sh/mkfile without truncate exits nonzero" "$?"
+    assert_eq "$sh/mkfile without truncate stops a && chain" "" "$out"
+
+    echo "[$sh] mkfile reads 010 as ten bytes and 1k as 1024, as pwsh does"
+    # uutils' truncate reads a leading 0 as octal: 010 was 8 bytes there.
+    $run "$FUNCTIONS_SH" "mkfile 010 '$d/ten.bin' && mkfile 1k '$d/kib.bin'" >/dev/null 2>&1
+    assert_success "$sh/mkfile 010 and 1k exit 0" "$?"
+    assert_eq "$sh/mkfile 010 is ten bytes" "10" "$(stat -c%s "$d/ten.bin" 2>/dev/null)"
+    assert_eq "$sh/mkfile 1k is 1024 bytes" "1024" "$(stat -c%s "$d/kib.bin" 2>/dev/null)"
+
+    echo "[$sh] mkfile resizes an existing file and keeps its leading bytes"
+    # truncate -s changes only the length: growing pads with zeros, shrinking
+    # cuts the tail, and the bytes before the new end stay. pwsh does the same.
+    cp "$d/orig.bin" "$d/grow.bin"
+    cp "$d/orig.bin" "$d/shrink.bin"
+    $run "$FUNCTIONS_SH" "mkfile 1K '$d/grow.bin' && mkfile 9 '$d/shrink.bin'" >/dev/null 2>&1
+    assert_success "$sh/mkfile on existing files exits 0" "$?"
+    mkfile_assert_resized "$sh" "$d"
+    rm -rf "$d"
+}
+
+# mkfile_assert_resized <label> <dir>: grow.bin and shrink.bin started as
+# orig.bin (15 bytes); grow.bin is now 1K and shrink.bin 9 bytes.
+mkfile_assert_resized() {
+    local sh="$1" d="$2"
+    assert_eq "$sh/mkfile grows an existing file to 1K" "1024" "$(stat -c%s "$d/grow.bin" 2>/dev/null)"
+    cmp -s -n 15 "$d/orig.bin" "$d/grow.bin"
+    assert_success "$sh/mkfile keeps a grown file's content" "$?"
+    assert_eq "$sh/mkfile pads a grown file with zeros" "0" \
+        "$(tail -c +16 "$d/grow.bin" | tr -d '\000' | wc -c | tr -d ' ')"
+    assert_eq "$sh/mkfile shrinks an existing file to 9 bytes" "9" "$(stat -c%s "$d/shrink.bin" 2>/dev/null)"
+    assert_eq "$sh/mkfile keeps a shrunk file's leading bytes" "IMPORTANT" "$(cat "$d/shrink.bin" 2>/dev/null)"
+}
+mkfile_posix_cases bash
+
 # --- archive + extract (tar.gz) ---
 echo "[bash] archive + extract tar.gz"
 setup_fixtures
@@ -1325,6 +1396,76 @@ assert_contains "bash/again no history" "no command at position" "$err"
 echo "[bash] sagain 0"
 err=$(run_bash_stderr "$FUNCTIONS_SH" "sagain 0")
 assert_contains "bash/sagain 0 usage" "usage" "$err"
+
+# ag_run <shell> <line...> - an interactive bash (--norc) or zsh (-f) that
+# reads its commands from a file, one per line, as it would from a terminal:
+# it loads functions.sh and stubs sudo, then runs the lines, which go into its
+# history. An again among them reads its answer from the line after it, as it
+# would read the terminal. Prints the shell's stdout. HISTFILE is empty, so no
+# history file is read or written.
+ag_run() {
+    local sh="$1" in="$WORK/again-input"
+    shift
+    printf '%s\n' "source '$FUNCTIONS_SH'" 'sudo() { echo "(sudo)"; "$@"; }' "$@" > "$in"
+    case "$sh" in
+        bash) HISTFILE='' bash --norc --noprofile -i < "$in" 2>/dev/null ;;
+        zsh) HISTFILE='' zsh -f -i < "$in" 2>/dev/null ;;
+    esac
+}
+
+# again and sagain asking, the same for bash and zsh: $1 is the shell. Enter
+# or y runs the line; any other answer, and the end of input, cancel with
+# status 1. Only n used to cancel, so a Ctrl-D (or stdin at its end) ran the
+# line unasked. On zsh nothing ran at all: `set +o history`, bash's option,
+# is an error there that ended again after the answer.
+again_posix_cases() {
+    local sh="$1" ans out
+    local prev='echo REPLAYED-$((40+2))' rc='echo "rc=$?"'
+    local ran="REPLAYED-42
++ echo REPLAYED-\$((40+2))
+Re-run? [Y/n] REPLAYED-42
+rc=0"
+    local cancelled="REPLAYED-42
++ echo REPLAYED-\$((40+2))
+Re-run? [Y/n] rc=1"
+
+    echo "[$sh] again runs the line on Enter, y and Y"
+    for ans in '' y Y; do
+        assert_eq "$sh/again answered '$ans' runs the line" "$ran" "$(ag_run "$sh" "$prev" again "$ans" "$rc")"
+    done
+
+    echo "[$sh] again cancels on any other answer"
+    for ans in n N x yes; do
+        assert_eq "$sh/again answered '$ans' cancels" "$cancelled" "$(ag_run "$sh" "$prev" again "$ans" "$rc")"
+    done
+
+    echo "[$sh] again cancels at the end of input"
+    # again ends the prompt's line itself there. printf builds the expected
+    # text, so the blank after the prompt stays in it.
+    assert_eq "$sh/again with stdin at its end cancels" \
+        "$(printf '%s\n' REPLAYED-42 '+ echo REPLAYED-$((40+2))' 'Re-run? [Y/n] ' rc=1)" \
+        "$(ag_run "$sh" "$prev" 'again </dev/null' "$rc")"
+
+    echo "[$sh] sagain asks the same way"
+    assert_eq "$sh/sagain answered y runs the line with sudo" "REPLAYED-42
++ sudo echo REPLAYED-\$((40+2))
+Re-run with sudo? [Y/n] (sudo)
+REPLAYED-42
+rc=0" "$(ag_run "$sh" "$prev" sagain y "$rc")"
+    assert_eq "$sh/sagain with stdin at its end cancels" \
+        "$(printf '%s\n' REPLAYED-42 '+ sudo echo REPLAYED-$((40+2))' 'Re-run with sudo? [Y/n] ' rc=1)" \
+        "$(ag_run "$sh" "$prev" 'sagain </dev/null' "$rc")"
+}
+again_posix_cases bash
+
+# bash keeps the replayed line out of its history and then puts the history
+# option back as it was: again used to turn it on even when it had been off.
+echo "[bash] again puts the history option back as it was"
+out=$(ag_run bash 'echo REPLAYED-$((40+2))' again y 'case :$SHELLOPTS: in *:history:*) echo history-on ;; *) echo history-off ;; esac')
+assert_contains "bash/again keeps the history on" "history-on" "$out"
+out=$(ag_run bash 'echo REPLAYED-$((40+2)); set +o history' again y 'case :$SHELLOPTS: in *:history:*) echo history-on ;; *) echo history-off ;; esac')
+assert_contains "bash/again replayed the line with the history off" "Re-run? [Y/n] REPLAYED-42" "$out"
+assert_contains "bash/again leaves the history off" "history-off" "$out"
 
 echo "[bash] back 0"
 err=$(run_bash_stderr "$FUNCTIONS_SH" "back 0")
@@ -1887,6 +2028,7 @@ assert_exists "zsh/mkfile created" "$WORK/dummy.bin"
 actual=$(stat -c%s "$WORK/dummy.bin")
 assert_eq "zsh/mkfile size" "1024" "$actual"
 rm -f "$WORK/dummy.bin"
+mkfile_posix_cases zsh
 
 echo "[zsh] archive + extract tar.gz"
 setup_fixtures
@@ -2323,6 +2465,8 @@ echo "[zsh] again no history"
 err=$(run_zsh_stderr "$FUNCTIONS_SH" "again")
 assert_contains "zsh/again no history" "no command" "$err"
 
+again_posix_cases zsh
+
 echo "[zsh] back 0"
 err=$(run_zsh_stderr "$FUNCTIONS_SH" "back 0")
 assert_contains "zsh/back 0 usage" "usage" "$err"
@@ -2424,6 +2568,77 @@ assert_exists "pwsh/mkfile created" "$WORK/dummy.bin"
 actual=$(stat -c%s "$WORK/dummy.bin")
 assert_eq "pwsh/mkfile size" "1024" "$actual"
 rm -f "$WORK/dummy.bin"
+
+# The size is checked before the file is opened: [int64] of a bad size, or a
+# size that overflowed, failed only at SetLength, after File.Create had emptied
+# the file, and mkfile still printed "Created" and returned success. Each
+# refusal and failure is a terminating error, so it stops a && chain.
+echo "[pwsh] mkfile refuses a size that is not digits with an optional K, M, G or T"
+d="$WORK/mkfile"
+rm -rf "$d"
+mkdir -p "$d"
+printf 'IMPORTANT DATA\n' > "$d/orig.bin"
+for size in -1 10X 1KB 99999999999T 8388608T; do
+    cp "$d/orig.bin" "$d/keep.bin"
+    out=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile '$size' '$d/keep.bin' && 'chain-ran'" 2>/dev/null)
+    assert_failure "pwsh/mkfile $size exits nonzero" "$?"
+    assert_eq "pwsh/mkfile $size stops a && chain" "" "$(printf '%s' "$out" | tr -d '\r')"
+    cmp -s "$d/orig.bin" "$d/keep.bin"
+    assert_success "pwsh/mkfile $size keeps the file as it was" "$?"
+done
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "mkfile 10X '$d/keep.bin'")
+assert_contains "pwsh/mkfile names the size it refuses" "invalid size '10X'" "$err"
+assert_not_contains "pwsh/mkfile no double prefix" "mkfile: mkfile:" "$err"
+
+echo "[pwsh] mkfile fails when the file cannot be made: no such folder, a read-only file"
+out=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 1K '$d/nodir/x.bin' && 'chain-ran'" 2>/dev/null)
+assert_failure "pwsh/mkfile into a missing folder exits nonzero" "$?"
+assert_not_contains "pwsh/mkfile into a missing folder prints no Created" "Created" "$out"
+assert_not_contains "pwsh/mkfile into a missing folder stops a && chain" "chain-ran" "$out"
+# root ignores the mode bits, so there it is skipped.
+: > "$d/ro.bin"
+if [ "$(id -u)" -ne 0 ] && chmod 444 "$d/ro.bin" 2>/dev/null && [ ! -w "$d/ro.bin" ]; then
+    out=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 1K '$d/ro.bin' && 'chain-ran'" 2>/dev/null)
+    assert_failure "pwsh/mkfile on a read-only file exits nonzero" "$?"
+    assert_not_contains "pwsh/mkfile on a read-only file stops a && chain" "chain-ran" "$out"
+    chmod 644 "$d/ro.bin"
+else
+    echo "  SKIP: pwsh/mkfile on a read-only file (running as root)"
+fi
+
+echo "[pwsh] mkfile reads 010 as ten bytes and 1k as 1024, as the posix mkfile does"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 010 '$d/ten.bin'; mkfile 1k '$d/kib.bin'" >/dev/null 2>&1
+assert_success "pwsh/mkfile 010 and 1k exit 0" "$?"
+assert_eq "pwsh/mkfile 010 is ten bytes" "10" "$(stat -c%s "$d/ten.bin" 2>/dev/null)"
+assert_eq "pwsh/mkfile 1k is 1024 bytes" "1024" "$(stat -c%s "$d/kib.bin" 2>/dev/null)"
+
+echo "[pwsh] mkfile resizes an existing file and keeps its leading bytes"
+# File.Create emptied an existing file before SetLength, so a grown or shrunk
+# file came back all zeros, where the posix mkfile (truncate -s) keeps it.
+cp "$d/orig.bin" "$d/grow.bin"
+cp "$d/orig.bin" "$d/shrink.bin"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 1K '$d/grow.bin'; mkfile 9 '$d/shrink.bin'" >/dev/null 2>&1
+assert_success "pwsh/mkfile on existing files exits 0" "$?"
+mkfile_assert_resized pwsh "$d"
+
+# A length the target cannot take (/dev/null refuses any) made SetLength throw
+# after the file was open, and nothing closed the stream: under Stop the caller
+# caught the error and the handle stayed open. Counted in /proc (Linux).
+echo "[pwsh] mkfile closes the file when SetLength fails"
+if [ -d /proc/self/fd ]; then
+    actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+        function fds { @(Get-ChildItem /proc/\$PID/fd | Where-Object { \$_.LinkTarget -eq '/dev/null' }).Count }
+        \$before = fds
+        \$ErrorActionPreference = 'Stop'
+        try { mkfile 1K /dev/null 6>\$null; 'no error' } catch { 'failed' }
+        'open: ' + ((fds) - \$before)
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/mkfile fails and leaves no handle open" "failed
+open: 0" "$actual"
+else
+    echo "  SKIP: pwsh/mkfile handle count (no /proc)"
+fi
+rm -rf "$d"
 
 echo "[pwsh] archive + extract tar.gz"
 setup_fixtures
@@ -3765,6 +3980,58 @@ assert_contains "pwsh/again no history" "no command at position" "$err"
 echo "[pwsh] sagain 0"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "sagain -N 0")
 assert_contains "pwsh/sagain 0 usage" "usage" "$err"
+
+# Enter or y runs the line; any other answer cancels, and so does the end of
+# input, where Read-Host returns $null: stdin at its end, or a -NonInteractive
+# session, where it cannot ask. Only n used to cancel, so there the line ran
+# unasked. Cancelling is a terminating error, as a declined prm is: a plain
+# return let `again && ...` go on. PA_HIST puts a line that prints
+# REPLAYED-42 in the history, and a sudo stub that prints what it was given.
+PA_HIST="
+    function global:sudo { \"sudo: \$args\" }
+    Add-History -InputObject ([pscustomobject]@{
+        CommandLine = \"'REPLAYED-' + (40+2)\"; ExecutionStatus = 'Completed'
+        StartExecutionTime = [datetime]::Now; EndExecutionTime = [datetime]::Now
+    })"
+# pa_run <answer> [again's arguments] - again, with Read-Host stubbed to
+# return <answer> (PowerShell: 'y', '', \$null, ...), then a && after it
+pa_run() {
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "$PA_HIST
+        function global:Read-Host { $1 }
+        again ${2-} 6>\$null && 'chain-ran'
+    " 2>/dev/null | tr -d '\r'
+}
+echo "[pwsh] again runs the line on Enter, y and Y"
+for ans in "''" "'y'" "'Y'"; do
+    assert_eq "pwsh/again answered $ans runs the line" "REPLAYED-42
+chain-ran" "$(pa_run "$ans")"
+done
+assert_eq "pwsh/again -Sudo answered y runs the line with sudo" "sudo: REPLAYED- + 42
+chain-ran" "$(pa_run "'y'" -Sudo)"
+echo "[pwsh] again cancels on any other answer and at the end of input, and stops a && chain"
+for ans in "'n'" "'N'" "'x'" "'yes'" '$null'; do
+    out=$(pa_run "$ans")
+    assert_failure "pwsh/again answered $ans exits nonzero" "$?"
+    assert_eq "pwsh/again answered $ans cancels" "" "$out"
+done
+assert_eq "pwsh/sagain at the end of input cancels" "" "$(pa_run '$null' -Sudo)"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "function global:Read-Host { 'n' }; Add-History -InputObject ([pscustomobject]@{ CommandLine = 'Get-Date'; ExecutionStatus = 'Completed'; StartExecutionTime = [datetime]::Now; EndExecutionTime = [datetime]::Now }); again 6>\$null")
+assert_contains "pwsh/again says it cancelled" "cancelled" "$err"
+assert_not_contains "pwsh/again cancelled no double prefix" "again: again:" "$err"
+# The real Read-Host: -NonInteractive refuses to ask, and stdin at its end
+# (pwsh started without -NonInteractive, stdin /dev/null) gives $null.
+out=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "$PA_HIST
+    again 6>\$null && 'chain-ran'" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/again in a -NonInteractive session cancels" "" "$out"
+out=$(pwsh -NoProfile -Command ". '$FUNCTIONS_PS1_COMBINED'
+    $PA_HIST
+    again 6>\$null && 'chain-ran'" 2>/dev/null </dev/null | tr -d '\r')
+assert_not_contains "pwsh/again with stdin at its end cancels" "REPLAYED-42" "$out"
+assert_not_contains "pwsh/again with stdin at its end stops a && chain" "chain-ran" "$out"
+out=$(printf '\n' | pwsh -NoProfile -Command ". '$FUNCTIONS_PS1_COMBINED'
+    $PA_HIST
+    again 6>\$null && 'chain-ran'" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/again with an empty line on stdin runs the line" "REPLAYED-42" "$out"
 
 # again replays the line inside a function (_DenReplay), as snippet run does.
 # Unlike bash/zsh's eval, which sets the shell's own variables, that keeps

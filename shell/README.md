@@ -268,7 +268,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `dg -e [ALGO] A B` | do A and B have the same content? |
 | `dg -c SUMSFILE...` | verify checksum files, GNU or BSD lines, like `sha256sum -c` |
 | `digest ...` | the older name of `dg`, same forms |
-| `mkfile SIZE PATH` | create a dummy file (e.g. `mkfile 10M test.bin`) |
+| `mkfile SIZE PATH` | create a dummy file (e.g. `mkfile 10M test.bin`), or resize an existing file and keep its content up to that size, in every shell |
 | `extract ARCHIVE...` / `xt` | auto-detect and extract each archive; a failure is reported and the rest still run (exit 1 if any failed). Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst |
 | `archive OUT FILES...` / `pk` | create an archive (format from `OUT` extension); every argument after `OUT` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) |
 | `y` | yazi file manager (returns you to the dir you exit in) |

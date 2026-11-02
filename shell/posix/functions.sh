@@ -445,18 +445,39 @@ dg() {
 # digest → dg under its older name; every form works the same.
 digest() { dg "$@"; }
 
-# mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)
+# mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin),
+# or resize an existing file and keep its content up to that size.
 mkfile() {
     if [ -z "$1" ] || [ -z "$2" ]; then
         echo "usage: mkfile <size> <path>  (e.g. mkfile 10M test.bin)" >&2
         return 1
     fi
+    # The size is digits with an optional K, M, G or T (powers of 1024), the
+    # grammar pwsh's mkfile takes. It is checked here, before truncate runs:
+    # truncate reads -1 or +5 as a change to an existing file's length and
+    # 1KB as 1000 bytes, so `mkfile -1 f` shortened f and reported it created.
+    case "${1%[KMGTkmgt]}" in
+        ''|*[!0-9]*)
+            echo "mkfile: invalid size '$1' (digits, optionally followed by K, M, G or T)" >&2
+            return 1
+            ;;
+    esac
+    # Leading zeros go: uutils' truncate reads 010 as octal (8 bytes).
+    _mf_size="$1"
+    while :; do
+        case "$_mf_size" in 0[0-9]*) _mf_size=${_mf_size#0} ;; *) break ;; esac
+    done
     # Neutralise a leading-dash path so truncate cannot parse it as an option
     # (parity with extract/archive/digest/mkcd).
     _mf_path="$2"
     case "$_mf_path" in -*) _mf_path="./$_mf_path" ;; esac
-    truncate -s "$1" "$_mf_path" && echo "Created $_mf_path ($1)"
-    unset _mf_path
+    # truncate's status is mkfile's: the unset after it used to replace a
+    # failure (no such folder, no permission, no truncate) with 0, so
+    # `mkfile 1K nodir/f && ...` went on as if f had been made.
+    truncate -s "$_mf_size" "$_mf_path" && echo "Created $_mf_path ($1)"
+    set -- "$?"
+    unset _mf_path _mf_size
+    return "$1"
 }
 
 # _ar_have → guard one branch of extract()/archive() on the tool it needs.
@@ -1069,18 +1090,36 @@ again() {
         echo "+ $_ag_cmd"
         printf 'Re-run? [Y/n] '
     fi
-    read -r _ag_ans
-    case "$_ag_ans" in n|N) unset _ag_sudo _ag_n _ag_cmd _ag_ans; return 1;; esac
+    # Enter or y runs the line; any other answer cancels, and so does the end
+    # of input (Ctrl-D, or stdin at its end), where read fails: only n used
+    # to cancel, so a Ctrl-D ran the line unasked.
+    if ! read -r _ag_ans; then
+        echo
+        unset _ag_sudo _ag_n _ag_cmd _ag_ans; return 1
+    fi
+    case "$_ag_ans" in
+        ''|y|Y) ;;
+        *) unset _ag_sudo _ag_n _ag_cmd _ag_ans; return 1 ;;
+    esac
 
-    { set +o history; } 2>/dev/null
+    # bash only: the replayed line stays out of the history, and the option
+    # is put back as it was. zsh has no `history` option, and `set +o history`
+    # there is an error that ends the function, so again never ran a line in
+    # zsh; zsh does not add an eval'd line to its history anyway.
+    _ag_hist=0
+    if [ -n "${BASH_VERSION-}" ]; then
+        # shellcheck disable=SC3028,SC3040  # SHELLOPTS, history: this branch runs only in bash
+        case ":$SHELLOPTS:" in *:history:*) _ag_hist=1; set +o history ;; esac
+    fi
     if [ "$_ag_sudo" = "1" ]; then
         eval "sudo $_ag_cmd"
     else
         eval "$_ag_cmd"
     fi
     _ag_rc=$?
-    { set -o history; } 2>/dev/null
-    unset _ag_sudo _ag_n _ag_cmd _ag_ans
+    # shellcheck disable=SC3040  # _ag_hist is 1 only in bash
+    if [ "$_ag_hist" = 1 ]; then set -o history; fi
+    unset _ag_sudo _ag_n _ag_cmd _ag_ans _ag_hist
     return "$_ag_rc"
 }
 

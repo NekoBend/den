@@ -18,7 +18,8 @@ rem or something in the current directory, for --version / -V too, and
 rem elsewhere uv run for those as well; pip runs nothing outside a venv,
 rem and in a venv without pip.exe runs uv pip with --config-file and your
 rem own uv.toml, or with --no-config without one;
-rem path lists PATH; again asks before it re-runs.
+rem path lists PATH; again asks before it re-runs, and only Enter or y
+rem runs it.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -691,6 +692,23 @@ set "RC=%errorlevel%"
 set "OK="
 if "%RC%"=="0" if not defined _DEN_AGAIN_RUN if not defined _DEN_AGAIN set "OK=1"
 call :check "again: no"
+rem Any answer other than Enter or y cancels; only n used to.
+>"%T%\other.txt" echo x
+>"%T%\enter.txt" echo(
+set "_DEN_AGAIN=echo hi"
+call "%BIN%\again.cmd" <"%T%\other.txt" >"%O%" 2>&1
+set "RC=%errorlevel%"
+set "OK="
+if "%RC%"=="0" if not defined _DEN_AGAIN_RUN if not defined _DEN_AGAIN set "OK=1"
+call :check "again: any other answer cancels"
+set "_DEN_AGAIN=echo hi"
+call "%BIN%\again.cmd" <"%T%\enter.txt" >"%O%" 2>&1
+set "RC=%errorlevel%"
+set "OK="
+if "%RC%"=="0" if "%_DEN_AGAIN_RUN%"=="1" if "%_DEN_AGAIN%"=="echo hi" set "OK=1"
+call :check "again: Enter runs it"
+set "_DEN_AGAIN_RUN="
+set "_DEN_AGAIN="
 set "_DEN_AGAIN_ERR=again: no command at position 3 in history"
 >"%W%" echo again: no command at position 3 in history
 call "%BIN%\again.cmd" >"%O%" 2>&1

@@ -251,24 +251,44 @@ function dg {
 # digest → dg under its older name; every form works the same.
 Set-Alias digest dg
 
-# mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin)
+# mkfile → create a dummy file of specified size (e.g. mkfile 10M test.bin),
+# or resize an existing file and keep its content up to that size.
 function mkfile {
   param(
     [Parameter(Mandatory)][string]$Size,
     [Parameter(Mandatory)][string]$Path
   )
-  $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB; 'T'=1TB }
-  $bytes = if ($Size -match '^(\d+)([KMGTkmgt])$') {
-    [int64]$Matches[1] * $mult[$Matches[2].ToUpper()]
-  } else {
-    [int64]$Size
+  # The size is digits with an optional K, M, G or T (powers of 1024), the
+  # grammar the posix mkfile checks too, and it is checked before the file is
+  # opened. A size that failed to parse or overflowed used to surface only at
+  # SetLength, after the file had been opened, so it left a 0-byte file,
+  # printed "Created" and returned success. A refusal, like a failure below,
+  # is a terminating error, so it stops a && chain.
+  $n = 0L
+  $shift = @{ '' = 0; 'K' = 10; 'M' = 20; 'G' = 30; 'T' = 40 }
+  if ($Size -notmatch '^([0-9]+)([KMGTkmgt]?)\z' -or -not [long]::TryParse($Matches[1], [ref]$n) -or
+      $n -gt ([long]::MaxValue -shr $shift[$Matches[2].ToUpper()])) {
+    Write-Error "invalid size '$Size' (digits, optionally followed by K, M, G or T)" -ErrorAction Stop
   }
-  # .NET resolves relative paths against the process directory, which
-  # Set-Location never updates; resolve against the PowerShell location first.
-  $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
-  $fs = [System.IO.File]::Create($Path)
-  $fs.SetLength($bytes)
-  $fs.Close()
+  $bytes = $n -shl $shift[$Matches[2].ToUpper()]
+  # A file that cannot be made (no such folder, no permission) or a length the
+  # file system refuses fails here, and the stream is closed either way: an
+  # exception from SetLength used to leave it open.
+  $fs = $null
+  try {
+    # .NET resolves relative paths against the process directory, which
+    # Set-Location never updates; resolve against the PowerShell location first.
+    $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    # OpenOrCreate, not Create: an existing file keeps its content up to the
+    # new length, as truncate -s keeps it in the posix mkfile. Create emptied
+    # it first, so a resized file came back all zeros.
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::OpenOrCreate)
+    $fs.SetLength($bytes)
+  } catch {
+    Write-Error "'$Path': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop
+  } finally {
+    if ($fs) { $fs.Dispose() }
+  }
   Write-Host "Created $Path ($Size → $bytes bytes)"
 }
 
@@ -1156,14 +1176,19 @@ function again {
   if ($Sudo) {
     Write-Host "+ sudo $cmd"
     $ans = Read-Host 'Re-run with sudo? [Y/n]'
-    if ($ans -eq 'n' -or $ans -eq 'N') { return }
-    _DenReplay "sudo $cmd" $typed
   } else {
     Write-Host "+ $cmd"
     $ans = Read-Host 'Re-run? [Y/n]'
-    if ($ans -eq 'n' -or $ans -eq 'N') { return }
-    _DenReplay $cmd $typed
   }
+  # Enter or y (either case: -ne ignores it) runs the line; any other answer
+  # cancels, and so does the end of input, where Read-Host returns $null
+  # (stdin at its end, or a -NonInteractive session, where it cannot ask):
+  # only n used to cancel, so there the line ran unasked. Cancelling is a
+  # terminating error, as a declined prm is, so it stops a && chain.
+  if ($null -eq $ans -or ($ans -ne '' -and $ans -ne 'y')) {
+    Write-Error 'cancelled' -ErrorAction Stop
+  }
+  if ($Sudo) { _DenReplay "sudo $cmd" $typed } else { _DenReplay $cmd $typed }
 }
 
 # sagain → backward-compatible wrapper

@@ -272,7 +272,7 @@ characters the text's length with its line ends.
 | `dg -e [algo] <a> <b>` | do two files have the same content? `SAME` (exit 0) or `DIFFERENT` with both hashes (exit 1) | ✓ | ✓ | ✓ |
 | `dg -c <sumsfile...>` | verify checksum files like `sha256sum -c`: GNU (`<hash>  <name>`, `<hash> *<name>`) and BSD (`SHA256 (<name>) = <hash>`) lines, the algo per line from its tag or length, names relative to the current directory; `<name>: OK` / `FAILED` / `MISSING` per entry, exit 0 only when every entry is OK | ✓ | ✓ | ✓ |
 | `digest ...` | the older name of `dg`; every form works the same | ✓ | ✓ | ✓ |
-| `mkfile <size> <path>` | create a dummy file of a given size | ✓ | ✓ | — |
+| `mkfile <size> <path>` | create a dummy file of a given size, or resize an existing file and keep its content up to that size (in every shell, as `truncate -s` does); the size is digits with an optional `K`, `M`, `G` or `T` (powers of 1024), as in `10M`; any other size (`-1`, `10X`, `1KB`) is refused before the file is touched | ✓ | ✓ | — |
 | `extract <archive...>` / `xt` | auto-detect each archive's type and extract it; exit 1 if any failed. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst | ✓ | ✓ | — |
 | `archive <out> <in>...` / `pk` | create an archive (format from the output name); every argument after `<out>` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) | ✓ | ✓ | — |
 | `path` | print `$PATH`, one entry per line | ✓ | ✓ | native |
@@ -568,7 +568,7 @@ prompt shows no CPU or GPU until then.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `again [N]` | re-run the Nth previous command after a confirm | ✓ | ✓ | ✓ |
+| `again [N]` | re-run the Nth previous command after a confirm: Enter or `y` runs it, any other answer cancels, and so does Ctrl-D on bash/zsh | ✓ | ✓ | ✓ |
 | `sagain [N]` | `again` with sudo | ✓ | ✓ | — |
 | `reload` | clear den's shell caches and restart the shell to load the config (`exec` on bash/zsh; a new pwsh on pwsh, see below) | ✓ | ✓ | — |
 | `code` | launch VS Code (prefers code-insiders) | ✓ | ✓ | ✓ |

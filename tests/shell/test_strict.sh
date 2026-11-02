@@ -634,6 +634,8 @@ Case 'dg -c, no checksum line' { dg -c empty.txt }
 Case 'digest' { digest hash.txt }
 Case 'mkfile' { mkfile 1K made.bin }
 Case 'mkfile, bytes' { mkfile 16 made2.bin }
+Case 'mkfile, invalid size' { mkfile 10X bad.bin }
+Case 'mkfile, no such folder' { mkfile 1K nodir/made.bin }
 Case '_ArVolumeRelative' { _ArVolumeRelative 'C:\Users\x'; _ArVolumeRelative 'rel\path' }
 Case '_ArLinkTarget' { _ArLinkTarget (Get-Item -LiteralPath a.txt); _ArLinkTarget (Get-Item -LiteralPath link.txt) }
 Case '_ArSameFile' { _ArSameFile a.txt a.txt; _ArSameFile a.txt link.txt; _ArSameFile a.txt nothere.gz }
@@ -731,6 +733,7 @@ Case 'y' { y }
 Case 'y, no yazi' { Use-StrictPath 'sys'; try { y } finally { Use-StrictPath } }
 Case 'again' { $global:_StrictAnswer = 'y'; again }
 Case 'again, declined' { $global:_StrictAnswer = 'n'; again }
+Case 'again, end of input' { $global:_StrictAnswer = $null; again }
 Case 'again -N' { $global:_StrictAnswer = 'y'; again -N 1 }
 Case 'again -Sudo' { $global:_StrictAnswer = 'y'; again -Sudo }
 Case 'again -Sudo, declined' { $global:_StrictAnswer = 'n'; again -Sudo }
