@@ -76,6 +76,13 @@ _parallel_exec() {
 _count_entries() {
     local limit=10000 total=0 p remaining count
     for p in "$@"; do
+        # A path from a glob can be a word find reads as its expression
+        # (`-delete`, `(`, `!`), with '.' as the starting point: a folder
+        # named -delete made `find -delete -print`, which emptied the
+        # current folder while pcp or pmv were only counting, and before
+        # prm -- asked [y/N]; `!` counted the current folder and `(` nothing.
+        # './' in front of every relative path keeps it a path.
+        case "$p" in /*) ;; *) p="./$p" ;; esac
         if [ -d "$p" ]; then
             if [ "$total" -ge "$limit" ]; then
                 echo "${limit}+"
@@ -324,6 +331,9 @@ _ptar_pipe() {
         */*) dir="${out%/*}" ;;
         *)   dir="." ;;
     esac
+    # mktemp reads a template that starts with '-' as its options: an output
+    # in a folder named -folder could not be archived.
+    case "$dir" in -*) dir="./$dir" ;; esac
     # `|| tmpd=`: under a caller's `set -e` a failed mktemp ended the shell
     # here, before the message below.
     tmpd=$(command mktemp -d "$dir/.ptar.XXXXXX" 2>/dev/null) || tmpd=

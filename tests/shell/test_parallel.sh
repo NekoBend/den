@@ -121,6 +121,64 @@ assert_eq "zsh/_count_entries dir" "5" "$actual"
 actual=$(run_zsh "$PARALLEL_SH" "_count_entries '$WORK/src/file1.txt'")
 assert_eq "zsh/_count_entries single file" "1" "$actual"
 
+echo "[bash/zsh] pcp, pmv and prm --: a folder named -delete is counted as a path"
+# A glob handed _count_entries a folder named -delete as find's first word:
+# `command find "$p" -print` became `find -delete -print`, which find reads
+# as an expression with '.' as the start, so it emptied the current folder
+# while pcp or pmv were only counting, and before prm -- asked [y/N].
+for _sh in bash zsh; do
+    _run="run_$_sh"
+    for _fn in pcp pmv prm; do
+        setup_fixtures
+        mkdir -p "$WORK/cwd/-delete" "$WORK/cwd/sub" "$WORK/out"
+        echo keep > "$WORK/cwd/a.txt"
+        echo keep > "$WORK/cwd/sub/b.txt"
+        echo in > "$WORK/cwd/-delete/c.txt"
+        case "$_fn" in
+            pcp) _call="pcp * '$WORK/out'" ;;
+            pmv) _call="pmv * '$WORK/out'" ;;
+            prm) _call="prm -- *" ;;
+        esac
+        actual=$(printf 'n\n' | "$_run" "$PARALLEL_SH" "cd '$WORK/cwd' && $_call" 2>&1)
+        assert_contains "$_sh/$_fn * counts the -delete folder as a path" "(5 entries)" "$actual"
+        case "$_fn" in
+            pcp)
+                assert_exists "$_sh/pcp * leaves the current folder as it was" "$WORK/cwd/sub/b.txt"
+                assert_exists "$_sh/pcp * copies the -delete folder" "$WORK/out/-delete/c.txt"
+                ;;
+            pmv)
+                assert_exists "$_sh/pmv * moves every source" "$WORK/out/sub/b.txt"
+                assert_exists "$_sh/pmv * moves the -delete folder" "$WORK/out/-delete/c.txt"
+                ;;
+            prm)
+                assert_exists "$_sh/prm -- * answered n removes nothing" "$WORK/cwd/sub/b.txt"
+                assert_exists "$_sh/prm -- * answered n keeps the -delete folder" "$WORK/cwd/-delete/c.txt"
+                ;;
+        esac
+    done
+done
+unset _sh _run _fn _call
+
+echo "[bash/zsh] _count_entries and ptar: other names find or mktemp read as options"
+# `(` and `!` are find expression words too: a folder named `(` counted 0 and
+# one named `!` counted the current folder. mktemp read a template under a
+# folder named -folder as its options, so ptar could not archive there.
+for _sh in bash zsh; do
+    _run="run_$_sh"
+    setup_fixtures
+    mkdir -p "$WORK/cwd/(" "$WORK/cwd/!" "$WORK/cwd/-folder" "$WORK/cwd/src"
+    echo x > "$WORK/cwd/(/a"
+    echo y > "$WORK/cwd/!/b"
+    echo z > "$WORK/cwd/src/f"
+    actual=$("$_run" "$PARALLEL_SH" "cd '$WORK/cwd' && _count_entries '('")
+    assert_eq "$_sh/_count_entries counts a folder named (" "2" "$actual"
+    actual=$("$_run" "$PARALLEL_SH" "cd '$WORK/cwd' && _count_entries '!'")
+    assert_eq "$_sh/_count_entries counts a folder named !" "2" "$actual"
+    "$_run" "$PARALLEL_SH" "cd '$WORK/cwd' && ptar -folder/out.tar src" >/dev/null 2>&1
+    assert_eq "$_sh/ptar archives into a folder named -folder" "src/ src/f " "$(tar tf "$WORK/cwd/-folder/out.tar" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+done
+unset _sh _run
+
 echo "[zsh] pcp single file"
 setup_fixtures
 run_zsh "$PARALLEL_SH" "pcp '$WORK/src/file1.txt' '$WORK/dest/'"
