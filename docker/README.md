@@ -67,10 +67,11 @@ keeps is in [Keeping state across rebuilds](#keeping-state-across-rebuilds).
 den is the exception: each build resolves den's `main` to a commit, so a
 rebuild after `main` moves redoes the `workspace` stage and nothing before it.
 To redo that stage when `main` has not moved, for example to pick up new
-releases of den's Python dependencies or of the stage's apt packages (tzdata,
-GNU coreutils), add `--no-cache-filter workspace`; the Rust tools are not
-recompiled. The zsh plugins den installs are pinned to commits in den itself,
-so they change only when `main` does.
+releases of den's Python dependencies or updates of the apt packages, add
+`--no-cache-filter workspace`; the Rust tools are not recompiled. The stage
+runs `apt-get upgrade`, so this also brings the updates for the apt packages
+that the earlier stages installed. The zsh plugins den installs are pinned to
+commits in den itself, so they change only when `main` does.
 
 ### Build ARGs
 

@@ -301,7 +301,14 @@ ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Build setting: IANA timezone name; also exported to application processes.
 ARG TZ=Asia/Tokyo
 ENV TZ=${TZ}
+# apt-get upgrade runs in this last stage, which a refresh build redoes on its
+# own (--no-cache-filter workspace), so a refresh also brings the updates for
+# the packages that the earlier stages installed. It runs before the next step
+# appends to /etc/zsh/zshenv, /etc/bash.bashrc and /etc/zsh/zshrc: those are
+# package conffiles, and an upgrade that met them changed would stop at
+# dpkg's question about keeping them.
 RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata gnu-coreutils && \
     test -f "/usr/share/zoneinfo/$TZ" && \
     ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime && \

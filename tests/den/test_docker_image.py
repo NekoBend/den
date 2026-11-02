@@ -1318,6 +1318,38 @@ def test_rsync_without_a_release_key_signature_is_not_built(
     assert not (home / ".local" / "bin" / "rsync").exists()
 
 
+# apt
+
+
+def test_the_last_stage_upgrades_apt_packages_before_it_changes_their_conffiles():
+    # A refresh build (--no-cache-filter workspace) redoes only the last stage,
+    # so the upgrade there brings the updates for every stage's packages. An
+    # upgrade after the image appends to zshenv, bash.bashrc and zshrc (bash
+    # and zsh conffiles) would stop at dpkg's question about keeping them.
+    last = _stages()[-1][0]
+    scripts = [
+        (user, script) for stage, user, _, _, script in _run_scripts() if stage == last
+    ]
+    upgrades = [
+        i
+        for i, (user, script) in enumerate(scripts)
+        if re.search(r"apt-get update && .*apt-get upgrade -y", script)
+    ]
+    assert len(upgrades) == 1, (
+        "the last stage runs no apt-get update && apt-get upgrade -y"
+    )
+    user, script = scripts[upgrades[0]]
+    assert user == "root"
+    assert "DEBIAN_FRONTEND=noninteractive apt-get upgrade" in script
+    appends = [
+        i
+        for i, (_, script) in enumerate(scripts)
+        if re.search(r"cat >> /etc/(zsh/zshenv|bash\.bashrc|zsh/zshrc)\b", script)
+    ]
+    assert appends, "the parser no longer sees the startup files"
+    assert upgrades[0] < min(appends)
+
+
 # --- the CI workflow that builds the image -------------------------------------
 
 
