@@ -247,23 +247,33 @@ used the nearest `.den` above it, and cline-cli's two files sit beside that
 
 Then delete the three entries by hand in each `.den` that still has them.
 Do not delete `.den` as a whole: `.den/board/` belongs to `den board`, which
-stays; `rmdir` removes `.den` only once nothing is left in it.
+stays; `rmdir` removes `.den` only once nothing is left in it. In
+`.den/history` the recipes delete only den's snapshots
+(`memory.<UTC stamp>.md`, plain files): den never read, rotated or deleted
+anything else there, so a file of yours in it stays, and so does the folder.
 
 ```sh
 command find ~/src -path '*/.den/imprint.md' 2>/dev/null   # where they are
 cd <the directory holding that .den>
-rm -rf .den/imprint.md .den/memory.md .den/history
-rmdir .den 2>/dev/null
+rm -f .den/imprint.md .den/memory.md
+command find .den/history -maxdepth 1 -type f \
+  -name 'memory.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9]*.md' -delete 2>/dev/null
+rmdir .den/history .den 2>/dev/null
 ```
 
 ```powershell
 Get-ChildItem ~/src -Recurse -Force -Filter imprint.md -ErrorAction SilentlyContinue |
   Where-Object { $_.Directory.Name -eq '.den' }
 Set-Location <the directory holding that .den>
-Remove-Item -Recurse -Force .den/imprint.md, .den/memory.md, .den/history `
-  -ErrorAction SilentlyContinue
-if (-not (Get-ChildItem -Force .den -ErrorAction SilentlyContinue)) {
-  Remove-Item .den -ErrorAction SilentlyContinue
+Remove-Item -Force -LiteralPath .den/imprint.md, .den/memory.md -ErrorAction SilentlyContinue
+Get-ChildItem -Force -File -LiteralPath .den/history -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -match '^memory\.\d{8}T\d{12}(_\d{3,})?\.md$' -and
+    -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+  Remove-Item -Force
+foreach ($d in '.den/history', '.den') {
+  if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -Force -LiteralPath $d)) {
+    Remove-Item -Force -LiteralPath $d   # -Force: pwsh counts a dot-name as hidden
+  }
 }
 ```
 
