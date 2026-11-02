@@ -808,6 +808,12 @@ _RSYNC_RELEASE_KEYS = (
 _INSTALL_TOOLS = ("bash", "awk", "install", "mktemp", "sha256sum", "tar")
 
 
+def test_fzf_is_not_an_apt_package():
+    # Ubuntu's fzf trails fzf's releases; the tools stage installs fzf's own.
+    for stage, _, _, _, script in _run_scripts():
+        assert not re.search(r"\bapt-get install\b[^\n]*\sfzf\b", script), stage
+
+
 def _tar_gz(members: dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
@@ -968,6 +974,127 @@ def _run_install(
     )
     assert not any(scratch.iterdir()), "the step left its work directory behind"
     return result, log.read_text(encoding="utf-8"), home
+
+
+# fzf
+
+_FZF = "https://github.com/junegunn/fzf/releases"
+
+
+def _fzf_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
+    """fzf 0.99.1 for amd64 and arm64, with its checksums file.
+
+    ``served_arch`` serves that architecture's archive with other contents
+    than the checksums file lists; ``listed=False`` lists no amd64 archive.
+    """
+    web = {}
+    sums = []
+    for arch in ("amd64", "arm64"):
+        name = f"fzf-0.99.1-linux_{arch}.tar.gz"
+        archive = _tar_gz({"fzf": _fake_program(f"0.99.1 linux_{arch}")})
+        if listed or arch != "amd64":
+            sums.append(f"{_sha256(archive)}  {name}\n")
+        if arch == served_arch:
+            archive = _tar_gz({"fzf": _fake_program("0.99.1 tampered")})
+        web[f"{_FZF}/download/v0.99.1/{name}"] = archive
+    web[f"{_FZF}/download/v0.99.1/fzf_0.99.1_checksums.txt"] = "".join(sums).encode()
+    return web
+
+
+_FZF_LATEST = {f"{_FZF}/latest": f"{_FZF}/tag/v0.99.1"}
+
+
+@_needs(*_INSTALL_TOOLS)
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_fzf_comes_from_its_release_into_the_user_bin(tmp_path, arch):
+    result, calls, home = _run_install(
+        tmp_path, "INSTALL_FZF", _fzf_web(), redirects=_FZF_LATEST, arch=arch
+    )
+    assert result.returncode == 0, result.stderr
+    fzf = home / ".local" / "bin" / "fzf"
+    assert f"0.99.1 linux_{arch}" in fzf.read_text(encoding="utf-8")
+    assert f"{_FZF}/download/v0.99.1/fzf-0.99.1-linux_{arch}.tar.gz" in calls
+
+
+@_needs(*_INSTALL_TOOLS)
+@pytest.mark.parametrize(
+    "web",
+    [_fzf_web(served_arch="amd64"), _fzf_web(listed=False)],
+    ids=["other-contents", "not-listed"],
+)
+def test_fzf_that_its_checksums_do_not_vouch_for_is_not_installed(tmp_path, web):
+    result, _, home = _run_install(tmp_path, "INSTALL_FZF", web, redirects=_FZF_LATEST)
+    assert result.returncode != 0
+    assert not (home / ".local" / "bin" / "fzf").exists()
+
+
+# PowerShell
+
+_PWSH = "https://github.com/PowerShell/PowerShell/releases"
+
+
+def _pwsh_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
+    """PowerShell 7.9.1 packages, with hashes.sha256 as the release writes it.
+
+    That file is UTF-16 with a byte order mark and CRLF line ends. The
+    arguments work as _fzf_web's do.
+    """
+    web = {}
+    # Lines for other release files, as the real file has.
+    others = (
+        "powershell-lts_7.9.1-1.deb_amd64.deb",
+        "powershell-7.9.1-linux-x64.tar.gz",
+    )
+    lines = [f"{_sha256(name.encode())} *{name}" for name in others]
+    for arch in ("amd64", "arm64"):
+        name = f"powershell_7.9.1-1.deb_{arch}.deb"
+        package = f"package for {arch}".encode()
+        if listed or arch != "amd64":
+            lines.append(f"{_sha256(package)} *{name}")
+        if arch == served_arch:
+            package = b"tampered package"
+        web[f"{_PWSH}/download/v7.9.1/{name}"] = package
+    hashes = "".join(f"{line}\r\n" for line in lines).encode("utf-16")
+    web[f"{_PWSH}/download/v7.9.1/hashes.sha256"] = hashes
+    return web
+
+
+_PWSH_LATEST = {f"{_PWSH}/latest": f"{_PWSH}/tag/v7.9.1"}
+
+
+def test_powershell_is_installed_by_root():
+    # A system package for every user; apt-get needs root.
+    user, env, _ = _install_step("INSTALL_PWSH")
+    assert user == "root"
+    assert env["PATH"] == SYSTEM_PATH
+
+
+@_needs(*_INSTALL_TOOLS, "iconv", "tr")
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_powershell_comes_from_its_release_as_a_package(tmp_path, arch):
+    result, calls, _ = _run_install(
+        tmp_path, "INSTALL_PWSH", _pwsh_web(), redirects=_PWSH_LATEST, arch=arch
+    )
+    assert result.returncode == 0, result.stderr
+    installs = [
+        line for line in calls.splitlines() if line.startswith("apt-get install")
+    ]
+    assert len(installs) == 1, calls
+    assert installs[0].endswith(f"/powershell_7.9.1-1.deb_{arch}.deb"), calls
+
+
+@_needs(*_INSTALL_TOOLS, "iconv", "tr")
+@pytest.mark.parametrize(
+    "web",
+    [_pwsh_web(served_arch="amd64"), _pwsh_web(listed=False)],
+    ids=["other-contents", "not-listed"],
+)
+def test_powershell_that_its_hashes_do_not_vouch_for_is_not_installed(tmp_path, web):
+    result, calls, _ = _run_install(
+        tmp_path, "INSTALL_PWSH", web, redirects=_PWSH_LATEST
+    )
+    assert result.returncode != 0
+    assert "apt-get" not in calls
 
 
 # rclone

@@ -10,10 +10,12 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # 1. OS packages and user. Compilers remain available for development.
-# gpgv checks the rsync tarball's signature in the utilities stage.
+# fzf is not taken from apt: Ubuntu's package trails fzf's releases, so the
+# tools stage installs fzf's own release. gpgv checks the rsync tarball's
+# signature in the utilities stage.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl fzf git gpgv less libssl-dev \
+        build-essential ca-certificates curl git gpgv less libssl-dev \
         openssh-client pkg-config procps python3 tmux unzip util-linux wget xz-utils zip zsh \
     && rm -rf /var/lib/apt/lists/*
 
@@ -95,6 +97,32 @@ RUN curl -fsSL https://astral.sh/uv/install.sh -o /tmp/uv.sh && \
     curl -fsSL https://astral.sh/ruff/install.sh -o /tmp/ruff.sh && \
     sh /tmp/ruff.sh && rm /tmp/ruff.sh
 
+# fzf from its GitHub release, checked against the release's checksums file.
+# Build setting: latest, or an exact fzf release without the v prefix.
+ARG FZF_VERSION=latest
+RUN <<'INSTALL_FZF'
+version=$FZF_VERSION
+if [[ "$version" == latest ]]; then
+    # GitHub redirects releases/latest to the newest release's tag.
+    latest_url=$(curl --proto '=https' --tlsv1.2 -fsSLI --retry 3 -o /dev/null -w '%{url_effective}' \
+        https://github.com/junegunn/fzf/releases/latest)
+    version=${latest_url##*/v}
+fi
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected fzf version: '$version'" >&2; exit 1; }
+release=https://github.com/junegunn/fzf/releases/download/v${version}
+archive=fzf-${version}-linux_${TARGETARCH}.tar.gz
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/$archive" -o "$work_dir/$archive"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/fzf_${version}_checksums.txt" -o "$work_dir/checksums.txt"
+# One "<sha256>  <file>" line per release file; check the archive's own line.
+# A missing line fails too: sha256sum -c rejects an empty list.
+(cd "$work_dir" && awk -v name="$archive" '$2 == name' checksums.txt | sha256sum -c -)
+tar -xzf "$work_dir/$archive" -C "$work_dir" fzf
+install -m 0755 "$work_dir/fzf" "$HOME/.local/bin/fzf"
+"$HOME/.local/bin/fzf" --version
+INSTALL_FZF
+
 ENV NVM_DIR="${HOME}/.nvm"
 # Build setting: exact nvm release, including the v prefix.
 ARG NVM_VERSION=v0.40.7
@@ -143,6 +171,36 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     bats ffmpeg jq lua5.4 p7zip-full parallel pbzip2 pigz shellcheck unrar-free zstd
 rm -rf /var/lib/apt/lists/*
 INSTALL_UTILITIES_DEPS
+
+# PowerShell from its GitHub release, checked against the release's
+# hashes.sha256, installed for every user. With pwsh present, den's shell
+# setup in the workspace stage also wires den into dev's pwsh profile.
+# Build setting: latest, or an exact PowerShell release without the v prefix.
+ARG PWSH_VERSION=latest
+RUN <<'INSTALL_PWSH'
+version=$PWSH_VERSION
+if [[ "$version" == latest ]]; then
+    # GitHub redirects releases/latest to the newest release's tag.
+    latest_url=$(curl --proto '=https' --tlsv1.2 -fsSLI --retry 3 -o /dev/null -w '%{url_effective}' \
+        https://github.com/PowerShell/PowerShell/releases/latest)
+    version=${latest_url##*/v}
+fi
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected PowerShell version: '$version'" >&2; exit 1; }
+release=https://github.com/PowerShell/PowerShell/releases/download/v${version}
+package=powershell_${version}-1.deb_${TARGETARCH}.deb
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/$package" -o "$work_dir/$package"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/hashes.sha256" -o "$work_dir/hashes.sha256"
+# hashes.sha256 is UTF-16 text with CRLF line ends and one "<sha256> *<file>"
+# line per release file; check the package's own line.
+(cd "$work_dir" && iconv -f UTF-16 -t UTF-8 hashes.sha256 | tr -d '\r' \
+    | awk -v name="*$package" '$2 == name' | sha256sum -c -)
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$work_dir/$package"
+rm -rf /var/lib/apt/lists/*
+pwsh --version
+INSTALL_PWSH
 
 USER ${USER_UID}:${USER_GID}
 ENV HOME=/home/${USERNAME}

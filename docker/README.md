@@ -14,10 +14,10 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 
 | Stage | Contents |
 | --- | --- |
-| `system` | apt base (build-essential, git, curl, gpgv, zsh, tmux, fzf, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
+| `system` | apt base (build-essential, git, curl, gpgv, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
 | `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
-| `tools` | starship, uv, ruff, ty, nvm + Node |
-| `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; rsync built from source; rclone |
+| `tools` | starship, uv, ruff, ty, fzf, nvm + Node |
+| `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; PowerShell (`pwsh`); rsync built from source; rclone |
 | `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
 User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
@@ -25,8 +25,15 @@ User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
 image's `HOME` is `/root`: see
 [PATH and HOME in `docker exec`](#path-and-home-in-docker-exec).
 
-PowerShell and opencode are left out on purpose; install them in the container
-when you need them.
+PowerShell (`pwsh`) is installed for every user, and den's shell setup wires
+den into `dev`'s pwsh profile. opencode is left out on purpose; install it in
+the container when you need it.
+
+fzf and PowerShell come from their GitHub releases and rclone from its
+release folder; each download is checked against that release's checksums
+file before it is installed. rsync publishes no checksums, so its tarball must
+carry a signature by one of the rsync release keys that the Dockerfile pins by
+fingerprint, and a release signed by any other key fails the build.
 
 ## Build
 
@@ -76,9 +83,11 @@ Override any of these with `--build-arg NAME=value`.
 | `USER_UID` | `1000` | Nonzero UID for the account. On Ubuntu, UID 1000 reuses the stock `ubuntu` account and renames it. The build fails if any other account already has the UID. |
 | `USER_GID` | `1000` | Nonzero primary GID. An existing group with this GID is reused. |
 | `RUSTUP_USE_CURL` | `0` | `1` selects rustup's deprecated curl backend as a TLS workaround. |
+| `FZF_VERSION` | `latest` | `latest`, or an exact fzf release without the `v` prefix. |
 | `NVM_VERSION` | `v0.40.7` | Exact nvm release, including the `v` prefix. |
 | `NODE_MAJOR` | `22` | Node major version; nvm installs it and makes it the default. |
 | `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. |
+| `PWSH_VERSION` | `latest` | `latest`, or an exact PowerShell release without the `v` prefix. |
 | `RSYNC_VERSION` | `3.5.1` | Exact rsync release, built from source into `~/.local`. Its tarball must be signed by a pinned rsync release key. |
 | `RCLONE_VERSION` | `current` | `current`, or an exact rclone release including the `v` prefix. |
 | `TZ` | `Asia/Tokyo` | IANA time zone name. The container also exports it as `TZ`. |
