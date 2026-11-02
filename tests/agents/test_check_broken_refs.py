@@ -900,6 +900,149 @@ def test_conditionally_defined_functions_are_module_level(tmp_path: Path) -> Non
     ]
 
 
+def test_a_removed_annotated_assignment_is_reported(tmp_path: Path) -> None:
+    # The assignment pattern was `^name\s*=`, which the annotation in
+    # `RETRIES: int = 3` defeats, so deleting it while a caller still imports
+    # it reported only the plain LIMIT next to it.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "RETRIES: int = 3\n"
+        "TABLE: dict[str, list[str]] = {\n"
+        "    'a': [],\n"
+        "}\n"
+        "LIMIT = 5\n"
+        "def helper():\n"
+        "    return 1\n",
+    )
+    write(
+        tmp_path,
+        "app.py",
+        "from lib import LIMIT, RETRIES, TABLE, helper\nprint(RETRIES, TABLE)\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "def helper():\n    return 1\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    imports = "from lib import LIMIT, RETRIES, TABLE, helper"
+    assert report(proc, tmp_path) == [
+        f"app.py:1:broken_ref:LIMIT:{imports}",
+        f"app.py:1:broken_ref:RETRIES:{imports}",
+        "app.py:2:broken_ref:RETRIES:print(RETRIES, TABLE)",
+        f"app.py:1:broken_ref:TABLE:{imports}",
+        "app.py:2:broken_ref:TABLE:print(RETRIES, TABLE)",
+    ]
+
+
+def test_a_removed_annotation_over_several_lines_is_reported(tmp_path: Path) -> None:
+    # The `=` of `LIMITS: dict[` ... `] = {}` is on its last line, so the
+    # first line alone defined nothing and deleting LIMITS reported only the
+    # SIMPLE next to it. A bare annotation over several lines assigns
+    # nothing, so deleting DECLARED removes no name.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "LIMITS: dict[\n"
+        "    str, int\n"
+        "] = {}\n"
+        "SIMPLE: int = 1\n"
+        "DECLARED: dict[\n"
+        "    str, int\n"
+        "]\n",
+    )
+    imports = "from lib import DECLARED, LIMITS, SIMPLE"
+    write(tmp_path, "app.py", f"{imports}\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# moved\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        f"app.py:1:broken_ref:LIMITS:{imports}",
+        f"app.py:1:broken_ref:SIMPLE:{imports}",
+    ]
+
+
+def test_a_removed_assignment_with_a_backslash_after_its_name_is_reported(
+    tmp_path: Path,
+) -> None:
+    # A backslash between the name and its `:` or `=` (`LIMITS \` then
+    # `: dict[str, int] = {}`) hid the assignment, so deleting it reported
+    # only the CONTROL next to it, whose line break sits inside brackets.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "LIMITS \\\n"
+        ": dict[str, int] = {}\n"
+        "V \\\n"
+        "= 7\n"
+        "CONTROL: dict[\n"
+        "    str, int\n"
+        "] = {}\n",
+    )
+    imports = "from lib import CONTROL, LIMITS, V"
+    write(tmp_path, "caller.py", f"{imports}\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "# moved\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        f"caller.py:1:broken_ref:CONTROL:{imports}",
+        f"caller.py:1:broken_ref:LIMITS:{imports}",
+        f"caller.py:1:broken_ref:V:{imports}",
+    ]
+
+
+def test_a_keyword_before_a_colon_is_not_a_removed_name(tmp_path: Path) -> None:
+    # `else: LEVEL = 2` has the shape of an annotated assignment (`name:
+    # annotation = value`). Taken for one, removing such lines made else, try,
+    # except, finally and lambda removed names, and every block in the tree
+    # that uses one became a broken reference.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.py",
+        "import os\n"
+        "if os.sep == '/': LEVEL = 1\n"
+        "else: LEVEL = 2\n"
+        "try: N = int('1')\n"
+        "except: N = 0\n"
+        "finally: DONE = True\n"
+        "lambda: dict(key=1)\n",
+    )
+    write(
+        tmp_path,
+        "app.py",
+        "try:\n"
+        "    x = 1\n"
+        "except ValueError:\n"
+        "    x = 2\n"
+        "else:\n"
+        "    x = 3\n"
+        "finally:\n"
+        "    f = lambda: x\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.py", "import os\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+
 def test_a_definition_behind_a_byte_order_mark_is_seen(tmp_path: Path) -> None:
     # A UTF-8 byte-order mark (what Windows editors often write to a .ps1) was
     # read as part of line 1, so `^function` missed a definition there and
@@ -917,6 +1060,111 @@ def test_a_definition_behind_a_byte_order_mark_is_seen(tmp_path: Path) -> None:
     proc = run("--base", "HEAD", "--root", str(tmp_path))
     assert proc.returncode == 0, proc.stderr
     assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:Get-Widget"]
+
+
+# Two functions as Windows PowerShell writes them, and the byte-order marks it
+# writes in front of a script saved as UTF-16.
+TOOLS = "function Get-Widget {\r\n}\r\nfunction Set-Thing {\r\n}\r\n"
+BOMS = {"utf-16-le": b"\xff\xfe", "utf-16-be": b"\xfe\xff", "utf-8": b""}
+
+
+def encoded(text: str, codec: str) -> bytes:
+    """`text` saved in `codec`, behind the byte-order mark of a UTF-16 one."""
+    return BOMS[codec] + text.encode(codec)
+
+
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+def test_a_definition_removed_from_a_utf16_file_is_reported(
+    tmp_path: Path, codec: str
+) -> None:
+    # Both sides of the diff were decoded as UTF-8, where a UTF-16 file
+    # defines nothing, so deleting Get-Widget from one reported no caller.
+    init_repo(tmp_path)
+    (tmp_path / "Tools.ps1").write_bytes(encoded(TOOLS, codec))
+    write(tmp_path, "run.ps1", "Get-Widget\nSet-Thing\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    kept = "function Set-Thing {\r\n}\r\n"
+    (tmp_path / "Tools.ps1").write_bytes(encoded(kept, codec))
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:Get-Widget"]
+
+
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+def test_saving_a_file_as_utf16_removes_nothing(tmp_path: Path, codec: str) -> None:
+    # Re-saved as UTF-16 with its functions unchanged, the file defined nothing
+    # in the working tree, so every function it kept was reported.
+    init_repo(tmp_path)
+    (tmp_path / "Tools.ps1").write_bytes(encoded(TOOLS, "utf-8"))
+    write(tmp_path, "run.ps1", "Get-Widget\nSet-Thing\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "Tools.ps1").write_bytes(encoded(TOOLS, codec))
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "1 changed file examined" in proc.stderr, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+
+def test_a_utf16_working_tree_encoding_keeps_its_definitions(tmp_path: Path) -> None:
+    # Under `working-tree-encoding=UTF-16LE-BOM` git stores the blob as UTF-8
+    # and writes the file as UTF-16. Read as UTF-8, the file defined nothing,
+    # so merely adding New-Thing reported both functions it kept.
+    init_repo(tmp_path)
+    write(tmp_path, ".gitattributes", "Tools.ps1 working-tree-encoding=UTF-16LE-BOM\n")
+    (tmp_path / "Tools.ps1").write_bytes(encoded(TOOLS, "utf-16-le"))
+    write(tmp_path, "run.ps1", "Get-Widget\nSet-Thing\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    exe = shutil.which("git")
+    assert exe is not None
+    blob = subprocess.run(
+        [exe, "cat-file", "-p", "HEAD:Tools.ps1"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert blob.startswith(b"function Get-Widget {"), blob[:24]
+
+    added = TOOLS + "function New-Thing {\r\n}\r\n"
+    (tmp_path / "Tools.ps1").write_bytes(encoded(added, "utf-16-le"))
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+    removed = "function Set-Thing {\r\n}\r\n"
+    (tmp_path / "Tools.ps1").write_bytes(encoded(removed, "utf-16-le"))
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:Get-Widget"]
+
+
+def test_an_undecodable_byte_cannot_keep_a_removed_name_defined(
+    tmp_path: Path,
+) -> None:
+    # The working tree was read with errors="ignore", which drops the byte
+    # that git show's side turned into U+FFFD: `def wid\xffget():` still
+    # defined widget, and its callers went unreported. Both sides now read
+    # it as the search does.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "from lib import widget\nwidget()\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    (tmp_path / "lib.py").write_bytes(b"def wid\xffget():\n    return 1\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        "app.py:1:broken_ref:widget:from lib import widget",
+        "app.py:2:broken_ref:widget:widget()",
+    ]
 
 
 def test_bash_function_keyword_form_removal_is_reported(tmp_path: Path) -> None:
@@ -955,6 +1203,72 @@ def test_powershell_names_are_case_insensitive(
         assert report(proc, tmp_path) == ["run.ps1:1:broken_ref:Get-Widget:get-widget"]
 
 
+def test_a_removed_typed_powershell_assignment_is_reported(tmp_path: Path) -> None:
+    # The assignment patterns wanted the line to start with `$`, so deleting
+    # `[int]$MaxTries = 3` while run.ps1 still reads it reported only the
+    # untyped $Plain next to it. A typed local of a function is no
+    # definition, so deleting one reports nothing.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.ps1",
+        "[int]$MaxTries = 3\n"
+        "[string[]]$Names = @()\n"
+        "$Plain = 5\n"
+        "function Get-Thing {\n"
+        "    [int]$script:Count = 0\n"
+        "    [int]$Local = 1\n"
+        "}\n",
+    )
+    uses = "Write-Output $MaxTries $Names $Plain $Count $Local"
+    write(tmp_path, "run.ps1", f"{uses}\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.ps1", "function Get-Thing {\n}\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        f"run.ps1:1:broken_ref:Count:{uses}",
+        f"run.ps1:1:broken_ref:MaxTries:{uses}",
+        f"run.ps1:1:broken_ref:Names:{uses}",
+        f"run.ps1:1:broken_ref:Plain:{uses}",
+    ]
+
+
+def test_a_quoted_bracket_in_an_attribute_hides_no_removed_assignment(
+    tmp_path: Path,
+) -> None:
+    # The `[` in `[ValidateSet("[")]` was taken for a bracket and left the
+    # attribute open, so deleting the variable while run.ps1 still reads it
+    # reported only $Level, whose attribute holds no bracket.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.ps1",
+        '[ValidateSet("[")][string]$Delimiter = "["\n'
+        "[ValidatePattern('^[^\\]]+$')][string]$Name = 'abc'\n"
+        "[ValidateRange(1, 10)][int]$Level = 5\n"
+        "function Get-Thing {\n"
+        "}\n",
+    )
+    uses = "Write-Output $Delimiter $Name $Level"
+    write(tmp_path, "run.ps1", f"{uses}\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.ps1", "function Get-Thing {\n}\n")
+
+    proc = run("--base", "HEAD", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert report(proc, tmp_path) == [
+        f"run.ps1:1:broken_ref:Delimiter:{uses}",
+        f"run.ps1:1:broken_ref:Level:{uses}",
+        f"run.ps1:1:broken_ref:Name:{uses}",
+    ]
+
+
 def test_a_removed_typescript_enum_is_reported(tmp_path: Path) -> None:
     init_repo(tmp_path)
     write(tmp_path, "status.ts", "export enum OrderStatus { Open }\n")
@@ -969,6 +1283,97 @@ def test_a_removed_typescript_enum_is_reported(tmp_path: Path) -> None:
     assert report(proc, tmp_path) == [
         "app.ts:1:broken_ref:OrderStatus:use(OrderStatus.Open);"
     ]
+
+
+def test_removed_javascript_names_holding_a_dollar_are_reported(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A `$` is part of a JavaScript or TypeScript name, but names were
+    # captured as \w+ and searched between \b: deleting `$fetch`, `users$`
+    # and `$` reported none of their uses, `class Store$` was a removed
+    # `Store`, and `load$($load)` was reported as a use of the removed `load`.
+    # The `$` of a template literal's `${` is no use of `$` or `users$`.
+    init_repo(tmp_path)
+    write(
+        tmp_path,
+        "lib.ts",
+        "export function $fetch() {}\n"
+        "export const users$ = 1;\n"
+        "export const $ = 2;\n"
+        "export class Store$ {}\n"
+        "export function load() {}\n"
+        "export function keep() {}\n",
+    )
+    imports = 'import { $fetch, users$, $, Store$, load, keep } from "./lib";'
+    write(
+        tmp_path,
+        "app.ts",
+        f"{imports}\n"
+        "$fetch();\n"
+        "console.log(users$, a$fetch);\n"
+        "$(1);\n"
+        "new Store$();\n"
+        "load$($load, keep);\n"
+        "const s = `${n} users${n}`;\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.ts", "export function keep() {}\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert report(proc, tmp_path) == [
+            f"app.ts:1:broken_ref:$:{imports}",
+            "app.ts:4:broken_ref:$:$(1);",
+            f"app.ts:1:broken_ref:$fetch:{imports}",
+            "app.ts:2:broken_ref:$fetch:$fetch();",
+            f"app.ts:1:broken_ref:Store$:{imports}",
+            "app.ts:5:broken_ref:Store$:new Store$();",
+            f"app.ts:1:broken_ref:load:{imports}",
+            f"app.ts:1:broken_ref:users$:{imports}",
+            "app.ts:3:broken_ref:users$:console.log(users$, a$fetch);",
+        ]
+
+
+def test_a_removed_dollar_name_right_before_a_brace_in_code_is_reported(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The `${` of a template literal ends no name, and that rule hid a `$`
+    # name standing right before `{` in code: deleting `class Store${}`
+    # left `class Child extends Store${}` unreported, and the same line after
+    # a closed template or inside a template's `${...}`. Only a template's
+    # text is left out now.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.js", "export class Store${}\nexport function keep() {}\n")
+    write(
+        tmp_path,
+        "app.js",
+        'import { Store$, keep } from "./lib.js";\n'
+        "class Child extends Store${}\n"
+        "const s = `${keep()} Store${keep()}`;\n"
+        "const label = `ok`; class Two extends Store${}\n"
+        "const t = `${class extends Store${}}`;\n"
+        "/* ` */ class Three extends Store${}\n"
+        "const re = /`/; class Four extends Store${}\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.js", "export function keep() {}\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert report(proc, tmp_path) == [
+            'app.js:1:broken_ref:Store$:import { Store$, keep } from "./lib.js";',
+            "app.js:2:broken_ref:Store$:class Child extends Store${}",
+            "app.js:4:broken_ref:Store$:const label = `ok`; class Two extends Store${}",
+            "app.js:5:broken_ref:Store$:const t = `${class extends Store${}}`;",
+            "app.js:6:broken_ref:Store$:/* ` */ class Three extends Store${}",
+            "app.js:7:broken_ref:Store$:const re = /`/; class Four extends Store${}",
+        ]
 
 
 def test_go_and_rust_methods_are_searched_as_members_only(tmp_path: Path) -> None:
@@ -1380,6 +1785,58 @@ def test_the_base_and_the_changed_file_count_go_to_stderr(tmp_path: Path) -> Non
     proc = run("--root", str(tmp_path))
     assert "base=HEAD: 1 changed file examined" in proc.stderr, proc.stderr
     assert "merge-base" not in proc.stderr, proc.stderr
+
+
+def test_a_base_that_git_would_read_as_an_option_is_refused(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # --base went to `git diff` as given, so `--base=--output=<file>` made
+    # git write its diff over that file, inside the tree or outside it, list
+    # no changed file and exit 0 with the real broken reference unreported.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.py", "def widget():\n    return 1\n")
+    write(tmp_path, "app.py", "widget()\n")
+    notes = write(tmp_path, "notes.txt", "precious notes\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    git(tmp_path, "tag", "-a", "v1", "-m", "v1")
+    write(tmp_path, "lib.py", "# gone\n")
+    outside = tmp_path_factory.mktemp("outside") / "outside.txt"
+    outside.write_text("keep\n", encoding="utf-8")
+
+    for target in (notes, outside):
+        proc = run(f"--base=--output={target}", "--root", str(tmp_path))
+        assert proc.returncode == 1, proc.stderr
+        assert "an option, not a commit" in proc.stderr, proc.stderr
+        assert proc.stdout == "", proc.stdout
+    assert notes.read_text(encoding="utf-8") == "precious notes\n"
+    assert outside.read_text(encoding="utf-8") == "keep\n"
+
+    proc = run("--base", "no-such-ref", "--root", str(tmp_path))
+    assert proc.returncode == 1, proc.stderr
+    assert "no-such-ref: not a commit" in proc.stderr, proc.stderr
+    git_exe = shutil.which("git")
+    assert git_exe is not None
+    tree = subprocess.run(
+        [git_exe, "rev-parse", "HEAD^{tree}"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    proc = run("--base", tree, "--root", str(tmp_path))
+    assert proc.returncode == 1, proc.stderr
+    assert f"{tree}: not a commit" in proc.stderr, proc.stderr
+
+    # an annotated tag and a revision expression still name the commit, and
+    # so does a tag named like a file: git takes its object ID, never the
+    # name, which `git diff notes.txt` found ambiguous and refused
+    git(tmp_path, "tag", "notes.txt")
+    for base in ("v1", "HEAD~0", "notes.txt"):
+        proc = run("--base", base, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert f"base={base}: 1 changed file examined" in proc.stderr, proc.stderr
+        assert report(proc, tmp_path) == ["app.py:1:broken_ref:widget:widget()"]
 
 
 def test_code_audit_tells_the_model_to_pass_a_base_for_committed_changes() -> None:

@@ -20,7 +20,8 @@ Modes:
 
     --in lists top-level names: in Python, a def or class at module level
     (column 0, or inside a module-level if/try/with/for/while block) and an
-    assignment at column 0, never a method, a nested function or a local.
+    assignment at column 0, annotated or not (`X: int = 1`; a bare `X: int`
+    assigns nothing), never a method, a nested function or a local.
     A Go method (a func with a receiver) is not one either. In Rust, Java
     and C# a name counts outside every type and function body only (a Rust
     `mod` or `extern` block and a C# namespace count as outside), so an impl
@@ -99,7 +100,7 @@ from _common import (
     TOP_LEVEL_PATTERNS,
     allow_undecodable_paths_on_stdout,
     format_hit,
-    is_definition_line,
+    is_definition_hit,
     iter_searchable_lines,
     list_search_files,
     mentions,
@@ -125,12 +126,16 @@ def _split(
     Every definition pattern holds the symbol as a whole word, so the
     definition lines are a subset of the word hits: each hit is classified by
     the patterns of its own file's extension instead of searching the tree
-    once more per (extension, pattern) pair.
+    once more per (extension, pattern) pair. A hit counts only where
+    mentions() finds the symbol as a whole word in that file's language,
+    which the search cannot tell: a `$` is part of a JavaScript name.
     """
     defs: list[Result] = []
     uses: list[Result] = []
     for file, lineno, content in search_words([symbol], _files(root, ext_filter)):
-        if is_definition_line(content, Path(file).suffix, symbol):
+        if not mentions(content, Path(file).suffix, symbol):
+            continue
+        if is_definition_hit(file, lineno, content, symbol):
             defs.append((file, lineno, "def", content.strip()))
         else:
             uses.append((file, lineno, "use", content.strip()))
@@ -205,7 +210,7 @@ def list_in_file(file_path: Path, root: Path) -> list[Result]:
         for u_file, u_line, u_content, u_ext in hits:
             if not mentions(u_content, u_ext, symbol):
                 continue
-            if is_definition_line(u_content, u_ext, symbol):
+            if is_definition_hit(u_file, u_line, u_content, symbol):
                 continue
             if u_file not in resolved:
                 resolved[u_file] = Path(u_file).resolve()

@@ -66,6 +66,38 @@ Hit = tuple[str, int, str]
 # type generic (`func (s *Stack[T]) Push(v T)`).
 _GO_METHOD = r"^func\s*\(\s*(?:\w+\s+)?\*?\s*\w+\s*(?:\[[^\]]*\]\s*)?\)\s*{name}\s*\("
 
+# A Python assignment at column 0, plain or annotated: `X = 3`, `X: int = 3`,
+# `X: dict[str, list[str]] = {`. `X: int` alone binds nothing, and `X == 3`
+# compares. The annotation is taken to end at its first `=`, so a bare one
+# holding an `=` of its own (`X: Annotated[int, Field(gt=0)]`) still counts.
+# The keywords a colon can follow at the start of a statement are no names:
+# `else: x = 1` defines no `else`. A backslash may join the name's line to
+# the next one (`X \` then `: int = 3`, or `X \` then `= 3`).
+_PY_ASSIGNMENT = (
+    r"^(?!(?:else|try|finally|except|lambda)\b){name}(?:\s|\\\r?\n)*"
+    r"(?::[^=]+)?=(?!=)"
+)
+
+# What may stand before a PowerShell variable's `$`: type constraints and
+# attributes such as `[int]`, `[string[]]` or `[ValidateRange(1, 9)]`, with
+# brackets nested up to three deep (`[List[string[]]]`). A quoted string in
+# them is read as one piece, so a bracket inside it is text:
+# `[ValidateSet("[")]`. Two quotes in a row are an escaped quote, never the
+# end of one string and the start of the next, which also keeps the match
+# linear on a long run of quotes.
+_PS_QUOTED = r"""'(?:[^']|'')*'(?!')|"(?:[^"`]|`.|"")*"(?!")"""
+_PS_PIECE = r"(?:" + _PS_QUOTED + r"""|[^\[\]'"])"""
+_PS_TYPES = (
+    r"(?:\[(?:" + _PS_PIECE + r"|\[(?:" + _PS_PIECE + r"|\[" + _PS_PIECE + r"*\])*\])*"
+    r"\]\s*)*"
+)
+
+# JavaScript and TypeScript, which share the .ts patterns. A name there can
+# hold `$` (`$fetch`, `users$`, or `$` alone), so it ends where neither a word
+# character nor a `$` follows: `\b` ended `class Store$` at `Store`.
+_JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_JS_END = r"(?![\w$])"
+
 # Where a symbol may be defined, per extension. {name} is the symbol.
 DEFINITION_PATTERNS: dict[str, list[str]] = {
     ".py": [
@@ -75,16 +107,16 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         # local assignment and every keyword argument of a multi-line call
         # (`    path=path,`), so such lines vanished from --uses and every
         # local of a changed file became a "removed definition".
-        r"^{name}\s*=",
+        _PY_ASSIGNMENT,
     ],
     ".ts": [
         r"\bfunction\s+{name}\s*[(<]",
-        r"\bclass\s+{name}\b",
-        r"\binterface\s+{name}\b",
+        r"\bclass\s+{name}" + _JS_END,
+        r"\binterface\s+{name}" + _JS_END,
         r"\btype\s+{name}\s*=",
         r"\b(?:const|let|var)\s+{name}\s*[=:]",
-        r"\benum\s+{name}\b",  # `const enum` too
-        r"\bnamespace\s+{name}\b",
+        r"\benum\s+{name}" + _JS_END,  # `const enum` too
+        r"\bnamespace\s+{name}" + _JS_END,
     ],
     ".go": [
         # a generic function or type takes its type parameters in brackets:
@@ -135,9 +167,10 @@ DEFINITION_PATTERNS: dict[str, list[str]] = {
         r"^\s*class\s+{name}\b",
         r"^\s*enum\s+{name}\b",
         # a script-level `$x =` at column 0, or an explicitly scoped one at any
-        # depth; an indented plain `$x =` is a function's local
-        r"^\$(?:script:|global:)?{name}\s*=",
-        r"^\s*\$(?:script|global):{name}\s*=",
+        # depth, typed or not (`[int]$x =`); an indented plain `$x =` is a
+        # function's local
+        r"^" + _PS_TYPES + r"\$(?:script:|global:)?{name}\s*=",
+        r"^\s*" + _PS_TYPES + r"\$(?:script|global):{name}\s*=",
     ],
 }
 
@@ -157,16 +190,16 @@ TOP_LEVEL_PATTERNS: dict[str, list[str]] = {
     ".py": [
         r"^(?:async\s+)?def\s+{name}\s*\(",
         r"^class\s+{name}\s*[(:\[]",
-        r"^{name}\s*=",
+        _PY_ASSIGNMENT,
     ],
     ".ts": [
         _TS_PREFIX + r"(?:async\s+)?function\s+{name}\s*[(<]",
-        _TS_PREFIX + r"(?:abstract\s+)?class\s+{name}\b",
-        _TS_PREFIX + r"interface\s+{name}\b",
+        _TS_PREFIX + r"(?:abstract\s+)?class\s+{name}" + _JS_END,
+        _TS_PREFIX + r"interface\s+{name}" + _JS_END,
         _TS_PREFIX + r"type\s+{name}\s*=",
         _TS_PREFIX + r"(?:const|let|var)\s+{name}\s*[=:]",
-        _TS_PREFIX + r"(?:const\s+)?enum\s+{name}\b",
-        _TS_PREFIX + r"namespace\s+{name}\b",
+        _TS_PREFIX + r"(?:const\s+)?enum\s+{name}" + _JS_END,
+        _TS_PREFIX + r"namespace\s+{name}" + _JS_END,
     ],
     # Every Go definition sits at column 0; a method is a member.
     ".go": [p for p in DEFINITION_PATTERNS[".go"] if p != _GO_METHOD],
@@ -217,16 +250,22 @@ _PY_BLOCK_LEVEL = TOP_LEVEL_PATTERNS[".py"][:2]
 # Verb-Noun names at the hyphen, so "function New-Wrapper" becomes a
 # definition of "New" - measured to both flood false broken_refs (a deleted
 # Test-* symbol collides with every Test-Path call) and hide real ones
-# (New-Wrapper deleted stays "defined" through New-WrapperSuffix).
+# (New-Wrapper deleted stays "defined" through New-WrapperSuffix). The
+# default would drop a JavaScript name holding `$` (`$fetch`, `users$`).
 DEFINITION_CAPTURE: dict[str, str] = {
     ".ps1": r"([\w-]+)",
     ".psm1": r"([\w-]+)",
-}
+} | dict.fromkeys(_JS_EXTS, r"([\w$]+)")
 DEFAULT_CAPTURE = r"(\w+)"
+
+# The characters a name is made of, by suffix, where \w is not all of them.
+# None of them may stand right before or after a name that a line mentions.
+NAME_CHARS: dict[str, str] = dict.fromkeys(_JS_EXTS, r"[\w$]")
+DEFAULT_NAME_CHARS = r"\w"
 
 # Extensions that share patterns with the canonical one.
 for _table in (DEFINITION_PATTERNS, TOP_LEVEL_PATTERNS):
-    for _alias in (".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+    for _alias in _JS_EXTS[1:]:
         _table[_alias] = _table[".ts"]
     _table[".psm1"] = _table[".ps1"]
     _table[".bash"] = _table[".sh"]
@@ -349,29 +388,32 @@ def _python_statement(line: str, col: int, blocks: list[str]) -> tuple[str, str]
 
 
 @functools.lru_cache(maxsize=8)
-def _python_scopes(text: str) -> dict[int, str]:
-    """Line number -> "module" or "class" for each Python statement line.
+def _python_scopes(text: str) -> dict[int, tuple[str, int]]:
+    """First line -> (scope, last line) for each Python statement.
 
-    "module": a statement at module level, or in a module-level
+    The scope is "module": a statement at module level, or in a module-level
     if/try/with/for/while block (a function defined there is still an
     attribute of the module), except `if __name__ == "__main__":`.
     "class": a statement in a class body, an if/try/... block inside it
     included. Statements nested in a function or in the main guard,
-    continuation lines and lines inside strings get no entry.
+    continuation lines and lines inside strings get no entry. The last line
+    is the statement's own last line; for a compound statement (a def, a
+    class, an if) it is the last line of its header.
 
     The blocks come from Python's own tokenizer, so a bracketed continuation
     line, a string spanning lines or a comment cannot pass for a statement.
     Where the tokenizer gives up (a syntax error, an unterminated string),
     the remaining lines fall back to the indentation rule: column 0 is
-    "module", anything indented "class".
+    "module", anything indented "class", and each line ends its statement.
     """
     lines = _lines(text)
-    scopes: dict[int, str] = {}
+    scopes: dict[int, tuple[str, int]] = {}
     # each open indented block: "def", "class", "script" (the main guard) or
     # "block" (any other compound statement)
     blocks: list[str] = []
     opens = "block"  # the kind of block the current statement would open
     statement_start = True
+    start = 0  # the first line of the current statement, when it has an entry
     last_row = 0
     try:
         tokens = tokenize.generate_tokens(io.StringIO("\n".join(lines)).readline)
@@ -383,18 +425,23 @@ def _python_scopes(text: str) -> dict[int, str]:
                 del blocks[-1:]
             elif tok.type == tokenize.NEWLINE:
                 statement_start = True
+                if start:
+                    scopes[start] = (scopes[start][0], tok.start[0])
+                    start = 0
             elif statement_start and tok.type not in _PY_PASSIVE_TOKENS:
                 statement_start = False
                 row, col = tok.start
                 line = lines[row - 1] if row <= len(lines) else ""
                 scope, opens = _python_statement(line, col, blocks)
                 if scope:
-                    scopes[row] = scope
+                    scopes[row] = (scope, row)
+                    start = row
     except (tokenize.TokenError, SyntaxError):
         for lineno in range(last_row + 1, len(lines) + 1):
             line = lines[lineno - 1]
             if line.strip():
-                scopes[lineno] = "class" if line[:1].isspace() else "module"
+                scope = "class" if line[:1].isspace() else "module"
+                scopes[lineno] = (scope, lineno)
     return scopes
 
 
@@ -404,7 +451,7 @@ def _python_definitions(text: str, *, member: bool) -> list[tuple[int, str, str]
     nested = _compile(".py", _PY_BLOCK_LEVEL)
     methods = _compile(".py", MEMBER_PATTERNS[".py"])
     picked: list[tuple[int, str, str, list[re.Pattern[str]]]] = []
-    for lineno, scope in sorted(_python_scopes(text).items()):
+    for lineno, (scope, last) in sorted(_python_scopes(text).items()):
         line = lines[lineno - 1] if lineno <= len(lines) else ""
         if member:
             if scope == "class":
@@ -413,8 +460,49 @@ def _python_definitions(text: str, *, member: bool) -> list[tuple[int, str, str]
             if line[:1].isspace():
                 picked.append((lineno, line.lstrip(), line, nested))
             else:
-                picked.append((lineno, line, line, top))
+                # the whole statement, reported at its first line: an
+                # annotation can run onto later lines, which then hold its
+                # `=` (`LIMITS: dict[` ... `] = {}`)
+                statement = "\n".join(lines[lineno - 1 : last])
+                picked.append((lineno, statement, line, top))
     return _scan(picked)
+
+
+# A Python line that can start an assignment whose `=` is on a later line:
+# the name, then the colon of an annotation or a backslash that ends the line.
+@functools.cache
+def _assignment_start(symbol: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(symbol)}\s*(?::|\\\r?$)")
+
+
+@functools.lru_cache(maxsize=8)
+def _file_statements(file: str) -> tuple[list[str], dict[int, tuple[str, int]]]:
+    """The lines of the Python file `file`, as searched, and its statements."""
+    lines = [text for _lineno, text in iter_searchable_lines(Path(file))]
+    return lines, _python_scopes("\n".join(lines))
+
+
+def is_definition_hit(file: str, lineno: int, line: str, symbol: str) -> bool:
+    """Whether line `lineno` of `file`, which reads `line`, may define `symbol`.
+
+    is_definition_line decides from the line alone, except where a Python
+    line starts an annotation without its `=` or ends in a backslash after
+    the name: an assignment can run onto later lines (`LIMITS: dict[` ...
+    `] = {}`, or `LIMITS` and a backslash, then `= {}`), so the statement
+    that starts there is read from the file and matched whole, as
+    _python_definitions matches it. Such a line that starts no statement
+    (a continuation line, a line inside a string) defines nothing.
+    """
+    ext = Path(file).suffix
+    if is_definition_line(line, ext, symbol):
+        return True
+    if ext != ".py" or not _assignment_start(symbol).match(line):
+        return False
+    lines, statements = _file_statements(file)
+    entry = statements.get(lineno)
+    if entry is None:
+        return False
+    return is_definition_line("\n".join(lines[lineno - 1 : entry[1]]), ext, symbol)
 
 
 # ---------- Rust, Java, C#: scopes from braces ----------
@@ -634,24 +722,124 @@ def member_definitions(text: str, ext: str) -> list[tuple[int, str, str]]:
 
 
 @functools.cache
-def _word_rx(symbol: str, *, ignore_case: bool, prefix: str) -> re.Pattern[str]:
+def _word_rx(
+    symbol: str, *, ignore_case: bool, prefix: str, suffix: str
+) -> re.Pattern[str]:
     return re.compile(
-        rf"{prefix}{re.escape(symbol)}\b", re.IGNORECASE if ignore_case else 0
+        f"{prefix}{re.escape(symbol)}{suffix}", re.IGNORECASE if ignore_case else 0
     )
+
+
+_TEXT = -1  # _TemplateScan's mark for a template's text
+
+
+class _TemplateScan:
+    """Whether columns of one JavaScript or TypeScript line are in a template
+    literal's text, read once from the line's start as the columns asked
+    about move right: a backtick opens or closes a template, a `${` in its
+    text opens code up to the matching `}`, a quote in code opens a string,
+    and a `/* */` comment is skipped. Any other `/` in code (a `//` comment,
+    a regular expression or a division, which one line cannot tell apart)
+    ends the reading: from there on every column counts as code, so a `$`
+    name before `{` there still counts. A line that starts inside a
+    template or a comment spanning lines is read as code too."""
+
+    def __init__(self, line: str) -> None:
+        self.line = line
+        self.i = 0
+        self.stack: list[int] = []  # _TEXT: a template's text; else a ${ } depth
+        self.quote = ""
+        self.lost = False
+
+    def in_text(self, pos: int) -> bool:
+        line = self.line
+        while self.i < pos and not self.lost:
+            if self.stack and self.stack[-1] == _TEXT:
+                self.i = _template_step(line, self.i, self.stack)
+            elif self.quote or line[self.i] in "'\"":
+                self.i, self.quote = _string_step(line, self.i, self.quote)
+            elif line.startswith("/*", self.i):
+                end = line.find("*/", self.i + 2)
+                self.lost = end < 0
+                self.i = end + 2
+            elif line[self.i] == "/":
+                self.lost = True
+            else:
+                _code_step(line[self.i], self.stack)
+                self.i += 1
+        if self.lost or self.quote or not self.stack:
+            return False
+        return self.stack[-1] == _TEXT
+
+
+def _template_step(line: str, i: int, stack: list[int]) -> int:
+    """One step of _TemplateScan in a template's text; the next column."""
+    if line[i] == "\\":
+        return i + 2
+    if line[i] == "`":
+        stack.pop()
+    elif line.startswith("${", i):
+        stack.append(0)
+        return i + 2
+    return i + 1
+
+
+def _string_step(line: str, i: int, quote: str) -> tuple[int, str]:
+    """One step of _TemplateScan at or in a quoted string: the next
+    column and the quote still open ("" once it closes)."""
+    ch = line[i]
+    if not quote:
+        return i + 1, ch
+    if ch == "\\":
+        return i + 2, quote
+    return i + 1, "" if ch == quote else quote
+
+
+def _code_step(ch: str, stack: list[int]) -> None:
+    """One step of _TemplateScan in code: a backtick opens a template, and
+    braces count towards the `}` that ends a `${`."""
+    if ch == "`":
+        stack.append(_TEXT)
+    elif stack and ch == "{":
+        stack[-1] += 1
+    elif stack and ch == "}":
+        if stack[-1] == 0:
+            stack.pop()
+        else:
+            stack[-1] -= 1
 
 
 def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     """Whether `line` (of a file with suffix `ext`) names `symbol`.
 
     As a whole word, or with member=True only as attribute access
-    (MEMBER_ACCESS: `.symbol`, and `::symbol` in Rust).
+    (MEMBER_ACCESS: `.symbol`, and `::symbol` in Rust). A whole word has no
+    character of a name (NAME_CHARS) right before or after it: in a
+    JavaScript or TypeScript file `users$` does not name `users`, and
+    `$fetch()` names `$fetch`. There a `$` right before a `{` in a template
+    literal's text opens its `${...}` and ends no name: in `` `${x}` `` it
+    does not name `$`, nor in `` `users${x}` `` does it name `users$`. In
+    code the name stands: `class X extends Store${}` names `Store$`, also
+    after a closed template on the line or inside a `${...}`
+    (_TemplateScan).
     """
     ignore_case = ext in CASE_INSENSITIVE_EXTS
     if not ignore_case and symbol not in line:  # the cheap test first
         return False
-    prefix = MEMBER_ACCESS.get(ext, DEFAULT_MEMBER_ACCESS) if member else r"\b"
-    rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix)
-    return rx.search(line) is not None
+    name_chars = NAME_CHARS.get(ext, DEFAULT_NAME_CHARS)
+    if member:
+        prefix = MEMBER_ACCESS.get(ext, DEFAULT_MEMBER_ACCESS)
+    else:
+        prefix = f"(?<!{name_chars})"
+    suffix = f"(?!{name_chars})"
+    rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix, suffix=suffix)
+    if not (ext in _JS_EXTS and symbol.endswith("$")):
+        return rx.search(line) is not None
+    scan = _TemplateScan(line)
+    return any(
+        not (line.startswith("{", m.end()) and scan.in_text(m.end() - 1))
+        for m in rx.finditer(line)
+    )
 
 
 # ---------- external tools ----------
@@ -987,6 +1175,23 @@ _UTF16_BOMS = ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"))
 _UTF8_BOM = b"\xef\xbb\xbf"
 
 
+def decode_text(data: bytes) -> str:
+    """A whole file's bytes as text, decoded as _raw_lines decodes them.
+
+    Behind a UTF-16 byte-order mark the rest is UTF-16; anything else is
+    UTF-8, a leading UTF-8 mark dropped. Undecodable bytes become U+FFFD, as
+    in iter_searchable_lines, so they cannot join two halves of a name.
+    check-broken-refs reads both sides of a change with this: read as UTF-8,
+    a script Windows PowerShell saved as UTF-16 defined nothing, so a
+    function deleted from it went unreported, and re-saving a file as UTF-16
+    reported every function it kept.
+    """
+    for bom, codec in _UTF16_BOMS:
+        if data.startswith(bom):
+            return data[len(bom) :].decode(codec, errors="replace")
+    return data.removeprefix(_UTF8_BOM).decode("utf-8", errors="replace")
+
+
 def _raw_lines(path: Path) -> Iterator[bytes]:
     """Each line of `path` as UTF-8 bytes, without its "\\n"."""
     try:
@@ -1106,21 +1311,49 @@ def _search_walk(
     return hits
 
 
+_WORD_CHAR = re.compile(r"\w")
+
+
+def _search_pattern(names: list[str]) -> str:
+    """The regex for the lines that may hold one of `names` as a whole word.
+
+    A word boundary holds only next to a word character, so it is left off
+    the side of a name that starts or ends with another one (`$fetch`,
+    `users$` in JavaScript): one before `$fetch` needed a letter before the
+    `$`, and no call of it was found. A line found that way may hold the
+    name inside a longer one; mentions() decides, by the file's language.
+    """
+    plain: list[str] = []
+    parts: list[str] = []
+    for name in names:
+        head = _WORD_CHAR.match(name[:1]) is not None
+        tail = _WORD_CHAR.match(name[-1:]) is not None
+        if head and tail:
+            plain.append(re.escape(name))
+        else:
+            parts.append(
+                (r"\b" if head else "") + re.escape(name) + (r"\b" if tail else "")
+            )
+    if plain:
+        parts.insert(0, r"\b(?:" + "|".join(plain) + r")\b")
+    return "|".join(parts)
+
+
 def search_words(symbols: Iterable[str], files: list[Path]) -> list[Hit]:
-    """Every line of `files` holding one of `symbols` as a whole word.
+    """Every line of `files` that may hold one of `symbols` as a whole word.
 
     One pass over the files for any number of symbols: the caller works out
-    which symbol a line holds, and whether it is a definition, from the line
-    itself. Uses ripgrep when it is installed, otherwise reads the files
-    in-process; both get the same file list and the same pattern, and the
-    hits come back sorted by (file, line). Case is ignored in PowerShell
-    files only, so those are searched apart: one ripgrep run per case group,
-    more only when a file list outgrows the command-line budget.
+    which symbol a line holds (mentions), and whether it is a definition,
+    from the line itself. Uses ripgrep when it is installed, otherwise reads
+    the files in-process; both get the same file list and the same pattern,
+    and the hits come back sorted by (file, line). Case is ignored in
+    PowerShell files only, so those are searched apart: one ripgrep run per
+    case group, more only when a file list outgrows the command-line budget.
     """
     names = sorted(set(symbols), key=lambda s: (-len(s), s))
     if not names or not files:
         return []
-    pattern = r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b"
+    pattern = _search_pattern(names)
     rg = find_tool("rg")
     hits: list[Hit] = []
     for ignore_case in (False, True):

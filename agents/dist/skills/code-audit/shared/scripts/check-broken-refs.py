@@ -15,6 +15,8 @@ Strategy:
     2. For each changed file:
        - Extract its top-level definitions and its methods at BASE (via
          `git show <base>:<old path>`) and in the working tree (new path).
+         Both are read alike: as UTF-16 behind a UTF-16 byte-order mark (as
+         Windows PowerShell saves scripts), otherwise as UTF-8.
        - removed = base - current.
     3. All removed names are searched for in ONE pass over the tree: a
        top-level name as a whole word, a member (a method, or a type nested
@@ -77,7 +79,8 @@ Limitations:
 
     What counts as a definition: in Python, a def or class at module level
     (column 0, or inside a module-level if/try/with/for/while block) and an
-    assignment at column 0; a def in a class body is a method. Local
+    assignment at column 0, annotated or not (`X: int = 1`; a bare `X: int`
+    assigns nothing); a def in a class body is a method. Local
     variables, keyword arguments, nested functions, class attributes and
     assignments inside a block are not definitions. A Go func with a
     receiver is a method. In Rust, Java and C# the braces decide: a
@@ -86,10 +89,13 @@ Limitations:
     or const in a Rust impl or trait and a type nested in a Java or C# type
     is a member, anything in a function body is neither. Shell and PowerShell
     functions count at any depth; a shell variable does not, a PowerShell
-    `$x =` at column 0 (or a `$script:`/`$global:` one) does. In PowerShell
-    files (.ps1 .psm1 .psd1) names are compared and matched ignoring case,
-    as PowerShell does: renaming Get-Widget to get-widget removes nothing,
-    and a removed Get-Widget is found where it is called as get-widget.
+    `$x =` or `[int]$x =` at column 0 (or a `$script:`/`$global:` one) does.
+    In PowerShell files (.ps1 .psm1 .psd1) names are compared and matched
+    ignoring case, as PowerShell does: renaming Get-Widget to get-widget
+    removes nothing, and a removed Get-Widget is found where it is called as
+    get-widget. A file saved as UTF-16 counts only with its byte-order mark:
+    without one (git's `working-tree-encoding=UTF-16LE`), it is read as
+    UTF-8, as rg reads it, and defines nothing.
 
     Signature changes (same name, different params) are NOT detected.
     Symbols added in the working tree that shadow an external symbol are NOT
@@ -108,6 +114,7 @@ from _common import (
     CASE_INSENSITIVE_EXTS,
     DEFINITION_PATTERNS,
     allow_undecodable_paths_on_stdout,
+    decode_text,
     find_tool,
     format_hit,
     git_command,
@@ -154,8 +161,12 @@ def _run_git_bytes(args: list[str], cwd: Path) -> bytes:
 
 
 def _run_git(args: list[str], cwd: Path) -> str:
-    """Run a git command and return stdout decoded as text (file CONTENT)."""
-    return _run_git_bytes(args, cwd).decode("utf-8", errors="replace")
+    """Run a git command and return stdout decoded as text (file CONTENT).
+
+    Decoded as the working-tree side is (decode_text), so a blob saved as
+    UTF-16 with its byte-order mark yields its definitions too.
+    """
+    return decode_text(_run_git_bytes(args, cwd))
 
 
 def _is_git_repo(root: Path) -> bool:
@@ -177,6 +188,26 @@ def _repo_root(root: Path) -> Path:
     """
     out = os.fsdecode(_run_git_bytes(["rev-parse", "--show-toplevel"], root))
     return Path(out.removesuffix("\n")).resolve()
+
+
+def _resolve_base(base: str, root: Path) -> str:
+    """The object ID of the commit `base` names. Raise GitError if none.
+
+    The ID, not `base` itself, is what `git diff` and `git show` get. git
+    reads an argument that starts with `-` as an option of its own:
+    `--base=--output=notes.txt` made `git diff` write over notes.txt, list
+    no changed file and end the check with exit 0. Such a base is refused
+    before git sees it.
+    """
+    if base.startswith("-"):
+        raise GitError(f"--base {base}: an option, not a commit")
+    try:
+        out = _run_git_bytes(
+            ["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], root
+        )
+    except GitError:
+        raise GitError(f"--base {base}: not a commit") from None
+    return out.decode("ascii").strip()
 
 
 def _changed_files(
@@ -272,9 +303,17 @@ def _file_text_at_base(base: str, file: Path, repo_root: Path) -> str | None:
 
 
 def _file_text_now(file: Path) -> str | None:
-    """Get the current working-tree text of `file`. Returns None if missing."""
+    """Get the current working-tree text of `file`. Returns None if missing.
+
+    Decoded exactly as the BASE side is (decode_text), so bytes that did not
+    change define the same names on both sides, and text that did not change
+    defines the same names in UTF-8 or behind a UTF-16 byte-order mark. Under
+    `working-tree-encoding=UTF-16LE-BOM` git keeps the blob in UTF-8 and the
+    file in UTF-16: read as UTF-8 here, the file defined nothing, so any edit
+    to it reported every function it kept.
+    """
     try:
-        return file.read_text(encoding="utf-8", errors="ignore")
+        return decode_text(file.read_bytes())
     except OSError:
         return None
 
@@ -400,7 +439,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         repo_root = _repo_root(root)
-        changed = _changed_files(args.base, root, repo_root, ext_filter)
+        base = _resolve_base(args.base, root)
+        changed = _changed_files(base, root, repo_root, ext_filter)
     except GitError as exc:
         print(f"git error: {exc}", file=sys.stderr)
         return 1
@@ -415,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"{PROG} base={args.base}: {count} examined{hint}", file=sys.stderr)
 
-    words, members, removed_from = _removed_symbols(changed, args.base, repo_root)
+    words, members, removed_from = _removed_symbols(changed, base, repo_root)
     if removed_from:
         _report(words, members, removed_from, root)
     return 0

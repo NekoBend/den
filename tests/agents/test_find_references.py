@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1019,6 +1020,184 @@ def test_in_follows_python_blocks_not_indentation(tmp_path: Path) -> None:
     ]
 
 
+def test_annotated_assignments_are_definitions(tmp_path: Path) -> None:
+    # The assignment pattern was `^name\s*=`, which the annotation in
+    # `MAX_RETRIES: int = 3` defeats: --def found nothing, --uses listed the
+    # line as a use and --in left the name out, while the comparison
+    # `PLAIN == 5` passed for a definition. A bare annotation binds nothing,
+    # and the keyword before the colon of a one-line block is no name.
+    lib = write(
+        tmp_path,
+        "lib.py",
+        "MAX_RETRIES: int = 3\n"
+        "TABLE: dict[str, list[str]] = {\n"
+        "    'a': [],\n"
+        "}\n"
+        "PLAIN = 5\n"
+        "DECLARED: int\n"
+        "PLAIN == 5\n"
+        "if PLAIN: LEVEL = 1\n"
+        "else: LEVEL = 2\n"
+        "try: N = int('1')\n"
+        "except: N = 0\n"
+        "finally: DONE = True\n"
+        "lambda: dict(key=1)\n",
+    )
+    write(
+        tmp_path, "app.py", "from lib import MAX_RETRIES, TABLE\nprint(MAX_RETRIES)\n"
+    )
+    expected_defs = {
+        "MAX_RETRIES": ["lib.py:1:def:MAX_RETRIES: int = 3"],
+        "TABLE": ["lib.py:2:def:TABLE: dict[str, list[str]] = {"],
+        "PLAIN": ["lib.py:5:def:PLAIN = 5"],
+        "DECLARED": [],
+    }
+    for symbol, expected in expected_defs.items():
+        proc = run("--def", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == expected, symbol
+
+    proc = run("--uses", "MAX_RETRIES", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "app.py:1:use:from lib import MAX_RETRIES, TABLE",
+        "app.py:2:use:print(MAX_RETRIES)",
+    ]
+    proc = run("--uses", "PLAIN", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:7:use:PLAIN == 5",
+        "lib.py:8:use:if PLAIN: LEVEL = 1",
+    ]
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:1:def:MAX_RETRIES: int = 3",
+        "app.py:1:use:MAX_RETRIES:from lib import MAX_RETRIES, TABLE",
+        "app.py:2:use:MAX_RETRIES:print(MAX_RETRIES)",
+        "lib.py:5:def:PLAIN = 5",
+        "lib.py:2:def:TABLE: dict[str, list[str]] = {",
+        "app.py:1:use:TABLE:from lib import MAX_RETRIES, TABLE",
+    ]
+
+
+def test_an_annotation_over_several_lines_is_one_definition(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The `=` of `LIMITS: dict[` ... `] = {}` is on its last line, so its first
+    # line alone matched nothing: --in listed SIMPLE only, --def found
+    # nothing and --uses listed the definition as a use. The statement is now
+    # matched whole and reported at its first line. A bare annotation over
+    # several lines defines nothing, and neither does a line that only looks
+    # like the start of one: a docstring line and a key in a dict.
+    lib = write(
+        tmp_path,
+        "lib.py",
+        '"""Settings.\n'
+        "\n"
+        "LIMITS: dict[\n"
+        '"""\n'
+        "LIMITS: dict[\n"
+        "    str, int\n"
+        "] = {}\n"
+        "SIMPLE: int = 1\n"
+        "DECLARED: dict[\n"
+        "    str, int\n"
+        "]\n"
+        "TABLE = {\n"
+        "LIMITS: 1,\n"
+        "}\n",
+    )
+    write(tmp_path, "app.py", "from lib import LIMITS, SIMPLE\nprint(LIMITS)\n")
+    for env in backends:
+        proc = run("--def", "LIMITS", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == ["lib.py:5:def:LIMITS: dict["]
+        proc = run("--uses", "LIMITS", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "app.py:1:use:from lib import LIMITS, SIMPLE",
+            "app.py:2:use:print(LIMITS)",
+            "lib.py:3:use:LIMITS: dict[",
+            "lib.py:13:use:LIMITS: 1,",
+        ]
+        proc = run("--def", "DECLARED", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == []
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:5:def:LIMITS: dict[",
+        "app.py:1:use:LIMITS:from lib import LIMITS, SIMPLE",
+        "app.py:2:use:LIMITS:print(LIMITS)",
+        "lib.py:8:def:SIMPLE: int = 1",
+        "app.py:1:use:SIMPLE:from lib import LIMITS, SIMPLE",
+        "lib.py:12:def:TABLE = {",
+    ]
+
+    # --in leaves out another file's definition of the same name, over
+    # several lines as on one
+    write(tmp_path, "other.py", "LIMITS: dict[\n    str, int\n] = {'a': 1}\n")
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert "other.py" not in proc.stdout, proc.stdout
+
+
+def test_a_backslash_after_the_name_keeps_an_assignment_a_definition(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A backslash that joins the name's line to the next (`LIMITS \` then
+    # `: dict[str, int] = {}`) put itself between the name and its `:` or
+    # `=`, which the assignment pattern did not allow: --def found nothing,
+    # --uses listed the first line as a use and --in left the name out. A
+    # comparison joined the same way is still no definition.
+    lib = write(
+        tmp_path,
+        "lib.py",
+        "LIMITS \\\n: dict[str, int] = {}\nV \\\n= 7\nSAME \\\n== 3\n",
+    )
+    (tmp_path / "win.py").write_bytes(b"WIN \\\r\n= 8\r\n")
+    write(
+        tmp_path, "app.py", "from lib import LIMITS, V\nprint(LIMITS, V, SAME, WIN)\n"
+    )
+    expected_defs = {
+        "LIMITS": ["lib.py:1:def:LIMITS \\"],
+        "V": ["lib.py:3:def:V \\"],
+        "WIN": ["win.py:1:def:WIN \\"],
+        "SAME": [],
+    }
+    for env in backends:
+        for symbol, expected in expected_defs.items():
+            proc = run("--def", symbol, "--root", str(tmp_path), env=env)
+            assert proc.returncode == 0, proc.stderr
+            assert rows(proc, tmp_path) == expected, symbol
+        proc = run("--uses", "LIMITS", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "app.py:1:use:from lib import LIMITS, V",
+            "app.py:2:use:print(LIMITS, V, SAME, WIN)",
+        ]
+        proc = run("--uses", "SAME", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "app.py:2:use:print(LIMITS, V, SAME, WIN)",
+            "lib.py:5:use:SAME \\",
+        ]
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.py:1:def:LIMITS \\",
+        "app.py:1:use:LIMITS:from lib import LIMITS, V",
+        "app.py:2:use:LIMITS:print(LIMITS, V, SAME, WIN)",
+        "lib.py:3:def:V \\",
+        "app.py:1:use:V:from lib import LIMITS, V",
+        "app.py:2:use:V:print(LIMITS, V, SAME, WIN)",
+    ]
+
+
 def test_python_definitions_survive_a_syntax_error() -> None:
     # Where the tokenizer gives up, the rest of the file is read by
     # indentation: column 0 is module level, an indented def is a method.
@@ -1082,6 +1261,118 @@ def test_powershell_matching_ignores_case(
     assert len(rows(proc, tmp_path)) == 3, proc.stdout
 
 
+def test_typed_powershell_assignments_are_definitions(tmp_path: Path) -> None:
+    # The assignment patterns wanted the line to start with `$`, so a typed
+    # one such as `[int]$MaxTries = 3` was no definition: --def found
+    # nothing, --uses listed it as a use and --in left it out. A typed local
+    # in a function body and a call on a cast are still no definitions.
+    lib = write(
+        tmp_path,
+        "lib.ps1",
+        "[int]$MaxTries = 3\n"
+        "[string[]]$Names = @()\n"
+        "[Collections.Generic.List[string[]]] $Items = @()\n"
+        "[ValidateRange(1, 10)][int]$Level = 5\n"
+        "$Plain = 5\n"
+        "function Get-Thing {\n"
+        "    [int]$script:Count = 0\n"
+        "    [int]$MaxTries = 1\n"
+        "}\n"
+        "[void]$Names.Add('x')\n",
+    )
+    uses = "Write-Output $MaxTries $Names $Items $Level $Count"
+    write(tmp_path, "run.ps1", f"{uses}\n")
+    expected_defs = {
+        "MaxTries": "lib.ps1:1:def:[int]$MaxTries = 3",
+        "Names": "lib.ps1:2:def:[string[]]$Names = @()",
+        "Items": "lib.ps1:3:def:[Collections.Generic.List[string[]]] $Items = @()",
+        "Level": "lib.ps1:4:def:[ValidateRange(1, 10)][int]$Level = 5",
+        "Count": "lib.ps1:7:def:[int]$script:Count = 0",
+    }
+    for symbol, expected in expected_defs.items():
+        proc = run("--def", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [expected], symbol
+
+    proc = run("--uses", "MaxTries", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.ps1:8:use:[int]$MaxTries = 1",
+        f"run.ps1:1:use:{uses}",
+    ]
+    proc = run("--uses", "Names", "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert rows(proc, tmp_path) == [
+        "lib.ps1:10:use:[void]$Names.Add('x')",
+        f"run.ps1:1:use:{uses}",
+    ]
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert [r for r in rows(proc, tmp_path) if ":def:" in r] == [
+        expected_defs["Count"],
+        "lib.ps1:6:def:function Get-Thing {",
+        expected_defs["Items"],
+        expected_defs["Level"],
+        expected_defs["MaxTries"],
+        expected_defs["Names"],
+        "lib.ps1:5:def:$Plain = 5",
+    ]
+
+
+def test_a_quoted_bracket_in_an_attribute_keeps_a_typed_assignment(
+    tmp_path: Path,
+) -> None:
+    # Every `[` and `]` before the `$` was taken for a bracket, quoted or
+    # not, so the `[` in `[ValidateSet("[")]` left the attribute open and the
+    # assignment was no definition: --def found nothing, --uses listed it as
+    # a use and --in left it out. Two quotes in a row are one escaped quote.
+    lines = {
+        "Delimiter": '[ValidateSet("[")][string]$Delimiter = "["',
+        "Name": "[ValidatePattern('^[^\\]]+$')][string]$Name = 'abc'",
+        "Quote": "[ValidateSet('it''s [')][string]$Quote = 'x'",
+        "Escaped": '[ValidateSet("a`"[", "b""[")][string]$Escaped = "x"',
+    }
+    lib = write(tmp_path, "lib.ps1", "".join(f"{line}\n" for line in lines.values()))
+    uses = "Write-Output " + " ".join(f"${symbol}" for symbol in lines)
+    write(tmp_path, "run.ps1", f"{uses}\n")
+    defs = {
+        symbol: f"lib.ps1:{lineno}:def:{line}"
+        for lineno, (symbol, line) in enumerate(lines.items(), 1)
+    }
+    for symbol, expected in defs.items():
+        proc = run("--def", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [expected], symbol
+        proc = run("--uses", symbol, "--root", str(tmp_path))
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [f"run.ps1:1:use:{uses}"], symbol
+
+    proc = run("--in", str(lib), "--root", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert [r for r in rows(proc, tmp_path) if ":def:" in r] == [
+        defs[symbol] for symbol in sorted(defs)
+    ]
+
+
+def test_a_line_of_quotes_is_matched_in_linear_time() -> None:
+    # A quote pair read both as an escaped quote and as the end of one
+    # string and the start of the next gave a line of n pairs 2**n ways to
+    # split, and a failed match tried every one: 24 pairs took two seconds.
+    # The child process is killed when the timeout expires, so a slow match
+    # fails this test instead of hanging the suite.
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+        "import _common\n"
+        "for body in (\"''\", '\"\"', \"'a'\", '\"a\"'):\n"
+        "    line = '[' + body * 40 + '$x = 1'\n"
+        "    assert _common.top_level_definitions(line, '.ps1') == []\n"
+        "    assert not _common.is_definition_line(line, '.ps1', 'x')\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=60)
+
+
 def test_typescript_enum_and_namespace_are_definitions(tmp_path: Path) -> None:
     status = write(
         tmp_path,
@@ -1104,6 +1395,137 @@ def test_typescript_enum_and_namespace_are_definitions(tmp_path: Path) -> None:
         "status.ts:1:def:export enum OrderStatus { Open }",
         "status.ts:3:def:export namespace Shapes {",
     ]
+
+
+def test_a_dollar_name_right_before_a_brace_in_code_is_found(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The `${` of a template literal ends no name, and that rule hid a `$`
+    # name standing right before `{` in code: `extends Store${}` was no use
+    # of Store$, nor was it after a closed template on the line or inside a
+    # template's `${...}`. Only a template's text is left out now.
+    write(tmp_path, "lib.js", "export class Store${}\n")
+    write(
+        tmp_path,
+        "app.js",
+        'import { Store$ } from "./lib.js";\n'
+        "class Child extends Store${}\n"
+        "const s = `${n} Store${n}`;\n"
+        "const label = `ok`; class Two extends Store${}\n"
+        "const t = `${class extends Store${}}`;\n"
+        "/* ` */ class Three extends Store${}\n"
+        "const re = /`/; class Four extends Store${}\n"
+        "const u = `${ /* } */ class extends Store${}}`;\n",
+    )
+    for env in backends:
+        proc = run("--def", "Store$", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == ["lib.js:1:def:export class Store${}"]
+        proc = run("--uses", "Store$", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            'app.js:1:use:import { Store$ } from "./lib.js";',
+            "app.js:2:use:class Child extends Store${}",
+            "app.js:4:use:const label = `ok`; class Two extends Store${}",
+            "app.js:5:use:const t = `${class extends Store${}}`;",
+            "app.js:6:use:/* ` */ class Three extends Store${}",
+            "app.js:7:use:const re = /`/; class Four extends Store${}",
+            "app.js:8:use:const u = `${ /* } */ class extends Store${}}`;",
+        ]
+
+
+def test_a_line_full_of_template_interpolations_is_read_once() -> None:
+    # Each `$` before `{` was checked by reading the line again from its
+    # start, so a line of n interpolations took time in n squared: 6,400 of
+    # them took about 5 seconds. Each line is now read once.
+    line = "const s = `" + "${x}" * 50_000 + "`;"
+    start = time.perf_counter()
+    assert not _common.mentions(line, ".js", "$")
+    assert time.perf_counter() - start < 5
+
+
+def test_javascript_names_holding_a_dollar_are_found(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # A `$` is part of a JavaScript or TypeScript name, but names were
+    # captured as \w+ and bounded by \b: `$fetch`, `users$` and `$` were no
+    # definitions and a search for them found no line at all, `class Store$`
+    # defined `Store`, and `load` was found inside `load$` and `$load`. The
+    # `$` of a template literal's `${` ends no name. In a shell file `$load`
+    # still names load: `$` is no part of a shell name.
+    lib = write(
+        tmp_path,
+        "lib.ts",
+        "export function $fetch() {}\n"
+        "export const users$ = 1;\n"
+        "export const $ = 2;\n"
+        "export class Store$ {}\n"
+        "export function load() {}\n",
+    )
+    imports = 'import { $fetch, users$, $, Store$, load } from "./lib";'
+    write(
+        tmp_path,
+        "app.ts",
+        f"{imports}\n"
+        "$fetch();\n"
+        "console.log(users$, a$fetch);\n"
+        "$(1);\n"
+        "new Store$();\n"
+        "load$($load);\n"
+        "const s = `${n} users${n}`;\n",
+    )
+    write(tmp_path, "run.sh", "echo $load\n")
+    expected = {
+        "$fetch": (
+            ["lib.ts:1:def:export function $fetch() {}"],
+            [f"app.ts:1:use:{imports}", "app.ts:2:use:$fetch();"],
+        ),
+        "users$": (
+            ["lib.ts:2:def:export const users$ = 1;"],
+            [f"app.ts:1:use:{imports}", "app.ts:3:use:console.log(users$, a$fetch);"],
+        ),
+        "$": (
+            ["lib.ts:3:def:export const $ = 2;"],
+            [f"app.ts:1:use:{imports}", "app.ts:4:use:$(1);"],
+        ),
+        "Store$": (
+            ["lib.ts:4:def:export class Store$ {}"],
+            [f"app.ts:1:use:{imports}", "app.ts:5:use:new Store$();"],
+        ),
+        "Store": ([], []),
+        "load": (
+            ["lib.ts:5:def:export function load() {}"],
+            [f"app.ts:1:use:{imports}", "run.sh:1:use:echo $load"],
+        ),
+    }
+    for env in backends:
+        for symbol, (defs, uses) in expected.items():
+            proc = run("--def", symbol, "--root", str(tmp_path), env=env)
+            assert proc.returncode == 0, proc.stderr
+            assert rows(proc, tmp_path) == defs, symbol
+            proc = run("--uses", symbol, "--root", str(tmp_path), env=env)
+            assert proc.returncode == 0, proc.stderr
+            assert rows(proc, tmp_path) == uses, symbol
+
+        proc = run("--in", str(lib), "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            "lib.ts:3:def:export const $ = 2;",
+            f"app.ts:1:use:$:{imports}",
+            "app.ts:4:use:$:$(1);",
+            "lib.ts:1:def:export function $fetch() {}",
+            f"app.ts:1:use:$fetch:{imports}",
+            "app.ts:2:use:$fetch:$fetch();",
+            "lib.ts:4:def:export class Store$ {}",
+            f"app.ts:1:use:Store$:{imports}",
+            "app.ts:5:use:Store$:new Store$();",
+            "lib.ts:5:def:export function load() {}",
+            f"app.ts:1:use:load:{imports}",
+            "run.sh:1:use:load:echo $load",
+            "lib.ts:2:def:export const users$ = 1;",
+            f"app.ts:1:use:users$:{imports}",
+            "app.ts:3:use:users$:console.log(users$, a$fetch);",
+        ]
 
 
 # Rust, Java and C# files whose members, nested functions, comments and
@@ -1387,6 +1809,28 @@ def test_byte_order_marks_are_read_alike_by_both_backends(
     assert outputs[0] == outputs[1], outputs
     proc = run("--in", str(lib), "--root", str(tmp_path))
     assert rows(proc, tmp_path)[0] == "lib.py:1:def:def widget():"
+
+
+def test_a_file_decoded_whole_reads_as_its_lines_do(tmp_path: Path) -> None:
+    # check-broken-refs reads each changed file whole (decode_text) and the
+    # search reads files line by line (_raw_lines). It decoded UTF-8 only, so
+    # a UTF-16 script defined nothing there while the search read it fine.
+    samples = [
+        b"\xff\xfe" + "function Get-Widget {\r\n}\r\n".encode("utf-16-le"),
+        b"\xfe\xff" + "a\nGet-Widget\n".encode("utf-16-be"),
+        b"\xff\xfe" + "odd".encode("utf-16-le") + b"\x00",  # a byte short
+        b"\xef\xbb\xbfdef widget():\n    pass\n",
+        b"def wid\xffget():\n",
+        b"no newline at the end",
+    ]
+    for n, data in enumerate(samples):
+        path = tmp_path / f"{n}.txt"
+        path.write_bytes(data)
+        lines = [line for _lineno, line in _common.iter_searchable_lines(path)]
+        text = _common.decode_text(data)
+        if text.endswith("\n"):
+            lines.append("")  # what follows the last newline: nothing
+        assert text.split("\n") == lines, data
 
 
 def test_the_fallback_does_not_load_a_large_file_whole(
