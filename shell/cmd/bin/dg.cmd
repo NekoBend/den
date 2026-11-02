@@ -199,6 +199,7 @@ if "%~1"=="" goto :check_done
 set "_s=%~1"
 shift
 call :isfile _s
+if not errorlevel 1 call :readable _s
 if errorlevel 1 (
     call :err _s " is not a readable file"
     set /a "_unread+=1"
@@ -261,6 +262,16 @@ rem (not a directory).
 setlocal EnableDelayedExpansion
 if not exist "!%~1!" exit /b 1
 if exist "!%~1!\*" exit /b 1
+exit /b 0
+
+rem :readable VAR - errorlevel 0 when the file named in VAR opens and reads.
+rem for /f runs no line of a file it cannot open and says nothing of it, so
+rem without this a sums file that exists but cannot be read (no read access,
+rem a sharing lock) passed for one with no lines, and dg -c could exit 0
+rem after the other sums files. type reads it once; sums files are small.
+:readable
+setlocal EnableDelayedExpansion
+type "!%~1!" >nul 2>&1 || exit /b 1
 exit /b 0
 
 rem :hash VAR - hash the file named in VAR with _alg; sets _h to the hex

@@ -19,7 +19,8 @@ rem elsewhere uv run for those as well; pip runs nothing outside a venv,
 rem and in a venv without pip.exe runs uv pip with --config-file and your
 rem own uv.toml, or with --no-config without one;
 rem path lists PATH; again asks before it re-runs, and only Enter or y
-rem runs it; dg hashes with System32's certutil.exe.
+rem runs it; dg hashes with System32's certutil.exe, and dg -c fails for a
+rem sums file it cannot read.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -733,6 +734,17 @@ set "OK=1"
 if exist "%T%\certutil-ran.txt" set "OK="
 call :check "dg: no certutil.bat from the current directory runs"
 del certutil.bat
+rem dg -c fails for a sums file it cannot read, though the one before it
+rem checks out: for /f says nothing of a file it cannot open.
+>ok.sums echo 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  a.txt
+copy /y ok.sums denied.sums >nul || exit /b 1
+"%SystemRoot%\System32\icacls.exe" denied.sums /deny "*S-1-1-0:(RD)" >nul || exit /b 1
+>"%W%" echo a.txt: OK
+>>"%W%" echo dg: 'denied.sums' is not a readable file
+>>"%W%" echo dg: 0 FAILED, 0 MISSING of 1 checked, 1 sums file(s) unreadable
+call "%BIN%\dg.cmd" -c ok.sums denied.sums >"%O%" 2>&1
+call :expect %errorlevel% 1 "dg -c: a sums file it cannot read fails the run"
+"%SystemRoot%\System32\icacls.exe" denied.sums /remove:d "*S-1-1-0" >nul
 cd /d "%T%\work" || exit /b 1
 
 cd /d "%~dp0"

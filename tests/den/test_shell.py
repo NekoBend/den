@@ -109,6 +109,28 @@ def test_cmd_digest_forwards_to_dg():
     assert dg.count(b"\n") == dg.count(b"\r\n"), "dg.cmd must use CRLF line endings"
 
 
+def test_cmd_dg_check_counts_a_sums_file_it_cannot_read():
+    # for /f runs no line of a file it cannot open and says nothing of it, so
+    # `dg -c ok.sums denied.sums` took a sums file without read access for one
+    # with no lines, and exited 0 once ok.sums checked out. dg.cmd now reads
+    # each sums file once with type before its for /f, and a failure counts
+    # it as unreadable (tests/shell/cmd_shims.cmd runs it on Windows).
+    code = _cmd_code("dg")
+    i = code.index(":check_next")
+    assert code[i + 4 : i + 7] == [
+        "call :isfile _s",
+        "if not errorlevel 1 call :readable _s",
+        "if errorlevel 1 (",
+    ]
+    r = code.index(":readable")
+    assert code[r : r + 4] == [
+        ":readable",
+        "setlocal EnableDelayedExpansion",
+        'type "!%~1!" >nul 2>&1 || exit /b 1',
+        "exit /b 0",
+    ]
+
+
 def _cmd_code(name: str) -> list[str]:
     """A cmd shim's lines without blank lines and rem comments."""
     lines = (_CMD_BIN / f"{name}.cmd").read_text(encoding="utf-8").splitlines()
