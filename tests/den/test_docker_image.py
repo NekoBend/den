@@ -800,12 +800,79 @@ def test_test_helpers_see_the_whole_dockerfile():
 
 # --- downloads -----------------------------------------------------------------
 
+# The agent CLI installers keep their own curl lines: the change that removes
+# them from the image owns those lines.
+_AGENT_INSTALLERS = {
+    "https://claude.ai/install.sh",
+    "https://chatgpt.com/codex/install.sh",
+    "https://x.ai/cli/install.sh",
+    "https://dev.meta.ai/install.sh",
+    "https://antigravity.google/cli/install.sh",
+}
 # The rsync release keys INSTALL_RSYNC pins, by primary key fingerprint.
 _RSYNC_RELEASE_KEYS = (
     "9FEF112DCE19A0DC7E882CB81BB24997A8535F6F",
     "C0E1054505704F757D925AB26A64E8AA2EFBCF5D",
 )
 _INSTALL_TOOLS = ("bash", "awk", "install", "mktemp", "sha256sum", "tar")
+
+
+def _is_operator(word: str) -> bool:
+    return set(word) <= set("();<>|&")
+
+
+def _curl_commands(script: str) -> list[list[str]]:
+    """The arguments of each curl command in a shell script, comments left out.
+
+    curl is a command where it starts the line or follows an operator (&&, |,
+    the ( of $(...)); elsewhere it is an argument, such as apt's package name.
+    """
+    commands = []
+    for line in re.sub(r"\\\n\s*", " ", script).splitlines():
+        if line.lstrip().startswith("#") or not re.search(r"\bcurl\b", line):
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+        for i, word in enumerate(words):
+            if word != "curl" or (i and not _is_operator(words[i - 1])):
+                continue
+            args = []
+            for arg in words[i + 1 :]:
+                if _is_operator(arg):
+                    break
+                args.append(arg)
+            commands.append(args)
+    return commands
+
+
+def _option(args: list[str], name: str) -> str | None:
+    return args[args.index(name) + 1] if name in args[:-1] else None
+
+
+def test_every_download_is_https_only_with_the_same_curl_options():
+    # Without --proto '=https', curl -L follows a redirect to plain http: the
+    # image ran the starship, uv, ty, ruff and nvm installers it got that way.
+    checked = 0
+    wrong = []
+    for stage, _, _, _, script in _run_scripts():
+        for args in _curl_commands(script):
+            if _AGENT_INSTALLERS & set(args):
+                continue
+            checked += 1
+            if (
+                _option(args, "--proto") != "=https"
+                or "--tlsv1.2" not in args
+                or _option(args, "--retry") != "3"
+                or not any(
+                    re.fullmatch(r"-[A-Za-z]+", arg) and set("fsSL") <= set(arg)
+                    for arg in args
+                )
+                or any("://" in arg and not arg.startswith("https://") for arg in args)
+            ):
+                wrong.append(f"{stage}: curl {shlex.join(args)}")
+    assert checked >= 15, "the scan no longer finds the image's downloads"
+    assert not wrong, "\n".join(wrong)
 
 
 def test_fzf_is_not_an_apt_package():

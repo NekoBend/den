@@ -64,7 +64,7 @@ FROM system AS rust-tools
 ARG TARGETARCH
 # Build setting: 1 selects the deprecated curl backend as a TLS workaround.
 ARG RUSTUP_USE_CURL=0
-RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup.sh && \
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://sh.rustup.rs -o /tmp/rustup.sh && \
     sh /tmp/rustup.sh -y --no-modify-path --profile minimal --component rustfmt,clippy && \
     rm /tmp/rustup.sh
 
@@ -88,13 +88,13 @@ RUN --mount=type=cache,id=cargo-registry-${TARGETARCH}-${USER_UID}-${USER_GID},t
 # 3. User-installed language tools.
 FROM rust-tools AS tools
 # Download each official installer completely before executing it as the user.
-RUN curl -fsSL https://starship.rs/install.sh -o /tmp/starship.sh && \
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://starship.rs/install.sh -o /tmp/starship.sh && \
     sh /tmp/starship.sh --yes --bin-dir "$HOME/.local/bin" && rm /tmp/starship.sh
-RUN curl -fsSL https://astral.sh/uv/install.sh -o /tmp/uv.sh && \
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/uv/install.sh -o /tmp/uv.sh && \
     sh /tmp/uv.sh && rm /tmp/uv.sh && \
-    curl -fsSL https://astral.sh/ty/install.sh -o /tmp/ty.sh && \
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/ty/install.sh -o /tmp/ty.sh && \
     sh /tmp/ty.sh && rm /tmp/ty.sh && \
-    curl -fsSL https://astral.sh/ruff/install.sh -o /tmp/ruff.sh && \
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/ruff/install.sh -o /tmp/ruff.sh && \
     sh /tmp/ruff.sh && rm /tmp/ruff.sh
 
 # fzf from its GitHub release, checked against the release's checksums file.
@@ -126,7 +126,7 @@ INSTALL_FZF
 ENV NVM_DIR="${HOME}/.nvm"
 # Build setting: exact nvm release, including the v prefix.
 ARG NVM_VERSION=v0.40.7
-RUN curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o /tmp/nvm.sh && \
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o /tmp/nvm.sh && \
     bash /tmp/nvm.sh && rm /tmp/nvm.sh
 # Build setting: project-selected version series, not an exact patch version.
 ARG NODE_MAJOR=22
