@@ -493,6 +493,11 @@ Case 'find, piped, find.exe there' {
 }
 Case 'grep' { grep alpha a.txt }
 Case 'grep, quoted and bare wildcards, a -name:value, a quoted ~' { grep 'a*' a* -e:alpha '~/a' }
+Case 'grep, a -name: with an array, an empty one and $null' {
+    $StrictV = @('alpha', $null, '')
+    $StrictE = @()
+    grep -e:$StrictV -e: $StrictV -e:$StrictE -e: $null a.txt
+}
 Case 'la' { la }
 Case 'll' { ll }
 Case 'lla' { lla }

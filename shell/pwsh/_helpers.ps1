@@ -874,7 +874,8 @@ function _DenColonWord($Word) {
 # <invocation> ($MyInvocation) describes, as the words a program gets for them
 # from _DenNativeBlock: an array goes as its elements, a $null not at all (as
 # @args gave them), and a -name: written with its value goes as one word
-# (-c:v), as when the program is typed by name, where @args lost the -name:.
+# (-c:v), and before each element of an array value (-e:one -e:two), as when
+# the program is typed by name, where @args lost the -name:.
 # A word typed without quotes (_DenArgKinds) is marked (_DenBare), so that pwsh
 # expands it; when the call cannot be read, none is, and every word goes as
 # it is. The call is read only when pwsh could change a word (one that holds
@@ -893,9 +894,24 @@ function _DenArgs($Invocation, [object[]]$Arguments) {
         $a = $Arguments[$j]
         if ($null -eq $a) { continue }
         $kind = if ($null -ne $kinds) { $kinds[$j] } else { 'value' }
-        if ((_DenColonWord $a) -and $kind -ne 'split' -and $j + 1 -lt $Arguments.Count) {
+        if ((_DenColonWord $a) -and $j + 1 -lt $Arguments.Count) {
+            # The -name: goes before each of the value's elements, as one word
+            # with it (-e:one -e:two for -e:$v, $v = 'one', 'two') or, when a
+            # blank stood after the colon, as a word of its own before it; a
+            # $null element and a $null or empty value give no word, and an
+            # empty string gives the -name: (AddToArgumentList and
+            # AppendOneNativeArgument in pwsh 7.6.0's
+            # NativeCommandParameterBinder). With a blank, a single value goes
+            # as any other word, so that pwsh expands one typed bare.
+            $v = $Arguments[$j + 1]
+            $items = [System.Management.Automation.LanguagePrimitives]::GetEnumerator($v)
+            if ($kind -eq 'split' -and $null -eq $items -and $null -ne $v) { "$a"; continue }
             $j++
-            "$a" + "$($Arguments[$j])"
+            if ($null -eq $items) { $items = @(, $v).GetEnumerator() }
+            while ($items.MoveNext()) {
+                if ($null -eq $items.Current) { continue }
+                if ($kind -eq 'split') { "$a"; "$($items.Current)" } else { "$a" + "$($items.Current)" }
+            }
             continue
         }
         $items = [System.Management.Automation.LanguagePrimitives]::GetEnumerator($a)

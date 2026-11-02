@@ -1155,8 +1155,10 @@ unset _sh _run _call _tool _names _i _c _d _w _got
 # foo2 and x for foo1. A word quoted at the prompt, or one from a variable,
 # now reaches the tool as it is; one typed without quotes is still expanded,
 # as for the tool typed by name. -c:v, which reaches $args as -c: and v and
-# which @__a handed on as v alone, goes as one word. The stand-ins log one
-# line per call, each argument in [ ].
+# which @__a handed on as v alone, goes as one word, and -e:$v with an array
+# in $v as -e: before each element (it went as the one word '-e:one two'), as
+# for the tool typed by name. The stand-ins log one line per call, each
+# argument in [ ].
 echo ""
 echo "================================================"
 echo "  Testing the words a pwsh wrapper hands its tool"
@@ -1204,6 +1206,9 @@ PATH="$G6_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
     \$p = 'foo*'; grep \$p x
     \$s = @('foo?', 'x'); grep @s
     grep -c:v x
+    \$v = @('one', 'two'); grep -e:\$v x
+    \$v = @('a', \$null, ''); grep -e: \$v x
+    \$v = @(); \$n = \$null; grep -e:\$v -e:\$n x
     'piped' | grep 'foo*'
     grep needle foo*
     grep needle foo?
@@ -1229,6 +1234,9 @@ G6_WANT=(
     "grep \$p x, \$p = 'foo*'|rg [foo*] [x]"
     "grep @s, \$s = @('foo?', 'x')|rg [foo?] [x]"
     "grep -c:v x (one word, as typed)|rg [-c:v] [x]"
+    "grep -e:\$v x, \$v = @('one', 'two') (-e: before each)|rg [-e:one] [-e:two] [x]"
+    "grep -e: \$v x, \$v = @('a', \$null, '') (no word for \$null)|rg [-e:] [a] [-e:] [] [x]"
+    "grep -e:@() -e:\$null x (no word at all)|rg [x]"
     "grep 'foo*' with input piped in|rg [foo*]"
     "grep needle foo* (bare: expanded)|rg [needle] [foo1] [foo2]"
     "grep needle foo? (bare: expanded)|rg [needle] [foo1] [foo2]"
