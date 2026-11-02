@@ -568,7 +568,7 @@ prompt shows no CPU or GPU until then.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `again [N]` | re-run the Nth previous command after a confirm | ✓ | ✓ | ✓ |
+| `again [N]` | re-run the Nth previous command after a confirm: Enter or `y` runs it, any other answer cancels, and so does Ctrl-D on bash/zsh | ✓ | ✓ | ✓ |
 | `sagain [N]` | `again` with sudo | ✓ | ✓ | — |
 | `reload` | clear den's shell caches and restart the shell to load the config (`exec` on bash/zsh; a new pwsh on pwsh, see below) | ✓ | ✓ | — |
 | `code` | launch VS Code (prefers code-insiders) | ✓ | ✓ | ✓ |

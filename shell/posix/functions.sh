@@ -1069,18 +1069,36 @@ again() {
         echo "+ $_ag_cmd"
         printf 'Re-run? [Y/n] '
     fi
-    read -r _ag_ans
-    case "$_ag_ans" in n|N) unset _ag_sudo _ag_n _ag_cmd _ag_ans; return 1;; esac
+    # Enter or y runs the line; any other answer cancels, and so does the end
+    # of input (Ctrl-D, or stdin at its end), where read fails: only n used
+    # to cancel, so a Ctrl-D ran the line unasked.
+    if ! read -r _ag_ans; then
+        echo
+        unset _ag_sudo _ag_n _ag_cmd _ag_ans; return 1
+    fi
+    case "$_ag_ans" in
+        ''|y|Y) ;;
+        *) unset _ag_sudo _ag_n _ag_cmd _ag_ans; return 1 ;;
+    esac
 
-    { set +o history; } 2>/dev/null
+    # bash only: the replayed line stays out of the history, and the option
+    # is put back as it was. zsh has no `history` option, and `set +o history`
+    # there is an error that ends the function, so again never ran a line in
+    # zsh; zsh does not add an eval'd line to its history anyway.
+    _ag_hist=0
+    if [ -n "${BASH_VERSION-}" ]; then
+        # shellcheck disable=SC3028,SC3040  # SHELLOPTS, history: this branch runs only in bash
+        case ":$SHELLOPTS:" in *:history:*) _ag_hist=1; set +o history ;; esac
+    fi
     if [ "$_ag_sudo" = "1" ]; then
         eval "sudo $_ag_cmd"
     else
         eval "$_ag_cmd"
     fi
     _ag_rc=$?
-    { set -o history; } 2>/dev/null
-    unset _ag_sudo _ag_n _ag_cmd _ag_ans
+    # shellcheck disable=SC3040  # _ag_hist is 1 only in bash
+    if [ "$_ag_hist" = 1 ]; then set -o history; fi
+    unset _ag_sudo _ag_n _ag_cmd _ag_ans _ag_hist
     return "$_ag_rc"
 }
 

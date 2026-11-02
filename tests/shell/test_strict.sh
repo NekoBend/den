@@ -731,6 +731,7 @@ Case 'y' { y }
 Case 'y, no yazi' { Use-StrictPath 'sys'; try { y } finally { Use-StrictPath } }
 Case 'again' { $global:_StrictAnswer = 'y'; again }
 Case 'again, declined' { $global:_StrictAnswer = 'n'; again }
+Case 'again, end of input' { $global:_StrictAnswer = $null; again }
 Case 'again -N' { $global:_StrictAnswer = 'y'; again -N 1 }
 Case 'again -Sudo' { $global:_StrictAnswer = 'y'; again -Sudo }
 Case 'again -Sudo, declined' { $global:_StrictAnswer = 'n'; again -Sudo }

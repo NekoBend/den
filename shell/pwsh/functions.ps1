@@ -1156,14 +1156,19 @@ function again {
   if ($Sudo) {
     Write-Host "+ sudo $cmd"
     $ans = Read-Host 'Re-run with sudo? [Y/n]'
-    if ($ans -eq 'n' -or $ans -eq 'N') { return }
-    _DenReplay "sudo $cmd" $typed
   } else {
     Write-Host "+ $cmd"
     $ans = Read-Host 'Re-run? [Y/n]'
-    if ($ans -eq 'n' -or $ans -eq 'N') { return }
-    _DenReplay $cmd $typed
   }
+  # Enter or y (either case: -ne ignores it) runs the line; any other answer
+  # cancels, and so does the end of input, where Read-Host returns $null
+  # (stdin at its end, or a -NonInteractive session, where it cannot ask):
+  # only n used to cancel, so there the line ran unasked. Cancelling is a
+  # terminating error, as a declined prm is, so it stops a && chain.
+  if ($null -eq $ans -or ($ans -ne '' -and $ans -ne 'y')) {
+    Write-Error 'cancelled' -ErrorAction Stop
+  }
+  if ($Sudo) { _DenReplay "sudo $cmd" $typed } else { _DenReplay $cmd $typed }
 }
 
 # sagain → backward-compatible wrapper

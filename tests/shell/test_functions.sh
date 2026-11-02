@@ -1326,6 +1326,76 @@ echo "[bash] sagain 0"
 err=$(run_bash_stderr "$FUNCTIONS_SH" "sagain 0")
 assert_contains "bash/sagain 0 usage" "usage" "$err"
 
+# ag_run <shell> <line...> - an interactive bash (--norc) or zsh (-f) that
+# reads its commands from a file, one per line, as it would from a terminal:
+# it loads functions.sh and stubs sudo, then runs the lines, which go into its
+# history. An again among them reads its answer from the line after it, as it
+# would read the terminal. Prints the shell's stdout. HISTFILE is empty, so no
+# history file is read or written.
+ag_run() {
+    local sh="$1" in="$WORK/again-input"
+    shift
+    printf '%s\n' "source '$FUNCTIONS_SH'" 'sudo() { echo "(sudo)"; "$@"; }' "$@" > "$in"
+    case "$sh" in
+        bash) HISTFILE='' bash --norc --noprofile -i < "$in" 2>/dev/null ;;
+        zsh) HISTFILE='' zsh -f -i < "$in" 2>/dev/null ;;
+    esac
+}
+
+# again and sagain asking, the same for bash and zsh: $1 is the shell. Enter
+# or y runs the line; any other answer, and the end of input, cancel with
+# status 1. Only n used to cancel, so a Ctrl-D (or stdin at its end) ran the
+# line unasked. On zsh nothing ran at all: `set +o history`, bash's option,
+# is an error there that ended again after the answer.
+again_posix_cases() {
+    local sh="$1" ans out
+    local prev='echo REPLAYED-$((40+2))' rc='echo "rc=$?"'
+    local ran="REPLAYED-42
++ echo REPLAYED-\$((40+2))
+Re-run? [Y/n] REPLAYED-42
+rc=0"
+    local cancelled="REPLAYED-42
++ echo REPLAYED-\$((40+2))
+Re-run? [Y/n] rc=1"
+
+    echo "[$sh] again runs the line on Enter, y and Y"
+    for ans in '' y Y; do
+        assert_eq "$sh/again answered '$ans' runs the line" "$ran" "$(ag_run "$sh" "$prev" again "$ans" "$rc")"
+    done
+
+    echo "[$sh] again cancels on any other answer"
+    for ans in n N x yes; do
+        assert_eq "$sh/again answered '$ans' cancels" "$cancelled" "$(ag_run "$sh" "$prev" again "$ans" "$rc")"
+    done
+
+    echo "[$sh] again cancels at the end of input"
+    # again ends the prompt's line itself there. printf builds the expected
+    # text, so the blank after the prompt stays in it.
+    assert_eq "$sh/again with stdin at its end cancels" \
+        "$(printf '%s\n' REPLAYED-42 '+ echo REPLAYED-$((40+2))' 'Re-run? [Y/n] ' rc=1)" \
+        "$(ag_run "$sh" "$prev" 'again </dev/null' "$rc")"
+
+    echo "[$sh] sagain asks the same way"
+    assert_eq "$sh/sagain answered y runs the line with sudo" "REPLAYED-42
++ sudo echo REPLAYED-\$((40+2))
+Re-run with sudo? [Y/n] (sudo)
+REPLAYED-42
+rc=0" "$(ag_run "$sh" "$prev" sagain y "$rc")"
+    assert_eq "$sh/sagain with stdin at its end cancels" \
+        "$(printf '%s\n' REPLAYED-42 '+ sudo echo REPLAYED-$((40+2))' 'Re-run with sudo? [Y/n] ' rc=1)" \
+        "$(ag_run "$sh" "$prev" 'sagain </dev/null' "$rc")"
+}
+again_posix_cases bash
+
+# bash keeps the replayed line out of its history and then puts the history
+# option back as it was: again used to turn it on even when it had been off.
+echo "[bash] again puts the history option back as it was"
+out=$(ag_run bash 'echo REPLAYED-$((40+2))' again y 'case :$SHELLOPTS: in *:history:*) echo history-on ;; *) echo history-off ;; esac')
+assert_contains "bash/again keeps the history on" "history-on" "$out"
+out=$(ag_run bash 'echo REPLAYED-$((40+2)); set +o history' again y 'case :$SHELLOPTS: in *:history:*) echo history-on ;; *) echo history-off ;; esac')
+assert_contains "bash/again replayed the line with the history off" "Re-run? [Y/n] REPLAYED-42" "$out"
+assert_contains "bash/again leaves the history off" "history-off" "$out"
+
 echo "[bash] back 0"
 err=$(run_bash_stderr "$FUNCTIONS_SH" "back 0")
 assert_contains "bash/back 0 usage" "usage" "$err"
@@ -2322,6 +2392,8 @@ assert_contains "zsh/again 0 usage" "usage" "$err"
 echo "[zsh] again no history"
 err=$(run_zsh_stderr "$FUNCTIONS_SH" "again")
 assert_contains "zsh/again no history" "no command" "$err"
+
+again_posix_cases zsh
 
 echo "[zsh] back 0"
 err=$(run_zsh_stderr "$FUNCTIONS_SH" "back 0")
@@ -3765,6 +3837,58 @@ assert_contains "pwsh/again no history" "no command at position" "$err"
 echo "[pwsh] sagain 0"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "sagain -N 0")
 assert_contains "pwsh/sagain 0 usage" "usage" "$err"
+
+# Enter or y runs the line; any other answer cancels, and so does the end of
+# input, where Read-Host returns $null: stdin at its end, or a -NonInteractive
+# session, where it cannot ask. Only n used to cancel, so there the line ran
+# unasked. Cancelling is a terminating error, as a declined prm is: a plain
+# return let `again && ...` go on. PA_HIST puts a line that prints
+# REPLAYED-42 in the history, and a sudo stub that prints what it was given.
+PA_HIST="
+    function global:sudo { \"sudo: \$args\" }
+    Add-History -InputObject ([pscustomobject]@{
+        CommandLine = \"'REPLAYED-' + (40+2)\"; ExecutionStatus = 'Completed'
+        StartExecutionTime = [datetime]::Now; EndExecutionTime = [datetime]::Now
+    })"
+# pa_run <answer> [again's arguments] - again, with Read-Host stubbed to
+# return <answer> (PowerShell: 'y', '', \$null, ...), then a && after it
+pa_run() {
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "$PA_HIST
+        function global:Read-Host { $1 }
+        again ${2-} 6>\$null && 'chain-ran'
+    " 2>/dev/null | tr -d '\r'
+}
+echo "[pwsh] again runs the line on Enter, y and Y"
+for ans in "''" "'y'" "'Y'"; do
+    assert_eq "pwsh/again answered $ans runs the line" "REPLAYED-42
+chain-ran" "$(pa_run "$ans")"
+done
+assert_eq "pwsh/again -Sudo answered y runs the line with sudo" "sudo: REPLAYED- + 42
+chain-ran" "$(pa_run "'y'" -Sudo)"
+echo "[pwsh] again cancels on any other answer and at the end of input, and stops a && chain"
+for ans in "'n'" "'N'" "'x'" "'yes'" '$null'; do
+    out=$(pa_run "$ans")
+    assert_failure "pwsh/again answered $ans exits nonzero" "$?"
+    assert_eq "pwsh/again answered $ans cancels" "" "$out"
+done
+assert_eq "pwsh/sagain at the end of input cancels" "" "$(pa_run '$null' -Sudo)"
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "function global:Read-Host { 'n' }; Add-History -InputObject ([pscustomobject]@{ CommandLine = 'Get-Date'; ExecutionStatus = 'Completed'; StartExecutionTime = [datetime]::Now; EndExecutionTime = [datetime]::Now }); again 6>\$null")
+assert_contains "pwsh/again says it cancelled" "cancelled" "$err"
+assert_not_contains "pwsh/again cancelled no double prefix" "again: again:" "$err"
+# The real Read-Host: -NonInteractive refuses to ask, and stdin at its end
+# (pwsh started without -NonInteractive, stdin /dev/null) gives $null.
+out=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "$PA_HIST
+    again 6>\$null && 'chain-ran'" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/again in a -NonInteractive session cancels" "" "$out"
+out=$(pwsh -NoProfile -Command ". '$FUNCTIONS_PS1_COMBINED'
+    $PA_HIST
+    again 6>\$null && 'chain-ran'" 2>/dev/null </dev/null | tr -d '\r')
+assert_not_contains "pwsh/again with stdin at its end cancels" "REPLAYED-42" "$out"
+assert_not_contains "pwsh/again with stdin at its end stops a && chain" "chain-ran" "$out"
+out=$(printf '\n' | pwsh -NoProfile -Command ". '$FUNCTIONS_PS1_COMBINED'
+    $PA_HIST
+    again 6>\$null && 'chain-ran'" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/again with an empty line on stdin runs the line" "REPLAYED-42" "$out"
 
 # again replays the line inside a function (_DenReplay), as snippet run does.
 # Unlike bash/zsh's eval, which sets the shell's own variables, that keeps

@@ -23,8 +23,12 @@ setlocal EnableDelayedExpansion
 echo(+ !_DEN_AGAIN!
 set "_ans="
 set /p "_ans=Re-run? [Y/n] "
-set "_run=1"
-if /i "!_ans!"=="n" set "_run="
+rem Enter or y runs it; any other answer cancels (only n used to). set /p
+rem leaves _ans undefined both for an empty line and at the end of input, so
+rem here the end of input still counts as Enter.
+set "_run="
+if not defined _ans set "_run=1"
+if /i "!_ans!"=="y" set "_run=1"
 endlocal & set "_DEN_AGAIN_RUN=%_run%"
 if not defined _DEN_AGAIN_RUN set "_DEN_AGAIN="
 exit /b 0
