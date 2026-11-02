@@ -1305,3 +1305,19 @@ def test_the_image_workflow_budget_covers_its_steps():
     assert steps["Build the dev image"].get("timeout-minutes", 0) > 0
     total = sum(step.get("timeout-minutes", 0) for step in job["steps"])
     assert job["timeout-minutes"] >= total
+
+
+def test_the_image_workflow_runs_fzf_and_pwsh_in_the_image():
+    # Both come from their releases, not from apt: the checks find fzf on
+    # dev's PATH and pwsh for root and dev in the built image.
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    checks = next(
+        step
+        for step in steps
+        if step.get("name") == "Check HOME and PATH for root and dev"
+    )
+    assert re.search(
+        r"docker exec --user dev den-dev zsh -lc '[^']*\bfzf --version", checks["run"]
+    )
+    assert re.search(r"docker exec den-dev pwsh --version\b", checks["run"])
+    assert "docker exec --user dev den-dev zsh -lc 'pwsh --version'" in checks["run"]
