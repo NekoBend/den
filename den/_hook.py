@@ -392,12 +392,10 @@ def _clinerules_targets(den_dir: Path) -> list[Path] | None:
 def _is_dens_rule(path: Path) -> bool:
     """Whether the rule file at `path` is one den wrote: it starts (after a
     UTF-8 BOM an editor may have added) with den's header. A file there that
-    does not is someone else's, and stays as it is."""
-    try:
-        with path.open("rb") as fh:
-            head = fh.read(len(_CLINERULES_HEADER) + 3)
-    except OSError:
-        return False
+    does not is someone else's, and stays as it is. A file that cannot be read
+    is neither: the OSError goes to the caller."""
+    with path.open("rb") as fh:
+        head = fh.read(len(_CLINERULES_HEADER) + 3)
     return head.removeprefix(b"\xef\xbb\xbf").startswith(_CLINERULES_HEADER)
 
 
@@ -420,17 +418,32 @@ def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
     targets = _clinerules_targets(den_dir)
     if targets is None:
         return False
+    # Every header is read before anything goes: a file that cannot be read
+    # was taken for someone else's, so den's stale copy stayed loaded and
+    # uninstall reported success. Now it refuses and touches nothing.
+    dens = []
     for path in targets:
         if not path.is_file():
             continue
-        if _is_dens_rule(path):
-            path.unlink()
+        try:
+            ours = _is_dens_rule(path)
+        except OSError as e:
+            print(
+                f"{_ERR}: refusing {path}: cannot read it to tell whether den "
+                f"wrote it ({e.strerror or e})",
+                file=sys.stderr,
+            )
+            return False
+        if ours:
+            dens.append(path)
         else:
             print(
                 f"{_ERR}: left {path}: it does not start with den's header, "
                 "so it is not a file den wrote",
                 file=sys.stderr,
             )
+    for path in dens:
+        path.unlink()
     return True
 
 

@@ -723,6 +723,35 @@ def test_remove_cline_cli_keeps_a_rule_file_den_did_not_write(
     assert f"left {mine.resolve()}" in err and "not a file den wrote" in err
 
 
+@pytest.mark.parametrize("name", ["den-imprint.md", "den-memory.md"])
+def test_remove_cline_cli_refuses_a_rule_file_it_cannot_read(
+    tmp_path, monkeypatch, capsys, name
+):
+    """A rule file whose header cannot be read is neither den's nor shown to be
+    someone else's. It was reported as not den's and uninstall succeeded, with
+    den's stale copy still loaded by cline; now nothing is removed, the read
+    error is named, and uninstall fails."""
+    _installed(tmp_path, "cline-cli")
+    rules = tmp_path / _RULES
+    before = {p.name: p.read_bytes() for p in rules.iterdir()}
+    real_open = Path.open
+
+    def open_fails_for_one(self, *args, **kwargs):
+        if self.name == name and self.parent.name == ".clinerules":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_fails_for_one)
+    monkeypatch.chdir(tmp_path)
+    assert uninstall_main(["hook", "--tool", "cline-cli"]) == 1
+    monkeypatch.setattr(Path, "open", real_open)
+    assert {p.name: p.read_bytes() for p in rules.iterdir()} == before
+    err = capsys.readouterr().err
+    assert "cannot read it to tell whether den wrote it (Permission denied)" in err
+    assert "not a file den wrote" not in err
+    assert "removed den hooks from cline-cli" not in err
+
+
 def test_remove_cline_cli_removes_a_memory_copy_without_the_imprint(
     tmp_path, monkeypatch
 ):
