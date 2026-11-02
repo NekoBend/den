@@ -1321,6 +1321,29 @@ def test_rsync_without_a_release_key_signature_is_not_built(
 # apt
 
 
+def test_apt_retries_failed_downloads_in_every_stage():
+    # apt 2.4 and later default to 3 retries; the setting keeps that for a
+    # base image whose apt defaults to none. It comes before the first apt-get,
+    # in the first stage, so every stage and the container read it.
+    scripts = _run_scripts()
+    first_apt = next(
+        i for i, (*_, script) in enumerate(scripts) if re.search(r"\bapt-get\b", script)
+    )
+    settings = [
+        (i, stage, script)
+        for i, (stage, _, _, _, script) in enumerate(scripts)
+        if 'Acquire::Retries "3";' in script
+    ]
+    assert len(settings) == 1, "no RUN sets Acquire::Retries"
+    i, stage, script = settings[0]
+    assert i < first_apt
+    assert stage == _stages()[0][0]
+    target = re.search(r"> /etc/apt/apt\.conf\.d/(\S+)", script)
+    assert target, script
+    # apt skips a file in apt.conf.d whose name has other characters.
+    assert re.fullmatch(r"[A-Za-z0-9_.-]+", target.group(1)), target.group(1)
+
+
 def test_the_last_stage_upgrades_apt_packages_before_it_changes_their_conffiles():
     # A refresh build (--no-cache-filter workspace) redoes only the last stage,
     # so the upgrade there brings the updates for every stage's packages. An

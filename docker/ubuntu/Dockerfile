@@ -9,6 +9,12 @@ FROM ${BASE_IMAGE} AS system
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
+# apt retries a failed download three times before it fails the step, in this
+# stage, in every stage built on it and in the container. apt 2.4 and later
+# already default to 3; the setting keeps that whatever the base image's apt
+# defaults to.
+RUN printf '%s\n' 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries
+
 # 1. OS packages and user. Compilers remain available for development.
 # fzf is not taken from apt: Ubuntu's package trails fzf's releases, so the
 # tools stage installs fzf's own release. gpgv checks the rsync tarball's
