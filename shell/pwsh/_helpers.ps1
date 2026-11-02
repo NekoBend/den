@@ -682,11 +682,11 @@ function _DenNewPrivateDir([string]$Path) {
 
 # _DenOneEntry <a> <b> - for two full paths spelled alike but for case: $true
 # when they name one directory entry, $false when they name two, and a throw
-# when that cannot be told; the caller has seen that both exist. Windows
-# compares names without regard to case, but how many files two such
-# spellings are depends on the folder: an ordinary one finds its one entry
-# under either, while a case-sensitive one (WSL makes them) can hold
-# backup.tgz and BACKUP.TGZ as two files. So at each level where the
+# when that cannot be told; the caller has seen that both exist. Windows, and
+# macOS's default volume, compare names without regard to case, but how many
+# files two such spellings are depends on the folder: such a folder finds its
+# one entry under either, while a case-sensitive one (Linux's, or one WSL
+# makes on Windows) can hold backup.tgz and BACKUP.TGZ as two files. So at each level where the
 # spellings differ, the folder's own listing is asked: a spelling it holds
 # exactly is that entry, and one it does not hold is its only name that
 # differs from it in case. A folder it cannot list, or one that holds several

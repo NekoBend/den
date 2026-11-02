@@ -468,8 +468,8 @@ function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
 # 7z fail on the old archive once it was moved aside, and the zip writer stored
 # the previous archive inside the new one. Only a source with the output's
 # leaf name reaches _ArSameFile, which forks on Linux/macOS; it then settles
-# './all.7z', a full path, case on Windows (by the folder: see _DenOneEntry)
-# and links, as the POSIX twin's '-ef' does, and throws when it cannot tell.
+# './all.7z', a full path, case (on Windows by the folder: see _DenOneEntry;
+# elsewhere -ef) and links, as the POSIX twin's '-ef' does, and throws when it cannot tell.
 function _ArDropOutput([string[]]$Sources = @(), [string]$Output = '') {
   $leaf = ($Output -split '[\\/]')[-1]
   $kept = @(foreach ($s in $Sources) {
@@ -509,10 +509,12 @@ function _ArNameComparer([bool]$Windows) {
 # (`zip -r` stores a path given twice in one spelling once, but refuses
 # p1/src next to ./p1/src: "cannot repeat names in zip file".)
 # $Skip is the final output: a source directory that holds it does not
-# archive the old archive into the new one. On Windows a file whose name
-# differs from it only in case is left out only when it is the output (see
-# _DenOneEntry): in a case-sensitive folder it is a file of its own, and it
-# used to be left out without a word. Every path is listed before $Dest
+# archive the old archive into the new one. A file whose name differs from
+# it only in case is left out only when it is the output (see _DenOneEntry):
+# in a case-sensitive folder it is a file of its own, and on Windows it used
+# to be left out without a word; on a case-insensitive volume elsewhere
+# (macOS's default) only Windows' folders were asked, and the old archive,
+# spelled otherwise, was stored inside the new one. Every path is listed before $Dest
 # is created, so the zip being written is never one of its own entries. Any
 # unreadable source throws, and the caller discards $Dest.
 function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = '') {
@@ -545,7 +547,7 @@ function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = 
       $rel = if ($full.Length -gt $root.Length) { $full.Substring($root.Length + 1) } else { $c.Name }
       $name = "$($item.Name)/" + $rel.Replace($sep, [char]'/')
       if ($c.PSIsContainer) { $entries.Add(@($null, "$name/", $full)); continue }
-      $isOutput = ($full -ceq $skipFull) -or ($onWindows -and $skipThere -and $full -eq $skipFull -and (_DenOneEntry $full $skipFull))
+      $isOutput = ($full -ceq $skipFull) -or ($skipThere -and $full -eq $skipFull -and (_DenOneEntry $full $skipFull))
       if (-not $isOutput) { $entries.Add(@($c, $name, $full)) }
     }
   }

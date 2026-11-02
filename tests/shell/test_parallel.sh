@@ -904,6 +904,41 @@ else
 fi
 rm -rf "$WORK/cs"
 
+echo "[pwsh] ptar on Linux and macOS drops a source spelled like the output but for case only when it is the output"
+# Elsewhere only Windows' folders were asked: on a case-insensitive volume
+# (macOS's default), `ptar backup.tgz BACKUP.TGZ src` kept BACKUP.TGZ as a
+# source, moved it aside with the output, and tar failed on the name. A
+# case-sensitive folder (Linux's) still holds the two as files of their own.
+# The case-insensitive part needs such a folder: $WORK when it is one, or
+# DEN_TEST_NOCASE_DIR. It names the output's other spelling as the only
+# source, so the check ends before anything is moved: on a folder shared from
+# Windows into Linux (virtiofs), the kernel keeps the old spelling cached
+# after a rename, and putting the new archive in place fails there for a
+# reason of that mount's own.
+mkdir -p "$WORK/cs/src"
+echo x > "$WORK/cs/src/x"
+echo upper > "$WORK/cs/BACKUP.TGZ"
+tar czf "$WORK/cs/backup.tgz" -C "$WORK/cs" src
+actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/cs'; ptar backup.tgz BACKUP.TGZ src" 2>&1; echo "status=$?")
+assert_contains "pwsh/ptar in a case-sensitive folder with the output's twin as a source exits 0" "status=0" "$actual"
+assert_eq "pwsh/ptar in a case-sensitive folder keeps the output's twin as a source" "BACKUP.TGZ src/ src/x " "$(tar tzf "$WORK/cs/backup.tgz" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+rm -rf "$WORK/cs"
+_nc=$(mktemp -d "${DEN_TEST_NOCASE_DIR:-$WORK}/nocase.XXXXXX")
+: > "$_nc/CaseProbe"
+if [ -e "$_nc/caseprobe" ]; then
+    mkdir -p "$_nc/src"
+    echo x > "$_nc/src/x"
+    tar czf "$_nc/BACKUP.TGZ" -C "$_nc" src
+    actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$_nc'; ptar backup.tgz BACKUP.TGZ" 2>&1 | tr -d '\r'; echo "status=${PIPESTATUS[0]}")
+    assert_contains "pwsh/ptar in a case-insensitive folder with only the output spelled otherwise fails" "status=1" "$actual"
+    assert_contains "pwsh/ptar in a case-insensitive folder takes the output spelled otherwise for the output" "no source besides the output 'backup.tgz'" "$actual"
+    assert_eq "pwsh/ptar in a case-insensitive folder leaves the old archive in place" "src/ src/x " "$(tar tzf "$_nc/BACKUP.TGZ" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+    assert_eq "pwsh/ptar in a case-insensitive folder leaves no staging folder" "" "$(ls -A "$_nc" | grep '^\.ptar\.' | tr -d '\n')"
+else
+    echo "  SKIP: no case-insensitive folder (DEN_TEST_NOCASE_DIR names one)"
+fi
+rm -rf "$_nc"
+
 echo "[pwsh] ptar makes its staging folder private, whatever the umask"
 # Made with the umask's mode (0777 under umask 000), the staging folder let
 # another user who can write to the output's folder plant a symlink where tar

@@ -2730,6 +2730,34 @@ else
 fi
 rm -rf "$WORK/cs"
 
+# Elsewhere only Windows' folders were asked: on a case-insensitive volume
+# (macOS's default), `archive src/backup.zip src` with src/BACKUP.ZIP there
+# stored the old archive inside the new one. A case-sensitive folder (Linux's)
+# still holds the two as files of their own. The case-insensitive part needs
+# such a folder: $WORK when it is one, or DEN_TEST_NOCASE_DIR.
+echo "[pwsh] archive on Linux and macOS takes a name that differs from the output only in case for the output only when it is"
+mkdir -p "$WORK/cs/src"
+echo x > "$WORK/cs/src/x"
+echo upper > "$WORK/cs/src/BACKUP.ZIP"
+echo old > "$WORK/cs/src/backup.zip"
+actual=$(pwsh_outcome "Set-Location '$WORK/cs'; archive src/backup.zip src")
+assert_contains "pwsh/archive zip in a case-sensitive folder with a twin of the output exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip in a case-sensitive folder keeps the output's twin and leaves the output out" "src/ src/BACKUP.ZIP src/x " "$(unzip -Z1 "$WORK/cs/src/backup.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+rm -rf "$WORK/cs"
+_nc=$(mktemp -d "${DEN_TEST_NOCASE_DIR:-$WORK}/nocase.XXXXXX")
+: > "$_nc/CaseProbe"
+if [ -e "$_nc/caseprobe" ]; then
+    mkdir -p "$_nc/src"
+    echo x > "$_nc/src/x"
+    echo old > "$_nc/src/BACKUP.ZIP"
+    actual=$(pwsh_outcome "Set-Location '$_nc'; archive src/backup.zip src")
+    assert_contains "pwsh/archive zip in a case-insensitive folder over the output spelled otherwise exits 0" "status=0" "$actual"
+    assert_eq "pwsh/archive zip in a case-insensitive folder leaves the output spelled otherwise out" "src/ src/x " "$(unzip -Z1 "$_nc/src/backup.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+else
+    echo "  SKIP: no case-insensitive folder (DEN_TEST_NOCASE_DIR names one)"
+fi
+rm -rf "$_nc"
+
 # The tar formats' staging folder was made with the umask's mode (0777 under
 # umask 000), so another user who can write to the output's folder could
 # plant a symlink where tar writes the new archive, or delete the previous one

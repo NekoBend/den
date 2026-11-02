@@ -221,19 +221,20 @@ function ptar {
     # replaces anything, so neither archive can land INSIDE a directory made
     # at the output meanwhile. A source that is the output itself
     # (`ptar all.tgz *` run again) is dropped first: moved aside, it is a name
-    # tar cannot find. On Windows one spelled like the output but for case is
-    # the output in an ordinary folder, but a file of its own in a
-    # case-sensitive one (WSL makes them), and was dropped without a word
-    # there: _DenOneEntry asks the folder, and a source it cannot tell about
-    # is refused, naming both.
+    # tar cannot find. One spelled like the output but for case is the output
+    # on a case-insensitive volume (Windows' ordinary folders, macOS's
+    # default), but a file of its own in a case-sensitive folder (Linux's, or
+    # one WSL makes on Windows). _DenOneEntry asks the folder, and a source it
+    # cannot tell about is refused, naming both. Asked on Windows only, macOS
+    # kept the output as a source, moved it aside, and tar failed on the name;
+    # Windows' case-sensitive folders lost the file from the archive.
     $sess = $ExecutionContext.SessionState.Path
     $outFull = $sess.GetUnresolvedProviderPathFromPSPath($Output)
-    $onWindows = ($env:OS -eq 'Windows_NT' -or $IsWindows)
     $outThere = $null -ne (Get-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue)
     $srcs = @(foreach ($s in $Sources) {
         $full = $sess.GetUnresolvedProviderPathFromPSPath($s)
         if ($full -ceq $outFull) { continue }
-        if ($onWindows -and $outThere -and
+        if ($outThere -and
             [string]::Equals($full, $outFull, [System.StringComparison]::OrdinalIgnoreCase) -and
             $null -ne (Get-Item -LiteralPath $s -Force -ErrorAction SilentlyContinue)) {
             $one = try { _DenOneEntry $full $outFull } catch { Write-Error $_.Exception.Message -ErrorAction Stop }
