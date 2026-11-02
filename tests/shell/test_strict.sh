@@ -539,6 +539,8 @@ Case 'grep, fallback, -l' { grep -l beta a.txt b.txt }
 Case 'grep, fallback, -n' { grep -n beta a.txt }
 Case 'grep, fallback, -n two files' { grep -n beta a.txt b.txt }
 Case 'grep, fallback, -r' { grep -r gamma }
+Case 'grep, fallback, -r a folder and a file' { grep -r gamma sub a.txt }
+Case 'grep, fallback, a folder without -r' { grep gamma sub a.txt }
 Case 'grep, fallback, piped' { 'alpha' | grep alph }
 Case 'grep, fallback, a pattern and a missing file' { grep beta '*.txt' missing.txt }
 Case 'find, fallback, a missing directory' { find nodir }

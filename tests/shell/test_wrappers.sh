@@ -1301,6 +1301,44 @@ find.exe [\"8080\"]
 in: z 8080" "$actual"
 rm -rf "$WORK/winroot"
 
+# =============================================================================
+# PowerShell: the grep fallback searches a folder with -r
+# =============================================================================
+# With no rg, no microsoft/coreutils and no grep on PATH, grep falls back to
+# _grep_ps_fallback, which gave a folder operand to Select-String, and
+# Select-String skips a folder without a word: `grep -r findme dir` printed
+# nothing and succeeded. With -r it now searches the files under each folder
+# operand, and the file operands as they are; without -r a folder is an error,
+# as in grep, and the files are still searched.
+echo ""
+echo "[pwsh] the grep fallback: -r with a folder operand, and a folder without -r"
+rm -rf "$WORK/gr" && mkdir -p "$WORK/gr/grepdir/sub" "$WORK/gr/nobin" || abort_suite "cannot make $WORK/gr"
+echo 'findme' > "$WORK/gr/grepdir/a.txt"
+echo 'nope' > "$WORK/gr/grepdir/sub/b.txt"
+echo 'findme too' > "$WORK/gr/grepdir/sub/c.txt"
+echo 'findme here' > "$WORK/gr/top.txt"
+GR_SETUP="\$env:PATH = '$WORK/gr/nobin'; \$env:_DEN_WRAPPER_LOG = '0'; Set-Location -LiteralPath '$WORK/gr'"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
+    'tools: ' + @(Get-Command rg, grep, coreutils -CommandType Application -ErrorAction SilentlyContinue).Count
+    grep -r findme grepdir | Sort-Object
+    '--'
+    grep -rn findme top.txt grepdir/sub | Sort-Object
+" 2>&1 < /dev/null | tr -d '\r')
+assert_eq "pwsh/grep -r findme grepdir, and a file with a folder" "tools: 0
+$WORK/gr/grepdir/a.txt:findme
+$WORK/gr/grepdir/sub/c.txt:findme too
+--
+$WORK/gr/grepdir/sub/c.txt:1:findme too
+$WORK/gr/top.txt:1:findme here" "$actual"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
+    grep findme grepdir top.txt
+" 2>/dev/null < /dev/null | tr -d '\r')
+assert_eq "pwsh/grep findme grepdir top.txt searches top.txt" "$WORK/gr/top.txt:findme here" "$actual"
+err=$(run_pwsh_stderr "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
+    grep findme grepdir top.txt
+" < /dev/null)
+assert_contains "pwsh/grep findme grepdir top.txt: grepdir is an error" "grep: grepdir: Is a directory" "$err"
+rm -rf "$WORK/gr"
 unset _t _i _w _got
 
 # =============================================================================
