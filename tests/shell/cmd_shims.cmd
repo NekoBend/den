@@ -17,7 +17,8 @@ rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path
 rem or something in the current directory, for --version / -V too, and
 rem elsewhere uv run for those as well; pip runs nothing outside a venv,
 rem and in a venv without pip.exe runs uv pip with --config-file and your
-rem own uv.toml, or with --no-config without one;
+rem own uv.toml, or with --no-config without one; wc fails, with no
+rem counts, for a file it cannot read;
 rem path lists PATH; again asks before it re-runs, and only Enter or y
 rem runs it; dg hashes with System32's certutil.exe, and dg -c fails for a
 rem sums file it cannot read.
@@ -668,6 +669,29 @@ set "FAKE_SELF="
 set "FAKE_FIND_SYSTEM="
 set "FAKE_FIND_MANAGED="
 cd /d "%T%\work" || exit /b 1
+
+rem --- wc counts a file it reads; a file it cannot read, or none, is an
+rem error with no counts, and exit 1 (stdout only: the error is on stderr)
+call "%BIN%\wc.cmd" "%T%\work\a.txt" >"%O%" 2>nul
+set "RC=%errorlevel%"
+set "OK="
+"%FINDSTR%" /l /c:"Characters" "%O%" >nul && if "%RC%"=="0" set "OK=1"
+call :check "wc: the counts of a file it reads, exit 0"
+call "%BIN%\wc.cmd" "%T%\work\no-such-file.txt" >"%O%" 2>nul
+set "RC=%errorlevel%"
+set "OK="
+for %%q in ("%O%") do if "%%~zq"=="0" if "%RC%"=="1" set "OK=1"
+call :check "wc: a missing file, no counts, exit 1"
+call "%BIN%\wc.cmd" "%T%\work" >"%O%" 2>nul
+set "RC=%errorlevel%"
+set "OK="
+for %%q in ("%O%") do if "%%~zq"=="0" if "%RC%"=="1" set "OK=1"
+call :check "wc: a folder, no counts, exit 1"
+call "%BIN%\wc.cmd" >"%O%" 2>nul
+set "RC=%errorlevel%"
+set "OK="
+for %%q in ("%O%") do if "%%~zq"=="0" if "%RC%"=="1" set "OK=1"
+call :check "wc: no file, no counts, exit 1"
 
 rem --- path.cmd lists PATH (typed `path` stays cmd's own command)
 call "%BIN%\path.cmd" >"%O%" 2>&1

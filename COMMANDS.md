@@ -268,7 +268,9 @@ flags, no pipe input). On pwsh, `df` ignores flags such as `-h`.
 
 cmd's `wc` reads the file once: lines are line feeds (blank lines count, a last
 line without one does not, as in GNU `wc -l`), words runs of non-blanks, and
-characters the text's length with its line ends.
+characters the text's length with its line ends. A file it cannot read
+(missing, a folder, no access, or none named) is an error: it prints no counts
+and exits 1.
 
 ## File utilities
 

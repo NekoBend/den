@@ -865,6 +865,35 @@ if command -v pwsh >/dev/null 2>&1; then
     assert_match "cmd/wc: header" "^Lines +Words +Characters +Property$" "$(printf '%s\n' "$out" | head -n 1)"
     assert_match "cmd/wc: values" "^ +5 +3 +9 *$" "$(printf '%s\n' "$out" | tail -n 1)"
 
+    echo "[cmd] wc fails for a file it cannot read, with no counts"
+    # Get-Content's errors do not stop a command of themselves: for a missing
+    # file, a folder, a file it may not read and no file at all, wc printed
+    # the error, then counts of 0, and exited 0.
+    mkdir -p "$WORK/wc-dir"
+    printf 'x\n' > "$WORK/wc-noread.txt"
+    chmod 000 "$WORK/wc-noread.txt"
+    res=""
+    for c in missing:"$WORK/wc-missing.txt" folder:"$WORK/wc-dir" noread:"$WORK/wc-noread.txt" none:; do
+        if [ "${c#*:}" ]; then
+            out=$(_ARG1="${c#*:}" pwsh -NoProfile -NonInteractive -Command "$WC_CMD" 2>"$WORK/wc-err.txt")
+        else
+            out=$(env -u _ARG1 pwsh -NoProfile -NonInteractive -Command "$WC_CMD" 2>"$WORK/wc-err.txt")
+        fi
+        rc=$?
+        err=no
+        [ -s "$WORK/wc-err.txt" ] && err=yes
+        res="$res${c%%:*} rc=$rc stdout=$(printf '%s' "$out" | tr -d '\r\n' | wc -c) stderr=$err
+"
+    done
+    chmod 600 "$WORK/wc-noread.txt"
+    assert_eq "cmd/wc: an error on stderr, nothing on stdout, exit 1" "missing rc=1 stdout=0 stderr=yes
+folder rc=1 stdout=0 stderr=yes
+noread rc=1 stdout=0 stderr=yes
+none rc=1 stdout=0 stderr=yes" "${res%
+}"
+    out=$(_ARG1="$WORK/wc-blank.txt" pwsh -NoProfile -NonInteractive -Command "$WC_CMD" 2>&1)
+    assert_eq "cmd/wc: a file it reads still exits 0" "0" "$?"
+
     echo "[cmd] tail reads the last lines with Get-Content -Tail"
     seq 1 15 > "$WORK/tail.txt"
     TAIL_DEFAULT=$(cmd_ps_commands tail | sed -n 1p)
