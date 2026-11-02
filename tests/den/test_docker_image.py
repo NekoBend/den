@@ -11,11 +11,14 @@ FAKE_EUID so the root branches run without root. The script tests are skipped
 on native Windows and where the shell they need is missing.
 """
 
+import hashlib
+import io
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -42,8 +45,8 @@ def _text() -> str:
     return DOCKERFILE.read_text(encoding="utf-8")
 
 
-def _instructions() -> list[tuple[str, str]]:
-    """(KEYWORD, arguments) per instruction, without comments or heredoc bodies."""
+def _parse() -> list[tuple[str, str, str]]:
+    """(KEYWORD, arguments, heredoc body) per instruction, without comments."""
     lines = _text().splitlines()
     out = []
     i = 0
@@ -55,14 +58,22 @@ def _instructions() -> list[tuple[str, str]]:
         while line.endswith("\\") and i < len(lines):
             line = line[:-1] + " " + lines[i].strip()
             i += 1
+        body = ""
         heredoc = re.search(r"<<-?['\"]?(\w+)['\"]?", line)
         if heredoc:
+            start = i
             while i < len(lines) and lines[i] != heredoc.group(1):
                 i += 1
+            body = "\n".join(lines[start:i]) + "\n"
             i += 1
         keyword, _, rest = line.strip().partition(" ")
-        out.append((keyword.upper(), rest.strip()))
+        out.append((keyword.upper(), rest.strip(), body))
     return out
+
+
+def _instructions() -> list[tuple[str, str]]:
+    """(KEYWORD, arguments) per instruction, without comments or heredoc bodies."""
+    return [(keyword, rest) for keyword, rest, _ in _parse()]
 
 
 def _expand(value: str, env: dict[str, str], args: dict[str, str]) -> str:
@@ -127,6 +138,32 @@ def _run_steps() -> list[tuple[str, str, dict[str, str], dict[str, str]]]:
         for stage, keyword, user, env, args in _walk()
         if keyword == "RUN"
     ]
+
+
+def _run_scripts() -> list[tuple[str, str, dict[str, str], dict[str, str], str]]:
+    """(stage, USER, ENV, build args, script) per RUN.
+
+    The script is the RUN line, then its heredoc body if it has one.
+    """
+    bodies = [(rest, body) for keyword, rest, body in _parse() if keyword == "RUN"]
+    return [
+        (stage, user, env, args, f"{rest}\n{body}")
+        for (stage, user, env, args), (rest, body) in zip(
+            _run_steps(), bodies, strict=True
+        )
+    ]
+
+
+def _install_step(marker: str) -> tuple[str, dict[str, str], str]:
+    """(USER, environment, body) of the RUN heredoc named ``marker``.
+
+    The environment is what the step runs with: its build args and the ENV,
+    which wins over a build arg of the same name.
+    """
+    for _, user, env, args, script in _run_scripts():
+        if script.startswith(f"<<'{marker}'\n"):
+            return user, {**args, **env}, script.partition("\n")[2]
+    raise AssertionError(f"the Dockerfile has no RUN <<'{marker}' step")
 
 
 def _appended_block(target: str) -> str:
@@ -757,6 +794,227 @@ def test_test_helpers_see_the_whole_dockerfile():
     names = [name for name, _, _ in _stages()]
     assert names[0] == "system"
     assert names[-1] == "workspace"
+
+
+# --- downloads -----------------------------------------------------------------
+
+_INSTALL_TOOLS = ("bash", "awk", "install", "mktemp", "sha256sum", "tar")
+
+
+def _zip(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, data in members.items():
+            info = zipfile.ZipInfo(name)
+            info.external_attr = 0o755 << 16
+            archive.writestr(info, data)
+    return buffer.getvalue()
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _fake_program(output: str) -> bytes:
+    return f"#!/bin/sh\necho {shlex.quote(output)}\n".encode()
+
+
+# curl that serves https://HOST/PATH from $FAKE_WEB/HOST/PATH. A HEAD request
+# (-I) writes the URL that $FAKE_WEB/HOST/PATH.redirect names for -w
+# '%{url_effective}'. It refuses a call without --proto =https and --tlsv1.2.
+_CURL_STUB = """\
+printf 'curl %s\\n' "$*" >> "$CALLS_LOG"
+url='' out='' head='' write='' proto='' tls=''
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --proto) proto=$2; shift ;;
+        --tlsv1.2) tls=1 ;;
+        --retry) shift ;;
+        -o) out=$2; shift ;;
+        -w) write=$2; shift ;;
+        -*I*) head=1 ;;
+        -*) ;;
+        *) url=$1 ;;
+    esac
+    shift
+done
+if [ "$proto" != =https ] || [ "$tls" != 1 ]; then
+    echo "curl stub: insecure call" >&2
+    exit 2
+fi
+case $url in https://*) ;; *) echo "curl stub: $url" >&2; exit 2 ;; esac
+file=$FAKE_WEB/${url#https://}
+if [ -n "$head" ]; then
+    target=$url
+    [ ! -f "$file.redirect" ] || target=$(cat "$file.redirect")
+    [ "$write" != '%{url_effective}' ] || printf '%s' "$target"
+    exit 0
+fi
+[ -f "$file" ] || { echo "curl: (22) HTTP 404: $url" >&2; exit 22; }
+if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi
+"""
+# The build commands an install step runs after its download check: they only
+# log their arguments. make install puts a fake rsync where rsync's would go,
+# and gpgv keeps the keyring it was given and reports $FAKE_GPGV_STATUS.
+_BUILD_STUBS = {
+    "apt-get": "",
+    "pwsh": "echo 'PowerShell 7.9.1'",
+    "make": """\
+if [ "$1" = install ]; then
+    printf '#!/bin/sh\\necho rsync\\n' > "$HOME/.local/bin/rsync"
+    chmod 0755 "$HOME/.local/bin/rsync"
+fi""",
+    "gpgv": """\
+while [ "$#" -gt 0 ]; do
+    [ "$1" != --keyring ] || cp "$2" "$GPGV_KEYRING"
+    shift
+done
+printf '%s\\n' "$FAKE_GPGV_STATUS"
+exit "$FAKE_GPGV_EXIT"
+""",
+}
+
+
+def _run_install(
+    tmp_path: Path,
+    marker: str,
+    web: dict[str, bytes],
+    *,
+    redirects: dict[str, str] | None = None,
+    arch: str = "amd64",
+    env: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], str, Path]:
+    """Run the RUN <<'marker' step against a fake web of ``web`` (URL -> body).
+
+    It runs with the step's build args and ENV, as the Dockerfile's SHELL
+    (bash -euo pipefail -c) does, but with HOME and TMPDIR in tmp_path and the
+    stubs first on PATH; the apt lists it deletes are a directory in tmp_path.
+    Returns the result, the call log and HOME.
+    """
+    bash = _tool("bash")
+    _, step_env, body = _install_step(marker)
+    apt_lists = tmp_path / "apt-lists"
+    apt_lists.mkdir()
+    if "/var/lib/apt/lists" in body:
+        body = _patched(body, {"rm -rf /var/lib/apt/lists/*": f"rm -rf {apt_lists}/*"})
+    assert "/var/" not in body and "/etc/" not in body, (
+        "the step writes outside tmp_path"
+    )
+    root = tmp_path / "web"
+    for url, data in web.items():
+        path = root / url.removeprefix("https://")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    for url, target in (redirects or {}).items():
+        path = root / (url.removeprefix("https://") + ".redirect")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(target, encoding="utf-8")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    log = tmp_path / "calls.log"
+    log.touch()
+    for name, stub in {"curl": _CURL_STUB, **_BUILD_STUBS}.items():
+        path = stubs / name
+        path.write_text(
+            f'#!{bash}\nprintf "{name} %s\\n" "$*" >> "$CALLS_LOG"\n{stub}\n'
+            if name != "curl"
+            else f"#!{bash}\n{stub}",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    run_env = {
+        **step_env,
+        "HOME": str(home),
+        "PATH": f"{stubs}:{SYSTEM_PATH}",
+        "TMPDIR": str(scratch),
+        "TARGETARCH": arch,
+        "FAKE_WEB": str(root),
+        "CALLS_LOG": str(log),
+        "GPGV_KEYRING": str(tmp_path / "keyring.gpg"),
+        "FAKE_GPGV_STATUS": "",
+        "FAKE_GPGV_EXIT": "2",
+        **(env or {}),
+    }
+    result = subprocess.run(
+        [bash, "-euo", "pipefail", "-c", body],
+        env=run_env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert not any(scratch.iterdir()), "the step left its work directory behind"
+    return result, log.read_text(encoding="utf-8"), home
+
+
+# rclone
+
+_RCLONE = "https://downloads.rclone.org"
+
+
+def _rclone_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
+    """rclone v1.99.1 as the current release, with its PGP-signed SHA256SUMS.
+
+    The archives are also served under their rclone-current names, which the
+    download used before it was checked. The arguments work as _fzf_web's do.
+    """
+    web = {f"{_RCLONE}/version.txt": b"rclone v1.99.1\n"}
+    sums = ["-----BEGIN PGP SIGNED MESSAGE-----\n", "Hash: SHA1\n", "\n"]
+    for arch in ("amd64", "arm64"):
+        name = f"rclone-v1.99.1-linux-{arch}.zip"
+        archive = _zip(
+            {
+                f"rclone-v1.99.1-linux-{arch}/rclone": _fake_program(
+                    f"rclone linux-{arch}"
+                )
+            }
+        )
+        if listed or arch != "amd64":
+            sums.append(f"{_sha256(archive)}  {name}\n")
+        if arch == served_arch:
+            archive = _zip(
+                {
+                    f"rclone-v1.99.1-linux-{arch}/rclone": _fake_program(
+                        "rclone tampered"
+                    )
+                }
+            )
+        web[f"{_RCLONE}/v1.99.1/{name}"] = archive
+        web[f"{_RCLONE}/rclone-current-linux-{arch}.zip"] = archive
+    sums += ["-----BEGIN PGP SIGNATURE-----\n", "\n", "c2lnbmF0dXJl\n"]
+    sums.append("-----END PGP SIGNATURE-----\n")
+    web[f"{_RCLONE}/v1.99.1/SHA256SUMS"] = "".join(sums).encode()
+    return web
+
+
+@_needs(*_INSTALL_TOOLS, "unzip")
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_rclone_comes_from_the_current_release_folder(tmp_path, arch):
+    result, calls, home = _run_install(
+        tmp_path, "INSTALL_RCLONE", _rclone_web(), arch=arch
+    )
+    assert result.returncode == 0, result.stderr
+    rclone = home / ".local" / "bin" / "rclone"
+    assert f"rclone linux-{arch}" in rclone.read_text(encoding="utf-8")
+    assert f"{_RCLONE}/v1.99.1/rclone-v1.99.1-linux-{arch}.zip" in calls
+
+
+@_needs(*_INSTALL_TOOLS, "unzip")
+@pytest.mark.parametrize(
+    "web",
+    [_rclone_web(served_arch="amd64"), _rclone_web(listed=False)],
+    ids=["other-contents", "not-listed"],
+)
+def test_rclone_that_its_sha256sums_do_not_vouch_for_is_not_installed(tmp_path, web):
+    # Before the check, the image installed whatever the download gave.
+    result, _, home = _run_install(tmp_path, "INSTALL_RCLONE", web)
+    assert result.returncode != 0
+    assert not (home / ".local" / "bin" / "rclone").exists()
 
 
 # --- the CI workflow that builds the image -------------------------------------

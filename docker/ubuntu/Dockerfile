@@ -169,15 +169,23 @@ ARG RCLONE_VERSION=current
 RUN <<'INSTALL_RCLONE'
 archive_dir=$(mktemp -d)
 trap 'rm -rf "$archive_dir"' EXIT
-download_base=https://downloads.rclone.org
-if [[ "$RCLONE_VERSION" != current ]]; then
-    download_base="$download_base/$RCLONE_VERSION"
+version=$RCLONE_VERSION
+if [[ "$version" == current ]]; then
+    # version.txt names the current release ("rclone v1.2.3"). Only a
+    # release's own folder has a SHA256SUMS file, so download from there.
+    version=$(curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://downloads.rclone.org/version.txt)
+    version=${version#rclone }
 fi
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    "$download_base/rclone-${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
-    -o "$archive_dir/rclone.zip"
-unzip -q -j "$archive_dir/rclone.zip" '*/rclone' -d "$archive_dir"
+[[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected rclone version: '$version'" >&2; exit 1; }
+release=https://downloads.rclone.org/$version
+archive=rclone-${version}-linux-${TARGETARCH}.zip
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/$archive" -o "$archive_dir/$archive"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/SHA256SUMS" -o "$archive_dir/SHA256SUMS"
+# One "<sha256>  <file>" line per release file; check the archive's own line.
+(cd "$archive_dir" && awk -v name="$archive" '$2 == name' SHA256SUMS | sha256sum -c -)
+unzip -q -j "$archive_dir/$archive" '*/rclone' -d "$archive_dir"
 install -m 0755 "$archive_dir/rclone" "$HOME/.local/bin/rclone"
+"$HOME/.local/bin/rclone" version
 INSTALL_RCLONE
 
 # den's main branch as a BuildKit git source. Every build resolves main to a
