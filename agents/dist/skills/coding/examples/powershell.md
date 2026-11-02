@@ -60,18 +60,43 @@ function Remove-StaleOrder {
 }
 ```
 
-A Pester test for the pure part lives in `Get-Order.Tests.ps1`
+A Pester test for the pure part lives in `Get-Order.Tests.ps1`,
+next to `Get-Order.ps1`, which holds the block above
 (reference section 2; the lint gate lints test files, Pester runs them):
 
 ```powershell
+BeforeAll {
+    . $PSScriptRoot/Get-Order.ps1
+}
+
 Describe 'Get-Order' {
     It 'returns a typed object for a well-formed payload' {
-        Mock curl { '{"id":"o1","status":"open","total":"12.50"}' }
+        Mock curl {
+            $global:LASTEXITCODE = 0
+            '{"id":"o1","status":"open","total":"12.50"}'
+        }
         $o = Get-Order -OrderId o1
         $o.Total | Should -BeOfType [decimal]
     }
+
+    It 'throws when curl fails' {
+        Mock curl { $global:LASTEXITCODE = 22 }
+        { Get-Order -OrderId o1 } | Should -Throw '*exit code 22*'
+    }
 }
 ```
+
+Pester 5 runs code outside `BeforeAll`, `It` and the other setup and
+teardown blocks only while it discovers the tests, and its results are
+not available when the tests run, so `BeforeAll` dot-sources
+`Get-Order.ps1`.
+
+A mocked `curl` is a PowerShell command, so calling it leaves
+`$LASTEXITCODE` as it was: unset in a fresh session (an error under
+StrictMode), or the exit code of an earlier native command. Each mock
+therefore sets `$global:LASTEXITCODE` to the exit code it stands for:
+0 for the payload, 22 (curl's `--fail` code for an HTTP error) for the
+failure.
 
 Points a reviewer should recognize from the reference: no
 `Write-Host` in library code, no `Format-*` in the function, the

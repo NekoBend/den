@@ -36,8 +36,9 @@ set -euo pipefail
 - `-u`: exit on undefined variable reference.
 - `-o pipefail`: a pipeline fails if any command in it fails.
 
-Known caveats: `-e` does not trigger inside command substitutions on older Bash,
-and it does not catch failures in commands before `&&` or `||`.
+Known caveats: Bash turns `-e` off inside command substitutions (`$(...)`)
+unless `shopt -s inherit_errexit` (Bash 4.4+) is set,
+and `-e` does not catch failures in commands before `&&` or `||`.
 Test exit codes explicitly when these patterns appear.
 
 **Why:** Without strict mode, a failing command in the middle of a script is silently ignored
@@ -54,14 +55,19 @@ Strict mode turns silent corruption into an immediate, diagnosable failure.
 4. Constants (`readonly`)
 5. Function definitions
 6. `main` function
-7. `main "$@"` call at the bottom
+7. `main "$@"` call at the bottom, guarded so it runs only when the script is executed:
+   `if ! (return 0 2>/dev/null); then main "$@"; fi`
 
 Wrap logic in a `main()` function rather than running at the top level.
 This prevents variables from leaking into the global scope
 and makes the script testable (functions can be sourced without executing `main`).
+`return` works only in a function or a sourced file,
+so `(return 0 2>/dev/null)` fails when the script is executed (also when Bash reads it from stdin)
+and succeeds when it is sourced.
 
-**Why:** The `main "$@"` pattern is the shell equivalent of Python's `if __name__ == "__main__"`.
-It keeps the script importable by other scripts via `source` without side effects.
+**Why:** The guarded `main "$@"` call is the shell equivalent of Python's `if __name__ == "__main__"`.
+Sourcing the script defines its functions without running `main`,
+so other scripts and tests can reuse them.
 
 ## 10. Error handling: exit codes and stderr
 

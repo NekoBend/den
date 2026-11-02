@@ -10,31 +10,45 @@ and section 14 (safe temp files).
 
 ```bash
 # Fetch all orders into a temp file, then report the total count.
-report_orders() {
+report_orders() (
   local order_ids=("$@")
   local tmp_file
-  tmp_file="$(mktemp)"
-  trap 'rm -f "$tmp_file"' RETURN
+  tmp_file="$(mktemp)" || exit "$?"
+  trap 'rm -f "$tmp_file"' EXIT
 
   local id
   for id in "${order_ids[@]}"; do
-    fetch_order "$id" >>"$tmp_file"
+    fetch_order "$id" >>"$tmp_file" || exit "$?"
   done
 
   local count
-  count="$(wc -l <"$tmp_file")"
+  count="$(wc -l <"$tmp_file")" || exit "$?"
   printf 'fetched %s orders\n' "$count"
-}
+)
 ```
 
 `mktemp` creates the temp file with a unique, unpredictable name (shell-security.md section 14):
 never a hardcoded `/tmp/orders.txt`, which is a symlink-attack and race-condition risk.
-`trap 'rm -f "$tmp_file"' RETURN` registers cleanup that runs when the function returns,
+`trap 'rm -f "$tmp_file"' EXIT` registers cleanup that runs when the function ends,
 on success or failure (shell-security.md section 8).
 
-This example uses `RETURN` (function scope) rather than `EXIT` (script scope)
-because the temp file is local to `report_orders`.
-A script-level temp file would use `trap ... EXIT` at the top level.
+The body is in `( ... )`, not `{ ... }`, so the function runs in a subshell
+and its `EXIT` trap fires when that subshell exits:
+after the last command, or when `set -e` or an `exit` stops it.
+An `exit` in the body, `die`'s included, ends only that subshell:
+its status becomes the function's return status.
+The caller's traps and variables stay untouched.
+In exchange, nothing the function assigns reaches the caller,
+so it hands its result back on stdout, as `report_orders` does.
+A caller that captures the result, `result="$(report_orders ...)"`,
+runs the function in a command substitution, where Bash turns `set -e` off
+(shell-structure.md section 7),
+so the function does not rely on `set -e`:
+each command that can fail ends it with `|| exit "$?"`.
+Do not use a `RETURN` trap for this:
+it stays set after the function returns, runs again as each calling function returns,
+and does not run when `set -e` or `exit` ends the script.
+A script-level temp file uses `trap ... EXIT` at the top level.
 
 ## 5. main and script assembly
 
@@ -43,24 +57,27 @@ This block demonstrates shared/reference/shell-structure.md section 9 (script st
 ```bash
 main() {
   if [[ "$#" -eq 0 ]]; then
-    die "usage: $(basename "$0") <order_id> [<order_id>...]"
+    echo "usage: $(basename "$0") <order_id> [<order_id>...]" >&2
+    exit 2
   fi
   process_orders "$@"
 }
 
-main "$@"
+if ! (return 0 2>/dev/null); then
+  main "$@"
+fi
 ```
 
 `main` wraps the top-level logic and is the last thing called,
 with `main "$@"` forwarding all script arguments (shell-structure.md section 9).
-This is the shell equivalent of Python's `if __name__ == "__main__"`:
-it keeps the functions definable without executing them,
-so the script can be sourced in tests (e.g., with Bats)
+The `(return 0 2>/dev/null)` check around that call is the shell equivalent of Python's `if __name__ == "__main__"`:
+`main` runs when the script is executed and not when it is sourced,
+so tests (e.g., with Bats) can source the script
 to test `fetch_order` and `summarize_order` in isolation.
 
 The full script orders its parts as:
 shebang, header, `set -euo pipefail`, `readonly` constants, function definitions, `main`,
-then the `main "$@"` call (shell-structure.md section 9).
+then the guarded `main "$@"` call (shell-structure.md section 9).
 
 ## Pitfalls
 
