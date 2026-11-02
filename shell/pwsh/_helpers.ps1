@@ -1220,17 +1220,18 @@ function _DenWinFind {
 # (_DenArgs), as find.exe needs them. find.exe takes the text to look for only
 # in double quotes (`find "8080"`, with each " inside it doubled), and pwsh
 # drops the quotes typed around a word, so a typed `find "8080"` would hand
-# find.exe a bare 8080, which it refuses. So the first word that is not an
-# option (/i, /v, ...) goes in double quotes, unless it starts with one: the
-# way to write it for find.exe typed by name in pwsh (`find '"8080"'`). pwsh
-# passes the quotes on as they are, since it hands find.exe its arguments in
-# its Legacy way.
+# find.exe a bare 8080, which it refuses. So the first word that is not one of
+# find.exe's switches (/v /c /n /i /off /offline /?, in any case) goes in
+# double quotes, unless it starts with one: the way to write it for find.exe
+# typed by name in pwsh (`find '"8080"'`). Any other word that starts with /
+# is text to look for (`find /api`). pwsh passes the quotes on as they are,
+# since it hands find.exe its arguments in its Legacy way.
 function _DenFindWords([object[]]$Words) {
     if ($null -eq $Words) { return }
     $quoted = $false
     foreach ($w in $Words) {
         $s = "$w"
-        if ($quoted -or $s.StartsWith('/')) { , $w; continue }
+        if ($quoted -or $s -in '/v', '/c', '/n', '/i', '/off', '/offline', '/?') { , $w; continue }
         $quoted = $true
         if ($s.StartsWith('"')) { $s } else { '"' + $s.Replace('"', '""') + '"' }
     }

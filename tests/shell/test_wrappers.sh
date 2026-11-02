@@ -1307,6 +1307,26 @@ in: y
 fd [8080]
 find.exe [\"8080\"]
 in: z 8080" "$actual"
+# Only find.exe's own switches (/v /c /n /i /off /offline /?, in any case)
+# stay bare: text to look for that starts with / goes in the double quotes
+# too. Every word that started with / was taken for a switch, so
+# `'GET /api' | find '/api'` handed find.exe no text to look for.
+rm -f "$G6_LOG"
+PATH="$G6_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    function global:_OnWindows { \$true }
+    \$env:SystemRoot = '$WORK/winroot'
+    'GET /api' | find '/api'
+    'GET /API' | find /i /api
+    'x 8080' | find /OFFLINE /N '/?' 8080
+" > /dev/null 2>&1 < /dev/null
+actual=$(cat "$G6_LOG" 2>/dev/null)
+assert_eq "pwsh/find /api and find /i /api: /api is the text to look for, in quotes" "find.exe [\"/api\"]
+in: GET /api
+find.exe [/i] [\"/api\"]
+in: GET /API
+find.exe [/OFFLINE] [/N] [/?] [\"8080\"]
+in: x 8080" "$actual"
 rm -rf "$WORK/winroot"
 
 # =============================================================================
