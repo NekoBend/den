@@ -1342,8 +1342,9 @@ def test_a_removed_dollar_name_right_before_a_brace_in_code_is_reported(
 ) -> None:
     # The `${` of a template literal ends no name, and that rule hid a `$`
     # name standing right before `{` in code: deleting `class Store${}`
-    # left `class Child extends Store${}` unreported. A template's `${` is
-    # now told by a backtick before it on the line.
+    # left `class Child extends Store${}` unreported, and the same line after
+    # a closed template or inside a template's `${...}`. Only a template's
+    # text is left out now.
     init_repo(tmp_path)
     write(tmp_path, "lib.js", "export class Store${}\nexport function keep() {}\n")
     write(
@@ -1351,7 +1352,9 @@ def test_a_removed_dollar_name_right_before_a_brace_in_code_is_reported(
         "app.js",
         'import { Store$, keep } from "./lib.js";\n'
         "class Child extends Store${}\n"
-        "const s = `${keep()} Store${keep()}`;\n",
+        "const s = `${keep()} Store${keep()}`;\n"
+        "const label = `ok`; class Two extends Store${}\n"
+        "const t = `${class extends Store${}}`;\n",
     )
     git(tmp_path, "add", "-A")
     git(tmp_path, "commit", "-q", "-m", "base")
@@ -1364,6 +1367,8 @@ def test_a_removed_dollar_name_right_before_a_brace_in_code_is_reported(
         assert report(proc, tmp_path) == [
             'app.js:1:broken_ref:Store$:import { Store$, keep } from "./lib.js";',
             "app.js:2:broken_ref:Store$:class Child extends Store${}",
+            "app.js:4:broken_ref:Store$:const label = `ok`; class Two extends Store${}",
+            "app.js:5:broken_ref:Store$:const t = `${class extends Store${}}`;",
         ]
 
 

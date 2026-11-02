@@ -730,6 +730,69 @@ def _word_rx(
     )
 
 
+_TEXT = -1  # _in_template_text's mark for a template's text
+
+
+def _in_template_text(line: str, pos: int) -> bool:
+    """Whether column `pos` of a JavaScript or TypeScript line is in a template
+    literal's text, by a scan from the line's start: a backtick opens or
+    closes a template, a `${` in its text opens code up to the matching `}`,
+    and a quote in code opens a string. A line that starts inside a template
+    or a comment spanning lines is read as code, so there a `$` name before
+    `{` counts."""
+    stack: list[int] = []  # _TEXT: a template's text; else a ${ } code depth
+    quote = ""
+    i = 0
+    while i < pos:
+        if stack and stack[-1] == _TEXT:
+            i = _template_step(line, i, stack)
+        elif quote or line[i] in "'\"":
+            i, quote = _string_step(line, i, quote)
+        elif line.startswith("//", i):
+            return False
+        else:
+            _code_step(line[i], stack)
+            i += 1
+    return bool(stack) and stack[-1] == _TEXT and not quote
+
+
+def _template_step(line: str, i: int, stack: list[int]) -> int:
+    """One step of _in_template_text in a template's text; the next column."""
+    if line[i] == "\\":
+        return i + 2
+    if line[i] == "`":
+        stack.pop()
+    elif line.startswith("${", i):
+        stack.append(0)
+        return i + 2
+    return i + 1
+
+
+def _string_step(line: str, i: int, quote: str) -> tuple[int, str]:
+    """One step of _in_template_text at or in a quoted string: the next
+    column and the quote still open ("" once it closes)."""
+    ch = line[i]
+    if not quote:
+        return i + 1, ch
+    if ch == "\\":
+        return i + 2, quote
+    return i + 1, "" if ch == quote else quote
+
+
+def _code_step(ch: str, stack: list[int]) -> None:
+    """One step of _in_template_text in code: a backtick opens a template, and
+    braces count towards the `}` that ends a `${`."""
+    if ch == "`":
+        stack.append(_TEXT)
+    elif stack and ch == "{":
+        stack[-1] += 1
+    elif stack and ch == "}":
+        if stack[-1] == 0:
+            stack.pop()
+        else:
+            stack[-1] -= 1
+
+
 def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     """Whether `line` (of a file with suffix `ext`) names `symbol`.
 
@@ -737,11 +800,12 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     (MEMBER_ACCESS: `.symbol`, and `::symbol` in Rust). A whole word has no
     character of a name (NAME_CHARS) right before or after it: in a
     JavaScript or TypeScript file `users$` does not name `users`, and
-    `$fetch()` names `$fetch`. There a `$` right before a `{`, with a
-    backtick before it on the line, opens the `${...}` of a template literal
-    and ends no name: in `` `${x}` `` it does not name `$`, nor in
-    `` `users${x}` `` does it name `users$`. With no backtick before it the
-    name stands: `class X extends Store${}` names `Store$`.
+    `$fetch()` names `$fetch`. There a `$` right before a `{` in a template
+    literal's text opens its `${...}` and ends no name: in `` `${x}` `` it
+    does not name `$`, nor in `` `users${x}` `` does it name `users$`. In
+    code the name stands: `class X extends Store${}` names `Store$`, also
+    after a closed template on the line or inside a `${...}`
+    (_in_template_text).
     """
     ignore_case = ext in CASE_INSENSITIVE_EXTS
     if not ignore_case and symbol not in line:  # the cheap test first
@@ -756,7 +820,7 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     if not (ext in _JS_EXTS and symbol.endswith("$")):
         return rx.search(line) is not None
     return any(
-        not (line.startswith("{", m.end()) and "`" in line[: m.start()])
+        not (line.startswith("{", m.end()) and _in_template_text(line, m.end() - 1))
         for m in rx.finditer(line)
     )
 

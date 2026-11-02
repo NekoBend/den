@@ -1401,14 +1401,17 @@ def test_a_dollar_name_right_before_a_brace_in_code_is_found(
 ) -> None:
     # The `${` of a template literal ends no name, and that rule hid a `$`
     # name standing right before `{` in code: `extends Store${}` was no use
-    # of Store$. A template's `${` is now told by a backtick before it.
+    # of Store$, nor was it after a closed template on the line or inside a
+    # template's `${...}`. Only a template's text is left out now.
     write(tmp_path, "lib.js", "export class Store${}\n")
     write(
         tmp_path,
         "app.js",
         'import { Store$ } from "./lib.js";\n'
         "class Child extends Store${}\n"
-        "const s = `${n} Store${n}`;\n",
+        "const s = `${n} Store${n}`;\n"
+        "const label = `ok`; class Two extends Store${}\n"
+        "const t = `${class extends Store${}}`;\n",
     )
     for env in backends:
         proc = run("--def", "Store$", "--root", str(tmp_path), env=env)
@@ -1419,6 +1422,8 @@ def test_a_dollar_name_right_before_a_brace_in_code_is_found(
         assert rows(proc, tmp_path) == [
             'app.js:1:use:import { Store$ } from "./lib.js";',
             "app.js:2:use:class Child extends Store${}",
+            "app.js:4:use:const label = `ok`; class Two extends Store${}",
+            "app.js:5:use:const t = `${class extends Store${}}`;",
         ]
 
 
