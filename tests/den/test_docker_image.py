@@ -195,20 +195,20 @@ def test_a_root_exec_home_is_roots():
 
 
 def test_build_steps_that_run_as_the_user_keep_its_home():
-    # rustup, cargo, the installers, nvm, npm and den write under the user's
-    # home, so ENV HOME=/root must come after the last of them.
+    # rustup, cargo, the installers, nvm and den write under the user's home,
+    # so ENV HOME=/root must come after the last of them.
     as_user = [
         (stage, env, args)
         for stage, user, env, args in _run_steps()
         if user.partition(":")[0] not in {"root", "0"}
     ]
-    assert len(as_user) > 10, "the parser no longer sees the user's build steps"
+    assert len(as_user) > 5, "the parser no longer sees the user's build steps"
     for stage, env, args in as_user:
         assert env["HOME"] == f"/home/{args['USERNAME']}", stage
 
 
 def test_root_build_steps_after_the_user_steps_use_roots_home():
-    # Once a step has run as the user (rustup, the installers, nvm, npm), the
+    # Once a step has run as the user (rustup, the installers, nvm), the
     # user's home may hold ~/.curlrc, ~/.dpkg.cfg or Python .pth files, which
     # curl, dpkg's hooks and python3 read as root's configuration.
     steps = _run_steps()
@@ -310,6 +310,38 @@ def test_den_comes_from_a_git_source_of_main_mounted_into_the_install():
         f"uv tool install --python /usr/bin/python3 --link-mode copy {source} "
         in install
     )
+
+
+# --- what the image leaves out -------------------------------------------------
+
+# The image ships no coding-agent CLI and no den skills: an image built FROM it
+# adds them (docker/README.md, "Adding your own tools"). eza and broot are left
+# out too, and bubblewrap served only codex's sandbox. A pattern also matches
+# the host a removed installer came from.
+_LEFT_OUT = {
+    "claude": r"\bclaude\b",
+    "codex": r"\bcodex\b|\bchatgpt\.com\b",
+    "acpx": r"\bacpx\b",
+    "grok": r"\bgrok\b|\bx\.ai\b",
+    "muse": r"\bmuse\b|\bdev\.meta\.ai\b",
+    "agy": r"\bagy\b|\bantigravity\b",
+    "eza": r"\beza\b",
+    "broot": r"\bbroot\b",
+    "bubblewrap": r"\bbubblewrap\b|\bbwrap\b",
+    "den install skills": r"\bden\s+install\s+skills\b",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_LEFT_OUT))
+def test_the_image_installs_no_agent_cli_eza_broot_or_den_skills(name):
+    # Comment lines, the Dockerfile's and its heredoc scripts', may name them.
+    pattern = re.compile(_LEFT_OUT[name], flags=re.IGNORECASE)
+    found = [
+        line.strip()
+        for line in _text().splitlines()
+        if not line.lstrip().startswith("#") and pattern.search(line)
+    ]
+    assert not found, f"{name} is back in the Dockerfile: {found}"
 
 
 # --- /etc/zsh/zshenv and /etc/bash.bashrc --------------------------------------
@@ -697,7 +729,7 @@ def test_entrypoint_gives_the_command_the_user_home(tmp_path, uid):
 @_needs("sh", "env")
 def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
     # A UID other than the build's re-owns all of /home/dev, which overlayfs
-    # copies into each new container (about 2 GB); the build args avoid it.
+    # copies into each new container; the build args avoid it.
     result, calls = _run_entrypoint(
         tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}
     )
@@ -706,7 +738,7 @@ def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
     lines = result.stderr.splitlines()
     assert len(lines) == 1, result.stderr
     # The copy is an overlayfs cost; other storage drivers re-own in place.
-    assert "on overlayfs copies about 2 GB" in lines[0]
+    assert "re-owns /home/dev, which on overlayfs copies all of it" in lines[0]
     assert "--build-arg USER_UID=501 --build-arg USER_GID=20" in lines[0]
 
 

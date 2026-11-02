@@ -71,7 +71,7 @@ RUN --mount=type=cache,id=cargo-registry-${TARGETARCH}-${USER_UID}-${USER_GID},t
     --mount=type=cache,id=cargo-git-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/git,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     --mount=type=cache,id=cargo-target-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/cargo-target,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     CARGO_TARGET_DIR="$HOME/.cache/cargo-target" cargo install --locked \
-        bat bottom broot du-dust eza fd-find git-delta gitui grex hyperfine \
+        bat bottom du-dust fd-find git-delta gitui grex hyperfine \
         lsd procs ripgrep sd tealdeer xh zoxide
 
 # yazi-build installs yazi/ya from its build script. Reusing its compiled target
@@ -82,7 +82,7 @@ RUN --mount=type=cache,id=cargo-registry-${TARGETARCH}-${USER_UID}-${USER_GID},t
     command -v yazi && command -v ya && \
     rm -rf /tmp/yazi-build-*
 
-# 3. User-installed language tools and AI CLIs.
+# 3. User-installed language tools.
 FROM rust-tools AS tools
 # Download each official installer completely before executing it as the user.
 RUN curl -fsSL https://starship.rs/install.sh -o /tmp/starship.sh && \
@@ -99,30 +99,14 @@ ENV NVM_DIR="${HOME}/.nvm"
 ARG NVM_VERSION=v0.40.7
 RUN curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o /tmp/nvm.sh && \
     bash /tmp/nvm.sh && rm /tmp/nvm.sh
-# Build settings: project-selected version series, not exact patch versions.
+# Build setting: project-selected version series, not an exact patch version.
 ARG NODE_MAJOR=22
-ARG ACPX_VERSION=0.19
 RUN source "$NVM_DIR/nvm.sh" && \
     nvm install "$NODE_MAJOR" && \
     nvm alias default "$NODE_MAJOR" && \
     ln -sfn "$NVM_DIR/versions/node/$(nvm version default)" "$NVM_DIR/current" && \
     nvm cache clear
 ENV PATH="${NVM_DIR}/current/bin:${PATH}"
-
-RUN --mount=type=cache,id=npm-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.npm,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    npm install -g --no-audit --no-fund "acpx@${ACPX_VERSION}" && \
-    acpx --skill install acpx --agent claude --scope user
-
-RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude.sh && \
-    bash /tmp/claude.sh && rm /tmp/claude.sh
-RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex.sh && \
-    sh /tmp/codex.sh && rm /tmp/codex.sh
-RUN curl -fsSL https://x.ai/cli/install.sh -o /tmp/grok.sh && \
-    GROK_BIN_DIR="$HOME/.local/bin" bash /tmp/grok.sh && rm /tmp/grok.sh
-RUN curl -fsSL https://dev.meta.ai/install.sh -o /tmp/muse.sh && \
-    bash /tmp/muse.sh && rm /tmp/muse.sh
-RUN curl -fsSL https://antigravity.google/cli/install.sh -o /tmp/agy.sh && \
-    bash /tmp/agy.sh && rm /tmp/agy.sh
 
 # 4. System utilities and file-transfer tools, before workspace configuration.
 FROM tools AS utilities
@@ -149,7 +133,7 @@ gh_package=gh
 if [[ "$GH_VERSION" != latest ]]; then
     gh_package="gh=$GH_VERSION"
 fi
-apt-get install -y --no-install-recommends "$gh_package" bubblewrap \
+apt-get install -y --no-install-recommends "$gh_package" \
     libacl1-dev libattr1-dev libidn2-dev liblz4-dev libpopt-dev \
     libxxhash-dev libzstd-dev zlib1g-dev
 # Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq)
@@ -207,8 +191,7 @@ FROM utilities AS workspace
 RUN --mount=type=bind,from=den-src,target=/tmp/den \
     --mount=type=cache,id=uv-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     uv tool install --python /usr/bin/python3 --link-mode copy /tmp/den && \
-    den install shell --force --bin --zsh-plugins && \
-    den install skills --tool claude --tool codex --with-parent --force
+    den install shell --force --bin --zsh-plugins
 
 # 6. Runtime entrypoint and defaults.
 USER root
@@ -276,7 +259,7 @@ if [ "$(id -u)" -eq 0 ]; then
             fail 'HOST_UID already belongs to another account'
         fi
         # On overlayfs, re-owning a file copies it into the container's layer.
-        printf '%s\n' "container-entrypoint: remapping $username from $old_uid:$old_gid to $target_uid:$target_gid re-owns $user_home, which on overlayfs copies about 2 GB into each new container; build with --build-arg USER_UID=$target_uid --build-arg USER_GID=$target_gid to skip this." >&2
+        printf '%s\n' "container-entrypoint: remapping $username from $old_uid:$old_gid to $target_uid:$target_gid re-owns $user_home, which on overlayfs copies all of it into each new container; build with --build-arg USER_UID=$target_uid --build-arg USER_GID=$target_gid to skip this." >&2
         # Change only matching IDs. Do this before usermod so a failed workspace
         # traversal leaves the original account IDs available for a retry.
         if [ "$fix_workspace" = 1 ]; then
