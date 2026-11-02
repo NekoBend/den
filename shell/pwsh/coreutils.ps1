@@ -16,7 +16,9 @@ if (-not (_OnWindows)) { return }
 # the binary directly, its stdin the console's, and on PowerShell 7.3 and later a
 # clean block (added at the end of this file) ends a pipeline that a stopped line
 # left open. Their PowerShell versions read piped input in a process block, an
-# object at a time.
+# object at a time. microsoft/coreutils gets the call's words as _DenArgs gives
+# them, through _DenNativeBlock or _DenPass: pwsh expanded a quoted ~/x in @args
+# to the home folder (pwsh 7.6 on Windows).
 
 # ===== Unix-like Utilities =====
 
@@ -25,7 +27,7 @@ if (-not (_OnWindows)) { return }
 # df reads no input, so microsoft/coreutils gets none.
 function df {
   $__cu = _CoreutilsBin
-  if ($__cu) { & $__cu df @Args; return }
+  if ($__cu) { _DenPass $MyInvocation $Args $__cu 'df'; return }
   $paths = @($Args | Where-Object { "$_" -notlike '-*' })
   $result = Get-PSDrive -PSProvider FileSystem |
     Select-Object Name,
@@ -54,9 +56,11 @@ function env {
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
+    $__w = @()
+    if ($__cu) { $__w = @(_DenArgs $MyInvocation $args) }
     $__piped = [System.Collections.Generic.List[object]]::new()
     if ($__cu -and $__in) {
-      $__sp = { & $__cu env @__a }.GetSteppablePipeline()
+      $__sp = (_DenNativeBlock '& $__cu env' $__w).GetSteppablePipeline()
       $__sp.Begin($true, $ExecutionContext)
     }
   }
@@ -66,7 +70,7 @@ function env {
   }
   end {
     if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
-    if ($__cu) { & $__cu env @__a; return }
+    if ($__cu) { & (_DenNativeBlock '& $__cu env' $__w); return }
     # The command runs from this scope, and PowerShell looks a variable up
     # through the scopes of the commands that called it, so a scriptblock or
     # a PowerShell function run here sees env's variables before its
@@ -167,8 +171,10 @@ function head {
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
+    $__w = @()
+    if ($__cu) { $__w = @(_DenArgs $MyInvocation $args) }
     if ($__cu) {
-      if ($__in) { $__sp = { & $__cu head @__a }.GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
+      if ($__in) { $__sp = (_DenNativeBlock '& $__cu head' $__w).GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
       return
     }
     $lines = 10; $excludeLast = 0; $files = @(); $quiet = $false; $verbose = $false; $i = 0
@@ -230,7 +236,7 @@ function head {
   }
   end {
     if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
-    if ($__cu) { & $__cu head @__a; return }
+    if ($__cu) { & (_DenNativeBlock '& $__cu head' $__w); return }
     $showHeader = ($files.Count -gt 1 -and -not $quiet) -or $verbose
     for ($fi = 0; $fi -lt $files.Count; $fi++) {
       $f = $files[$fi]
@@ -253,8 +259,10 @@ function split {
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
+    $__w = @()
+    if ($__cu) { $__w = @(_DenArgs $MyInvocation $args) }
     $__piped = [System.Collections.Generic.List[object]]::new()
-    if ($__cu -and $__in) { $__sp = { & $__cu split @__a }.GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
+    if ($__cu -and $__in) { $__sp = (_DenNativeBlock '& $__cu split' $__w).GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
   }
   process {
     if ($null -ne $__sp) { $__sp.Process($_) }
@@ -262,7 +270,7 @@ function split {
   }
   end {
     if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
-    if ($__cu) { & $__cu split @__a; return }
+    if ($__cu) { & (_DenNativeBlock '& $__cu split' $__w); return }
     # Every captured operand is cast to [string]. PowerShell binds a bare
     # numeric argument as a NUMBER, and "$x -ne ''" coerces the right side to
     # the left side's type, so [int]'' is 0 and `-n 0` compared equal to "not
@@ -485,8 +493,10 @@ function tail {
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
+    $__w = @()
+    if ($__cu) { $__w = @(_DenArgs $MyInvocation $args) }
     if ($__cu) {
-      if ($__in) { $__sp = { & $__cu tail @__a }.GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
+      if ($__in) { $__sp = (_DenNativeBlock '& $__cu tail' $__w).GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
       return
     }
     $lines = 10; $fromLine = 0; $files = @(); $follow = $false; $quiet = $false; $verbose = $false; $i = 0
@@ -520,7 +530,7 @@ function tail {
   }
   end {
     if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
-    if ($__cu) { & $__cu tail @__a; return }
+    if ($__cu) { & (_DenNativeBlock '& $__cu tail' $__w); return }
     $showHeader = ($files.Count -gt 1 -and -not $quiet) -or $verbose
     if ($follow -and $files.Count -ge 1) {
       Get-Content -LiteralPath $files[0] -Tail $lines -Wait
@@ -545,7 +555,7 @@ function tail {
 # Usage: touch <file...>
 function touch {
   $__cu = _CoreutilsBin
-  if ($__cu) { & $__cu touch @Args; return }
+  if ($__cu) { _DenPass $MyInvocation $Args $__cu 'touch'; return }
   if ($Args.Count -eq 0) { Write-Error "usage: <file...>"; return }
   foreach ($a in $Args) {
     # A name is taken literally: [ ] in pages/[id].tsx are not wildcards (New-Item
@@ -619,8 +629,10 @@ function wc {
     $__cu = _CoreutilsBin
     $__in = $MyInvocation.ExpectingInput
     $__a = $args
+    $__w = @()
+    if ($__cu) { $__w = @(_DenArgs $MyInvocation $args) }
     if ($__cu) {
-      if ($__in) { $__sp = { & $__cu wc @__a }.GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
+      if ($__in) { $__sp = (_DenNativeBlock '& $__cu wc' $__w).GetSteppablePipeline(); $__sp.Begin($true, $ExecutionContext) }
       return
     }
     $flags = @(); $files = @()
@@ -656,7 +668,7 @@ function wc {
   }
   end {
     if ($null -ne $__sp) { $__s = $__sp; $__sp = $null; $__s.End(); return }
-    if ($__cu) { & $__cu wc @__a; return }
+    if ($__cu) { & (_DenNativeBlock '& $__cu wc' $__w); return }
     if ($files.Count -eq 0) {
       $r = $count.End()
       if ($needChar -and $seen -gt 0) {

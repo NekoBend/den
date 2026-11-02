@@ -5,24 +5,42 @@ if (-not (_ResolveCmd 'uv' 'App')) { return }
 
 # ===== uv overrides =====
 
+# This file's functions hand their arguments on to a program through
+# _DenPyArgs and _DenPyCall, so that a quoted word reaches it as it is on Linux
+# and macOS too (`pip install 'pkg[extra]'`), where pwsh expanded every word
+# of @Args (see _DenArgs in _helpers.ps1). Both are defined global: and fall
+# back to @Args in a session whose _helpers.ps1 predates _DenArgs: toggle-uv ON
+# reads this file again after den is updated in place, while the session keeps
+# the _helpers.ps1 it loaded (see the helpers python calls, below).
+
+# _DenPyArgs <invocation> <args> - <args> as the words to hand a program
+# (_DenArgs), or as they are in such a session.
+function global:_DenPyArgs($Invocation, [object[]]$Arguments) {
+  if (Get-Command _DenArgs -CommandType Function -ErrorAction Ignore) { return , @(_DenArgs $Invocation $Arguments) }
+  return , @($Arguments)
+}
+
+# _DenPyCall <program> <words> - run <program> with <words> (_DenCall), or
+# with @words in such a session.
+function global:_DenPyCall($Program, [object[]]$Words) {
+  if (Get-Command _DenCall -CommandType Function -ErrorAction Ignore) { _DenCall $Program $Words; return }
+  & $Program @Words
+}
+
 # uv → auto-inject --python for 'uv run' when venv is active
 function uv {
-  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and $Args.Count -ge 1 -and $Args[0] -eq 'run') {
-    $rest = @($Args | Select-Object -Skip 1)
+  $words = _DenPyArgs $MyInvocation $Args
+  if ($env:VIRTUAL_ENV -and $env:_DEN_VENV_PYTHON -and $words.Count -ge 1 -and "$($words[0])" -eq 'run') {
+    $rest = @($words | Select-Object -Skip 1)
     # `--` ends uv's OWN option parsing, so injecting it unconditionally turned
     # every `uv run` option into the command to spawn (`uv run --with rich app.py`
     # -> "Failed to spawn: --with"). Only separate when the first user argument
     # cannot be mistaken for a uv option. Parity with posix python.sh.
-    if ($rest.Count -ge 1 -and ([string]$rest[0]).StartsWith('-')) {
-      & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON @rest
-    }
-    else {
-      & (_ResolveCmd 'uv' 'App') run --python $env:_DEN_VENV_PYTHON -- @rest
-    }
+    $words = @('run', '--python', $env:_DEN_VENV_PYTHON)
+    if (-not ($rest.Count -ge 1 -and "$($rest[0])".StartsWith('-'))) { $words += '--' }
+    $words += $rest
   }
-  else {
-    & (_ResolveCmd 'uv' 'App') @Args
-  }
+  _DenPyCall (_ResolveCmd 'uv' 'App') $words
 }
 
 # Show-UvOnlyMessage → display warning that direct python/pip is disabled
@@ -52,7 +70,7 @@ function pip {
   }
   $venvPip = @('Scripts/pip.exe', 'bin/pip') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-  if ($venvPip) { & $venvPip @Args; return }
+  if ($venvPip) { _DenPyCall $venvPip (_DenPyArgs $MyInvocation $Args); return }
   $uv = _ResolveCmd 'uv' 'App'
   if (-not $uv) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
   $cfg = _DenUvConfig
@@ -65,7 +83,7 @@ function pip {
     $reads = 'reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
   }
   Show-UvOnlyMessage "pip $($Args -join ' ')" "$((@('uv') + $options + @('pip') + $Args) -join ' ') ($reads)"
-  & $uv @options pip @Args
+  _DenPyCall $uv (@($options) + @('pip') + (_DenPyArgs $MyInvocation $Args))
 }
 
 # pip3 → the same, with an active venv's own pip3
@@ -76,7 +94,7 @@ function pip3 {
   }
   $venvPip = @('Scripts/pip3.exe', 'bin/pip3') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-  if ($venvPip) { & $venvPip @Args; return }
+  if ($venvPip) { _DenPyCall $venvPip (_DenPyArgs $MyInvocation $Args); return }
   $uv = _ResolveCmd 'uv' 'App'
   if (-not $uv) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
   $cfg = _DenUvConfig
@@ -89,7 +107,7 @@ function pip3 {
     $reads = 'reads no uv.toml or pyproject.toml here or above, which a clone can ship; type uv pip to read those'
   }
   Show-UvOnlyMessage "pip3 $($Args -join ' ')" "$((@('uv') + $options + @('pip') + $Args) -join ' ') ($reads)"
-  & $uv @options pip @Args
+  _DenPyCall $uv (@($options) + @('pip') + (_DenPyArgs $MyInvocation $Args))
 }
 
 # The three helpers python, python3 and py call are defined global:. toggle-uv
@@ -299,26 +317,23 @@ function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
 
 # python → _DenPyRun
 function python {
-  $run = _DenPyRun 'python' $Args
+  $run = _DenPyRun 'python' (_DenPyArgs $MyInvocation $Args)
   if ($run['Error']) { Write-Error $run['Error']; return }
-  $runArgs = $run['Args']
-  & $run['Exe'] @runArgs
+  _DenPyCall $run['Exe'] $run['Args']
 }
 
 # python3 → _DenPyRun
 function python3 {
-  $run = _DenPyRun 'python3' $Args
+  $run = _DenPyRun 'python3' (_DenPyArgs $MyInvocation $Args)
   if ($run['Error']) { Write-Error $run['Error']; return }
-  $runArgs = $run['Args']
-  & $run['Exe'] @runArgs
+  _DenPyCall $run['Exe'] $run['Args']
 }
 
 # py → _DenPyRun
 function py {
-  $run = _DenPyRun 'py' $Args
+  $run = _DenPyRun 'py' (_DenPyArgs $MyInvocation $Args)
   if ($run['Error']) { Write-Error $run['Error']; return }
-  $runArgs = $run['Args']
-  & $run['Exe'] @runArgs
+  _DenPyCall $run['Exe'] $run['Args']
 }
 
 # toggle-uv leaves _DEN_UV_OVERRIDE in the environment, so a reload (a new pwsh)
@@ -633,7 +648,7 @@ function global:vv {
     return
   }
   $options = @(_DenUvVenvOptions 'vv' $Args)
-  & (_ResolveCmd 'uv' 'App') @options venv @Args
+  _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + (_DenPyArgs $MyInvocation $Args))
 }
 
 # vva → uv venv + activate (default: .venv)
@@ -644,7 +659,7 @@ function global:vva {
   }
   $name = if ($Args.Count -ge 1) { $Args[0] } else { '.venv' }
   $options = @(_DenUvVenvOptions 'vva' $Args)
-  & (_ResolveCmd 'uv' 'App') @options venv @Args
+  _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + (_DenPyArgs $MyInvocation $Args))
   if ($LASTEXITCODE -eq 0) { va $name }
 }
 

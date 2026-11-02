@@ -410,6 +410,30 @@ Case '_DenBatDashDash' {
     _DenBatDashDash @()
     _DenBatDashDash $null
 }
+Case '_DenArgs' {
+    function global:strict-args { @(_DenArgs $MyInvocation $args) | ForEach-Object { "$_=$(_DenBare $_)" } }
+    strict-args 'a*' a* -c:v -n: x '~/a' @('b*', $null) $null 5 -- -x
+    $StrictSplat = @('s*', 'x')
+    strict-args a* @StrictSplat b*
+    strict-args @StrictSplat @StrictSplat a*
+    strict-args
+    _DenArgs $null $null
+    _DenArgs $null @('a*', $null, '-c:')
+}
+Case '_DenArgKinds' {
+    _DenArgKinds $null @()
+    _DenArgKinds $MyInvocation $null
+    _DenArgKinds $MyInvocation @('x')
+}
+Case '_DenColonWord' { _DenColonWord $null; _DenColonWord 'x:' }
+Case '_DenBare' { _DenBare $null; _DenBare 'x' }
+Case '_DenNativeBlock' {
+    $null = _DenNativeBlock '& rg' @('a', 'b') '--x'
+    $null = _DenNativeBlock '& rg' $null ''
+}
+Case '_DenCall' { _DenCall 'rg' @('a*', 'b'); _DenCall 'rg' $null }
+Case '_DenPass' { _DenPass $MyInvocation @('a*') 'rg' 'x'; _DenPass $null $null 'rg' $null }
+Case '_DenRun' { _DenRun rg -x:y 'a*' a*; _DenRun }
 Case 'grep, a file name that reads as an option' {
     $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
     $null = New-Item -ItemType File -Path $StrictOpt -Force
@@ -451,6 +475,7 @@ Case 'cat, a quoted --' { try { cat '--' a.txt } catch { $null = $_ } }
 Case 'cat, piped' { 'x' | cat }
 Case 'find' { find a }
 Case 'grep' { grep alpha a.txt }
+Case 'grep, quoted and bare wildcards, a -name:value, a quoted ~' { grep 'a*' a* -e:alpha '~/a' }
 Case 'la' { la }
 Case 'll' { ll }
 Case 'lla' { lla }
@@ -848,6 +873,8 @@ Case 'py, in a venv' { Invoke-InVenv { py -V } }
 Case 'pip' { pip list }
 Case 'pip3' { pip3 list }
 Case 'python' { python -V }
+Case '_DenPyArgs' { _DenPyArgs $MyInvocation @('a*'); _DenPyArgs $null $null }
+Case '_DenPyCall' { _DenPyCall (_ResolveCmd 'uv' 'App') @('x'); _DenPyCall (_ResolveCmd 'uv' 'App') $null }
 Case 'python3' { python3 -V }
 Case 'py' { py -V }
 Case 'python, a pyproject.toml here' { Set-Location -LiteralPath proj; python -c x }
