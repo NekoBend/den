@@ -253,30 +253,42 @@ looks for cline-cli's two files beside the nearest `.den`, so with `.den`
 gone, a run from a subdirectory looks in the wrong place. Look inside first:
 a file you kept there yourself goes with it. The recipes stop at once when
 `.den`, or anything in it, is a link (a symlink or a junction): what it
-leads to is not den's, so look at it by hand.
+leads to is not den's, so look at it by hand. They delete only inside the
+directory you name, and nothing at all when they cannot go there, so a
+mistyped path never removes the `.den` of the folder you happen to be in.
 
 ```sh
 command find ~/src -name .den -prune 2>/dev/null   # where they are
-cd <the directory holding that .den>
-ls -AlR .den                                       # anything of yours in it?
-if [ -n "$(command find .den -type l -print -quit)" ]; then
-  echo ".den is or holds a link: look at it by hand" >&2
-else
-  rm -rf .den
-fi
+d='<the directory holding that .den>'
+ls -AlR -- "$d/.den"                               # anything of yours in it?
+(
+  cd -- "$d" || exit 1
+  if [ -n "$(command find .den -type l -print -quit)" ]; then
+    echo "$d/.den is or holds a link: look at it by hand" >&2
+  else
+    rm -rf .den
+  fi
+)
 ```
 
 ```powershell
 Get-ChildItem ~/src -Recurse -Force -Filter .den -ErrorAction SilentlyContinue |
   ForEach-Object FullName                          # where they are
-Set-Location <the directory holding that .den>
-Get-ChildItem -Force -Recurse -LiteralPath .den    # anything of yours in it?
-$link = @(Get-Item -Force -LiteralPath .den) + @(Get-ChildItem -Force -Recurse -LiteralPath .den) |
-  Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }
-if ($link) {
-  Write-Warning "$($link.FullName -join ', ') is a link: look at it by hand"
-} else {
-  Remove-Item -Recurse -Force -LiteralPath .den
+$d = '<the directory holding that .den>'
+Get-ChildItem -Force -Recurse -LiteralPath (Join-Path $d .den)   # anything of yours in it?
+& {
+  Push-Location -LiteralPath $d -ErrorAction Stop   # nothing below runs if this fails
+  try {
+    $link = @(Get-Item -Force -LiteralPath .den) + @(Get-ChildItem -Force -Recurse -LiteralPath .den) |
+      Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }
+    if ($link) {
+      Write-Warning "$($link.FullName -join ', ') is a link: look at it by hand"
+    } else {
+      Remove-Item -Recurse -Force -LiteralPath .den
+    }
+  } finally {
+    Pop-Location
+  }
 }
 ```
 
