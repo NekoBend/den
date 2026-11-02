@@ -95,7 +95,9 @@ is just `z ...` / `zi ...` (or `zd ...` / `zdi ...`, the same) becomes a `cd /d`
 the directory `zoxide query` picks. As with zoxide's own `z`, `z` alone goes to
 `%USERPROFILE%`, `z -` to the previous directory and `z <existing dir>` straight
 there. This needs zoxide on `PATH` when cmd starts and Clink 1.2.16 or newer, and
-works only on a line of its own (`z foo & dir` is left to cmd).
+works only on a line of its own (`z foo & dir` is left to cmd). The directory
+reaches that line, and zoxide, through a variable (`cd /d "%_DEN_Z%"`), so a
+`%NAME%` in a folder's name stays as it is instead of being expanded.
 
 `back` / `fwd` work like a browser's back and forward buttons over this shell
 session's directory history (kept in memory, never written to disk):
@@ -268,7 +270,11 @@ flags, no pipe input). On pwsh, `df` ignores flags such as `-h`.
 
 cmd's `wc` reads the file once: lines are line feeds (blank lines count, a last
 line without one does not, as in GNU `wc -l`), words runs of non-blanks, and
-characters the text's length with its line ends.
+characters the text's length with its line ends. A file it cannot read
+(missing, a folder, no access, or none named) is an error: it prints no counts
+and exits 1. pwsh's `wc` reports each file it cannot read, as GNU `wc` does,
+counts the others, and then fails with one more error, so `$?` is false and
+`pwsh -Command` exits 1.
 
 ## File utilities
 
@@ -362,10 +368,12 @@ check at all (a missing file, or an algo that disagrees with the hash's length);
   (`dg 256 a -e b`); bash/zsh and cmd take them only before the algo and the
   files. Hash mode keeps Get-FileHash's uppercase hex; the other forms print
   lowercase.
-- **cmd**: hashes with `certutil`. It reads a checksum file in the console code
-  page, so run `chcp 65001` first when its names are UTF-8. Only `\\` is undone in
-  a GNU-escaped name (a Windows name cannot hold a newline). An unknown `-x` is
-  a file name here; bash/zsh refuse it as an unknown option.
+- **cmd**: hashes with System32's `certutil.exe`, never a `certutil` of the
+  current directory, which cmd would otherwise run first. It reads a checksum
+  file in the console code page, so run `chcp 65001` first when its names are
+  UTF-8; one it cannot read fails the run, as on the other shells. Only `\\`
+  is undone in a GNU-escaped name (a Windows name cannot hold a newline). An
+  unknown `-x` is a file name here; bash/zsh refuse it as an unknown option.
 
 ## Python and uv
 
@@ -390,9 +398,11 @@ keeps), except where uv would build or run code that came with a clone:
   marker, so a pyenv `~/.python-version` leaves home alone, unless the
   current directory holds something of the same name. bash, zsh and pwsh
   also count a line over 128 characters, or a 65th one, without looking
-  further; cmd trims spaces and tabs only, not the rest of the white space uv
-  trims (`U+00A0` and the like). A `.python-versions`, which uv reads the
-  same way, counts on the same terms.
+  further. cmd trims spaces and tabs only, not the rest of the white space uv
+  trims (`U+00A0` and the like), and reads a name outside ASCII in the
+  console code page, so it also counts a line that holds any character but
+  ASCII letters and digits, spaces, tabs and `. @ + - _ < > = ! ~ , *`.
+  A `.python-versions`, which uv reads the same way, counts on the same terms.
   There a python runs directly instead: the active venv's own, with no line,
   else, after a warning line, the system Python uv finds, else one uv
   installed (`uv python install`). Type `uv run python` to use the project.
@@ -437,7 +447,9 @@ through `uv run --python <venv version>` outside a project. Inside a venv on cmd
 `python` and `python3` run the venv's `python.exe` (a Windows venv has no
 `python3.exe`). cmd's python, python3, pip and uv shims find each program they
 run on `PATH` (System32's `where.exe`) or by its full path, never in the current
-directory. Flip the redirects with `toggle-uv`.
+directory: they read `PATH`'s absolute entries alone, since an empty or a
+relative one (`.`, `..\bin`) is the current directory or a folder in it, and so
+do cmd's `ls`, `cat`, `grep` and `findw`. Flip the redirects with `toggle-uv`.
 On pwsh the redirects apply to commands typed at the prompt; a script gets the
 `python`, `pip` and `uv` on `PATH` (see "How to read this"). `py`, which Linux
 and macOS do not have, stays den's in scripts there.

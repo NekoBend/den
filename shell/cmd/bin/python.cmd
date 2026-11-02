@@ -29,8 +29,25 @@ set "_py="
 set "_m="
 if defined VIRTUAL_ENV if exist "%VIRTUAL_ENV%\Scripts\python.exe" set "_py=%VIRTUAL_ENV%\Scripts\python.exe"
 if defined _py goto run
+rem The lookup reads PATH's absolute entries alone (a drive's or a UNC
+rem path, quotes dropped): an empty or relative entry (., ..\bin, tools) is
+rem the current directory or a folder in it, whose program would run. Each
+rem entry is read with delayed expansion off, so a "!" in it survives, and
+rem tested with it on; the list leaves that setlocal through for /f.
+set "_abs=x"
+set "_ar="
+if defined PATH set "_ar=%PATH:"=%"
+if defined _ar for %%e in ("%_ar:;=" "%") do (
+    set "_ae=x%%~e"
+    setlocal EnableDelayedExpansion
+    if "!_ae:~2,2!"==":\" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~2,2!"==":/" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~1,2!"=="\\" set "_abs=!_abs!!_ae:~1!;"
+    for /f "delims=" %%v in ("!_abs!") do endlocal & set "_abs=%%v"
+)
+set "_abs=%_abs:~1,-1%"
 set "_uv="
-if not "%_DEN_UV_OVERRIDE%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
+if not "%_DEN_UV_OVERRIDE%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $_abs:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
 if not defined _uv goto plain
 rem The file uv run would read: here, then each directory up. A
 rem .python-version, or a .python-versions, which uv reads the same way,
@@ -41,9 +58,19 @@ rem there, not beside the file, and takes a directory for a venv and runs
 rem its python. One that holds version requests alone (3.13, cpython@3.13)
 rem does not count, so a pyenv .python-version in the user's folder leaves
 rem that folder alone, unless the current directory holds something of the
-rem same name. uv trims other white space as well (U+00A0, U+3000 and the
-rem like), which cmd cannot. findstr and for /f read the file, so no line
-rem of it reaches cmd's parser; the tab in delims= is a tab.
+rem same name. A line with any other character than the ones version
+rem requests use (ASCII letters and digits, spaces, tabs and
+rem . @ + - _ < > = ! ~ , *) counts as well: uv trims other white space
+rem too (U+00A0, U+3000, VT, FF and the like), and for /f reads a name
+rem outside ASCII in the console code page, which garbles it for if exist
+rem unless that is UTF-8. In the last of the three lines below that read a
+rem version file, the second for /f skips a line that starts with # (it
+rem has no delims to skip before it looks), and the third has those
+rem characters for delims, so it leaves a token only where another
+rem character is; the x before the line and its eol=, (both of them
+rem delims) keep the line's first character from being read as a
+rem comment. findstr and for /f read the file, so no line of it reaches
+rem cmd's parser; the tab in delims= is a tab.
 set "_d=%CD%"
 :walk
 if "%_d:~-1%"=="\" set "_d=%_d:~0,-1%"
@@ -53,6 +80,7 @@ if not defined _m if exist "%_d%\pyvenv.cfg" set "_m=%_d%\pyvenv.cfg"
 if not defined _m if exist "%_d%\uv.toml" set "_m=%_d%\uv.toml"
 for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" "%SystemRoot%\System32\findstr.exe" /r /c:"^ *[/\\]" /c:"^ *[^# ].*[/\\]" "%_d%\%%f" >nul 2>&1 && set "_m=%_d%\%%f"
 for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f "tokens=1 eol=# delims=	" %%n in ("%%l") do if not defined _m if exist "%%n" set "_m=%_d%\%%f") 2>nul
+for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f "eol=# delims=" %%k in ("%%l") do for /f "tokens=1 eol=, delims=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.@+-_<>=!~,*	 " %%c in ("x%%k") do if not defined _m set "_m=%_d%\%%f") 2>nul
 if defined _m goto direct
 for %%u in ("%_d%\..") do set "_u=%%~fu"
 if "%_u:~-1%"=="\" set "_u=%_u:~0,-1%"
@@ -74,7 +102,7 @@ if not defined _py goto nopython
 call :warn
 goto run
 :plain
-for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:%_n%.exe 2^>nul') do if not defined _py set "_py=%%p"
+for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $_abs:%_n%.exe 2^>nul') do if not defined _py set "_py=%%p"
 if defined _py goto run
 >&2 echo %_n%: %_n%.exe is not on PATH
 exit /b 9009

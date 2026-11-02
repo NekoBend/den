@@ -11,8 +11,25 @@ rem arrive unchanged. uv.exe comes from PATH, through System32's where.exe:
 rem never one in the current directory, and never this shim.
 rem CRLF line endings: with LF only, cmd can miss a goto label.
 setlocal EnableExtensions DisableDelayedExpansion
+rem The lookup reads PATH's absolute entries alone (a drive's or a UNC
+rem path, quotes dropped): an empty or relative entry (., ..\bin, tools) is
+rem the current directory or a folder in it, whose program would run. Each
+rem entry is read with delayed expansion off, so a "!" in it survives, and
+rem tested with it on; the list leaves that setlocal through for /f.
+set "_abs=x"
+set "_ar="
+if defined PATH set "_ar=%PATH:"=%"
+if defined _ar for %%e in ("%_ar:;=" "%") do (
+    set "_ae=x%%~e"
+    setlocal EnableDelayedExpansion
+    if "!_ae:~2,2!"==":\" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~2,2!"==":/" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~1,2!"=="\\" set "_abs=!_abs!!_ae:~1!;"
+    for /f "delims=" %%v in ("!_abs!") do endlocal & set "_abs=%%v"
+)
+set "_abs=%_abs:~1,-1%"
 set "_uv="
-for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
+for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $_abs:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
 if defined _uv goto found
 >&2 echo uv: uv.exe is not on PATH
 exit /b 9009

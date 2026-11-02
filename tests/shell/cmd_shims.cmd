@@ -9,17 +9,21 @@ rem typed find is find.exe; cat expands each wildcard itself, refuses a name
 rem that starts with - and names a file, a typed --, and an option or an
 rem option's value that holds * or ?, and hands bat every name in quotes,
 rem the run of backslashes it ends in doubled, then a last --paging=never;
-rem no where.* or tool in the current directory runs;
+rem no where.* or tool in the current directory runs, nor one from an
+rem empty or a relative PATH entry;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
 rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path
-rem or something in the current directory, for --version / -V too, and
+rem or something in the current directory, or holds a character version
+rem requests do not use, for --version / -V too, and
 rem elsewhere uv run for those as well; pip runs nothing outside a venv,
 rem and in a venv without pip.exe runs uv pip with --config-file and your
-rem own uv.toml, or with --no-config without one;
+rem own uv.toml, or with --no-config without one; wc fails, with no
+rem counts, for a file it cannot read;
 rem path lists PATH; again asks before it re-runs, and only Enter or y
-rem runs it.
+rem runs it; dg hashes with System32's certutil.exe, and dg -c fails for a
+rem sums file it cannot read.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -458,6 +462,33 @@ cd /d "%T%\pyverbom" || exit /b 1
 >>"%W%" echo [x]
 call "%BIN%\python.cmd" -c x >"%O%" 2>&1
 call :expect %errorlevel% 0 "python: beside a .python-version with a byte order mark before #, the system python and a line, not uv run"
+rem uv trims more white space than spaces and tabs, and for /f reads a name
+rem outside ASCII in the console code page, which garbles it for if exist:
+rem a line that holds a character version requests do not use counts. Here
+rem U+00A0 before repoenv, a VT after it (findstr cannot see one at the end
+rem of a line), and the name U+74B0 U+5883 in UTF-8, each beside a folder of
+rem the name uv takes. A file of version requests, with an indented comment
+rem that holds U+00E9, does not count.
+mkdir "%T%\pyvnbsp\repoenv" "%T%\pyvvt\repoenv" "%T%\pyvkanji" "%T%\pyvreq" || exit /b 1
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$u = New-Object Text.UTF8Encoding $false; $k = [string][char]0x74B0 + [char]0x5883; [IO.File]::WriteAllBytes($env:T + '\pyvnbsp\.python-version', $u.GetBytes([string][char]0xA0 + 'repoenv' + [char]10)); [IO.File]::WriteAllBytes($env:T + '\pyvvt\.python-version', $u.GetBytes('repoenv' + [char]11 + [char]10)); [IO.File]::WriteAllBytes($env:T + '\pyvkanji\.python-version', $u.GetBytes($k + [char]10)); $null = [IO.Directory]::CreateDirectory($env:T + '\pyvkanji\' + $k); [IO.File]::WriteAllBytes($env:T + '\pyvreq\.python-version', $u.GetBytes('>=3.12,<3.14' + [char]10 + 'cpython@3.13' + [char]10 + '~=3.12' + [char]10 + '!=3.11' + [char]10 + '3.12.*' + [char]10 + '  # ' + [char]0xE9 + [char]10))" || exit /b 1
+for %%v in (pyvnbsp pyvvt pyvkanji) do (
+    cd /d "%T%\%%v" || exit /b 1
+    >"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\%%v\.python-version
+    >>"%W%" echo [@sys]
+    >>"%W%" echo [-c]
+    >>"%W%" echo [x]
+    call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+    call :expect %%errorlevel%% 0 "python: beside a .python-version in %%v, the system python and a line, not uv run"
+)
+cd /d "%T%\pyvreq" || exit /b 1
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python: beside a .python-version of version requests and an indented comment, uv run"
 rem A line that names something in the current directory counts as well,
 rem without the spaces and tabs around it (pyvpad), and a version request
 rem too (pyv313): uv looks a bare name up there, not beside the file, and
@@ -662,11 +693,109 @@ set "_DEN_UV_OVERRIDE="
 >>"%W%" echo [--version]
 call "%BIN%\uv.cmd" --version >"%O%" 2>&1
 call :expect %errorlevel% 0 "uv: uv.exe from PATH, not the current directory"
+
+rem --- no tool from an empty or a relative PATH entry runs: ., an empty entry
+rem and rel (a folder of the current directory) come before the tools on
+rem PATH, and each holds a copy of every tool, which would name its folder.
+mkdir "%T%\relpath\rel" || exit /b 1
+for %%t in (lsd bat rg fd uv python pip) do (
+    copy /y "%T%\tools\fake.exe" "%T%\relpath\%%t.exe" >nul || exit /b 1
+    copy /y "%T%\tools\fake.exe" "%T%\relpath\rel\%%t.exe" >nul || exit /b 1
+)
+cd /d "%T%\relpath" || exit /b 1
+set "PATH=.;;rel;%T%\tools;%BASEPATH%"
+>"%W%" echo [@tools]
+>>"%W%" echo [q]
+call "%BIN%\ls.cmd" q >"%O%" 2>&1
+call :expect %errorlevel% 0 "ls: lsd from PATH's absolute entries, not from ., an empty or a relative one"
+>"%W%" echo [@tools]
+>>"%W%" echo [-a]
+call "%BIN%\la.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "la: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [-l]
+call "%BIN%\ll.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "ll: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [-la]
+call "%BIN%\lla.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "lla: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [--tree]
+call "%BIN%\lt.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "lt: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [-l]
+>>"%W%" echo [--tree]
+call "%BIN%\llt.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "llt: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [zzz]
+call "%BIN%\grep.cmd" zzz >"%O%" 2>&1
+call :expect %errorlevel% 0 "grep: rg from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [zzz]
+call "%BIN%\findw.cmd" zzz >"%O%" 2>&1
+call :expect %errorlevel% 0 "findw: fd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [zz]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" zz >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: bat from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [--version]
+call "%BIN%\uv.cmd" --version >"%O%" 2>&1
+call :expect %errorlevel% 0 "uv: uv.exe from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python3: uv.exe from PATH's absolute entries"
+set "_DEN_UV_OVERRIDE=0"
+>"%W%" echo [@tools]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: python.exe from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>&1
+call :expect %errorlevel% 0 "pip: pip.exe from PATH's absolute entries"
+set "_DEN_UV_OVERRIDE="
+set "PATH=%T%\tools;%BASEPATH%"
 del "%T%\tools\python.exe" "%T%\tools\pip.exe"
 set "FAKE_SELF="
 set "FAKE_FIND_SYSTEM="
 set "FAKE_FIND_MANAGED="
 cd /d "%T%\work" || exit /b 1
+
+rem --- wc counts a file it reads; a file it cannot read, or none, is an
+rem error with no counts, and exit 1 (stdout only: the error is on stderr)
+call "%BIN%\wc.cmd" "%T%\work\a.txt" >"%O%" 2>nul
+set "RC=%errorlevel%"
+set "OK="
+"%FINDSTR%" /l /c:"Characters" "%O%" >nul && if "%RC%"=="0" set "OK=1"
+call :check "wc: the counts of a file it reads, exit 0"
+call "%BIN%\wc.cmd" "%T%\work\no-such-file.txt" >"%O%" 2>nul
+set "RC=%errorlevel%"
+set "OK="
+for %%q in ("%O%") do if "%%~zq"=="0" if "%RC%"=="1" set "OK=1"
+call :check "wc: a missing file, no counts, exit 1"
+call "%BIN%\wc.cmd" "%T%\work" >"%O%" 2>nul
+set "RC=%errorlevel%"
+set "OK="
+for %%q in ("%O%") do if "%%~zq"=="0" if "%RC%"=="1" set "OK=1"
+call :check "wc: a folder, no counts, exit 1"
+call "%BIN%\wc.cmd" >"%O%" 2>nul
+set "RC=%errorlevel%"
+set "OK="
+for %%q in ("%O%") do if "%%~zq"=="0" if "%RC%"=="1" set "OK=1"
+call :check "wc: no file, no counts, exit 1"
 
 rem --- path.cmd lists PATH (typed `path` stays cmd's own command)
 call "%BIN%\path.cmd" >"%O%" 2>&1
@@ -719,6 +848,32 @@ call :check "again: the message is cleared"
 >"%W%" echo again: type it on a line of its own (needs Clink 1.3.18 or newer)
 call "%BIN%\again.cmd" >"%O%" 2>&1
 call :expect %errorlevel% 1 "again: run without the lookup"
+
+rem --- dg: certutil.exe from System32 hashes, never a certutil.* of the
+rem current directory (cmd looks a bare name up there first)
+mkdir "%T%\dg" || exit /b 1
+cd /d "%T%\dg" || exit /b 1
+<nul >a.txt set /p "=hello"
+>certutil.bat echo @echo certutil.bat ran^>"%T%\certutil-ran.txt"
+>"%W%" echo 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+call "%BIN%\dg.cmd" a.txt >"%O%" 2>&1
+call :expect %errorlevel% 0 "dg: System32's certutil.exe hashes a.txt"
+set "OK=1"
+if exist "%T%\certutil-ran.txt" set "OK="
+call :check "dg: no certutil.bat from the current directory runs"
+del certutil.bat
+rem dg -c fails for a sums file it cannot read, though the one before it
+rem checks out: for /f says nothing of a file it cannot open.
+>ok.sums echo 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  a.txt
+copy /y ok.sums denied.sums >nul || exit /b 1
+"%SystemRoot%\System32\icacls.exe" denied.sums /deny "*S-1-1-0:(RD)" >nul || exit /b 1
+>"%W%" echo a.txt: OK
+>>"%W%" echo dg: 'denied.sums' is not a readable file
+>>"%W%" echo dg: 0 FAILED, 0 MISSING of 1 checked, 1 sums file(s) unreadable
+call "%BIN%\dg.cmd" -c ok.sums denied.sums >"%O%" 2>&1
+call :expect %errorlevel% 1 "dg -c: a sums file it cannot read fails the run"
+"%SystemRoot%\System32\icacls.exe" denied.sums /remove:d "*S-1-1-0" >nul
+cd /d "%T%\work" || exit /b 1
 
 cd /d "%~dp0"
 if not "%FAILS%"=="0" (

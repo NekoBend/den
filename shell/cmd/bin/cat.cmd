@@ -40,8 +40,25 @@ rem survives; where it is ON, a name is only ever expanded as !var!, which
 rem is never parsed again, so "&", "^" or a percent sign in it cannot turn
 rem into syntax.
 setlocal EnableExtensions DisableDelayedExpansion
+rem The lookup reads PATH's absolute entries alone (a drive's or a UNC
+rem path, quotes dropped): an empty or relative entry (., ..\bin, tools) is
+rem the current directory or a folder in it, whose program would run. Each
+rem entry is read with delayed expansion off, so a "!" in it survives, and
+rem tested with it on; the list leaves that setlocal through for /f.
+set "_abs=x"
+set "_ar="
+if defined PATH set "_ar=%PATH:"=%"
+if defined _ar for %%e in ("%_ar:;=" "%") do (
+    set "_ae=x%%~e"
+    setlocal EnableDelayedExpansion
+    if "!_ae:~2,2!"==":\" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~2,2!"==":/" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~1,2!"=="\\" set "_abs=!_abs!!_ae:~1!;"
+    for /f "delims=" %%v in ("!_abs!") do endlocal & set "_abs=%%v"
+)
+set "_abs=%_abs:~1,-1%"
 set "_t="
-if not "%_DEN_WRAPPERS%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:bat.exe 2^>nul') do if not defined _t set "_t=%%p"
+if not "%_DEN_WRAPPERS%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $_abs:bat.exe 2^>nul') do if not defined _t set "_t=%%p"
 if not defined _t goto :type
 set "_n=0"
 set "_bad="

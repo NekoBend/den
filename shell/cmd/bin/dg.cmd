@@ -15,7 +15,9 @@ rem survives. The helpers at the bottom that touch a file name or a line of a
 rem checksum file turn it ON and only ever expand those as !var!: a value
 rem expanded that way is never parsed again, so "&", "|", "^" or a quote in
 rem it cannot turn into syntax. certutil is started directly (never inside a
-rem for /f command, which would hand the name to a second cmd to parse) and
+rem for /f command, which would hand the name to a second cmd to parse), by
+rem its System32 path: cmd looks a bare name up in the current directory
+rem first, where a certutil.bat of the folder being hashed would run. It
 rem writes into a temporary directory of its own that for /f then reads.
 
 setlocal DisableDelayedExpansion
@@ -197,6 +199,7 @@ if "%~1"=="" goto :check_done
 set "_s=%~1"
 shift
 call :isfile _s
+if not errorlevel 1 call :readable _s
 if errorlevel 1 (
     call :err _s " is not a readable file"
     set /a "_unread+=1"
@@ -261,6 +264,16 @@ if not exist "!%~1!" exit /b 1
 if exist "!%~1!\*" exit /b 1
 exit /b 0
 
+rem :readable VAR - errorlevel 0 when the file named in VAR opens and reads.
+rem for /f runs no line of a file it cannot open and says nothing of it, so
+rem without this a sums file that exists but cannot be read (no read access,
+rem a sharing lock) passed for one with no lines, and dg -c could exit 0
+rem after the other sums files. type reads it once; sums files are small.
+:readable
+setlocal EnableDelayedExpansion
+type "!%~1!" >nul 2>&1 || exit /b 1
+exit /b 0
+
 rem :hash VAR - hash the file named in VAR with _alg; sets _h to the hex
 rem digest, or clears it when certutil could not read the file. certutil
 rem prints a header line, the hash (in old versions with a space between
@@ -286,7 +299,7 @@ set /a "_try+=1"
 if !_try! gtr 20 goto :hash_done
 set "_d=!_tmp!!RANDOM!!RANDOM!"
 md "!_d!" >nul 2>&1 || goto :hash_dir
-certutil -hashfile "!_p!" !_alg! >"!_d!\out.txt" 2>&1
+"%SystemRoot%\System32\certutil.exe" -hashfile "!_p!" !_alg! >"!_d!\out.txt" 2>&1
 for /f "usebackq skip=1 delims=" %%H in ("!_d!\out.txt") do if not defined _h set "_h=%%H"
 rd /s /q "!_d!" >nul 2>&1
 if defined _h set "_h=!_h: =!"

@@ -158,6 +158,61 @@ printf "ccc\n" > "$WORK/wc_b.txt"
 actual=$(run_pwsh "$COREUTILS_PS1_STRIPPED" "wc -l '$WORK/wc_a.txt' '$WORK/wc_b.txt' | Out-String" | clean)
 assert_contains "wc multi-file has total" "total" "$actual"
 
+# wc said nothing of a missing file (one alone printed nothing, and with others
+# it was left out of the table), counted a file it could not read as empty,
+# and exited 0 either way. Like GNU wc, it now reports each one, counts the
+# rest, and fails. _CoreutilsBin is stubbed: this file is loaded without
+# _helpers.ps1, and the error of its absence would fill stderr. The command
+# is one line, so an error shows as "wc: <message>", and the table goes to the
+# host as typed at a prompt (a later terminating error ends a pipeline such
+# as | Out-String before it writes anything).
+echo "[pwsh] wc reports a file it cannot read, counts the rest, and fails"
+mkdir -p "$WORK/wc_dir"
+printf "x\n" > "$WORK/wc_noread.txt"
+chmod 000 "$WORK/wc_noread.txt"
+wc_run() {
+    pwsh -NoProfile -NonInteractive -Command ". '$COREUTILS_PS1_STRIPPED'; function _CoreutilsBin { }; $1" \
+        > "$WORK/wc_out.txt" 2> "$WORK/wc_err.txt"
+    printf 'rc=%s\n' "$?"
+    # The table's rows alone: its width, and so its header, follows the paths.
+    clean < "$WORK/wc_out.txt" | sed 's/\x1b\[[0-9;]*m//g' | sed "s|$WORK/||g" | tr -s ' ' | sed 's/ $//' |
+        grep -E '^(wc_|total )' || true
+    echo "--- stderr"
+    clean < "$WORK/wc_err.txt" | sed 's/\x1b\[[0-9;]*m//g' | sed "s|$WORK/||g"
+}
+actual=$(wc_run "wc -l '$WORK/wc_missing.txt' '$WORK/wc_a.txt'")
+assert_eq "wc: a missing file among others" "rc=1
+wc_a.txt 2
+total 2
+--- stderr
+wc: 'wc_missing.txt': No such file or directory
+wc: 1 of 2 files could not be read" "$actual"
+actual=$(wc_run "wc -l '$WORK/wc_missing.txt'")
+assert_eq "wc: a missing file alone" "rc=1
+--- stderr
+wc: 'wc_missing.txt': No such file or directory" "$actual"
+actual=$(wc_run "wc '$WORK/wc_dir'")
+assert_eq "wc: a folder" "rc=1
+--- stderr
+wc: 'wc_dir': Is a directory" "$actual"
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: root reads a file whatever its mode (CI's test image runs as root)"
+else
+    actual=$(wc_run "wc -l '$WORK/wc_noread.txt' '$WORK/wc_b.txt'")
+    assert_contains "wc: a file it may not read is an error" \
+        "wc: 'wc_noread.txt': Access to the path 'wc_noread.txt' is denied." "$actual"
+    assert_contains "wc: the others are still counted" "wc_b.txt 1" "$actual"
+    assert_eq "wc: and it fails" "rc=1" "$(printf '%s\n' "$actual" | head -n 1)"
+    assert_eq "wc: no count for the one it may not read" "" \
+        "$(printf '%s\n' "$actual" | sed '/^--- stderr$/,$d' | grep -F 'wc_noread.txt' || true)"
+    actual=$(wc_run "wc -l '$WORK/wc_noread.txt'")
+    assert_eq "wc: a file it may not read, alone, prints no count" "rc=1
+--- stderr" "$(printf '%s\n' "$actual" | sed -n '1,2p')"
+fi
+chmod 600 "$WORK/wc_noread.txt"
+actual=$(wc_run "wc -l '$WORK/wc_a.txt' '$WORK/wc_b.txt'")
+assert_eq "wc: files it reads still exit 0" "rc=0" "$(printf '%s\n' "$actual" | head -n 1)"
+
 # =============================================================================
 # split
 # =============================================================================

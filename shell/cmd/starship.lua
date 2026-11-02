@@ -258,7 +258,13 @@ local function hw_read_cache()
 end
 
 -- Write the values set now, as hwinfo.ps1 does (' doubled inside the quotes),
--- through a temporary file renamed into place.
+-- through a temporary file renamed into place. A write that fails (a full
+-- disk, a quota) leaves the cache file as it was: the write and the close
+-- each say whether they got the text out, and the close says so for what the
+-- write left in its buffer, which is where a full disk shows. Only a file
+-- written whole replaces the old one. Clink's os.move (MoveFileW) and
+-- os.rename do not replace a file that exists, so the old one steps aside
+-- first, and goes back when the new one cannot take its place.
 local function hw_write_cache()
     local lines = {}
     for _, v in ipairs(hw_vars) do
@@ -277,18 +283,25 @@ local function hw_write_cache()
     if not os.isdir(dir) and os.mkdir then
         os.mkdir(dir)
     end
-    local tmp = hw_cache .. ".tmp." .. (os.getpid and os.getpid() or os.time())
+    local id = os.getpid and os.getpid() or os.time()
+    local tmp, old = hw_cache .. ".tmp." .. id, hw_cache .. ".old." .. id
     local f = io.open(tmp, "wb")
     if not f then
         return
     end
-    local ok = f:write(table.concat(lines, "\n") .. "\n")
-    f:close()
+    local wrote = f:write(table.concat(lines, "\n") .. "\n")
+    local closed = f:close()
     local unlink, move = os.unlink or os.remove, os.move or os.rename
-    if ok then
-        unlink(hw_cache)
+    if wrote and closed then
+        local aside = move(hw_cache, old)
         if move(tmp, hw_cache) then
+            if aside then
+                unlink(old)
+            end
             return
+        end
+        if aside then
+            move(old, hw_cache)
         end
     end
     unlink(tmp)
@@ -364,6 +377,23 @@ local function quote_arg(s)
     return '"' .. (s:gsub("(\\+)$", "%1%1")) .. '"'
 end
 
+-- A directory goes into a command line as "%<name>%", its value in that
+-- environment variable: cmd puts a variable's value into the line once and
+-- never reads it again. Written into the line itself, a %TEMP% or %USERNAME%
+-- in a folder's name was expanded, inside the quotes too, so z went to
+-- another folder (or none), and zoxide add and --exclude got a name that was
+-- not the folder's. For a program's argument (arg), a trailing backslash is
+-- doubled as quote_arg doubles it; cd takes the value as it is.
+local function via_env(name, dir, arg)
+    os.setenv(name, arg and (dir:gsub("(\\+)$", "%1%1")) or dir)
+    return '"%' .. name .. '%"'
+end
+-- _DEN_Z holds the directory of the cd line a z line becomes, until the next
+-- prompt; _DEN_ZARG the one handed to zoxide, while it runs. A child cmd
+-- inherits them from its parent; this session starts without.
+os.setenv("_DEN_Z", nil)
+os.setenv("_DEN_ZARG", nil)
+
 -- ===== Directory history for back / fwd (and _OLDPWD) =====
 -- Browser-style history for this cmd session. It lives in two environment
 -- variables, where the back.cmd / fwd.cmd shims (run by this same cmd process)
@@ -417,6 +447,8 @@ end
 local _prev_dir = os.getcwd()
 local dirhist_filter = clink.promptfilter(99)
 function dirhist_filter:filter(prompt)
+    -- The cd line a z line became has run.
+    os.setenv("_DEN_Z", nil)
     local cur = os.getcwd()
     local back = dirhist_get("_DEN_DIRBACK")
     local fwd = dirhist_get("_DEN_DIRFWD")
@@ -462,7 +494,8 @@ function dirhist_filter:filter(prompt)
         os.setenv("_OLDPWD", _prev_dir)
         _prev_dir = cur
         if zoxide_exe then
-            os.execute(cmd_line(zoxide_exe, "add -- " .. quote_arg(cur)))
+            os.execute(cmd_line(zoxide_exe, "add -- " .. via_env("_DEN_ZARG", cur, true)))
+            os.setenv("_DEN_ZARG", nil)
         end
     end
     return nil  -- don't modify prompt
@@ -507,11 +540,12 @@ local function zoxide_query(opts, words)
         args[#args + 1] = quote_arg(w)
     end
     local h = io.popen(cmd_line(zoxide_exe, table.concat(args, " ")))
-    if not h then
-        return nil
+    local dir = ""
+    if h then
+        dir = (h:read("*l") or ""):gsub("%s+$", "")
+        h:close()
     end
-    local dir = (h:read("*l") or ""):gsub("%s+$", "")
-    h:close()
+    os.setenv("_DEN_ZARG", nil)
     return dir ~= "" and dir or nil
 end
 
@@ -539,12 +573,12 @@ local function zoxide_filter(line)
     elseif #words == 1 and os.isdir(words[1]) then
         dir = words[1]
     else
-        dir = zoxide_query({ "--exclude", quote_arg(os.getcwd()) }, words)
+        dir = zoxide_query({ "--exclude", via_env("_DEN_ZARG", os.getcwd(), true) }, words)
     end
     if not dir then
         return "verify other 2>nul"
     end
-    return 'cd /d "' .. dir .. '"'
+    return "cd /d " .. via_env("_DEN_Z", dir)
 end
 
 if zoxide_exe and clink.onfilterinput then

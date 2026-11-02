@@ -21,7 +21,8 @@ fi
 # The stub: H.boot(opts) installs fake os/io/clink/rl/settings tables and runs
 # starship.lua. Files live in H.files (lower-cased path -> content), so a tool
 # is "on PATH" when its file is there; every spawn is recorded (os.execute in
-# H.execs, io.popen in H.popens) and io.popen answers with opts.popen(cmdline).
+# H.execs, io.popen in H.popens, and in H.ran both as cmd /c runs them, after
+# H.expand) and io.popen answers with opts.popen(cmdline).
 # opts.old drops the Clink APIs a version lacks: "1.6" no os.setalias, "1.1"
 # no os.createtmpfile either, "1.2" no clink.onfilterinput / onprovideline /
 # rl history. H.input(line) types a line: Clink adds it to its history, then
@@ -29,7 +30,7 @@ fi
 # the result is what cmd runs. H.provide() is the next onprovideline answer.
 CMD_STUB="$TESTTMP/cmd_stub.lua"
 cat > "$CMD_STUB" <<'LUA'
-local H = { env = {}, files = {}, dirs = {}, execs = {}, popens = {}, written = {},
+local H = { env = {}, files = {}, dirs = {}, execs = {}, popens = {}, ran = {}, written = {},
             aliases = {}, alias_names = {}, filters = {}, inputs = {}, provides = {},
             history = {}, cwd = "C:\\start" }
 -- The real ones, for a scenario that runs a tool for real (pwsh).
@@ -55,9 +56,12 @@ local function reader(text)
 end
 
 -- text: a C runtime text-mode file, which writes each "\n" as "\r\n".
+-- H.write_fails makes each write fail; H.close_fails makes the close fail,
+-- with the part a failed flush can leave on disk.
 local function writer(path, text)
     local buf, f = {}, {}
     function f:write(...)
+        if H.write_fails then return nil, "No space left on device" end
         for _, s in ipairs({ ... }) do
             s = tostring(s)
             buf[#buf + 1] = text and s:gsub("\n", "\r\n") or s
@@ -65,8 +69,12 @@ local function writer(path, text)
         return f
     end
     function f:close()
-        H.files[key(path)] = table.concat(buf)
         H.written[#H.written + 1] = path
+        if H.close_fails then
+            H.files[key(path)] = table.concat(buf):sub(1, 10)
+            return nil, "No space left on device"
+        end
+        H.files[key(path)] = table.concat(buf)
         return true
     end
     return f
@@ -82,8 +90,16 @@ io.open = function(path, mode)
     if t == nil then return nil, path .. ": No such file or directory" end
     return reader(t)
 end
+-- What cmd makes of a line: each %NAME% of a set variable is replaced by its
+-- value, once (a value is never read again), and one that is not set stays as
+-- it is, as on cmd's command line.
+function H.expand(c)
+    return (c:gsub("%%([^%%]+)%%", function(n) return H.env[n] end))
+end
+
 io.popen = function(c)
     H.popens[#H.popens + 1] = c
+    H.ran[#H.ran + 1] = H.expand(c)
     local out = H.popen_out and H.popen_out(c) or ""
     if out == nil then return nil end
     return reader(out)
@@ -101,6 +117,7 @@ os.isdir = function(p) return H.dirs[key(abs(p))] == true end
 os.mkdir = function(p) H.dirs[key(p)] = true; return true end
 os.execute = function(c)
     H.execs[#H.execs + 1] = c
+    H.ran[#H.ran + 1] = H.expand(c)
     local mf = c:match('/macrofile="([^"]+)"')
     if mf then H.macrofile = H.files[key(mf)] end
     return true
@@ -111,8 +128,12 @@ local function remove(p)
     H.files[key(p)] = nil
     return true
 end
+-- As MoveFileW: no move onto a file that exists. H.move_fails names the
+-- sources (lower-cased) whose move fails anyway.
 local function rename(a, b)
-    if H.files[key(a)] == nil or H.files[key(b)] ~= nil then return nil, "cannot move" end
+    if H.files[key(a)] == nil or H.files[key(b)] ~= nil or H.move_fails[key(a)] then
+        return nil, "cannot move"
+    end
     H.files[key(b)] = H.files[key(a)]; H.files[key(a)] = nil
     return true
 end
@@ -130,6 +151,8 @@ function H.boot(opts)
     for _, d in ipairs(opts.dirs or {}) do H.dirs[key(d)] = true end
     H.popen_out = opts.popen
     H.unwritable = opts.unwritable
+    H.write_fails, H.close_fails, H.move_fails = opts.write_fails, opts.close_fails, {}
+    for _, p in ipairs(opts.move_fails or {}) do H.move_fails[key(p)] = true end
     H.cwd = opts.cwd or H.cwd
     local old = opts.old or ""
     os.setalias = nil
@@ -414,13 +437,15 @@ zx()
 print("popens=" .. #H.popens .. " execs=" .. #H.execs .. " handlers=" .. #H.inputs)')
 assert_eq "cmd/zoxide: startup spawns nothing" 'popens=0 execs=0 handlers=2' "$out"
 
+# A directory reaches a line through a variable (see the % case below):
+# H.expand shows what cmd makes of the cd line, and H.ran what zoxide got.
 echo "[cmd] z / zd ask zoxide query for the keywords and cd there"
 out=$(run_lua zx_query "$ZX"'
 zx()
-print(H.input("z foo bar"))
-print(H.popens[1])
-print(H.input("zd \"my dir\" \"a&b\""))
-print(H.popens[2])
+print(H.expand(H.input("z foo bar")))
+print(H.ran[1])
+print(H.expand(H.input("zd \"my dir\" \"a&b\"")))
+print(H.ran[2])
 print(H.input("Z nomatch"))')
 assert_eq "cmd/zoxide: z and zd" 'cd /d "C:\proj\bar"
 ""C:\tools\zoxide.exe" query --exclude "C:\start" -- "foo" "bar""
@@ -431,7 +456,7 @@ verify other 2>nul' "$out"
 echo "[cmd] zi / zdi use zoxide's interactive picker"
 out=$(run_lua zx_interactive "$ZX"'
 zx()
-print(H.input("zi foo"))
+print(H.expand(H.input("zi foo")))
 print(H.popens[1])
 print(H.input("zdi"))
 print(H.popens[2])')
@@ -443,14 +468,14 @@ verify other 2>nul
 echo "[cmd] z alone goes home, z - back, z <dir> straight there, a drive root stays quoted"
 out=$(run_lua zx_forms "$ZX"'
 zx{ dirs = { "C:\\sub" }, cwd = "C:\\" }
-print(H.input("z"))
+print(H.expand(H.input("z")))
 print(H.input("z -") .. " " .. #H.popens)
 H.env._OLDPWD = "C:\\prev"
-print(H.input("z -"))
-print(H.input("z sub"))
+print(H.expand(H.input("z -")))
+print(H.expand(H.input("z sub")))
 print("popens=" .. #H.popens)
-print(H.input("z x"))
-print(H.popens[1])' 2>&1)
+print(H.expand(H.input("z x")))
+print(H.ran[1])' 2>&1)
 assert_eq "cmd/zoxide: the special forms" 'cd /d "C:\Users\me"
 zoxide: _OLDPWD is not set
 verify other 2>nul 0
@@ -474,13 +499,51 @@ echo "[cmd] each directory change is fed to zoxide add, once"
 out=$(run_lua zx_add "$ZX"'
 zx()
 H.prompt(); print("first prompt: " .. #H.execs)
-H.cwd = "C:\\a"; H.prompt(); print(H.execs[1])
+H.cwd = "C:\\a"; H.prompt(); print(H.ran[1])
 H.prompt(); print("same dir: " .. #H.execs)
-H.cwd = "C:\\"; H.prompt(); print(H.execs[2])')
+H.cwd = "C:\\"; H.prompt(); print(H.ran[2])')
 assert_eq "cmd/zoxide: zoxide add on change" 'first prompt: 0
 ""C:\tools\zoxide.exe" add -- "C:\a""
 same dir: 1
 ""C:\tools\zoxide.exe" add -- "C:\\""' "$out"
+
+# cmd expands a %NAME% of a set variable anywhere in a line, inside quotes
+# too: written into the line, C:\repos\%USERNAME%\project became
+# C:\repos\me\project, another folder, or (with %TEMP%, whose value holds a
+# drive) none. The directory goes through _DEN_Z (cd) or _DEN_ZARG (zoxide),
+# whose value cmd puts in once and never reads again.
+echo "[cmd] a % in a directory's name stays as it is, for z, z -, zoxide add and --exclude"
+out=$(run_lua zx_percent "$ZX"'
+zx{ env = { USERNAME = "me", TEMP = "C:\\T" } }
+H.popen_out = function(c)
+    return c:find(" query ", 1, true) and "C:\\repos\\%USERNAME%\\project\n" or ""
+end
+local line = H.input("z proj")
+print(line)
+print("_DEN_Z=" .. H.show(H.env._DEN_Z))
+print("cmd runs: " .. H.expand(line))
+H.env._OLDPWD = "C:\\w\\%TEMP%x"
+print("cmd runs: " .. H.expand(H.input("z -")))
+H.cwd = "C:\\repos\\%TEMP%\\project"; H.prompt()
+print("after the prompt: _DEN_Z=" .. H.show(H.env._DEN_Z) .. " _DEN_ZARG=" .. H.show(H.env._DEN_ZARG))
+print(H.ran[#H.ran])
+H.input("z other")
+print(H.ran[#H.ran])
+print("after the query: _DEN_ZARG=" .. H.show(H.env._DEN_ZARG))')
+assert_eq "cmd/zoxide: % in a directory name" 'cd /d "%_DEN_Z%"
+_DEN_Z=C:\repos\%USERNAME%\project
+cmd runs: cd /d "C:\repos\%USERNAME%\project"
+cmd runs: cd /d "C:\w\%TEMP%x"
+after the prompt: _DEN_Z=nil _DEN_ZARG=nil
+""C:\tools\zoxide.exe" add -- "C:\repos\%TEMP%\project""
+""C:\tools\zoxide.exe" query --exclude "C:\repos\%TEMP%\project" -- "other""
+after the query: _DEN_ZARG=nil' "$out"
+
+echo "[cmd] a cmd started from this one does not inherit z's variables"
+out=$(run_lua zx_inherit "$ZX"'
+zx{ env = { _DEN_Z = "C:\\old", _DEN_ZARG = "C:\\old" } }
+print(H.show(H.env._DEN_Z) .. " " .. H.show(H.env._DEN_ZARG))')
+assert_eq "cmd/zoxide: _DEN_Z and _DEN_ZARG start unset" 'nil nil' "$out"
 
 echo "[cmd] without zoxide nothing is added or rewritten"
 out=$(run_lua zx_none '
@@ -579,6 +642,29 @@ $want_bad
 $want_bad
 $want_bad
 $want_bad" "$out"
+
+# The write went unchecked at the close, where a full disk shows (the write
+# only fills a buffer), and the old file was deleted before the new one
+# moved in: a full disk put a file cut short in place, and a move that failed
+# left none. Each step is checked now, and the old file steps aside and comes
+# back. "stale" is a file den would not write, so the detection runs.
+echo "[cmd] a cache write that fails leaves the cache file as it was"
+out=$(run_lua hw_fail "$HW"'
+for _, how in ipairs({ "none", "write_fails", "close_fails", "move_fails" }) do
+    H.files = {}; H.popens = {}; H.env = {}
+    local opts = { files = { [CACHE] = "stale\n" }, detect = "STARSHIP_CPU_INTEL=i7-12700H\nok\n" }
+    if how == "move_fails" then opts.move_fails = { CACHE .. ".tmp.4242" }
+    elseif how ~= "none" then opts[how] = true end
+    hw(opts)
+    local n = 0
+    for k in pairs(H.files) do if k:find("hwinfo-cache", 1, true) then n = n + 1 end end
+    print(how .. ": " .. H.show(H.env.STARSHIP_CPU_INTEL) .. " | " .. (H.show(H.file(CACHE)):gsub("\n", "/"))
+        .. " | files=" .. n)
+end')
+assert_eq "cmd/hwinfo: a failed write, close or move keeps the old file, and leaves no other" "none: i7-12700H | \$env:STARSHIP_CPU_INTEL = 'i7-12700H'/ | files=1
+write_fails: i7-12700H | stale/ | files=1
+close_fails: i7-12700H | stale/ | files=1
+move_fails: i7-12700H | stale/ | files=1" "$out"
 
 echo "[cmd] inherited values are used as they are; a failed detection writes nothing"
 out=$(run_lua hw_inherit "$HW"'
@@ -812,14 +898,51 @@ echo "[cmd] python's walk also counts a version file line that names something i
 # would skip a line that names ;x); the second cuts it at a tab, and Windows
 # drops the spaces after a name. if exist tests it from the current
 # directory, as uv does, so a drive-relative C:name resolves the same way.
-names=$(printf '%s\n' "$walk" | grep -F 'for /f' || true)
-assert_eq "cmd/python: one for /f line reads the version files" "1" "$(printf '%s\n' "$names" | grep -c 'for /f')"
+names=$(printf '%s\n' "$walk" | grep -F 'for /f' | grep -v -F 'eol=, delims=' || true)
+assert_eq "cmd/python: one for /f line looks names up" "1" "$(printf '%s\n' "$names" | grep -c 'for /f')"
 assert_contains "cmd/python: for /f reads each version file, with its errors silenced" \
     'for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f ' "$names"
 assert_contains "cmd/python: a second for /f cuts the line at a tab" \
     "do for /f \"tokens=1 eol=# delims=$(printf '\t')\" %%n in (\"%%l\") do " "$names"
 assert_contains "cmd/python: a name found from the current directory makes the file the marker" \
     'do if not defined _m if exist "%%n" set "_m=%_d%\%%f") 2>nul' "$names"
+
+echo "[cmd] python's walk counts a version file line with a character version requests do not use"
+# uv trims more white space than spaces and tabs (U+00A0, U+3000, VT, FF), and
+# for /f reads a name outside ASCII in the console code page, which garbles it
+# for if exist unless that is UTF-8: cmd missed a venv such a line names. A
+# line with any character but ASCII letters and digits, spaces, tabs and
+# . @ + - _ < > = ! ~ , * counts now. After the first for /f (leading spaces
+# and tabs dropped), a second, with no delims, skips a line that starts with
+# #, and a third has the alphabet for delims, so it leaves a token only where
+# another character is; "x" and eol=, are delims, so its eol never fires.
+alpha_line=$(printf '%s\n' "$walk" | grep -F 'eol=, delims=' || true)
+assert_eq "cmd/python: one for /f line checks the alphabet" "1" "$(printf '%s\n' "$alpha_line" | grep -c 'for /f')"
+assert_contains "cmd/python: the alphabet check reads each version file and skips # lines" \
+    'for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f "eol=# delims=" %%k in ("%%l") do for /f "tokens=1 eol=, delims=' "$alpha_line"
+assert_contains "cmd/python: any token left makes the file the marker" \
+    '" %%c in ("x%%k") do if not defined _m set "_m=%_d%\%%f") 2>nul' "$alpha_line"
+alpha=$(printf '%s\n' "$alpha_line" | sed 's/.*eol=, delims=\([^"]*\)" %%c in .*/\1/')
+assert_eq "cmd/python: the delims are the version request alphabet" \
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.@+-_<>=!~,*$(printf '\t') " "$alpha"
+# The three for /f on sample lines (label|line), byte by byte as under a
+# single-byte code page: each label whose line counts.
+counted=$(printf '%s\n' \
+    'nbsp|'"$(printf '\302\240')"'repoenv' 'nbsp-after|repoenv'"$(printf '\302\240')" \
+    'ideo|'"$(printf '\343\200\200')"'repoenv' 'vt|'"$(printf '\013')"'repoenv' \
+    'vt-after|repoenv'"$(printf '\013')" 'ff-after|repoenv'"$(printf '\014')" \
+    'kanji|'"$(printf '\347\222\260\345\242\203')" 'eacute|v'"$(printf '\303\251')"'nv' \
+    'drive|C:venv' 'slash|./venv' \
+    'v|3.13' 'req|cpython@3.13' 'pypy|pypy3.10' 'range|>=3.12,<3.14' 'compat|~=3.12' \
+    'not|!=3.11' 'star|3.12.*' 'variant|3.14+freethreaded' 'key|cpython-3.13.0-windows-x86_64-none' \
+    'pad|'"$(printf '\t ')"'3.13'"$(printf ' \t')" 'comment|  # '"$(printf '\303\251')" 'name|repoenv' |
+    LC_ALL=C awk -F'|' -v a="$alpha" '{
+        l = $2; sub(/^[ \t]+/, "", l)
+        if (l == "" || substr(l, 1, 1) == "#") next
+        for (i = 1; i <= length(l); i++) if (!index(a, substr(l, i, 1))) { print $1; next }
+    }' | tr '\n' ' ')
+assert_eq "cmd/python: the lines the alphabet check counts" \
+    "nbsp nbsp-after ideo vt vt-after ff-after kanji eacute drive slash " "$counted"
 
 echo "[cmd] pip outside a venv runs nothing"
 # The no-venv branch ends before uv pip: `uv pip` would pick the .venv in or
@@ -833,6 +956,50 @@ echo "[cmd] pip's refusal names no .venv of the current directory"
 # then the clone's own batch file: the message must not send the user there.
 named=$(tr -d '\r' < "$CMD_BIN/pip.cmd" | sed -n '/^:refuse$/,/^:plain$/p' | grep -i -F '.venv' || true)
 assert_eq "cmd/pip: the refusal names no .venv" "" "$named"
+
+# =============================================================================
+# The PATH lookup of the tool shims (run for real by the Windows job:
+# tests/shell/cmd_shims.cmd)
+# =============================================================================
+echo "[cmd] every where.exe lookup reads PATH's absolute entries alone"
+# where.exe $PATH:<tool> searched every PATH entry, an empty or a relative one
+# (., ..\bin, tools) too, and such an entry is the current directory or a
+# folder in it: with . on PATH, ls ran the lsd.exe a clone keeps. Each shim
+# now builds _abs from PATH's drive and UNC entries, as starship.lua's
+# find_on_path picks them, and looks its tool up there. A plain for splits
+# PATH at each ; with every entry quoted (no quote is left in them), and
+# the list leaves each entry's setlocal through for /f, so a ! survives.
+abs_block() { cmd_code "$1" | sed -n '/^set "_abs=x"$/,/^set "_abs=%_abs:~1,-1%"$/p'; }
+want_block=$(abs_block ls)
+assert_eq "cmd/abs PATH: ls.cmd's block keeps drive and UNC entries alone" 'set "_abs=x"
+set "_ar="
+if defined PATH set "_ar=%PATH:"=%"
+if defined _ar for %%e in ("%_ar:;=" "%") do (
+    set "_ae=x%%~e"
+    setlocal EnableDelayedExpansion
+    if "!_ae:~2,2!"==":\" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~2,2!"==":/" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~1,2!"=="\\" set "_abs=!_abs!!_ae:~1!;"
+    for /f "delims=" %%v in ("!_abs!") do endlocal & set "_abs=%%v"
+)
+set "_abs=%_abs:~1,-1%"' "$want_block"
+lookups=""
+bad=""
+for f in "$CMD_BIN"/*.cmd; do
+    n=$(basename "$f" .cmd)
+    code=$(cmd_code "$n")
+    printf '%s\n' "$code" | grep -q 'where\.exe \$' || continue
+    lookups="$lookups $n"
+    if printf '%s\n' "$code" | grep -q 'where\.exe \$PATH:'; then bad="$bad $n:PATH"; fi
+    [ "$(abs_block "$n")" = "$want_block" ] || bad="$bad $n:block"
+    first_abs=$(printf '%s\n' "$code" | grep -n -m1 '^set "_abs=x"$' | cut -d: -f1)
+    first_where=$(printf '%s\n' "$code" | grep -n -m1 'where\.exe \$' | cut -d: -f1)
+    [ -n "$first_abs" ] && [ "$first_abs" -lt "$first_where" ] || bad="$bad $n:order"
+    printf '%s\n' "$code" | grep -q '^setlocal EnableExtensions DisableDelayedExpansion$' || bad="$bad $n:setlocal"
+done
+assert_eq "cmd/abs PATH: the shims that look a tool up" \
+    " cat findw grep la ll lla llt ls lt pip python python3 uv" "$lookups"
+assert_eq "cmd/abs PATH: each has the block before its lookup, delayed expansion off, and no \$PATH: lookup" "" "$bad"
 
 # =============================================================================
 # The PowerShell the head / tail / wc shims run
@@ -864,6 +1031,45 @@ if command -v pwsh >/dev/null 2>&1; then
         | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^$')
     assert_match "cmd/wc: header" "^Lines +Words +Characters +Property$" "$(printf '%s\n' "$out" | head -n 1)"
     assert_match "cmd/wc: values" "^ +5 +3 +9 *$" "$(printf '%s\n' "$out" | tail -n 1)"
+
+    echo "[cmd] wc fails for a file it cannot read, with no counts"
+    # Get-Content's errors do not stop a command of themselves: for a missing
+    # file, a folder, a file it may not read and no file at all, wc printed
+    # the error, then counts of 0, and exited 0.
+    mkdir -p "$WORK/wc-dir"
+    printf 'x\n' > "$WORK/wc-noread.txt"
+    chmod 000 "$WORK/wc-noread.txt"
+    res=""
+    # Root reads a file whatever its mode (CI's test image runs as root).
+    cases=(missing:"$WORK/wc-missing.txt" folder:"$WORK/wc-dir")
+    want_noread=""
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "  SKIP: the unreadable file, as root"
+    else
+        cases+=(noread:"$WORK/wc-noread.txt")
+        want_noread="noread rc=1 stdout=0 stderr=yes
+"
+    fi
+    cases+=(none:)
+    for c in "${cases[@]}"; do
+        if [ "${c#*:}" ]; then
+            out=$(_ARG1="${c#*:}" pwsh -NoProfile -NonInteractive -Command "$WC_CMD" 2>"$WORK/wc-err.txt")
+        else
+            out=$(env -u _ARG1 pwsh -NoProfile -NonInteractive -Command "$WC_CMD" 2>"$WORK/wc-err.txt")
+        fi
+        rc=$?
+        err=no
+        [ -s "$WORK/wc-err.txt" ] && err=yes
+        res="$res${c%%:*} rc=$rc stdout=$(printf '%s' "$out" | tr -d '\r\n' | wc -c) stderr=$err
+"
+    done
+    chmod 600 "$WORK/wc-noread.txt"
+    assert_eq "cmd/wc: an error on stderr, nothing on stdout, exit 1" "missing rc=1 stdout=0 stderr=yes
+folder rc=1 stdout=0 stderr=yes
+${want_noread}none rc=1 stdout=0 stderr=yes" "${res%
+}"
+    out=$(_ARG1="$WORK/wc-blank.txt" pwsh -NoProfile -NonInteractive -Command "$WC_CMD" 2>&1)
+    assert_eq "cmd/wc: a file it reads still exits 0" "0" "$?"
 
     echo "[cmd] tail reads the last lines with Get-Content -Tail"
     seq 1 15 > "$WORK/tail.txt"

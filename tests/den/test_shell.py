@@ -109,6 +109,28 @@ def test_cmd_digest_forwards_to_dg():
     assert dg.count(b"\n") == dg.count(b"\r\n"), "dg.cmd must use CRLF line endings"
 
 
+def test_cmd_dg_check_counts_a_sums_file_it_cannot_read():
+    # for /f runs no line of a file it cannot open and says nothing of it, so
+    # `dg -c ok.sums denied.sums` took a sums file without read access for one
+    # with no lines, and exited 0 once ok.sums checked out. dg.cmd now reads
+    # each sums file once with type before its for /f, and a failure counts
+    # it as unreadable (tests/shell/cmd_shims.cmd runs it on Windows).
+    code = _cmd_code("dg")
+    i = code.index(":check_next")
+    assert code[i + 4 : i + 7] == [
+        "call :isfile _s",
+        "if not errorlevel 1 call :readable _s",
+        "if errorlevel 1 (",
+    ]
+    r = code.index(":readable")
+    assert code[r : r + 4] == [
+        ":readable",
+        "setlocal EnableDelayedExpansion",
+        'type "!%~1!" >nul 2>&1 || exit /b 1',
+        "exit /b 0",
+    ]
+
+
 def _cmd_code(name: str) -> list[str]:
     """A cmd shim's lines without blank lines and rem comments."""
     lines = (_CMD_BIN / f"{name}.cmd").read_text(encoding="utf-8").splitlines()
@@ -145,7 +167,7 @@ def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
         code = _cmd_code(name)
         joined = "\n".join(code)
         assert not any("&&" in ln and "||" in ln for ln in code), name
-        assert f"where.exe $PATH:{tool}.exe" in joined, name
+        assert f"where.exe $_abs:{tool}.exe" in joined, name
         assert 'if defined _t "%_t%" ' in joined, name
         assert "if not defined _t " in joined, name
         assert code[-1] == "exit /b %errorlevel%", name
@@ -167,7 +189,7 @@ def test_cmd_cat_expands_wildcards_and_hands_bat_quoted_names():
     code = _cmd_code("cat")
     joined = "\n".join(code)
     assert not any("&&" in ln and "||" in ln for ln in code)
-    assert "where.exe $PATH:bat.exe" in joined
+    assert "where.exe $_abs:bat.exe" in joined
     assert "if not defined _t goto :type" in joined
     assert [ln for ln in code if "%*" in ln] == ["type %*"]
     assert "for /l %%i in (1,1,%_n%) do call :quote %%i" in joined
@@ -219,7 +241,7 @@ def test_cmd_find_is_find_exe_and_fd_is_findw():
     joined = "\n".join(code)
     assert "_DEN_WRAPPERS" not in joined
     assert "find.exe" not in joined.lower()
-    assert "%SystemRoot%\\System32\\where.exe $PATH:fd.exe" in joined
+    assert "%SystemRoot%\\System32\\where.exe $_abs:fd.exe" in joined
     assert code[code.index("if not defined _t (") + 1 :][:3] == [
         ">&2 echo findw: fd is not installed.",
         "exit /b 1",
@@ -232,8 +254,11 @@ def test_cmd_shims_call_where_and_powershell_by_system32_path():
     # cmd looks a bare command name up in the current directory first, with
     # every PATHEXT extension: a where.js (ramda ships one) or a committed
     # where.bat ran in place of where.exe whenever ls, grep, cat or which did
-    # their lookup, and a powershell.bat in place of head, tail, wc and path.
-    bare = re.compile(r"(?i)(?<![\\\w.$:-])(where|powershell)(\.exe)?(?=[\s\"']|$)")
+    # their lookup, a powershell.bat in place of head, tail, wc and path, and
+    # a certutil.bat beside the files dg hashed in place of certutil.exe.
+    bare = re.compile(
+        r"(?i)(?<![\\\w.$:-])(where|powershell|certutil)(\.exe)?(?=[\s\"']|$)"
+    )
     found = [
         f"{f.name}: {ln}"
         for f in sorted(_CMD_BIN.glob("*.cmd"))
@@ -259,7 +284,7 @@ def test_cmd_uv_passes_the_run_arguments_through_as_typed():
     assert not [ln for ln in code if ln.lower().split()[0] == "shift"]
     assert "set _raw=%*" in code
     assert 'set "_rest=!_raw:*run=!"' in code
-    where_uv = "%SystemRoot%\\System32\\where.exe $PATH:uv.exe 2^>nul"
+    where_uv = "%SystemRoot%\\System32\\where.exe $_abs:uv.exe 2^>nul"
     find_uv = f"for /f \"delims=\" %%p in ('{where_uv}')"
     assert f'{find_uv} do if not defined _uv set "_uv=%%p"' in code
     assert '"!_uv!" run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code
