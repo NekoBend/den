@@ -56,9 +56,12 @@ local function reader(text)
 end
 
 -- text: a C runtime text-mode file, which writes each "\n" as "\r\n".
+-- H.write_fails makes each write fail; H.close_fails makes the close fail,
+-- with the part a failed flush can leave on disk.
 local function writer(path, text)
     local buf, f = {}, {}
     function f:write(...)
+        if H.write_fails then return nil, "No space left on device" end
         for _, s in ipairs({ ... }) do
             s = tostring(s)
             buf[#buf + 1] = text and s:gsub("\n", "\r\n") or s
@@ -66,8 +69,12 @@ local function writer(path, text)
         return f
     end
     function f:close()
-        H.files[key(path)] = table.concat(buf)
         H.written[#H.written + 1] = path
+        if H.close_fails then
+            H.files[key(path)] = table.concat(buf):sub(1, 10)
+            return nil, "No space left on device"
+        end
+        H.files[key(path)] = table.concat(buf)
         return true
     end
     return f
@@ -121,8 +128,12 @@ local function remove(p)
     H.files[key(p)] = nil
     return true
 end
+-- As MoveFileW: no move onto a file that exists. H.move_fails names the
+-- sources (lower-cased) whose move fails anyway.
 local function rename(a, b)
-    if H.files[key(a)] == nil or H.files[key(b)] ~= nil then return nil, "cannot move" end
+    if H.files[key(a)] == nil or H.files[key(b)] ~= nil or H.move_fails[key(a)] then
+        return nil, "cannot move"
+    end
     H.files[key(b)] = H.files[key(a)]; H.files[key(a)] = nil
     return true
 end
@@ -140,6 +151,8 @@ function H.boot(opts)
     for _, d in ipairs(opts.dirs or {}) do H.dirs[key(d)] = true end
     H.popen_out = opts.popen
     H.unwritable = opts.unwritable
+    H.write_fails, H.close_fails, H.move_fails = opts.write_fails, opts.close_fails, {}
+    for _, p in ipairs(opts.move_fails or {}) do H.move_fails[key(p)] = true end
     H.cwd = opts.cwd or H.cwd
     local old = opts.old or ""
     os.setalias = nil
@@ -629,6 +642,29 @@ $want_bad
 $want_bad
 $want_bad
 $want_bad" "$out"
+
+# The write went unchecked at the close, where a full disk shows (the write
+# only fills a buffer), and the old file was deleted before the new one
+# moved in: a full disk put a file cut short in place, and a move that failed
+# left none. Each step is checked now, and the old file steps aside and comes
+# back. "stale" is a file den would not write, so the detection runs.
+echo "[cmd] a cache write that fails leaves the cache file as it was"
+out=$(run_lua hw_fail "$HW"'
+for _, how in ipairs({ "none", "write_fails", "close_fails", "move_fails" }) do
+    H.files = {}; H.popens = {}; H.env = {}
+    local opts = { files = { [CACHE] = "stale\n" }, detect = "STARSHIP_CPU_INTEL=i7-12700H\nok\n" }
+    if how == "move_fails" then opts.move_fails = { CACHE .. ".tmp.4242" }
+    elseif how ~= "none" then opts[how] = true end
+    hw(opts)
+    local n = 0
+    for k in pairs(H.files) do if k:find("hwinfo-cache", 1, true) then n = n + 1 end end
+    print(how .. ": " .. H.show(H.env.STARSHIP_CPU_INTEL) .. " | " .. (H.show(H.file(CACHE)):gsub("\n", "/"))
+        .. " | files=" .. n)
+end')
+assert_eq "cmd/hwinfo: a failed write, close or move keeps the old file, and leaves no other" "none: i7-12700H | \$env:STARSHIP_CPU_INTEL = 'i7-12700H'/ | files=1
+write_fails: i7-12700H | stale/ | files=1
+close_fails: i7-12700H | stale/ | files=1
+move_fails: i7-12700H | stale/ | files=1" "$out"
 
 echo "[cmd] inherited values are used as they are; a failed detection writes nothing"
 out=$(run_lua hw_inherit "$HW"'

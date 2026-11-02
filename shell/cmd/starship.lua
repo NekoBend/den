@@ -258,7 +258,13 @@ local function hw_read_cache()
 end
 
 -- Write the values set now, as hwinfo.ps1 does (' doubled inside the quotes),
--- through a temporary file renamed into place.
+-- through a temporary file renamed into place. A write that fails (a full
+-- disk, a quota) leaves the cache file as it was: the write and the close
+-- each say whether they got the text out, and the close says so for what the
+-- write left in its buffer, which is where a full disk shows. Only a file
+-- written whole replaces the old one. Clink's os.move (MoveFileW) and
+-- os.rename do not replace a file that exists, so the old one steps aside
+-- first, and goes back when the new one cannot take its place.
 local function hw_write_cache()
     local lines = {}
     for _, v in ipairs(hw_vars) do
@@ -277,18 +283,25 @@ local function hw_write_cache()
     if not os.isdir(dir) and os.mkdir then
         os.mkdir(dir)
     end
-    local tmp = hw_cache .. ".tmp." .. (os.getpid and os.getpid() or os.time())
+    local id = os.getpid and os.getpid() or os.time()
+    local tmp, old = hw_cache .. ".tmp." .. id, hw_cache .. ".old." .. id
     local f = io.open(tmp, "wb")
     if not f then
         return
     end
-    local ok = f:write(table.concat(lines, "\n") .. "\n")
-    f:close()
+    local wrote = f:write(table.concat(lines, "\n") .. "\n")
+    local closed = f:close()
     local unlink, move = os.unlink or os.remove, os.move or os.rename
-    if ok then
-        unlink(hw_cache)
+    if wrote and closed then
+        local aside = move(hw_cache, old)
         if move(tmp, hw_cache) then
+            if aside then
+                unlink(old)
+            end
             return
+        end
+        if aside then
+            move(old, hw_cache)
         end
     end
     unlink(tmp)
