@@ -1,14 +1,13 @@
 """den - the installer for your LLM skills and machine environment.
 
-  install    deploy skills, the shell environment, hooks, or cheatsheets
+  install    deploy skills, the shell environment, or cheatsheets
   uninstall  remove den-installed files (keeping ones you changed)
   upgrade    upgrade den itself via uv; --refresh redeploys bundled content
   board      serve the project's report board (user-side debug reports)
 
-Runtime plumbing invoked by installed hooks and skills (not part of the
-everyday surface):
-  hook    the per-turn worker + hook lifecycle (den hook run/list/imprint/memory)
-  memory  workspace session memory (also reachable as den hook memory)
+Runtime plumbing invoked by skills and by hooks an older den installed (not
+part of the everyday surface):
+  hook    `den hook run`, a no-op kept for those hooks (see den/_hook.py)
   verify  format/lint/typecheck Python files, config-faithfully (skills
           call this after writing code; see den/_verify.py)
 """
@@ -27,7 +26,7 @@ def _usage() -> None:
         "den installs your LLM skills and machine environment.\n"
         "\n"
         "Commands:\n"
-        "  install   [skills|shell|hook|cheatsheets]"
+        "  install   [skills|shell|cheatsheets]     "
         "  deploy (interactive if no target)\n"
         "  uninstall [skills|shell|hook|cheatsheets]"
         "  remove den-installed files\n"
@@ -37,8 +36,8 @@ def _usage() -> None:
         " serve the local report board\n"
         "\n"
         "Run 'den <command> --help' for command-specific options.\n"
-        "(den hook / den memory / den verify are runtime plumbing"
-        " for hooks and skills.)"
+        "(den hook / den verify are runtime plumbing"
+        " for old hooks and for skills.)"
     )
 
 
@@ -71,9 +70,9 @@ def _dispatch(args: list[str]) -> int:  # ruff: ignore[too-many-return-statement
         return _main(rest)
 
     if cmd == "memory":
-        from ._memory import main as _main
+        from ._hook import removed
 
-        return _main(rest)
+        return removed("den memory")
 
     if cmd == "hook":
         from ._hook import main as _main

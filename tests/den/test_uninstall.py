@@ -1331,7 +1331,7 @@ def test_uninstall_usage_common_flags_scoped(capsys):
 
 def test_uninstall_leaf_help_prints_usage(capsys):
     # `den uninstall <target> --help` should print usage and exit 0, not error 2.
-    for target in ("skills", "shell", "cheatsheets"):
+    for target in ("skills", "shell", "hook", "cheatsheets"):
         for flag in ("--help", "-h", "help"):
             assert uninstall_main([target, flag]) == 0
             assert "usage: den uninstall" in capsys.readouterr().out

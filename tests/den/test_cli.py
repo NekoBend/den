@@ -1,5 +1,7 @@
 """Tests for the den top-level CLI dispatcher (den/cli.py)."""
 
+import io
+
 import pytest
 
 from den.cli import main as den_main
@@ -32,16 +34,63 @@ def test_removed_dev_tool_commands_are_unknown(capsys):
         assert den_main([cmd, "x"]) == 2
 
 
-def test_hook_memory_and_memory_alias_both_dispatch(tmp_path, monkeypatch, capsys):
-    # memory is nested under hook (den hook memory) but the bare `den memory`
-    # alias stays for already-deployed imprints; both reach the same store.
+# den memory and the per-turn hook were removed (MIGRATIONS.md). A stale
+# script, alias or imprint that still runs one of these gets one line naming
+# the removal, not a traceback or an argparse error, and exit 1 (not 2, which a
+# Claude Code hook reads as "block the prompt").
+_REMOVED = [
+    ["memory"],
+    ["memory", "--help"],
+    *(
+        ["memory", sub, *args]
+        for sub, args in [
+            ("show", []),
+            ("checkpoint", []),
+            ("save", ["--file", "x.md"]),
+            ("add", ["a fact"]),
+            ("clear", []),
+            ("log", []),
+            ("restore", ["1"]),
+            ("diff", []),
+            ("path", []),
+        ]
+    ),
+    ["hook", "memory", "add", "a fact"],
+    ["hook", "imprint"],
+    ["hook", "install", "--tool", "claude"],
+    ["hook", "list"],
+    ["hook", "remove", "--tool", "claude"],
+    ["install", "hook"],
+    ["install", "hook", "--tool", "cline-cli"],
+    ["install", "hook", "--help"],
+]
+
+
+@pytest.mark.parametrize("argv", _REMOVED, ids=[" ".join(a) for a in _REMOVED])
+def test_a_removed_command_says_so_in_one_line(tmp_path, monkeypatch, capsys, argv):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".den").mkdir()
-    assert den_main(["hook", "memory", "add", "fact via hook"]) == 0
-    assert den_main(["memory", "add", "fact via alias"]) == 0
-    assert den_main(["hook", "memory", "show"]) == 0
+    (tmp_path / ".den" / "memory.md").write_text("- a fact\n")
+    monkeypatch.setattr("sys.stdin", io.StringIO("piped text\n"))
+    assert den_main(argv) == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    lines = out.err.splitlines()
+    assert len(lines) == 1, lines
+    command = " ".join(["den", *argv[:2]]) if argv[0] != "memory" else "den memory"
+    assert lines[0].startswith(f"{command}: removed from den (2026-11)")
+    assert lines[0].endswith(
+        "see MIGRATIONS.md, https://github.com/NekoBend/den/blob/main/MIGRATIONS.md"
+    )
+    assert sorted(p.name for p in tmp_path.rglob("*")) == [".den", "memory.md"]
+    assert (tmp_path / ".den" / "memory.md").read_text() == "- a fact\n"
+
+
+def test_help_names_no_removed_command(capsys):
+    assert den_main(["--help"]) == 0
     out = capsys.readouterr().out
-    assert "fact via hook" in out and "fact via alias" in out
+    assert "memory" not in out
+    assert "install   [skills|shell|cheatsheets]" in out
 
 
 def test_ctrl_c_exits_130_without_a_traceback(monkeypatch, capsys):

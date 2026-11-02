@@ -24,9 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 # After the sys.path entry above, which it needs.
 from den import _install, _shell
 
-# POSIX-only tests (see the module docstring). Fixed via PYTHONUTF8 (encoding) and
-# den's newline="" writes (CRLF), the memory/imprint tests are NOT here -- they run
-# on Windows too.
+# POSIX-only tests (see the module docstring).
 _WINDOWS_SKIP = {
     # shell: POSIX config/bin deployment (mock _windows=False) + PosixPath
     "test_install_shell_bin_does_not_chmod_through_a_symlink",
@@ -44,9 +42,7 @@ _WINDOWS_SKIP = {
     "test_uninstall_shell_non_tty_refuses_without_yes",
     "test_uninstall_shell_removes_posix_bin_keeps_local_bin",
     "test_uninstall_shell_round_trip",
-    # cline: workspace-local executable scripts (POSIX name/bit) + Documents rules dir
-    "test_install_cline_is_workspace_local",
-    "test_install_cline_writes_executable_scripts",
+    # cline: the Documents rules dir
     "test_install_cline_parent_goes_to_cline_rules_dir",
     "test_install_cline_cli_parent_stays_in_agents",
     "test_uninstall_cline_removes_rules_parent",

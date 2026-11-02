@@ -192,25 +192,34 @@ def test_uninstall_cheatsheets_removes_identical(tmp_path, monkeypatch):
     assert not sheet.exists()
 
 
-def test_install_hook_routes_to_cmd_install(tmp_path, monkeypatch):
-    # `den install hook` is a thin alias for `den hook install`.
-    monkeypatch.chdir(tmp_path)  # seed imprint.md under tmp, not the repo
+def test_install_hook_is_removed(tmp_path, monkeypatch, capsys):
+    # den no longer installs hooks (MIGRATIONS.md): one line, exit 1, nothing
+    # written, not even a .den.
+    monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "settings.json"
-    assert install_main(["hook", "--tool", "claude", "--config", str(cfg)]) == 0
-    assert cfg.is_file()
-    assert "den hook run" in cfg.read_text()
+    assert install_main(["hook", "--tool", "claude", "--config", str(cfg)]) == 1
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 1 and err[0].startswith("den install hook: removed from den")
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_uninstall_hook_routes_to_cmd_remove(tmp_path, monkeypatch):
+    import json
+
     from den._uninstall import main as uninstall_main
 
-    monkeypatch.chdir(tmp_path)  # seed imprint.md under tmp, not the repo
+    monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "settings.json"
-    install_main(["hook", "--tool", "claude", "--config", str(cfg)])
-    assert "den hook run" in cfg.read_text()
+    cmd = "den hook run --event per-turn --tool claude --den-dir /old/.den"
+    hooks = {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": cmd}]}]}
+    cfg.write_text(json.dumps({"hooks": hooks}))
     assert uninstall_main(["hook", "--tool", "claude", "--config", str(cfg)]) == 0
-    remaining = cfg.read_text() if cfg.is_file() else ""
-    assert "den hook run" not in remaining
+    assert json.loads(cfg.read_text()) == {}
+
+
+def test_install_usage_offers_no_hook_target(capsys):
+    assert install_main(["--help"]) == 0
+    assert "hook" not in capsys.readouterr().out
 
 
 def test_cheatsheets_unknown_arg_exits_2(tmp_path, monkeypatch):

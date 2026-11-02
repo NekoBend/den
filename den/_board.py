@@ -51,7 +51,7 @@ from typing import BinaryIO, cast
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
-from ._memory import (
+from ._fsafe import (
     _find_den_dir,
     _read_guarded,
     _symlink_component,

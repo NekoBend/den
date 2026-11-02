@@ -24,7 +24,6 @@ den install shell                  # shell env (bash/zsh + PowerShell, starship,
 den install skills --all-tools     # LLM agent skills into every tool's dirs
 den install skills --tool claude   # ...or just one tool
 den install skills --target ~/.codex --codex-config   # print the Codex TOML block
-den install hook --tool cline      # per-turn imprint hooks (run inside a workspace)
 den install cheatsheets            # deploy the offline cheatsheets to your data dir
 ```
 
@@ -39,7 +38,7 @@ stateless uninstall cannot reach files den no longer deploys.
 ## Layout
 
 - `agents/`      LLM skill system: `src/` (9 hand-authored skills + shared resources) and `dist/` (generated parent prompts; never hand-edited). See `agents/README.md`.
-- `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `uninstall`, `hook`, `memory`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
+- `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `uninstall`, `upgrade`, `board`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
 - `shell/`       the interactive shell sources: bash/zsh, a PowerShell port, CMD shims, starship (deployed by `den install shell`). See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).
 - `docker/`      the Ubuntu dev container image. See `docker/README.md`.
@@ -66,9 +65,10 @@ Python implementation replaces the old bash + PowerShell installers.
   when it is byte-identical to den's version (so your edits are kept), strips the
   rc-file block, and prunes emptied dirs. It is stateless (no manifest), lists
   the plan and asks before deleting (`--yes`, `--dry-run`).
-- `den install hook` registers per-turn imprint hooks per workspace; `den hook`
-  (run/list/imprint/memory) is the runtime plumbing those hooks invoke. See
-  `den/README.md`.
+- den no longer installs per-turn hooks or keeps a workspace memory. In a
+  workspace an older den set up, `den hook run` stays as a no-op so the
+  hooks there keep working, and `den uninstall hook` takes them out. See
+  `MIGRATIONS.md`, section 9.
 - `den board` serves a per-project localhost page where you file observations
   (a button press plus a note) while testing something an agent cannot run
   itself; each report lands as one JSON line in `.den/board/reports.jsonl`,

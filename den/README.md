@@ -2,8 +2,8 @@
 
 A small CLI for LLM-assisted development. It bundles the deployable content
 (skills, shared resources, parent prompts, shell sources, cheatsheets) into its
-wheel and installs it, plus verification helpers, a workspace `memory`, and
-per-turn `hook` imprinting for weak coding agents.
+wheel and installs it, plus a verification helper the skills call and a
+per-project report board.
 
 This is the `den/` package of the `den` repo: a self-contained `uv` tool whose
 only runtime deps are `questionary` + `rich`, used purely for the interactive
@@ -24,15 +24,14 @@ source on disk; from a checkout it falls back to the repo root (`_content.py`).
 ## Commands
 
 ```
-den install   [skills|shell|hook|cheatsheets]   interactive setup, or one target
+den install   [skills|shell|cheatsheets]        interactive setup, or one target
 den uninstall [skills|shell|hook|cheatsheets]   remove den files, keeping your edits
 den upgrade   [--refresh] [--force]             upgrade den via uv (alias: update)
 den board     [--port N] [--open] [--dir PATH]  serve the project's report board
 
-# runtime plumbing invoked by installed hooks and skills (not everyday commands):
-den hook   run|list|imprint|memory   the per-turn worker + hook lifecycle
-den hook memory show|add|...          workspace session memory (.den/memory.md)
+# runtime plumbing (not everyday commands):
 den verify <file.py...>               format/lint/typecheck each file, config-faithfully
+den hook run ...                      a no-op left for hooks an older den installed
 ```
 
 `den install` never silently clobbers local edits: files that already exist and
@@ -46,8 +45,7 @@ holds something else; the copy takes the file's owner, group and, on Linux,
 its ACL and extended attributes, and its permissions minus execute, and a file
 it cannot copy that way is not overwritten).
 Non-interactive runs skip the changed files and exit non-zero,
-so a scripted install cannot mistake a full skip for success. `den install hook`
-into a tool's settings file merges (it preserves foreign hooks and other keys).
+so a scripted install cannot mistake a full skip for success.
 
 ### Parent profiles (frontier / weak)
 
@@ -107,8 +105,9 @@ a path that reaches a symlink below it is refused and reported, never
 removed through. The run exits non-zero when it refuses such a path, keeps
 a file changed while the prompt was open, or cannot read or remove a file,
 or read or rewrite an rc file (each one is named, and the closing count
-holds only what was really removed). Hooks are per-workspace, so
-`den uninstall` does not touch them; use `den uninstall hook`.
+holds only what was really removed). Hooks an older den installed are
+per workspace, so `den uninstall` does not touch them; use
+`den uninstall hook` (below).
 
 Being stateless has one cost: when den stops deploying something (a retired
 tool, a renamed skill, a deleted script), the old copy is no longer anything
@@ -218,174 +217,67 @@ what is appended to it, so after a hand edit that keeps the file's size
 until you restart `den board`. Agents read the file itself and see the
 edit at once.
 
-## `den hook memory`
+den never follows a symlink at or under `.den/`: a cloned repository ships
+the layout of `.den/`, and a symlink there would make the board read, serve
+or append to a file outside the project. A refused read yields nothing and
+says so once on stderr; a refused write fails.
 
-Workspace-level session memory that the agent reads and overwrites. It lives at
-`<project>/.den/memory.md`: a single Markdown file the agent owns. It can be
-rewritten wholesale (`save`, or the agent's own file tools) or grown one fact at
-a time with `add` (a low-friction append, so a weak agent records a decision
-without reproducing the whole file). Because the agent may edit it directly, a
-content-hash `checkpoint` snapshots it into `.den/history/` whenever it changes,
-so direct edits are captured and any bad overwrite is recoverable.
+## Hooks and memory (removed)
 
-| Subcommand | What it does |
-|------------|--------------|
-| `show` | print `memory.md` (empty if absent) |
-| `save [--file F]` | overwrite `memory.md` from stdin or F (snapshots the old content first) |
-| `add <text>` | append one fact to `memory.md` from args or stdin (snapshots first); low-friction counterpart to `save` |
-| `checkpoint` | snapshot `memory.md` into history if it changed |
-| `clear` | delete `memory.md` (snapshots it first) |
-| `log` | list history snapshots, newest first |
-| `restore [n]` | restore the n-th newest snapshot (default 1) |
-| `diff [n]` | diff `memory.md` against the n-th newest snapshot |
-| `path` | print the resolved `memory.md` path |
+den no longer installs per-turn hooks or keeps a workspace memory: the agent
+tools keep a memory of their own now. `den memory`, `den hook memory`,
+`den hook install` / `den install hook`, `den hook list`, `den hook imprint`
+and `den hook remove` were removed. Each one now prints one line on stderr
+that names the removal and [`MIGRATIONS.md`](../MIGRATIONS.md), and exits 1
+(not 2, which a Claude Code hook reads as "block the prompt").
+MIGRATIONS.md, section 9, says how to clean a workspace up.
 
-Memory is UTF-8 text whatever the locale: `show`, `log`, `diff` and
-`den hook imprint` write UTF-8, and `save`/`add` read stdin (and `save --file`
-its file) as UTF-8 (a leading BOM is dropped), also on a Windows console set to
-an ANSI code page. Input that is not UTF-8 is refused with exit 2 and nothing is
-written.
+Two commands stay for the workspaces an older den set up:
 
-The `.den/` directory is resolved by walking up from the current directory to the
-nearest existing `.den/`, falling back to `<cwd>/.den`. History keeps the last 20
-snapshots. Only files named the way den names them (`memory.<UTC stamp>.md`,
-with a stamp that is not in the future) are snapshots: anything else in
-`.den/history/`, such as a `memory.zzz.md` a cloned repo shipped to sort first,
-is never listed, restored, rotated or deleted, and `den install hook` names it
-along with the first line of every real snapshot.
+- `den hook run`, which those hooks still call, is a no-op. It takes any
+  arguments an installed hook passes, reads nothing (no `.den`, no stdin),
+  writes nothing, prints nothing on stderr, and exits 0 with the response
+  each tool takes for "nothing to add":
 
-den never follows a symlink at or under `.den/` (memory, imprint, history,
-the board files, and the `.clinerules` mirror): a cloned repository ships the
-layout of `.den/`, and a symlink there would pull an outside file into the
-model's context every turn or make `save`/`add`/`restore` write through it.
-A refused read yields nothing and says so once on stderr; a refused write
-fails.
+  | Tool | stdout |
+  |------|--------|
+  | claude | nothing |
+  | copilot | `{}` |
+  | cline (the VS Code extension) | `{"cancel": false}` |
+  | cline-cli, or a tool den does not know | nothing |
 
-## `den hook`
+- `den uninstall hook [--tool T]... [--all-tools] [--config PATH]` takes
+  den's hooks out of the current workspace (every tool when none is named):
 
-Installs per-tool hooks that imprint context every turn. Soft enforcement only:
-the hooks never block a tool call. Each turn the tool runs `den hook run`, which
+  | Tool | What it removes |
+  |------|-----------------|
+  | claude | den's entries in `.claude/settings.local.json` and in the `.claude/settings.json` earlier dens wrote |
+  | copilot | den's entries in `.github/hooks/den.json` |
+  | cline | den's scripts in `.clinerules/hooks/` (`<Event>` or `<Event>.ps1`) |
+  | cline-cli | `.clinerules/den-imprint.md` and `den-memory.md`, beside the nearest `.den` |
 
-1. injects `.den/imprint.md` (static, human-owned directives) plus
-   `den hook memory show` (agent-owned memory) as additional context, and
-2. checkpoints memory, capturing the previous turn's direct edits.
+  An entry is den's when its command carries `den hook run`. Everything else
+  stays: a foreign hook in a group den wrote, other keys, and shapes den never
+  wrote; a file with nothing of den's in it is left byte-identical. A settings
+  file is rewritten through a new copy that replaces it in one step, so a
+  write that fails part-way leaves it as it was; the copy takes the file's
+  owner, group and permissions (and, on Linux, its extended attributes and
+  ACLs), and a file with a second hard link is left as it is and named for
+  you to edit by hand (exit 1). The workspace-relative paths must stay in the
+  workspace: a symlinked `.claude`, `.github`, `.clinerules` or config file is
+  refused (exit 1), so a checked-out repo cannot redirect the removal into
+  your own settings; an explicit `--config PATH` is taken as given.
 
-`den hook run` fails open for every tool: an argument it does not know (an
-event or tool from another den version), a pinned `--den-dir` that is not
-absolute on this OS (a command written on the other side of a WSL/Windows
-pair), or an error while reading memory is one line on stderr, the tool's
-empty response, and exit 0 with nothing injected. It never exits 2, which
-Claude Code treats as blocking the prompt.
+  cline loads every `.clinerules/*.md` as an always-on rule, so den's stale
+  imprint and memory copies there keep reaching the model until they go.
+  Each goes only when it starts with den's `<!-- den-managed` header; a file
+  under one of those names that does not is left as it is and named. A
+  regular file at `.clinerules` (cline's single-file rules) means cline-cli
+  was never installed there, and is left alone.
 
-Two files, two owners:
-
-- `.den/imprint.md` - static directives that must not fall out of context (read
-  the skill, use a subagent, record memory). Seeded with defaults on install,
-  then human-edited. The agent does not overwrite it.
-- `.den/memory.md` - the agent-owned, overwritable memory above.
-
-```
-den install hook [--tool T ...] [--all-tools]    # register hooks + seed imprint.md
-den uninstall hook [--tool T ...]                # unregister
-den hook imprint                                 # print the composed injection
-den hook list                                    # show den-managed hooks
-den hook memory show|add|...                     # workspace session memory
-den hook run --event E --tool T                   # the worker the tool invokes
-```
-
-Hooks install **per workspace**: run `den install hook` inside a project and it
-writes that tool's project-level hook config under the current directory and
-seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope.
-`install` writes only the hooks den manages (marked by a sentinel) and leaves
-foreign hooks untouched, one added to a group den wrote included: install and
-`uninstall hook` take out only den's own hooks, and a group only when those
-were all it held; `uninstall hook` leaves a file with nothing of den's in it
-byte-identical. A settings file den cannot merge its hooks into (not a JSON
-object, a `hooks` that is not an object, or one of den's events holding
-something other than a list) is first copied to `<file>.den.bak`, or to the
-first free `.den.bak.N` when an earlier backup holds something else, with the
-file's owner, group and permissions minus execute (and, on Linux, its ACL),
-and den's hooks then take the place of what
-it could not merge into; when no copy can be made, install leaves the file
-alone and exits non-zero. Install and `uninstall hook` rewrite a settings file
-through a new copy that replaces it in one step, so a write that fails
-part-way leaves the file as it was; the copy takes the file's owner, group and
-permissions, as with an rc file, and a file with a second hard link is left as
-it is and named for you to edit by hand (the command exits non-zero).
-Generic events map to each tool's own names:
-`session-start`, `per-turn`, `post-tool`, `stop`.
-
-`--all-tools` installs every verified tool: claude, copilot and cline (the
-extension). cline-cli is installed only when named, and naming it together
-with cline (or with `--all-tools`, which adds to any `--tool`) is refused
-(exit 2), in the interactive picker too, because the
-extension would then load the imprint and memory twice (see below). For
-`list` and `uninstall hook`, `--all-tools` still covers every tool.
-
-The workspace-relative config (`.claude/settings.local.json` and the other
-per-tool paths below) must stay in the workspace: `den install hook` refuses it
-when any path component is a symlink, so a checked-out repo cannot redirect the
-install into your global settings. An explicit `--config PATH` is taken as given.
-
-Each hook command pins this machine's absolute `.den` path, so claude's hooks go
-to `.claude/settings.local.json`, Claude Code's personal file, not the shared
-`.claude/settings.json` you commit. `den install hook` moves den's entries out
-of `.claude/settings.json` (an earlier den wrote them there; everything else in
-the file is kept, and a file without den entries is not touched; a symlinked
-one is never edited: `list` shows den's entries there, and install and
-`uninstall hook` exit 1 until you remove them by hand), `list` and
-`uninstall hook` read both files, and inside a git work tree install adds
-`settings.local.json` to `.git/info/exclude` unless git already ignores it.
-copilot (`.github/hooks/den.json`) and cline (`.clinerules/hooks/`) have no
-personal counterpart; there, a command from another machine just fails open.
-The install also reports a pre-existing `.den/memory.md` (size, first line,
-snapshot count, and each snapshot's first line, since `restore` can bring any of
-them back) next to the imprint, because both are injected every turn.
-
-### Per-tool support
-
-| Tool | Per-turn inject | Mechanism | Workspace config |
-|------|-----------------|-----------|------------------|
-| claude | yes | `hookSpecificOutput.additionalContext` | `.claude/settings.local.json` |
-| cline | yes (extension) | `contextModification` (script per event) | `.clinerules/hooks/` |
-| cline-cli | session-start | `.clinerules/*.md` rule files (no hook) | `.clinerules/` |
-| copilot | session-start only | `additionalContext` (`userPromptSubmitted` is notify-only) | `.github/hooks/den.json` |
-| codex | not yet | (hooks ship as a marketplace plugin + trust) | deferred |
-
-`cline` and `cline-cli` are split because the two consume hooks differently. The
-**VS Code extension** (`cline`) runs the per-event hook scripts and injects
-`contextModification` into the conversation each turn (gated by its `hooksEnabled`
-setting). The **CLI** (`cline-cli`) cannot: its file hooks are observe-only
-(`prompt_submit`/`agent_start` are fire-and-forget; only `cancel`/`overrideInput`
-on `tool_call` are applied, and `context`/`contextModification` are parsed then
-ignored). So for the CLI, den does not install a hook; instead it writes the
-imprint and memory as **`.clinerules/` rule files** (`den-imprint.md`,
-`den-memory.md`), which cline loads as always-on context at session start. `den
-memory` keeps `den-memory.md` in sync (`save`, `add`, `clear`, `restore`,
-`checkpoint`, and every `den hook run` in the workspace refresh it), so a direct
-edit to `.den/memory.md` reaches cline-cli at the next of those; the imprint rule
-tells the agent to run `den hook memory checkpoint` after one. The mirror runs
-only when cline-cli is installed here
-(detected by the `den-imprint.md` marker) -- so the extension's own
-`.clinerules/hooks/` does not trigger a memory mirror. That gate is what keeps the
-extension from double-delivering memory (it would otherwise inject via the hook
-AND read the `.clinerules` rule), and it is why den refuses to install both.
-
-For `cline` (extension), `install` writes one script per event, named for the
-platform Cline expects: extensionless `<Event>` (executable bash) on macOS/Linux,
-`<Event>.ps1` (PowerShell) on Windows. Either way the script just calls `den hook
-run`, so `den` must be on PATH where Cline runs the hook.
-
-claude, copilot, and the macOS/Linux cline extension path were verified
-end to end. gemini support is retired: gemini-cli hit upstream end-of-life
-for individual accounts (2026-06), and its successor (Antigravity) reads
-the cross-tool `~/.agents/skills` + `AGENTS.md` that den already deploys -
-a tool-specific entry returns only after verification against the real
-CLI. `den uninstall` sweeps legacy `~/.gemini/skills` copies. The cline-cli `.clinerules` delivery was validated manually against
-the real CLI (a seeded rule reached the model); CI is Linux-only and does not run
-the cline CLI runtime. The Windows cline `.ps1` path follows Cline's documented
-contract; verify against a live Windows install. codex is scaffolded but disabled
-(`verified=False`).
+`den uninstall hook` never creates `.den/` and does not touch what is in it:
+`.den/imprint.md`, `.den/memory.md` and `.den/history/` are yours to delete,
+and `.den/board/` belongs to `den board`.
 
 ## `den verify`
 
@@ -427,19 +319,21 @@ Python only; for other languages the coding and code-audit skills name each lang
 ## Architecture
 
 `cli.py` is the dispatcher; each command is a sibling `_xxx.py` module
-(`_memory`, `_hook`, `_install`, `_uninstall`, `_upgrade`, `_verify`) with a
+(`_board`, `_hook`, `_install`, `_uninstall`, `_upgrade`, `_verify`) with a
 `main(argv)`
-entry point and relative imports (`_shell`/`_ui` are shared helpers).
+entry point and relative imports (`_shell`/`_ui` are shared helpers, and
+`_fsafe` holds the symlink guard and the guarded reads and writes).
 `_content.py`
 locates bundled content (wheel `den/_data/`, or the repo root from a checkout).
-`den hook` registers a per-format installer (`settings_json`, `copilot_json`,
-`cline_scripts`) and a per-tool output emitter; `den install` is one
-cross-platform implementation of the skill and shell-environment installers.
+`_hook` keeps one remover per format an older den installed (`settings_json`,
+`copilot_json`, `cline_scripts`, `clinerules`) and the `den hook run` no-op;
+`den install` is one cross-platform implementation of the skill and
+shell-environment installers.
 
 ## Tests
 
 ```
-python3 -m pytest tests/den     # cli, hook, memory, install, uninstall, shell
+python3 -m pytest tests/den     # cli, hook, install, uninstall, shell, board
 ```
 
 CI runs these alongside `ruff check agents den tests hatch_build.py` and a `packaging` job
