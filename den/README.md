@@ -2,8 +2,7 @@
 
 A small CLI for LLM-assisted development. It bundles the deployable content
 (skills, shared resources, parent prompts, shell sources, cheatsheets) into its
-wheel and installs it, plus a verification helper the skills call and a
-per-project report board.
+wheel and installs it, plus a verification helper the skills call.
 
 This is the `den/` package of the `den` repo: a self-contained `uv` tool whose
 only runtime deps are `questionary` + `rich`, used purely for the interactive
@@ -27,7 +26,6 @@ source on disk; from a checkout it falls back to the repo root (`_content.py`).
 den install   [skills|shell|cheatsheets]        interactive setup, or one target
 den uninstall [skills|shell|hook|cheatsheets]   remove den files, keeping your edits
 den upgrade   [--refresh] [--force]             upgrade den via uv (alias: update)
-den board     [--port N] [--open] [--dir PATH]  serve the project's report board
 
 # runtime plumbing (not everyday commands):
 den verify <file.py...>               format/lint/typecheck each file, config-faithfully
@@ -172,55 +170,12 @@ Windows locks running executables. If uv reports a file-in-use error there,
 run `uv tool upgrade den` directly from your shell instead (den itself then
 is not running, so nothing is locked).
 
-## `den board`
+## `den board` (removed)
 
-A per-project localhost page for reporting observations back to an agent
-while you exercise the thing under test (a game, a build, a device) - so a
-debug session does not round-trip through chat for every "ran it again,
-here is what happened". Press a button, optionally attach a note; each
-report is appended as one JSON line (`{ts, button, text}`) to
-`.den/board/reports.jsonl`. Agents never talk to the server: they read
-that file (the troubleshoot skill checks for it by name).
-
-```
-den board                 # serve http://127.0.0.1:8484 for the nearest .den project
-den board --open          # ...and open it in the browser
-den board --port 9000     # prefer another port
-den board --dir ~/proj    # serve a specific project root
-
-# the agent-side surface (append to .den/board/agent.jsonl, print the new id):
-den board task "retest the boss fight after this fix"
-den board reply <report-id> "seen - fixed in build 7, please retry"
-```
-
-The channel is two-way with exactly one writer per file: the server appends
-the user's reports to `reports.jsonl`; agents append tasks and replies to
-`agent.jsonl` (ids are generated - use the commands above rather than
-hand-writing JSON; a hand-appended line without an id still works, the
-server derives a stable one from its content). The page shows open tasks
-with Done / Can't buttons - the user's reaction lands in `reports.jsonl`
-with `re=<task id>` - and threads replies under the report they name.
-Agents still never talk to the server.
-
-Multiple boards coexist: each project has its own server, file, and lock.
-If the preferred port is busy the next free one is used; a second
-`den board` in the same project just reprints the live instance's URL; the
-page titles itself after the project so parallel tabs stay apart. The
-server binds 127.0.0.1 only, refuses non-loopback Host headers (DNS
-rebinding), and refuses browser writes whose Origin is not the board
-itself. Edit `.den/board/board.json` to rename the
-board or change its button set (`{id, label, color}` per button); delete
-`reports.jsonl` (or ask the agent to) when a session is done. The page's
-task answers come from one full read of `reports.jsonl` and then only from
-what is appended to it, so after a hand edit that keeps the file's size
-(`task-done` changed to `task-cant`, say), a task can show its old answer
-until you restart `den board`. Agents read the file itself and see the
-edit at once.
-
-den never follows a symlink at or under `.den/`: a cloned repository ships
-the layout of `.den/`, and a symlink there would make the board read, serve
-or append to a file outside the project. A refused read yields nothing and
-says so once on stderr; a refused write fails.
+den no longer serves a per-project report page. `den board`, with any
+arguments (`task` and `reply` included), prints one line on stderr that
+names the removal and [`MIGRATIONS.md`](../MIGRATIONS.md), and exits 1.
+MIGRATIONS.md, section 10, says what an old board left in a project.
 
 ## Hooks and memory (removed)
 
@@ -275,9 +230,9 @@ Two commands stay for the workspaces an older den set up:
   regular file at `.clinerules` (cline's single-file rules) means cline-cli
   was never installed there, and is left alone.
 
-`den uninstall hook` never creates `.den/` and does not touch what is in it:
-`.den/imprint.md`, `.den/memory.md` and `.den/history/` are yours to delete,
-and `.den/board/` belongs to `den board`.
+`den uninstall hook` never creates `.den/` and does not touch what is in it.
+den uses nothing under `.den/` any more: delete it by hand, after
+`den uninstall hook` has run there (MIGRATIONS.md, section 9).
 
 ## `den verify`
 
@@ -319,7 +274,7 @@ Python only; for other languages the coding and code-audit skills name each lang
 ## Architecture
 
 `cli.py` is the dispatcher; each command is a sibling `_xxx.py` module
-(`_board`, `_hook`, `_install`, `_uninstall`, `_upgrade`, `_verify`) with a
+(`_hook`, `_install`, `_uninstall`, `_upgrade`, `_verify`) with a
 `main(argv)`
 entry point and relative imports (`_shell`/`_ui` are shared helpers, and
 `_fsafe` holds the symlink guard and the guarded reads and writes).
@@ -333,7 +288,7 @@ shell-environment installers.
 ## Tests
 
 ```
-python3 -m pytest tests/den     # cli, hook, install, uninstall, shell, board
+python3 -m pytest tests/den     # cli, hook, install, uninstall, shell
 ```
 
 CI runs these alongside `ruff check agents den tests hatch_build.py` and a `packaging` job

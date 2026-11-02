@@ -38,7 +38,7 @@ stateless uninstall cannot reach files den no longer deploys.
 ## Layout
 
 - `agents/`      LLM skill system: `src/` (9 hand-authored skills + shared resources) and `dist/` (generated parent prompts; never hand-edited). See `agents/README.md`.
-- `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `uninstall`, `upgrade`, `board`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
+- `den/`        the `den` CLI package: a `uv` tool that bundles the deployable content and installs it (`install`, `uninstall`, `upgrade`). Its only deps are `questionary` + `rich` for the interactive UI, with a stdlib fallback. See `den/README.md`.
 - `shell/`       the interactive shell sources: bash/zsh, a PowerShell port, CMD shims, starship (deployed by `den install shell`). See `shell/README.md`.
 - `cheatsheets/` quick references (Python, regex, shell one-liners).
 - `docker/`      the Ubuntu dev container image. See `docker/README.md`.
@@ -69,13 +69,8 @@ Python implementation replaces the old bash + PowerShell installers.
   workspace an older den set up, `den hook run` stays as a no-op so the
   hooks there keep working, and `den uninstall hook` takes them out. See
   `MIGRATIONS.md`, section 9.
-- `den board` serves a per-project localhost page where you file observations
-  (a button press plus a note) while testing something an agent cannot run
-  itself; each report lands as one JSON line in `.den/board/reports.jsonl`,
-  which agents read directly (the troubleshoot skill checks for it by name).
-  The channel is two-way: `den board task` / `den board reply` let an agent
-  put tasks on the page and thread answers under reports, with reactions
-  flowing back through `reports.jsonl`.
+- den no longer serves a per-project report page (`den board`). See
+  `MIGRATIONS.md`, section 10.
 
 ## CI
 
