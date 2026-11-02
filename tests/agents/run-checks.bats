@@ -115,6 +115,49 @@ _run_stubbed() {
   run env PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$1"
 }
 
+# _bounded <seconds> <command...>: bats' run of the command, stopped after
+# <seconds>, so a run that never ends fails its test instead of hanging the
+# suite. timeout sends TERM then (status 124), and KILL 5 seconds later when
+# the command is still running (status 137): bash can outlive the TERM in a
+# loop of command substitutions, the shape of a walk up that never ends.
+_bounded() {
+  local limit="$1"
+  shift
+  run timeout -k 5 "$limit" "$@"
+}
+
+# _in_time: fails when _bounded stopped the run (status 124 or 137).
+_in_time() {
+  case "$status" in
+    124|137) return 1 ;;
+  esac
+}
+
+# _run_bounded <file>: _run_stubbed, stopped by _bounded after 20 seconds.
+_run_bounded() {
+  _bounded 20 env PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "$1"
+}
+
+# _run_real <file>: run the script with the tools on PATH, stopped by
+# _bounded after 20 seconds, and with a home of its own, so no user-level
+# ruff or ty config applies.
+_run_real() {
+  mkdir -p "$WORK/home"
+  _bounded 20 env HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/home/.config" \
+    XDG_CACHE_HOME="$WORK/home/.cache" "$SCRIPT" "$1"
+}
+
+# _each_run_ends_with <tool> <argument>: true when $WORK/<tool>.log holds a
+# run of the stub and the arguments of every run end with <argument>.
+_each_run_ends_with() {
+  local line n=0
+  while IFS= read -r line; do
+    [[ "$line" == *" argv=$2" || "$line" == *" argv="*" $2" ]] || return 1
+    n=$((n + 1))
+  done < "$WORK/$1.log"
+  [ "$n" -gt 0 ]
+}
+
 # _ts_project: $WORK/proj with a tsconfig.json and src/a.ts, src/b.ts.
 _ts_project() {
   mkdir -p "$WORK/proj/src"
@@ -145,6 +188,192 @@ _ts_project() {
   run "$SCRIPT" "$WORK/data.unknownext"
   [ "$status" -eq 2 ]
   [[ "$output" == *"unknown extension"* ]]
+}
+
+@test "the time limit ends a run that outlives its TERM, with KILL 5 seconds later" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: the limit sent TERM alone, which bash can outlive in a walk
+  # up that never ends, so such a walk hung the suite instead of failing its
+  # test. The stand-in ignores TERM and ends by itself after 30 seconds.
+  printf '#!/usr/bin/env bash\ntrap "" TERM\nwhile [ "$SECONDS" -lt 30 ]; do sleep 0.1; done\n' > "$WORK/stand-in"
+  chmod +x "$WORK/stand-in"
+  SECONDS=0
+  _bounded 1 "$WORK/stand-in"
+  [ "$status" -eq 137 ]
+  [ "$SECONDS" -lt 20 ]
+}
+
+@test "a name that starts with - or @ reaches every tool as ./<name> (stub tools)" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: each tool got the name as given, so ruff took
+  # --output-file=victim.py for its flag and overwrote victim.py, and ruff
+  # and ty read @x.py as a response file: a list of more arguments
+  for tool in ruff ty prettier eslint gofmt rustfmt google-java-format checkstyle shfmt shellcheck; do
+    _stub "$tool"
+  done
+  _stub_tsc
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  for ext in py ts go rs java sh; do
+    case $ext in
+      py) tools="ruff ty" ;;
+      ts) tools="prettier eslint" ;;
+      go) tools="gofmt" ;;
+      rs) tools="rustfmt" ;;
+      java) tools="google-java-format checkstyle" ;;
+      sh) tools="shfmt shellcheck" ;;
+    esac
+    for name in "@x.$ext" "-x.$ext" "--output-file=x.$ext"; do
+      printf '\n' > "./$name"
+      rm -f "${WORK:?}"/*.log
+      _run_bounded "$name"
+      _in_time # else the time limit stopped a walk up that never ended
+      [ "$status" -eq 0 ]
+      for tool in $tools; do
+        _each_run_ends_with "$tool" "./$name"
+      done
+    done
+  done
+}
+
+@test "the ./ rule: a relative name gets ./ in front; under Git Bash, MSYS2 or Cygwin one that starts with a drive letter and a colon, or with a backslash, goes as given (stub ruff)" {
+  case "$OSTYPE" in
+    msys*|cygwin*) skip "names like C:x.py are paths here, not file names" ;;
+  esac
+  # Under Git Bash, MSYS2 or Cygwin, ./ in front of a name like C:x.py or
+  # \\srv\share\x.py would name a different file; on Linux and macOS such a
+  # name is relative like any other. The script picks the rule by OSTYPE, so
+  # each platform's rule runs here on files with those names.
+  _stub ruff
+  _stub ty
+  mkdir -p "$WORK/proj/sub" "$WORK/proj/C:"
+  cd "$WORK/proj"
+  for f in x.py sub/x.py -x.py @x.py C:/x.py 'C:\x.py' C:x.py '\\srv\share\x.py' '\x.py'; do
+    printf 'x = 1\n' > "./$f"
+  done
+  given=(x.py sub/x.py -x.py @x.py ./x.py ../proj/x.py "$WORK/proj/x.py"
+    C:/x.py 'C:\x.py' C:x.py '\\srv\share\x.py' '\x.py')
+  posix=(./x.py ./sub/x.py ./-x.py ./@x.py ./x.py ../proj/x.py "$WORK/proj/x.py"
+    ./C:/x.py './C:\x.py' ./C:x.py './\\srv\share\x.py' './\x.py')
+  windows=(./x.py ./sub/x.py ./-x.py ./@x.py ./x.py ../proj/x.py "$WORK/proj/x.py"
+    C:/x.py 'C:\x.py' C:x.py '\\srv\share\x.py' '\x.py')
+  for os in linux-gnu msys cygwin; do
+    for i in "${!given[@]}"; do
+      case $os in
+        linux-gnu) want=${posix[$i]} ;;
+        *) want=${windows[$i]} ;;
+      esac
+      rm -f "${WORK:?}"/*.log
+      run env OSTYPE="$os" PATH="$WORK/bin:/usr/bin:/bin" "$SCRIPT" "${given[$i]}"
+      [ "$status" -eq 0 ]
+      _each_run_ends_with ruff "$want"
+      _each_run_ends_with ty "$want"
+    done
+  done
+}
+
+@test "the walk up for a ruff config ends for a name that starts with - (stub ruff)" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: dirname and cd took -x.py for an option, so the walk started
+  # from '' and went on from '.', which dirname turns into '.' forever; it
+  # stopped only at /
+  _stub ruff
+  _stub ty
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  printf 'x = 1\n' > ./-x.py
+  _run_bounded -x.py
+  _in_time # else the time limit stopped a walk up that never ended
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[lint     ] PASS      ruff check "*"./-x.py"* ]]
+}
+
+@test "the walks up to / end when cd cannot enter the file's directory (stub tools)" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: after a failed cd each walk up started from '' and went on
+  # from '.', which dirname turns into '.' forever. cd fails on a directory
+  # whose name ends in a newline, which $(dirname ...) drops.
+  for tool in ruff ty prettier eslint rustfmt shfmt shellcheck; do
+    _stub "$tool"
+  done
+  _stub_tsc
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  nl="$WORK/d"$'\n'
+  mkdir "$nl"
+  for ext in py sh rs ts; do
+    printf '\n' > "$nl/x.$ext"
+    _run_bounded "$nl/x.$ext"
+    _in_time # else the time limit stopped a walk up that never ended
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SUMMARY: "*", 0 failed, "* ]]
+  done
+  [[ "$output" == *"[typecheck] SKIPPED   cd cannot enter the directory of $nl/x.ts, so tsc did not check it"* ]]
+}
+
+@test "Shell: awk reads a file named like a=b.sh, not stdin (stub shfmt)" {
+  _found_above "$WORK" .editorconfig && skip "an .editorconfig above the temp dir"
+  # regression: awk takes an operand like a=b.sh for an assignment and reads
+  # stdin instead, so the shebang that picks shfmt's [[zsh]] section came
+  # from stdin (and the script waited there while stdin stayed open)
+  _stub shfmt
+  _stub shellcheck
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  printf 'root = true\n\n[[zsh]]\nindent_style = tab\n' > .editorconfig
+  printf '#!/bin/sh\necho hi\n' > a=b.sh
+  run bash -c 'printf "#!/usr/bin/env zsh\n" | PATH="$1" "$2" a=b.sh' _ "$WORK/bin:/usr/bin:/bin" "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[format   ] PASS      shfmt -d -i 2 -ci -s ./a=b.sh"* ]]
+}
+
+@test "Python (ruff): a file named like an option is checked, never taken for one" {
+  command -v ruff >/dev/null 2>&1 || skip "ruff not installed"
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: next to a file named --output-file=victim.py, ruff check took
+  # the name for its flag and overwrote victim.py with its report;
+  # -ovictim2.py did the same through the short flag, and
+  # --config=cache-dir='..'#.py made ruff write its cache into the parent of
+  # the working directory. With no ruff.toml here the walk up for a config
+  # hung before ruff check ran.
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  : > ruff.toml
+  printf 'VALUE = 1\n' > victim.py
+  printf 'VALUE = 2\n' > victim2.py
+  for name in --output-file=victim.py -ovictim2.py "--config=cache-dir='..'#.py"; do
+    printf 'VALUE = 0\n' > "./$name"
+    _run_real "$name"
+    [ "$(cat victim.py)" = "VALUE = 1" ]
+    [ "$(cat victim2.py)" = "VALUE = 2" ]
+    [ "$(cd "$WORK" && shopt -s dotglob && echo *)" = "home proj" ]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[format   ] PASS      ruff format --check ./$name"* ]]
+    [[ "$output" == *"[lint     ] PASS      ruff check ./$name"* ]]
+    [[ "$output" == *"[typecheck] PASS      ty check ./$name"* ||
+      "$output" == *"[typecheck] SKIPPED   ty not installed"* ]]
+  done
+}
+
+@test "Python (ruff): a file named like a response file is checked itself, not the files it lists" {
+  command -v ruff >/dev/null 2>&1 || skip "ruff not installed"
+  command -v timeout >/dev/null 2>&1 || skip "timeout not installed"
+  # regression: ruff and ty replace an argument @x with the lines of the file
+  # x, after -- too, so checking @args.py checked the files args.py lists
+  # (here one outside the project, its text then quoted in the FAIL detail)
+  # instead of @args.py itself
+  mkdir -p "$WORK/proj"
+  cd "$WORK/proj"
+  printf 'NOT PYTHON outside-marker\n' > "$WORK/outside.txt"
+  printf '%s\n' "$WORK/outside.txt" > args.py
+  printf 'VALUE = 1\n' > ./@args.py
+  _run_real @args.py
+  [[ "$output" != *"outside-marker"* ]]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[format   ] PASS      ruff format --check ./@args.py"* ]]
+  [[ "$output" == *"[lint     ] PASS      ruff check "*"./@args.py"* ]]
+  [[ "$output" == *"[typecheck] PASS      ty check ./@args.py"* ||
+    "$output" == *"[typecheck] SKIPPED   ty not installed"* ]]
 }
 
 @test "clean shell file: all checks pass, summary printed, exit 0" {
