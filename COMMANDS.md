@@ -624,12 +624,11 @@ this is the shape.
 
 | Command | Does |
 |---|---|
-| `den install [skills\|shell\|hook\|cheatsheets]` | deploy a component (no target on a TTY = interactive); `skills --profile weak\|frontier` picks the parent-prompt profile (frontier default) |
-| `den uninstall [skills\|shell\|hook\|cheatsheets]` | remove den-identical files for a component |
+| `den install [skills\|shell\|cheatsheets]` | deploy a component (no target on a TTY = interactive); `skills --profile weak\|frontier` picks the parent-prompt profile (frontier default) |
+| `den uninstall [skills\|shell\|hook\|cheatsheets]` | remove den-identical files for a component; `hook` takes the hooks an older den installed out of the current workspace |
 | `den upgrade [--refresh] [--force]` | upgrade den via uv; `--refresh` redeploys, with the new binary, only the skills, parent prompts and shell files the old version deployed and nobody edited (`--force` also replaces edited skill and shell files, backing each up to `<file>.den.bak`; a parent prompt not exactly as den deployed it is never touched) (alias: `den update`) |
 | `den install shell` | the command in this reference — deploys bash/zsh/pwsh/cmd config |
-| `den hook <install\|remove\|list\|run\|imprint>` | per-workspace per-turn agent imprint hooks (runtime plumbing) |
-| `den hook memory <show\|save\|add\|checkpoint\|log\|restore\|diff\|clear\|path>` | workspace session memory (also `den memory ...`) |
+| `den hook run` | a no-op left for the hooks an older den installed (the rest of `den hook`, and `den memory`, were removed: [`MIGRATIONS.md`](MIGRATIONS.md), section 9) |
 | `den verify <file.py>` | format/lint/typecheck one Python file, honoring the project's own ruff/ty config (runtime plumbing for skills) |
 | `den --help` / `den --version` | top-level usage / version |
 

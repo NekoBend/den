@@ -149,16 +149,11 @@ Get-ChildItem ~/.claude/skills, ~/.agents/skills, ~/.copilot/skills, `
 ## 6. claude hooks moved to `.claude/settings.local.json` (2026-10)
 
 den used to write its claude hook commands, which pin this machine's
-absolute `.den` path, into the committed `.claude/settings.json`. They now
-go to Claude Code's personal `.claude/settings.local.json`. Nothing is
-orphaned (`den hook list` and `den uninstall hook` still read the old
-file), but the old entries stay in the shared file until you re-run the
-install in each workspace that has them, which moves them and keeps
-`settings.local.json` out of git:
-
-```sh
-den install hook --tool claude
-```
+absolute `.den` path, into the committed `.claude/settings.json`. They then
+went to Claude Code's personal `.claude/settings.local.json`. Since
+section 9, den installs no hooks at all, so there is nothing to move them
+to: `den uninstall hook --tool claude` takes den's entries out of both
+files, and leaves everything else in them.
 
 ## 7. `clip` renamed to `mclip` (2026-10)
 
@@ -189,6 +184,126 @@ del "%LOCALAPPDATA%\clink\bin\find.cmd"
 ```powershell
 Remove-Item "$env:LOCALAPPDATA\clink\bin\find.cmd" -ErrorAction SilentlyContinue
 ```
+
+## 9. `den memory` and the per-turn hook removed (2026-11)
+
+den kept a workspace memory (`.den/memory.md`, with snapshots in
+`.den/history/`) and installed per-turn hooks that put it, with
+`.den/imprint.md`, in front of the model every turn. The agent tools keep a
+memory of their own now, Cline among them, so both were removed:
+`den memory` and `den hook memory`, `den install hook` (`den hook install`),
+`den hook list`, `den hook imprint` and `den hook remove`. Each of these
+now prints one line saying so, naming this file, and exits 1.
+
+Two commands still run, so that old installs keep working while you clean
+up:
+
+- `den hook run`, which every installed hook calls, is a no-op: it reads
+  nothing, writes nothing, and gives each tool its empty answer, so a hook
+  still in place neither fails nor blocks a session. Nothing reaches the
+  model through it any more.
+- `den uninstall hook` takes those hooks out.
+
+Both stay for now; a later den may drop them.
+
+Left behind in each workspace where you ran `den install hook`:
+
+- den's entries in `.claude/settings.local.json` (or, from older dens,
+  `.claude/settings.json`) and `.github/hooks/den.json`, and its scripts in
+  `.clinerules/hooks/`;
+- for cline-cli, `.clinerules/den-imprint.md` and `.clinerules/den-memory.md`.
+  **These matter more than the rest**: cline loads every `.clinerules/*.md`
+  as an always-on rule, so the old imprint and memory keep reaching the
+  model, and the imprint keeps telling it to run `den hook memory add`, which
+  now fails;
+- `.den/imprint.md`, `.den/memory.md` and `.den/history/`, which den no
+  longer reads or writes;
+- the `/.claude/settings.local.json` line den added to the repository's
+  `.git/info/exclude`. It only keeps an untracked file out of git; leave it
+  or delete it.
+
+den keeps no list of those workspaces. This names every file den wrote
+there, under the directory where you keep your projects (`~/src` here
+stands for it):
+
+```sh
+command find ~/src \( -path '*/.claude/settings*.json' -o -path '*/.github/hooks/den.json' \
+                     -o -path '*/.clinerules/*' \) -type f \
+     -exec grep -l -e 'den hook run' -e '^<!-- den-managed' {} + 2>/dev/null
+```
+
+```powershell
+Get-ChildItem ~/src -Recurse -Force -File -ErrorAction SilentlyContinue |
+  Where-Object FullName -Match '[\\/](\.claude[\\/]settings(\.local)?\.json|\.github[\\/]hooks[\\/]den\.json|\.clinerules[\\/].+)$' |
+  Select-String -List -Pattern 'den hook run', '^<!-- den-managed' |
+  ForEach-Object Path
+```
+
+Run `den uninstall hook` in each directory that holds a `.claude`, `.github`
+or `.clinerules` the list names. That directory is not always the one with
+the `.den`: an install in a subdirectory wrote its hook config there but
+used the nearest `.den` above it, and cline-cli's two files sit beside that
+`.den`.
+
+Then delete the three entries by hand in each `.den` that still has them.
+Do not delete `.den` as a whole: `.den/board/` belongs to `den board`, which
+stays; `rmdir` removes `.den` only once nothing is left in it.
+
+```sh
+command find ~/src -path '*/.den/imprint.md' 2>/dev/null   # where they are
+cd <the directory holding that .den>
+rm -rf .den/imprint.md .den/memory.md .den/history
+rmdir .den 2>/dev/null
+```
+
+```powershell
+Get-ChildItem ~/src -Recurse -Force -Filter imprint.md -ErrorAction SilentlyContinue |
+  Where-Object { $_.Directory.Name -eq '.den' }
+Set-Location <the directory holding that .den>
+Remove-Item -Recurse -Force .den/imprint.md, .den/memory.md, .den/history `
+  -ErrorAction SilentlyContinue
+if (-not (Get-ChildItem -Force .den -ErrorAction SilentlyContinue)) {
+  Remove-Item .den -ErrorAction SilentlyContinue
+}
+```
+
+`den uninstall hook` leaves a file under `.clinerules/` named
+`den-imprint.md` or `den-memory.md` that does not start with den's
+`<!-- den-managed` header, and says so: it is not a file den wrote.
+
+Two older shapes live outside that layout:
+
+- dens before section 2 (2026-07) also installed gemini hooks in
+  `.gemini/settings.json`. gemini-cli is end-of-life, so they never run;
+  the file has claude's format, so this takes den's entries out of it:
+
+  ```sh
+  den uninstall hook --tool claude --config .gemini/settings.json
+  ```
+
+- the first dens (June 2026, before den was a package) wrote user-level
+  files instead of workspace ones. Check whether any of them holds a
+  `den hook run` line:
+
+  ```sh
+  command grep -rl 'den hook run' ~/.claude/settings.json ~/.gemini/settings.json \
+                ~/.copilot/hooks/den.json ~/.cline/hooks 2>/dev/null
+  ```
+
+  ```powershell
+  Select-String -List -Pattern 'den hook run' -ErrorAction SilentlyContinue `
+    -Path ~/.claude/settings.json, ~/.gemini/settings.json, `
+          ~/.copilot/hooks/den.json, ~/.cline/hooks/*
+  ```
+
+  and take den's entries out of each one it names:
+
+  ```sh
+  den uninstall hook --tool claude --config ~/.claude/settings.json
+  den uninstall hook --tool claude --config ~/.gemini/settings.json
+  den uninstall hook --tool copilot --config ~/.copilot/hooks/den.json
+  den uninstall hook --tool cline --config ~/.cline/hooks
+  ```
 
 ## Why there is no `den prune`
 
