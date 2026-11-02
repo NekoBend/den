@@ -5,13 +5,19 @@ rem that cmd_fake_tool.ps1 builds: each prints its arguments as [arg] lines
 rem and exits with FAKE_RC. Checked: the wrappers run the tool found on PATH,
 rem keep its exit code and run their fallback only without it; findw runs fd
 rem whatever the toggle, and says so without it; there is no find shim, so
-rem typed find is find.exe; no where.* or tool in the current directory runs;
+rem typed find is find.exe; cat expands each wildcard itself, refuses a name
+rem that starts with - and names a file, a typed --, and an option or an
+rem option's value that holds * or ?, and hands bat every name in quotes,
+rem the run of backslashes it ends in doubled, then a last --paging=never;
+rem no where.* or tool in the current directory runs;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
 rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path
 rem or something in the current directory, for --version / -V too, and
-rem elsewhere uv run for those as well; pip runs nothing outside a venv;
+rem elsewhere uv run for those as well; pip runs nothing outside a venv,
+rem and in a venv without pip.exe runs uv pip with --config-file and your
+rem own uv.toml, or with --no-config without one;
 rem path lists PATH; again asks before it re-runs.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
@@ -60,8 +66,169 @@ call :expect %errorlevel% 1 "grep: rg finds nothing, exit 1, no findstr after it
 >>"%W%" echo [--paging=never]
 >>"%W%" echo [a.txt]
 >>"%W%" echo [missing.txt]
+>>"%W%" echo [--paging=never]
 call "%BIN%\cat.cmd" a.txt missing.txt >"%O%" 2>&1
 call :expect %errorlevel% 1 "cat: bat fails, no type after it"
+
+rem bat expands a wildcard itself, one word at a time (cmd does not), and
+rem reads a name that starts with - as an option. So cat expands each word
+rem with cmd's for and hands bat every name in quotes, which bat's expansion
+rem leaves alone, then a last --paging=never: bat takes the last --paging.
+rem With FAKE_RAW set the stand-in prints its command line in braces, which
+rem shows the quotes. A word that matches nothing goes on as it is, "" stays
+rem an argument, and cat alone or cat - leaves bat to read standard input.
+set "FAKE_RC="
+set "FAKE_RAW=1"
+>"%W%" echo {--style=plain --paging=never "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" * >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: cmd expands the wildcard, and bat gets each name in quotes"
+>"%W%" echo {--style=plain --paging=never "a.txt" "-" "" "zz*" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [-]
+>>"%W%" echo []
+>>"%W%" echo [zz*]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" a.txt - "" zz* >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: -, an empty argument and a wildcard that matches nothing reach bat"
+>"%W%" echo {--style=plain --paging=never --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" <nul >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: no argument, bat reads standard input"
+>"%W%" echo {--style=plain --paging=never "-n" "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [-n]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" -n a.txt >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: an option that names no file reaches bat"
+
+rem cat's for would make file names of an option or an option's value that
+rem holds * or ?: -l * would give bat a.txt as the language. So cat refuses
+rem such a word, and the value of an option that takes it from the next word
+rem (cmd splits an unquoted --file-name=*.py at the =), and bat does not run.
+rem An option or a value without them goes on as it is, and a wildcard after
+rem an option's value, or after -lrust, which holds its value, is a file.
+>"%W%" echo cat: '*.py', the value of --file-name, holds * or ?, which cat would expand as a wildcard: bat did not run.
+>>"%W%" echo cat: run bat by name for it.
+call "%BIN%\cat.cmd" --file-name=*.py - >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses --file-name=*.py, split at the =, and bat does not run"
+>"%W%" echo cat: '--file-name=*.py' is an option that holds * or ?, which cat would expand as a wildcard: bat did not run.
+>>"%W%" echo cat: run bat by name for it.
+call "%BIN%\cat.cmd" "--file-name=*.py" - >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a quoted --file-name=*.py, and bat does not run"
+>"%W%" echo cat: '*', the value of -l, holds * or ?, which cat would expand as a wildcard: bat did not run.
+>>"%W%" echo cat: run bat by name for it.
+call "%BIN%\cat.cmd" -l * a.txt >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses -l *, and bat does not run"
+>"%W%" echo cat: 'a?txt', the value of -pl, holds * or ?, which cat would expand as a wildcard: bat did not run.
+>>"%W%" echo cat: run bat by name for it.
+call "%BIN%\cat.cmd" -pl a?txt a.txt >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses -pl a?txt, and bat does not run"
+>"%W%" echo {--style=plain --paging=never "--file-name" "x.py" "-l" "rust" "-lrust" "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [--file-name]
+>>"%W%" echo [x.py]
+>>"%W%" echo [-l]
+>>"%W%" echo [rust]
+>>"%W%" echo [-lrust]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" --file-name=x.py -l rust -lrust * >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: options and values without * or ? reach bat, and * after them is a file"
+
+rem Beside files named --, --pager=cmd and --paging=always, bat once
+rem expanded ???* to the pager options and then * to a -- that turned the
+rem last --paging=never into a file name. cat refuses a match that starts
+rem with - and names a file, for either word and for * alone, and bat does
+rem not run.
+mkdir "%T%\opt" || exit /b 1
+cd /d "%T%\opt" || exit /b 1
+type nul >"--"
+type nul >"--pager=cmd"
+type nul >"--paging=always"
+>"notes.txt" echo type nul
+call "%BIN%\cat.cmd" ???* * >"%O%" 2>&1
+call :refused %errorlevel% "cat: ???* * beside --, --pager=cmd and --paging=always, bat does not run"
+call "%BIN%\cat.cmd" * >"%O%" 2>&1
+call :refused %errorlevel% "cat: * beside them, bat does not run"
+
+rem The message names the file and the ways that work: .\ before the name
+rem or the wildcard, which bat reads as a file, or type.
+mkdir "%T%\opt2" || exit /b 1
+cd /d "%T%\opt2" || exit /b 1
+type nul >"-x.txt"
+>"a.txt" echo zzz
+>"%W%" echo cat: '-x.txt' names a file, and bat would read it as an option: bat did not run.
+>>"%W%" echo cat: write it as .\-x.txt (a wildcard as .\*), or run type instead.
+call "%BIN%\cat.cmd" * >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a match named -x.txt and says why"
+call "%BIN%\cat.cmd" -x.txt >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a typed -x.txt that names a file"
+>"%W%" echo {--style=plain --paging=never ".\-x.txt" ".\a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [.\-x.txt]
+>>"%W%" echo [.\a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" .\* >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: .\* hands bat .\-x.txt as a file"
+
+rem A name with characters cmd would parse reaches bat whole.
+mkdir "%T%\spec" || exit /b 1
+cd /d "%T%\spec" || exit /b 1
+type nul >"a&b!c%%d^e (1).txt"
+>"%W%" echo {--style=plain --paging=never "a&b!c%%d^e (1).txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [a^&b!c%%d^^e (1).txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" * >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: a name with special characters and a blank reaches bat whole"
+cd /d "%T%\work" || exit /b 1
+
+rem bat reads a run of backslashes before a quote as half as many, and an
+rem odd one as escaping the quote: "label\" would swallow its closing quote
+rem and run on into the words after it, den's last --paging=never included.
+rem So cat doubles the run of backslashes a word ends in.
+>"%W%" echo {--style=plain --paging=never "--file-name" "label\\" "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [--file-name]
+>>"%W%" echo [label\]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" --file-name label\ a.txt >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: a value that ends in \ reaches bat whole, and so do the words after it"
+>"%W%" echo {--style=plain --paging=never ".\sub\\" "sub\\\\" "a.txt" --paging=never}
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [.\sub\]
+>>"%W%" echo [sub\\]
+>>"%W%" echo [a.txt]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" .\sub\ sub\\ a.txt >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: a typed path that ends in \ or \\ reaches bat whole, and so do the words after it"
+set "FAKE_RAW="
+
+rem A typed -- would make bat read the last --paging=never as a file name,
+rem so cat refuses one and bat does not run.
+>"%W%" echo cat: -- would make bat read den's last --paging=never as a file name.
+>>"%W%" echo cat: write a file whose name starts with - as .\-name instead.
+call "%BIN%\cat.cmd" a.txt -- -x.txt >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a typed --, and bat does not run"
+call "%BIN%\cat.cmd" a.txt "--" >"%O%" 2>&1
+call :expect %errorlevel% 2 "cat: refuses a quoted --, and bat does not run"
+set "FAKE_RC=1"
 
 rem findw is fd, the toggle notwithstanding, and find.exe never runs after
 rem it. There is no find.cmd: typed find is find.exe, which reads a pipe
@@ -403,11 +570,69 @@ set "FAKE_FIND_MANAGED=%T%\managed\python.exe"
 call "%BIN%\pip.cmd" install foo >"%O%" 2>&1
 call :expect %errorlevel% 1 "pip: no venv, nothing runs"
 set "VIRTUAL_ENV=%T%\venv"
+rem uv reads no uv.toml or pyproject.toml of a clone here, which can have it
+rem run a python the clone ships or install from the clone's files: pip has
+rem it read your own uv.toml alone (--config-file), or none (--no-config).
+rem Yours is the one UV_CONFIG_FILE names, even under UV_NO_CONFIG, else,
+rem unless UV_NO_CONFIG is true, %APPDATA%\uv\uv.toml, else, unless
+rem UV_NO_SYSTEM_CONFIG is true, %SYSTEMDRIVE%\ProgramData\uv\uv.toml.
+set "_APPDATA=%APPDATA%"
+set "_SYSTEMDRIVE=%SYSTEMDRIVE%"
+set "APPDATA=%T%\appdata"
+set "SYSTEMDRIVE=%T%\sysdrive"
+set "UV_CONFIG_FILE="
+set "UV_NO_CONFIG="
+set "UV_NO_SYSTEM_CONFIG="
+mkdir "%T%\appdata\uv" "%T%\sysdrive\ProgramData\uv" || exit /b 1
 >"%W%" echo [@tools]
+>>"%W%" echo [--no-config]
 >>"%W%" echo [pip]
 >>"%W%" echo [list]
 call "%BIN%\pip.cmd" list >"%O%" 2>nul
-call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv pip"
+call :expect %errorlevel% 0 "pip: a venv without pip.exe and no uv.toml of yours, uv --no-config pip"
+type nul >"%T%\sysdrive\ProgramData\uv\uv.toml"
+>"%W%" echo [@tools]
+>>"%W%" echo [--config-file]
+>>"%W%" echo [%T%\sysdrive\ProgramData\uv\uv.toml]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv --config-file pip with the system uv.toml"
+set "UV_NO_SYSTEM_CONFIG=On"
+>"%W%" echo [@tools]
+>>"%W%" echo [--no-config]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: UV_NO_SYSTEM_CONFIG true, uv --no-config pip"
+type nul >"%T%\appdata\uv\uv.toml"
+>"%W%" echo [@tools]
+>>"%W%" echo [--config-file]
+>>"%W%" echo [%T%\appdata\uv\uv.toml]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: a venv without pip.exe, uv --config-file pip with your uv.toml"
+set "UV_NO_CONFIG=TRUE"
+>"%W%" echo [@tools]
+>>"%W%" echo [--no-config]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: UV_NO_CONFIG true, uv --no-config pip"
+set "UV_CONFIG_FILE=%T%\mine.toml"
+>"%W%" echo [@tools]
+>>"%W%" echo [--config-file]
+>>"%W%" echo [%T%\mine.toml]
+>>"%W%" echo [pip]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>nul
+call :expect %errorlevel% 0 "pip: UV_CONFIG_FILE, under UV_NO_CONFIG too, uv --config-file pip with that file"
+set "UV_CONFIG_FILE="
+set "UV_NO_CONFIG="
+set "UV_NO_SYSTEM_CONFIG="
+set "APPDATA=%_APPDATA%"
+set "SYSTEMDRIVE=%_SYSTEMDRIVE%"
 copy /y "%T%\tools\fake.exe" "%T%\venv\Scripts\pip.exe" >nul || exit /b 1
 >"%W%" echo [@Scripts]
 >>"%W%" echo [list]
@@ -501,6 +726,15 @@ echo --- want:
 type "%W%"
 echo --- got:
 type "%O%"
+exit /b 0
+
+rem :refused RC LABEL - cat ran nothing: RC is 2, the output says why, and
+rem the stand-in printed nothing (its lines start with { or [).
+:refused
+set "OK="
+"%FINDSTR%" /b /l /c:"cat: '-" "%O%" >nul && if "%~1"=="2" set "OK=1"
+"%FINDSTR%" /b /l /c:"{" /c:"[" "%O%" >nul && set "OK="
+call :check "%~2"
 exit /b 0
 
 rem :check LABEL - passes when OK is defined.

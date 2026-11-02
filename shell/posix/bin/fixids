@@ -24,10 +24,11 @@
 # which locks the user out of their own files, so fixids refuses to run as
 # root without --to (--to 0:0 chowns to root on purpose).
 #
-# fixids finds the files first and then chowns them by path; with --from
-# UID:GID the chowns start only after the whole walk. Run it before anything
-# else uses the tree, as an entrypoint does: a process that renames
-# directories in the tree meanwhile could make a chown land on another file.
+# fixids finds the files first, in one walk that lists them under TMPDIR
+# (default /tmp; the lists are removed on exit), and then chowns them by
+# path, starting only after the whole walk. Run it before anything else uses
+# the tree, as an entrypoint does: a process that renames directories in the
+# tree meanwhile could make a chown land on another file.
 #
 #   In a Dockerfile:  COPY shell/posix/bin/fixids /usr/local/bin/fixids
 #                     COPY entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -67,6 +68,8 @@ Options:
 
 UID/GID may be numeric or names. Chowning files you do not own needs root (the
 usual entrypoint case). Symlinks are chowned themselves, never their targets.
+The files are listed under \$TMPDIR (default /tmp) before any is changed; the
+lists are removed on exit.
 EOF
 }
 
@@ -210,42 +213,31 @@ warn_walk() {
 	fail=1
 }
 
-# run_pass VERB QUIET CMD TARGET MATCH... -- find the files matching MATCH under
-# the shared roots (with the prune above), or with $list set take the paths
-# from that file (one of classify's lists), and apply `CMD -h -c TARGET` to
-# them in parallel. `-c` prints one line per CHANGED file; awk counts them (fast, in
-# C) for a live progress total (only to a tty) and a summary; with -v each
-# changed path is printed too. VERB is the past-tense verb for the messages;
-# QUIET=1 suppresses the summary when nothing changed (secondary passes). With
-# --dry-run only the candidate count is printed. A per-file failure does not
-# abort the run (CMD and xargs both continue past it); failures surface AFTER
-# the pipeline via PIPESTATUS (awk is last in the pipe, so xargs' status would
-# otherwise be lost behind awk's exit 0) and mark the whole run failed.
-# stdbuf -oL keeps each parallel worker's lines whole (block-buffered output
-# can split lines mid-path when workers interleave, garbling the count).
-# ${prune[@]+...}: empty-array expansion is an unbound-variable error under
-# `set -u` on bash < 4.4 (centos7-era images), so expand it conditionally.
+# run_pass VERB QUIET CMD TARGET LIST -- apply `CMD -h -c TARGET` to the paths
+# in LIST (one of walk's lists, checked there) in parallel. `-c` prints one
+# line per CHANGED file; awk counts them (fast, in C) for a live progress
+# total (only to a tty) and a summary; with -v each changed path is printed
+# too. VERB is the past-tense verb for the messages; QUIET=1 suppresses the
+# summary when nothing changed (secondary passes). With --dry-run only the
+# candidate count is printed. A per-file failure does not abort the run (CMD
+# and xargs both continue past it); failures surface AFTER the pipeline via
+# PIPESTATUS (awk is last in the pipe, so xargs' status would otherwise be
+# lost behind awk's exit 0) and mark the whole run failed. stdbuf -oL keeps
+# each parallel worker's lines whole (block-buffered output can split lines
+# mid-path when workers interleave, garbling the count). uutils' stdbuf
+# (/usr/bin/stdbuf on Ubuntu 26.04) leaves a directory under TMPDIR on every
+# call, one per batch, so the pass runs with TMPDIR set to the list
+# directory, which is removed on exit.
 run_pass() {
-	local verb=$1 quiet=$2 cmd=$3 tgt=$4
-	shift 4
-	# Roots were canonicalized above; -H covers the corner where readlink -f
-	# failed and a root is still a symlink (better to walk it than to no-op).
-	# Files INSIDE the tree stay lstat-matched and chowned with -h, so inner
-	# symlinks are never followed.
-	local fc=(find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} "$@" -print0)
-	# A list was walked already (classify reported its errors): read it.
-	[ -z "$list" ] || fc=(cat -- "$list")
+	local verb=$1 quiet=$2 cmd=$3 tgt=$4 list=$5
 	if [ "$dry" -eq 1 ]; then
-		# inspection mode: every pass's count is printed, on stdout. find errors
-		# must not hide behind the count pipeline here either (exit "${PIPESTATUS[0]}"
-		# re-raises find's status out of the substitution; n is still captured).
+		# inspection mode: every pass's count is printed, on stdout
 		local n
-		n=$("${fc[@]}" | tr -cd '\0' | wc -c; exit "${PIPESTATUS[0]}") || warn_walk
+		n=$(tr -cd '\0' <"$list" | wc -c)
 		echo "$prog: $n file(s) would be $verb to $tgt"
 		return 0
 	fi
-	"${fc[@]}" |
-		xargs -0 -r -P "$jobs" -n 256 stdbuf -oL "$cmd" -h -c "$tgt" |
+	TMPDIR=$tmpd xargs -0 -r -P "$jobs" -n 256 stdbuf -oL "$cmd" -h -c "$tgt" <"$list" |
 		awk -v prog="$prog" -v verbose="$verbose" -v tty="$tty" \
 			-v verb="$verb" -v quiet="$quiet" -v tgt="$tgt" '
 			{
@@ -259,49 +251,66 @@ run_pass() {
 					printf "%s: %s %d file(s) to %s\n", prog, verb, n + 0, tgt > "/dev/stderr"
 			}'
 	local ps=("${PIPESTATUS[@]}")
-	[ "${ps[0]}" -eq 0 ] || warn_walk
-	if [ "${ps[1]}" -ne 0 ]; then
-		echo "$prog: some files could not be $verb (xargs exit ${ps[1]})" >&2
+	if [ "${ps[0]}" -ne 0 ]; then
+		echo "$prog: some files could not be $verb (xargs exit ${ps[0]})" >&2
 		fail=1
 	fi
 	return 0
 }
 
-# classify F_UID F_GID -- sort the files under the roots (with the prune above)
-# into the three disjoint classes the --from UID:GID passes change, in ONE walk
-# taken before anything changes: both ids match, the uid only, the gid only.
-# Each class goes to a NUL-separated list in $tmpd (both, uid, gid). A walk
-# per pass lstat()ed every inode three times, and a pass that walked after an
-# earlier pass had chowned saw that pass's files again: with --to F_UID:NEWGID
-# the uid-only walk matched every file the first pass had just re-grouped.
-# GNU find's comma operator evaluates every class for each file; the
-# parentheses keep the prune ahead of all three.
+# walk EXPR... -- the one find walk over the roots (with the prune above),
+# taken before anything changes. EXPR writes each class of files a pass
+# changes to a NUL-separated list in $tmpd with -fprint0. With --from UID:GID
+# there are three disjoint classes: both ids match, the uid only, the gid
+# only. A walk per pass lstat()ed every inode three times, and a pass that
+# walked after an earlier pass had chowned saw that pass's files again: with
+# --to F_UID:NEWGID the uid-only walk matched every file the first pass had
+# just re-grouped. GNU find's comma operator evaluates every class for each
+# file; the parentheses keep the prune ahead of all of them.
 # A list find could not write in full (TMPDIR full, a file-size limit), or one
 # a find stopped by a signal left, can end in or splice in part of a path,
-# which chown would take for a path (an ancestor directory, say). So when
-# find names a list in an error, or does not exit 0 or 1, fixids stops before
-# it changes anything. Other walk errors (an unreadable directory) let the
+# which chown would take for a path (an ancestor directory, say). So fixids
+# stops before it changes anything when find names a list in an error, when
+# find does not exit 0 or 1, or when a list is not empty and its last byte is
+# not a NUL. find does not always notice a cut: GNU find 4.10 reports a list
+# it could not write only when closing the list fails, so with a file-size
+# limit and SIGXFSZ ignored it can exit 0, without a message, over a list
+# that ends inside a path. The last-byte check sees only where a list ends: a
+# list cut exactly after a NUL looks complete to it, and so does one that lost
+# bytes before its end. Other walk errors (an unreadable directory) let the
 # passes run, as before; find's messages are read for this and then printed.
-classify() {
-	local err rc=0 bad=0
-	tmpd=$(mktemp -d "${TMPDIR:-/tmp}/fixids.XXXXXX")
-	trap 'rm -rf -- "$tmpd"' EXIT
-	err=$(find -H "${roots[@]}" ${prune[@]+"${prune[@]}"} '(' \
-		'(' -uid "$1" -gid "$2" -fprint0 "$tmpd/both" ')' , \
-		'(' -uid "$1" '!' -gid "$2" -fprint0 "$tmpd/uid" ')' , \
-		'(' '!' -uid "$1" -gid "$2" -fprint0 "$tmpd/gid" ')' ')' 2>&1 >/dev/null) || rc=$?
+# Every pass reads a list: a pass that read find's output through a pipe as
+# it walked handed chown whatever a killed find had written, a cut path too.
+# The walk prunes $tmpd itself (by inode, so any spelling of TMPDIR matches):
+# with TMPDIR inside a root, it selected the list directory and its lists,
+# and a real run chowned the list xargs was still reading.
+# Roots were canonicalized above; -H covers the corner where readlink -f
+# failed and a root is still a symlink (better to walk it than to no-op).
+# Files INSIDE the tree stay lstat-matched and chowned with -h, so inner
+# symlinks are never followed.
+# ${prune[@]+...}: empty-array expansion is an unbound-variable error under
+# `set -u` on bash < 4.4 (centos7-era images), so expand it conditionally.
+walk() {
+	local err rc=0 bad=0 l
+	err=$(find -H "${roots[@]}" '(' -samefile "$tmpd" -prune ')' -o \
+		${prune[@]+"${prune[@]}"} '(' "$@" ')' 2>&1 >/dev/null) || rc=$?
 	[ -z "$err" ] || printf '%s\n' "$err" >&2
-	[ "$rc" -eq 0 ] && return 0
-	[ "$rc" -eq 1 ] || bad=1
+	[ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || bad=1
 	case $err in *"${tmpd##*/}/"*) bad=1 ;; esac
+	# tail -c 1 reads only the last byte (it seeks), however long the list
+	for l in "$tmpd"/*; do
+		[ ! -s "$l" ] || [ "$(tail -c 1 -- "$l" | od -An -tx1)" = " 00" ] || bad=1
+	done
 	if [ "$bad" -eq 1 ]; then
 		echo "$prog: the file lists under ${tmpd%/*} are incomplete (find exit $rc); nothing was changed" >&2
 		exit 1
 	fi
-	warn_walk
+	[ "$rc" -eq 0 ] || warn_walk
 }
 
-list=""
+# walk's lists go in a directory of their own, removed on exit.
+tmpd=$(mktemp -d "${TMPDIR:-/tmp}/fixids.XXXXXX")
+trap 'rm -rf -- "$tmpd"' EXIT
 
 # Which files to change, and how.
 if [ "$from_set" -eq 1 ]; then
@@ -313,24 +322,28 @@ if [ "$from_set" -eq 1 ]; then
 		# DISJOINT passes so each file gets exactly the change it matched -- a
 		# file matching only by gid must not have its uid taken over. On the
 		# typical tree (everything owned uid:gid) passes 2 and 3 match nothing.
-		# The classes come from one walk (classify). A uid-only file needs a
-		# change only when the uid does, a gid-only file only when the gid does.
-		classify "$f_uid" "$f_gid"
-		list=$tmpd/both run_pass chowned 0 chown "$to_uid:$to_gid"
-		[ "$to_uid" = "$f_uid" ] || list=$tmpd/uid run_pass chowned 1 chown "$to_uid"
-		[ "$to_gid" = "$f_gid" ] || list=$tmpd/gid run_pass "chgrp'd" 1 chgrp "$to_gid"
+		# The classes come from one walk. A uid-only file needs a change only
+		# when the uid does, a gid-only file only when the gid does.
+		walk '(' -uid "$f_uid" -gid "$f_gid" -fprint0 "$tmpd/both" ')' , \
+			'(' -uid "$f_uid" '!' -gid "$f_gid" -fprint0 "$tmpd/uid" ')' , \
+			'(' '!' -uid "$f_uid" -gid "$f_gid" -fprint0 "$tmpd/gid" ')'
+		run_pass chowned 0 chown "$to_uid:$to_gid" "$tmpd/both"
+		[ "$to_uid" = "$f_uid" ] || run_pass chowned 1 chown "$to_uid" "$tmpd/uid"
+		[ "$to_gid" = "$f_gid" ] || run_pass "chgrp'd" 1 chgrp "$to_gid" "$tmpd/gid"
 	else
 		# uid-only --from; or --to without a GID, where gid matches have no
 		# target gid, so only uid matches are touched (groups stay as they are)
-		run_pass chowned 0 chown "$target" -uid "$f_uid"
+		walk -uid "$f_uid" -fprint0 "$tmpd/all"
+		run_pass chowned 0 chown "$target" "$tmpd/all"
 	fi
 else
 	# Anything not already fully owned by the target (uid or gid differs).
 	if [ -n "$to_gid" ]; then
-		run_pass chowned 0 chown "$target" '(' '!' -uid "$to_uid" -o '!' -gid "$to_gid" ')'
+		walk '(' '!' -uid "$to_uid" -o '!' -gid "$to_gid" ')' -fprint0 "$tmpd/all"
 	else
-		run_pass chowned 0 chown "$target" '!' -uid "$to_uid"
+		walk '!' -uid "$to_uid" -fprint0 "$tmpd/all"
 	fi
+	run_pass chowned 0 chown "$target" "$tmpd/all"
 fi
 
 exit "$fail"

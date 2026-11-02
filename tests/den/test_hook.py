@@ -1,10 +1,12 @@
 """Tests for den hook (den/_hook.py)."""
 
 import base64
+import copy
 import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -12,6 +14,7 @@ import pytest
 
 from den import _hook
 from den._hook import main as hook_main
+from den._uninstall import main as uninstall_main
 
 
 def _assert_pinned(cmd: str, prefix: str, den_dir) -> None:
@@ -245,6 +248,30 @@ def test_install_backs_up_non_utf8_config(tmp_path, monkeypatch):
     assert bak.is_file() and bak.read_bytes() == b"\xff\xfe not utf-8 \x00"
 
 
+@pytest.mark.parametrize(
+    ("tool", "rel", "content"),
+    [
+        ("claude", ".claude/settings.local.json", {"permissions": {"allow": ["x"]}}),
+        ("copilot", ".github/hooks/den.json", {"version": 1}),
+    ],
+)
+def test_install_merges_into_an_object_without_hooks(
+    tmp_path, monkeypatch, capsys, tool, rel, content
+):
+    # The most common settings file has no `hooks` key yet. It is mergeable:
+    # no backup, and no line saying den could not merge into it.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps(content))
+    assert hook_main(["install", "--tool", tool]) == 0
+    assert not list(cfg.parent.glob(cfg.name + ".den.bak*"))
+    assert "can merge" not in capsys.readouterr().err
+    data = json.loads(cfg.read_text())
+    assert data.items() >= content.items()
+    assert data["hooks"]
+
+
 def test_install_surfaces_existing_imprint(tmp_path, monkeypatch, capsys):
     _seed(tmp_path, imprint="SUSPICIOUS RULE\n")  # pre-existing, not seeded by us
     monkeypatch.chdir(tmp_path)
@@ -440,6 +467,204 @@ def test_remove_strips_den_keeps_foreign(tmp_path, monkeypatch):
     assert commands == ["echo foreign"]
 
 
+# den writes one hook per group, but a hook added by hand (or by a tool that
+# appends to an existing group with the same matcher) can share one of den's.
+# Install, remove and the move out of settings.json all dropped every group that
+# held a den command, and the foreign hook with it.
+
+
+def _commands(groups):
+    return [h["command"] for g in groups for h in g["hooks"]]
+
+
+def _add_to_den_group(settings, event, command):
+    data = json.loads(settings.read_text())
+    data["hooks"][event][0]["hooks"].append({"type": "command", "command": command})
+    settings.write_text(json.dumps(data))
+
+
+def test_reinstall_keeps_a_foreign_hook_in_dens_group(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    local = tmp_path / ".claude" / "settings.local.json"
+    _add_to_den_group(local, "PostToolUse", "echo foreign-policy-check")
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    groups = json.loads(local.read_text())["hooks"]["PostToolUse"]
+    foreign = {"type": "command", "command": "echo foreign-policy-check"}
+    assert {"matcher": "Write|Edit|MultiEdit", "hooks": [foreign]} in groups
+    den = [c for c in _commands(groups) if c.startswith(_hook._MARKER)]
+    assert len(den) == 1, "den's own hook is replaced, not duplicated"
+
+
+def test_remove_keeps_a_foreign_hook_in_dens_group(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    local = tmp_path / ".claude" / "settings.local.json"
+    _add_to_den_group(local, "Stop", "echo KEEP_FOREIGN_STOP")
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    foreign = {"type": "command", "command": "echo KEEP_FOREIGN_STOP"}
+    assert json.loads(local.read_text()) == {"hooks": {"Stop": [{"hooks": [foreign]}]}}
+
+
+def test_install_moves_den_out_of_a_shared_group_and_keeps_the_team_hook(
+    tmp_path, monkeypatch
+):
+    # A committed .claude/settings.json with a team hook in an earlier den's
+    # group: the team hook left the shared file and was in neither file.
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    team = {"type": "command", "command": "echo team-policy-check"}
+    den = _den_group("claude")["hooks"][0]
+    perms = {"allow": ["Bash(git status)"]}
+    shared.write_text(
+        json.dumps(
+            {
+                "permissions": perms,
+                "hooks": {"UserPromptSubmit": [{"hooks": [den, team]}]},
+            }
+        )
+    )
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert json.loads(shared.read_text()) == {
+        "permissions": perms,
+        "hooks": {"UserPromptSubmit": [{"hooks": [team]}]},
+    }
+    local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    cmds = _commands(local["hooks"]["UserPromptSubmit"])
+    assert len(cmds) == 1 and cmds[0].startswith("den hook run --event per-turn")
+
+
+def test_strip_den_hooks_takes_out_only_dens_hooks():
+    den = _den_group("claude")["hooks"][0]
+    foreign = {"type": "command", "command": "echo foreign", "timeout": 5}
+    hooks = {
+        "PostToolUse": [{"matcher": "Write|Edit", "hooks": [den, foreign]}],
+        "SessionStart": [{"hooks": [den]}, {"matcher": "startup", "hooks": [foreign]}],
+        "Stop": [{"hooks": [den]}],
+    }
+    before = copy.deepcopy(hooks)
+    assert _hook._strip_den_hooks(hooks) == {
+        "PostToolUse": [{"matcher": "Write|Edit", "hooks": [foreign]}],
+        "SessionStart": [{"matcher": "startup", "hooks": [foreign]}],
+    }
+    assert hooks == before, "the argument is unchanged: remove compares against it"
+
+
+@pytest.mark.parametrize(
+    "hooks",
+    [
+        {"Stop": []},
+        {"Stop": [{"matcher": "Bash"}]},
+        {"Stop": [{"hooks": []}]},
+        {"Stop": ["not a group"]},
+        {"Stop": [{"hooks": "echo hi"}]},
+        {"Stop": [{"hooks": ["echo hi", 5, None]}]},
+        {"Stop": [{"hooks": [{"type": "command", "command": 5}]}]},
+        {"Stop": {"hooks": [{"type": "command", "command": "echo hi"}]}},
+        {"Stop": "echo hi", "PreToolUse": None},
+        None,
+        ["echo hi"],
+    ],
+)
+def test_strip_den_hooks_returns_what_holds_nothing_of_dens_unchanged(hooks):
+    # Anything else made remove rewrite a file it had nothing to take out of,
+    # or raised on an entry den never wrote. A shape den never writes (the last
+    # four) was dropped. Getting the very object back is remove's cue.
+    arg = copy.deepcopy(hooks)
+    assert _hook._strip_den_hooks(arg) is arg
+    assert arg == hooks
+
+
+def test_remove_leaves_a_file_with_nothing_of_dens_byte_identical(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    raw = b'{"hooks": {"Stop": [], "PreToolUse": [{"matcher": "Bash", "hooks": []}]}}'
+    local.write_bytes(raw)
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    assert local.read_bytes() == raw
+
+
+# Shapes den never writes: a `hooks` that is not an object, an event whose value
+# is not a list. strip dropped them, so remove rewrote a file that held nothing
+# of den's without them, and install dropped them with no copy anywhere.
+_ODD_HOOKS = {
+    "event-object": {"Stop": {"hooks": [{"type": "command", "command": "echo hi"}]}},
+    "event-null": {"Stop": None},
+    "hooks-null": None,
+    "hooks-list": ["echo hi"],
+    # json reads NaN, which is not equal to itself: remove has to tell that
+    # nothing came out by getting the very object back, not by comparing.
+    "hooks-nan": float("nan"),
+}
+
+
+@pytest.mark.parametrize("hooks", list(_ODD_HOOKS.values()), ids=list(_ODD_HOOKS))
+def test_remove_leaves_hooks_of_a_shape_den_never_writes_byte_identical(
+    tmp_path, monkeypatch, hooks
+):
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    raw = json.dumps({"x": 1, "hooks": hooks}, separators=(",", ":")).encode()
+    local.write_bytes(raw)
+    assert hook_main(["remove", "--tool", "claude"]) == 0
+    assert local.read_bytes() == raw
+
+
+@pytest.mark.parametrize("hooks", list(_ODD_HOOKS.values()), ids=list(_ODD_HOOKS))
+def test_install_backs_up_hooks_it_cannot_add_to_before_replacing_them(
+    tmp_path, monkeypatch, capsys, hooks
+):
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    raw = json.dumps({"x": 1, "hooks": hooks}).encode()
+    local.write_bytes(raw)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    bak = local.with_name(local.name + ".den.bak")
+    assert bak.read_bytes() == raw
+    assert str(bak) in capsys.readouterr().err, "the backup is named"
+    data = json.loads(local.read_text())
+    assert data["x"] == 1
+    cmds = _commands(data["hooks"]["Stop"])
+    assert len(cmds) == 1 and cmds[0].startswith("den hook run --event stop")
+
+
+def test_install_keeps_another_events_value_of_a_shape_den_never_writes(
+    tmp_path, monkeypatch
+):
+    # den adds nothing to these events, so it neither replaces nor copies them.
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    local.parent.mkdir()
+    odd = {"PreToolUse": "echo keep", "Notification": None}
+    local.write_text(json.dumps({"hooks": odd}))
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    hooks = json.loads(local.read_text())["hooks"]
+    assert {k: hooks[k] for k in odd} == odd
+    assert "UserPromptSubmit" in hooks
+    assert not list(local.parent.glob("*.den.bak*")), "nothing replaced, no backup"
+
+
+def test_install_moves_den_out_of_settings_json_and_keeps_a_value_it_never_wrote(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    shared.write_text(
+        json.dumps(
+            {"hooks": {"Stop": [_den_group("claude", "stop")], "PreToolUse": "echo x"}}
+        )
+    )
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert json.loads(shared.read_text()) == {"hooks": {"PreToolUse": "echo x"}}
+
+
 def test_list_shows_den_managed(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     cfg = tmp_path / "settings.json"
@@ -448,6 +673,20 @@ def test_list_shows_den_managed(tmp_path, monkeypatch, capsys):
     assert hook_main(["list", "--tool", "claude", "--config", str(cfg)]) == 0
     out = capsys.readouterr().out
     assert "den hook run --event per-turn --tool claude" in out
+
+
+def test_list_names_only_dens_hooks_among_entries_it_never_wrote(
+    tmp_path, monkeypatch, capsys
+):
+    # list decides whether the move out of settings.json strips anything, so it
+    # must read every shape strip does, not raise on a group without a list.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "settings.json"
+    den = _den_group("claude")["hooks"][0]
+    odd = [{"hooks": None}, {"hooks": ["echo hi", {"command": 5}, den]}]
+    cfg.write_text(json.dumps({"hooks": {"Stop": odd}}))
+    assert hook_main(["list", "--tool", "claude", "--config", str(cfg)]) == 0
+    assert capsys.readouterr().out.splitlines() == [f"claude  Stop  {den['command']}"]
 
 
 # --------------------------------------------------------------------------- #
@@ -467,6 +706,125 @@ def test_install_copilot_flat_json(tmp_path, monkeypatch):
         "den hook run --event session-start --tool copilot",
         tmp_path / ".den",
     )
+
+
+# copilot's entries are flat {type, bash} objects. A `bash` that is not text
+# (null, a number) made install, remove and list raise TypeError, and remove
+# rewrote a file with nothing of den's in it, dropping what den never wrote.
+
+_COPILOT = Path(".github") / "hooks" / "den.json"
+_ODD_BASH = pytest.mark.parametrize("bash", [None, 5], ids=["null", "number"])
+
+
+def _copilot_entry(event="session-start", den_dir="/old/proj/.den"):
+    """A copilot entry as an earlier den wrote it."""
+    cmd = f"den hook run --event {event} --tool copilot --den-dir {den_dir}"
+    return {"type": "command", "bash": cmd}
+
+
+def _write_copilot(proj, hooks):
+    cfg = proj / _COPILOT
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"version": 1, "hooks": hooks}))
+    return cfg
+
+
+@_ODD_BASH
+def test_install_copilot_keeps_an_entry_whose_bash_is_not_text(
+    tmp_path, monkeypatch, bash
+):
+    monkeypatch.chdir(tmp_path)
+    odd = {"type": "command", "bash": bash}
+    cfg = _write_copilot(tmp_path, {"sessionStart": [odd, _copilot_entry()]})
+    assert hook_main(["install", "--tool", "copilot"]) == 0
+    first, *den = json.loads(cfg.read_text())["hooks"]["sessionStart"]
+    assert first == odd
+    assert len(den) == 1, "den's own entry is replaced, not duplicated"
+    _assert_pinned(
+        den[0]["bash"],
+        "den hook run --event session-start --tool copilot",
+        tmp_path / ".den",
+    )
+
+
+@_ODD_BASH
+def test_remove_copilot_keeps_an_entry_whose_bash_is_not_text(
+    tmp_path, monkeypatch, bash
+):
+    monkeypatch.chdir(tmp_path)
+    odd = {"type": "command", "bash": bash}
+    cfg = _write_copilot(
+        tmp_path,
+        {
+            "sessionStart": [odd, "not an entry", _copilot_entry()],
+            "postToolUse": [_copilot_entry("post-tool")],
+        },
+    )
+    assert hook_main(["remove", "--tool", "copilot"]) == 0
+    assert json.loads(cfg.read_text()) == {
+        "version": 1,
+        "hooks": {"sessionStart": [odd, "not an entry"]},
+    }
+
+
+@_ODD_BASH
+def test_list_copilot_names_only_dens_entry_beside_a_bash_that_is_not_text(
+    tmp_path, monkeypatch, capsys, bash
+):
+    monkeypatch.chdir(tmp_path)
+    den = _copilot_entry()
+    _write_copilot(tmp_path, {"sessionStart": [{"type": "command", "bash": bash}, den]})
+    assert hook_main(["list", "--tool", "copilot"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        f"copilot  sessionStart  {den['bash']}"
+    ]
+
+
+def test_remove_copilot_leaves_a_file_with_nothing_of_dens_byte_identical(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / _COPILOT
+    cfg.parent.mkdir(parents=True)
+    raw = (
+        b'{"version":1,"hooks":{"sessionStart":[{"type":"command","bash":"echo hi"},'
+        b'"not an entry"],"stop":[],"x":{"bash":"echo y"}}}'
+    )
+    cfg.write_bytes(raw)
+    assert hook_main(["remove", "--tool", "copilot"]) == 0
+    assert cfg.read_bytes() == raw
+
+
+_ODD_COPILOT_HOOKS = {
+    "event-object": {"sessionStart": {"type": "command", "bash": "echo hi"}},
+    "event-null": {"sessionStart": None},
+    "hooks-null": None,
+    "hooks-list": ["echo hi"],
+    "hooks-nan": float("nan"),
+}
+
+
+@pytest.mark.parametrize(
+    "hooks", list(_ODD_COPILOT_HOOKS.values()), ids=list(_ODD_COPILOT_HOOKS)
+)
+def test_copilot_leaves_or_backs_up_hooks_of_a_shape_den_never_writes(
+    tmp_path, monkeypatch, hooks
+):
+    # As for claude: remove leaves them byte-identical, and install copies the
+    # file before it puts den's entries in their place.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / _COPILOT
+    cfg.parent.mkdir(parents=True)
+    raw = json.dumps({"version": 1, "hooks": hooks}).encode()
+    cfg.write_bytes(raw)
+    assert hook_main(["remove", "--tool", "copilot"]) == 0
+    assert cfg.read_bytes() == raw
+    assert hook_main(["install", "--tool", "copilot"]) == 0
+    assert cfg.with_name(cfg.name + ".den.bak").read_bytes() == raw
+    entries = json.loads(cfg.read_text())["hooks"]["sessionStart"]
+    assert [e["bash"].split(" --den-dir ")[0] for e in entries] == [
+        "den hook run --event session-start --tool copilot"
+    ]
 
 
 def test_run_copilot_sessionstart_additional_context(tmp_path, monkeypatch, capsys):
@@ -972,6 +1330,34 @@ def test_install_refuses_symlinked_config_dir(tmp_path, monkeypatch, capsys, sym
     assert "is a symlink" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("command", "prefix"),
+    [
+        ("den hook install", "den hook install"),
+        ("den install hook", "den hook install"),
+        ("den uninstall hook", "den hook"),
+    ],
+)
+def test_the_workspace_symlink_refusal_names_the_command(
+    tmp_path, monkeypatch, capsys, symlink, command, prefix
+):
+    # Install's refusal said `den hook:`, unlike every other line install
+    # prints, which start with `den hook install:`.
+    from den.cli import main as cli_main
+
+    outside = tmp_path / "home" / ".claude"
+    outside.mkdir(parents=True)
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    symlink(outside, proj / ".claude")
+    monkeypatch.chdir(proj)
+    assert cli_main([*command.split()[1:], "--tool", "claude"]) == 1
+    err = capsys.readouterr().err.splitlines()
+    refusals = [line for line in err if "(the workspace config must stay" in line]
+    assert len(refusals) == 1
+    assert refusals[0].startswith(f"{prefix}: refusing ")
+
+
 @pytest.mark.parametrize("name", ["settings.local.json", "settings.json"])
 def test_install_refuses_symlinked_config_file(tmp_path, monkeypatch, symlink, name):
     # settings.local.json is the file den writes; settings.json is the one it
@@ -1227,9 +1613,55 @@ def test_install_refuses_a_directory_at_the_backup_path(tmp_path, monkeypatch, c
     assert "not a regular file" in capsys.readouterr().err
 
 
-def test_install_accepts_an_existing_file_backup(tmp_path, monkeypatch):
-    # A real backup from an earlier run is still respected: install proceeds and
-    # does not clobber it with the (already overwritten) config.
+def _refusals(err):
+    return [line for line in err.splitlines() if "not replacing" in line]
+
+
+def test_install_names_den_hook_install_when_it_cannot_back_up(
+    tmp_path, monkeypatch, capsys
+):
+    # The refusal is printed by the --force backup, which named `den install`
+    # whatever command was run.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text("not json {{{")
+    cfg.with_name(cfg.name + ".den.bak").mkdir()
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    refusals = _refusals(capsys.readouterr().err)
+    assert len(refusals) == 1
+    assert refusals[0].startswith("den hook install: not replacing ")
+    assert refusals[0].endswith(".den.bak is not a regular file")
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0, reason="POSIX permission bits, not root"
+)
+def test_install_names_den_hook_install_when_the_config_cannot_be_read(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"keep": 1}')
+    cfg.chmod(0)
+    try:
+        assert hook_main(["install", "--tool", "claude"]) == 1
+    finally:
+        cfg.chmod(0o600)
+    assert cfg.read_text() == '{"keep": 1}', "not written over without a copy"
+    refusals = _refusals(capsys.readouterr().err)
+    assert len(refusals) == 1
+    assert refusals[0].startswith("den hook install: not replacing ")
+    assert "cannot back it up" in refusals[0]
+
+
+def test_install_backs_up_beside_an_existing_file_backup(tmp_path, monkeypatch, capsys):
+    """An unmergeable config is never den's own output (den writes json.dumps),
+    so an earlier backup cannot already hold it. Install took any existing
+    .den.bak for "already preserved" and wrote den's hooks over the new edit,
+    which then survived nowhere. It goes to the first free .den.bak.N, as with
+    --force, and the earlier backup is left as it was."""
     proj = tmp_path / "repo"
     cfg = proj / ".claude" / "settings.local.json"
     cfg.parent.mkdir(parents=True)
@@ -1239,7 +1671,338 @@ def test_install_accepts_an_existing_file_backup(tmp_path, monkeypatch):
     monkeypatch.chdir(proj)
     assert hook_main(["install", "--tool", "claude"]) == 0
     assert bak.read_text() == "the original, from an earlier install\n"
+    numbered = proj / ".claude" / "settings.local.json.den.bak.1"
+    assert numbered.read_text() == "not json {{{"
+    assert str(numbered) in capsys.readouterr().err, "the backup is named"
     assert "UserPromptSubmit" in json.loads(cfg.read_text())["hooks"]
+
+
+@pytest.mark.parametrize(
+    ("tool", "rel"),
+    [("claude", ".claude/settings.local.json"), ("copilot", ".github/hooks/den.json")],
+)
+def test_install_keeps_every_unmergeable_edit(tmp_path, monkeypatch, tool, rel):
+    # The finding's repro, for both tools whose install merges JSON: install
+    # backs a broken config up, the user breaks it again, install runs again.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("FIRST_EDIT {{{")
+    assert hook_main(["install", "--tool", tool]) == 0
+    cfg.write_text("SECOND_EDIT {{{")
+    assert hook_main(["install", "--tool", tool]) == 0
+    saved = sorted(p.read_text() for p in cfg.parent.glob(cfg.name + ".den.bak*"))
+    assert saved == ["FIRST_EDIT {{{", "SECOND_EDIT {{{"]
+
+
+def test_install_reuses_a_backup_that_holds_the_same_bytes(tmp_path, monkeypatch):
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.local.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not json {{{")
+    (proj / ".claude" / "settings.local.json.den.bak").write_text("not json {{{")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert not (proj / ".claude" / "settings.local.json.den.bak.1").exists()
+
+
+@pytest.mark.parametrize(
+    ("tool", "rel"),
+    [("claude", ".claude/settings.local.json"), ("copilot", ".github/hooks/den.json")],
+)
+def test_install_does_not_take_a_hard_link_to_the_config_for_its_backup(
+    tmp_path, monkeypatch, hard_link, tool, rel
+):
+    """A hard link at .den.bak is the config under another name. It held the
+    unmergeable edit's bytes, so it was reused as the backup, and writing den's
+    hooks into the config changed it too: the edit was kept nowhere. The config
+    itself, with its second hard link, is then left as it was (see
+    test_uninstall_hook_leaves_a_hard_linked_config_as_it_was)."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("MY_EDIT {{{")
+    hard_link(cfg, cfg.with_name(cfg.name + ".den.bak"))
+    assert hook_main(["install", "--tool", tool]) == 1
+    assert cfg.with_name(cfg.name + ".den.bak.1").read_text() == "MY_EDIT {{{"
+    assert cfg.read_text() == "MY_EDIT {{{"
+
+
+def test_install_refuses_a_symlink_at_a_numbered_backup(tmp_path, monkeypatch, symlink):
+    """The numbered names get the guard .den.bak has: a repo can ship
+    `settings.local.json.den.bak.1` as a dangling link next to a regular
+    .den.bak, and writing through it would create the link's target."""
+    outside = tmp_path / "home" / "stolen.json"
+    outside.parent.mkdir(parents=True)
+    proj = tmp_path / "repo"
+    cfg = proj / ".claude" / "settings.local.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not json {{{")
+    (proj / ".claude" / "settings.local.json.den.bak").write_text("something else\n")
+    symlink(outside, proj / ".claude" / "settings.local.json.den.bak.1")
+    monkeypatch.chdir(proj)
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    assert not outside.exists(), "nothing may be created outside the workspace"
+    assert cfg.read_text() == "not json {{{", "not overwritten without a backup"
+
+
+@pytest.fixture
+def umask_022():
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o600, 0o640], ids=oct)
+def test_install_backup_keeps_the_config_mode(tmp_path, monkeypatch, umask_022, mode):
+    """The backup was written with the umask's mode, so a 0600 settings file got
+    a world-readable copy. It now keeps the config's own permission bits."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"token": "secret", // not json\n')
+    cfg.chmod(mode)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    bak = cfg.with_name(cfg.name + ".den.bak")
+    assert stat.S_IMODE(bak.stat().st_mode) == mode
+    assert "secret" in bak.read_text()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    ("held", "mode", "want"),
+    [
+        (0o644, 0o600, 0o600),
+        (0o604, 0o640, 0o600),
+        (0o755, 0o644, 0o644),
+        (0o400, 0o600, 0o400),  # a narrower copy is not widened
+    ],
+    ids=["world-readable", "other-readable", "executable", "narrower"],
+)
+def test_install_narrows_a_reused_backup_to_the_config_mode(
+    tmp_path, monkeypatch, umask_022, held, mode, want
+):
+    """A backup that holds the config's bytes is reused, and it kept whatever
+    mode it had: a world-readable copy an older den made of a 0600 config
+    stayed so while install named it as the backup."""
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"token": "secret", // not json\n')
+    cfg.chmod(mode)
+    bak = cfg.with_name(cfg.name + ".den.bak")
+    bak.write_bytes(cfg.read_bytes())
+    bak.chmod(held)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert stat.S_IMODE(bak.stat().st_mode) == want
+    assert not cfg.with_name(cfg.name + ".den.bak.1").exists(), "it was reused"
+
+
+# A hook config was truncated and then written in place, so a write that failed
+# part-way (a full disk, an I/O error) left the user's settings empty or cut
+# short. file_size_limit makes the write fail for real after its first bytes.
+
+_JSON_CONFIGS = pytest.mark.parametrize(
+    ("tool", "rel"),
+    [("claude", ".claude/settings.local.json"), ("copilot", ".github/hooks/den.json")],
+)
+_BIG = "x" * 6000  # a value of the user's that takes any rewrite past the limit
+
+
+def _names(directory):
+    return sorted(p.name for p in directory.iterdir())
+
+
+@_JSON_CONFIGS
+def test_install_keeps_the_config_when_the_write_fails_part_way(
+    tmp_path, monkeypatch, capsys, file_size_limit, tool, rel
+):
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path, imprint="IMP")  # so install writes nothing but the config
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    original = json.dumps({"keep": _BIG}).encode()
+    cfg.write_bytes(original)
+    with file_size_limit(1024):
+        assert hook_main(["install", "--tool", tool]) == 1
+    assert cfg.read_bytes() == original
+    assert _names(cfg.parent) == [cfg.name], "no temporary copy is left"
+    assert f"den hook install: left {cfg} as it was: " in capsys.readouterr().err
+
+
+@_JSON_CONFIGS
+def test_install_leaves_no_config_when_writing_a_new_one_fails_part_way(
+    tmp_path, monkeypatch, capsys, file_size_limit, tool, rel
+):
+    # A new config cut short would make the tool reject the file, and the next
+    # install back it up as the user's.
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path, imprint="IMP")
+    cfg = tmp_path / rel
+    with file_size_limit(256):
+        assert hook_main(["install", "--tool", tool]) == 1
+    assert not cfg.exists()
+    assert f"den hook install: left {cfg} as it was: " in capsys.readouterr().err
+
+
+@_JSON_CONFIGS
+def test_uninstall_hook_keeps_the_config_when_the_write_fails_part_way(
+    tmp_path, monkeypatch, capsys, file_size_limit, tool, rel
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({"keep": _BIG}))
+    assert hook_main(["install", "--tool", tool]) == 0
+    installed = cfg.read_bytes()
+    capsys.readouterr()
+    with file_size_limit(1024):
+        assert uninstall_main(["hook", "--tool", tool]) == 1
+    assert cfg.read_bytes() == installed, "den's hooks included"
+    assert _names(cfg.parent) == [cfg.name], "no temporary copy is left"
+    assert f"den hook: left {cfg} as it was: " in capsys.readouterr().err
+
+
+def test_install_keeps_settings_json_when_moving_den_out_fails_part_way(
+    tmp_path, monkeypatch, capsys, file_size_limit
+):
+    # The committed .claude/settings.json is shared with a team; the move of
+    # den's old entries out of it rewrites it, under install's name.
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path, imprint="IMP")
+    legacy = tmp_path / ".claude" / "settings.json"
+    legacy.parent.mkdir()
+    hooks = {"Stop": [_den_group("claude", "stop")]}
+    original = json.dumps({"keep": "x" * 9000, "hooks": hooks}).encode()
+    legacy.write_bytes(original)
+    with file_size_limit(4096):  # room for den's settings.local.json
+        assert hook_main(["install", "--tool", "claude"]) == 1
+    assert legacy.read_bytes() == original
+    local = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    assert "UserPromptSubmit" in local["hooks"]
+    assert f"den hook install: left {legacy} as it was: " in capsys.readouterr().err
+
+
+def test_uninstall_hook_leaves_a_hard_linked_config_as_it_was(
+    tmp_path, monkeypatch, capsys, hard_link
+):
+    """A config is replaced through a new copy now, so one with a second hard
+    link (a dotfiles repo) is left as it was, den's hooks included, and named,
+    as `den uninstall` leaves such an rc file: the copy would take only this
+    name, and the other would keep den's hooks."""
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    installed = cfg.read_bytes()
+    other = tmp_path / "dotfiles-settings.json"
+    hard_link(cfg, other)
+    capsys.readouterr()
+    assert uninstall_main(["hook", "--tool", "claude"]) == 1
+    assert cfg.read_bytes() == installed
+    assert other.samefile(cfg)
+    err = capsys.readouterr().err
+    assert f"den hook: left {cfg} as it was: it has 2 hard links" in err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o600, 0o640], ids=oct)
+def test_install_and_uninstall_keep_the_config_mode(
+    tmp_path, monkeypatch, umask_022, mode
+):
+    # The new copy takes the config's permission bits, as the in-place write
+    # kept them.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"keep": 1}')
+    cfg.chmod(mode)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    assert stat.S_IMODE(cfg.stat().st_mode) == mode
+    assert uninstall_main(["hook", "--tool", "claude"]) == 0
+    assert stat.S_IMODE(cfg.stat().st_mode) == mode
+    assert json.loads(cfg.read_text()) == {"keep": 1}
+
+
+@_JSON_CONFIGS
+def test_install_writes_the_config_with_the_platforms_line_ends(
+    tmp_path, monkeypatch, tool, rel
+):
+    # The bytes now go to a new copy; write_text wrote os.linesep (CRLF on
+    # Windows), and the copy keeps that.
+    monkeypatch.chdir(tmp_path)
+    assert hook_main(["install", "--tool", tool]) == 0
+    lines = (tmp_path / rel).read_bytes().split(os.linesep.encode())
+    assert len(lines) > 2
+    assert not [ln for ln in lines if b"\n" in ln or b"\r" in ln]
+
+
+# The backup of a config den cannot merge into is a new file, which took its
+# directory's default ACL (or a setgid directory's group): once the config's
+# mode opened the copy's group bits, the user that ACL names could read a copy
+# of a config kept from them. The copy now takes the config's owner, group and
+# extended attributes first, and when it cannot, install leaves the config.
+
+
+@_JSON_CONFIGS
+def test_install_backup_does_not_take_its_directorys_acl(
+    tmp_path, monkeypatch, let_65534_in, tool, rel
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / rel
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('{"token": "secret", // not json\n')
+    cfg.chmod(0o640)
+    let_65534_in(cfg.parent)  # uid 65534 gets every new file
+    assert hook_main(["install", "--tool", tool]) == 0
+    bak = cfg.with_name(cfg.name + ".den.bak")
+    assert "secret" in bak.read_text()
+    assert "system.posix_acl_access" not in os.listxattr(bak), "65534 may not read it"
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="POSIX owners; root may give a file to anyone",
+)
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_install_leaves_a_config_whose_owner_or_group_a_backup_cannot_take(
+    tmp_path, monkeypatch, capsys, foreign_stat, whose
+):
+    # Only root gives a file away, so stat reports another owner or group for
+    # the config here, and the chown that would carry it to the copy fails.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text("not json {{{")
+    foreign_stat(cfg.name, whose)
+    assert hook_main(["install", "--tool", "claude"]) == 1
+    assert cfg.read_text() == "not json {{{", "not overwritten without a backup"
+    assert _names(cfg.parent) == [cfg.name], "no copy is left"
+    refusals = _refusals(capsys.readouterr().err)
+    assert len(refusals) == 1
+    assert refusals[0].startswith(f"den hook install: not replacing {cfg}: ")
+    assert "copying it would change its owner or group (" in refusals[0]
+
+
+def test_install_does_not_reuse_a_backup_that_took_its_directorys_acl(
+    tmp_path, monkeypatch, let_65534_in
+):
+    # An older den's copy took its directory's default ACL, so the user it
+    # names could read it; it held the config's bytes, so it was reused.
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / ".claude" / "settings.local.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"token": "secret", // not json\n')
+    cfg.chmod(0o640)
+    bak = cfg.with_name(cfg.name + ".den.bak")
+    bak.write_bytes(cfg.read_bytes())
+    let_65534_in(bak)
+    assert hook_main(["install", "--tool", "claude"]) == 0
+    new = cfg.with_name(cfg.name + ".den.bak.1")
+    assert "secret" in new.read_text()
+    assert "system.posix_acl_access" not in os.listxattr(new)
+    assert stat.S_IMODE(new.stat().st_mode) == 0o640
 
 
 def test_install_refuses_a_symlinked_backup_outside_the_workspace(

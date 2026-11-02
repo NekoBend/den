@@ -1,11 +1,12 @@
 """den uninstall - reverse den install, statelessly.
 
 Re-derives what `den install` would deploy (from the bundled content) and, for
-each target file, removes it ONLY if it is byte-identical to den's version; a
-file the user changed is kept and reported (package-manager semantics). The
-rc-file `# ===== den =====` block is stripped, and dirs den created that become
-empty are pruned. With no component (in a terminal) it asks per component,
-mirroring `den install`.
+each target file, removes it ONLY if it is byte-identical to den's version,
+checked again right before the delete; a file the user changed (before the
+prompt or while it was open) is kept and reported (package-manager semantics).
+The rc-file `# ===== den =====` block is stripped, and dirs den created that
+become empty are pruned. With no component (in a terminal) it asks per
+component, mirroring `den install`.
 
   den uninstall [skills|shell] [--yes] [--dry-run]
   den uninstall skills [--tool T]... [--all-tools] [--target DIR]... [--with-parent]
@@ -13,25 +14,46 @@ mirroring `den install`.
 
 from __future__ import annotations
 
-import contextlib
+import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
 from . import _ui
 
+_ERR = "den uninstall"
+
+
+def _read_file(path: Path) -> bytes | None:
+    """The bytes of the regular file at `path`; None when there is none there
+    (absent, a dangling link, a directory). OSError when den cannot tell or
+    cannot read it (a permission error, a directory it may not search): the
+    file may well be den's, so the caller reports it instead of passing it
+    over as absent."""
+    try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            return None
+        return path.read_bytes()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
 
 def _has_block(rc: Path, line: str) -> bool:
+    """Whether `rc` holds den's block. False when there is no regular file
+    there, or one that does not decode; OSError when one is there but cannot
+    be read (see _read_file)."""
     from ._shell import _COMMENT, _decode_rc
 
-    if not rc.is_file():
+    raw = _read_file(rc)
+    if raw is None:
         return False
     try:
         # In the file's own encoding (a UTF-16 PowerShell profile gets den's
         # block in UTF-16, see _shell._wire); UTF-8 is lossless, and
         # `errors="ignore"` would DROP every byte that is not valid UTF-8.
-        text, _codec = _decode_rc(rc.read_bytes())
-    except (OSError, UnicodeDecodeError):
+        text, _codec = _decode_rc(raw)
+    except UnicodeDecodeError:
         return False
     # den-managed only when the marker line is immediately followed by den's
     # exact wire line (what _wire writes, and what _strip_block removes). A
@@ -43,10 +65,20 @@ def _has_block(rc: Path, line: str) -> bool:
     )
 
 
-def _strip_block(rc: Path, line: str) -> None:
+def _strip_block(rc: Path, line: str) -> bool:
     """Remove den's rc block: the `# ===== den =====` marker, the source line
     that follows it, and one preceding blank line (the append form). If nothing
-    but den's block was in the file, den created it, so the file goes too.
+    but den's block was in the file, den created it, so the file goes too,
+    unless it is a symlink (the user's own arrangement, a dotfiles repo): its
+    target is emptied instead, and the link stays. The new content replaces
+    the file through a temporary copy (_shell._replace_bytes), never by
+    truncating it. A file with a second hard link (a dotfiles repo) is left
+    for the user to edit: a new copy would split it from its other names, and
+    removing it would leave den's block under them. True when a block was
+    removed; False when there was none to remove (the file is then not
+    rewritten). OSError when the file cannot be read, rewritten or removed,
+    and when it has a second hard link: the file is as it was, block
+    included, and the caller says so.
 
     Works on BYTES, keeping each surviving line with its own terminator. The
     previous version set one `crlf` flag if the file contained a single CRLF
@@ -61,9 +93,11 @@ def _strip_block(rc: Path, line: str) -> None:
     encoding behind its own BOM. Strict decoding makes that exact; a file
     that does not decode is left alone (_has_block never reports one).
     """
-    from ._shell import _bom_codec
+    from ._shell import _bom_codec, _replace_bytes
 
-    raw = rc.read_bytes()
+    raw = _read_file(rc)
+    if raw is None:
+        return False  # removed since den looked: no block left in it
     bom, codec = _bom_codec(raw)
     if codec == "utf-8":
         kept, stripped = _strip_lines(raw, line)
@@ -71,14 +105,19 @@ def _strip_block(rc: Path, line: str) -> None:
         try:
             text = raw[len(bom) :].decode(codec)
         except UnicodeDecodeError:
-            return
+            return False
         kept, stripped = _strip_lines(text.encode("utf-8"), line)
         kept = bom + kept.decode("utf-8").encode(codec)
-    if stripped and not kept.removeprefix(bom):  # only den's block was there
-        with contextlib.suppress(OSError):
-            rc.unlink()
-        return
-    rc.write_bytes(kept)
+    if not stripped:
+        return False
+    # A file another name leads to is never removed, even when den's block
+    # was all it held: _replace_bytes empties a symlink's target, and refuses
+    # a file with a second hard link.
+    if kept.removeprefix(bom) or rc.is_symlink() or rc.stat().st_nlink > 1:
+        _replace_bytes(rc, kept)
+    else:  # only den's block was there, in a file nothing else names
+        rc.unlink(missing_ok=True)
+    return True
 
 
 def _strip_lines(data: bytes, line: str) -> tuple[bytes, bool]:
@@ -117,16 +156,36 @@ def _strip_lines(data: bytes, line: str) -> tuple[bytes, bool]:
 class _Remover:
     """Collects the same (dest, content) stages a _Writer would, but on commit
     deletes only the files byte-identical to den's version and keeps the ones
-    the user changed. Also strips rc blocks and prunes emptied dirs."""
+    the user changed. Also strips rc blocks and prunes emptied dirs. The bytes
+    are compared when the plan is listed and again right before each delete,
+    so a file saved again, or replaced, while the prompt was open is kept.
+
+    A root passed to confine() is a workspace den does not control (--target,
+    typically a cloned repo), as for _Writer: a path below it that reaches a
+    symlink - a symlinked skills/, a CLAUDE.md linked elsewhere, a dangling
+    link - is refused, never removed through, and the symlink is named once
+    on stderr, however many of den's paths lie below it and whether or not
+    anything is behind it. The default tool dirs are not confined, as for
+    _Writer.
+
+    commit returns 1 when part of the plan did not happen without the user
+    choosing so: a path refused, a file kept because it changed after den
+    checked it, or a file or rc file den failed to read, remove or rewrite
+    (each named on stderr and left out of the closing count)."""
 
     def __init__(self) -> None:
         self._files: list[tuple[Path, bytes]] = []
         self._unwire: list[tuple[Path, str]] = []
         self._boundaries: set[Path] = set()
+        self._roots: list[Path] = []
 
     # same signature as _Writer.stage so install's staging code can drive us
     def stage(self, dest: Path, content: bytes) -> None:
         self._files.append((Path(dest), content))
+
+    def confine(self, root: Path) -> None:
+        """Refuse every staged path below `root` that reaches a symlink."""
+        self._roots.append(root)
 
     def unwire(self, rc: Path, line: str) -> None:
         self._unwire.append((Path(rc), line))
@@ -136,50 +195,180 @@ class _Remover:
         for d in dirs:
             self._boundaries.add(Path(d))
 
-    def _plan(self) -> tuple[list[Path], list[Path], list[tuple[Path, str]]]:
+    def _candidates(self) -> dict[Path, list[bytes]]:
+        """Every content staged for each dest, dests in staging order.
+
+        A dest can be staged more than once, because `den install` can write
+        more than one content there (the --no-den-cli SKILL.md variants, the
+        frontier/weak parents). A file is den's when its bytes match ANY of
+        them -- first-wins would report den's own output as a file the user
+        changed."""
+        candidates: dict[Path, list[bytes]] = {}
+        for dest, content in self._files:
+            candidates.setdefault(dest, []).append(content)
+        return candidates
+
+    def _refused(self, dest: Path, named: set[Path]) -> bool:
+        """Whether `dest` lies below a confined root and reaches a symlink
+        there. The symlink is named on stderr the first time (and added to
+        `named`); every other path below it is refused without another line.
+        OSError when a component cannot be inspected."""
+        from ._install import _confined
+        from ._memory import _symlink_component
+
+        guard = _confined(self._roots, dest)
+        if guard is None:
+            return False
+        bad = _symlink_component(*guard)
+        if bad is None:
+            return False
+        if bad not in named:
+            named.add(bad)
+            what = bad if bad == guard[1] else f"anything below {bad}"
+            print(
+                f"{_ERR}: refusing to remove {what}: it is a symlink", file=sys.stderr
+            )
+        return True
+
+    def _plan(
+        self,
+    ) -> tuple[list[Path], list[Path], list[tuple[Path, str]], int, int]:
+        """(files to delete, files to keep, rc files to unwire, the number of
+        symlinks refused under a confined root, the number of files and rc
+        files den could not read). Each refusal and each read error is named
+        on stderr: a file den cannot inspect may well be den's, or hold its
+        block, so it is not passed over as absent."""
         delete: list[Path] = []
         keep: list[Path] = []
-        # A dest can be staged more than once, because `den install` can write
-        # more than one content there (the --no-den-cli SKILL.md variants, the
-        # frontier/weak parents). Collect every candidate and delete when the
-        # bytes on disk match ANY of them -- first-wins would report den's own
-        # output as a file the user changed.
-        candidates: dict[Path, list[bytes]] = {}
-        order: list[Path] = []
-        for dest, content in self._files:
-            if dest not in candidates:
-                candidates[dest] = []
-                order.append(dest)
-            candidates[dest].append(content)
-        for dest in order:
-            if not dest.is_file():
-                continue
+        named: set[Path] = set()
+        unreadable = 0
+        candidates = self._candidates()
+        for dest in candidates:
             try:
-                on_disk = dest.read_bytes()
-            except OSError:
+                if self._refused(dest, named):
+                    continue  # left alone, never removed through the link
+                on_disk = _read_file(dest)
+            except OSError as e:
+                print(f"{_ERR}: cannot read {dest}: {e}", file=sys.stderr)
+                unreadable += 1
+                continue
+            if on_disk is None:
                 continue
             same = any(on_disk == c for c in candidates[dest])
             (delete if same else keep).append(dest)
-        unwire = [(rc, line) for rc, line in self._unwire if _has_block(rc, line)]
-        return delete, keep, unwire
+        unwire: list[tuple[Path, str]] = []
+        for rc, line in self._unwire:
+            try:
+                if _has_block(rc, line):
+                    unwire.append((rc, line))
+            except OSError as e:
+                print(f"{_ERR}: cannot read {rc}: {e}", file=sys.stderr)
+                unreadable += 1
+        return delete, keep, unwire, len(named), unreadable
 
-    def commit(self, *, assume_yes: bool, dry_run: bool) -> int:
-        delete, keep, unwire = self._plan()
+    @staticmethod
+    def _show(
+        delete: list[Path],
+        keep: list[Path],
+        unwire: list[tuple[Path, str]],
+        refused: int,
+        unreadable: int,
+    ) -> bool:
+        """Print the plan; False when there is nothing to remove."""
+        if refused:
+            print(
+                f"  refused {refused} path(s) listed above; nothing was removed there",
+                file=sys.stderr,
+            )
+        if unreadable:
+            print(
+                f"  could not read {unreadable} file(s) listed above;"
+                " they are left as they are",
+                file=sys.stderr,
+            )
         if keep:
             _ui.say("Keeping files you changed (no longer den's):", style="yellow")
             for d in keep:
                 _ui.say(f"  {d}", style="yellow")
         if not delete and not unwire:
-            _ui.say("Nothing else to remove." if keep else "Nothing to remove.")
-            return 0
+            _ui.say(
+                "Nothing else to remove."
+                if keep or refused or unreadable
+                else "Nothing to remove."
+            )
+            return False
         _ui.say("To be removed:")
         for d in delete:
             _ui.say(f"  rm {d}")
         for rc, _line in unwire:
             _ui.say(f"  unwire {rc}")
+        return True
+
+    def _remove(self, delete: list[Path]) -> tuple[list[Path], int, int]:
+        """Delete the planned files: (the files removed, the number kept
+        because they changed after den checked them, the number den failed
+        to read or remove, each named on stderr). Each one is checked again
+        right before it goes, so what decides the delete is what the file
+        holds now, not what it held when the plan was listed: an edit saved
+        while the prompt was open is kept, so is whatever took the file's
+        place (a directory, a FIFO, a dangling link), and a path below a
+        confined root that reaches a symlink by now is refused. Only a file
+        deleted in that time is passed over without a word."""
+        candidates = self._candidates()
+        removed: list[Path] = []
+        late = failed = 0
+        named: set[Path] = set()
+        for d in delete:
+            try:
+                if self._refused(d, named):
+                    late += 1
+                    continue
+                data = _read_file(d)
+            except OSError as e:
+                print(f"  warning: {d}: {e}", file=sys.stderr)
+                failed += 1
+                continue
+            if data is None and not os.path.lexists(d):
+                continue  # deleted since the plan was listed: nothing to remove
+            if data is None or not any(data == c for c in candidates[d]):
+                # saved again, or replaced by something that is not a file
+                late += 1
+                print(f"  kept {d}: it changed after den checked it", file=sys.stderr)
+                continue
+            try:
+                d.unlink()
+            except OSError as e:
+                print(f"  warning: {d}: {e}", file=sys.stderr)
+                failed += 1
+                continue
+            removed.append(d)
+        return removed, late, failed
+
+    @staticmethod
+    def _unwire_all(unwire: list[tuple[Path, str]]) -> tuple[int, int]:
+        """Strip den's block from each rc file: (the number unwired, the
+        number den failed to read, rewrite or remove, each named on stderr)."""
+        unwired = failed = 0
+        for rc, line in unwire:
+            try:
+                if _strip_block(rc, line):
+                    unwired += 1
+            except OSError as e:
+                print(f"  warning: {rc}: {e}", file=sys.stderr)
+                failed += 1
+        return unwired, failed
+
+    def commit(self, *, assume_yes: bool, dry_run: bool) -> int:
+        """Delete what _plan found, after one confirmation. 1 when part of the
+        plan did not happen (see the class docstring) or a non-interactive
+        run lacks --yes, else 0."""
+        delete, keep, unwire, refused, unreadable = self._plan()
+        status = 1 if refused or unreadable else 0
+        if not self._show(delete, keep, unwire, refused, unreadable):
+            return status
         if dry_run:
             _ui.say("(dry-run; nothing changed)")
-            return 0
+            return status
         if not assume_yes:
             if not sys.stdin.isatty():
                 print(
@@ -189,17 +378,17 @@ class _Remover:
                 return 1
             if not _ui.confirm("Remove them?", default=False):
                 _ui.say("aborted; nothing removed.")
-                return 0
-        for d in delete:
-            try:
-                d.unlink()
-            except OSError as e:
-                print(f"  warning: {d}: {e}", file=sys.stderr)
-        for rc, line in unwire:
-            _strip_block(rc, line)
-        self._prune(delete)
-        _ui.say(f"removed {len(delete)} file(s); unwired {len(unwire)} rc file(s).")
-        return 0
+                return status
+        removed, late, failed = self._remove(delete)
+        unwired, unwire_failed = self._unwire_all(unwire)
+        self._prune(removed)
+        _ui.say(f"removed {len(removed)} file(s); unwired {unwired} rc file(s).")
+        not_done = [f"{failed} file(s) not removed"] if failed else []
+        if unwire_failed:
+            not_done.append(f"{unwire_failed} rc file(s) not unwired")
+        if not_done:
+            print(f"  {', '.join(not_done)}; see the warnings above", file=sys.stderr)
+        return 1 if status or late or failed or unwire_failed else 0
 
     @staticmethod
     def _drop_pycache(cur: Path) -> None:
@@ -274,20 +463,16 @@ def _stage_skills(
     names = _skill_names()
     den_free = _den_free_skills()
 
-    def parent_bytes(dest: Path, parent_file: str) -> bytes | None:
-        """The parent content to treat as den-identical at dest. den install
-        writes either profile, so accept whichever one matches the disk;
-        with no match, stage the frontier bytes (the remover then keeps the
-        file and reports it as modified)."""
-        sources = [_parent_source(parent_file, p) for p in ("frontier", "weak")]
-        for src in sources:
-            if (
-                src.is_file()
-                and dest.is_file()
-                and dest.read_bytes() == src.read_bytes()
-            ):
-                return src.read_bytes()
-        return sources[0].read_bytes() if sources[0].is_file() else None
+    def stage_parent(dest: Path) -> None:
+        """Stage both contents `den install` may have written to the parent
+        file `dest`, the frontier and the weak profile: _plan removes it when
+        it matches either, and keeps and reports it otherwise. dest itself
+        is not read here. _plan reads it after the symlink rule, and names a
+        file it cannot read."""
+        for profile in ("frontier", "weak"):
+            src = _parent_source(dest.name, profile)
+            if src.is_file():
+                remover.stage(dest, src.read_bytes())
 
     def do(skills_target: Path, parent_dir: Path, parent_file: str | None) -> None:
         for name in names:
@@ -300,9 +485,7 @@ def _stage_skills(
                 _install_skill(name, skills_target, remover, no_den_cli=True)
         remover.boundary(parent_dir)
         if with_parent and parent_file:
-            content = parent_bytes(parent_dir / parent_file, parent_file)
-            if content is not None:
-                remover.stage(parent_dir / parent_file, content)
+            stage_parent(parent_dir / parent_file)
 
     if not tools and not targets:
         sk, pd, pf = _TOOLS["claude"]
@@ -328,11 +511,12 @@ def _stage_skills(
         do(*_tool_paths(tool))
     for t in targets:
         root = Path(t).expanduser()
+        # a workspace den does not control, as `den install --target` treats
+        # it: nothing below it is removed through a symlink
+        remover.confine(root)
         do(root / "skills", root, "AGENTS.md")
         if with_parent:
-            content = parent_bytes(root / "CLAUDE.md", "CLAUDE.md")
-            if content is not None:
-                remover.stage(root / "CLAUDE.md", content)
+            stage_parent(root / "CLAUDE.md")
 
 
 def _parse_skills(

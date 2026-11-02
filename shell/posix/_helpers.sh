@@ -84,6 +84,40 @@ _den_typed() {
     return 0
 }
 
+# ========== file names that read as options ==========
+
+# _wrap_optfile <name> <modern> <arg>... - status 1, with a message on stderr,
+# when an <arg> starts with - and names a file (an existing path, or a symlink
+# that points nowhere), else 0. For the wrappers that replace a native command
+# with bat, fd or rg, whose options can run a program (rg --pre and
+# --hostname-bin, fd -x and -X in any spelling, bat --pager with --paging):
+# a glob such as * puts the names it matches among the arguments, so `grep
+# needle *` beside a file named --pre=sh ran `rg needle --pre=sh ...`, and rg
+# ran sh on every file it searched. A wrapper cannot tell a typed word from a
+# glob's, so it runs nothing then and names the ways that work: ./* puts ./
+# before each name, and the native command reads the words as the plain
+# shell hands them to it.
+_wrap_optfile() {
+    _wo_n=$1 _wo_m=$2
+    shift 2
+    for _wo_a in "$@"; do
+        case $_wo_a in
+            -?*)
+                if [ -e "$_wo_a" ] || [ -L "$_wo_a" ]; then
+                    printf "%s: '%s' names a file, and %s would read it as an option: %s did not run.\n" \
+                        "$_wo_n" "$_wo_a" "$_wo_m" "$_wo_m" >&2
+                    printf '%s: write it as ./%s (a glob as ./*), or run the native %s: command %s\n' \
+                        "$_wo_n" "$_wo_a" "$_wo_n" "$_wo_n" >&2
+                    unset _wo_n _wo_m _wo_a
+                    return 1
+                fi
+                ;;
+        esac
+    done
+    unset _wo_n _wo_m _wo_a
+    return 0
+}
+
 # ========== wrapper generator ==========
 
 # _wrap <func> <modern> <modern_flags> <fallback> <fallback_flags>
@@ -91,12 +125,21 @@ _den_typed() {
 # runs the modern tool only when typed at the prompt (_den_typed), since code
 # that calls that name means the native command. den's own names (la, ll, lla,
 # lt, llt, ripgrep) mean nothing else, so they run the modern tool anywhere.
+# Of those that take a native name, the ones that run bat, fd or rg first
+# check their arguments for a file name the tool would read as an option
+# (_wrap_optfile) and run nothing, status 2, when one is there.
 _wrap() {
     _w_name="$1" _w_mod="$2" _w_mf="$3" _w_fb="$4" _w_fbf="$5"
-    _w_typed=
+    _w_typed='' _w_chk=''
     [ "$_w_name" = "$_w_fb" ] && _w_typed=" && _den_typed"
+    if [ -n "$_w_typed" ]; then
+        case $_w_mod in
+            bat|fd|rg) _w_chk="_wrap_optfile \"${_w_name}\" \"${_w_mod}\" \"\$@\" || return 2" ;;
+        esac
+    fi
     eval "${_w_name}() {
         if [ \"\${_DEN_WRAPPERS:-1}\" != \"0\" ] && command -v ${_w_mod} >/dev/null 2>&1${_w_typed}; then
+            ${_w_chk}
             _wrap_log \"${_w_name}\" \"${_w_mod}\" \"${_w_fb}\" \"${_w_fbf}\"
             ${_w_mod} ${_w_mf} \"\$@\"
         elif [ -n \"${_w_fb}\" ]; then
@@ -105,7 +148,7 @@ _wrap() {
             echo \"${_w_name}: ${_w_mod} is not installed.\" >&2; return 1
         fi
     }"
-    unset _w_name _w_mod _w_mf _w_fb _w_fbf _w_typed
+    unset _w_name _w_mod _w_mf _w_fb _w_fbf _w_typed _w_chk
 }
 
 # _wsfx <func> <modern> <modern_flags> — always use modern (w-suffix bypass)

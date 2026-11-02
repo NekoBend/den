@@ -375,6 +375,50 @@ Case '_DenAddClean' {
     _DenAddClean 'strict-ac', 'nonexistent-strict'
     strict-ac
 }
+Case '_DenOptionFile' {
+    $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
+    $null = New-Item -ItemType File -Path $StrictOpt -Force
+    try {
+        _DenOptionFile 'grep' 'rg' @('alpha', '-strict-opt')
+        _DenOptionFile 'grep' 'rg' @('alpha', '*', $null, @('a.txt', 'b.txt'), '/nonexistent-strict/*')
+        _DenOptionFile 'grep' 'rg' @('alpha', 'a.txt')
+        _DenOptionFile 'grep' 'rg' @()
+        _DenOptionFile 'grep' 'rg' $null
+    } finally { Remove-Item -LiteralPath $StrictOpt -Force }
+}
+Case '_DenBatWords' {
+    $StrictBat = Join-Path $PWD.ProviderPath 'strict-bat[1].txt'
+    [System.IO.File]::WriteAllText($StrictBat, '')
+    try {
+        _DenBatWords @('alpha', 'strict-b*', $null, @('a.txt', 'b.txt'), '/nonexistent-strict/*', 'nomatch-strict*', '-')
+        _DenBatWords @()
+        _DenBatWords $null
+    } finally { Remove-Item -LiteralPath $StrictBat -Force }
+}
+Case '_DenBatWild' {
+    _DenBatWild @('--file-name=*.py', '-')
+    _DenBatWild @('-pl', '*', 'a.txt')
+    _DenBatWild @('--style', 'plain', '-lrust', '-n', $null, @('a.txt', 'b.txt'), '-l', '', '--', '-x*')
+    _DenBatWild @('-l')
+    _DenBatWild @()
+    _DenBatWild $null
+}
+Case '_DenBatDashDash' {
+    _DenBatDashDash @('a.txt', '--')
+    _DenBatDashDash @('a.txt', $null, @('-n', '--'), '')
+    _DenBatDashDash @('a.txt', '-', '---')
+    _DenBatDashDash @()
+    _DenBatDashDash $null
+}
+Case 'grep, a file name that reads as an option' {
+    $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
+    $null = New-Item -ItemType File -Path $StrictOpt -Force
+    try {
+        try { grep alpha * } catch { $null = $_ }
+        try { grep alpha -strict-opt } catch { $null = $_ }
+        try { 'x' | grep alpha -strict-opt } catch { $null = $_ }
+    } finally { Remove-Item -LiteralPath $StrictOpt -Force }
+}
 Case 'toggle-wrapper' { toggle-wrapper; toggle-wrapper }
 Case 'tgl-wr' { tgl-wr; tgl-wr }
 Case '_DenTrustedCacheOwner' {
@@ -401,6 +445,9 @@ Case 'Initialize-Cache, not installed' { Initialize-Cache 'nonexistent-strict' @
 
 # ===== wrappers.ps1: modern tool, native command, PowerShell fallback =====
 Case 'cat' { cat a.txt }
+Case 'cat, wildcards' { cat a* nomatch-strict* }
+Case 'cat, an option with a wildcard' { try { cat -l '*' a.txt } catch { $null = $_ } }
+Case 'cat, a quoted --' { try { cat '--' a.txt } catch { $null = $_ } }
 Case 'cat, piped' { 'x' | cat }
 Case 'find' { find a }
 Case 'grep' { grep alpha a.txt }
@@ -594,6 +641,7 @@ Case '_ArRegularFile' { _ArRegularFile a.txt; _ArRegularFile sub; _ArRegularFile
 Case '_ArTool' { _ArTool 'gzip'; _ArTool 'nonexistent-strict' }
 Case '_ArCompressTo' { _ArCompressTo (_ArTool 'gzip') one.txt direct.gz }
 Case '_ArZipTo' { _ArZipTo @('a.txt', 'sub', 'emptydir') 'out.zip' 'direct.zip' }
+Case '_ArNameComparer' { _ArNameComparer $true; _ArNameComparer $false }
 Case '_ArZipTo, a missing source' { _ArZipTo @('missing.txt') 'out.zip' 'direct2.zip' }
 Case '_ArDropOutput' { _ArDropOutput @('a.txt', './b.txt', 'sub') 'b.txt'; _ArDropOutput @('a.txt') '' }
 Case '_ArDropOutput, only the output' { _ArDropOutput @('a.txt', 'link.txt') 'a.txt' }
@@ -609,6 +657,14 @@ Case 'archive .xz' { archive s3.xz one.txt }
 Case 'archive .zst' { archive s4.zst one.txt }
 Case 'archive .zip' { archive out.zip a.txt b.txt }
 Case 'archive .zip, the output among the sources' { archive out.zip a.txt out.zip }
+Case 'archive .zip, two sources with one name' { Set-Content -LiteralPath c.txt -Value 1; archive dup.zip c.txt sub/c.txt }
+Case 'archive .zip, one source named twice' { archive twice.zip a.txt ./a.txt }
+Case 'archive .zip, names that differ only in case' {
+    $null = New-Item -ItemType Directory -Path cs -Force
+    Set-Content -LiteralPath cs/x.txt -Value 1
+    Set-Content -LiteralPath cs/X.TXT -Value 2
+    archive cs.zip cs
+}
 Case 'archive .7z' { archive out.7z a.txt '-x' }
 Case 'archive .7z, only the output as a source' { archive out.7z ./out.7z }
 Case 'archive, a dash-leading output' { archive '-dash.tar' a.txt }
@@ -869,13 +925,16 @@ Case 'pcp <src> <dest>' { pcp a.txt dest }
 Case 'pcp <srcs> <dest>' { pcp a.txt b.txt sub dest }
 Case 'pcp <glob> <dest>' { pcp '*.txt' dest }
 Case 'pcp, dest not a directory' { pcp a.txt b.txt nodir }
+Case 'pcp, a missing source' { pcp a.txt missing.txt dest }
 Case 'pmv' { pmv }
 Case 'pmv <src> <dest>' { Set-Content -LiteralPath mv1.txt -Value 1; pmv mv1.txt dest }
 Case 'pmv, dest not a directory' { pmv a.txt b.txt nodir }
+Case 'pmv, a missing source' { pmv missing.txt dest }
 Case 'prm' { prm }
 Case 'prm --force, no path' { prm --force }
 Case 'prm --force' { Set-Content -LiteralPath rm1.txt -Value 1; prm --force rm1.txt }
 Case 'prm -Force' { Set-Content -LiteralPath rm2.txt -Value 1; prm -Force rm2.txt }
+Case 'prm -Force, a missing path' { prm -Force missing.txt }
 Case 'prm, declined' { prm a.txt }
 Case 'prm, confirmed' {
     Set-Content -LiteralPath rm3.txt -Value 1

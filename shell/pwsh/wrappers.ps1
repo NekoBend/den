@@ -85,12 +85,22 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
 }
 
 # ===== Toggle-aware wrappers: modern → native → PS fallback =====
-# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
+# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr> [modernTail]
 # A fallback pipes Get-ChildItem on rather than reading a member off its result:
 # with nothing listed, that reads it off $null, an error under a caller's
 # Set-StrictMode.
+# bat expands the wildcards in its arguments itself on Windows, and takes the
+# last --paging it reads: `cat *` beside files named --pager=cmd and
+# --paging=always ran cmd as bat's pager, which ran the files' lines. So on
+# Windows cat expands such a word itself (_DenBatWords), after it has refused
+# an option or an option's value that holds a wildcard (_DenBatWild) and a
+# name that starts with - (_DenOptionFile), and on every system it hands bat
+# one more --paging=never after the arguments. After a -- bat would read that
+# last word as a file name, so on every system cat refuses a -- that reaches
+# it (_DenBatDashDash): pwsh drops a bare -- typed to cat, but a quoted '--'
+# or a second -- reaches it.
 
-New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'if ($Args.Count) { Get-Content @Args } else { $input }'
+New-Wrapper 'cat'     'bat' '--style=plain --paging=never' 'cat'  ''                'if ($Args.Count) { Get-Content @Args } else { $input }' '--paging=never'
 New-Wrapper 'find'    'fd'  ''                              'find' ''                '_find_ps_fallback @Args'
 New-Wrapper 'grep'    'rg'  ''                              'grep' '--color=auto'    '$input | _grep_ps_fallback @Args'
 New-Wrapper 'la'      'lsd' '-a'                            'ls'   '-A --color=auto' 'Get-ChildItem -Force @Args'

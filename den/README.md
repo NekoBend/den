@@ -37,10 +37,14 @@ den verify <file.py...>               format/lint/typecheck each file, config-fa
 
 `den install` never silently clobbers local edits: files that already exist and
 differ from the bundled version are listed and you are asked once before
-overwriting (default no, so your changes are kept). Pass `--force` to overwrite
-without asking; each file it overwrites is first copied to `<file>.den.bak`
-(`.den.bak.1`, `.2`, ... when an earlier backup holds something else; the copy
-keeps the file's permissions minus execute).
+overwriting (default no, so your changes are kept). A yes covers the files as
+they were listed: one you save again or delete while that prompt is open
+stays as you left it, and the run exits non-zero.
+Pass `--force` to overwrite without asking; each file it overwrites is first
+copied to `<file>.den.bak` (`.den.bak.1`, `.2`, ... when an earlier backup
+holds something else; the copy takes the file's owner, group and, on Linux,
+its ACL and extended attributes, and its permissions minus execute, and a file
+it cannot copy that way is not overwritten).
 Non-interactive runs skip the changed files and exit non-zero,
 so a scripted install cannot mistake a full skip for success. `den install hook`
 into a tool's settings file merges (it preserves foreign hooks and other keys).
@@ -88,9 +92,23 @@ removes each file ONLY if it is byte-identical to den's version, so a file you
 edited is kept and reported (package-manager semantics). It is stateless (no
 manifest): "unchanged" means "matches what this den version installs". It strips
 the rc-file `# ===== den =====` block and prunes dirs den created that became
-empty. It lists the plan and asks once before deleting (`--yes` to skip,
-`--dry-run` to preview only; non-interactive runs require `--yes`). Hooks are
-per-workspace, so `den uninstall` does not touch them; use `den uninstall hook`.
+empty. An rc file is rewritten through a new copy that replaces it, so one
+with a second hard link (a dotfiles repo) is left as it is, block included,
+and named for you to edit by hand: a new copy would split it from its other
+names. The copy takes the file's owner, group and permission bits and, on
+Linux, its extended attributes and ACLs; a file whose owner, group or
+attributes it cannot take is left and named the same way. It lists the
+plan and asks once before deleting (`--yes` to skip,
+`--dry-run` to preview only; non-interactive runs require `--yes`). Each file
+is compared again right before it is deleted, so one you save, or replace
+with something else (a directory, say), while that prompt is open is kept
+and named. A `--target` directory gets the same symlink rule as on install:
+a path that reaches a symlink below it is refused and reported, never
+removed through. The run exits non-zero when it refuses such a path, keeps
+a file changed while the prompt was open, or cannot read or remove a file,
+or read or rewrite an rc file (each one is named, and the closing count
+holds only what was really removed). Hooks are per-workspace, so
+`den uninstall` does not touch them; use `den uninstall hook`.
 
 Being stateless has one cost: when den stops deploying something (a retired
 tool, a renamed skill, a deleted script), the old copy is no longer anything
@@ -279,7 +297,22 @@ Hooks install **per workspace**: run `den install hook` inside a project and it
 writes that tool's project-level hook config under the current directory and
 seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope.
 `install` writes only the hooks den manages (marked by a sentinel) and leaves
-foreign hooks untouched. Generic events map to each tool's own names:
+foreign hooks untouched, one added to a group den wrote included: install and
+`uninstall hook` take out only den's own hooks, and a group only when those
+were all it held; `uninstall hook` leaves a file with nothing of den's in it
+byte-identical. A settings file den cannot merge its hooks into (not a JSON
+object, a `hooks` that is not an object, or one of den's events holding
+something other than a list) is first copied to `<file>.den.bak`, or to the
+first free `.den.bak.N` when an earlier backup holds something else, with the
+file's owner, group and permissions minus execute (and, on Linux, its ACL),
+and den's hooks then take the place of what
+it could not merge into; when no copy can be made, install leaves the file
+alone and exits non-zero. Install and `uninstall hook` rewrite a settings file
+through a new copy that replaces it in one step, so a write that fails
+part-way leaves the file as it was; the copy takes the file's owner, group and
+permissions, as with an rc file, and a file with a second hard link is left as
+it is and named for you to edit by hand (the command exits non-zero).
+Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
 
 `--all-tools` installs every verified tool: claude, copilot and cline (the

@@ -1758,12 +1758,21 @@ assert_eq "pwsh/reload -File runs once" "1" "$(grep -c . "$WORK/reload_runs.txt"
 
 # When the executable cannot be started, reload warns and the session goes on
 # (it must not exit). Get-Process is shadowed to report a missing executable.
+# The variables reload set for the new shell, here _DEN_RELOAD_DEPTH and
+# VSCODE_NONCE (from a stand-in for VS Code's state), are removed again. They
+# were removed with $null, which PowerShell hands a .NET string parameter as
+# '': since .NET 9 (pwsh 7.5), SetEnvironmentVariable sets '' as an empty
+# value, so they stayed, set to ''.
 echo "[pwsh] reload stays in the session when pwsh cannot be started"
-actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" 'reload' '"STILL-HERE DEPTH-ENV=[$env:_DEN_RELOAD_DEPTH]"' 'exit 3' |
-    rl_env -u _DEN_FORCE_INTERACTIVE timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
+actual=$(printf '%s\n' "function Get-Process { [pscustomobject]@{ Path = '$WORK/no-such-pwsh' } }" \
+    '$Global:__VSCodeState = @{ Nonce = "rl-n" }' 'reload' '"STILL-HERE DEPTH-ENV=[$env:_DEN_RELOAD_DEPTH]"' \
+    '"HANDED-ON UNSET: DEPTH=$($null -eq $env:_DEN_RELOAD_DEPTH) NONCE=$($null -eq $env:VSCODE_NONCE)"' 'exit 3' |
+    rl_env -u _DEN_FORCE_INTERACTIVE -u VSCODE_NONCE timeout 60 pwsh -NoLogo 2>&1 | tr -d '\r'
     echo "RC=${PIPESTATUS[1]}")
 assert_contains "pwsh/reload start failure warns" "reload: could not start" "$actual"
 assert_contains "pwsh/reload start failure keeps the session" "STILL-HERE DEPTH-ENV=[]" "$actual"
+assert_contains "pwsh/reload start failure removes the variables it set for the new shell" \
+    "HANDED-ON UNSET: DEPTH=True NONCE=True" "$actual"
 assert_contains "pwsh/reload start failure exit code is the session's" "RC=3" "$actual"
 
 # exit in a nested prompt (the debugger's, $Host.EnterNestedPrompt()) only leaves
@@ -1800,6 +1809,50 @@ actual=$(printf '%s\n' 'reload' 'exit 6' |
 assert_contains "pwsh/reload --% warns" "not restarting: its launch arguments hold '--%'" "$actual"
 assert_eq "pwsh/reload --% starts no shell" "1" "$(printf '%s\n' "$actual" | grep -c 'PROFILE-LOADED')"
 assert_contains "pwsh/reload --% exit code" "RC=6" "$actual"
+
+# archive's and ptar's staging folder was made with the umask's mode (0777
+# under umask 000). _DenNewPrivateDir makes it 0700 whatever the umask, and
+# refuses anything already at the name: a folder, a symlink to one (which
+# .NET's CreateDirectory takes as made), a dangling symlink, a file. A mkdir
+# stub that leaves a symlink at the name stands in for a folder that is not a
+# plain one of this user's. The argument passes through /bin/sh as one word,
+# spaces and glob characters included.
+echo "[pwsh] _DenNewPrivateDir makes a private folder, and refuses anything already there"
+rm -rf "$WORK/pd"
+mkdir -p "$WORK/pd/exists" "$WORK/pd/bin" "$WORK/pd/elsewhere"
+ln -s exists "$WORK/pd/link"
+ln -s nowhere "$WORK/pd/dangling"
+: > "$WORK/pd/file"
+actual=$(umask 000; run_pwsh "$HELPERS_PS1" "foreach (\$n in 'new', 'a b*', 'exists', 'link', 'dangling', 'file') { try { _DenNewPrivateDir ('$WORK/pd/' + \$n); \"\${n}: made\" } catch { \"\${n}: \$(\$_.Exception.Message)\" } }" 2>/dev/null | tr -d '\r')
+assert_contains "pwsh/_DenNewPrivateDir makes a new folder" "new: made" "$actual"
+assert_eq "pwsh/_DenNewPrivateDir makes it 0700 under umask 000" "700" "$(stat -c %a "$WORK/pd/new" 2>/dev/null)"
+assert_contains "pwsh/_DenNewPrivateDir takes a name with a space and a star" "a b*: made" "$actual"
+assert_eq "pwsh/_DenNewPrivateDir makes that one folder, 0700" "700" "$(stat -c %a "$WORK/pd/a b*" 2>/dev/null)"
+for _n in exists link dangling file; do
+    assert_contains "pwsh/_DenNewPrivateDir refuses an existing $_n" "$_n: mkdir -m 700 failed" "$actual"
+done
+assert_eq "pwsh/_DenNewPrivateDir left the symlink to a folder as it was" "exists" "$(readlink "$WORK/pd/link")"
+printf '#!/bin/sh\nln -s "%s/elsewhere" "$4"\n' "$WORK/pd" > "$WORK/pd/bin/mkdir"
+chmod +x "$WORK/pd/bin/mkdir"
+actual=$(run_pwsh "$HELPERS_PS1" "\$env:PATH = '$WORK/pd/bin:' + \$env:PATH; try { _DenNewPrivateDir '$WORK/pd/stubbed'; 'made' } catch { \$_.Exception.Message }" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/_DenNewPrivateDir refuses what is not a plain directory of this user's" "not a plain directory owned by this user" "$actual"
+rm -rf "$WORK/pd"
+
+# Windows compares names without regard to case, but whether backup.tgz and
+# BACKUP.TGZ are one file depends on the folder (a case-sensitive one, as WSL
+# makes, holds both). _DenOneEntry asks the folder's listing at each level
+# where two spellings differ: two names it holds exactly are two files, a
+# spelling it does not hold is its only variant there, and a folder with
+# several variants but not the spelling cannot tell. Linux cannot make a
+# case-insensitive folder, so the second case is a spelling Linux does not
+# have (SUB), resolved through the listing as Windows would.
+echo "[pwsh] _DenOneEntry asks the folder whether two spellings but for case are one file"
+rm -rf "$WORK/oe"
+mkdir -p "$WORK/oe/sub"
+for _n in a.txt A.TXT x.TxT X.txt; do echo "$_n" > "$WORK/oe/sub/$_n"; done
+actual=$(run_pwsh "$HELPERS_PS1" "_DenOneEntry '$WORK/oe/sub/a.txt' '$WORK/oe/sub/A.TXT'; _DenOneEntry '$WORK/oe/sub/a.txt' '$WORK/oe/SUB/a.txt'; try { _DenOneEntry '$WORK/oe/sub/x.txt' '$WORK/oe/sub/X.TXT' } catch { \$_.Exception.Message }" 2>/dev/null | tr -d '\r' | tr '\n' '|')
+assert_eq "pwsh/_DenOneEntry: two files, one file, cannot tell" "False|True|cannot tell whether '$WORK/oe/sub/x.txt' and '$WORK/oe/sub/X.TXT' are one file: '$WORK/oe/sub' holds several names that differ from them only in case|" "$actual"
+rm -rf "$WORK/oe"
 
 # =============================================================================
 # Summary

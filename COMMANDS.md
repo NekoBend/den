@@ -207,6 +207,23 @@ text; `fd` ignores it, looks for file names instead and exits 0 when none
 match. Typed `find` is always `find.exe`; `findw` runs `fd`, whatever the
 toggle, and without `fd` says so and exits 1.
 
+Typed `cat`, `grep` and `find` (bash/zsh, pwsh), and cmd's `cat`, run
+nothing and say why (bash/zsh and cmd: status 2; pwsh: a terminating error)
+when an argument starts with `-` and names a file: a glob such as `*` puts
+such names among the arguments, and `bat`, `rg` and `fd` would read them as
+options, some of which run a program (`rg --pre`, `fd -x`, `bat --pager`).
+Write the file as `./name` (bash/zsh: the glob as `./*`; pwsh: a full path
+such as `$PWD/*`; cmd: `.\*`), or use the native command. On Windows, where
+`bat` would expand a wildcard itself, `cat` expands it first, hands `bat` the
+names in a form its own expansion leaves alone, and ends `bat`'s arguments
+with `--paging=never`, as PowerShell's `cat` does on every system. cmd's and
+PowerShell's `cat` refuse a `--` (PowerShell's on every system), after which
+`bat` would read that last word as a file name. On Windows `cat` expands file
+names only, and runs nothing when an option, or the value of an option that
+takes it from the next word, holds a wildcard character (`--file-name=*.py`,
+`-l '*'`): run `bat` by name for those (see shell/README.md, "The wrapper
+system").
+
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `ls` | `lsd` → native `ls` / `dir` | ✓ | ✓ | ✓ |
@@ -271,11 +288,50 @@ its tool, though: `xz` and `zstd` refuse to decompress an upper-case `.XZ` or
 `.ZST`, and `bzip2` writes `NAME.BZ2.out`. `archive` always writes a fresh
 archive: over an existing `.zip` or `.7z` it replaces the file instead of
 updating it, so files deleted from the sources do not linger, and a source that
-is the output itself (a rerun of `pk all.7z *`) is left out. Every format exits
-non-zero when its archiver fails. A failed or interrupted `.zip`, `.7z` or
-single-file run keeps the existing output as it was; the tar formats replace it
-with whatever tar wrote. On pwsh the `.zip` holds hidden files and folders
-(`.env`, `.git`) too, as `zip -r` does.
+is the output itself (a rerun of `pk all.7z *`, or on bash/zsh a hard link to
+it under another name) is left out. On Windows, pwsh asks the folder whether a
+source spelled like the output but for case is the output: a case-sensitive
+folder (WSL makes them) can hold `BACKUP.ZIP` beside `backup.zip` as a file of
+its own, which is then archived, and a folder pwsh cannot list makes it stop
+and name both. The tar formats leave their own output out
+too: GNU tar cannot tell that it is reading its own archive when it
+compresses, so `archive all.tgz .` or `archive all.tgz *` run again in the
+folder it archives used to store the previous archive inside the new one. Only
+the sources as given are checked: a hard link to the output inside a source
+folder (`sub/latest.zip` when archiving `.`) is still stored, since the
+archivers cannot leave a file out by its inode. Every format exits non-zero
+when its archiver fails or is not installed (tar included). A failed or
+interrupted run keeps the existing output as it was, whatever the format. On
+bash/zsh a Ctrl-C, TERM or HUP that comes before the new archive is in place
+interrupts the run even when the archiver finishes all the same: the old
+archive is put back, and the signal is then raised again so the caller stops. On
+bash/zsh, and for the tar formats on pwsh, a directory that another program
+makes at the output while the archiver runs fails the run instead of taking
+in either archive (with BSD mv, which has no `-T`, one made in the instant
+before the rename still can, and `archive` then says where the file went).
+Should the existing output fail to go back in place as well (its folder
+turned read-only meanwhile, or such a directory stands there), bash/zsh leave
+it where it waited and say where
+(`archive: previous 'out.zip' kept at ./.archive.XXXXXX/previous`), and so
+does pwsh for the tar formats (`.archive.<random>/previous`) and for a `.7z`
+(`out.7z.previous.<random>`, beside it). These staging folders are private
+(`0700`) on Linux and macOS whatever the umask, as `mktemp -d` makes them on
+bash/zsh, and pwsh stops before it moves anything into one that it did not just
+make as a plain folder of its own.
+On pwsh the `.zip` holds hidden files and folders (`.env`, `.git`) too, as
+`zip -r` does, but it stores each source under its own name (a folder as
+`name/`), where `zip -r` keeps the path as given (`alpha/config.txt`). Two
+sources with one name, such as `alpha/config.txt` and `beta/config.txt` or two
+folders called `src`, would then overwrite each other when extracted, so pwsh
+refuses them before it writes anything and names both. It checks every name in
+the zip, the files inside a folder too, and on Windows names that differ only
+in case count as one (a case-sensitive folder, as WSL makes, can hold
+`config.txt` and `CONFIG.TXT`). Only the same full path, compared exactly,
+counts as one source: `p1/src`, `./p1/src` and its absolute path are stored
+once, but another route to the same folder (through a symlinked parent, say)
+is a second source, and is refused when the names clash. `zip -r` stores a
+repeat of one spelling once but refuses a second spelling
+(`cannot repeat names in zip file`).
 
 On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
 `.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
@@ -338,11 +394,36 @@ keeps), except where uv would build or run code that came with a clone:
   python run directly inside one.
 - `pip` / `pip3` run only inside an active venv: the venv's own pip when it has
   one, else `uv pip`, which installs into that venv (a venv made by uv, `vv` /
-  `vva`, has no pip). With no venv active they run nothing and say so, since
-  `uv pip` would pick the `.venv` in or above the current directory itself and
-  run its python: activate one with `va`, which refuses a venv that came with
-  the clone (cmd has no `va`: run the `Scripts\activate` of a venv you made),
-  or type `uv pip` yourself.
+  `vva`, has no pip). pip reads no `uv.toml` or `pyproject.toml`, and uv reads
+  them in the current directory and above, where a clone's settings can have
+  uv run a python the clone ships or install a package from the clone's own
+  files. So den runs `uv --config-file <your uv.toml> pip`, which reads your
+  own uv settings in their place, or, when you have no uv.toml,
+  `uv --no-config pip`, which reads none; a line on stderr says which, and
+  typed `uv pip` reads them all. With no venv active they run nothing and say
+  so, since `uv pip` would pick the `.venv` in or above the current directory
+  itself and run its python: activate one with `va`, which refuses a venv that
+  came with the clone (cmd has no `va`: run the `Scripts\activate` of a venv
+  you made), or type `uv pip` yourself.
+- `vv` / `vva` run `uv venv`, but where `python` runs a python directly (the
+  same files, here or above, or, as uv takes them, in or above the directory
+  `--directory` or `--project` names, or `UV_WORKING_DIR` or `UV_PROJECT`)
+  `uv --no-config venv`, with `--config-file <your uv.toml>` when you have
+  one, after a line that says so: `uv venv` runs the
+  program a `.python-version` names, and a `uv.toml`'s or `pyproject.toml`'s
+  settings can have it run a python the clone ships, or install one from the
+  clone's files and run it, `--python` given or not. `--no-config` skips those,
+  and also a `.python-version` that only pins a version, your global one
+  (`uv python pin --global`) too: pick a python with `--python`, or type
+  `uv venv`.
+- Your uv.toml is the one uv reads besides a project's: the one
+  `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
+  (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows
+  `%APPDATA%\uv\uv.toml`), else, unless `UV_NO_SYSTEM_CONFIG` is true, the
+  system one (`uv/uv.toml` in the first `$XDG_CONFIG_DIRS` directory that has
+  one, `/etc/xdg` by default, else `/etc/uv/uv.toml`; on Windows
+  `%SYSTEMDRIVE%\ProgramData\uv\uv.toml`). uv merges a user and a system
+  uv.toml, and `--config-file` reads one: with both, the user one alone.
 
 Inside a venv `va` activated on bash/zsh/pwsh, `python` / `python3` / `py` run
 through `uv run --python <venv version>` outside a project. Inside a venv on cmd,
@@ -357,8 +438,8 @@ and macOS do not have, stays den's in scripts there.
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `python` / `python3` / `py` | `uv run -- python`, but in a project (a `pyproject.toml`, `.venv`, `pyvenv.cfg`, `uv.toml` or path-naming `.python-version` / `.python-versions` here or above) a python directly; else system python | ✓ | ✓ | ✓ (no `py`) |
-| `pip` / `pip3` | in a venv its own pip, else `uv pip`; with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
-| `uv` | injects `--python` for `uv run` inside an active venv | ✓ | ✓ | ✓ |
+| `pip` / `pip3` | in a venv its own pip, else `uv pip` with your own uv.toml alone (`--config-file`, or `--no-config` without one); with no venv active nothing (`va`, or type `uv pip`); else system pip | ✓ | ✓ | ✓ (no `pip3`) |
+| `uv` | injects `--python` for `uv run` inside an active venv; `uv run` itself is not guarded: it builds and runs the project, as uv does | ✓ | ✓ | ✓ |
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
@@ -373,12 +454,17 @@ cmd has no `va`, and a venv activated in cmd (`activate.bat`) leaves `uv run` as
 typed. The arguments after `run` reach uv unchanged, quoted `&` `|` `<` `>` and
 `=` `,` `;` `!` included.
 
-`va` refuses a venv it cannot trust and prints the command to source it yourself:
+`va` refuses these venvs and prints the command to source one yourself:
 one whose `bin/` (`Scripts/`) or activate script git tracks, or is a symlink, one
 whose `pyvenv.cfg` git tracks, one whose activate script is world-writable, one
 in a repository git will not read (dubious ownership), and one that is itself a git
 repository (a committed `HEAD`, `objects/` and `refs/`). That last check needs git
 2.38 or later; older git reads such a repository and finds nothing tracked.
+What git tracks is how `va` tells a venv that came with the tree, so it can tell
+only in a git checkout: outside one, a venv that came in an archive or a shared
+folder is sourced as it is, as `source` would source it. Activate only a venv you
+made there. `va` runs git with `core.fsmonitor` off, so a `.git/config` that came
+with such a tree starts no program.
 
 ## Media (ffmpeg)
 
@@ -404,12 +490,34 @@ longer starts one `cp` (or one parallel item) per file. Each call still pays
 the parallel tool's own startup, GNU parallel's most of all, so for a quick
 copy of small files a plain `cp` stays faster. `pcp` and `pmv` overwrite an
 existing destination file on both shells, read-only or not. Once confirmed,
-`prm` removes hidden entries too on both shells.
+`prm` removes hidden entries too on both shells. `pcp`, `pmv` and `prm` fail
+when any path fails (on pwsh with a terminating error that counts the errors)
+and when they refuse to start (a usage error, a destination that is not a
+directory, a declined `prm`), so `pcp a b dest && prm --force a b` stops before
+it removes anything. On pwsh every `ptar` refusal is a terminating error too.
 `ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a plain `tar`
 wrapper on pwsh; both accept `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
-`.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). The
-threaded forms write the archive only once tar and the compressor have both
-succeeded, so a failed run leaves no truncated archive.
+`.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). Every
+form, threaded or not, writes the archive only once tar (and the compressor)
+have succeeded, so a failed run leaves no truncated archive and an existing
+output as it was. Every form also leaves an existing output out of the new
+archive (on bash/zsh a hard link to it under another name too), so running
+`ptar backup.tgz .` or `ptar all.tgz *` again does not store the previous
+archive inside the new one.
+On Windows a source spelled like the output but for case is left out only when
+it is the output, as with `archive`.
+Only the sources as given are checked: a hard link
+to the output inside a source folder is still stored, as with `archive`. The
+existing output waits in a staging directory beside it while tar runs; should
+it fail to go back in place after a failed or interrupted run, `ptar` leaves
+it there and says where, as `archive` does
+(`ptar: previous 'backup.tgz' kept at ./.ptar.XXXXXX/previous`). On bash/zsh,
+a signal that comes before the new archive is in place puts the old one back,
+as with `archive`.
+The staging directory is private on pwsh as on bash/zsh.
+A directory that another program makes at the output while tar runs fails the
+run instead of taking in either archive, with the same BSD mv exception as
+`archive`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
@@ -422,7 +530,7 @@ succeeded, so a failed run leaves no truncated archive.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
-| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets; `save <name> '<command>'` stores it as typed, `save <name> <word...>` quotes each word again where it needs it (see shell/README.md) | ✓ | ✓ | — |
+| `snippet` / `snip` | save/ls/show/run/rm/pick named command snippets; `save <name> '<command>'` stores it as typed, `save <name> <word...>` quotes each word again where it needs it; on pwsh a snippet runs inside a function, so a `cd` and `$env:` changes stay, but a variable or function it makes stays only as `$global:x` or `function global:f` (see shell/README.md) | ✓ | ✓ | — |
 | `cheat [name\|ls]` | browse den's bundled cheatsheets (fzf + bat) | ✓ | ✓ | — |
 | `proxy <add\|rm\|ls\|on\|off\|status>` | named proxy profiles (session env vars); a password in a url prints as `user:***@host`, and the `proxy add` line that typed it stays out of the history file | ✓ | ✓ | — |
 
@@ -439,7 +547,7 @@ see shell/README.md for what each shell can and cannot catch.
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|
 | `toggle-hwinfo` / `tgl-hw` | show/hide CPU/GPU info in the starship prompt | ✓ | ✓ | ✓ |
-| `refresh-hwinfo` | clear the per-boot hardware cache so it re-detects | ✓ | ✓ | — |
+| `refresh-hwinfo` | clear the per-boot hardware cache and this shell's values, so the next shell re-detects | ✓ | ✓ | — |
 
 On cmd the CPU/GPU names come from the cache file pwsh's hwinfo keeps,
 `%LOCALAPPDATA%\shell-cache\hwinfo-cache.<COMPUTERNAME>.ps1`, which cmd reads as
@@ -447,10 +555,14 @@ text and never runs. Only without it does a new cmd window detect them (through
 Windows PowerShell, the way pwsh's hwinfo does, so both shells show the same
 names) and write the file for the next one, a "nothing recognized" result
 included; without starship nothing is detected. cmd has no `refresh-hwinfo`:
-pwsh's, or deleting that file, makes the next window detect again. bash, zsh
-and pwsh cache a "nothing recognized" result too (pwsh with the line cmd
-writes), so no shell detects again at each start; their `refresh-hwinfo` makes
-the next shell try again.
+pwsh's, or deleting that file, makes the next window detect again if it
+inherits no `STARSHIP_*` value. A cmd that inherits one (started from a shell
+that still has them, say) uses the inherited values as they are, without
+reading the file or detecting. bash, zsh and pwsh cache a "nothing recognized"
+result too (pwsh with the line cmd writes), so no shell detects again at each
+start; their `refresh-hwinfo` makes the next shell try again, a `reload` or a
+child shell included: it unsets the values in the shell it runs in too, so the
+prompt shows no CPU or GPU until then.
 
 ## History, session, editor
 
@@ -469,6 +581,11 @@ On cmd, `again` reads Clink's history (cmd's own `doskey /history` stays empty
 under Clink) and needs Clink 1.3.18 or newer. Type it on a line of its own:
 after the confirm, the command becomes the next input line, so it runs as if
 typed, aliases included.
+
+On pwsh, `again` runs the line inside a function, as `snippet run` does: a `cd`
+and `$env:` changes stay, but a variable or function the line makes does not,
+so `$x = Get-Date` run again leaves `$x` as it was; `$global:x = Get-Date`
+sets it (see shell/README.md, Command snippets).
 
 On zsh, `reload` also deletes the completion dump (`~/.zcompdump`), so the new
 shell's `compinit` takes in completion functions installed since; without it,

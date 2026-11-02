@@ -568,11 +568,20 @@ function _DenTyped([string]$Origin, [int]$Hops = 0) {
 # _DenReplay <line> <typed> - Invoke-Expression <line>, for again and snippet. When
 # the command replaying it was typed (<typed>), the commands the line calls itself
 # count as typed too (see _DenTyped), as they did when the line was first typed.
-function _DenReplay([string]$Line, [bool]$Typed) {
-    $outer = $global:_DenReplayDepth
+# The line runs in this function's scope, not in the prompt's: it reads the
+# session's variables, and the location, $env: and what it makes global
+# ($global:x, function global:f, -Scope Global) stay, but a variable, function
+# or alias it makes otherwise, itself or in a script it dot-sources, ends with
+# it (shell/README.md, Command snippets, tells users so). A variable of this
+# function's, or of a function that calls it, hides the session's of that name
+# from the line, and a variable the line sets lands here: so this function's
+# own are named $__x, which no session uses, as are snippet's and _SnippetExec's
+# (see snippet).
+function _DenReplay([string]$__line, [bool]$__typed) {
+    $__outer = $global:_DenReplayDepth
     $global:_DenReplayDepth = 0
-    if ($Typed) { $global:_DenReplayDepth = @(Get-PSCallStack).Count }
-    try { Invoke-Expression $Line } finally { $global:_DenReplayDepth = $outer }
+    if ($__typed) { $global:_DenReplayDepth = @(Get-PSCallStack).Count }
+    try { Invoke-Expression $__line } finally { $global:_DenReplayDepth = $__outer }
 }
 
 # ========== path operands ==========
@@ -596,46 +605,164 @@ function _ResolvePaths([string[]]$Patterns) {
 
 # ========== den's stores ==========
 
+# _DenMakePrivate <dir> <file> - make <dir> 0700 and <file> 0600 (Linux and
+# macOS; a symlink's target gets the mode), for _DenWritePrivate.
+function _DenMakePrivate([string]$Dir, [string]$File) {
+    if ('System.IO.UnixFileMode' -as [type]) {
+        [IO.File]::SetUnixFileMode($Dir, 'UserRead, UserWrite, UserExecute')
+        [IO.File]::SetUnixFileMode($File, 'UserRead, UserWrite')
+    } else {
+        # pwsh before 7.3 (.NET 6 and older) has no such API.
+        $chmod = _ResolveCmd 'chmod' 'App'
+        if (-not $chmod) { throw "chmod not found: cannot make $File private" }
+        & $chmod 700 $Dir
+        if ($LASTEXITCODE -eq 0) { & $chmod 600 $File }
+        if ($LASTEXITCODE -ne 0) { throw "cannot make $File private" }
+    }
+}
+
 # _DenWritePrivate <path> <text> - write text (UTF-8 without a BOM, which posix
 # reads too) to one of den's stores under $XDG_CONFIG_HOME/den, which proxy.ps1
 # and snippet.ps1 share with bash/zsh: proxy.conf may hold a proxy password, and
-# snippets holds saved commands. On Linux and macOS the directory is made 0700
-# and the file 0600 before the text goes in, whatever the umask, so an older
-# den's looser modes are tightened too; a store that is a symlink is written
-# through, and its target gets the mode. On Windows both keep the ACL they
-# inherit from the profile directory. A failure ends the caller, so it prints
-# no "saved" message and the text never lands in a file left readable: the
-# catch rethrows, because a .NET method's exception alone would end only its
-# own statement and the next one would still run.
+# snippets holds saved commands. The text goes to a temporary file beside the
+# store, which then replaces it, as _den_put does in bash/zsh: a write that
+# fails (a full disk, a quota) leaves the store as it was, where a write in
+# place left it cut short or empty. A store that is a symlink is written
+# through instead, so the link stays and its target (created if missing) gets
+# the text; when that write fails, the target may be cut short, so the
+# temporary file, the only whole copy, stays and the error names it. On Linux
+# and macOS the directory is made 0700, and the temporary file and a link's
+# target 0600, before the text goes in, whatever the umask, so an older den's
+# looser modes are tightened too. On Windows the temporary file takes the ACL
+# it inherits from the directory, and File.Replace gives it the store's own. A
+# failure ends the caller, so it prints no "saved" message and the text never
+# lands in a file left readable: the catch throws again, because a .NET
+# method's exception alone would end only its own statement and the next one
+# would still run.
 function _DenWritePrivate([string]$Path, [string]$Text) {
+    $tmp = "$Path.tmp.$PID"
+    $cut = $false
     try {
         $dir = Split-Path -Parent $Path
         if (-not (Test-Path -LiteralPath $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
         # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
-        if (-not ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)) {
-            # Create the file if it is missing, so it can get its mode before
-            # the text goes in. Appending nothing creates it, also as the
-            # target of a symlink that points nowhere yet, for which
-            # Test-Path already says True; an existing file is left as it is.
+        $private = -not ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)
+        # A symlink, also one that points nowhere yet; -1 is no such path.
+        $attrs = [int]([IO.FileInfo]::new($Path).Attributes)
+        $link = $attrs -ne -1 -and ($attrs -band [int][IO.FileAttributes]::ReparsePoint)
+        # Made empty first, so that it has its mode before the text goes in.
+        [IO.File]::WriteAllText($tmp, '')
+        if ($private) { _DenMakePrivate $dir $tmp }
+        [IO.File]::WriteAllText($tmp, $Text, [Text.UTF8Encoding]::new($false))
+        if ($link) {
+            # Appending nothing creates a missing target, so that it has its
+            # mode before the text goes in; an existing one is left as it is.
             [IO.File]::AppendAllText($Path, '')
-            if ('System.IO.UnixFileMode' -as [type]) {
-                [IO.File]::SetUnixFileMode($dir, 'UserRead, UserWrite, UserExecute')
-                [IO.File]::SetUnixFileMode($Path, 'UserRead, UserWrite')
-            } else {
-                # pwsh before 7.3 (.NET 6 and older) has no such API.
-                $chmod = _ResolveCmd 'chmod' 'App'
-                if (-not $chmod) { throw "chmod not found: cannot make $Path private" }
-                & $chmod 700 $dir
-                if ($LASTEXITCODE -eq 0) { & $chmod 600 $Path }
-                if ($LASTEXITCODE -ne 0) { throw "cannot make $Path private" }
-            }
+            if ($private) { _DenMakePrivate $dir $Path }
+            $cut = $true
+            [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
+            $cut = $false
+            try { [IO.File]::Delete($tmp) } catch { }
+        } elseif ([IO.File]::Exists($Path)) {
+            # A $null argument would reach .NET as ''.
+            [IO.File]::Replace($tmp, $Path, [NullString]::Value)
+        } else {
+            [IO.File]::Move($tmp, $Path)
         }
-        [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
     } catch {
-        throw
+        $why = $_.Exception.GetBaseException().Message
+        if ($cut) { throw "cannot write $Path; the whole new store is in $tmp. $why" }
+        try { [IO.File]::Delete($tmp) } catch { }
+        throw "cannot write $Path; it is left as it was. $why"
     }
+}
+
+# ========== archive's and ptar's staging folders ==========
+
+# _DenNewPrivateDir <full path> - make a new, empty folder at <path> for
+# archive's and ptar's staging (the previous archive waits in it while tar
+# writes the new one there), or throw. On Linux and macOS it is
+# `mkdir -m 700`, as `mktemp -d` is for the bash/zsh twins: made with the
+# umask's mode instead (0775 under umask 002, 0777 under 000), the folder let
+# another user who can write to the output's directory plant a symlink where
+# tar writes the new archive, or delete the previous one. mkdir also fails
+# when anything is at <path> already, where .NET's CreateDirectory takes an
+# existing folder, or a symlink to one, as made; and what it made must be a
+# plain directory (no symlink) this user owns, or nothing goes into it. On
+# Windows the folder is made after a check that nothing is at <path>, and
+# keeps the ACL it inherits.
+function _DenNewPrivateDir([string]$Path) {
+    if (-not $Path) { throw 'no path given' }
+    # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
+    if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+        if ([System.IO.Directory]::Exists($Path) -or [System.IO.File]::Exists($Path)) {
+            throw "'$Path' already exists"
+        }
+        try { $null = [System.IO.Directory]::CreateDirectory($Path) }
+        catch { throw $_.Exception.GetBaseException().Message }
+        return
+    }
+    if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { throw '/bin/sh not found' }
+    # mkdir says why it failed on stderr; the checks after it, on stdout. The
+    # script holds no double quotes, which pwsh before 7.3 strips from a
+    # native command's arguments (see _DenLegacyArgPassing): IFS= and set -f
+    # keep an unquoted $1 one word, as quotes would.
+    $script = 'IFS=; set -f; mkdir -m 700 -- $1 || exit 1; ' +
+        '[ -d $1 ] && [ ! -h $1 ] && [ -O $1 ] && exit 0; ' +
+        'echo not a plain directory owned by this user; exit 1'
+    $why = & /bin/sh -c $script _ $Path
+    if ($LASTEXITCODE -ne 0) {
+        if ($why) { throw "$why" }
+        throw "mkdir -m 700 failed"
+    }
+}
+
+# ========== names that differ only in case ==========
+
+# _DenOneEntry <a> <b> - for two full paths spelled alike but for case: $true
+# when they name one directory entry, $false when they name two, and a throw
+# when that cannot be told; the caller has seen that both exist. Windows, and
+# macOS's default volume, compare names without regard to case, but how many
+# files two such spellings are depends on the folder: such a folder finds its
+# one entry under either, while a case-sensitive one (Linux's, or one WSL
+# makes on Windows) can hold backup.tgz and BACKUP.TGZ as two files. So at each level where the
+# spellings differ, the folder's own listing is asked: a spelling it holds
+# exactly is that entry, and one it does not hold is its only name that
+# differs from it in case. A folder it cannot list, or one that holds several
+# such names but not this one, cannot tell.
+function _DenOneEntry([string]$A, [string]$B) {
+    # GetPathRoot('') is $null, and its .Length an error under strict mode.
+    if (-not $A -or -not $B) { return $false }
+    $seps = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $root = [System.IO.Path]::GetPathRoot($A)
+    $pa = $A.Substring($root.Length).Split($seps, [System.StringSplitOptions]::RemoveEmptyEntries)
+    $pb = $B.Substring($root.Length).Split($seps, [System.StringSplitOptions]::RemoveEmptyEntries)
+    if ($pa.Count -ne $pb.Count) { return $false }
+    $dir = $root
+    for ($i = 0; $i -lt $pa.Count; $i++) {
+        $name = $pa[$i]
+        if ($name -cne $pb[$i]) {
+            try {
+                $held = @(foreach ($e in [System.IO.Directory]::EnumerateFileSystemEntries($dir)) {
+                    $n = [System.IO.Path]::GetFileName($e)
+                    if ([string]::Equals($n, $name, [System.StringComparison]::OrdinalIgnoreCase)) { $n }
+                })
+            } catch {
+                throw "cannot tell whether '$A' and '$B' are one file: $($_.Exception.GetBaseException().Message)"
+            }
+            $ea = if ($held -ccontains $name) { $name } elseif ($held.Count -eq 1) { $held[0] }
+            $eb = if ($held -ccontains $pb[$i]) { $pb[$i] } elseif ($held.Count -eq 1) { $held[0] }
+            if ($null -eq $ea -or $null -eq $eb) {
+                throw "cannot tell whether '$A' and '$B' are one file: '$dir' holds several names that differ from them only in case"
+            }
+            if ($ea -cne $eb) { return $false }
+            $name = $ea
+        }
+        $dir = [System.IO.Path]::Combine($dir, $name)
+    }
+    return $true
 }
 
 # ========== wrapper generator ==========
@@ -694,8 +821,165 @@ function _DenAddClean([string[]]$Names) {
     }
 }
 
-# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr>
-function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr) {
+# _DenOptionFile <name> <tool> <args> - for New-Wrapper: why <tool> must not run
+# with <args>, the arguments of den's <name>, else $null. bat, fd and rg have
+# options that run a program (rg --pre and --hostname-bin, fd -x and -X in any
+# spelling, bat --pager with --paging), and they read a word that starts with -
+# as an option, also when it is the name of a file: `grep needle *` beside a
+# file named --pre=sh had rg run sh on every file it searched. So <tool> must
+# not run when one of <args> starts with - and names an existing path, or
+# when one is a wildcard that stands for such a name and the wildcard is
+# expanded: by pwsh, for a native command on Linux and macOS, after this
+# function has seen it, each name relative to the current directory (./*
+# included: it hands on ./--pre=sh as --pre=sh); by den's cat on Windows, for
+# bat (_DenBatWords), in the same way. So the names are looked up the way pwsh
+# does it. On Windows pwsh expands nothing, and rg and fd do not either.
+function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
+    $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    $expand = (-not (_OnWindows) -or $Tool -eq 'bat') -and $loc.Provider.Name -eq 'FileSystem'
+    # <tool> runs in the session's file-system location, also while the session
+    # is on another drive (Env:, a registry drive), so a name is looked up there,
+    # as a file.
+    $fsBase = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        if ($null -eq $w) { continue }
+        $s = "$w"
+        if ($s.Length -gt 1 -and $s[0] -eq '-') {
+            $there = $false
+            try { $there = Test-Path -LiteralPath ('FileSystem::' + [System.IO.Path]::Combine($fsBase, $s)) } catch { $null = $_ }
+            if ($there) {
+                return "'$s' names a file, which $Tool would read as an option: $Tool did not run. " +
+                    "Write it as ./$s, or run the native $Name with the wrappers off (tgl-wr)."
+            }
+        }
+        # pwsh expands a rooted pattern (/x/*, ~/x/*) to rooted names.
+        if (-not $expand -or $s.StartsWith('~') -or [System.IO.Path]::IsPathRooted($s) -or
+            -not [WildcardPattern]::ContainsWildcardCharacters($s)) { continue }
+        $items = @()
+        try { $items = @($ExecutionContext.SessionState.InvokeProvider.ChildItem.Get($s, $false)) } catch { $null = $_ }
+        foreach ($i in $items) {
+            if ($i -isnot [System.IO.FileSystemInfo]) { continue }
+            $n = $ExecutionContext.SessionState.Path.NormalizeRelativePath($i.FullName, $loc.ProviderPath)
+            if ($n.StartsWith('-')) {
+                return "'$s' stands for the file '$n', which $Tool would read as an option: $Tool did " +
+                    "not run. Write the wildcard with a full path (`$PWD/$s), or run the native $Name " +
+                    "with the wrappers off (tgl-wr)."
+            }
+        }
+    }
+    return $null
+}
+
+# _DenBatWild <args> - for den's cat on Windows: why bat must not run with
+# <args>, else $null. There bat expands each word that holds * ? [ or ] itself
+# (see _DenBatWords), an option and an option's value too, and pwsh hands a
+# word without a blank on unquoted, so nothing keeps bat from expanding one:
+# `cat -l * x` would make a file named like an option the language and read
+# the names after it as options. So den's cat expands file operands only, and
+# refuses a word that starts with - and holds one of those characters
+# (--file-name=*.py), or the value of an option that takes it from the next
+# word when that holds one (--map-syntax '*.h:C++', -l '*'). Turning such a
+# word into a path, as for an operand, would make bat read the option as a
+# file. After a -- every word is an operand (den's cat has refused a -- by
+# then: _DenBatDashDash).
+function _DenBatWild($Words) {
+    # bat 0.26.1's options that take a value, from `bat --help` (bat cache's
+    # --source and --target too): without =value, the next word is the value.
+    # A cluster of short options gives -l, -m, -r or -H the rest of the word,
+    # or the next word when it ends the word (-pl).
+    $long = @('--binary', '--color', '--completion', '--decorations', '--diff-context',
+        '--file-name', '--highlight-line', '--ignored-suffix', '--italic-text', '--language',
+        '--line-range', '--map-syntax', '--nonprintable-notation', '--pager', '--paging',
+        '--squeeze-limit', '--strip-ansi', '--style', '--tabs', '--terminal-width', '--theme',
+        '--theme-dark', '--theme-light', '--wrap', '--source', '--target')
+    $how = 'which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it.'
+    $opt = $null
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        $s = "$w"
+        $wild = $s.IndexOfAny([char[]]'*?[]') -ge 0
+        if ($opt) {
+            if ($wild) { return "'$s', the value of $opt, holds * ? [ or ], $how" }
+            $opt = $null
+            continue
+        }
+        if ($s -eq '--') { break }
+        if ($s.Length -lt 2 -or $s[0] -ne '-') { continue }
+        if ($wild) { return "'$s' is an option that holds * ? [ or ], $how" }
+        if ($s -cin $long) { $opt = $s; continue }
+        if ($s[1] -eq '-') { continue }
+        for ($i = 1; $i -lt $s.Length; $i++) {
+            if ('lmrH'.IndexOf($s[$i]) -lt 0) { continue }
+            if ($i -eq $s.Length - 1) { $opt = $s }
+            break
+        }
+    }
+    return $null
+}
+
+# _DenBatDashDash <args> - for den's cat: why bat must not run with <args>,
+# else $null. cat hands bat a last --paging=never after <args>, which wins over
+# any --paging a file name put before it, but after a -- bat reads every word
+# as a file name, that one too. pwsh drops a bare -- typed to a function, but a
+# quoted '--', a second --, or one in a variable or an array reaches <args>.
+# So cat refuses a -- on every system, as cmd's cat does.
+function _DenBatDashDash($Words) {
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        if ("$w" -ceq '--') {
+            return "'--' would make bat read den's last --paging=never as a file name: bat did not run. " +
+                'Write a file whose name starts with - as ./-name instead, or run bat or catw by name.'
+        }
+    }
+    return $null
+}
+
+# _DenBatWords <args> - for den's cat on Windows: <args>, with each word that
+# bat would expand itself replaced by what it stands for, so that bat's own
+# expansion does not decide what it reads. On Windows bat expands each word
+# that holds * ? [ or ] (the wild crate, which leaves a quoted word alone, but
+# pwsh hands most words on unquoted), one word at a time: `cat ???* *` beside
+# files named --, --pager=cmd and --paging=always gave bat the pager options
+# from the first word and a -- from the second, which made the last
+# --paging=never a file name. Such a word is a file operand here
+# (_DenBatWild has refused an option or an option's value that holds one), and
+# it becomes the names it matches, relative to the current directory as pwsh
+# hands them on in Linux and macOS (_DenOptionFile has refused a match whose
+# name starts with -). A match of a
+# rooted word, or one whose name holds [ or ], goes as its full path, and
+# whatever bat still makes of a full path is one too. A word that matches
+# nothing, or any such word while the current location is not a folder, goes
+# on made a full path from the folder bat runs in. So no name bat reads
+# starts with -.
+function _DenBatWords($Words) {
+    $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    $fs = $loc.Provider.Name -eq 'FileSystem'
+    $base = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+    foreach ($w in @($Words | ForEach-Object { $_ })) {
+        if ($null -eq $w) { $w; continue }
+        $s = "$w"
+        if ($s.IndexOfAny([char[]]'*?[]') -lt 0) { $w; continue }
+        $rooted = $s.StartsWith('~') -or [System.IO.Path]::IsPathRooted($s)
+        $items = @()
+        if ($fs) {
+            try { $items = @($ExecutionContext.SessionState.InvokeProvider.ChildItem.Get($s, $false)) } catch { $null = $_ }
+        }
+        $names = @(foreach ($i in $items) {
+            if ($i -isnot [System.IO.FileSystemInfo]) { continue }
+            $n = $i.FullName
+            if (-not $rooted) {
+                $r = $ExecutionContext.SessionState.Path.NormalizeRelativePath($n, $loc.ProviderPath)
+                if (-not $r.StartsWith('-') -and $r.IndexOfAny([char[]]'[]') -lt 0) { $n = $r }
+            }
+            $n
+        })
+        if ($names.Count) { $names; continue }
+        if ($rooted) { $s; continue }
+        try { [System.IO.Path]::Combine($base, $s) } catch { $s }
+    }
+}
+
+# New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr> [modernTail]
+# <modernTail>: flags the modern tool gets after the call's arguments.
+function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr, [string]$ModernTail) {
     # Dispatch order: modern tool -> (Windows) microsoft/coreutils -> native exe on
     # PATH -> PowerShell fallback. The coreutils and native tiers both reuse
     # $NativeCmd as the Unix command name ('ls'/'cat'/'grep'/'find'), so on Windows a
@@ -709,6 +993,24 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # error it writes is the function's ("lt: ..."). With input piped in, it runs
     # as a scriptblock of its own, which sees the call's arguments as $Args and
     # what was piped in as $input, all at once.
+    # A wrapper named after the native command it replaces whose modern tool has
+    # options that run a program (bat, fd, rg) runs nothing, with a terminating
+    # error, when an argument is a file name the tool would read as an option
+    # (_DenOptionFile).
+    # bat runs nothing either when a -- reaches the wrapper, after which it
+    # would read the last --paging=never as a file name (_DenBatDashDash).
+    # On Windows, bat runs nothing either when an option or an option's value
+    # holds a wildcard (_DenBatWild), and gets each other word it would expand
+    # replaced by what it stands for (_DenBatWords).
+    $optionCheck = ''
+    if ($FuncName -eq $NativeCmd -and $Modern -in @('bat', 'fd', 'rg')) {
+        $optionCheck = "`$__o = _DenOptionFile '$FuncName' '$Modern' `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }"
+        if ($Modern -eq 'bat') {
+            $optionCheck = "`$__o = _DenBatDashDash `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }; " +
+                "if (_OnWindows) { `$__o = _DenBatWild `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop } }; " +
+                $optionCheck + "; if (_OnWindows) { `$__a = @(_DenBatWords `$__a) }"
+        }
+    }
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
     $winNativeSkip = @('find', 'sort', 'more')
     $nativeGuard = if ($NativeCmd -and ($NativeCmd -in $winNativeSkip)) {
@@ -723,8 +1025,9 @@ begin {
     `$__sp = `$null
     `$__a = `$args
     if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
+        $optionCheck
         _WrapLog '$FuncName' '$Modern'
-        `$__run = { & '$Modern' $ModernFlags @__a }
+        `$__run = { & '$Modern' $ModernFlags @__a $ModernTail }
     } else {
         `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
         `$__nc = if (-not `$__cu -and ($nativeGuard)) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }

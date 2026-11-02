@@ -142,28 +142,35 @@ _snippet_save() {
         unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp
         return 1
     }
+    # A store that cannot be read, or a write into the temporary file that
+    # fails (a full disk, a quota), ends the save, and _ss_err says which: the
+    # store is never replaced by one that holds the new line alone, or by a
+    # copy cut short. A failed write breaks out of the loop, which then ends
+    # with status 0, so a failure of the loop itself is the < redirection.
+    _ss_err=
     if [ -f "$_ss_file" ]; then
         # Drop any existing snippet with this name (literal field-1 compare).
-        # A store that cannot be read ends the save, so it is never replaced
-        # by one that holds the new line alone.
         while IFS= read -r _ss_line || [ -n "$_ss_line" ]; do
             if [ "${_ss_line%%"$_ss_tab"*}" != "$_ss_name" ]; then
-                printf '%s\n' "$_ss_line" >> "$_ss_tmp"
+                printf '%s\n' "$_ss_line" >> "$_ss_tmp" || { _ss_err='write'; break; }
             fi
-        done < "$_ss_file" || {
-            rm -f "$_ss_tmp"
-            echo "snippet save: cannot read $_ss_file; it is left as it was" >&2
-            unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
-            return 1
-        }
+        done < "$_ss_file" || _ss_err='read'
     fi
-    printf '%s\t%s\n' "$_ss_name" "$_ss_cmd" >> "$_ss_tmp"
+    if [ -z "$_ss_err" ] && ! printf '%s\t%s\n' "$_ss_name" "$_ss_cmd" >> "$_ss_tmp"; then
+        _ss_err='write'
+    fi
+    if [ -n "$_ss_err" ]; then
+        rm -f "$_ss_tmp"
+        echo "snippet save: cannot $_ss_err $_ss_file; it is left as it was" >&2
+        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line _ss_err
+        return 1
+    fi
     if ! _den_put "$_ss_tmp" "$_ss_file"; then
         echo "snippet save: cannot write $_ss_file" >&2
         if [ -e "$_ss_tmp" ]; then
             echo "snippet save: the whole new store is in $_ss_tmp" >&2
         fi
-        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+        unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line _ss_err
         return 1
     fi
     # The several-words form prints the line it saved, with the quotes it put
@@ -173,7 +180,7 @@ _snippet_save() {
     else
         echo "snippet: saved '$_ss_name'" >&2
     fi
-    unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line
+    unset _ss_name _ss_words _ss_cmd _ss_file _ss_dir _ss_tab _ss_tmp _ss_line _ss_err
 }
 
 _snippet_ls() {
@@ -225,30 +232,39 @@ _snippet_rm() {
         unset _srm_file _srm_tab _srm_tmp _srm_found
         return 1
     }
+    # A store that cannot be read, or a write into the temporary file that
+    # fails, ends the rm and leaves the store as it was, as in save.
+    _srm_err=
     while IFS= read -r _srm_line || [ -n "$_srm_line" ]; do
         if [ "${_srm_line%%"$_srm_tab"*}" = "$1" ]; then
             _srm_found=1
         else
-            printf '%s\n' "$_srm_line" >> "$_srm_tmp"
+            printf '%s\n' "$_srm_line" >> "$_srm_tmp" || { _srm_err='write'; break; }
         fi
-    done < "$_srm_file"
+    done < "$_srm_file" || _srm_err='read'
+    if [ -n "$_srm_err" ]; then
+        rm -f "$_srm_tmp"
+        echo "snippet rm: cannot $_srm_err $_srm_file; it is left as it was" >&2
+        unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line _srm_err
+        return 1
+    fi
     if [ "$_srm_found" -eq 1 ]; then
         if ! _den_put "$_srm_tmp" "$_srm_file"; then
             echo "snippet rm: cannot write $_srm_file" >&2
             if [ -e "$_srm_tmp" ]; then
                 echo "snippet rm: the whole new store is in $_srm_tmp" >&2
             fi
-            unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line
+            unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line _srm_err
             return 1
         fi
         echo "snippet: removed '$1'" >&2
     else
         rm -f "$_srm_tmp"
         echo "snippet rm: no such snippet '$1'" >&2
-        unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line
+        unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line _srm_err
         return 1
     fi
-    unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line
+    unset _srm_file _srm_tab _srm_tmp _srm_found _srm_line _srm_err
 }
 
 _snippet_run() {

@@ -107,11 +107,24 @@ assert_eq "fixids/no lists left in TMPDIR" "" "$actual"
 # A list find could not write in full ended in part of a path, and the passes
 # still ran: xargs -0 handed that fragment (a prefix of a real path, which can
 # name an ancestor directory) to chown. A file-size limit of one block stands
-# in for a full TMPDIR: with SIGXFSZ ignored find gets EFBIG, names the list
-# and exits 1; with it at its default find is killed. Either way fixids now
-# stops before any pass. A probe first checks that the limit holds here.
-mkdir -p "$WORK/big"
-for i in $(seq 1 100); do : > "$WORK/big/a-file-name-long-enough-to-fill-a-block-$i"; done
+# in for a full TMPDIR. With SIGXFSZ at its default find is killed. With it
+# ignored find gets EFBIG, but GNU find 4.10 reports a list it could not write
+# only when closing the list fails, and closing has nothing left to write
+# when the NUL after the last path met a full stdio buffer (st_blksize, 4096
+# bytes on the usual file systems): the write of that buffer failed, emptied
+# it and dropped the NUL, and find exits 0 without a message. Whether a tree
+# of many files ended that way hung on the length of TMPDIR. The tree here
+# has a root path longer than a block, so the one-block list always ends
+# inside that first name, and one file in it whose path ends the list's
+# paths at 4096 bytes (2 * root + 2 + name), so that find exits 0 (up to a
+# TMPDIR of about 2000 characters, past which the name has no room left).
+# Either way fixids now stops before any pass. A probe first checks that the
+# limit holds here.
+_long=$(readlink -f -- "$WORK")/cut
+while [ "${#_long}" -lt 1920 ]; do _long=$_long/$(printf '%100s' '' | tr ' ' d); done
+mkdir -p "$_long"
+_name=$((4094 - 2 * ${#_long}))
+[ "$_name" -lt 1 ] || : > "$_long/$(printf "%${_name}s" '' | tr ' ' f)"
 _fsz=$("$BASH_BIN" -c 'trap "" XFSZ; ulimit -f 1; head -c 4096 /dev/zero > "$1" 2>/dev/null; stat -c %s "$1"' _ "$WORK/fsz.probe")
 rm -f "$WORK/fsz.probe"
 for _xfsz in ignored default; do
@@ -121,14 +134,74 @@ for _xfsz in ignored default; do
         continue
     fi
     if [ "$_xfsz" = ignored ]; then _trap='trap "" XFSZ;'; else _trap='trap - XFSZ;'; fi
-    actual=$(mkdir -p "$WORK/tmp"; PATH="$PATH" TMPDIR="$WORK/tmp" "$BASH_BIN" -c "$_trap ulimit -f 1; exec \"\$0\" \"\$@\"" "$BASH_BIN" "$FIXIDS" -n --from "$U:$G" --to 2000:2000 "$WORK/big" 2>&1; echo "rc=$?")
+    actual=$(mkdir -p "$WORK/tmp"; PATH="$PATH" TMPDIR="$WORK/tmp" "$BASH_BIN" -c "$_trap ulimit -f 1; exec \"\$0\" \"\$@\"" "$BASH_BIN" "$FIXIDS" -n --from "$U:$G" --to 2000:2000 "$_long" 2>&1; echo "rc=$?")
     assert_contains "fixids/cut list ($_xfsz): stops" "nothing was changed" "$actual"
     assert_contains "fixids/cut list ($_xfsz): names the lists" "fixids: the file lists under $WORK/tmp are incomplete (find exit " "$actual"
     assert_not_contains "fixids/cut list ($_xfsz): no pass ran" "would be" "$actual"
     assert_eq "fixids/cut list ($_xfsz): exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
     assert_eq "fixids/cut list ($_xfsz): lists removed" "" "$(find "$WORK/tmp" -mindepth 1)"
 done
-rm -rf "${WORK:?}/big"
+rm -rf "${WORK:?}/cut"
+
+# The same stop for a list cut by hand, in each of the three lists, which does
+# not hang on how find writes: a find stand-in runs the real one, then leaves
+# in the list named by CUT the "both" list's paths less the last NUL and the
+# character before it (a list that ends inside a path) and exits 0 without a
+# message. fixids used to run its passes over such a list.
+mkdir -p "$TESTTMP/cutfind"
+{
+    printf '#!/bin/sh\n"%s" "$@" || exit\n' "$REAL_FIND"
+    cat <<'EOF'
+for a do
+    case $a in */both) b=$a ;; esac
+    case $a in */"$CUT") c=$a ;; esac
+done
+head -c -2 -- "$b" > "$c.cut" && mv -- "$c.cut" "$c"
+EOF
+} > "$TESTTMP/cutfind/find"
+chmod +x "$TESTTMP/cutfind/find"
+for _list in both uid gid; do
+    echo "[fixids] a $_list list that ends inside a path stops the run, though find exits 0"
+    actual=$(CUT=$_list fx "$TESTTMP/cutfind" -n --from "$U:$G" --to 2000:2000 "$WORK/t")
+    assert_contains "fixids/hand-cut $_list list: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 0); nothing was changed" "$actual"
+    assert_not_contains "fixids/hand-cut $_list list: no pass ran" "would be" "$actual"
+    assert_eq "fixids/hand-cut $_list list: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+    assert_eq "fixids/hand-cut $_list list: lists removed" "" "$(find "$WORK/tmp" -mindepth 1)"
+done
+
+# The two older stops, which no cut above reaches: the stand-ins below run the
+# real find, which writes every list in full (each ends in a NUL), and then
+# report a failure. One names a list in a message and exits 1, as find does
+# when it cannot write or close a list; the other exits 2 without a message
+# (find's own errors give exit 1, so another status means find was stopped or
+# never ran). A list may then lack paths, so fixids stops before any pass.
+mkdir -p "$TESTTMP/msgfind" "$TESTTMP/rc2find"
+{
+    printf '#!/bin/sh\n"%s" "$@" || exit\n' "$REAL_FIND"
+    cat <<'EOF'
+p=
+for a do
+    [ "$p" != -fprint0 ] || l=$a
+    p=$a
+done
+echo "find: '$l': No space left on device" >&2
+exit 1
+EOF
+} > "$TESTTMP/msgfind/find"
+printf '#!/bin/sh\n"%s" "$@" || exit\nexit 2\n' "$REAL_FIND" > "$TESTTMP/rc2find/find"
+chmod +x "$TESTTMP/msgfind/find" "$TESTTMP/rc2find/find"
+
+echo "[fixids] find naming a list in a message stops the run, though every list ends in a NUL"
+actual=$(fx "$TESTTMP/msgfind" -n --from "$U:$G" --to 2000:2000 "$WORK/t")
+assert_contains "fixids/list named in a message: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 1); nothing was changed" "$actual"
+assert_not_contains "fixids/list named in a message: no pass ran" "would be" "$actual"
+assert_eq "fixids/list named in a message: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+
+echo "[fixids] find exiting 2 stops the run, though every list ends in a NUL"
+actual=$(fx "$TESTTMP/rc2find" -n --from "$U:$G" --to 2000:2000 "$WORK/t")
+assert_contains "fixids/find exit 2: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 2); nothing was changed" "$actual"
+assert_not_contains "fixids/find exit 2: no pass ran" "would be" "$actual"
+assert_eq "fixids/find exit 2: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
 
 # An unreadable directory is a walk error, not a list error: the passes still
 # run over what find could read, and the run fails. Root reads any directory.
@@ -144,6 +217,152 @@ if [ "$(id -u)" -ne 0 ]; then
 else
     echo "  SKIP: fixids/unreadable dir (root reads every directory)"
 fi
+
+# =============================================================================
+# One class: a checked list too
+# =============================================================================
+# Without --from UID:GID and a --to GID there is one class (no --from, a
+# --from without a GID, or a --to without one), and its pass read find's
+# output through a pipe as find walked. A find killed mid-walk left that
+# stream ending inside a path, and xargs handed the fragment, a prefix of a
+# real path (an ancestor directory, or one -x excluded), to chown. That pass
+# now reads a list the walk checked first, as the three classes do. A find
+# stand-in runs the real one, then leaves what it wrote (its output, and each
+# -fprint0 list) less the last NUL and the character before it, and dies of
+# SIGKILL (CUTEND=sigkill) or exits 0 without a message (CUTEND=0). chown and
+# chgrp stand-ins only log their arguments, so these real runs change nothing.
+mkdir -p "$TESTTMP/cutall"
+{
+    printf '#!/bin/sh\nout="%s"\n"%s" "$@" > "$out" || exit\n' "$WORK/cutall.out" "$REAL_FIND"
+    cat <<'EOF'
+p=
+for a do
+    if [ "$p" = -fprint0 ]; then head -c -2 -- "$a" > "$a.cut" && mv -- "$a.cut" "$a"; fi
+    p=$a
+done
+head -c -2 -- "$out"
+[ "$CUTEND" != sigkill ] || kill -KILL $$
+EOF
+} > "$TESTTMP/cutall/find"
+for t in chown chgrp; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s"\n' "$t" "$WORK/cutall.calls" > "$TESTTMP/cutall/$t"
+done
+chmod +x "$TESTTMP/cutall/find" "$TESTTMP/cutall/chown" "$TESTTMP/cutall/chgrp"
+for _mode in "--from UID" "--to UID:GID" "--to UID"; do
+    case $_mode in
+        "--from UID") _args=(--from "$U" --to 2000) ;;
+        "--to UID:GID") _args=(--to 2000:2000) ;;
+        *) _args=(--to 2000) ;;
+    esac
+    echo "[fixids] $_mode: find killed mid-walk, its list ends inside a path: no chown runs"
+    rm -f "$WORK/cutall.calls"
+    actual=$(CUTEND=sigkill fx "$TESTTMP/cutall" "${_args[@]}" "$WORK/t")
+    assert_contains "fixids/$_mode, find killed: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 137); nothing was changed" "$actual"
+    assert_eq "fixids/$_mode, find killed: no chown ran" "" "$(cat "$WORK/cutall.calls" 2>/dev/null)"
+    assert_eq "fixids/$_mode, find killed: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+    echo "[fixids] $_mode: a list that ends inside a path stops the run, though find exits 0"
+    rm -f "$WORK/cutall.calls"
+    actual=$(CUTEND=0 fx "$TESTTMP/cutall" "${_args[@]}" "$WORK/t")
+    assert_contains "fixids/$_mode, cut list: stops" "fixids: the file lists under $WORK/tmp are incomplete (find exit 0); nothing was changed" "$actual"
+    assert_eq "fixids/$_mode, cut list: no chown ran" "" "$(cat "$WORK/cutall.calls" 2>/dev/null)"
+    assert_eq "fixids/$_mode, cut list: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+done
+
+# =============================================================================
+# TMPDIR inside a walked root
+# =============================================================================
+# Every mode makes its list directory under TMPDIR before the walk, and find
+# opens the -fprint0 lists as it reads its arguments. With TMPDIR inside a
+# root (`fixids --force --to U:G /` with the default /tmp, or a TMPDIR under
+# the home being fixed), the walk selected that directory and its lists: -n
+# counted them, and a real run handed chown the list xargs was still reading.
+# The tree is t plus t/tmp as TMPDIR, 7 entries: t/tmp is the user's and is
+# selected, what fixids makes in it is not. chown and chgrp stand-ins print
+# and log each path they are handed.
+mkdir -p "$TESTTMP/chpaths"
+for t in chown chgrp; do
+    printf '#!/bin/sh\nshift 3\nfor p do printf "%%s\\n" "$p"; printf "%%s\\n" "$p" >> "%s"; done\n' "$WORK/chpaths.log" > "$TESTTMP/chpaths/$t"
+done
+chmod +x "$TESTTMP/chpaths/chown" "$TESTTMP/chpaths/chgrp"
+for _mode in "--from UID" "--to UID:GID" "--to UID" "--from UID:GID"; do
+    case $_mode in
+        "--from UID") _args=(--from "$U" --to 2000) _tgt=2000 _more="" ;;
+        "--to UID:GID") _args=(--to 2000:2000) _tgt=2000:2000 _more="" ;;
+        "--to UID") _args=(--to 2000) _tgt=2000 _more="" ;;
+        *) _args=(--from "$U:$G" --to 2000:2000) _tgt=2000:2000 _more="
+fixids: 0 file(s) would be chowned to 2000
+fixids: 0 file(s) would be chgrp'd to 2000" ;;
+    esac
+    echo "[fixids] $_mode with TMPDIR inside the root: the walk leaves out fixids' own lists"
+    setup_tree
+    mkdir "$WORK/t/tmp"
+    actual=$(TMPDIR="$WORK/t/tmp" "$BASH_BIN" "$FIXIDS" -n "${_args[@]}" "$WORK/t" 2>&1; echo "rc=$?")
+    assert_eq "fixids/$_mode, TMPDIR in the root: count" "fixids: 7 file(s) would be chowned to $_tgt$_more
+rc=0" "$actual"
+    rm -f "$WORK/chpaths.log"
+    actual=$(PATH="$TESTTMP/chpaths:$PATH" TMPDIR="$WORK/t/tmp" "$BASH_BIN" "$FIXIDS" "${_args[@]}" "$WORK/t" 2>&1; echo "rc=$?")
+    assert_eq "fixids/$_mode, TMPDIR in the root: real run" "fixids: chowned 7 file(s) to $_tgt
+rc=0" "$actual"
+    assert_not_contains "fixids/$_mode, TMPDIR in the root: no list chowned" "$WORK/t/tmp/" "$(cat "$WORK/chpaths.log" 2>/dev/null)"
+done
+# The roots are canonicalized and TMPDIR is not, so the prune goes by inode.
+echo "[fixids] TMPDIR inside the root through a symlink: the walk still leaves out the lists"
+setup_tree
+mkdir "$WORK/t/tmp"
+ln -s t/tmp "$WORK/tmplink"
+actual=$(TMPDIR="$WORK/tmplink" "$BASH_BIN" "$FIXIDS" -n --to 2000 "$WORK/t" 2>&1; echo "rc=$?")
+assert_eq "fixids/TMPDIR in the root through a symlink: count" "fixids: 7 file(s) would be chowned to 2000
+rc=0" "$actual"
+rm -f "$WORK/tmplink"
+setup_tree
+
+# uutils' stdbuf (/usr/bin/stdbuf on Ubuntu 26.04) leaves a directory under
+# TMPDIR on every call, one per batch of 256 paths, and fixids left them all
+# in TMPDIR (where a TMPDIR inside the root then had them chowned by the next
+# run). A stand-in stdbuf does the same, then runs the logging chown above;
+# what it leaves must go with the lists.
+mkdir -p "$TESTTMP/leakbuf"
+printf '#!/bin/sh\nmktemp -d "${TMPDIR:-/tmp}/.tmpXXXXXX" >/dev/null || exit 125\nshift\nexec "$@"\n' > "$TESTTMP/leakbuf/stdbuf"
+chmod +x "$TESTTMP/leakbuf/stdbuf"
+for _mode in "--to UID" "--from UID:GID"; do
+    case $_mode in
+        "--to UID") _args=(--to 2000) _tgt=2000 ;;
+        *) _args=(--from "$U:$G" --to 2000:2000) _tgt=2000:2000 ;;
+    esac
+    echo "[fixids] $_mode: what stdbuf leaves in TMPDIR is removed with the lists"
+    rm -rf "${WORK:?}/tmp"
+    actual=$(fx "$TESTTMP/leakbuf:$TESTTMP/chpaths" "${_args[@]}" "$WORK/t")
+    assert_eq "fixids/$_mode, leaking stdbuf: real run" "fixids: chowned 6 file(s) to $_tgt
+rc=0" "$actual"
+    assert_eq "fixids/$_mode, leaking stdbuf: TMPDIR left empty" "" "$(find "$WORK/tmp" -mindepth 1)"
+done
+
+# =============================================================================
+# A chown or chgrp that fails
+# =============================================================================
+# chown and chgrp go on past a file they cannot change, and so does xargs,
+# which then exits 123. awk is last in the pass's pipeline, so fixids reads
+# xargs' status from PIPESTATUS, reports it and fails the run; with the wrong
+# index the failure went unreported and fixids exited 0. Stand-ins that fail
+# every call take the place of a chown that fails (a real one fails only for
+# a non-root user, and CI runs the suites as root). --from with another uid
+# and the tree's gid puts every file in the gid-only class, so chgrp runs.
+mkdir -p "$TESTTMP/chfail"
+for t in chown chgrp; do
+    printf '#!/bin/sh\nexit 1\n' > "$TESTTMP/chfail/$t"
+done
+chmod +x "$TESTTMP/chfail/chown" "$TESTTMP/chfail/chgrp"
+for _mode in "--to UID" "--from UID:GID" "--from OTHER:GID"; do
+    case $_mode in
+        "--to UID") _args=(--to 2000) _verb=chowned ;;
+        "--from UID:GID") _args=(--from "$U:$G" --to 2000:2000) _verb=chowned ;;
+        *) _args=(--from "$((U + 1)):$G" --to "2000:$NEWG") _verb="chgrp'd" ;;
+    esac
+    echo "[fixids] $_mode: a $_verb pass whose calls fail is reported, and the run fails"
+    actual=$(fx "$TESTTMP/chfail" "${_args[@]}" "$WORK/t")
+    assert_contains "fixids/$_mode, failing calls: reported" "fixids: some files could not be $_verb (xargs exit 123)" "$actual"
+    assert_eq "fixids/$_mode, failing calls: exit 1" "rc=1" "$(printf '%s\n' "$actual" | tail -n 1)"
+done
 
 # =============================================================================
 # A real run (root only)

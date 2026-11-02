@@ -229,6 +229,53 @@ CPU= GPU=" "$actual"
     assert_eq "$sh/hwinfo runs no cat" "" "$(cat "$HWN/cat.log" 2>/dev/null)"
 done
 
+# A cache write that fails, as on a full disk or past a quota. ulimit -f caps
+# the size of the files the shell writes (in 1024-byte blocks in bash, 512-byte
+# ones in zsh), and with SIGXFSZ ignored a write past the cap fails (EFBIG)
+# instead of ending the shell. Under a cap of 1 the CPU's line (under 512
+# bytes) fits and the GPU's (over 600) is cut short: den put that cache in
+# place, the next start set the CPU from it and not the GPU, and a value set
+# skips the detection, so the GPU stayed off until refresh-hwinfo. Under a cap
+# of 0 every write fails, and den put an empty cache in place. awk is a
+# function here that gives a long Intel CPU name for /proc/cpuinfo and a long
+# GPU name for what nvidia-smi, a stub, prints.
+HWF="$WORK/hwinfo-full"
+mkdir -p "$HWF/bin"
+for t in mktemp mv rm sed hostname; do
+    p=$(command -v "$t") && ln -sf "$p" "$HWF/bin/$t"
+done
+printf '#!/bin/sh\necho stub\n' > "$HWF/bin/nvidia-smi"
+chmod +x "$HWF/bin/nvidia-smi"
+HWF_CPU="i9-$(printf '%0470d' 0)"
+HWF_GPU="RTX-$(printf '%0600d' 0)"
+for sh in bash zsh; do
+    sh_bin=$(command -v "$sh")
+    for cap in 1 0; do
+        rt="$HWF/rt-$sh-$cap"
+        mkdir -p "$rt"
+        # hw_full_start <cap> - one start of hwinfo.sh under that file-size cap
+        # (unlimited for none); it prints the length of the two values it set.
+        hw_full_start() {
+            env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+                -u STARSHIP_GPU_INTEL XDG_RUNTIME_DIR="$rt" PATH="$HWF/bin" "$sh_bin" -c "
+                    awk() { case \"\$*\" in */proc/cpuinfo) echo 'intel|$HWF_CPU' ;; *) echo '$HWF_GPU' ;; esac; }
+                    trap '' XFSZ
+                    ulimit -f $1
+                    . '$HWINFO_SH'
+                    echo \"CPU=\${#STARSHIP_CPU_INTEL} GPU=\${#STARSHIP_GPU_NVIDIA}\"
+                " 2>&1 | grep -v 'write error' || true
+        }
+        echo "[$sh] a cache write that fails (file size cap $cap) leaves no cache; the next start detects again"
+        actual=$(hw_full_start "$cap")
+        assert_eq "$sh/failed cache write, cap $cap: the start has both values" "CPU=473 GPU=604" "$actual"
+        assert_eq "$sh/failed cache write, cap $cap: no cache, no temporary file" "" "$(ls -A "$rt")"
+        actual=$(hw_full_start unlimited)
+        assert_eq "$sh/failed cache write, cap $cap: the next start has both values" "CPU=473 GPU=604" "$actual"
+        assert_eq "$sh/failed cache write, cap $cap: the next start writes the whole cache" "3 _DEN_HWINFO_CACHED=1" \
+            "$(wc -l < "$(hwinfo_file "$rt")") $(sed -n '$p' "$(hwinfo_file "$rt")")"
+    done
+done
+
 # set -C alone opens an existing FIFO or device, or a link to one, so without
 # mktemp a FIFO at the cache's temporary name, or a link to one, made the shell
 # start wait for a reader, and a link to /dev/null was taken, then moved in as
@@ -263,6 +310,103 @@ for sh in bash zsh; do
             "rc=0 CPU= GPU=" "rc=$rc $actual"
         assert_eq "$sh/no mktemp, a $what at the temporary name: no cache" "" \
             "$(find "$rt" -name "${hw_f##*/}" 2>/dev/null)"
+    done
+done
+
+# refresh-hwinfo deleted the cache file and nothing else. The shell it ran in
+# kept its exported STARSHIP_* values, which reload (exec) and a child shell
+# inherit, and an inherited value skips both the cache and the detection: the
+# next shell showed the old names, and only a terminal that was no child of it
+# detected again. Under an OFF, the values toggle-hwinfo saved were inherited
+# too, and the next toggle showed them. refresh-hwinfo now unsets both in its
+# own shell. The machine: a cache that says OLD for all five names, and a
+# detection that says NEW (awk, a function that logs each call; PATH holds no
+# GPU tool, as above). HWR_PARENT loads the cache, lists which of those ten
+# variables are set (an empty one too) before refresh-hwinfo and which are
+# left after it, and starts HWR_NEXT: as a child, by exec as reload does, or
+# ("hidden") as a child after toggle-hwinfo, then toggles back on. Both take
+# hwinfo.sh as $1; the parent takes the next shell's program as $2 and the way
+# to start it as $3. Before refresh-hwinfo, the five values are set, or under
+# an OFF the five that toggle-hwinfo saved.
+HWR="$WORK/hwinfo-refresh"
+HWR_PARENT="$TESTTMP/hwinfo_refresh_parent.sh"
+HWR_NEXT="$TESTTMP/hwinfo_refresh_next.sh"
+HWR_VALUES="STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL"
+HWR_SAVED="_DEN_SAVED_CPU_INTEL _DEN_SAVED_CPU_AMD _DEN_SAVED_GPU_NVIDIA _DEN_SAVED_GPU_AMD _DEN_SAVED_GPU_INTEL"
+mkdir -p "$HWR"
+cat > "$HWR_PARENT" << 'EOF'
+awk() { echo awk >> "$HWN_LOG"; echo 'intel|NEW CPU'; }
+. "$1"
+# hw_set <label> - which of the ten variables are set, an empty one too
+hw_set() {
+    set_=
+    for v in CPU_INTEL CPU_AMD GPU_NVIDIA GPU_AMD GPU_INTEL; do
+        for n in "STARSHIP_$v" "_DEN_SAVED_$v"; do
+            eval "[ -z \"\${$n+set}\" ]" || set_="$set_ $n"
+        done
+    done
+    echo "$1=[${set_# }]"
+}
+echo "LOAD:CPU=${STARSHIP_CPU_INTEL-} GPU=${STARSHIP_GPU_NVIDIA-}"
+[ "$3" != hidden ] || toggle-hwinfo >/dev/null
+hw_set BEFORE:set
+refresh-hwinfo
+hw_set REFRESH:left
+if [ "$3" = exec ]; then exec "$2" "$HWR_NEXT" "$1"; fi
+"$2" "$HWR_NEXT" "$1"
+if [ "$3" = hidden ]; then
+    toggle-hwinfo >/dev/null
+    echo "ON:CPU=${STARSHIP_CPU_INTEL-unset} GPU=${STARSHIP_GPU_NVIDIA-unset}"
+fi
+EOF
+cat > "$HWR_NEXT" << 'EOF'
+awk() { echo awk >> "$HWN_LOG"; echo 'intel|NEW CPU'; }
+. "$1"
+echo "NEXT:CPU=${STARSHIP_CPU_INTEL-} GPU=${STARSHIP_GPU_NVIDIA-}"
+if [ "${_DEN_HWINFO_HIDDEN-}" = 1 ]; then
+    toggle-hwinfo >/dev/null
+    echo "NEXT-ON:CPU=${STARSHIP_CPU_INTEL-} GPU=${STARSHIP_GPU_NVIDIA-}"
+fi
+EOF
+# hw_refresh <sh> <child|exec|hidden> - the parent's run in that shell
+hw_refresh() {
+    local sh_bin rt
+    sh_bin=$(command -v "$1")
+    rt="$HWR/rt-$1-$2"
+    mkdir -p "$rt"
+    printf '%s\n' "export STARSHIP_CPU_INTEL='OLD CPU'" "export STARSHIP_CPU_AMD='OLD AMD CPU'" \
+        "export STARSHIP_GPU_NVIDIA='OLD GPU'" "export STARSHIP_GPU_AMD='OLD AMD GPU'" \
+        "export STARSHIP_GPU_INTEL='OLD INTEL GPU'" _DEN_HWINFO_CACHED=1 > "$(hwinfo_file "$rt")"
+    chmod 600 "$(hwinfo_file "$rt")"
+    env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD -u STARSHIP_GPU_INTEL \
+        -u _DEN_HWINFO_HIDDEN -u _DEN_SAVED_CPU_INTEL -u _DEN_SAVED_CPU_AMD -u _DEN_SAVED_GPU_NVIDIA \
+        -u _DEN_SAVED_GPU_AMD -u _DEN_SAVED_GPU_INTEL XDG_RUNTIME_DIR="$rt" PATH="$HWN/bin" \
+        HWN_LOG="$HWR/awk-$1-$2.log" HWR_NEXT="$HWR_NEXT" "$sh_bin" "$HWR_PARENT" "$HWINFO_SH" "$sh_bin" "$2" 2>&1
+}
+for sh in bash zsh; do
+    for how in child exec; do
+        echo "[$sh] after refresh-hwinfo, the next shell ($how) detects again"
+        actual=$(hw_refresh "$sh" "$how") || true
+        assert_eq "$sh/refresh-hwinfo, then the next shell ($how)" "LOAD:CPU=OLD CPU GPU=OLD GPU
+BEFORE:set=[$HWR_VALUES]
+hwinfo cache cleared. Restart shell to refresh.
+REFRESH:left=[]
+NEXT:CPU=NEW CPU GPU=" "$actual"
+        assert_eq "$sh/refresh-hwinfo, then the next shell ($how): the new cache" "export STARSHIP_CPU_INTEL='NEW CPU'
+_DEN_HWINFO_CACHED=1" "$(cat "$(hwinfo_file "$HWR/rt-$sh-$how")" 2>/dev/null)"
+    done
+    echo "[$sh] after toggle-hwinfo and refresh-hwinfo, no old name comes back"
+    actual=$(hw_refresh "$sh" hidden) || true
+    assert_eq "$sh/refresh-hwinfo under an OFF" "LOAD:CPU=OLD CPU GPU=OLD GPU
+BEFORE:set=[$HWR_SAVED]
+hwinfo cache cleared. Restart shell to refresh.
+REFRESH:left=[]
+NEXT:CPU= GPU=
+NEXT-ON:CPU=NEW CPU GPU=
+ON:CPU=unset GPU=unset" "$actual"
+    for how in child exec hidden; do
+        assert_eq "$sh/refresh-hwinfo ($how): one detection, in the next shell" "awk" \
+            "$(cat "$HWR/awk-$sh-$how.log" 2>/dev/null)"
     done
 done
 
@@ -441,6 +585,172 @@ echo "[pwsh] hwinfo.ps1 writes the line cmd's starship.lua writes and reads"
 actual=$(sed -n 's/^local hw_none = "\(.*\)"$/\1/p' "$DOTFILES/shell/cmd/starship.lua")
 assert_eq "cmd/starship.lua's hw_none" "$HW_NONE_LINE" "$actual"
 assert_eq "pwsh/hwinfo.ps1 writes and reads the same line" "1" "$(grep -cF "\$_hwNone = '$HW_NONE_LINE'" "$HWINFO_PS1")"
+
+# A cache write that fails, as on a full disk or past a quota: ulimit -f caps
+# the size of the files pwsh writes (in 1024-byte blocks, under bash), and with
+# SIGXFSZ ignored a write past the cap fails (EFBIG) instead of ending pwsh.
+# .NET starts under the cap only with DOTNET_EnableWriteXorExecute=0 (without
+# it pwsh stops with "Failed to create CoreCLR"). Set-Content reported no error
+# when its write failed, and the move put the temporary file in place, cut short.
+# Under a cap of 1, with a CPU name of 980 characters the cut fell in the
+# GPU's line before its quote: the next start set the CPU from that cache and
+# not the GPU, and a value set skips the detection, so the GPU stayed off the
+# prompt until refresh-hwinfo or reload. With a CPU name of 473 the cut fell
+# inside the GPU's name, and the next start stopped on a ParserError there.
+# Under a cap of 0 every write fails, and an empty cache was put in place.
+# The start stands in for the Windows machine, as in hw_ps, with an Intel CPU
+# and an NVIDIA GPU (nvidia-smi is a function here, so it is the one that
+# answers) of those long names.
+HWF_PS="$WORK/hwinfo-ps-full"
+HWF_PS_DIR="$HWF_PS/data/shell-cache"
+HWF_PS_CACHE="$HWF_PS_DIR/hwinfo-cache.DENTEST.ps1"
+HWF_PS_START="$TESTTMP/hwinfo_full_start.ps1"
+mkdir -p "$HWF_PS_DIR"
+cat > "$HWF_PS_START" << 'PS1'
+param([string]$Dotfiles, [int]$CpuLength)
+. "$Dotfiles/shell/pwsh/_helpers.ps1"
+Set-Variable -Name IsWindows -Value $true -Scope Global -Force
+function global:_OnWindows { $false }
+$global:HwCalls = 0
+$global:HwCpu = 'i9-' + ('0' * ($CpuLength - 3))
+function global:Get-ItemProperty {
+  $global:HwCalls++
+  [pscustomobject]@{ ProcessorNameString = "Intel(R) Core(TM) $global:HwCpu CPU @ 1.00GHz" }
+}
+function global:nvidia-smi { $global:HwCalls++; 'NVIDIA GeForce RTX-' + ('0' * 600) }
+. "$Dotfiles/shell/pwsh/hwinfo.ps1"
+"calls=$global:HwCalls CPU=$(([string]$env:STARSHIP_CPU_INTEL).Length) GPU=$(([string]$env:STARSHIP_GPU_NVIDIA).Length)"
+PS1
+# hw_ps_full <cap> <CPU name length> - one start of hwinfo.ps1 under that
+# file-size cap (unlimited for none); it prints the detections it ran and the
+# length of the two values it set.
+hw_ps_full() {
+    (cd "$WORK" && env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+        -u STARSHIP_GPU_INTEL -u _DEN_HWINFO_HIDDEN XDG_DATA_HOME="$HWF_PS/data" COMPUTERNAME=DENTEST \
+        DOTNET_EnableWriteXorExecute=0 bash -c "
+            trap '' XFSZ
+            ulimit -f $1
+            pwsh -NoProfile -NonInteractive -File '$HWF_PS_START' '$DOTFILES' $2
+        " 2>&1 | tr -d '\r')
+}
+for hwf in 1:980 1:473 0:980; do
+    cap=${hwf%%:*} len=${hwf#*:}
+    what="pwsh/failed cache write, cap $cap, CPU name $len"
+    echo "[pwsh] a cache write that fails (file size cap $cap, a CPU name of $len) leaves no cache; the next start detects again"
+    rm -f "$HWF_PS_DIR"/*
+    actual=$(hw_ps_full "$cap" "$len") || true
+    assert_eq "$what: the start has both values" "calls=2 CPU=$len GPU=604" "$actual"
+    assert_eq "$what: no cache, no temporary file" "" "$(ls -A "$HWF_PS_DIR")"
+    actual=$(hw_ps_full unlimited "$len") || true
+    assert_eq "$what: the next start detects both values" "calls=2 CPU=$len GPU=604" "$actual"
+    # Two lines: the CPU's (27 + len + 2 bytes) and the GPU's (28 + 604 + 2).
+    assert_eq "$what: the next start writes the whole cache" "2 lines, $((len + 663)) bytes" \
+        "$(wc -l < "$HWF_PS_CACHE" | tr -d ' ') lines, $(wc -c < "$HWF_PS_CACHE" | tr -d ' ') bytes"
+done
+
+# refresh-hwinfo in pwsh, likewise: reload starts the new pwsh in this
+# session's environment, so it inherited the old STARSHIP_* values (and, under
+# an OFF, the saved ones) and skipped the cache and the detection. The parent
+# loads a cache that says OLD for all five names, runs refresh-hwinfo (after
+# toggle-hwinfo, with -Hide), lists which of the ten variables are set before
+# it and which are left after it (an empty one too:
+# [Environment]::SetEnvironmentVariable(name, $null) leaves one on pwsh 7.6),
+# and starts the next pwsh as reload does: this executable, in this
+# environment. The next one is the Windows machine hw_ps stands in for, with a
+# detection that says NEW.
+HWR_PS="$WORK/hwinfo-refresh-ps"
+HWR_PS_CACHE="$HWR_PS/data/shell-cache/hwinfo-cache.DENTEST.ps1"
+HWR_PS_PARENT="$TESTTMP/hwinfo_refresh_parent.ps1"
+HWR_PS_NEXT="$TESTTMP/hwinfo_refresh_next.ps1"
+mkdir -p "$HWR_PS/data/shell-cache"
+cat > "$HWR_PS_PARENT" << 'PS1'
+param([string]$Dotfiles, [string]$Next, [switch]$Hide)
+. "$Dotfiles/shell/pwsh/_helpers.ps1"
+. "$Dotfiles/shell/pwsh/hwinfo.ps1"
+# Get-HwSet - which of the ten variables are set, an empty one too
+function Get-HwSet {
+  foreach ($v in 'CPU_INTEL', 'CPU_AMD', 'GPU_NVIDIA', 'GPU_AMD', 'GPU_INTEL') {
+    foreach ($n in "STARSHIP_$v", "_DEN_SAVED_$v") { if (Test-Path -LiteralPath "Env:\$n") { $n } }
+  }
+}
+"LOAD:CPU=[$env:STARSHIP_CPU_INTEL] GPU=[$env:STARSHIP_GPU_NVIDIA]"
+if ($Hide) { toggle-hwinfo 6>$null }
+"BEFORE:set=[$(@(Get-HwSet) -join ' ')]"
+refresh-hwinfo 6>&1
+"REFRESH:left=[$(@(Get-HwSet) -join ' ')]"
+& (Get-Process -Id $PID).Path -NoProfile -NonInteractive -File $Next $Dotfiles
+if ($Hide) {
+  toggle-hwinfo 6>$null
+  "ON:CPU=[$env:STARSHIP_CPU_INTEL] GPU=[$env:STARSHIP_GPU_NVIDIA]"
+}
+PS1
+cat > "$HWR_PS_NEXT" << 'PS1'
+param([string]$Dotfiles)
+. "$Dotfiles/shell/pwsh/_helpers.ps1"
+Set-Variable -Name IsWindows -Value $true -Scope Global -Force
+function global:_OnWindows { $false }
+$global:HwCalls = 0
+function global:Get-ItemProperty {
+  $global:HwCalls++
+  [pscustomobject]@{ ProcessorNameString = 'Intel(R) Core(TM) i5-NEW CPU @ 1.00GHz' }
+}
+function global:Get-CimInstance { $global:HwCalls++; [pscustomobject]@{ Name = 'Qualcomm(R) Adreno(TM) X1-85 GPU' } }
+. "$Dotfiles/shell/pwsh/hwinfo.ps1"
+"NEXT:calls=$global:HwCalls CPU=[$env:STARSHIP_CPU_INTEL] GPU=[$env:STARSHIP_GPU_NVIDIA]"
+if ($env:_DEN_HWINFO_HIDDEN -eq '1') {
+  toggle-hwinfo 6>$null
+  "NEXT-ON:CPU=[$env:STARSHIP_CPU_INTEL] GPU=[$env:STARSHIP_GPU_NVIDIA]"
+}
+PS1
+# hw_ps_refresh <data dir> [-Hide] - that parent's run, then the next pwsh's,
+# with LocalApplicationData (XDG_DATA_HOME) at that directory
+hw_ps_refresh() {
+    local data=$1
+    shift
+    printf '%s\n' "\$env:STARSHIP_CPU_INTEL = 'OLD CPU'" "\$env:STARSHIP_CPU_AMD = 'OLD AMD CPU'" \
+        "\$env:STARSHIP_GPU_NVIDIA = 'OLD GPU'" "\$env:STARSHIP_GPU_AMD = 'OLD AMD GPU'" \
+        "\$env:STARSHIP_GPU_INTEL = 'OLD INTEL GPU'" > "$data/shell-cache/hwinfo-cache.DENTEST.ps1"
+    (cd "$WORK" && env -u STARSHIP_CPU_INTEL -u STARSHIP_CPU_AMD -u STARSHIP_GPU_NVIDIA -u STARSHIP_GPU_AMD \
+        -u STARSHIP_GPU_INTEL -u _DEN_HWINFO_HIDDEN -u _DEN_SAVED_CPU_INTEL -u _DEN_SAVED_CPU_AMD \
+        -u _DEN_SAVED_GPU_NVIDIA -u _DEN_SAVED_GPU_AMD -u _DEN_SAVED_GPU_INTEL \
+        XDG_DATA_HOME="$data" COMPUTERNAME=DENTEST \
+        pwsh -NoProfile -NonInteractive -File "$HWR_PS_PARENT" "$DOTFILES" "$HWR_PS_NEXT" "$@" 2>&1 | tr -d '\r')
+}
+echo "[pwsh] after refresh-hwinfo, the next pwsh (as reload starts it) detects again"
+actual=$(hw_ps_refresh "$HWR_PS/data") || true
+assert_eq "pwsh/refresh-hwinfo, then the next pwsh" "LOAD:CPU=[OLD CPU] GPU=[OLD GPU]
+BEFORE:set=[$HWR_VALUES]
+hwinfo cache cleared. Restart shell to refresh.
+REFRESH:left=[]
+NEXT:calls=2 CPU=[i5-NEW] GPU=[]" "$actual"
+assert_eq "pwsh/refresh-hwinfo, then the next pwsh: the new cache" "\$env:STARSHIP_CPU_INTEL = 'i5-NEW'" \
+    "$(tr -d '\r' 2>/dev/null < "$HWR_PS_CACHE")"
+echo "[pwsh] after toggle-hwinfo and refresh-hwinfo, no old name comes back"
+actual=$(hw_ps_refresh "$HWR_PS/data" -Hide) || true
+assert_eq "pwsh/refresh-hwinfo under an OFF" "LOAD:CPU=[OLD CPU] GPU=[OLD GPU]
+BEFORE:set=[$HWR_SAVED]
+hwinfo cache cleared. Restart shell to refresh.
+REFRESH:left=[]
+NEXT:calls=2 CPU=[] GPU=[]
+NEXT-ON:CPU=[i5-NEW] GPU=[]
+ON:CPU=[] GPU=[]" "$actual"
+# refresh-hwinfo deleted the cache with Remove-Item -Path, which reads [ and ]
+# in the path as a wildcard: under a LocalApplicationData named data[1], it
+# deleted the file under data1 if there was one, else nothing, with no error
+# either way, and the next pwsh loaded the old names from the cache it left.
+echo "[pwsh] refresh-hwinfo deletes the cache under a directory with [ and ] in its name"
+mkdir -p "$HWR_PS/data[1]/shell-cache" "$HWR_PS/data1/shell-cache"
+echo "data1's cache" > "$HWR_PS/data1/shell-cache/hwinfo-cache.DENTEST.ps1"
+actual=$(hw_ps_refresh "$HWR_PS/data[1]") || true
+assert_eq "pwsh/refresh-hwinfo, [ ] in the cache's path" "LOAD:CPU=[OLD CPU] GPU=[OLD GPU]
+BEFORE:set=[$HWR_VALUES]
+hwinfo cache cleared. Restart shell to refresh.
+REFRESH:left=[]
+NEXT:calls=2 CPU=[i5-NEW] GPU=[]" "$actual"
+assert_eq "pwsh/refresh-hwinfo, [ ] in the cache's path: the new cache" "\$env:STARSHIP_CPU_INTEL = 'i5-NEW'" \
+    "$(tr -d '\r' 2>/dev/null < "$HWR_PS/data[1]/shell-cache/hwinfo-cache.DENTEST.ps1")"
+assert_eq "pwsh/refresh-hwinfo, [ ] in the cache's path: data1's file stays" "data1's cache" \
+    "$(cat "$HWR_PS/data1/shell-cache/hwinfo-cache.DENTEST.ps1" 2>/dev/null)"
 
 # =============================================================================
 # Windows PowerShell 5.1 syntax, over every shell/pwsh/*.ps1

@@ -47,7 +47,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import cast
+from typing import BinaryIO, cast
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
@@ -84,6 +84,11 @@ _DEFAULT_CONFIG: dict[str, object] = {
         {"id": "ok", "label": "OK", "color": "#0ca30c"},
     ],
 }
+# board.json nests three levels deep (the object, its buttons, a button).
+# This leaves room for anything a user adds, and stays far below the depth
+# any thread can encode (CPython 3.12 and 3.13 stop at 10000 levels, at 3000
+# on Windows and at 500 in a debug build).
+_MAX_CONFIG_DEPTH = 32
 
 
 def _board_dir(root: Path) -> Path:
@@ -134,8 +139,10 @@ def _read_lock(root: Path) -> dict | None:
     # Decode INSIDE the suppress. Routing this through the guard moved it out of
     # the old handler, so a non-UTF-8 server.json -- a byte a repo can plant --
     # raised UnicodeDecodeError out of `den board` instead of reading, as it
-    # always did, as one more invalid lock.
-    with suppress(ValueError):  # UnicodeDecodeError and JSONDecodeError both
+    # always did, as one more invalid lock. ValueError covers that,
+    # JSONDecodeError and int's digit limit; a lock nested too deep raises
+    # RecursionError, which escaped the same way.
+    with suppress(ValueError, RecursionError):
         info = json.loads(data.decode("utf-8"))
         if isinstance(info, dict):
             return info
@@ -180,6 +187,15 @@ def _append_line(root: Path, path: Path, line: str) -> bool:
     return True
 
 
+def _scrub(text: str) -> str:
+    """`text` with "?" in place of each lone surrogate, which json.dumps keeps
+    and the strict UTF-8 write in _append_line raises on. They come from argv
+    bytes that are not UTF-8 (Python decodes those with surrogateescape), and
+    from the escape of one in a POST body: json.loads accepts it, and a
+    browser's JSON.stringify writes it for a lone surrogate in the page's text."""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def _new_id() -> str:
     return secrets.token_hex(4)
 
@@ -190,6 +206,79 @@ def _derived_id(line: str) -> str:
     when an agent appended raw JSON without an id field."""
     digest = hashlib.sha1(line.encode("utf-8"), usedforsecurity=False)
     return digest.hexdigest()[:8]
+
+
+def _depth(value: object) -> int:
+    """How many levels of dicts and lists `value` nests: 0 for anything else.
+    Level by level, not by recursion, so any depth json.loads made is fine."""
+    depth, level = 0, [value]
+    while containers := [v for v in level if isinstance(v, (dict, list))]:
+        depth += 1
+        level = [
+            item
+            for v in containers
+            for item in (v.values() if isinstance(v, dict) else v)
+        ]
+    return depth
+
+
+def _valid_button_id(button: object) -> bool:
+    """Whether /api/report takes `button` as a report's button: a string that
+    is not blank and holds at most _MAX_BUTTON_LEN characters. The board.json
+    filter uses the same test, so the page gets no button it cannot file."""
+    return (
+        isinstance(button, str)
+        and bool(button.strip())
+        and len(button) <= _MAX_BUTTON_LEN
+    )
+
+
+def _well_formed(button: object) -> bool:
+    """Whether `button` is a well-formed board.json button: an object with an
+    id /api/report takes (_valid_button_id), and a string label and color
+    when it has them (a null counts as none)."""
+    if not isinstance(button, dict) or not _valid_button_id(button.get("id")):
+        return False
+    return all(
+        value is None or isinstance(value, str)
+        for value in (button.get("label"), button.get("color"))
+    )
+
+
+def _usable_buttons(cfg_path: Path, buttons: object) -> object:
+    """The well-formed buttons of board.json, or the default buttons when
+    none is left. Those left out are named on stderr.
+
+    The page drew each button through conversions that call the value's own
+    toString, which throw on an object whose toString is not a function
+    ({"toString": null}), and it read b.id off a null button. Such a button
+    stopped the page part way through drawing its buttons or its reports
+    list, or both. A button whose id /api/report refuses (blank, or longer
+    than 64 characters) was drawn, but every click on it got a 400 that does
+    not name board.json. An empty list stays empty: nothing in it was left
+    out.
+    """
+    if not isinstance(buttons, list):
+        print(
+            f"den board: buttons in {cfg_path} is not a list; "
+            "using the default buttons",
+            file=sys.stderr,
+        )
+        return _DEFAULT_CONFIG["buttons"]
+    left_out = [n for n, b in enumerate(buttons, start=1) if not _well_formed(b)]
+    if not left_out:
+        return buttons
+    kept = [b for b in buttons if _well_formed(b)]
+    named = ", ".join(map(str, left_out[:10])) + (", ..." if len(left_out) > 10 else "")
+    plural = "s" if len(left_out) > 1 else ""
+    fallback = "" if kept else "; using the default buttons"
+    print(
+        f"den board: leaving out button{plural} {named} of {cfg_path} (a button "
+        f"needs a non-blank string id of at most {_MAX_BUTTON_LEN} characters, "
+        f"and a string label and color if it has them){fallback}",
+        file=sys.stderr,
+    )
+    return kept or _DEFAULT_CONFIG["buttons"]
 
 
 def ensure_scaffold(root: Path) -> dict[str, object]:
@@ -204,13 +293,36 @@ def ensure_scaffold(root: Path) -> dict[str, object]:
         )
     try:
         loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        # /api/config sends the buttons as they are, so a config the response
+        # cannot carry is no more usable than one json.loads rejects; the page
+        # showed no buttons, and no report could be filed. allow_nan=False
+        # refuses the nan and inf json.loads makes of NaN, Infinity and the
+        # standard 1e400 (json.dumps writes them back as NaN and Infinity,
+        # which the page's JSON parser rejects). The depth bound stands in
+        # for "too deep to send": a server thread nests the buttons as deep
+        # as this file, from further down its stack, so a file this thread
+        # reads and writes back can still be too deep for that one. That is
+        # a few levels with equal stacks, and far more on CPython 3.14 when
+        # this thread's stack is the larger: 3.14 sizes the limit to each
+        # thread's stack. Any depth past what a board.json needs is refused,
+        # on every Python and stack alike.
+        if _depth(loaded) > _MAX_CONFIG_DEPTH:
+            msg = f"nested deeper than {_MAX_CONFIG_DEPTH} levels"
+            raise ValueError(msg)
+        json.dumps(loaded, allow_nan=False)
+    except (OSError, ValueError, RecursionError) as exc:
+        # A cloned repo can ship board.json. ValueError covers a byte that is
+        # not UTF-8 (UnicodeDecodeError), invalid JSON and int's digit limit;
+        # a file nested too deep raises RecursionError. All of them are an
+        # unreadable config, not a traceback out of `den board`.
         print(f"den board: unreadable {cfg_path}: {exc}", file=sys.stderr)
         return dict(_DEFAULT_CONFIG)
     if not isinstance(loaded, dict):
         print(f"den board: {cfg_path} is not a JSON object", file=sys.stderr)
         return dict(_DEFAULT_CONFIG)
-    return {**_DEFAULT_CONFIG, **loaded}
+    config = {**_DEFAULT_CONFIG, **loaded}
+    config["buttons"] = _usable_buttons(cfg_path, config["buttons"])
+    return config
 
 
 def _split_jsonl(data: bytes) -> list[str]:
@@ -264,9 +376,15 @@ class _Reactions:
     delete it (den/README.md suggests that when a session is done) or edit it.
     A different file, or other bytes where the last _SEAM_BYTES read were (the
     seam; a shorter file lacks some), mean more than an append happened, and
-    the index starts over from byte 0. A same-length change further back in
-    the same file goes unseen until the server restarts. Only complete lines
-    count: a line still missing its newline is read again, whole, next poll.
+    the file is read again from byte 0, into a new index that replaces this one
+    once that read reaches the end of the file. A same-length change further
+    back in the same file goes unseen until the server restarts. Only complete
+    lines count: a line still missing its newline is read again, whole, next
+    poll. A failed read keeps the reactions already known. One that fails to
+    open the file, or part way through reading it again from byte 0, changes
+    nothing, and the next poll tries again; one that fails part way through
+    what was appended keeps the whole lines it took in, and the next poll
+    reads on from there.
     """
 
     def __init__(self, root: Path) -> None:
@@ -278,14 +396,15 @@ class _Reactions:
         self._seam = b""  # the last _SEAM_BYTES of them
 
     def snapshot(self) -> dict[str, dict[str, object]]:
-        """Task id -> {button, ts, text} of its latest reaction, read up to now."""
+        """Task id -> {button, ts, text} of its latest reaction, read up to now.
+        ts and text are each a string or None."""
         with self._lock:
             self._refresh()
             return dict(self._by_task)
 
-    def _restart(self, ident: tuple[int, int] | None = None) -> None:
+    def _restart(self) -> None:
         self._by_task = {}
-        self._ident = ident
+        self._ident = None
         self._offset = 0
         self._seam = b""
 
@@ -308,26 +427,37 @@ class _Reactions:
             st = os.fstat(f.fileno())
             ident = (st.st_dev, st.st_ino)
             f.seek(self._offset - len(self._seam))
-            if ident != self._ident or f.read(len(self._seam)) != self._seam:
-                self._restart(ident)
-                f.seek(0)
-            pending = b""
-            while chunk := f.read(_READ_CHUNK):
-                pending += chunk
-                end = pending.rfind(b"\n") + 1
-                if end:
-                    self._take(pending[:end])
-                    pending = pending[end:]
+            if ident == self._ident and f.read(len(self._seam)) == self._seam:
+                self._read_on(f)  # what was appended since, if anything
+                return
+            # More than an append happened. Cleared first and then read, the
+            # index lost every answer it held when that read failed part way
+            # (the suppress above), and answered tasks showed open again. The
+            # new index replaces this one only once the whole file is read.
+            fresh = _Reactions(self._root)
+            f.seek(0)
+            fresh._read_on(f)
+            self._by_task = fresh._by_task
+            self._ident = ident
+            self._offset = fresh._offset
+            self._seam = fresh._seam
+
+    def _read_on(self, f: BinaryIO) -> None:
+        """Take in the whole lines from f's position on, to its end."""
+        pending = b""
+        while chunk := f.read(_READ_CHUNK):
+            pending += chunk
+            end = pending.rfind(b"\n") + 1
+            if end:
+                self._take(pending[:end])
+                pending = pending[end:]
 
     def _take(self, block: bytes) -> None:
         """Take in `block`: whole lines, read from _offset on."""
         for line in _split_jsonl(block):
             # ValueError is JSONDecodeError and also int's digit limit; a line
             # nested too deep raises RecursionError. A line that raised would
-            # be read again, and raise again, on every poll after. A reaction
-            # /api/agent cannot send as strict JSON is skipped too (as in
-            # _list_reports): kept, it would fail every /api/agent for as long
-            # as the file holds it, however much follows it.
+            # be read again, and raise again, on every poll after.
             with suppress(ValueError, RecursionError):
                 rep = json.loads(line)
                 if (
@@ -336,25 +466,28 @@ class _Reactions:
                     and isinstance(rep.get("button"), str)
                     and rep["button"].startswith("task-")
                 ):
-                    reaction = {
+                    # ts and text only when they are strings, as the server
+                    # writes them, and None otherwise. A reaction stays in
+                    # every /api/agent for as long as the file holds it,
+                    # however much follows it, and from the first poll after a
+                    # restart. An object whose toString is not a function made
+                    # the page throw on every poll; a nan or inf (json.loads
+                    # makes them of NaN, Infinity and the standard 1e400) put
+                    # JSON the page cannot parse in every body, which is why
+                    # such a reaction used to be skipped, leaving its task
+                    # open. Strings and None always encode.
+                    ts, text = rep.get("ts"), rep.get("text")
+                    self._by_task[rep["re"]] = {
                         "button": rep["button"],
-                        "ts": rep.get("ts"),
-                        "text": rep.get("text"),
+                        "ts": ts if isinstance(ts, str) else None,
+                        "text": text if isinstance(text, str) else None,
                     }
-                    json.dumps(
-                        {"entries": [{"reaction": reaction}]},
-                        ensure_ascii=False,
-                        allow_nan=False,
-                    )
-                    self._by_task[rep["re"]] = reaction
         self._offset += len(block)
         self._seam = (self._seam + block[-_SEAM_BYTES:])[-_SEAM_BYTES:]
 
 
 def _valid_report(button: object, text: object, re_id: object) -> bool:
-    if not isinstance(button, str) or not button.strip():
-        return False
-    if len(button) > _MAX_BUTTON_LEN:
+    if not _valid_button_id(button):
         return False
     if not isinstance(text, str) or len(text) > _MAX_TEXT_LEN:
         return False
@@ -373,9 +506,17 @@ def _existing_instance(root: Path) -> str | None:
         return None
     try:
         port = int(info["port"])
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, OverflowError):
+        # OverflowError: int() of the inf json.loads makes of 1e400 or
+        # Infinity. It escaped, and `den board` stopped at start.
         return None
-    with suppress(OSError, ValueError, json.JSONDecodeError):
+    # Whatever listens on that port answers. ValueError covers JSONDecodeError,
+    # a body that is not UTF-8 and int's digit limit; an answer nested too
+    # deep raises RecursionError. http.client raises HTTPException, which is
+    # not an OSError, on an answer that is not HTTP (BadStatusLine), a header
+    # line past its limit (LineTooLong) and a body cut short (IncompleteRead).
+    # Each of those escaped, and `den board` stopped at start.
+    with suppress(OSError, ValueError, RecursionError, http.client.HTTPException):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_PING_TIMEOUT_S)
         try:
             conn.request("GET", "/api/ping")
@@ -399,7 +540,7 @@ def _release_lock(root: Path) -> None:
     info = _read_lock(root)
     if info is None:
         return
-    with suppress(ValueError, TypeError):
+    with suppress(ValueError, TypeError, OverflowError):  # as in _existing_instance
         if int(info.get("pid", -1)) == os.getpid():
             _unlink_lock(root)
 
@@ -562,16 +703,21 @@ class _Handler(BaseHTTPRequestHandler):
         reports: list[object] = []
         for line in lines[-limit:]:
             # Every line json.loads rejects, as in _Reactions._take: one that
-            # raised would fail every poll while it stays in the window. And
-            # every report this response cannot hold: json.loads accepts an
-            # array nested a few levels short of its limit, which _send_json's
-            # json.dumps then has to nest two levels deeper. allow_nan=False
-            # refuses the nan and inf that json.loads makes of NaN, Infinity
-            # and the standard 1e400: json.dumps writes them back as NaN and
-            # Infinity, the page's JSON parser rejects those, and the page
-            # shows the server as unreachable.
+            # raised would fail every poll while it stays in the window. Every
+            # line that is not an object, as in _list_agent: the page reads
+            # rep.button on each report, and a null threw there, so no report
+            # rendered while that line stayed in the window. And every report
+            # this response cannot hold: json.loads accepts a report nested a
+            # few levels short of its limit, which _send_json's json.dumps
+            # then has to nest two levels deeper. allow_nan=False refuses the
+            # nan and inf that json.loads makes of NaN, Infinity and the
+            # standard 1e400: json.dumps writes them back as NaN and Infinity,
+            # the page's JSON parser rejects those, and the page shows the
+            # server as unreachable.
             with suppress(ValueError, RecursionError):
                 report = json.loads(line)
+                if not isinstance(report, dict):
+                    continue
                 json.dumps({"reports": [report]}, ensure_ascii=False, allow_nan=False)
                 reports.append(report)
         return {"reports": reports, "total": len(lines)}
@@ -593,7 +739,8 @@ class _Handler(BaseHTTPRequestHandler):
                 if not isinstance(entry, dict):
                     continue
                 # Only an entry this response can hold, as in _list_reports.
-                # The reaction joined below was checked when it was read.
+                # The reaction joined below holds strings and None, which
+                # always encode (see _Reactions._take).
                 json.dumps({"entries": [entry]}, ensure_ascii=False, allow_nan=False)
                 if not isinstance(entry.get("id"), str) or not entry["id"]:
                     # Occurrence-salted so duplicate id-less lines stay
@@ -635,7 +782,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (ValueError, RecursionError):
+            # ValueError covers UnicodeDecodeError and JSONDecodeError, and
+            # also int's digit limit (a 5000-digit number); a body nested too
+            # deep raises RecursionError. Those last two escaped here, and the
+            # connection dropped without an answer.
             self._send_json(400, {"error": "invalid JSON"})
             return
         button = payload.get("button") if isinstance(payload, dict) else None
@@ -649,11 +800,11 @@ class _Handler(BaseHTTPRequestHandler):
         entry: dict[str, object] = {
             "ts": datetime.now(UTC).isoformat(timespec="seconds"),
             "id": _new_id(),
-            "button": button.strip(),
-            "text": text.strip(),
+            "button": _scrub(button.strip()),
+            "text": _scrub(text.strip()),
         }
         if isinstance(re_id, str) and re_id.strip():
-            entry["re"] = re_id.strip()
+            entry["re"] = _scrub(re_id.strip())
         line = json.dumps(entry, ensure_ascii=False) + "\n"
         root = self.board.board_root
         with self.board.append_lock:
@@ -694,16 +845,14 @@ def _append_agent(
     root: Path, entry_type: str, text: str, re_id: str | None
 ) -> str | None:
     entry_id = _new_id()
-    # Lone surrogates (surrogateescape-decoded argv bytes) survive
-    # json.dumps but explode at the strict utf-8 file write - scrub first.
     entry: dict[str, object] = {
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "id": entry_id,
         "type": entry_type,
-        "text": text.strip().encode("utf-8", "replace").decode("utf-8"),
+        "text": _scrub(text.strip()),
     }
     if re_id is not None:
-        entry["re"] = re_id.encode("utf-8", "replace").decode("utf-8")
+        entry["re"] = _scrub(re_id)
     line = json.dumps(entry, ensure_ascii=False) + "\n"
     if not _append_line(root, _agent_path(root), line):
         return None

@@ -551,44 +551,225 @@ STUB
     fi
     rm -rf "$WORK/self" "$WORK/self.before"
 
-    # Ctrl-C while the archiver ran ended the function between the move-aside
-    # and the restore: <out> was gone, and the old archive sat hidden in the
-    # staging directory. A zip stub that waits stands in for a slow zip. The
-    # run gets a process group of its own (set -m), and the whole group gets
-    # the signal, as Ctrl-C at a terminal does. A shell started with SIGINT
-    # ignored (a background job of a non-interactive shell) cannot trap it, so
-    # the run starts with SIGINT at its default (env --default-signal,
-    # coreutils 8.31+).
-    for _sig in INT TERM; do
-        echo "[$sh] archive .zip interrupted by SIG$_sig puts the previous archive back"
-        if ! env --default-signal=INT true 2>/dev/null; then
-            echo "  SKIP: env has no --default-signal"
-            continue
-        fi
-        rm -rf "$WORK/slow"
-        mkdir -p "$WORK/slow/bin" "$WORK/slow/src"
-        echo x > "$WORK/slow/src/x"
-        echo PRECIOUS > "$WORK/slow/keep.zip"
-        printf '#!/bin/sh\n: > "%s/started"\nsleep 10\n' "$WORK/slow" > "$WORK/slow/bin/zip"
-        chmod +x "$WORK/slow/bin/zip"
-        (
-            set -m
-            env --default-signal=INT "$sh" -c "source '$FUNCTIONS_SH' && PATH='$WORK/slow/bin:$PATH' && cd '$WORK/slow' && archive keep.zip src; echo after" > "$WORK/slow.out" 2>&1 &
-            _pid=$!
-            _i=0
-            while [ ! -e "$WORK/slow/started" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
-            kill -"$_sig" -- "-$_pid"
-            wait "$_pid"
-            echo "status=$?" >> "$WORK/slow.out"
-        )
-        actual=$(cat "$WORK/slow.out")
-        assert_eq "$sh/archive .zip after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/slow/keep.zip" 2>/dev/null)"
-        assert_eq "$sh/archive .zip after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/slow" | grep '^\.archive\.' | tr -d '\n')"
-        # The signal is raised again, so the caller stops as it would have.
-        assert_not_contains "$sh/archive .zip after SIG$_sig stops its caller" "after" "$actual"
-        assert_not_contains "$sh/archive .zip after SIG$_sig does not report success" "status=0" "$actual"
+    echo "[$sh] archive .zip/.7z leave out a hard link to the output too"
+    # Under another name: only a source with the output's name was checked,
+    # so latest.zip, a hard link to backup.zip, stayed a source, and with
+    # backup.zip moved aside it still held the previous archive.
+    mkdir -p "$WORK/hl"
+    echo a > "$WORK/hl/a.txt"; echo b > "$WORK/hl/b.txt"
+    $run "$FUNCTIONS_SH" "cd '$WORK/hl' && archive backup.zip a.txt" >/dev/null 2>&1
+    ln "$WORK/hl/backup.zip" "$WORK/hl/latest.zip"
+    cp "$WORK/hl/backup.zip" "$WORK/hl.before"
+    actual=$($run "$FUNCTIONS_SH" "cd '$WORK/hl' && archive backup.zip latest.zip" 2>&1)
+    assert_failure "$sh/archive .zip with only a hard link to the output as a source fails" "$?"
+    assert_contains "$sh/archive .zip with only a hard link to the output as a source says so" "no source besides the output" "$actual"
+    assert_eq "$sh/archive .zip with only a hard link to the output as a source keeps it" "$(sha256sum < "$WORK/hl.before")" "$(sha256sum < "$WORK/hl/backup.zip")"
+    $run "$FUNCTIONS_SH" "cd '$WORK/hl' && archive backup.zip *" >/dev/null 2>&1
+    assert_success "$sh/archive .zip over a glob holding a hard link to the output exit code" "$?"
+    assert_eq "$sh/archive .zip over a glob holding a hard link to the output" "a.txt b.txt " "$(unzip -Z1 "$WORK/hl/backup.zip" 2>/dev/null | sort | tr '\n' ' ')"
+    rm -f "$WORK/hl"/*.zip
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/hl' && archive backup.7z a.txt" >/dev/null 2>&1
+    ln "$WORK/hl/backup.7z" "$WORK/hl/latest.7z"
+    cp "$WORK/hl/backup.7z" "$WORK/hl.before"
+    actual=$($run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/hl' && archive backup.7z latest.7z" 2>&1)
+    assert_failure "$sh/archive .7z with only a hard link to the output as a source fails" "$?"
+    assert_contains "$sh/archive .7z with only a hard link to the output as a source says so" "no source besides the output" "$actual"
+    assert_eq "$sh/archive .7z with only a hard link to the output as a source keeps it" "$(cat "$WORK/hl.before")" "$(cat "$WORK/hl/backup.7z")"
+    $run "$FUNCTIONS_SH" "export PATH='$WORK/upd:$PATH'; cd '$WORK/hl' && archive backup.7z *" >/dev/null 2>&1
+    assert_success "$sh/archive .7z over a glob holding a hard link to the output exit code" "$?"
+    assert_eq "$sh/archive .7z over a glob holding a hard link to the output" "a.txt b.txt " "$(tr '\n' ' ' < "$WORK/hl/backup.7z")"
+    rm -rf "$WORK/hl" "$WORK/hl.before"
+
+    # tar cannot tell that it is reading its own archive when it compresses
+    # (it writes to the compressor through a pipe), so `archive all.tgz *` or
+    # `archive all.tgz .` run again in the folder it archives stored the old
+    # all.tgz, and the one being written, inside the new one; and a failed tar
+    # left a cut archive where the old one had been. Each tar format runs over
+    # a glob twice, then over '.', then with a missing source. The plain .tar
+    # (GNU tar leaves itself out) takes the same staged path.
+    echo "[$sh] archive tar formats leave their own output out, and a failed run keeps the old one"
+    for ext in tgz tar.bz2 txz tar.zst tar; do
+        rm -rf "$WORK/own" "$WORK/own.before"
+        mkdir -p "$WORK/own"
+        echo a > "$WORK/own/a.txt"; echo b > "$WORK/own/b.txt"
+        $run "$FUNCTIONS_SH" "cd '$WORK/own' && archive all.$ext * && archive all.$ext *" >/dev/null 2>&1
+        assert_success "$sh/archive .$ext rerun over a glob holding the output exit code" "$?"
+        assert_eq "$sh/archive .$ext rerun over a glob holding the output" "a.txt b.txt " "$(tar tf "$WORK/own/all.$ext" 2>/dev/null | sort | tr '\n' ' ')"
+        $run "$FUNCTIONS_SH" "cd '$WORK/own' && archive all.$ext ." >/dev/null 2>&1
+        assert_success "$sh/archive .$ext over its own folder exit code" "$?"
+        assert_eq "$sh/archive .$ext over its own folder leaves itself and the staging directory out" "./ ./a.txt ./b.txt " "$(tar tf "$WORK/own/all.$ext" 2>/dev/null | sort | tr '\n' ' ')"
+        # Built in a 0700 directory, the archive still lands with the umask.
+        : > "$WORK/own/ref"
+        assert_eq "$sh/archive .$ext lands with the umask's mode" "$(stat -c %a "$WORK/own/ref")" "$(stat -c %a "$WORK/own/all.$ext")"
+        cp "$WORK/own/all.$ext" "$WORK/own.before"
+        $run "$FUNCTIONS_SH" "cd '$WORK/own' && archive all.$ext a.txt missing" >/dev/null 2>&1
+        assert_failure "$sh/archive .$ext with a missing source fails" "$?"
+        assert_eq "$sh/archive .$ext failed run keeps the previous archive" "$(sha256sum < "$WORK/own.before")" "$(sha256sum < "$WORK/own/all.$ext")"
+        assert_eq "$sh/archive .$ext leaves no staging directory" "" "$(ls -A "$WORK/own" | grep '^\.archive\.' | tr -d '\n')"
     done
-    rm -rf "$WORK/slow" "$WORK/slow.out"
+    # The staged tar publishes through _ar_rename too: a directory made at
+    # the output while tar runs takes in neither archive (a gzip stub, which
+    # tar runs for -z, makes it).
+    rm -rf "$WORK/own" "$WORK/own.before"
+    mkdir -p "$WORK/own/bin" "$WORK/own/src"
+    echo x > "$WORK/own/src/x"
+    echo PRECIOUS > "$WORK/own/keep.tgz"
+    printf '#!/bin/sh\n%s "$@"\nmkdir keep.tgz\n' "$(command -v gzip)" > "$WORK/own/bin/gzip"
+    chmod +x "$WORK/own/bin/gzip"
+    actual=$($run "$FUNCTIONS_SH" "PATH='$WORK/own/bin:$PATH' && cd '$WORK/own' && archive keep.tgz src" 2>&1)
+    assert_failure "$sh/archive .tgz with a directory made at the output fails" "$?"
+    assert_contains "$sh/archive .tgz with a directory made at the output says where the previous archive is" "archive: previous 'keep.tgz' kept at ./.archive." "$actual"
+    assert_eq "$sh/archive .tgz with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/own"/.archive.*/previous 2>/dev/null)"
+    assert_eq "$sh/archive .tgz put nothing in the directory made at the output" "" "$(ls -A "$WORK/own/keep.tgz")"
+    rm -rf "$WORK/own"
+
+    # Between the move-aside and the restore there is no <out>, so a Ctrl-C
+    # (or a TERM or HUP) while the archiver runs must not end the function
+    # there; and an archiver that finishes all the same must not have its
+    # archive published, with the old one deleted, before the signal is
+    # raised again. Stubs stand in for the archivers: zip and 7z write the
+    # output they are given, and tar (for .tgz) runs the real one; then each
+    # sends the signal to its whole process group, as Ctrl-C at a terminal
+    # does, ignores it itself, and exits 0. The run gets a process group of
+    # its own (set -m), with SIGINT at its default (env --default-signal,
+    # coreutils 8.31+): a shell started with SIGINT ignored, as a background
+    # job of a non-interactive shell is, cannot trap it. Its output is read
+    # through a pipe, which ends only when every process of the run has, the
+    # subshell that puts things back included, so no timing decides what the
+    # checks see.
+    if ! env --default-signal=INT true 2>/dev/null; then
+        echo "[$sh] archive that gets a signal while the archiver runs"
+        echo "  SKIP: env has no --default-signal"
+    else
+        rm -rf "$WORK/sig"
+        mkdir -p "$WORK/sig/bin"
+        printf '#!/bin/sh\ntrap "" INT TERM HUP\necho NEW > "$2"\nkill -s "$SIG" 0\nexit 0\n' > "$WORK/sig/bin/zip"
+        cp "$WORK/sig/bin/zip" "$WORK/sig/bin/7z"
+        printf '#!/bin/sh\ntrap "" INT TERM HUP\n%s "$@" || exit\nkill -s "$SIG" 0\nexit 0\n' "$(command -v tar)" > "$WORK/sig/bin/tar"
+        chmod +x "$WORK/sig/bin/zip" "$WORK/sig/bin/7z" "$WORK/sig/bin/tar"
+        for _fmt in zip 7z tgz; do
+            for _sig in INT TERM HUP; do
+                echo "[$sh] archive .$_fmt that gets SIG$_sig while the archiver runs puts the previous archive back"
+                rm -rf "$WORK/sig/run"
+                mkdir -p "$WORK/sig/run/src"
+                echo x > "$WORK/sig/run/src/x"
+                echo PRECIOUS > "$WORK/sig/run/keep.$_fmt"
+                actual=$(
+                    set -m
+                    env --default-signal=INT SIG="$_sig" "$sh" -c "source '$FUNCTIONS_SH' && PATH='$WORK/sig/bin:$PATH' && cd '$WORK/sig/run' && archive keep.$_fmt src; echo after" 2>&1 &
+                    wait "$!"
+                    echo "status=$?"
+                )
+                assert_eq "$sh/archive .$_fmt after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/sig/run/keep.$_fmt" 2>/dev/null)"
+                assert_eq "$sh/archive .$_fmt after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/sig/run" | grep '^\.archive\.' | tr -d '\n')"
+                # The signal is raised again, so the caller stops as it would have.
+                assert_not_contains "$sh/archive .$_fmt after SIG$_sig stops its caller" "after" "$actual"
+                assert_not_contains "$sh/archive .$_fmt after SIG$_sig does not report success" "status=0" "$actual"
+            done
+        done
+        rm -rf "$WORK/sig"
+    fi
+
+    # When zip failed and the old archive could not be moved back either (the
+    # directory turned read-only while zip ran), the staging directory, the
+    # one place the old archive was left, was removed with it. A zip stub
+    # that fails after putting a directory (holding a 'previous' directory)
+    # where the archive goes makes that move back fail even as root.
+    echo "[$sh] archive .zip keeps the previous archive when it cannot be put back"
+    rm -rf "$WORK/back"
+    mkdir -p "$WORK/back/bin" "$WORK/back/src"
+    echo x > "$WORK/back/src/x"
+    echo PRECIOUS > "$WORK/back/keep.zip"
+    printf '#!/bin/sh\nmkdir -p keep.zip/previous\nexit 3\n' > "$WORK/back/bin/zip"
+    chmod +x "$WORK/back/bin/zip"
+    actual=$($run "$FUNCTIONS_SH" "PATH='$WORK/back/bin:$PATH' && cd '$WORK/back' && archive keep.zip src" 2>&1)
+    assert_eq "$sh/archive .zip that cannot put the previous archive back exits with zip's code" "3" "$?"
+    assert_contains "$sh/archive .zip says where the previous archive was kept" "archive: previous 'keep.zip' kept at ./.archive." "$actual"
+    assert_eq "$sh/archive .zip kept the previous archive it could not put back" "PRECIOUS" "$(cat "$WORK/back"/.archive.*/previous 2>/dev/null)"
+    rm -rf "$WORK/back"
+
+    # archive refuses a directory at <out> before it starts, but another
+    # program can make one there while the archiver runs. mv then moved a file
+    # INTO it: a failed zip's restore put the previous archive there and said
+    # nothing, and a single-file publish put the new archive there and
+    # reported success. Stubs make an empty directory at <out>. The same runs
+    # again with a BSD-like mv (no --version, no -T), and once with the
+    # directory made by mv's own call, after the check.
+    echo "[$sh] archive: a directory made at the output while the archiver runs takes in neither archive"
+    rm -rf "$WORK/race"
+    mkdir -p "$WORK/race/bin" "$WORK/race/bsd" "$WORK/race/src"
+    echo x > "$WORK/race/src/x"
+    printf '#!/bin/sh\nmkdir keep.zip\nexit 3\n' > "$WORK/race/bin/zip"
+    printf '#!/bin/sh\n%s "$@"\nmkdir keep.gz\n' "$(command -v gzip)" > "$WORK/race/bin/gzip"
+    printf '#!/bin/sh\ncase "$1" in --version|-*T*) echo "mv: illegal option" >&2; exit 64 ;; esac\nif [ -n "${MKDIR_AT-}" ] && [ "$4" = "$MKDIR_AT" ] && [ ! -e "$4" ]; then mkdir "$4"; fi\nexec %s "$@"\n' "$(command -v mv)" > "$WORK/race/bsd/mv"
+    chmod +x "$WORK/race/bin/zip" "$WORK/race/bin/gzip" "$WORK/race/bsd/mv"
+    for _mv in gnu bsd; do
+        _path="$WORK/race/bin:$PATH"
+        [ "$_mv" = bsd ] && _path="$WORK/race/bin:$WORK/race/bsd:$PATH"
+        rm -rf "$WORK/race/keep.zip" "$WORK/race/keep.gz" "$WORK/race"/.archive.*
+        echo PRECIOUS > "$WORK/race/keep.zip"
+        actual=$($run "$FUNCTIONS_SH" "PATH='$_path' && cd '$WORK/race' && archive keep.zip src" 2>&1)
+        assert_eq "$sh/archive .zip ($_mv mv) with a directory made at the output exits with zip's code" "3" "$?"
+        assert_contains "$sh/archive .zip ($_mv mv) with a directory made at the output says where the previous archive is" "archive: previous 'keep.zip' kept at ./.archive." "$actual"
+        assert_eq "$sh/archive .zip ($_mv mv) with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/race"/.archive.*/previous 2>/dev/null)"
+        assert_eq "$sh/archive .zip ($_mv mv) put nothing in the directory made at the output" "" "$(ls -A "$WORK/race/keep.zip")"
+        rm -rf "$WORK/race"/.archive.*
+        $run "$FUNCTIONS_SH" "PATH='$_path' && cd '$WORK/race' && archive keep.gz src/x" >/dev/null 2>&1
+        assert_failure "$sh/archive .gz ($_mv mv) with a directory made at the output fails" "$?"
+        assert_eq "$sh/archive .gz ($_mv mv) put nothing in the directory made at the output" "" "$(ls -A "$WORK/race/keep.gz")"
+        assert_eq "$sh/archive .gz ($_mv mv) with a directory made at the output leaves no staging directory" "" "$(ls -A "$WORK/race" | grep '^\.archive\.' | tr -d '\n')"
+    done
+    # mv's own call makes the directory, after the check: the step fails and
+    # says where the file went (zip fails here on a source that is missing).
+    rm -rf "$WORK/race/keep.zip" "$WORK/race/keep.gz" "$WORK/race"/.archive.*
+    echo PRECIOUS > "$WORK/race/keep.zip"
+    actual=$($run "$FUNCTIONS_SH" "PATH='$WORK/race/bsd:$PATH' && export MKDIR_AT=keep.zip && cd '$WORK/race' && archive keep.zip missing" 2>&1)
+    assert_failure "$sh/archive .zip (BSD mv, late directory) fails" "$?"
+    assert_contains "$sh/archive .zip (BSD mv, late directory) says where the previous archive went" "archive: output 'keep.zip' is a directory; 'previous' went into it" "$actual"
+    assert_eq "$sh/archive .zip (BSD mv, late directory) still has the previous archive" "PRECIOUS" "$(cat "$WORK/race/keep.zip/previous" 2>/dev/null)"
+    rm -rf "$WORK/race"
+
+    # The steps run in a subshell, which inherits a caller's `set -e`. A
+    # failing archiver, rm or mv in plain sight ended it before the restore:
+    # the previous archive stayed in the staging directory, and nothing said
+    # so.
+    echo "[$sh] archive .zip/.7z under set -euo pipefail put the previous archive back, or say where it is"
+    rm -rf "$WORK/strict"
+    mkdir -p "$WORK/strict/bin" "$WORK/strict/src"
+    echo x > "$WORK/strict/src/x"
+    _strict="set -euo pipefail; source '$FUNCTIONS_SH'; PATH='$WORK/strict/bin:$PATH'; cd '$WORK/strict'"
+    echo PRECIOUS > "$WORK/strict/keep.zip"
+    actual=$("$sh" -c "$_strict; archive keep.zip missing; echo after" 2>&1)
+    assert_failure "$sh/archive .zip under set -e with zip failing fails" "$?"
+    assert_not_contains "$sh/archive .zip under set -e with zip failing stops its caller" "after" "$actual"
+    assert_eq "$sh/archive .zip under set -e with zip failing puts the previous archive back" "PRECIOUS" "$(cat "$WORK/strict/keep.zip" 2>/dev/null)"
+    assert_eq "$sh/archive .zip under set -e with zip failing leaves no staging directory" "" "$(ls -A "$WORK/strict" | grep '^\.archive\.' | tr -d '\n')"
+    # zip fails, and then the move back (the stub of the case above).
+    printf '#!/bin/sh\nmkdir -p keep.zip/previous\nexit 3\n' > "$WORK/strict/bin/zip"
+    chmod +x "$WORK/strict/bin/zip"
+    actual=$("$sh" -c "$_strict; archive keep.zip src; echo after" 2>&1)
+    assert_contains "$sh/archive .zip under set -e with the move back failing says where the previous archive is" "archive: previous 'keep.zip' kept at ./.archive." "$actual"
+    assert_eq "$sh/archive .zip under set -e with the move back failing keeps the previous archive" "PRECIOUS" "$(cat "$WORK/strict"/.archive.*/previous 2>/dev/null)"
+    rm -rf "$WORK/strict/keep.zip" "$WORK/strict"/.archive.*
+    printf '#!/bin/sh\nexit 2\n' > "$WORK/strict/bin/7z"
+    chmod +x "$WORK/strict/bin/7z"
+    echo PRECIOUS > "$WORK/strict/keep.7z"
+    actual=$("$sh" -c "$_strict; archive keep.7z src; echo after" 2>&1)
+    assert_failure "$sh/archive .7z under set -e with 7z failing fails" "$?"
+    assert_eq "$sh/archive .7z under set -e with 7z failing puts the previous archive back" "PRECIOUS" "$(cat "$WORK/strict/keep.7z" 2>/dev/null)"
+    assert_eq "$sh/archive .7z under set -e with 7z failing leaves no staging directory" "" "$(ls -A "$WORK/strict" | grep '^\.archive\.' | tr -d '\n')"
+    # A cleanup that fails (an rm that refuses the staging directory) is not
+    # a failed archive: the new archive is already in place, so archive
+    # still succeeds and its caller goes on.
+    rm -f "$WORK/strict/bin/zip" "$WORK/strict/bin/7z" "$WORK/strict/keep.7z"
+    printf '#!/bin/sh\nfor a; do case $a in *.archive.*) exit 1 ;; esac; done\nexec %s "$@"\n' "$(command -v rm)" > "$WORK/strict/bin/rm"
+    chmod +x "$WORK/strict/bin/rm"
+    echo PRECIOUS > "$WORK/strict/keep.zip"
+    actual=$("$sh" -c "$_strict; archive keep.zip src; echo after" 2>&1)
+    assert_success "$sh/archive .zip under set -e with the cleanup failing succeeds" "$?"
+    assert_contains "$sh/archive .zip under set -e with the cleanup failing lets its caller go on" "after" "$actual"
+    assert_eq "$sh/archive .zip under set -e with the cleanup failing published the archive" "src/ src/x " "$(unzip -Z1 "$WORK/strict/keep.zip" 2>/dev/null | sort | tr '\n' ' ')"
+    rm -rf "$WORK/strict"
 
     # `set -- "$@" x` per source made the 7z branch quadratic: 20000 sources
     # took minutes in bash before 7z even started. Linear, it is well under a
@@ -719,10 +900,19 @@ assert_contains "bash/archive crafted glob tar.gz stored the file" "$CRAFTED_SRC
 
 echo "[bash] archive treats every argument after the output as a source"
 setup_crafted
+err=$(run_bash_stderr "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt")
 run_bash "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
 assert_failure "bash/archive does not honour -C as a tar option" "$?"
+# tar looked for a file called -C, and the failed run left no archive.
+assert_contains "bash/archive looked for a file called -C" "-C: Cannot stat" "$err"
+assert_not_exists "bash/archive failed run with -C left no archive" "$WORK/out2.tar.gz"
+# With a file of that name there, both are stored, and tar did not chdir.
+: > "$WORK/crafted/-C"
+run_bash "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
+assert_success "bash/archive with a file called -C exit code" "$?"
 actual=$(tar tzf "$WORK/out2.tar.gz" 2>/dev/null)
 assert_contains "bash/archive stored the source that followed it" "bait.txt" "$actual"
+assert_contains "bash/archive stored the file called -C" "-C" "$actual"
 assert_not_contains "bash/archive did not chdir for -C" "crafted" "$actual"
 
 echo "[bash] archive neutralizes an option-shaped source name (zip)"
@@ -1780,10 +1970,19 @@ assert_contains "zsh/archive crafted glob tar.gz stored the file" "$CRAFTED_SRC"
 
 echo "[zsh] archive treats every argument after the output as a source"
 setup_crafted
+err=$(run_zsh_stderr "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt")
 run_zsh "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
 assert_failure "zsh/archive does not honour -C as a tar option" "$?"
+# tar looked for a file called -C, and the failed run left no archive.
+assert_contains "zsh/archive looked for a file called -C" "-C: Cannot stat" "$err"
+assert_not_exists "zsh/archive failed run with -C left no archive" "$WORK/out2.tar.gz"
+# With a file of that name there, both are stored, and tar did not chdir.
+: > "$WORK/crafted/-C"
+run_zsh "$FUNCTIONS_SH" "cd '$WORK/crafted' && archive '$WORK/out2.tar.gz' -C bait.txt" 2>/dev/null
+assert_success "zsh/archive with a file called -C exit code" "$?"
 actual=$(tar tzf "$WORK/out2.tar.gz" 2>/dev/null)
 assert_contains "zsh/archive stored the source that followed it" "bait.txt" "$actual"
+assert_contains "zsh/archive stored the file called -C" "-C" "$actual"
 assert_not_contains "zsh/archive did not chdir for -C" "crafted" "$actual"
 
 echo "[zsh] archive neutralizes an option-shaped source name (zip)"
@@ -2325,6 +2524,44 @@ assert_eq "pwsh/archive zip failed run keeps the existing output" "PRECIOUS" "$(
 assert_eq "pwsh/archive zip failed run leaves no temporary" "" "$(ls -A "$WORK" | grep '\.tmp\.' | tr -d '\n')"
 rm -f "$WORK"/bad.tar* "$WORK/keep.zip"
 
+# GNU tar cannot tell that it is reading its own archive when it compresses,
+# so the tar formats, which ran `tar czf <out>`, stored the old archive (and
+# the one being written) in a rerun over their own folder, and a failed tar
+# left a cut archive where the old one had been.
+echo "[pwsh] archive tar formats leave their own output out, and a failed run keeps the old one"
+for ext in tgz tar.bz2 txz tar.zst tar; do
+    rm -rf "$WORK/own" "$WORK/own.before"
+    mkdir -p "$WORK/own"
+    echo a > "$WORK/own/a.txt"; echo b > "$WORK/own/b.txt"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/own'; archive all.$ext a.txt b.txt; archive all.$ext (Get-ChildItem -Name)" >/dev/null 2>&1
+    assert_success "pwsh/archive .$ext rerun over a list holding the output exit code" "$?"
+    assert_eq "pwsh/archive .$ext rerun over a list holding the output" "a.txt b.txt " "$(tar tf "$WORK/own/all.$ext" 2>/dev/null | sort | tr '\n' ' ')"
+    run_pwsh "$FUNCTIONS_PS1_COMBINED" "Set-Location '$WORK/own'; archive all.$ext ." >/dev/null 2>&1
+    assert_success "pwsh/archive .$ext over its own folder exit code" "$?"
+    assert_eq "pwsh/archive .$ext over its own folder leaves itself out" "./ ./a.txt ./b.txt " "$(tar tf "$WORK/own/all.$ext" 2>/dev/null | sort | tr '\n' ' ')"
+    cp "$WORK/own/all.$ext" "$WORK/own.before"
+    actual=$(pwsh_outcome "Set-Location own; archive all.$ext a.txt missing")
+    assert_contains "pwsh/archive .$ext with a missing source exits 1" "status=1" "$actual"
+    assert_contains "pwsh/archive .$ext with a missing source names tar's exit code" "tar exited 2" "$actual"
+    assert_not_contains "pwsh/archive .$ext put the old archive back and says nothing of a kept copy" "kept at" "$actual"
+    assert_eq "pwsh/archive .$ext failed run keeps the previous archive" "$(sha256sum < "$WORK/own.before")" "$(sha256sum < "$WORK/own/all.$ext")"
+    assert_eq "pwsh/archive .$ext leaves nothing behind" "" "$(ls -A "$WORK/own" | grep '^\.archive\.' | tr -d '\n')"
+done
+# A directory made at the output while tar runs (a gzip stub, which tar runs
+# for -z, makes it) takes in neither archive.
+rm -rf "$WORK/own" "$WORK/own.before"
+mkdir -p "$WORK/own/bin" "$WORK/own/src"
+echo x > "$WORK/own/src/x"
+echo PRECIOUS > "$WORK/own/keep.tgz"
+printf '#!/bin/sh\n%s "$@"\nmkdir keep.tgz\n' "$(command -v gzip)" > "$WORK/own/bin/gzip"
+chmod +x "$WORK/own/bin/gzip"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/own/bin:' + \$env:PATH; Set-Location own; archive keep.tgz src")
+assert_contains "pwsh/archive .tgz with a directory made at the output exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive .tgz with a directory made at the output says where the previous archive is" "archive: previous 'keep.tgz' kept at .archive." "$actual"
+assert_eq "pwsh/archive .tgz with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/own"/.archive.*/previous 2>/dev/null)"
+assert_eq "pwsh/archive .tgz put nothing in the directory made at the output" "" "$(ls -A "$WORK/own/keep.tgz")"
+rm -rf "$WORK/own"
+
 # 7z is not in the test image; a stub stands in with 7z's update semantics
 # (the names already in <out> stay and the sources are added), exiting 2 when
 # STUB_FAIL is set.
@@ -2351,9 +2588,22 @@ assert_contains "pwsh/archive 7z failing archiver exits 1" "status=1" "$actual"
 assert_contains "pwsh/archive 7z names 7z's exit code" "7z exited 2" "$actual"
 assert_eq "pwsh/archive 7z failed run keeps the previous archive" "file1.txt" "$(cat "$WORK/rel.7z")"
 assert_eq "pwsh/archive 7z leaves nothing set aside" "" "$(ls -A "$WORK" | grep '\.previous\.' | tr -d '\n')"
+# The old archive is back in place, so nothing may claim it was kept elsewhere.
+assert_not_contains "pwsh/archive 7z that put the old archive back says nothing of a kept copy" "kept at" "$actual"
 actual=$(pwsh_outcome "\$env:PATH='$WORK/nobin'; archive none.7z src")
 assert_contains "pwsh/archive 7z not installed exits 1" "status=1" "$actual"
 assert_contains "pwsh/archive 7z not installed says so" "7z is not installed" "$actual"
+# When 7z failed and the old archive could not be moved back either (its
+# folder turned read-only while 7z ran), it stayed under its random set-aside
+# name, and nothing said where. A Move-Item that refuses that one move stands
+# in for the read-only folder, which root would get past.
+mv_refuses_restore="function Move-Item { [CmdletBinding()] param([string]\$LiteralPath, [string]\$Destination, [switch]\$Force) if (\$LiteralPath -like '*.previous.*') { Write-Error 'denied'; return }; Microsoft.PowerShell.Management\\Move-Item -LiteralPath \$LiteralPath -Destination \$Destination -Force:\$Force }"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/upd:' + \$env:PATH; \$env:STUB_FAIL='1'; $mv_refuses_restore; archive rel.7z src/file2.txt")
+assert_contains "pwsh/archive 7z that cannot put the previous archive back exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive 7z says where the previous archive was kept" "archive: previous 'rel.7z' kept at rel.7z.previous." "$actual"
+assert_contains "pwsh/archive 7z that cannot put the previous archive back names 7z's exit code" "7z exited 2" "$actual"
+assert_eq "pwsh/archive 7z kept the previous archive it could not put back" "file1.txt" "$(cat "$WORK"/rel.7z.previous.* 2>/dev/null)"
+rm -f "$WORK"/rel.7z.previous.*
 
 # A source that IS the output (a rerun whose list, or glob, holds the old
 # archive): the 7z branch moved the old archive aside and 7z then failed on
@@ -2375,6 +2625,180 @@ assert_contains "pwsh/archive zip with only the output as a source says so" "no 
 assert_eq "pwsh/archive zip with only the output keeps it" "$(sha256sum < "$WORK/self.before")" "$(sha256sum < "$WORK/self/all.zip")"
 rm -rf "$WORK/upd" "$WORK/rel.7z" "$WORK/self" "$WORK/self.before"
 
+# The zip stores each source under its own name (a folder as name/), where
+# `zip -r` keeps the path as given. Two sources with one name from different
+# folders made two entries of that name, and extracting kept only the last.
+echo "[pwsh] archive zip refuses two sources that would be stored under one name"
+setup_fixtures
+mkdir -p "$WORK/alpha" "$WORK/beta" "$WORK/p1/src" "$WORK/p2/src"
+echo alpha > "$WORK/alpha/config.txt"; echo beta > "$WORK/beta/config.txt"
+echo one > "$WORK/p1/src/a.txt"; echo two > "$WORK/p2/src/a.txt"
+echo PRECIOUS > "$WORK/both.zip"
+actual=$(pwsh_outcome "archive both.zip alpha/config.txt beta/config.txt")
+assert_contains "pwsh/archive zip same-name files exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive zip same-name files names both" "'alpha/config.txt' and 'beta/config.txt' would both be stored as 'config.txt'" "$actual"
+assert_not_contains "pwsh/archive zip same-name files stops the run" "out=after" "$actual"
+assert_eq "pwsh/archive zip same-name files keeps the existing output" "PRECIOUS" "$(cat "$WORK/both.zip")"
+actual=$(pwsh_outcome "archive dirs.zip p1/src p2/src")
+assert_contains "pwsh/archive zip same-name folders exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive zip same-name folders names both" "'p1/src' and 'p2/src' would both be stored as 'src'" "$actual"
+assert_not_exists "pwsh/archive zip same-name folders wrote nothing" "$WORK/dirs.zip"
+assert_eq "pwsh/archive zip same-name sources leave no temporary" "" "$(ls -A "$WORK" | grep '\.tmp\.' | tr -d '\n')"
+# The same full path, however it is written, is one source and is stored
+# once. (zip -r stores a path given twice in one spelling once, but refuses
+# p1/src next to ./p1/src: "cannot repeat names in zip file".)
+actual=$(pwsh_outcome "archive twice.zip p1/src ./p1/src alpha/config.txt")
+assert_contains "pwsh/archive zip one source named twice exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip one source named twice is stored once" "config.txt src/ src/a.txt " "$(unzip -Z1 "$WORK/twice.zip" 2>/dev/null | sort | tr '\n' ' ')"
+# Its absolute path is the same path. A route through a symlinked parent is
+# another path, so another source, and its clashing name is refused.
+ln -s p1 "$WORK/link"
+actual=$(pwsh_outcome "archive abs.zip p1/src '$WORK/p1/src'")
+assert_contains "pwsh/archive zip one source as a relative and an absolute path exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip one source as a relative and an absolute path is stored once" "src/ src/a.txt " "$(unzip -Z1 "$WORK/abs.zip" 2>/dev/null | sort | tr '\n' ' ')"
+actual=$(pwsh_outcome "archive route.zip p1/src link/src")
+assert_contains "pwsh/archive zip one folder through a symlinked parent exits 1" "status=1" "$actual"
+assert_contains "pwsh/archive zip one folder through a symlinked parent is a second source" "'p1/src' and 'link/src' would both be stored as 'src'" "$actual"
+rm -rf "$WORK/alpha" "$WORK/beta" "$WORK/p1" "$WORK/p2" "$WORK/link" "$WORK/both.zip" "$WORK/twice.zip" "$WORK/abs.zip"
+
+# Windows compares names without regard to case, and its case-sensitive
+# folders (WSL makes them) can still hold config.txt and CONFIG.TXT. The same
+# rule also picked the sources that count as one, so those two were one
+# source, and one of the files was left out without a word. Only the same
+# path is one source now, and every entry name is checked, not only the
+# sources' own. Linux's file system stands in for such a folder, and
+# $env:OS = 'Windows_NT' selects Windows' rule, as the test of the Windows
+# branch further down does.
+echo "[pwsh] archive zip compares the names by the platform's rule, and only the same path is one source"
+mkdir -p "$WORK/cs"
+echo lower > "$WORK/cs/config.txt"; echo upper > "$WORK/cs/CONFIG.TXT"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; archive cs1.zip cs/config.txt cs/CONFIG.TXT")
+assert_contains "pwsh/archive zip on Windows refuses two sources whose names differ only in case" "status=1" "$actual"
+assert_contains "pwsh/archive zip on Windows names both of those sources" "'cs/config.txt' and 'cs/CONFIG.TXT' would both be stored as 'CONFIG.TXT'" "$actual"
+assert_not_exists "pwsh/archive zip on Windows wrote nothing for those sources" "$WORK/cs1.zip"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; archive cs2.zip cs")
+assert_contains "pwsh/archive zip on Windows refuses entries whose names differ only in case" "status=1" "$actual"
+assert_contains "pwsh/archive zip on Windows names the first of those entries" "'$WORK/cs/config.txt'" "$actual"
+assert_contains "pwsh/archive zip on Windows names the second of those entries" "'$WORK/cs/CONFIG.TXT'" "$actual"
+assert_contains "pwsh/archive zip on Windows says which name they share" "would both be stored as 'cs/" "$actual"
+assert_not_exists "pwsh/archive zip on Windows wrote nothing for those entries" "$WORK/cs2.zip"
+actual=$(pwsh_outcome "archive cs3.zip cs/config.txt cs/CONFIG.TXT cs")
+assert_contains "pwsh/archive zip on Linux keeps names that differ only in case" "status=0" "$actual"
+assert_eq "pwsh/archive zip on Linux stores both of them" "CONFIG.TXT config.txt cs/ cs/CONFIG.TXT cs/config.txt " "$(unzip -Z1 "$WORK/cs3.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "(_ArNameComparer \$true).Equals('config.txt', 'CONFIG.TXT'); (_ArNameComparer \$false).Equals('config.txt', 'CONFIG.TXT'); (_ArNameComparer \$false).Equals('config.txt', 'config.txt')" 2>&1 | tr -d '\r' | tr '\n' ' ')
+assert_eq "pwsh/archive's name rule ignores case on Windows only" "True False True " "$actual"
+rm -rf "$WORK/cs" "$WORK"/cs?.zip
+
+# Windows takes BACKUP.ZIP for backup.zip in an ordinary folder, but a
+# case-sensitive one holds the two as files of their own, and archive took
+# such a source for the output: the zip and tar formats left it out without a
+# word, as the zip did a file of that name inside a source folder, and a
+# single file was refused as its own output. The folder is asked now
+# (_DenOneEntry), and one that cannot be listed (root lists any) refuses the
+# source, naming both. Linux's file system stands in for a case-sensitive
+# folder, with Windows' rule selected as above.
+echo "[pwsh] archive on Windows takes a name that differs from the output only in case for the output only when it is"
+mkdir -p "$WORK/cs/src"
+echo x > "$WORK/cs/src/x"
+for _n in BACKUP.ZIP BACKUP.TGZ DATA.GZ; do echo upper > "$WORK/cs/$_n"; done
+for _n in backup.zip backup.tgz data.gz; do echo old > "$WORK/cs/$_n"; done
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive backup.zip BACKUP.ZIP src")
+assert_contains "pwsh/archive zip on Windows with a source that differs from the output only in case exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip on Windows keeps a source that differs from the output only in case" "BACKUP.ZIP src/ src/x " "$(unzip -Z1 "$WORK/cs/backup.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive backup.tgz BACKUP.TGZ src")
+assert_contains "pwsh/archive tgz on Windows with a source that differs from the output only in case exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive tgz on Windows keeps a source that differs from the output only in case" "BACKUP.TGZ src/ src/x " "$(tar tzf "$WORK/cs/backup.tgz" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive data.gz DATA.GZ")
+assert_contains "pwsh/archive gz on Windows from a file that differs from the output only in case exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive gz on Windows compresses that file" "upper" "$(gzip -dc "$WORK/cs/data.gz" 2>/dev/null)"
+# In a zip of the folder that holds the output, only the output is left out.
+# (The other pairs would be refused as one name in the zip: see above.)
+rm -f "$WORK/cs/BACKUP.TGZ" "$WORK/cs/backup.tgz" "$WORK/cs/DATA.GZ" "$WORK/cs/data.gz"
+actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive backup.zip .")
+assert_contains "pwsh/archive zip on Windows of the folder holding the output exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip on Windows leaves only the output itself out of that folder" "cs/ cs/BACKUP.ZIP cs/src/ cs/src/x " "$(unzip -Z1 "$WORK/cs/backup.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: root can list any folder"
+else
+    echo PRECIOUS > "$WORK/cs/backup.zip"
+    chmod 311 "$WORK/cs"
+    actual=$(pwsh_outcome "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; archive backup.zip BACKUP.ZIP src")
+    chmod 755 "$WORK/cs"
+    assert_contains "pwsh/archive zip on Windows that cannot list the folder fails" "status=1" "$actual"
+    assert_contains "pwsh/archive zip on Windows that cannot list the folder names both" "cannot tell whether '$WORK/cs/BACKUP.ZIP' and '$WORK/cs/backup.zip' are one file" "$actual"
+    assert_eq "pwsh/archive zip on Windows that cannot list the folder keeps the old archive" "PRECIOUS" "$(cat "$WORK/cs/backup.zip" 2>/dev/null)"
+fi
+rm -rf "$WORK/cs"
+
+# Elsewhere only Windows' folders were asked: on a case-insensitive volume
+# (macOS's default), `archive src/backup.zip src` with src/BACKUP.ZIP there
+# stored the old archive inside the new one. A case-sensitive folder (Linux's)
+# still holds the two as files of their own. The case-insensitive part needs
+# such a folder: $WORK when it is one, or DEN_TEST_NOCASE_DIR.
+echo "[pwsh] archive on Linux and macOS takes a name that differs from the output only in case for the output only when it is"
+mkdir -p "$WORK/cs/src"
+echo x > "$WORK/cs/src/x"
+echo upper > "$WORK/cs/src/BACKUP.ZIP"
+echo old > "$WORK/cs/src/backup.zip"
+actual=$(pwsh_outcome "Set-Location '$WORK/cs'; archive src/backup.zip src")
+assert_contains "pwsh/archive zip in a case-sensitive folder with a twin of the output exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip in a case-sensitive folder keeps the output's twin and leaves the output out" "src/ src/BACKUP.ZIP src/x " "$(unzip -Z1 "$WORK/cs/src/backup.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+rm -rf "$WORK/cs"
+_nc=$(mktemp -d "${DEN_TEST_NOCASE_DIR:-$WORK}/nocase.XXXXXX")
+: > "$_nc/CaseProbe"
+if [ -e "$_nc/caseprobe" ]; then
+    mkdir -p "$_nc/src"
+    echo x > "$_nc/src/x"
+    echo old > "$_nc/src/BACKUP.ZIP"
+    actual=$(pwsh_outcome "Set-Location '$_nc'; archive src/backup.zip src")
+    assert_contains "pwsh/archive zip in a case-insensitive folder over the output spelled otherwise exits 0" "status=0" "$actual"
+    assert_eq "pwsh/archive zip in a case-insensitive folder leaves the output spelled otherwise out" "src/ src/x " "$(unzip -Z1 "$_nc/src/backup.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+else
+    echo "  SKIP: no case-insensitive folder (DEN_TEST_NOCASE_DIR names one)"
+fi
+rm -rf "$_nc"
+
+# The tar formats' staging folder was made with the umask's mode (0777 under
+# umask 000), so another user who can write to the output's folder could
+# plant a symlink where tar writes the new archive, or delete the previous one
+# waiting there. A tar stub notes the mode of the folder it is told to write
+# into. A folder that is not a plain one of this user's (a mkdir stub leaves a
+# symlink to another folder at the name) is refused before anything goes in.
+echo "[pwsh] archive makes its staging folder private, whatever the umask"
+rm -rf "$WORK/pv"
+mkdir -p "$WORK/pv/bin" "$WORK/pv/src" "$WORK/pv/elsewhere"
+echo x > "$WORK/pv/src/x"
+printf '#!/bin/sh\nprev=\nfor a; do [ "$prev" = -f ] && stat -c %%a "$(dirname "$a")" > "%s/mode"; prev=$a; done\nexec %s "$@"\n' "$WORK/pv" "$(command -v tar)" > "$WORK/pv/bin/tar"
+chmod +x "$WORK/pv/bin/tar"
+actual=$(umask 000; pwsh_outcome "\$env:PATH = '$WORK/pv/bin:' + \$env:PATH; Set-Location '$WORK/pv'; archive out.tgz src")
+assert_contains "pwsh/archive tgz under umask 000 exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive tgz under umask 000 stages in a 0700 folder" "700" "$(cat "$WORK/pv/mode" 2>/dev/null)"
+echo PRECIOUS > "$WORK/pv/keep.tgz"
+printf '#!/bin/sh\nln -s "%s/elsewhere" "$4"\n' "$WORK/pv" > "$WORK/pv/bin/mkdir"
+chmod +x "$WORK/pv/bin/mkdir"
+actual=$(pwsh_outcome "\$env:PATH = '$WORK/pv/bin:' + \$env:PATH; Set-Location '$WORK/pv'; archive keep.tgz src")
+assert_contains "pwsh/archive tgz with a staging folder that is not its own fails" "status=1" "$actual"
+assert_contains "pwsh/archive tgz with a staging folder that is not its own says why" "not a plain directory owned by this user" "$actual"
+assert_eq "pwsh/archive tgz with a staging folder that is not its own keeps the old archive" "PRECIOUS" "$(cat "$WORK/pv/keep.tgz" 2>/dev/null)"
+assert_eq "pwsh/archive tgz put nothing in the folder that symlink leads to" "" "$(ls -A "$WORK/pv/elsewhere")"
+rm -rf "$WORK/pv"
+
+# Below a folder, only the platform's separators become '/'. On Linux a '\'
+# is part of a name, and turning it into '/' as well stored a file 'a\b.txt'
+# and a file 'b.txt' in a folder 'a' under one entry name, of which
+# extracting kept one.
+echo "[pwsh] archive zip keeps a backslash in a Linux file name"
+mkdir -p "$WORK/bs/a"
+echo literal > "$WORK/bs/a\\b.txt"; echo nested > "$WORK/bs/a/b.txt"
+actual=$(pwsh_outcome "archive bs.zip bs")
+assert_contains "pwsh/archive zip with a backslash in a name exits 0" "status=0" "$actual"
+assert_eq "pwsh/archive zip stores a backslash in a name as it is" 'bs/ bs/a/ bs/a/b.txt bs/a\b.txt ' "$(unzip -Z1 "$WORK/bs.zip" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+mkdir -p "$WORK/bs.out"
+(cd "$WORK/bs.out" && unzip -q ../bs.zip)
+assert_eq "pwsh/archive zip with a backslash in a name extracts that file" "literal" "$(cat "$WORK/bs.out/bs/a\\b.txt" 2>/dev/null)"
+assert_eq "pwsh/archive zip with a backslash in a name extracts the other file" "nested" "$(cat "$WORK/bs.out/bs/a/b.txt" 2>/dev/null)"
+rm -rf "$WORK/bs" "$WORK/bs.zip" "$WORK/bs.out"
+
 # extract ran `& 7z` / `& unrar` by bare name: a missing tool raised only a
 # non-terminating CommandNotFound, $LASTEXITCODE stayed 0, and the archive
 # did not count as failed.
@@ -2386,6 +2810,36 @@ assert_contains "pwsh/extract without 7z/unrar counts both" "2 of 2 archives fai
 assert_contains "pwsh/extract names the missing 7z" "7z is not installed" "$actual"
 assert_contains "pwsh/extract names the missing unrar" "unrar is not installed" "$actual"
 rm -f "$WORK/x.7z" "$WORK/y.rar"
+
+# tar was run by bare name in both: with no tar on PATH the CommandNotFound
+# was non-terminating, $LASTEXITCODE stayed 0, and extract and archive
+# reported success, so `archive out.tgz src && Remove-Item -Recurse src`
+# deleted the sources with no archive written. In a try/catch the
+# CommandNotFound also ended extract's loop, so later archives went unseen.
+echo "[pwsh] extract and archive count a missing tar as a failure"
+setup_fixtures
+mkdir -p "$WORK/notar" "$WORK/out"
+(cd "$WORK" && tar cf a.tar src && tar czf a.tgz src && tar --zstd -cf a.tzst src)
+actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; Set-Location out; extract ../a.tar ../a.tgz ../a.tzst")
+assert_contains "pwsh/extract without tar exits 1" "status=1" "$actual"
+assert_contains "pwsh/extract without tar counts every tar archive" "3 of 3 archives failed" "$actual"
+assert_contains "pwsh/extract names the missing tar" "tar is not installed" "$actual"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; Set-Location out; extract ../a.tgz 2>\$null && Remove-Item ../a.tgz")
+assert_contains "pwsh/extract without tar stops a && chain" "status=1" "$actual"
+assert_exists "pwsh/extract without tar keeps the archive a && chain would remove" "$WORK/a.tgz"
+actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; Set-Location out; try { extract ../a.tar ../missing.zip } catch { 'caught: ' + \$_ }")
+assert_contains "pwsh/extract without tar still reaches the next archive" "'../missing.zip' is not a file" "$actual"
+assert_contains "pwsh/extract without tar counts the next archive" "caught: 2 of 2 archives failed" "$actual"
+assert_eq "pwsh/extract without tar wrote nothing" "" "$(ls -A "$WORK/out")"
+for _out in out.tar out.tgz out.tar.bz2 out.txz out.tar.zst; do
+    actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; archive $_out src 2>\$null && Remove-Item -Recurse src")
+    assert_contains "pwsh/archive $_out without tar exits 1" "status=1" "$actual"
+    assert_exists "pwsh/archive $_out without tar keeps the sources a && chain would remove" "$WORK/src/file1.txt"
+    assert_not_exists "pwsh/archive $_out without tar wrote nothing" "$WORK/$_out"
+done
+actual=$(pwsh_outcome "\$env:PATH='$WORK/notar'; archive out.tgz src")
+assert_contains "pwsh/archive names the missing tar" "tar is not installed" "$actual"
+rm -rf "$WORK/notar" "$WORK/out" "$WORK"/a.t*
 
 # --- xt / pk: short names for extract / archive ---
 # Aliases, so the call IS extract / archive: named parameters, $?, the
@@ -3311,6 +3765,31 @@ assert_contains "pwsh/again no history" "no command at position" "$err"
 echo "[pwsh] sagain 0"
 err=$(run_pwsh_stderr "$FUNCTIONS_PS1_COMBINED" "sagain -N 0")
 assert_contains "pwsh/sagain 0 usage" "usage" "$err"
+
+# again replays the line inside a function (_DenReplay), as snippet run does.
+# Unlike bash/zsh's eval, which sets the shell's own variables, that keeps
+# $global: and $env: changes but not a plain assignment. The docs say so.
+echo "[pwsh] again runs the line inside a function: a plain \$x = ... is not kept, \$global: and \$env: are"
+actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+    function global:Read-Host { 'y' }
+    \$x = 'old'
+    Add-History -InputObject ([pscustomobject]@{
+        CommandLine = '\$x = ''new''; \$global:g = ''set''; \$env:DEN_AGAIN_PROBE = ''set'''; ExecutionStatus = 'Completed'
+        StartExecutionTime = [datetime]::Now; EndExecutionTime = [datetime]::Now
+    })
+    again 6>\$null
+    \"x=\$x g=\$g env=\$env:DEN_AGAIN_PROBE\"
+" 2>/dev/null | tr -d '\r')
+assert_eq "pwsh/again: what stays in the session" "x=old g=set env=set" "$actual"
+assert_eq "docs/README: pwsh again keeps only global variables" 'on PowerShell a variable or function the line makes is not kept unless it is global' \
+    "$(grep -oF -- 'on PowerShell a variable or function the line makes is not kept unless it is global' "$DOTFILES/shell/README.md" | head -n 1)"
+# The shell test image copies only shell/ and tests/shell/, not COMMANDS.md.
+if [ -f "$DOTFILES/COMMANDS.md" ]; then
+    assert_eq "docs/COMMANDS: pwsh again runs the line inside a function" 'On pwsh, `again` runs the line inside a function' \
+        "$(grep -oF -- 'On pwsh, `again` runs the line inside a function' "$DOTFILES/COMMANDS.md" | head -n 1)"
+else
+    echo "  SKIP: docs/COMMANDS pwsh again paragraph (no COMMANDS.md in $DOTFILES)"
+fi
 
 # back N>1 is supported now (browser-style history); with nothing recorded
 # yet it reports the empty history instead of "only N=1".

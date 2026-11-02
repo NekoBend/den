@@ -3,8 +3,10 @@
 The sheet's name has a hyphen, so it is loaded from its path, not imported.
 """
 
+import errno
 import importlib.util
 import os
+import re
 import shutil
 import stat
 import sys
@@ -307,3 +309,201 @@ def test_atomic_write_never_writes_a_private_file_into_a_wider_one(
     fileops.atomic_write(secret, '{"token": "s3cret"}')
     assert modes == [0o600]
     assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+
+
+# --- split_by_size + split_by_lines: the parts of a private file ---------------
+
+SECRET = b"secret-1\nsecret-2\nsecret-3\n"
+SPLITS = [  # each cuts SECRET into one part per line
+    ("split_by_size", {"chunk_bytes": 9}),
+    ("split_by_lines", {"lines_per_chunk": 1}),
+]
+SPLIT_IDS = [recipe for recipe, _ in SPLITS]
+
+
+def _modes_while_written(directory: Path, call) -> dict[str, set[int]]:
+    """Run ``call``; map each file it writes in ``directory`` to its modes then."""
+    modes: dict[str, set[int]] = {}
+
+    def profile(frame, event, arg):
+        # A file object's write method, before the bytes go in.
+        if event != "c_call" or getattr(arg, "__name__", None) != "write":
+            return
+        target = getattr(arg, "__self__", None)
+        name = getattr(target, "name", None)
+        if isinstance(name, (str, os.PathLike)) and Path(name).parent == directory:
+            modes.setdefault(Path(name).name, set()).add(_mode_of(target.fileno()))
+
+    sys.setprofile(profile)
+    try:
+        call()
+    finally:
+        sys.setprofile(None)
+    return modes
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    "leftover", [False, True], ids=["new-parts", "over-a-0o666-part"]
+)
+@pytest.mark.parametrize(("recipe", "kwargs"), SPLITS, ids=SPLIT_IDS)
+def test_split_never_writes_a_private_file_into_a_wider_part(
+    fileops, tmp_path, umask_022, recipe, kwargs, leftover
+):
+    # Every part was written with Path.write_bytes: a new one got 0o666 minus
+    # the umask (0o644) and an old one kept its mode, so every local user
+    # could read the pieces of a 0o600 file, next to it by default.
+    src = tmp_path / "private.log"
+    src.write_bytes(SECRET)
+    src.chmod(0o600)
+    out = tmp_path / "parts"
+    out.mkdir()
+    if leftover:
+        old = out / "private.part0001.log"
+        old.write_bytes(b"a longer part from an earlier run\n")
+        old.chmod(0o666)
+    parts: list[Path] = []
+    modes = _modes_while_written(
+        out, lambda: parts.extend(getattr(fileops, recipe)(src, out_dir=out, **kwargs))
+    )
+    names = [f"private.part{index:04d}.log" for index in range(3)]
+    assert [part.name for part in parts] == names
+    assert modes == {name: {0o600} for name in names}
+    assert [stat.S_IMODE(part.stat().st_mode) for part in parts] == [0o600] * 3
+    assert b"".join(part.read_bytes() for part in parts) == SECRET
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(
+    ("source_mode", "part_mode"),
+    [(0o640, 0o640), (0o444, 0o644)],
+    ids=["group-readable", "read-only"],
+)
+@pytest.mark.parametrize(("recipe", "kwargs"), SPLITS, ids=SPLIT_IDS)
+def test_split_parts_take_the_source_permission_bits(
+    fileops, tmp_path, umask_022, recipe, kwargs, source_mode, part_mode
+):
+    # A part takes the source's bits, as shutil.copy gives its copy, but
+    # stays writable for its owner: parts of a read-only source made
+    # read-only would stop the next run at the first part.
+    src = tmp_path / "data.log"
+    src.write_bytes(SECRET)
+    src.chmod(source_mode)
+    out = tmp_path / "parts"
+    for _ in range(2):  # the second run replaces the parts of the first
+        parts = getattr(fileops, recipe)(src, out_dir=out, **kwargs)
+    assert [stat.S_IMODE(part.stat().st_mode) for part in parts] == [part_mode] * 3
+    assert b"".join(part.read_bytes() for part in parts) == SECRET
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(("recipe", "kwargs"), SPLITS, ids=SPLIT_IDS)
+def test_split_sets_a_parts_mode_on_the_open_part(
+    fileops, tmp_path, umask_022, monkeypatch, recipe, kwargs
+):
+    # A chmod by name after the close followed whatever the name was by
+    # then: someone able to replace entries in out_dir could swap a part for
+    # a symlink, and a split of a 0o644 source would widen the file it names.
+    src = tmp_path / "data.log"
+    src.write_bytes(SECRET)
+    src.chmod(0o644)
+    out = tmp_path / "parts"
+    chmod = os.chmod
+
+    def by_name(target, *args, **kwargs):
+        if Path(target).parent == out:
+            raise AssertionError(f"a part's mode set by name: {target}")
+        return chmod(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", by_name)
+    parts = getattr(fileops, recipe)(src, out_dir=out, **kwargs)
+    assert [stat.S_IMODE(part.stat().st_mode) for part in parts] == [0o644] * 3
+    assert b"".join(part.read_bytes() for part in parts) == SECRET
+
+
+def _still_open_on(fd: int, path: Path) -> bool:
+    """Whether ``fd`` is still open on ``path`` (closed or reused: no)."""
+    try:
+        return os.path.samestat(os.fstat(fd), path.stat())
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize(("recipe", "kwargs"), SPLITS, ids=SPLIT_IDS)
+def test_split_leaves_a_part_it_cannot_narrow_alone(
+    fileops, tmp_path, monkeypatch, recipe, kwargs
+):
+    # fchmod fails with EPERM on a part you may write but do not own: the
+    # split must stop there, with that part's old bytes intact and its fd
+    # closed, rather than write the source's bytes into a file it cannot
+    # make private.
+    src = tmp_path / "private.log"
+    src.write_bytes(SECRET)
+    src.chmod(0o600)
+    out = tmp_path / "parts"
+    out.mkdir()
+    theirs = out / "private.part0000.log"
+    theirs.write_bytes(b"OLD CONTENT\n")
+    narrowed: list[int] = []
+
+    def fchmod(fd: int, mode: int) -> None:
+        narrowed.append(fd)
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "fchmod", fchmod)
+    with pytest.raises(PermissionError):
+        getattr(fileops, recipe)(src, out_dir=out, **kwargs)
+    assert theirs.read_bytes() == b"OLD CONTENT\n"
+    assert narrowed
+    assert not [fd for fd in narrowed if _still_open_on(fd, theirs)]
+    assert sorted(path.name for path in out.iterdir()) == [theirs.name]
+
+
+# --- what the 0o600 notes promise ---------------------------------------------
+
+
+def _sentences(doc: str | None) -> list[str]:
+    assert doc is not None
+    return re.split(r"(?<=\.)\s+(?=[A-Z`])", " ".join(doc.split()))
+
+
+@pytest.mark.parametrize(
+    ("recipe", "posix"),
+    [
+        ("merge_files", "On POSIX, over an existing ``output`` the temp file is 0o600"),
+        ("atomic_write", "On POSIX, over an existing file the temp file is 0o600"),
+        ("split_by_size", "On POSIX each part is created 0o600"),
+        ("split_by_lines", "On POSIX each part is created 0o600"),
+    ],
+    ids=["merge_files", "atomic_write", "split_by_size", "split_by_lines"],
+)
+def test_private_file_notes_say_that_the_0o600_promise_is_posix_only(
+    fileops, recipe, posix
+):
+    # Each creates its temp file or part 0o600, but on Windows os.open's
+    # 0o600 only keeps it from being read-only: the ACL it inherits from its
+    # directory decides who can read it, and os.replace keeps that ACL. The
+    # merge_files and atomic_write notes promised on every platform that
+    # private data never sits in a wider file. The promise has to sit in a
+    # sentence that names POSIX and not Windows.
+    sentences = _sentences(getattr(fileops, recipe).__doc__)
+    promise = [sentence for sentence in sentences if posix in sentence]
+    assert len(promise) == 1, (posix, sentences)
+    assert "Windows" not in promise[0], promise[0]
+    assert any("Windows has no such guarantee" in s for s in sentences), sentences
+    assert any("ACL" in s for s in sentences), sentences
+
+
+def test_atomic_write_note_says_that_the_directory_fsync_is_posix_only(fileops):
+    # The directory is fsynced only when os.name == "posix", but the note said
+    # "fsynced before the rename and the directory after it" for every
+    # platform. The crash promise rests on the temp file's fsync alone.
+    sentences = _sentences(fileops.atomic_write.__doc__)
+    directory = [s for s in sentences if "fsync" in s and "directory" in s]
+    assert len(directory) == 1, sentences
+    assert directory[0].startswith("On POSIX the directory is fsynced"), directory
+    assert "Windows cannot open a directory to fsync it" in directory[0], directory
+    crash = [s for s in sentences if "never an empty file" in s]
+    assert len(crash) == 1, sentences
+    assert "directory" not in crash[0], crash

@@ -382,7 +382,7 @@ assert_eq "pwsh/a script's cat and grep, then a typed cat" "banana
 line1
 line2
 STUB-BAT --style=plain --paging=never $WORK/fruits.txt
-STUB-BAT --style=plain --paging=never $WORK/fruits.txt" "$actual"
+STUB-BAT --style=plain --paging=never $WORK/fruits.txt --paging=never" "$actual"
 
 # On Windows ls and cat are aliases of Get-ChildItem and Get-Content, which den
 # removes so that its wrappers win at the prompt. A script then got den's ls,
@@ -847,6 +847,301 @@ modern rg y
 modern rg z
 modern lsd w" "$actual"
 done
+
+# =============================================================================
+# File names that read as options (typed cat, find, grep: bat, fd, rg)
+# =============================================================================
+# Typed at the prompt, cat, find and grep run bat, fd and rg, and a glob such
+# as * puts the names of the files it matches among their arguments. Those
+# tools read a word that starts with - as an option, and some of their options
+# run a program: `grep needle *` beside a file named --pre=sh ran
+# `rg needle --pre=sh data.txt`, and rg ran sh on every file it searched; fd
+# -x / -X (in any spelling) ran a program on what it found, and bat --pager
+# with a later --paging=always piped the files into one. A wrapper cannot tell
+# a typed word from a glob's, so it runs nothing when an argument starts with
+# - and names a file. pwsh expands a wildcard for a native command itself on
+# Linux and macOS (quoted too, and ./* to bare names), after the wrapper has
+# seen it, so the pwsh wrappers look the names up as pwsh will. The stand-ins
+# log each run; each case is a fresh directory holding data.txt and the
+# given files.
+echo ""
+echo "================================================"
+echo "  Testing file names that read as options"
+echo "================================================"
+OPT_BIN="$TESTTMP/opt-bin"
+OPT_LOG="$TESTTMP/opt-ran.log"
+mkdir -p "$OPT_BIN" || abort_suite "cannot create $OPT_BIN"
+for _t in bat fd rg; do
+    cat > "$OPT_BIN/$_t" <<EOF || abort_suite "cannot write $OPT_BIN/$_t"
+#!/bin/sh
+echo "$_t \$*" >> '$OPT_LOG'
+EOF
+    chmod +x "$OPT_BIN/$_t"
+done
+
+# opt_tree <dir> <name>... - a fresh $WORK/opt/<dir> with data.txt and an empty
+# file of each <name>.
+opt_tree() {
+    local d="$WORK/opt/$1" n
+    shift
+    rm -rf "$d" && mkdir -p "$d" && echo 'needle here' > "$d/data.txt" || return 1
+    for n in "$@"; do : > "$d/$n" || return 1; done
+}
+
+# opt_ran → what the stand-ins logged since the last reset, on one line.
+opt_ran() {
+    if [ -e "$OPT_LOG" ]; then echo "ran: $(paste -sd '|' "$OPT_LOG")"; else echo "ran: no"; fi
+}
+
+# One case per tool and spelling: <call> | <tool> | <file names>.
+OPT_CASES="grep needle *|rg|--pre=sh
+grep needle *|rg|--pre sh
+grep needle *|rg|--hostname-bin=sh
+find *|fd|--exec=sh
+find *|fd|-xsh
+find *|fd|-Xsh
+find *|fd|--exec-batch=sh
+find *|fd|-x sh
+find *|fd|-HIxsh
+cat *|bat|--pager=sh --paging=always"
+
+for _sh in bash zsh; do
+    _run="run_${_sh}_i"
+    echo "[$_sh] typed grep, find, cat with a glob beside a file named like an option: the tool does not run"
+    while IFS='|' read -r _call _tool _names; do
+        # shellcheck disable=SC2086 # the names are words
+        opt_tree case $_names || abort_suite "cannot make the tree for $_names"
+        rm -f "$OPT_LOG"
+        actual=$(PATH="$OPT_BIN:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK/opt/case'; $_call 2>&1; echo \"rc=\$?\"" < /dev/null)
+        got="$(grep -o "$_tool did not run" <<< "$actual" | head -n 1); $(grep -o 'rc=[0-9]*' <<< "$actual"); $(opt_ran)"
+        assert_eq "$_sh/typed $_call beside $_names: $_tool does not run" "$_tool did not run; rc=2; ran: no" "$got"
+    done <<< "$OPT_CASES"
+
+    echo "[$_sh] the message names the file, ./, and the native command"
+    opt_tree msg --pre=sh || abort_suite "cannot make the tree for the message"
+    rm -f "$OPT_LOG"
+    actual=$(PATH="$OPT_BIN:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK/opt/msg'; grep needle * 2>&1; echo \"rc=\$?\"")
+    assert_eq "$_sh/the refusal of grep needle *" "grep: '--pre=sh' names a file, and rg would read it as an option: rg did not run.
+grep: write it as ./--pre=sh (a glob as ./*), or run the native grep: command grep
+rc=2" "$actual"
+
+    echo "[$_sh] a dangling symlink named like an option counts too"
+    opt_tree link || abort_suite "cannot make the tree for the symlink"
+    ln -s "$WORK/opt/nowhere" "$WORK/opt/link/--pre=sh" || abort_suite "cannot make the symlink"
+    rm -f "$OPT_LOG"
+    actual=$(PATH="$OPT_BIN:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK/opt/link'; grep needle * 2>&1; echo \"rc=\$?\"")
+    got="$(grep -o 'rg did not run' <<< "$actual" | head -n 1); $(grep -o 'rc=[0-9]*' <<< "$actual"); $(opt_ran)"
+    assert_eq "$_sh/grep needle * beside a dangling --pre=sh symlink" "rg did not run; rc=2; ran: no" "$got"
+
+    echo "[$_sh] typed use without such a file name runs the tool as before"
+    opt_tree ok - || abort_suite "cannot make the tree for the controls"
+    rm -f "$OPT_LOG"
+    PATH="$OPT_BIN:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK/opt/ok'; grep -rn foo .; find -e py; cat data.txt; cat - </dev/null; grep needle *" >/dev/null
+    assert_eq "$_sh/grep -rn, find -e, cat file, cat -, grep with a glob: the tool runs" "ran: rg -rn foo .|fd -e py|bat --style=plain --paging=never data.txt|bat --style=plain --paging=never -|rg needle - data.txt" "$(opt_ran)"
+    opt_tree dash --pre=sh || abort_suite "cannot make the tree for the controls"
+    rm -f "$OPT_LOG"
+    PATH="$OPT_BIN:$PATH" _DEN_WRAPPER_LOG=0 "$_run" "$WRAPPERS_SH" "cd '$WORK/opt/dash'; grep needle data.txt; grep needle ./*" >/dev/null
+    actual=$(opt_ran)
+    assert_contains "$_sh/beside --pre=sh, grep needle data.txt runs rg" "ran: rg needle data.txt|" "$actual"
+    assert_contains "$_sh/beside --pre=sh, grep needle ./* runs rg on ./--pre=sh" "./--pre=sh" "$actual"
+done
+
+echo "[bash/zsh] _wrap_optfile: names test(1) reads as operators, a dangling symlink, and - alone"
+opt_tree edge -e -o -a -n -L - || abort_suite "cannot make the tree for the edge names"
+ln -s "$WORK/opt/nowhere" "$WORK/opt/edge/-d" || abort_suite "cannot make the symlink"
+mkdir -p "$WORK/opt/empty"
+# shellcheck disable=SC2016 # the shells under test expand it
+EDGE_CALL='for n in -e -o -a -n -L -d - -q; do _wrap_optfile x t "$n" 2>/dev/null; printf "%s=%s " "$n" "$?"; done'
+for _sh in bash zsh; do
+    actual=$("run_$_sh" "$HELPERS_SH" "cd '$WORK/opt/edge' && $EDGE_CALL")
+    assert_eq "$_sh/_wrap_optfile beside those files" "-e=1 -o=1 -a=1 -n=1 -L=1 -d=1 -=0 -q=0 " "$actual"
+    actual=$("run_$_sh" "$HELPERS_SH" "cd '$WORK/opt/empty' && $EDGE_CALL")
+    assert_eq "$_sh/_wrap_optfile in an empty directory" "-e=0 -o=0 -a=0 -n=0 -L=0 -d=0 -=0 -q=0 " "$actual"
+done
+
+echo "[pwsh] typed grep, find, cat with a wildcard beside a file named like an option: the tool does not run"
+# Each case is a directory of its own, made here; the pwsh session goes through
+# them in order and prints one line for each.
+_i=0
+OPT_PWSH_DIRS=()
+while IFS='|' read -r _call _tool _names; do
+    _i=$((_i + 1))
+    # shellcheck disable=SC2086 # the names are words
+    opt_tree "p$_i" $_names || abort_suite "cannot make the tree for $_names"
+    OPT_PWSH_DIRS+=("$_call|$WORK/opt/p$_i")
+done <<< "$OPT_CASES"
+for _d in pq pn pc; do opt_tree "$_d" --pre=sh || abort_suite "cannot make the pwsh trees"; done
+opt_tree pok || abort_suite "cannot make the pwsh trees"
+OPT_PWSH_CASES=""
+for _c in "${OPT_PWSH_DIRS[@]}"; do
+    OPT_PWSH_CASES+="Test-Opt '${_c#*|}' { ${_c%%|*} }
+"
+done
+OPT_PWSH_CASES+="Test-Opt '$WORK/opt/pq' { grep needle '*' }
+Test-Opt '$WORK/opt/pn' { grep needle (Get-ChildItem -Name) }
+Test-Opt '$WORK/opt/pc' { grep needle data.txt }
+Test-Opt '$WORK/opt/pc' { grep needle \$PWD/--pre* }
+Test-Opt '$WORK/opt/pc' { Set-Location Env:; grep needle '--pre=sh' data.txt }
+Test-Opt '$WORK/opt/pok' { grep -rn foo . }
+Test-Opt '$WORK/opt/pok' { find -e py }
+Test-Opt '$WORK/opt/pok' { cat data.txt }
+"
+# Test-Opt <dir> <call> - run <call> in <dir>: 'refused' or 'ran', and what the
+# stand-ins logged.
+OPT_PWSH_FN="
+    \$env:_DEN_WRAPPER_LOG = '0'
+    function Test-Opt([string]\$Dir, [scriptblock]\$Call) {
+        Set-Location -LiteralPath \$Dir
+        Remove-Item -LiteralPath '$OPT_LOG' -ErrorAction SilentlyContinue
+        \$r = try { \$null = & \$Call 2>&1; 'ran' } catch {
+            if (\$_.Exception.Message -like '* did not run. *') { 'refused' } else { 'error: ' + \$_.Exception.Message }
+        }
+        \$log = if (Test-Path -LiteralPath '$OPT_LOG') { (Get-Content -LiteralPath '$OPT_LOG') -join '|' } else { 'no' }
+        \"\$r; ran: \$log\"
+    }"
+actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
+    $OPT_PWSH_CASES
+" < /dev/null 2>&1 | tr -d '\r')
+# One label and one expected line per Test-Opt line above, in order.
+OPT_PWSH_WANT=()
+while IFS='|' read -r _call _tool _names; do
+    OPT_PWSH_WANT+=("typed $_call beside $_names: $_tool does not run|refused; ran: no")
+done <<< "$OPT_CASES"
+OPT_PWSH_WANT+=(
+    "grep needle '*' (quoted, still expanded) beside --pre=sh: rg does not run|refused; ran: no"
+    "grep needle (Get-ChildItem -Name) beside --pre=sh: rg does not run|refused; ran: no"
+    "beside --pre=sh, grep needle data.txt runs rg|ran; ran: rg needle data.txt"
+    "beside --pre=sh, a full path (\$PWD/--pre*) runs rg on it|ran; ran: rg needle $WORK/opt/pc/--pre=sh"
+    "on the Env: drive, grep needle '--pre=sh' beside that file in the folder rg runs in: rg does not run|refused; ran: no"
+    "grep -rn foo . runs rg|ran; ran: rg -rn foo ."
+    "find -e py runs fd|ran; ran: fd -e py"
+    "cat data.txt runs bat with a last --paging=never|ran; ran: bat --style=plain --paging=never data.txt --paging=never"
+)
+mapfile -t _got <<< "$actual"
+assert_eq "pwsh/one line per case" "${#OPT_PWSH_WANT[@]}" "${#_got[@]}"
+for _i in "${!OPT_PWSH_WANT[@]}"; do
+    _w=${OPT_PWSH_WANT[$_i]}
+    assert_eq "pwsh/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
+done
+
+echo "[pwsh] the message names the wildcard, the file and the ways that work"
+err=$(cd "$WORK/opt/pc" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; grep needle *")
+assert_eq "pwsh/the refusal of grep needle *" "grep: '*' stands for the file '--pre=sh', which rg would read as an option: rg did not run. Write the wildcard with a full path (\$PWD/*), or run the native grep with the wrappers off (tgl-wr)." "$err"
+
+echo "[pwsh, Windows] cat expands a wildcard for bat itself and refuses a match named like an option"
+# On Windows pwsh expands no wildcard, and bat expands each word that holds
+# * ? [ or ] itself, one word at a time: `cat ???* *` beside files named --,
+# --pager=sh and --paging=always gave bat the pager options from the first
+# word and a -- from the second, which made the last --paging=never a file
+# name. There cat refuses a match whose name starts with -, and hands bat the
+# names a word matches (a full path for a rooted word or a name that holds [
+# or ]), or the word made a full path when it matches none. An _OnWindows
+# that says true stands in for Windows; the stand-in bat logs what it got.
+opt_tree w4 -- --pager=sh --paging=always notes.txt || abort_suite "cannot make the tree for the Windows cases"
+opt_tree wok 'b[1].txt' || abort_suite "cannot make the tree for the Windows cases"
+actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
+    function global:_OnWindows { \$true }
+    Test-Opt '$WORK/opt/w4' { cat ???* * }
+    Test-Opt '$WORK/opt/w4' { cat * }
+    Test-Opt '$WORK/opt/w4' { cat \$PWD/--pagi* }
+    Test-Opt '$WORK/opt/wok' { cat da* }
+    Test-Opt '$WORK/opt/wok' { cat b* }
+    Test-Opt '$WORK/opt/wok' { cat no*match }
+    Test-Opt '$WORK/opt/wok' { cat data.txt - }
+" < /dev/null 2>&1 | tr -d '\r')
+OPT_WIN_WANT=(
+    "cat ???* * beside --, --pager=sh, --paging=always: bat does not run|refused; ran: no"
+    "cat * beside them: bat does not run|refused; ran: no"
+    "a full path (\$PWD/--pagi*) gets the full path of the match|ran; ran: bat --style=plain --paging=never $WORK/opt/w4/--paging=always --paging=never"
+    "da* gets the name it matches|ran; ran: bat --style=plain --paging=never data.txt --paging=never"
+    "b* gets the full path of b[1].txt|ran; ran: bat --style=plain --paging=never $WORK/opt/wok/b[1].txt --paging=never"
+    "a wildcard that matches nothing goes on as a full path|ran; ran: bat --style=plain --paging=never $WORK/opt/wok/no*match --paging=never"
+    "data.txt and - go on as they are|ran; ran: bat --style=plain --paging=never data.txt - --paging=never"
+)
+mapfile -t _got <<< "$actual"
+assert_eq "pwsh, Windows/one line per case" "${#OPT_WIN_WANT[@]}" "${#_got[@]}"
+for _i in "${!OPT_WIN_WANT[@]}"; do
+    _w=${OPT_WIN_WANT[$_i]}
+    assert_eq "pwsh, Windows/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
+done
+
+echo "[pwsh, Windows] cat refuses an option or an option's value that holds a wildcard"
+# bat expands an option or an option's value too, and pwsh hands it on
+# unquoted; cat expanded it as a file operand, which made an option a path:
+# `cat '--file-name=*.py' -` gave bat <cwd>/--file-name=*.py as a file, and
+# `cat -l '*' x` gave it a file name as the language. So cat runs nothing
+# when a word that starts with - holds * ? [ or ], or the value of an option
+# that takes it from the next word does (bat --help: --map-syntax, -l, -H,
+# a cluster ending in -l). An option or a value without them goes on as it
+# is, and a wildcard after an option's value is a file operand. A quoted --
+# is refused before any of this (see the next block).
+opt_tree wopt a.h || abort_suite "cannot make the tree for the Windows option cases"
+actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
+    function global:_OnWindows { \$true }
+    Test-Opt '$WORK/opt/wopt' { cat '--file-name=*.py' - }
+    Test-Opt '$WORK/opt/wopt' { cat --map-syntax '*.h:C++' data.txt }
+    Test-Opt '$WORK/opt/wopt' { cat -l '*' data.txt }
+    Test-Opt '$WORK/opt/wopt' { cat -pl '*' data.txt }
+    Test-Opt '$WORK/opt/wopt' { cat -H '[1]' data.txt }
+    Test-Opt '$WORK/opt/wopt' { cat --file-name=x.py - }
+    Test-Opt '$WORK/opt/wopt' { cat --map-syntax '.h:C++' -l rust da* }
+    Test-Opt '$WORK/opt/wopt' { cat -lrust -n da* }
+    Test-Opt '$WORK/opt/wopt' { cat '--' '-x*' }
+" < /dev/null 2>&1 | tr -d '\r')
+OPT_WINOPT_WANT=(
+    "cat '--file-name=*.py' -: bat does not run|refused; ran: no"
+    "cat --map-syntax '*.h:C++' data.txt: bat does not run|refused; ran: no"
+    "cat -l '*' data.txt: bat does not run|refused; ran: no"
+    "cat -pl '*' data.txt: bat does not run|refused; ran: no"
+    "cat -H '[1]' data.txt: bat does not run|refused; ran: no"
+    "--file-name=x.py goes on as it is|ran; ran: bat --style=plain --paging=never --file-name=x.py - --paging=never"
+    "values without a wildcard go on as they are, and da* after them is a file|ran; ran: bat --style=plain --paging=never --map-syntax .h:C++ -l rust data.txt --paging=never"
+    "-lrust holds its value, so da* is a file|ran; ran: bat --style=plain --paging=never -lrust -n data.txt --paging=never"
+    "a quoted -- before a wildcard: bat does not run|refused; ran: no"
+)
+mapfile -t _got <<< "$actual"
+assert_eq "pwsh, Windows/one line per option case" "${#OPT_WINOPT_WANT[@]}" "${#_got[@]}"
+for _i in "${!OPT_WINOPT_WANT[@]}"; do
+    _w=${OPT_WINOPT_WANT[$_i]}
+    assert_eq "pwsh, Windows/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
+done
+
+echo "[pwsh, Windows] the message names the word, the option and bat or catw"
+err=$(cd "$WORK/opt/wopt" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; function global:_OnWindows { \$true }; cat '--file-name=*.py' -" < /dev/null)
+assert_eq "pwsh, Windows/the refusal of cat '--file-name=*.py' -" "cat: '--file-name=*.py' is an option that holds * ? [ or ], which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it." "$err"
+err=$(cd "$WORK/opt/wopt" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; function global:_OnWindows { \$true }; cat -l '*' data.txt" < /dev/null)
+assert_eq "pwsh, Windows/the refusal of cat -l '*' data.txt" "cat: '*', the value of -l, holds * ? [ or ], which bat would expand as a wildcard on Windows: bat did not run. Run bat or catw by name for it." "$err"
+
+echo "[pwsh] cat refuses a -- that reaches it, on every system"
+# cat hands bat a last --paging=never after the arguments, and after a -- bat
+# reads every word as a file name, that one too. pwsh drops a bare -- typed to
+# a function, but a quoted '--', a second --, or one in a variable or an array
+# reaches cat, and it reached bat. So cat refuses each, here as on Windows
+# (above), as cmd's cat does; a bare -- still runs bat, without it.
+opt_tree pdd || abort_suite "cannot make the tree for the -- cases"
+actual=$(PATH="$OPT_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "$OPT_PWSH_FN
+    Test-Opt '$WORK/opt/pdd' { cat '--' data.txt }
+    Test-Opt '$WORK/opt/pdd' { cat -- -- data.txt }
+    Test-Opt '$WORK/opt/pdd' { \$d = '--'; cat \$d data.txt }
+    Test-Opt '$WORK/opt/pdd' { cat data.txt @('-n', '--') }
+    Test-Opt '$WORK/opt/pdd' { cat -- data.txt }
+" < /dev/null 2>&1 | tr -d '\r')
+OPT_DD_WANT=(
+    "cat '--' data.txt: bat does not run|refused; ran: no"
+    "cat -- -- data.txt (pwsh drops the first): bat does not run|refused; ran: no"
+    "cat \$d data.txt, \$d = '--': bat does not run|refused; ran: no"
+    "cat data.txt @('-n', '--'): bat does not run|refused; ran: no"
+    "a bare -- is pwsh's, and bat runs without it|ran; ran: bat --style=plain --paging=never data.txt --paging=never"
+)
+mapfile -t _got <<< "$actual"
+assert_eq "pwsh/one line per -- case" "${#OPT_DD_WANT[@]}" "${#_got[@]}"
+for _i in "${!OPT_DD_WANT[@]}"; do
+    _w=${OPT_DD_WANT[$_i]}
+    assert_eq "pwsh/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
+done
+err=$(cd "$WORK/opt/pdd" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; cat '--' data.txt" < /dev/null)
+assert_eq "pwsh/the refusal of cat '--' data.txt" "cat: '--' would make bat read den's last --paging=never as a file name: bat did not run. Write a file whose name starts with - as ./-name instead, or run bat or catw by name." "$err"
+unset _sh _run _call _tool _names _i _c _d _w _got
 
 # =============================================================================
 # Wrapper notice of the real wrappers (stub modern tools)

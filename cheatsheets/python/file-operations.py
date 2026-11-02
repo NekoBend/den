@@ -168,20 +168,63 @@ def split_by_size(
 
     [Best for] Uploading large files in parts, parallel processing.
     [Note] Last chunk may be smaller than ``chunk_bytes``.
+           On POSIX each part is created 0o600, or narrowed to 0o600 before
+           it is truncated, so the parts of a private file are private too;
+           a part whose mode cannot be changed (another user's file) raises
+           ``PermissionError`` with its old bytes intact. Once written, a
+           part takes the source's permission bits, plus write for the owner
+           so that a rerun can replace it. Windows has no such guarantee:
+           there 0o600 only keeps a new part from being read-only, and who
+           can read a part is up to its ACL, which a new file inherits from
+           its directory and an existing one keeps.
     """
+    import os
+    import stat
+
+    def private(name: str, flags: int) -> int:
+        """Open ``name`` 0o600; an existing file is narrowed before it is truncated."""
+        fd = os.open(name, flags & ~os.O_TRUNC, 0o600)
+        try:
+            if os.name == "posix":
+                os.fchmod(fd, 0o600)  # EPERM on another user's file
+            # O_TRUNC's job, once the mode is safe. Like O_TRUNC, it skips a
+            # FIFO or a device, where ftruncate fails with EINVAL.
+            if flags & os.O_TRUNC and stat.S_ISREG(os.fstat(fd).st_mode):
+                os.ftruncate(fd, 0)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def write_part(part_path: Path, data: bytes, mode: int) -> None:
+        """Write ``data`` to a part that stays 0o600 until its mode is set."""
+        with open(part_path, "wb", opener=private) as part:
+            part.write(data)
+            if os.name == "posix":
+                # On the open part: a chmod by name after the close follows
+                # whatever the name is by then, such as a symlink someone
+                # put in a shared out_dir, and would widen that file.
+                part.flush()
+                os.fchmod(part.fileno(), mode)
+        if os.name != "posix":
+            os.chmod(part_path, mode)
+
     src = Path(path)
     dest = Path(out_dir) if out_dir else src.parent
     dest.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
 
     with open(src, "rb") as fh:
+        # The source's permission bits, plus write for the owner so that a
+        # rerun can replace the part.
+        mode = (stat.S_IMODE(os.fstat(fh.fileno()).st_mode) & 0o777) | stat.S_IWUSR
         idx = 0
         while True:
             chunk = fh.read(chunk_bytes)
             if not chunk:
                 break
             part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-            part_path.write_bytes(chunk)
+            write_part(part_path, chunk, mode)
             parts.append(part_path)
             idx += 1
 
@@ -215,8 +258,43 @@ def split_by_lines(
            A lone CR is not cut at: a file with CR-only line endings (classic
            Mac OS) has no 0x0A, so it stays in one part and is read into
            memory whole.
+           On POSIX each part is created 0o600 (or narrowed to it before it
+           is truncated) and, once written, takes the source's permission
+           bits plus write for the owner, as in ``split_by_size``, so the
+           parts of a private file are private too. Windows has no such
+           guarantee: who can read a part is up to its ACL there.
     """
     import codecs
+    import os
+    import stat
+
+    def private(name: str, flags: int) -> int:
+        """Open ``name`` 0o600; an existing file is narrowed before it is truncated."""
+        fd = os.open(name, flags & ~os.O_TRUNC, 0o600)
+        try:
+            if os.name == "posix":
+                os.fchmod(fd, 0o600)  # EPERM on another user's file
+            # O_TRUNC's job, once the mode is safe. Like O_TRUNC, it skips a
+            # FIFO or a device, where ftruncate fails with EINVAL.
+            if flags & os.O_TRUNC and stat.S_ISREG(os.fstat(fd).st_mode):
+                os.ftruncate(fd, 0)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def write_part(part_path: Path, data: bytes, mode: int) -> None:
+        """Write ``data`` to a part that stays 0o600 until its mode is set."""
+        with open(part_path, "wb", opener=private) as part:
+            part.write(data)
+            if os.name == "posix":
+                # On the open part: a chmod by name after the close follows
+                # whatever the name is by then, such as a symlink someone
+                # put in a shared out_dir, and would widen that file.
+                part.flush()
+                os.fchmod(part.fileno(), mode)
+        if os.name != "posix":
+            os.chmod(part_path, mode)
 
     # utf-8-sig writes its BOM once, at the start of the file, not per line.
     nl = "\n".encode(encoding).removeprefix(codecs.BOM_UTF8)
@@ -238,19 +316,22 @@ def split_by_lines(
     parts: list[Path] = []
 
     with open(src, "rb") as fh:
+        # The source's permission bits, plus write for the owner so that a
+        # rerun can replace the part.
+        mode = (stat.S_IMODE(os.fstat(fh.fileno()).st_mode) & 0o777) | stat.S_IWUSR
         idx = 0
         batch: list[bytes] = []
         for line in fh:
             batch.append(line)
             if len(batch) >= lines_per_chunk:
                 part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-                part_path.write_bytes(b"".join(batch))
+                write_part(part_path, b"".join(batch), mode)
                 parts.append(part_path)
                 batch = []
                 idx += 1
         if batch:
             part_path = dest / f"{src.stem}.part{idx:04d}{src.suffix}"
-            part_path.write_bytes(b"".join(batch))
+            write_part(part_path, b"".join(batch), mode)
             parts.append(part_path)
 
     return parts
@@ -271,9 +352,13 @@ def merge_files(paths: list[Path], output: Path, chunk_size: int = 1024 * 1024) 
            on the second run): reading the file being appended to never
            reaches EOF and fills the disk. The merge goes to a temp file that
            replaces ``output`` only once complete, so a failed merge leaves
-           the previous ``output`` untouched. Over an existing ``output`` the
-           temp file is 0o600 until the copy is done and then takes the old
-           file's mode, so a private file's data never sits in a wider one.
+           the previous ``output`` untouched. On POSIX, over an existing
+           ``output`` the temp file is 0o600 until the copy is done and then
+           takes the old file's mode, so a private file's data never sits in
+           a wider one. Windows has no such guarantee: there 0o600 only keeps
+           the temp file from being read-only, and who can read it is up to
+           the ACL it inherits from its directory. ``os.replace`` keeps that
+           ACL, not the old file's.
     """
     import os
     import shutil
@@ -390,13 +475,19 @@ def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
            as the OS allows. The temp file is created in the same directory to
            ensure it resides on the same filesystem. Symlinks are resolved
            first, so a dotfiles-managed link stays a link and the file it
-           points to is the one updated. Over an existing file the temp file
-           is 0o600 while the content is written and takes the old file's
-           permission bits just before the rename, so a 0o600 secret never
-           sits in a wider file; a new file gets 0o666 minus the umask, as
-           with ``open`` (``tempfile.mkstemp`` would leave it 0o600). It is
-           fsynced before the rename and the directory after it, so a crash
-           leaves the old content or the new one, never an empty file.
+           points to is the one updated. On POSIX, over an existing file the
+           temp file is 0o600 while the content is written and takes the old
+           file's permission bits just before the rename, so a 0o600 secret
+           never sits in a wider file; a new file gets 0o666 minus the umask,
+           as with ``open`` (``tempfile.mkstemp`` would leave it 0o600).
+           Windows has no such guarantee: there 0o600 only keeps the temp file
+           from being read-only, and who can read it is up to the ACL it
+           inherits from its directory. ``os.replace`` keeps that ACL, not the
+           old file's. The temp file is fsynced before the rename, so a crash
+           leaves the old content or the new one, never an empty file. On
+           POSIX the directory is fsynced after the rename as well, so the
+           rename is on disk by the time the call returns; Windows cannot
+           open a directory to fsync it, so it gets no such promise.
     """
     import os
     import stat

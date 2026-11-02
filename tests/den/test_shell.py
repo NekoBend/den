@@ -1,7 +1,10 @@
 """Tests for den install shell (den/_shell.py)."""
 
+import errno
+import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -118,6 +121,7 @@ def _cmd_code(name: str) -> list[str]:
 
 # The wrapper shims and the modern tool each one prefers. findw.cmd is not
 # here: it has no native fallback and ignores the toggle (see its own test).
+# Nor is cat.cmd, which expands wildcards for bat itself (see its own test).
 _CMD_WRAPPERS = {
     "ls": "lsd",
     "la": "lsd",
@@ -125,7 +129,6 @@ _CMD_WRAPPERS = {
     "lla": "lsd",
     "lt": "lsd",
     "llt": "lsd",
-    "cat": "bat",
     "grep": "rg",
 }
 
@@ -146,6 +149,62 @@ def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
         assert 'if defined _t "%_t%" ' in joined, name
         assert "if not defined _t " in joined, name
         assert code[-1] == "exit /b %errorlevel%", name
+
+
+def test_cmd_cat_expands_wildcards_and_hands_bat_quoted_names():
+    # On Windows bat expands a wildcard itself (the wild crate), one word at a
+    # time, and reads a file name that starts with - as an option: beside
+    # files named --, --pager=cmd and --paging=always, `cat ???* *` gave it
+    # the pager options and then a --, which made the last --paging=never a
+    # file name. cat.cmd expands each word with cmd's for and hands bat every
+    # name in quotes, which wild leaves alone (tests/shell/cmd_shims.cmd runs
+    # it on Windows). cmd cannot run here; this pins the shape: bat is looked
+    # up on PATH only, the branch is on whether it was found, only type gets
+    # the arguments as typed, each name reaches bat in quotes (:quote, see
+    # the next test), both ways end with the exit code of whichever ran, and
+    # the file keeps CRLF line endings (with bare LF, cmd can miss a label
+    # that straddles a 512-byte block).
+    code = _cmd_code("cat")
+    joined = "\n".join(code)
+    assert not any("&&" in ln and "||" in ln for ln in code)
+    assert "where.exe $PATH:bat.exe" in joined
+    assert "if not defined _t goto :type" in joined
+    assert [ln for ln in code if "%*" in ln] == ["type %*"]
+    assert "for /l %%i in (1,1,%_n%) do call :quote %%i" in joined
+    run = code.index('"!_t!" --style=plain --paging=never!_a! --paging=never')
+    assert code[run + 1] == "exit /b %errorlevel%"
+    assert code[code.index("type %*") + 1] == "exit /b %errorlevel%"
+    raw = (_CMD_BIN / "cat.cmd").read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n"), "cat.cmd must use CRLF line endings"
+
+
+def test_cmd_cat_doubles_the_backslashes_a_name_ends_in():
+    # bat parses its command line by CommandLineToArgvW's rules (wild 2.2.1,
+    # src/parser.rs): 2n backslashes before a quote are n and the quote ends
+    # the word, 2n+1 are n and a quote in the word. cat.cmd hands bat every
+    # name in quotes, so `cat --file-name label\ notes.txt` gave bat
+    # "--file-name" "label\" "notes.txt" --paging=never, which it read as
+    # --file-name with the one value label" notes.txt --paging=never, and no
+    # file. cat.cmd's :quote doubles the run of backslashes a name ends in
+    # (tests/shell/cmd_shims.cmd runs it on Windows); cmd cannot run here,
+    # so this pins the routine.
+    code = _cmd_code("cat")
+    q = code.index(":quote")
+    assert code[q : q + 12] == [
+        ":quote",
+        'set "_s=!_w%1!"',
+        'set "_x="',
+        ":quote_bs",
+        "if not defined _s goto :quote_end",
+        'if not "!_s:~-1!"=="\\" goto :quote_end',
+        'set "_s=!_s:~0,-1!"',
+        'set "_x=!_x!\\"',
+        "goto :quote_bs",
+        ":quote_end",
+        'set "_a=!_a! "!_w%1!!_x!""',
+        "exit /b 0",
+    ]
+    assert "call :quote %%i" in "\n".join(code)
 
 
 def test_cmd_find_is_find_exe_and_fd_is_findw():
@@ -828,6 +887,17 @@ def test_disable_coreutils_readline_two_blocks_preserve_between(tmp_path):
     assert "60b36fc6" not in out
 
 
+def test_disable_coreutils_readline_two_blocks_one_blank_apart_keep_the_next_line(
+    tmp_path,
+):
+    # Both blocks' spans held the blank line between them, and deleting the spans
+    # one after the other took out the line after the second block too.
+    prof = tmp_path / "p.ps1"
+    prof.write_text(_CU_BLOCK + "\n" + _CU_BLOCK + "Import-Module KeepMe\n")
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert prof.read_text() == "Import-Module KeepMe\n"
+
+
 def test_disable_coreutils_readline_keeps_dangling_sentinel(tmp_path):
     prof = tmp_path / "p.ps1"
     lone = "# DO NOT MODIFY -- coreutils -- 60b36fc6-2d59-49df-be51-28dd2f4c3c9a\n"
@@ -847,6 +917,421 @@ def test_disable_coreutils_readline_backs_up(tmp_path):
     bak = tmp_path / "p.ps1.den.bak"
     assert bak.is_file()
     assert bak.read_text() == original
+
+
+@pytest.fixture
+def umask_022():
+    old = os.umask(0o022)
+    yield
+    os.umask(old)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o600, 0o640], ids=oct)
+def test_disable_coreutils_readline_backup_keeps_the_profile_mode(
+    tmp_path, umask_022, mode
+):
+    """backup.write_bytes made the copy with the umask's mode, so a 0600 profile
+    holding a token got a world-readable .den.bak with the token in it."""
+    prof = tmp_path / "p.ps1"
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(mode)
+    assert _shell._disable_coreutils_readline(prof) is True
+    bak = tmp_path / "p.ps1.den.bak"
+    assert stat.S_IMODE(bak.stat().st_mode) == mode
+    assert "secret" in bak.read_text()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_disable_coreutils_readline_narrows_a_reused_backup_to_the_profile_mode(
+    tmp_path, umask_022
+):
+    # A 0644 copy an older den made of a 0600 profile holds the profile's bytes
+    # again once coreutils puts its block back; it was reused as it was.
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    prof.chmod(0o600)
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text(original)
+    bak.chmod(0o644)
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o600
+    assert not (tmp_path / "p.ps1.den.bak.1").exists(), "it was reused"
+
+
+def test_disable_coreutils_readline_keeps_an_earlier_backup(tmp_path):
+    # coreutils puts its block back after an update and den strips it again.
+    # Any existing .den.bak used to count as the backup, so the profile as it was
+    # before this edit was saved nowhere; it goes to the first free .den.bak.N.
+    prof = tmp_path / "p.ps1"
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text("the profile the first time\n")
+    current = "a line added since\n\n" + _CU_BLOCK
+    prof.write_text(current)
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert bak.read_text() == "the profile the first time\n"
+    assert (tmp_path / "p.ps1.den.bak.1").read_text() == current
+
+
+def test_disable_coreutils_readline_does_not_take_a_hard_link_for_its_backup(
+    tmp_path, hard_link
+):
+    # A hard link at .den.bak is the profile under another name: reused as the
+    # backup, it took the edit too, and the profile as it was survived nowhere.
+    # The profile itself, with its second hard link, is then left as it was.
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    hard_link(prof, tmp_path / "p.ps1.den.bak")
+    assert _shell._disable_coreutils_readline(prof) is None
+    assert (tmp_path / "p.ps1.den.bak.1").read_text() == original
+    assert prof.read_text() == original
+
+
+def test_disable_coreutils_readline_keeps_the_profile_when_the_write_fails_part_way(
+    tmp_path, capsys, file_size_limit
+):
+    """The profile was truncated and then written in place, so a write that
+    failed part-way (a full disk, an I/O error) left it empty or cut short:
+    den's own init line, and anything the user keeps there, gone."""
+    prof = tmp_path / "p.ps1"
+    original = "$env:A = 1\n" * 300 + "\n" + _CU_BLOCK
+    prof.write_text(original)
+    # An earlier backup holds these bytes, so the profile is all that is written.
+    (tmp_path / "p.ps1.den.bak").write_text(original)
+    with file_size_limit(1024):
+        assert _shell._disable_coreutils_readline(prof) is None
+    assert prof.read_text() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.ps1", "p.ps1.den.bak"]
+    err = capsys.readouterr().err
+    assert f"den install shell: left {prof} as it was, coreutils' block" in err
+
+
+def test_disable_coreutils_readline_refuses_a_symlinked_backup(tmp_path, symlink):
+    """A dangling link at the backup name passed `not backup.exists()`, and the
+    write followed it. No edit without a backup either: the profile stays."""
+    outside = tmp_path / "outside" / "stolen.ps1"
+    outside.parent.mkdir()
+    prof = tmp_path / "p.ps1"
+    original = "keep\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    symlink(outside, tmp_path / "p.ps1.den.bak")
+    assert _shell._disable_coreutils_readline(prof) is None
+    assert not outside.exists(), "nothing written through the link"
+    assert prof.read_text() == original
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX profile dir (see conftest)")
+def test_install_shell_fails_when_it_cannot_back_up_the_profile(
+    tmp_path, monkeypatch, capsys, symlink
+):
+    # The coreutils block stays and den's wrappers stay defeated, so a scripted
+    # install must not report success.
+    monkeypatch.setattr(_shell, "_windows", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(_shell.shutil, "which", _stub_which({"pwsh"}))
+    prof = tmp_path / "xdg" / "powershell" / _shell._PWSH_PROFILE
+    prof.parent.mkdir(parents=True)
+    prof.write_text(_CU_BLOCK)
+    outside = tmp_path / "outside.ps1"
+    symlink(outside, prof.with_name(prof.name + ".den.bak"))
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 1
+    assert "60b36fc6" in prof.read_text(), "the block is left in place"
+    assert not outside.exists()
+    err = capsys.readouterr().err.splitlines()
+    refusals = [line for line in err if line.endswith(".den.bak is a symlink")]
+    assert len(refusals) == 1
+    assert refusals[0].startswith("den install shell: not replacing "), (
+        "named after the command that was run"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX profile dir (see conftest)")
+def test_install_shell_fails_when_it_cannot_replace_the_profile(
+    tmp_path, monkeypatch, capsys, hard_link
+):
+    """The profile is replaced through a new copy now, so one with a second
+    hard link (a dotfiles repo) is left as it was, coreutils' block included,
+    as `den uninstall shell` leaves such a profile: the copy would take only
+    this name, and the other would keep the block."""
+    monkeypatch.setattr(_shell, "_windows", lambda: False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(_shell.shutil, "which", _stub_which({"pwsh"}))
+    prof = tmp_path / "xdg" / "powershell" / _shell._PWSH_PROFILE
+    prof.parent.mkdir(parents=True)
+    prof.write_text(_CU_BLOCK)
+    other = tmp_path / "dotfiles-profile.ps1"
+    hard_link(prof, other)
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 1
+    assert "60b36fc6" in prof.read_text(), "the block is left in place"
+    assert other.samefile(prof)
+    err = capsys.readouterr().err
+    assert f"den install shell: left {prof} as it was, coreutils' block" in err
+    assert "it has 2 hard links" in err
+
+
+# The backup is a new file, so it took what its directory gives a new file: a
+# setgid directory's group, a default ACL's named users. Once the profile's mode
+# opened the copy's group bits (and the ACL mask with them), they could read a
+# copy of a profile the profile itself kept from them. The copy now takes the
+# profile's owner, group and extended attributes while it is still 0600, as an
+# rc file's replacement does (_match_access), and when it cannot, no copy is
+# left and the profile stays as it is, coreutils' block included.
+
+
+def _xattrs(path):
+    return {name: os.getxattr(path, name) for name in os.listxattr(path)}
+
+
+def test_disable_coreutils_readline_backup_does_not_take_its_directorys_acl(
+    tmp_path, let_65534_in
+):
+    prof = tmp_path / "ps" / "p.ps1"
+    prof.parent.mkdir()
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(0o640)
+    let_65534_in(prof.parent)  # uid 65534 gets every new file
+    assert "system.posix_acl_access" not in os.listxattr(prof), "made before the ACL"
+    assert _shell._disable_coreutils_readline(prof) is True
+    bak = prof.with_name("p.ps1.den.bak")
+    assert "secret" in bak.read_text()
+    assert "system.posix_acl_access" not in os.listxattr(bak), "65534 may not read it"
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o640
+
+
+def test_disable_coreutils_readline_backup_keeps_the_profiles_acl_and_attributes(
+    tmp_path, let_65534_in, set_xattr
+):
+    prof = tmp_path / "p.ps1"
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    let_65534_in(prof)  # uid 65534 may read it too, so its copy as well
+    set_xattr(prof, "user.note", b"the user's own")
+    before = _xattrs(prof)
+    assert _shell._disable_coreutils_readline(prof) is True
+    bak = tmp_path / "p.ps1.den.bak"
+    assert _xattrs(bak) == before
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o640
+
+
+def test_disable_coreutils_readline_opens_the_backup_only_once_its_acl_is_the_profiles(
+    tmp_path, monkeypatch, let_65534_in
+):
+    """The mode is the last thing the copy takes: set while the copy still had
+    its directory's ACL, it let the user that ACL names read it."""
+    prof = tmp_path / "ps" / "p.ps1"
+    prof.parent.mkdir()
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(0o640)
+    let_65534_in(prof.parent)
+    seen = []
+    chmod, fchmod = os.chmod, os.fchmod
+
+    def watched(target):
+        # An open file (fchmod) by the name it was opened as.
+        if isinstance(target, int):
+            name = Path(f"/proc/self/fd/{target}").readlink().name
+        else:
+            name = Path(target).name
+        if name.endswith(".den.bak"):
+            seen.append("system.posix_acl_access" in os.listxattr(target))
+
+    def watch_chmod(target, mode, *args, **kwargs):
+        watched(target)
+        return chmod(target, mode, *args, **kwargs)
+
+    def watch_fchmod(fd, mode):
+        watched(fd)
+        return fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "chmod", watch_chmod)
+    monkeypatch.setattr(os, "fchmod", watch_fchmod)
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert seen == [False], "the copy still had its directory's ACL when opened"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX groups")
+def test_disable_coreutils_readline_backup_keeps_the_profiles_group_in_a_setgid_dir(
+    tmp_path,
+):
+    """A new file in a setgid directory takes the directory's group, which
+    could read the copy of a profile kept from it. Skipped for a user with one
+    group (see the stand-in test below)."""
+    d = tmp_path / "ps"
+    d.mkdir()
+    probe = d / "probe"
+    probe.touch()
+    own = probe.stat().st_gid
+    probe.unlink()
+    others = sorted(set(os.getgroups()) - {own})
+    if not others:
+        pytest.skip("den's user has no second group to give the directory")
+    prof = d / "p.ps1"
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(0o640)
+    os.chown(d, -1, others[0])
+    d.chmod(0o2775)
+    assert _shell._disable_coreutils_readline(prof) is True
+    bak = d / "p.ps1.den.bak"
+    assert bak.stat().st_gid == own
+    assert stat.S_IMODE(bak.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="POSIX owners; root may give a file to anyone",
+)
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_disable_coreutils_readline_keeps_the_profile_if_a_copy_cannot_take_its_owner(
+    tmp_path, capsys, foreign_stat, whose
+):
+    # Only root gives a file away, so stat reports another owner or group for
+    # the profile here, and the chown that would carry it to the copy fails.
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    foreign_stat(prof.name, whose)
+    assert _shell._disable_coreutils_readline(prof) is None
+    assert prof.read_text() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.ps1"], "no copy is left"
+    assert (
+        f"den install shell: not replacing {prof}: cannot back it up: copying it"
+        " would change its owner or group ("
+    ) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("setxattr", ["fails", "does nothing"])
+def test_disable_coreutils_readline_keeps_the_profile_if_a_copy_cannot_take_its_xattrs(
+    tmp_path, monkeypatch, capsys, set_xattr, setxattr
+):
+    prof = tmp_path / "p.ps1"
+    original = "keep\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    set_xattr(prof, "user.note", b"the user's own")
+
+    def refuse(*_a, **_k):
+        if setxattr == "fails":
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "setxattr", refuse)
+    assert _shell._disable_coreutils_readline(prof) is None
+    assert prof.read_text() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.ps1"], "no copy is left"
+    expected = "lose" if setxattr == "fails" else "change"
+    assert f"copying it would {expected} its extended attributes or ACL" in (
+        capsys.readouterr().err
+    )
+
+
+def test_disable_coreutils_readline_leaves_no_cut_backup_when_its_write_fails(
+    tmp_path, capsys, file_size_limit
+):
+    # A copy cut short at .den.bak looked like the profile's backup.
+    prof = tmp_path / "p.ps1"
+    original = "$env:A = 1\n" * 300 + "\n" + _CU_BLOCK
+    prof.write_text(original)
+    with file_size_limit(1024):
+        assert _shell._disable_coreutils_readline(prof) is None
+    assert prof.read_text() == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["p.ps1"], "no copy is left"
+    err = capsys.readouterr().err
+    assert f"den install shell: not replacing {prof}: cannot back it up: " in err
+
+
+def test_disable_coreutils_readline_gives_the_backup_its_access_through_the_open_file(
+    tmp_path, monkeypatch, symlink
+):
+    """The copy's owner, group, attributes and mode go to the open file, not
+    to whatever has its name by then: in a directory others may write, the
+    name can be swapped for a link once the copy exists, and the link's
+    target must not get the profile's mode."""
+    prof = tmp_path / "p.ps1"
+    prof.write_text("$env:TOKEN = 'secret'\n\n" + _CU_BLOCK)
+    prof.chmod(0o640)
+    outside = tmp_path / "outside"
+    outside.write_text("someone else's\n")
+    outside.chmod(0o600)
+    # Windows keeps only the read-only bit, so compare with what it reports.
+    outside_mode = stat.S_IMODE(outside.stat().st_mode)
+    match_access = _shell._match_access
+
+    def swap_then_match(copy, original, st, *args, **kwargs):
+        if kwargs.get("doing") == "copying it":  # the backup's, not the replace's
+            bak = tmp_path / "p.ps1.den.bak"
+            bak.unlink()
+            symlink(outside, bak)
+        return match_access(copy, original, st, *args, **kwargs)
+
+    monkeypatch.setattr(_shell, "_match_access", swap_then_match)
+    _shell._disable_coreutils_readline(prof)
+    assert stat.S_IMODE(outside.stat().st_mode) == outside_mode
+    assert outside.read_text() == "someone else's\n"
+
+
+# A copy that holds the profile's bytes was reused as its backup whatever
+# decided who could read it: one another user owns, one in a group the profile
+# is not in, or one an older den made beside a default ACL, which took that ACL
+# and let the user it names read it. Such a copy is now passed over like one
+# holding something else, and the backup goes to the first free .den.bak.N.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX owners")
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_disable_coreutils_readline_does_not_reuse_a_backup_with_another_owner(
+    tmp_path, foreign_stat, whose
+):
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    prof.chmod(0o600)
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text(original)
+    bak.chmod(0o600)
+    foreign_stat(bak.name, whose)  # stat says someone else's
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert (tmp_path / "p.ps1.den.bak.1").read_text() == original
+    assert bak.read_text() == original, "left as it is"
+
+
+@pytest.mark.parametrize("extra", ["acl", "attribute"])
+def test_disable_coreutils_readline_does_not_reuse_a_backup_with_other_xattrs(
+    tmp_path, let_65534_in, set_xattr, extra
+):
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    prof.chmod(0o640)
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text(original)
+    if extra == "acl":
+        let_65534_in(bak)  # as a copy made beside a default ACL
+    else:
+        set_xattr(bak, "user.note", b"not the profile's")
+    bak.chmod(0o640)
+    assert _shell._disable_coreutils_readline(prof) is True
+    new = tmp_path / "p.ps1.den.bak.1"
+    assert new.read_text() == original
+    assert os.listxattr(new) == []
+    assert stat.S_IMODE(new.stat().st_mode) == 0o640
+
+
+def test_disable_coreutils_readline_reuses_a_backup_with_the_profiles_acl(
+    tmp_path, let_65534_in
+):
+    # The same ACL on both is no reason to make another copy.
+    prof = tmp_path / "p.ps1"
+    original = "$env:TOKEN = 'secret'\n\n" + _CU_BLOCK
+    prof.write_text(original)
+    let_65534_in(prof)
+    bak = tmp_path / "p.ps1.den.bak"
+    bak.write_text(original)
+    let_65534_in(bak)
+    assert _shell._disable_coreutils_readline(prof) is True
+    assert not (tmp_path / "p.ps1.den.bak.1").exists(), "it was reused"
 
 
 def test_disable_coreutils_readline_preserves_utf16(tmp_path):

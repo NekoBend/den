@@ -28,11 +28,11 @@ fd PATTERN DIR              # search in specific directory
 ### Find and execute
 
 ```sh
-fd -I -t f -e log -X rm         # delete all .log files (-I: gitignored ones too; -H adds hidden ones)
-fd -e jpg -x mv -n -- {} dest/  # move all .jpg to dest/ (-n: a name already in dest/ is skipped)
-fd -e py -x wc -l               # line count per Python file
-fd -e rs -X rustfmt             # format all Rust files (all at once with -X)
-fd -I -t f -e bak -X rm         # remove all .bak files (-I: gitignored ones too; -H adds hidden ones)
+fd -I -t f -e log -X rm              # delete all .log files (-I: gitignored ones too; -H adds hidden ones)
+fd -t f -e jpg -x mv -n -- {} dest/  # move all .jpg to dest/ (-n: a name already in dest/ is skipped)
+fd -e py -x wc -l                    # line count per Python file
+fd -e rs -X rustfmt                  # format all Rust files (all at once with -X)
+fd -I -t f -e bak -X rm              # remove all .bak files (-I: gitignored ones too; -H adds hidden ones)
 ```
 
 ### Exclude and filter
@@ -388,16 +388,23 @@ rg -l0 -F 'unwrap()' -t rust | xargs -0 -r bat       # find risky unwrap() calls
 ### Bulk rename files
 
 `mv -n` never overwrites: a file whose new name is taken (README.txt next to
-README.md) is skipped and keeps its old name. GNU mv 9.5 and later skip it
-silently with exit status 0 (9.2 to 9.4 exit 1), so run the same `fd` search
-again to list what was left; `mv --update=none-fail` (GNU 9.5 and later only)
-reports every skip. `fd -x` starts mv itself, so a shell alias such as
-`mv -i` never applies.
+README.md) is skipped and keeps its old name. `-T` makes mv treat the new name
+as a file name, so a directory there, or a symlink to one, is taken too;
+without `-T`, mv moves the file into that directory (README.md/README.txt).
+`-T` needs GNU mv: BSD and macOS mv lack it. GNU mv 9.5 and later skip a
+taken name silently with exit status 0 (9.2 to 9.4 exit 1), so run the same
+`fd` search again to list what was left; `mv --update=none-fail` (GNU 9.5 and
+later only) reports every skip. `fd -x` starts mv itself, so a shell alias
+such as `mv -i` never applies.
+
+The last line needs a Perl `rename`. It applies the expression to the whole
+path `fd` hands it, so `s/test_/spec_/` would turn ./test_dir/test_a.py into
+./spec_dir/test_a.py; the expression below changes only the file name.
 
 ```sh
-fd -e .jpeg -x mv -n -- {} {.}.jpg                   # .jpeg → .jpg (-n: skipped if the .jpg exists)
-fd -t f -e txt -x mv -n -- {} {.}.md                 # .txt → .md (-n: skipped if the .md exists)
-fd 'test_' -t f -x rename 's/test_/spec_/' {}        # rename prefix (with rename util)
+fd -t f -e .jpeg -x mv -n -T -- {} {.}.jpg           # .jpeg → .jpg (-n -T: skipped if the .jpg exists)
+fd -t f -e txt -x mv -n -T -- {} {.}.md              # .txt → .md (-n -T: skipped if the .md exists)
+fd 'test_' -t f -x rename 's{(^|/)test_([^/]*)$}{$1spec_$2}' {}  # rename prefix (with rename util)
 ```
 
 ### Pipeline workflows

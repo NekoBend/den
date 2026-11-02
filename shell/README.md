@@ -47,14 +47,33 @@ first, or Ubuntu's `/etc/zsh/zshrc` did, which runs a full `compinit` unless
 above den's line (`source <(kubectl completion zsh)`, say).
 
 While `~/.zcompdump` is less than a day old, den's `compinit -C` loads it as
-it is: no security audit, and no look for completion functions added since. A
-missing or older dump gets the full `compinit -u`, which finds them (an apt
-package, a new tool) and rewrites the dump when they changed; the dump is then
-dated today, so the shells of the next day take `-C` again. `-u` leaves out the
-security audit too, which asked about an `fpath` directory others may write to
-and, where no one could answer (`zsh -i -c`), gave up with no completion and
-no dump. `reload` deletes the dump, so the new shell picks new completion
-functions up at once.
+it is, with no look for completion functions added since, once `compaudit`
+has found nothing wrong in `fpath` (about 4 ms). A missing or older dump gets
+the full `compinit -i`, which finds them (an apt package, a new tool) and
+rewrites the dump when they changed; the dump is then dated today, so the
+shells of the next day take `-C` again. `reload` deletes the dump, so the new
+shell picks new completion functions up at once.
+
+Completion functions others may have written are skipped, as `compaudit`
+judges it: those in an `fpath` directory others may write to (group- or
+world-writable, or owned by a user other than you and root), in one that
+holds a completion file or a function's digest someone else owns, and in one
+below a directory others may write to or whose digest (`<dir>.zwc`, which
+zsh reads in place of the directory) someone else owns. When `_compdir`
+names a collection with a `Base`, the subdirectories `compaudit` adds from
+it are judged the same way. Anyone who can write there could put a function
+that runs as you at your next Tab. den takes such directories out of `fpath`
+and runs `compinit -i`, which asks nothing, so `zsh -i -c` with no terminal
+to answer still gets completion and a dump. `-C` would skip the audit and
+keep them in `fpath`, so while one is there every shell runs the full
+`compinit -i`, about 11 ms more per start than the audit and `-C`.
+`compaudit` lists what it flags; once that is yours or root's and not
+writable by group or others, its functions are used again. A relative
+`fpath` entry (`zfunc`, not `~/zfunc`) is looked up in whatever directory
+you are in when a Tab first needs a function from it, so den cannot make it
+safe and does not support it. The audit cannot cover itself: `compaudit` is
+loaded from `fpath` before it runs, as in plain zsh, so a directory others may
+write to ahead of zsh's own in `fpath` can still replace it.
 
 ## The wrapper system
 
@@ -89,9 +108,16 @@ stock alias). Install it with `den install shell
 only). microsoft/coreutils also inlines a `PSConsoleHostReadLine` rewriter into
 your PowerShell profile that retargets typed `ls`/`cat`/... to coreutils before
 the wrappers run, which would defeat the modern-first order; `den install shell`
-removes that block (backing the profile up to `<profile>.den.bak` first, and
-keeping the binary to drive through the tier above), so re-run `den install shell`
-after updating coreutils if the block comes back. The
+removes that block (keeping the binary to drive through the tier above), so
+re-run `den install shell` after updating coreutils if the block comes back.
+Each removal first copies the profile to `<profile>.den.bak`, or to the first
+free `.den.bak.N` when an earlier backup holds something else, with the
+profile's owner, group and permissions minus execute (and, on Linux, its
+ACL); when no copy can be made, the block stays
+and the run exits non-zero. The edited profile then replaces the old one in
+one step, as `den uninstall shell` replaces it, so a write that fails part-way
+leaves the profile as it was; a profile with a second hard link is left as it
+is, block included, and the run exits non-zero. The
 wrappers resolve the binary at its fixed install path
 `%ProgramFiles%\coreutils\coreutils.exe` (the installer does not add it to PATH);
 point them elsewhere with `_DEN_COREUTILS=<path>`, or disable the tier with
@@ -143,6 +169,50 @@ there is silently absent from your `grep` and `find` results. Reach for
 `command grep` / `command find` (or `export _DEN_WRAPPERS=0`) when auditing such
 a tree, or pass the tools' own overrides, `rg --no-ignore --hidden` and
 `fd --no-ignore --hidden`.
+
+A file name can also reach a modern tool as an option. A glob such as `*` puts
+the names it matches among the arguments, and `rg`, `fd` and `bat` read a word
+that starts with `-` as an option, some of which run a program (`rg --pre` and
+`--hostname-bin`, `fd -x` and `-X`, `bat --pager` with `--paging=always`): in a
+checkout with a file named `--pre=sh`, a typed `grep needle *` ran `sh` on every
+file `rg` searched. So typed `cat`, `grep` and `find` run nothing when an
+argument starts with `-` and names a file (a symlink that points nowhere
+included); they say which one (bash/zsh: status 2; pwsh: a terminating
+error). Write such a file as `./--pre=sh`
+(a glob as `./*`), or use the native command (`command grep`).
+PowerShell on Linux and macOS expands a wildcard for a native command itself,
+after the wrapper has seen it (quoted ones too, and `./*` to bare names), so
+the pwsh wrappers look the names up as pwsh will; there write the wildcard
+with a full path (`$PWD/*`), or turn the wrappers off. On Windows, cmd and
+PowerShell pass `*` on as it is, and `bat` expands it itself, one word at a
+time: `cat ???* *` beside files named `--`, `--pager=cmd` and
+`--paging=always` could give it the pager options from the first word and a
+`--` from the second. So `cat` there expands each wildcard first (cmd with
+its own `for`, PowerShell as it does on Linux and macOS), runs nothing when a
+match starts with `-` (cmd: write the wildcard as `.\*`; PowerShell:
+`$PWD/*`), and hands `bat` the names in a form its own expansion leaves
+alone: cmd puts each in quotes, PowerShell gives the full path of a name
+that holds `[` or `]`. cmd doubles the backslashes a word ends in (`dir\`),
+which `bat` would otherwise read as escaping the closing quote. cmd splits a
+word at `=`, `,` and `;`, as it does for its own commands, so such a name
+goes in quotes there. `cat` also hands `bat` a last `--paging=never` after
+the names, which wins over any `--paging` before it, and refuses a `--`,
+after which `bat` would read that word as a file name. PowerShell's `cat`
+does both on every system; it drops a bare `--` typed to `cat`, but a quoted
+`'--'`, or a second `--`, reaches it. `cat` there expands file names only:
+`bat` would expand an option or an option's value too, and expanding one as a
+name would make it a file. So it runs nothing
+when a word that starts with `-` holds a wildcard character
+(`--file-name=*.py`), or when the value of an option that takes it from the
+next word does (`-l '*'`, `--map-syntax '*.h:C++'`; the options `bat --help`
+lists with a value); run `bat` (PowerShell: or `catw`) by name for those. The
+wildcard characters are `*` and `?` in cmd, whose `for` takes `[` and `]` as
+they are and whose quotes keep `bat` from expanding them, and `* ? [ ]` in
+PowerShell. cmd splits an unquoted `--file-name=*.py` into `--file-name` and
+`*.py`, so there the rule for values covers it.
+`rg` and `fd` expand no wildcards themselves, so cmd's `grep`
+and `findw` hand them `*` unexpanded. The `w`-suffix forms and `ripgrep` run
+the tool as typing its name does, without this check.
 
 Ways to get the native command:
 
@@ -202,17 +272,17 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `extract ARCHIVE...` / `xt` | auto-detect and extract each archive; a failure is reported and the rest still run (exit 1 if any failed). Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z, rar; single file: gz, bz2, xz, zst |
 | `archive OUT FILES...` / `pk` | create an archive (format from `OUT` extension); every argument after `OUT` is a source, never an option. Formats: tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, tar, zip, 7z; single file: gz, bz2, xz, zst (one source) |
 | `y` | yazi file manager (returns you to the dir you exit in) |
-| `again [N]` / `sagain` | re-run the Nth previous command (`sagain` = with sudo) |
+| `again [N]` / `sagain` | re-run the Nth previous command (`sagain` = with sudo); on PowerShell a variable or function the line makes is not kept unless it is global (see Command snippets, below) |
 
 ### Python / uv
 | Command | What it does |
 |---------|--------------|
 | `py` `python` `python3` | `uv run python` (uses the active venv's version), `--version` / `-V` too; in a project (a `pyproject.toml`, `.venv`, `pyvenv.cfg`, `uv.toml`, or `.python-version` / `.python-versions` that names a path or something in the current directory, here or above, which uv run would build or run code from), a python directly |
-| `pip` `pip3` | an active venv's own pip, else `uv pip` into it; nothing with no venv active (`va` one, or type `uv pip`) |
-| `uv` | injects `--python` for `uv run` when a venv is active |
+| `pip` `pip3` | an active venv's own pip, else `uv pip` into it, reading your own uv.toml alone (`uv --config-file <it> pip`, or `uv --no-config pip` without one), not a clone's, which pip never reads; nothing with no venv active (`va` one, or type `uv pip`) |
+| `uv` | injects `--python` for `uv run` when a venv is active; `uv run` itself is not guarded (it builds and runs the project, as uv does) |
 | `va [DIR]` | activate a venv (default `.venv`) |
 | `vd` | deactivate |
-| `vv` / `vva` | `uv venv` (create / create + activate) |
+| `vv` / `vva` | `uv venv` (create / create + activate); in a project (here, or where `--directory` or `--project` points uv), as for `python`, `uv --no-config venv`, with `--config-file <your uv.toml>` when you have one |
 | `toggle-uv` / `tgl-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
 
 ### Parallel file ops
@@ -317,6 +387,12 @@ Snippets are stored in `$XDG_CONFIG_HOME/den/snippets` (`name<TAB>command`; the
 name is `[A-Za-z0-9_-]`, the command may contain anything on one line). `run` and
 `pick` echo the command, then `eval` it in the **current shell** (you saved it,
 so it is trusted), which lets it `cd`, set vars, and use the current environment.
+PowerShell runs it with `Invoke-Expression` inside a function, as `again` runs
+the line it re-runs: it can `cd`, set `$env:` variables and read the session's
+variables, but a variable, function or alias it makes (`$x = 1`,
+`function f {...}`, `Set-Alias`), itself or through a script it dot-sources
+(`. ./env.ps1`), is gone when it ends. Make one global to keep it in the
+session: `$global:x = 1`, `function global:f {...}`, `Set-Alias -Scope Global`.
 `pick` needs `fzf`; without it, use `snippet run <name>`. `snippet` is in
 bash/zsh and PowerShell, and a machine's pwsh and bash share the snippet store.
 
@@ -387,7 +463,11 @@ exports `STARSHIP_CPU_*` / `STARSHIP_GPU_*`.
   comment line cmd writes for the same case. A shell that inherits
   `STARSHIP_*` values reads no cache at all.
 - `toggle-hwinfo` (short: `tgl-hw`) shows/hides the info in the prompt.
-- `refresh-hwinfo` clears the cache so the next shell re-detects.
+- `refresh-hwinfo` clears the cache, and unsets this shell's
+  `STARSHIP_CPU_*` / `STARSHIP_GPU_*` values and the ones `toggle-hwinfo`
+  saved, so the next shell re-detects, a `reload` or a child shell included
+  (either would inherit the old values). The prompt shows no CPU or GPU until
+  then.
 
 ## Tab completion (pwsh)
 

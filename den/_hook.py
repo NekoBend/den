@@ -39,11 +39,12 @@ import re
 import shlex
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
 
 from ._exe import find_tool
 from ._memory import (
@@ -418,9 +419,12 @@ def _leaves_workspace(path: Path, prefix: str = _ERR_HOOK) -> bool:
     return True
 
 
-def _resolve_config(spec: dict, override: str | None) -> Path | None:
-    """The config file/dir to operate on, or None (after one line on stderr) when
-    the workspace-relative default is unusable.
+def _resolve_config(
+    spec: dict, override: str | None, prefix: str = _ERR_HOOK
+) -> Path | None:
+    """The config file/dir to operate on, or None (after one line on stderr,
+    starting with `prefix`: install passes its own name) when the
+    workspace-relative default is unusable.
 
     An explicit --config is the user's own choice and is taken as given -- but
     RESOLVED, so the paths derived from it are real ones. Dotfiles managers
@@ -435,7 +439,7 @@ def _resolve_config(spec: dict, override: str | None) -> Path | None:
     if override:
         return Path(override).expanduser().resolve()
     config = Path.cwd() / spec["config"]
-    if _leaves_workspace(config):
+    if _leaves_workspace(config, prefix):
         return None
     # No symlink component left, so resolve() only normalizes the path.
     return config.resolve()
@@ -489,60 +493,65 @@ def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
     return entries
 
 
-def _mergeable(config: Path) -> bool:
-    """True when config is already a JSON object den can merge its keys into, so
-    nothing of the user's is lost by writing it back. ValueError covers both
-    JSONDecodeError and UnicodeDecodeError."""
+def _mergeable(config: Path, events: Iterable[str]) -> bool:
+    """True when config is already a JSON object den can merge its hooks for
+    `events` into, so nothing of the user's is lost by writing it back: its
+    `hooks`, if it has one, is an object, and each of those events in it holds
+    a list. ValueError covers both JSONDecodeError and UnicodeDecodeError."""
     try:
-        return isinstance(json.loads(config.read_text(encoding="utf-8")), dict)
+        data = json.loads(config.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
+    if not isinstance(data, dict):
+        return False
+    hooks = data.get("hooks", {})
+    return isinstance(hooks, dict) and all(
+        isinstance(hooks.get(event, []), list) for event in events
+    )
 
 
-def _backup_if_unmergeable(config: Path) -> bool:
-    """Back up config to <config>.den.bak before install overwrites it, UNLESS it
-    is already a JSON object den can merge into. _read_json reads anything else as
-    {} -- a malformed file, a non-UTF-8 file, OR valid-but-non-object JSON (a
-    list/string/number) -- so without this, install would write back only den's
-    keys and silently discard the user's file. ValueError covers both
-    JSONDecodeError and UnicodeDecodeError.
+def _backup_if_unmergeable(config: Path, events: Iterable[str]) -> bool:
+    """Back up config before install overwrites it, UNLESS den can merge its
+    hooks for `events` into it (_mergeable). _read_json reads anything but a
+    JSON object as {} -- a malformed file, a non-UTF-8 file, OR
+    valid-but-non-object JSON (a list/string/number) -- so without this, install
+    would write back only den's keys and silently discard the user's file. Inside
+    an object, a `hooks` that is not an object, or one of den's events holding
+    something other than a list, is a shape den never writes and cannot add to:
+    install replaces it (_add_den_entries), so the file is backed up first too.
 
-    False when the backup could not be made and the caller must not write. The
-    backup path gets the same guard as the config itself: a repo can ship a
-    DANGLING symlink at `settings.json.den.bak`, where `exists()` is False, so the
-    write would have followed it out of the workspace. Refusing the backup means
-    refusing the install -- writing den's hooks over a file we could not preserve
-    is exactly the loss the backup exists to prevent.
+    The copy is the one `--force` makes (_Writer._backup): <config>.den.bak, or
+    the first free .den.bak.N when an earlier backup holds something else, and
+    one that holds these very bytes, with the config's owner, group and
+    extended attributes, is reused. An earlier backup proves nothing
+    about the file there now: den never writes an unmergeable file itself, so a
+    backup it made before holds an earlier edit, and taking it for this one let
+    install overwrite the new edit with no copy anywhere. The copy takes the
+    config's owner, group and, on Linux, extended attributes and ACL (not its
+    directory's), and its permission bits minus execute, so a private settings
+    file does not get a backup others can read; a config whose owner, group or
+    extended attributes the copy cannot take gets no backup.
 
-    An existing backup path is accepted as "already preserved" only when it is a
-    regular file. A repo can ship `settings.json.den.bak/` as a DIRECTORY (or as
-    a symlink to one), which preserves nothing; taking it for a backup would hand
-    install a green light to overwrite the config it was meant to save.
+    False (one line on stderr) when no backup could be made, and the caller must
+    not write: writing den's hooks over a file we could not preserve is exactly
+    the loss the backup exists to prevent. A symlink at a backup name is refused,
+    not written through (a repo can ship a DANGLING one, where `exists()` is
+    False), and so is anything else that is not a regular file there (a repo can
+    ship `settings.json.den.bak/` as a DIRECTORY, which preserves nothing). The
+    backup's directory is the config's own, which _resolve_config already
+    vetted.
     """
-    if not config.is_file() or _mergeable(config):
+    if not config.is_file() or _mergeable(config, events):
         return True
-    bak = config.with_suffix(config.suffix + ".den.bak")
-    if _leaves_workspace(bak, _ERR_INSTALL):
-        return False
-    if bak.is_symlink() or (bak.exists() and not bak.is_file()):
-        print(
-            f"{_ERR_INSTALL}: refusing to treat {bak} as a backup of {config}: "
-            "it is not a regular file",
-            file=sys.stderr,
-        )
-        return False
-    if bak.is_file():
-        return True
-    try:
-        written = _write_guarded(bak.parent, bak, config.read_bytes(), _ERR_INSTALL)
-    except OSError as exc:
-        print(f"{_ERR_INSTALL}: cannot back up {config}: {exc}", file=sys.stderr)
-        written = False
-    if not written:
+    # Imported here: install's module is not needed on the per-turn hook path.
+    from ._install import _Writer
+
+    bak = _Writer._backup(config, None, _ERR_INSTALL)  # ruff: ignore[private-member-access]  # the --force backup, shared
+    if bak is None:
         return False
     print(
-        f"{_ERR_INSTALL}: {config} is not a JSON object den can merge; "
-        f"backed up to {bak} before writing den's hooks",
+        f"{_ERR_INSTALL}: {config} is not a JSON object den can merge its hooks "
+        f"into; backed up to {bak} before writing den's hooks",
         file=sys.stderr,
     )
     return True
@@ -560,36 +569,124 @@ def _read_json(config: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _strip_den_hooks(hooks: dict) -> dict:
-    """Drop every hook group whose command contains the den marker."""
+def _write_config(config: Path, data: dict, prefix: str) -> bool:
+    """Write `data` to the JSON config at `config` without truncating what is
+    there first: an existing file is replaced in one rename
+    (_shell._replace_bytes, which gives the new file the old one's owner,
+    group and permission bits and, on Linux, its extended attributes and
+    ACLs), and a new one is created whole or not at all. Written in place, a
+    write that failed part-way (a full disk, an I/O error) left the user's
+    settings empty or cut short.
+
+    False (one line on stderr, starting with `prefix`, the command that was
+    run) when it cannot be written, and the file is then as it was: a write
+    that failed, or a file _replace_bytes refuses, one with a second hard
+    link among them (a new copy would take only this name), which the user
+    edits by hand, as `den uninstall` leaves such an rc file."""
+    # Imported here: the shell installer is not needed on the per-turn hook path.
+    from ._shell import _replace_bytes
+
+    # Line ends as write_text wrote them: os.linesep (CRLF on Windows).
+    raw = (json.dumps(data, indent=2) + "\n").replace("\n", os.linesep)
+    try:
+        if config.is_file():
+            _replace_bytes(config, raw.encode("utf-8"))
+        else:
+            config.parent.mkdir(parents=True, exist_ok=True)
+            _create_whole(config, raw.encode("utf-8"))
+    except OSError as e:
+        print(f"{prefix}: left {config} as it was: {e}", file=sys.stderr)
+        return False
+    return True
+
+
+def _create_whole(path: Path, data: bytes) -> None:
+    """Create `path` holding `data`, or raise OSError and leave no file there:
+    one a failed write cut short is removed again. A file that appeared there
+    since the caller looked is not written over (O_EXCL)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o666)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        with suppress(OSError):
+            path.unlink()
+        raise
+
+
+def _is_den_hook(hook: object, key: str = "command") -> bool:
+    """Whether a hook entry is one den wrote: an object whose command (`key`:
+    settings_json's "command", copilot's "bash") is text carrying the marker.
+    list and strip both ask this, so what `den hook list` shows is exactly what
+    install and remove take out, and an entry den never wrote (a command that
+    is null or a number) is neither listed nor taken out, nor makes them raise."""
+    if not isinstance(hook, dict):
+        return False
+    command = hook.get(key)
+    return isinstance(command, str) and _MARKER in command
+
+
+def _strip_den_hooks(hooks: object) -> object:
+    """`hooks` with den's own entries taken out; the argument is not changed.
+
+    Only a hook whose command carries the den marker comes out. Its group stays,
+    with its matcher and every other key, while anything is left in it: a hook
+    someone added to a group den wrote is theirs, and dropping the whole group
+    deleted it on every install and remove, and on the move out of a shared
+    .claude/settings.json. A group goes only when den's hooks were all it held,
+    and an event only when that leaves it with no group. A shape den never
+    writes (a `hooks` that is not an object, an event whose value is not a
+    list) holds nothing den can tell is its own, so it stays as it is.
+
+    When nothing of den's is in it, `hooks` itself comes back, whatever its
+    shape: remove then leaves the file byte-identical."""
     if not isinstance(hooks, dict):
-        return {}
-    cleaned: dict[str, list] = {}
+        return hooks
+    cleaned: dict = {}
     for event, groups in hooks.items():
         if not isinstance(groups, list):
+            cleaned[event] = groups
             continue
-        kept = [
-            g
-            for g in groups
-            if isinstance(g, dict)
-            and not any(_MARKER in h.get("command", "") for h in g.get("hooks", []))
-        ]
-        if kept:
+        kept = []
+        for group in groups:
+            if not isinstance(group, dict):
+                kept.append(group)  # not a group, so nothing of den's in it
+                continue
+            inner = group.get("hooks")
+            if not isinstance(inner, list):
+                kept.append(group)  # no hook list, so nothing of den's in it
+                continue
+            rest = [h for h in inner if not _is_den_hook(h)]
+            if len(rest) == len(inner):
+                kept.append(group)
+            elif rest:
+                kept.append({**group, "hooks": rest})
+        if kept or not groups:
             cleaned[event] = kept
-    return cleaned
+    # Equal exactly when nothing came out: the groups kept are the same objects.
+    return hooks if cleaned == hooks else cleaned
+
+
+def _add_den_entries(hooks: object, entries: dict[str, list]) -> dict:
+    """`hooks`, den's own entries already taken out, with den's `entries` added
+    after what each event holds. What den cannot add to (a `hooks` that is not
+    an object, one of den's events holding something other than a list) is
+    replaced: _backup_if_unmergeable has copied the file first."""
+    merged = dict(hooks) if isinstance(hooks, dict) else {}
+    for event, new in entries.items():
+        old = merged.get(event)
+        merged[event] = [*old, *new] if isinstance(old, list) else list(new)
+    return merged
 
 
 def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    if not _backup_if_unmergeable(config):
+    entries = _settings_entries(tool, spec, den_dir)
+    if not _backup_if_unmergeable(config, entries):
         return False
     data = _read_json(config)
-    hooks = _strip_den_hooks(data.get("hooks", {}))
-    for event, groups in _settings_entries(tool, spec, den_dir).items():
-        hooks.setdefault(event, []).extend(groups)
-    data["hooks"] = hooks
-    config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    data["hooks"] = _add_den_entries(_strip_den_hooks(data.get("hooks", {})), entries)
+    return _write_config(config, data, _ERR_INSTALL)
 
 
 def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
@@ -601,63 +698,66 @@ def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
         if not isinstance(groups, list):
             continue
         for g in groups:
-            if not isinstance(g, dict):
+            inner = g.get("hooks") if isinstance(g, dict) else None
+            if not isinstance(inner, list):
                 continue
             lines.extend(
-                f"{tool}  {event}  {h['command']}"
-                for h in g.get("hooks", [])
-                if isinstance(h, dict) and _MARKER in h.get("command", "")
+                f"{tool}  {event}  {h['command']}" for h in inner if _is_den_hook(h)
             )
     return lines
 
 
-def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
+def _remove_settings_json(
+    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
+) -> bool:
     if not config.is_file():
         return True
     data = _read_json(config)
     if "hooks" not in data:
         return True
     cleaned = _strip_den_hooks(data["hooks"])
-    if cleaned == data["hooks"]:
+    if cleaned is data["hooks"]:
         return True  # nothing of den's: leave the file byte-identical
     data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    return _write_config(config, data, prefix)
 
 
 # --- copilot: flat {version, hooks:{event:[{type,bash}]}}, marker in "bash" --- #
 
 
-def _strip_copilot(hooks: dict) -> dict:
+def _strip_copilot(hooks: object) -> object:
+    """_strip_den_hooks for copilot's flat event lists: only an entry whose
+    `bash` is den's comes out, every other entry stays (one that is not an
+    object, or whose `bash` is not text, included), and an event goes only when
+    den's entries were all it held. A shape den never writes stays as it is, and
+    when nothing of den's is in it, `hooks` itself comes back."""
     if not isinstance(hooks, dict):
-        return {}
-    cleaned: dict[str, list] = {}
+        return hooks
+    cleaned: dict = {}
     for event, arr in hooks.items():
         if not isinstance(arr, list):
+            cleaned[event] = arr
             continue
-        kept = [
-            h for h in arr if isinstance(h, dict) and _MARKER not in h.get("bash", "")
-        ]
-        if kept:
+        kept = [h for h in arr if not _is_den_hook(h, "bash")]
+        if kept or not arr:
             cleaned[event] = kept
-    return cleaned
+    # Equal exactly when nothing came out: the entries kept are the same objects.
+    return hooks if cleaned == hooks else cleaned
 
 
 def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    if not _backup_if_unmergeable(config):
+    entries = {
+        native: [{"type": "command", "bash": _run_command(tool, generic, den_dir)}]
+        for generic, native in spec["events"].items()
+    }
+    if not _backup_if_unmergeable(config, entries):
         return False
     data = _read_json(config)
     data["version"] = data.get("version", 1)
-    hooks = _strip_copilot(data.get("hooks", {}))
-    for generic, native in spec["events"].items():
-        cmd = _run_command(tool, generic, den_dir)
-        hooks.setdefault(native, []).append({"type": "command", "bash": cmd})
-    data["hooks"] = hooks
-    config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    data["hooks"] = _add_den_entries(_strip_copilot(data.get("hooks", {})), entries)
+    return _write_config(config, data, _ERR_INSTALL)
 
 
 def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
@@ -669,21 +769,25 @@ def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
         for event, arr in hooks.items()
         if isinstance(arr, list)
         for h in arr
-        if isinstance(h, dict) and _MARKER in h.get("bash", "")
+        if _is_den_hook(h, "bash")
     ]
 
 
-def _remove_copilot(tool: str, spec: dict, config: Path) -> bool:
+def _remove_copilot(
+    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
+) -> bool:
     if not config.is_file():
         return True
     data = _read_json(config)
     if "hooks" not in data:
         return True
-    data["hooks"] = _strip_copilot(data["hooks"])
+    cleaned = _strip_copilot(data["hooks"])
+    if cleaned is data["hooks"]:
+        return True  # nothing of den's: leave the file byte-identical
+    data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
+    return _write_config(config, data, prefix)
 
 
 # --- cline: one executable script per event, named exactly the event name --- #
@@ -767,7 +871,7 @@ def _list_cline(tool: str, spec: dict, config: Path) -> list[str]:
     ]
 
 
-def _remove_cline(tool: str, spec: dict, config: Path) -> bool:
+def _remove_cline(tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK) -> bool:
     if not config.is_dir():
         return True
     for _native, script in _cline_scripts(spec, config):
@@ -879,7 +983,9 @@ def _list_clinerules(tool: str, spec: dict, config: Path) -> list[str]:
     return [f"{tool}  {p.name}  {p}" for p in targets if p.is_file()]
 
 
-def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
+def _remove_clinerules(
+    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
+) -> bool:
     # `config` is ignored by this format (see the section comment above), so the
     # path _resolve_config vetted is not the one being unlinked here. Derive and
     # guard the real one, or the unlinks follow a planted link out of the
@@ -887,7 +993,7 @@ def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
     den_dir = _find_den_dir(Path.cwd())
     if _single_file_clinerules(den_dir):
         return True
-    targets = _clinerules_targets(den_dir)
+    targets = _clinerules_targets(den_dir, prefix)
     if targets is None:
         return False
     for path in targets:
@@ -949,7 +1055,7 @@ def _strip_legacy(
     legacy = legacy.resolve()
     if not list_fn(tool, spec, legacy):
         return True
-    if not remove_fn(tool, spec, legacy):
+    if not remove_fn(tool, spec, legacy, prefix):
         return False
     done = f"moved them to {moved_to}" if moved_to else "removed them"
     print(f"{prefix}: {legacy} held den's {tool} hooks; {done}", file=sys.stderr)
@@ -1049,7 +1155,8 @@ def _git_exclude(path: Path) -> None:
         )
 
 
-# format -> (install, list, remove)
+# format -> (install, list, remove). remove takes the prefix of the command
+# that was run: install also moves den's entries out of a legacy file with it.
 _FORMATS = {
     "settings_json": (
         _install_settings_json,
@@ -1226,7 +1333,7 @@ def _cmd_install(argv: list[str]) -> int:
             )
             rc = 1
             continue
-        config = _resolve_config(spec, override)
+        config = _resolve_config(spec, override, _ERR_INSTALL)
         if config is None:  # symlinked workspace config: refuse, write nothing
             rc = 1
             continue

@@ -173,20 +173,28 @@ if [ -z "$_hwc_hit" ] && \
             (umask 077 && set -C && : > "$_hwc_tmp") 2>/dev/null || _hwc_tmp=""
         fi
     fi
+    # A write that fails (a full disk, a quota) leaves no cache: one cut short
+    # after the CPU's line set the CPU at the next start and not the GPU, and a
+    # value set there skips the detection above, so the GPU stayed off the
+    # prompt until refresh-hwinfo or a reboot.
     if [ -n "$_hwc_tmp" ]; then
+        _hwc_ok=1
         for _hwc_v in STARSHIP_CPU_INTEL STARSHIP_CPU_AMD STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL; do
             eval "_hwc_val=\$$_hwc_v"
             if [ -n "$_hwc_val" ]; then
                 # Single-quote the value, escaping any embedded single quote.
                 _hwc_esc=$(printf '%s' "$_hwc_val" | sed "s/'/'\\''/g")
-                printf "export %s='%s'\n" "$_hwc_v" "$_hwc_esc" >> "$_hwc_tmp"
+                printf "export %s='%s'\n" "$_hwc_v" "$_hwc_esc" >> "$_hwc_tmp" || { _hwc_ok=; break; }
             fi
         done
         # Last, so a file cut short by a failed write does not count as a hit.
-        printf '_DEN_HWINFO_CACHED=1\n' >> "$_hwc_tmp"
-        mv -f "$_hwc_tmp" "$_hwc_f" 2>/dev/null || rm -f "$_hwc_tmp"
+        if [ -n "$_hwc_ok" ] && printf '_DEN_HWINFO_CACHED=1\n' >> "$_hwc_tmp"; then
+            mv -f "$_hwc_tmp" "$_hwc_f" 2>/dev/null || rm -f "$_hwc_tmp"
+        else
+            rm -f "$_hwc_tmp"
+        fi
     fi
-    unset _hwc_v _hwc_val _hwc_esc _hwc_tmp
+    unset _hwc_v _hwc_val _hwc_esc _hwc_tmp _hwc_ok
 fi
 
 # toggle-hwinfo exports _DEN_HWINFO_HIDDEN, so a reload (a new shell) or a child
@@ -207,10 +215,19 @@ fi
 unset _hwc_f _hwc_hit
 
 # refresh-hwinfo → clear the hardware info cache (re-detect on next shell)
+# It unsets this shell's STARSHIP_CPU_*/STARSHIP_GPU_* values, and the ones
+# toggle-hwinfo saved, too: reload (exec) and a child shell inherit them, and
+# an inherited value skips both the cache and the detection above, so the next
+# shell showed the old names again. The prompt shows no CPU or GPU until the
+# next shell; an OFF (_DEN_HWINFO_HIDDEN) stays.
 refresh-hwinfo() {
     _den_hwinfo_file
     rm -f "$_hwc_f"
     unset _hwc_f
+    unset STARSHIP_CPU_INTEL STARSHIP_CPU_AMD
+    unset STARSHIP_GPU_NVIDIA STARSHIP_GPU_AMD STARSHIP_GPU_INTEL
+    unset _DEN_SAVED_CPU_INTEL _DEN_SAVED_CPU_AMD
+    unset _DEN_SAVED_GPU_NVIDIA _DEN_SAVED_GPU_AMD _DEN_SAVED_GPU_INTEL
     echo "hwinfo cache cleared. Restart shell to refresh."
 }
 

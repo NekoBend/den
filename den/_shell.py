@@ -27,10 +27,14 @@ plugin just turns the feature off.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from ._content import shell_dir
@@ -147,6 +151,135 @@ def _copy(src: Path, dst: Path, writer: _Stager, *, dry_run: bool) -> None:
         print(f"  [dry] {dst}")
         return
     writer.stage(dst, src.read_bytes())
+
+
+def _replace_bytes(path: Path, data: bytes) -> None:
+    """Put `data` in place of the file at `path` without truncating it first.
+
+    The bytes go to a new file beside it, which then replaces it in one
+    rename, so a write that fails part-way (a full disk, an I/O error) leaves
+    the file as it was instead of empty or cut short. The new file gets what
+    decides who may use the old one (_match_access): its owner, group and
+    permission bits and, on Linux, its extended attributes, ACLs included. A
+    symlink is followed: its target is replaced and the link stays, as an
+    in-place write would have left it. Shared with _uninstall, which strips
+    den's block from an rc file this way.
+
+    Refused with OSError, the file left as it is: a file den may not write
+    (PermissionError), as the in-place write refused it, although its
+    directory would let the rename through; a file with a second hard link,
+    since the new file would take only this name, and the others would keep
+    the old content and no longer be the same file; and a file whose owner,
+    group or extended attributes the new file cannot take."""
+    real = path.resolve()
+    st = real.stat()
+    if not os.access(real, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+    if st.st_nlink > 1:
+        raise OSError(
+            f"it has {st.st_nlink} hard links, and replacing it would split"
+            " them; edit it by hand"
+        )
+    try:
+        fd, name = tempfile.mkstemp(
+            prefix=f"{real.name}.", suffix=".den-tmp", dir=real.parent
+        )
+    except OSError as e:  # name the directory, not a copy that was never made
+        raise OSError(
+            e.errno, f"cannot create a temporary file in {real.parent}: {e.strerror}"
+        ) from e
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        _match_access(tmp, real, st)
+        tmp.replace(real)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink()
+        raise
+
+
+def _match_access(
+    copy: Path | int,
+    original: Path,
+    st: os.stat_result,
+    mode: int | None = None,
+    *,
+    doing: str = "replacing it",
+) -> None:
+    """Give `copy` (a path, or a file open for writing) the owner and group
+    of `original`, whose stat is `st`, and on Linux its extended attributes,
+    ACLs included, without any the copy took from its directory (a default
+    ACL); then, last, the permission bits `mode`, the original's unless the
+    caller passes its own (_install._Writer._backup drops execute).
+
+    An in-place write kept all of these. A new file starts with den's own
+    owner and group (or a setgid directory's group) and its directory's
+    default ACL instead, which can hand a file that holds a token to other
+    users, or take access away from the ones it was shared with. OSError,
+    worded after `doing` (what den was doing to the original), when the copy
+    cannot take one of them: only root gives a file to another user, and
+    only a member of a group gives a file to that group. Windows DACLs and
+    macOS ACLs are not read here, as Python has no call for them."""
+    if sys.platform != "win32":
+        now = os.fstat(copy) if isinstance(copy, int) else copy.stat()
+        if (now.st_uid, now.st_gid) != (st.st_uid, st.st_gid):
+            try:
+                os.chown(copy, st.st_uid, st.st_gid)
+            except OSError as e:
+                raise OSError(
+                    f"{doing} would change its owner or group ({e.strerror});"
+                    " edit it by hand"
+                ) from e
+    if sys.platform == "linux":  # the one platform with os.listxattr
+        try:
+            want = _xattrs(original)
+            have = _xattrs(copy)
+            for name in have.keys() - want.keys():
+                os.removexattr(copy, name)
+            for name, value in want.items():
+                if have.get(name) != value:
+                    os.setxattr(copy, name, value)
+        except OSError as e:
+            raise OSError(
+                f"{doing} would lose its extended attributes or ACL"
+                f" ({e.strerror}); edit it by hand"
+            ) from e
+        # Checked before the mode is set: a mode other than the original's (a
+        # backup's, without execute) rewrites the ACL's owner, mask and other
+        # entries to match, and the original's own mode leaves them as they are.
+        if _xattrs(copy) != want:
+            raise OSError(
+                f"{doing} would change its extended attributes or ACL; edit it by hand"
+            )
+    # Last: after chown, which may clear set-id bits, and after the ACL is the
+    # old file's. Until then the copy keeps the 0600 it was made with, whose
+    # group bits mask every named entry of a default ACL it took from its
+    # directory; the old file's mode before that would let such a user read
+    # the copy.
+    final = stat.S_IMODE(st.st_mode) if mode is None else mode
+    if isinstance(copy, int):
+        os.fchmod(copy, final)  # the open file, not whatever has its name now
+    else:
+        copy.chmod(final)
+
+
+def _xattrs(path: Path | int) -> dict[str, bytes]:
+    """The extended attributes of `path` (or of an open file) by name, its
+    POSIX ACL among them (system.posix_acl_access); none on a filesystem
+    that keeps none, and none off Linux, where Python cannot list them."""
+    if sys.platform != "linux":
+        return {}
+    try:
+        names = os.listxattr(path)
+    except OSError as e:
+        if e.errno == errno.ENOTSUP:
+            return {}
+        raise
+    return {name: os.getxattr(path, name) for name in names}
 
 
 def _bom_codec(raw: bytes) -> tuple[bytes, str]:
@@ -303,18 +436,36 @@ def _decide_posix_bin(*, want: bool, skip: bool) -> bool:
     )
 
 
-def _disable_coreutils_readline(profile: Path) -> bool:
+def _disable_coreutils_readline(profile: Path) -> bool | None:
     """Remove microsoft/coreutils' PSConsoleHostReadLine integration block(s) from a
     PowerShell profile. coreutils inlines a readline rewriter that retargets typed
     `ls`/`cat`/... to coreutils before den's wrappers see them, defeating den's
     modern-first dispatch. Each block is bracketed by two sentinel comment lines
     carrying a fixed GUID. Removes each open..close PAIR (plus an adjacent blank on
     each side), so content sitting BETWEEN two separate blocks is never touched.
-    Backs the original up to <profile>.den.bak before the first edit. Preserves the
-    file's CRLF/LF ending and its encoding (UTF-8, UTF-8-BOM, or UTF-16; a UTF-16
-    profile is normalized to little-endian, which is what PowerShell writes), and
-    leaves the file untouched if it does not decode. Idempotent: returns True only
-    when it removed a block."""
+    Two blocks one blank line apart both claim that line, so the lines to drop are
+    gathered first and taken out in one pass: deleting each block's span in turn
+    took out the line after the second block as well.
+    Preserves the file's CRLF/LF ending and its encoding (UTF-8, UTF-8-BOM, or
+    UTF-16; a UTF-16 profile is normalized to little-endian, which is what
+    PowerShell writes), and leaves the file untouched if it does not decode.
+    Idempotent: returns True only when it removed a block.
+
+    Every edit first copies the profile the way `--force` backs up a file it
+    replaces (_Writer._backup): to <profile>.den.bak, or the first free
+    .den.bak.N when an earlier backup holds something else, with the
+    profile's owner, group and, on Linux, extended attributes and ACL (not
+    its directory's), and its permission bits minus execute (a profile can
+    hold a token, and a plain write left a 0600 profile's copy
+    world-readable). The new text then replaces the profile in one rename
+    (_replace_bytes), never by truncating it, so a write that fails part-way
+    leaves the profile as it was instead of empty or cut short. None (one
+    line on stderr) when no copy could be made (a symlink or a directory at a
+    backup name, a failed write, a copy that cannot take the profile's owner,
+    group or extended attributes) or the profile could not be replaced (a
+    failed write, or a profile _replace_bytes refuses, such as one with a
+    second hard link): the profile is then left as it is, coreutils' block
+    included."""
     if not profile.is_file():
         return False
     raw = profile.read_bytes()
@@ -336,25 +487,30 @@ def _disable_coreutils_readline(profile: Path) -> bool:
     marks = [i for i, ln in enumerate(lines) if _COREUTILS_SENTINEL in ln]
     # Pair the sentinels (open, close). An odd trailing sentinel (corrupt/partial
     # block) is left in place rather than guessing where it ends.
-    spans = []
+    drop: set[int] = set()
     for open_i, close_i in zip(marks[0::2], marks[1::2], strict=False):
         start, end = open_i, close_i + 1
         if end < len(lines) and lines[end] == "":  # trailing blank
             end += 1
         if start > 0 and lines[start - 1] == "":  # preceding blank
             start -= 1
-        spans.append((start, end))
-    if not spans:
+        drop.update(range(start, end))
+    if not drop:
         return False
-    backup = profile.with_suffix(profile.suffix + ".den.bak")
-    if not backup.exists():
-        backup.write_bytes(raw)
-    for start, end in reversed(spans):  # deepest-first keeps earlier indices valid
-        del lines[start:end]
-    new = "\n".join(lines)
+    if _Writer._backup(profile, None, "den install shell") is None:  # ruff: ignore[private-member-access]  # the --force backup, shared
+        return None
+    new = "\n".join(ln for i, ln in enumerate(lines) if i not in drop)
     if crlf:
         new = new.replace("\n", "\r\n")
-    profile.write_text(new, encoding=enc, newline="")
+    try:
+        _replace_bytes(profile, new.encode(enc))
+    except OSError as e:
+        print(
+            f"den install shell: left {profile} as it was, coreutils' block"
+            f" included: {e}",
+            file=sys.stderr,
+        )
+        return None
     return True
 
 
@@ -470,11 +626,16 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
     # retargets typed `ls`/`cat`/... to coreutils BEFORE den's wrappers run,
     # defeating den's modern-first dispatch. den drives coreutils through its own
     # tier (coreutils.exe), so strip that block to let the wrappers govern. Done
-    # after the install step so a freshly added block is caught too.
+    # after the install step so a freshly added block is caught too. A block that
+    # stays because the profile could not be backed up first, or then replaced,
+    # fails the run.
     if not dry_run and (_windows() or shutil.which("pwsh")):
         for prof in (pwsh_dir / _PWSH_PROFILE, pwsh_dir / "profile.ps1"):
-            if _disable_coreutils_readline(prof):
+            removed = _disable_coreutils_readline(prof)
+            if removed:
                 print(f"  [ok] removed coreutils readline integration from {prof}")
+            elif removed is None:
+                rc = rc or 1
 
     return rc
 
