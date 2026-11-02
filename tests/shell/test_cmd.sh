@@ -898,14 +898,51 @@ echo "[cmd] python's walk also counts a version file line that names something i
 # would skip a line that names ;x); the second cuts it at a tab, and Windows
 # drops the spaces after a name. if exist tests it from the current
 # directory, as uv does, so a drive-relative C:name resolves the same way.
-names=$(printf '%s\n' "$walk" | grep -F 'for /f' || true)
-assert_eq "cmd/python: one for /f line reads the version files" "1" "$(printf '%s\n' "$names" | grep -c 'for /f')"
+names=$(printf '%s\n' "$walk" | grep -F 'for /f' | grep -v -F 'eol=, delims=' || true)
+assert_eq "cmd/python: one for /f line looks names up" "1" "$(printf '%s\n' "$names" | grep -c 'for /f')"
 assert_contains "cmd/python: for /f reads each version file, with its errors silenced" \
     'for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f ' "$names"
 assert_contains "cmd/python: a second for /f cuts the line at a tab" \
     "do for /f \"tokens=1 eol=# delims=$(printf '\t')\" %%n in (\"%%l\") do " "$names"
 assert_contains "cmd/python: a name found from the current directory makes the file the marker" \
     'do if not defined _m if exist "%%n" set "_m=%_d%\%%f") 2>nul' "$names"
+
+echo "[cmd] python's walk counts a version file line with a character version requests do not use"
+# uv trims more white space than spaces and tabs (U+00A0, U+3000, VT, FF), and
+# for /f reads a name outside ASCII in the console code page, which garbles it
+# for if exist unless that is UTF-8: cmd missed a venv such a line names. A
+# line with any character but ASCII letters and digits, spaces, tabs and
+# . @ + - _ < > = ! ~ , * counts now. After the first for /f (leading spaces
+# and tabs dropped), a second, with no delims, skips a line that starts with
+# #, and a third has the alphabet for delims, so it leaves a token only where
+# another character is; "x" and eol=, are delims, so its eol never fires.
+alpha_line=$(printf '%s\n' "$walk" | grep -F 'eol=, delims=' || true)
+assert_eq "cmd/python: one for /f line checks the alphabet" "1" "$(printf '%s\n' "$alpha_line" | grep -c 'for /f')"
+assert_contains "cmd/python: the alphabet check reads each version file and skips # lines" \
+    'for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f "eol=# delims=" %%k in ("%%l") do for /f "tokens=1 eol=, delims=' "$alpha_line"
+assert_contains "cmd/python: any token left makes the file the marker" \
+    '" %%c in ("x%%k") do if not defined _m set "_m=%_d%\%%f") 2>nul' "$alpha_line"
+alpha=$(printf '%s\n' "$alpha_line" | sed 's/.*eol=, delims=\([^"]*\)" %%c in .*/\1/')
+assert_eq "cmd/python: the delims are the version request alphabet" \
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.@+-_<>=!~,*$(printf '\t') " "$alpha"
+# The three for /f on sample lines (label|line), byte by byte as under a
+# single-byte code page: each label whose line counts.
+counted=$(printf '%s\n' \
+    'nbsp|'"$(printf '\302\240')"'repoenv' 'nbsp-after|repoenv'"$(printf '\302\240')" \
+    'ideo|'"$(printf '\343\200\200')"'repoenv' 'vt|'"$(printf '\013')"'repoenv' \
+    'vt-after|repoenv'"$(printf '\013')" 'ff-after|repoenv'"$(printf '\014')" \
+    'kanji|'"$(printf '\347\222\260\345\242\203')" 'eacute|v'"$(printf '\303\251')"'nv' \
+    'drive|C:venv' 'slash|./venv' \
+    'v|3.13' 'req|cpython@3.13' 'pypy|pypy3.10' 'range|>=3.12,<3.14' 'compat|~=3.12' \
+    'not|!=3.11' 'star|3.12.*' 'variant|3.14+freethreaded' 'key|cpython-3.13.0-windows-x86_64-none' \
+    'pad|'"$(printf '\t ')"'3.13'"$(printf ' \t')" 'comment|  # '"$(printf '\303\251')" 'name|repoenv' |
+    LC_ALL=C awk -F'|' -v a="$alpha" '{
+        l = $2; sub(/^[ \t]+/, "", l)
+        if (l == "" || substr(l, 1, 1) == "#") next
+        for (i = 1; i <= length(l); i++) if (!index(a, substr(l, i, 1))) { print $1; next }
+    }' | tr '\n' ' ')
+assert_eq "cmd/python: the lines the alphabet check counts" \
+    "nbsp nbsp-after ideo vt vt-after ff-after kanji eacute drive slash " "$counted"
 
 echo "[cmd] pip outside a venv runs nothing"
 # The no-venv branch ends before uv pip: `uv pip` would pick the .venv in or

@@ -41,9 +41,18 @@ rem there, not beside the file, and takes a directory for a venv and runs
 rem its python. One that holds version requests alone (3.13, cpython@3.13)
 rem does not count, so a pyenv .python-version in the user's folder leaves
 rem that folder alone, unless the current directory holds something of the
-rem same name. uv trims other white space as well (U+00A0, U+3000 and the
-rem like), which cmd cannot. findstr and for /f read the file, so no line
-rem of it reaches cmd's parser; the tab in delims= is a tab.
+rem same name. A line with any other character than the ones version
+rem requests use (ASCII letters and digits, spaces, tabs and
+rem . @ + - _ < > = ! ~ , *) counts as well: uv trims other white space
+rem too (U+00A0, U+3000, VT, FF and the like), and for /f reads a name
+rem outside ASCII in the console code page, which garbles it for if exist
+rem unless that is UTF-8. In the third line below, the second for /f skips
+rem a line that starts with # (it has no delims to skip before it looks),
+rem and the third has those characters for delims, so it leaves a token
+rem only where another character is; the x before the line and its eol=,
+rem (both of them delims) keep the line's first character from being read
+rem as a comment. findstr and for /f read the file, so no line of it
+rem reaches cmd's parser; the tab in delims= is a tab.
 set "_d=%CD%"
 :walk
 if "%_d:~-1%"=="\" set "_d=%_d:~0,-1%"
@@ -53,6 +62,7 @@ if not defined _m if exist "%_d%\pyvenv.cfg" set "_m=%_d%\pyvenv.cfg"
 if not defined _m if exist "%_d%\uv.toml" set "_m=%_d%\uv.toml"
 for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" "%SystemRoot%\System32\findstr.exe" /r /c:"^ *[/\\]" /c:"^ *[^# ].*[/\\]" "%_d%\%%f" >nul 2>&1 && set "_m=%_d%\%%f"
 for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f "tokens=1 eol=# delims=	" %%n in ("%%l") do if not defined _m if exist "%%n" set "_m=%_d%\%%f") 2>nul
+for %%f in (.python-version .python-versions) do if not defined _m if exist "%_d%\%%f" (for /f "usebackq tokens=* eol=#" %%l in ("%_d%\%%f") do for /f "eol=# delims=" %%k in ("%%l") do for /f "tokens=1 eol=, delims=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.@+-_<>=!~,*	 " %%c in ("x%%k") do if not defined _m set "_m=%_d%\%%f") 2>nul
 if defined _m goto direct
 for %%u in ("%_d%\..") do set "_u=%%~fu"
 if "%_u:~-1%"=="\" set "_u=%_u:~0,-1%"

@@ -14,7 +14,8 @@ rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
 rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path
-rem or something in the current directory, for --version / -V too, and
+rem or something in the current directory, or holds a character version
+rem requests do not use, for --version / -V too, and
 rem elsewhere uv run for those as well; pip runs nothing outside a venv,
 rem and in a venv without pip.exe runs uv pip with --config-file and your
 rem own uv.toml, or with --no-config without one; wc fails, with no
@@ -460,6 +461,33 @@ cd /d "%T%\pyverbom" || exit /b 1
 >>"%W%" echo [x]
 call "%BIN%\python.cmd" -c x >"%O%" 2>&1
 call :expect %errorlevel% 0 "python: beside a .python-version with a byte order mark before #, the system python and a line, not uv run"
+rem uv trims more white space than spaces and tabs, and for /f reads a name
+rem outside ASCII in the console code page, which garbles it for if exist:
+rem a line that holds a character version requests do not use counts. Here
+rem U+00A0 before repoenv, a VT after it (findstr cannot see one at the end
+rem of a line), and the name U+74B0 U+5883 in UTF-8, each beside a folder of
+rem the name uv takes. A file of version requests, with an indented comment
+rem that holds U+00E9, does not count.
+mkdir "%T%\pyvnbsp\repoenv" "%T%\pyvvt\repoenv" "%T%\pyvkanji" "%T%\pyvreq" || exit /b 1
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$u = New-Object Text.UTF8Encoding $false; $k = [string][char]0x74B0 + [char]0x5883; [IO.File]::WriteAllBytes($env:T + '\pyvnbsp\.python-version', $u.GetBytes([string][char]0xA0 + 'repoenv' + [char]10)); [IO.File]::WriteAllBytes($env:T + '\pyvvt\.python-version', $u.GetBytes('repoenv' + [char]11 + [char]10)); [IO.File]::WriteAllBytes($env:T + '\pyvkanji\.python-version', $u.GetBytes($k + [char]10)); $null = [IO.Directory]::CreateDirectory($env:T + '\pyvkanji\' + $k); [IO.File]::WriteAllBytes($env:T + '\pyvreq\.python-version', $u.GetBytes('>=3.12,<3.14' + [char]10 + 'cpython@3.13' + [char]10 + '~=3.12' + [char]10 + '!=3.11' + [char]10 + '3.12.*' + [char]10 + '  # ' + [char]0xE9 + [char]10))" || exit /b 1
+for %%v in (pyvnbsp pyvvt pyvkanji) do (
+    cd /d "%T%\%%v" || exit /b 1
+    >"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from %T%\%%v\.python-version
+    >>"%W%" echo [@sys]
+    >>"%W%" echo [-c]
+    >>"%W%" echo [x]
+    call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+    call :expect %%errorlevel%% 0 "python: beside a .python-version in %%v, the system python and a line, not uv run"
+)
+cd /d "%T%\pyvreq" || exit /b 1
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python: beside a .python-version of version requests and an indented comment, uv run"
 rem A line that names something in the current directory counts as well,
 rem without the spaces and tabs around it (pyvpad), and a version request
 rem too (pyv313): uv looks a bare name up there, not beside the file, and
