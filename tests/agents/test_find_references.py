@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1411,7 +1412,10 @@ def test_a_dollar_name_right_before_a_brace_in_code_is_found(
         "class Child extends Store${}\n"
         "const s = `${n} Store${n}`;\n"
         "const label = `ok`; class Two extends Store${}\n"
-        "const t = `${class extends Store${}}`;\n",
+        "const t = `${class extends Store${}}`;\n"
+        "/* ` */ class Three extends Store${}\n"
+        "const re = /`/; class Four extends Store${}\n"
+        "const u = `${ /* } */ class extends Store${}}`;\n",
     )
     for env in backends:
         proc = run("--def", "Store$", "--root", str(tmp_path), env=env)
@@ -1424,7 +1428,20 @@ def test_a_dollar_name_right_before_a_brace_in_code_is_found(
             "app.js:2:use:class Child extends Store${}",
             "app.js:4:use:const label = `ok`; class Two extends Store${}",
             "app.js:5:use:const t = `${class extends Store${}}`;",
+            "app.js:6:use:/* ` */ class Three extends Store${}",
+            "app.js:7:use:const re = /`/; class Four extends Store${}",
+            "app.js:8:use:const u = `${ /* } */ class extends Store${}}`;",
         ]
+
+
+def test_a_line_full_of_template_interpolations_is_read_once() -> None:
+    # Each `$` before `{` was checked by reading the line again from its
+    # start, so a line of n interpolations took time in n squared: 6,400 of
+    # them took about 5 seconds. Each line is now read once.
+    line = "const s = `" + "${x}" * 50_000 + "`;"
+    start = time.perf_counter()
+    assert not _common.mentions(line, ".js", "$")
+    assert time.perf_counter() - start < 5
 
 
 def test_javascript_names_holding_a_dollar_are_found(

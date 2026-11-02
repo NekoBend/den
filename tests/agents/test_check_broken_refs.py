@@ -1354,7 +1354,9 @@ def test_a_removed_dollar_name_right_before_a_brace_in_code_is_reported(
         "class Child extends Store${}\n"
         "const s = `${keep()} Store${keep()}`;\n"
         "const label = `ok`; class Two extends Store${}\n"
-        "const t = `${class extends Store${}}`;\n",
+        "const t = `${class extends Store${}}`;\n"
+        "/* ` */ class Three extends Store${}\n"
+        "const re = /`/; class Four extends Store${}\n",
     )
     git(tmp_path, "add", "-A")
     git(tmp_path, "commit", "-q", "-m", "base")
@@ -1369,6 +1371,8 @@ def test_a_removed_dollar_name_right_before_a_brace_in_code_is_reported(
             "app.js:2:broken_ref:Store$:class Child extends Store${}",
             "app.js:4:broken_ref:Store$:const label = `ok`; class Two extends Store${}",
             "app.js:5:broken_ref:Store$:const t = `${class extends Store${}}`;",
+            "app.js:6:broken_ref:Store$:/* ` */ class Three extends Store${}",
+            "app.js:7:broken_ref:Store$:const re = /`/; class Four extends Store${}",
         ]
 
 

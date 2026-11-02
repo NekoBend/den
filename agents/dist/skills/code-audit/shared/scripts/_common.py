@@ -730,34 +730,50 @@ def _word_rx(
     )
 
 
-_TEXT = -1  # _in_template_text's mark for a template's text
+_TEXT = -1  # _TemplateScan's mark for a template's text
 
 
-def _in_template_text(line: str, pos: int) -> bool:
-    """Whether column `pos` of a JavaScript or TypeScript line is in a template
-    literal's text, by a scan from the line's start: a backtick opens or
-    closes a template, a `${` in its text opens code up to the matching `}`,
-    and a quote in code opens a string. A line that starts inside a template
-    or a comment spanning lines is read as code, so there a `$` name before
-    `{` counts."""
-    stack: list[int] = []  # _TEXT: a template's text; else a ${ } code depth
-    quote = ""
-    i = 0
-    while i < pos:
-        if stack and stack[-1] == _TEXT:
-            i = _template_step(line, i, stack)
-        elif quote or line[i] in "'\"":
-            i, quote = _string_step(line, i, quote)
-        elif line.startswith("//", i):
+class _TemplateScan:
+    """Whether columns of one JavaScript or TypeScript line are in a template
+    literal's text, read once from the line's start as the columns asked
+    about move right: a backtick opens or closes a template, a `${` in its
+    text opens code up to the matching `}`, a quote in code opens a string,
+    and a `/* */` comment is skipped. Any other `/` in code (a `//` comment,
+    a regular expression or a division, which one line cannot tell apart)
+    ends the reading: from there on every column counts as code, so a `$`
+    name before `{` there still counts. A line that starts inside a
+    template or a comment spanning lines is read as code too."""
+
+    def __init__(self, line: str) -> None:
+        self.line = line
+        self.i = 0
+        self.stack: list[int] = []  # _TEXT: a template's text; else a ${ } depth
+        self.quote = ""
+        self.lost = False
+
+    def in_text(self, pos: int) -> bool:
+        line = self.line
+        while self.i < pos and not self.lost:
+            if self.stack and self.stack[-1] == _TEXT:
+                self.i = _template_step(line, self.i, self.stack)
+            elif self.quote or line[self.i] in "'\"":
+                self.i, self.quote = _string_step(line, self.i, self.quote)
+            elif line.startswith("/*", self.i):
+                end = line.find("*/", self.i + 2)
+                self.lost = end < 0
+                self.i = end + 2
+            elif line[self.i] == "/":
+                self.lost = True
+            else:
+                _code_step(line[self.i], self.stack)
+                self.i += 1
+        if self.lost or self.quote or not self.stack:
             return False
-        else:
-            _code_step(line[i], stack)
-            i += 1
-    return bool(stack) and stack[-1] == _TEXT and not quote
+        return self.stack[-1] == _TEXT
 
 
 def _template_step(line: str, i: int, stack: list[int]) -> int:
-    """One step of _in_template_text in a template's text; the next column."""
+    """One step of _TemplateScan in a template's text; the next column."""
     if line[i] == "\\":
         return i + 2
     if line[i] == "`":
@@ -769,7 +785,7 @@ def _template_step(line: str, i: int, stack: list[int]) -> int:
 
 
 def _string_step(line: str, i: int, quote: str) -> tuple[int, str]:
-    """One step of _in_template_text at or in a quoted string: the next
+    """One step of _TemplateScan at or in a quoted string: the next
     column and the quote still open ("" once it closes)."""
     ch = line[i]
     if not quote:
@@ -780,7 +796,7 @@ def _string_step(line: str, i: int, quote: str) -> tuple[int, str]:
 
 
 def _code_step(ch: str, stack: list[int]) -> None:
-    """One step of _in_template_text in code: a backtick opens a template, and
+    """One step of _TemplateScan in code: a backtick opens a template, and
     braces count towards the `}` that ends a `${`."""
     if ch == "`":
         stack.append(_TEXT)
@@ -805,7 +821,7 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     does not name `$`, nor in `` `users${x}` `` does it name `users$`. In
     code the name stands: `class X extends Store${}` names `Store$`, also
     after a closed template on the line or inside a `${...}`
-    (_in_template_text).
+    (_TemplateScan).
     """
     ignore_case = ext in CASE_INSENSITIVE_EXTS
     if not ignore_case and symbol not in line:  # the cheap test first
@@ -819,8 +835,9 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix, suffix=suffix)
     if not (ext in _JS_EXTS and symbol.endswith("$")):
         return rx.search(line) is not None
+    scan = _TemplateScan(line)
     return any(
-        not (line.startswith("{", m.end()) and _in_template_text(line, m.end() - 1))
+        not (line.startswith("{", m.end()) and scan.in_text(m.end() - 1))
         for m in rx.finditer(line)
     )
 
