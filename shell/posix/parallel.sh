@@ -244,6 +244,28 @@ prm() {
     printf '%s\0' "${items[@]}" | _parallel_exec "$jobs" "${#items[@]}" "$gnu" rm "$flags" --
 }
 
+# _ptar_rename <from> <to> → rename <from> to <to> for ptar, and fail rather
+# than move it INTO a directory at <to>, as _ar_rename in functions.sh does
+# for archive() (its comment says how). ptar refuses a directory at <out>
+# before it starts, but one made there while tar ran got the new archive
+# inside it, ptar reported success, and the previous archive went with the
+# staging directory.
+_ptar_rename() {
+    if command mv --version >/dev/null 2>&1; then
+        command mv -fT -- "$1" "$2"
+        return
+    fi
+    if [ -d "$2" ]; then
+        echo "ptar: output '$2' is a directory" >&2
+        return 1
+    fi
+    command mv -f -- "$1" "$2" || return
+    if [ -d "$2" ]; then
+        echo "ptar: output '$2' is a directory; '${1##*/}' went into it" >&2
+        return 1
+    fi
+}
+
 # _ptar_pipe <out> <compressor> <compressor-option> <src...>
 # `tar | compressor > out` for ptar. Without pipefail a pipeline's status is
 # the compressor's, so a source tar could not read (a typo, a permission)
@@ -258,26 +280,108 @@ prm() {
 # shared directory could be swapped for a symlink before the shell opens it.
 # tar leaves that directory out by its unique name: with <out> inside a source
 # (`ptar out.tgz .`), it would otherwise store the half-written archive.
+#
+# tar writes to a pipe here, so it cannot tell that an existing <out> is its
+# own archive (nor can `tar czf <out>`, whose compressor is a pipe as well;
+# only an uncompressed `tar cf` notices): a rerun of `ptar backup.tgz .` stored
+# the previous backup.tgz, files deleted since and all, inside the new one,
+# which grew by a whole copy each time. An existing <out> is moved into the
+# staging directory before tar starts, so tar leaves it out with the rest of
+# that directory; the new archive then replaces it, or on failure it is put
+# back. The threaded forms and the single-threaded fallbacks all go this way.
+# A source that IS <out> (`ptar all.tgz *` run again), under its own name or
+# through a link, is dropped first, as archive() drops one: moved aside, it
+# would be a name tar cannot find, and a hard link would still hold it. The
+# steps run in a subshell that only notes INT, TERM and HUP, restores, cleans
+# up and then raises the signal again, the way archive()'s zip/7z branch does
+# (its comments say why); a restore that fails keeps the staging directory and
+# names it instead of removing the only copy of the old archive. The new
+# archive and the old one go back to <out> through _ptar_rename, never into a
+# directory found there.
 _ptar_pipe() {
-    local out="$1" comp="$2" copt="$3" dir tmpd rc
+    local out="$1" comp="$2" copt="$3" dir tmpd prev rc sig s
+    local -a keep=()
     shift 3
+    # Every source is asked, whatever its name, as in archive(): a hard link
+    # to <out> under another name (latest.tgz beside backup.tgz) is the old
+    # archive too, and tar stats each source anyway. Only the sources as given
+    # are asked: a hard link to <out> inside a source folder is still stored,
+    # since tar cannot leave a file out by its inode.
+    if [ -e "$out" ] || [ -L "$out" ]; then
+        for s in "$@"; do
+            if [ "$s" -ef "$out" ]; then
+                continue
+            fi
+            keep+=("$s")
+        done
+        set -- "${keep[@]}"
+        if [ $# -eq 0 ]; then
+            echo "ptar: no source besides the output '$out'" >&2
+            return 1
+        fi
+    fi
     case "$out" in
         */*) dir="${out%/*}" ;;
         *)   dir="." ;;
     esac
-    tmpd=$(command mktemp -d "$dir/.ptar.XXXXXX" 2>/dev/null)
+    # `|| tmpd=`: under a caller's `set -e` a failed mktemp ended the shell
+    # here, before the message below.
+    tmpd=$(command mktemp -d "$dir/.ptar.XXXXXX" 2>/dev/null) || tmpd=
     if [ -z "$tmpd" ]; then
         echo "ptar: cannot create a temporary directory in '$dir'" >&2
         return 1
     fi
-    ( set -o pipefail; tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive" )
-    rc=$?
-    if [ "$rc" -eq 0 ]; then
-        mv -f -- "$tmpd/archive" "$out"
-        rc=$?
-    fi
-    rm -rf -- "$tmpd"
-    return "$rc"
+    # Each step in here that can fail (tar, the compressor, mv, rm) runs in a
+    # condition or with `|| true`. The subshell inherits a caller's `set -e`,
+    # and a failing tar or mv left in plain sight ended it on the spot: the
+    # old archive stayed in the staging directory, and nothing said so.
+    (
+        set -o pipefail
+        sig=
+        trap 'sig=INT' INT
+        trap 'sig=TERM' TERM
+        trap 'sig=HUP' HUP
+        prev="$tmpd/previous"
+        rc=1
+        if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$prev"; then
+            if [ -z "$sig" ]; then
+                # The signal is asked about again once tar and the compressor
+                # are done, before anything is published: one that did not
+                # stop them (sent to this shell alone, or ignored by them)
+                # still makes this an interrupted run, and the old archive goes
+                # back as after a failure. Unasked, the new archive replaced
+                # it and the old one was deleted just before the signal was
+                # raised again.
+                if tar -cf - --exclude="${tmpd##*/}" -- "$@" | command "$comp" "$copt" > "$tmpd/archive" &&
+                    [ -z "$sig" ]; then
+                    if _ptar_rename "$tmpd/archive" "$out"; then
+                        rc=0
+                    else
+                        rc=$?
+                    fi
+                else
+                    rc=$?
+                fi
+            fi
+        fi
+        # Asked of the staging directory, not of a flag or of mv's status, as
+        # in archive(): a move cut short by a signal may still have happened.
+        if [ "$rc" -ne 0 ] && { [ -e "$prev" ] || [ -L "$prev" ]; }; then
+            _ptar_rename "$prev" "$out" || true
+        fi
+        if [ "$rc" -ne 0 ] && { [ -e "$prev" ] || [ -L "$prev" ]; }; then
+            echo "ptar: previous '$out' kept at $prev" >&2
+        else
+            rm -rf -- "$tmpd" || true
+        fi
+        if [ -n "$sig" ]; then
+            trap - "$sig"
+            # $$ is the parent shell's pid, even in a subshell; the sh
+            # started here is a child of this subshell.
+            kill -s "$sig" "$(exec sh -c 'echo "$PPID"')"
+        fi
+        exit "$rc"
+    )
 }
 
 # ptar → parallel compress using pigz/pbzip2/pxz when available
@@ -290,8 +394,9 @@ ptar() {
     local out="$1"
     shift
 
-    # A directory at the output path is not an output: the staged rename in
-    # _ptar_pipe would move the archive INTO it and report success.
+    # A directory at the output path is not an output. Refused here, with a
+    # message of ptar's own, before anything runs; _ptar_rename also refuses
+    # one that appears while tar runs.
     if [ -d "$out" ]; then
         echo "ptar: output '$out' is a directory" >&2
         return 1
@@ -307,7 +412,7 @@ ptar() {
                 _ptar_pipe "$out" pigz -p"$jobs" "$@"
             else
                 echo "+ ptar: compressing → $out (using standard)"
-                tar czf "$out" -- "$@"
+                _ptar_pipe "$out" gzip -c "$@"
             fi
             ;;
         *.tar.bz2|*.tbz2)
@@ -316,7 +421,7 @@ ptar() {
                 _ptar_pipe "$out" pbzip2 -p"$jobs" "$@"
             else
                 echo "+ ptar: compressing → $out (using standard)"
-                tar cjf "$out" -- "$@"
+                _ptar_pipe "$out" bzip2 -c "$@"
             fi
             ;;
         *.tar.xz|*.txz)
@@ -328,12 +433,15 @@ ptar() {
                 _ptar_pipe "$out" xz -T"$jobs" "$@"
             else
                 echo "+ ptar: compressing → $out (using standard)"
-                tar cJf "$out" -- "$@"
+                _ptar_pipe "$out" xz -c "$@"
             fi
             ;;
         *.tar)
             echo "+ ptar: archiving → $out (no compression)"
-            tar -cf "$out" -- "$@"
+            # Staged as the compressed forms are, cat in place of a compressor:
+            # tar -cf "$out" truncated the old archive before a missing source
+            # failed the run.
+            _ptar_pipe "$out" cat - "$@"
             ;;
         *)
             echo "ptar: unsupported format '$out'" >&2

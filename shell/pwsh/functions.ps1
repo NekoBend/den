@@ -369,10 +369,12 @@ function _ArSameFile([string]$A, [string]$B) {
     & /bin/sh -c 'test "$1" -ef "$2"' _ $fa $fb
     return ($LASTEXITCODE -eq 0)
   }
-  # Windows. The case-insensitive compare settles the spellings people type,
-  # NTFS being case-insensitive, and is only the fast path: Windows has hard
-  # links and symlinks too, and no -ef to ask about them.
-  if ($fa -eq $fb) { return $true }
+  # Windows. The exact compare is only the fast path: Windows has hard links
+  # and symlinks too, and no -ef to ask about them. Spellings that differ
+  # only in case are asked of the folder below (_DenOneEntry): taken as one
+  # file outright, they made a case-sensitive folder's BACKUP.ZIP the output
+  # backup.zip, and archive left that file out without a word.
+  if ($fa -ceq $fb) { return $true }
   if (-not (Test-Path -LiteralPath $fb)) { return $false }
   $ia = Get-Item -LiteralPath $fa -Force -ErrorAction SilentlyContinue
   $ib = Get-Item -LiteralPath $fb -Force -ErrorAction SilentlyContinue
@@ -387,9 +389,13 @@ function _ArSameFile([string]$A, [string]$B) {
     throw 'a symlinked source or output requires PowerShell 7+ (pwsh), not Windows PowerShell 5.1'
   }
   # A symlink names another path: compare what each one actually points at.
+  # Two spellings of one path but for case are one file in an ordinary folder
+  # and two in a case-sensitive one; _DenOneEntry tells which, and throws
+  # (naming both) when it cannot.
   $ra = _ArLinkTarget $ia
   $rb = _ArLinkTarget $ib
-  if ($ra -eq $rb) { return $true }
+  if ($ra -ceq $rb) { return $true }
+  if ($ra -eq $rb -and (_DenOneEntry $ra $rb)) { return $true }
   # A hard link is one file under several names, and on Windows .Target
   # enumerates the OTHER names for LinkType 'HardLink'. They come back
   # volume-relative, so both sides are compared with the root dropped;
@@ -462,8 +468,8 @@ function _ArCompressTo([string]$ToolPath, [string]$Source, [string]$Dest) {
 # 7z fail on the old archive once it was moved aside, and the zip writer stored
 # the previous archive inside the new one. Only a source with the output's
 # leaf name reaches _ArSameFile, which forks on Linux/macOS; it then settles
-# './all.7z', a full path, case on a case-insensitive volume and links, as the
-# POSIX twin's '-ef' does.
+# './all.7z', a full path, case (on Windows by the folder: see _DenOneEntry;
+# elsewhere -ef) and links, as the POSIX twin's '-ef' does, and throws when it cannot tell.
 function _ArDropOutput([string[]]$Sources = @(), [string]$Output = '') {
   $leaf = ($Output -split '[\\/]')[-1]
   $kept = @(foreach ($s in $Sources) {
@@ -474,12 +480,41 @@ function _ArDropOutput([string[]]$Sources = @(), [string]$Output = '') {
   return $kept
 }
 
+# _ArNameComparer → how archive compares the names inside a zip: without
+# regard to case on Windows, where extracting writes two names that differ
+# only in case onto one file, and exactly elsewhere. The platform is a
+# parameter, so that a test can apply either rule on any system.
+function _ArNameComparer([bool]$Windows) {
+  if ($Windows) { return [System.StringComparer]::OrdinalIgnoreCase }
+  return [System.StringComparer]::Ordinal
+}
+
 # _ArZipTo → write a zip of $Sources into $Dest, a file that must not exist
 # yet, for archive. A directory is stored under its own name with everything
 # beneath it, hidden entries included (Get-ChildItem -Force), and a directory
 # entry for every folder, as `zip -r` does; a file is stored under its name.
+# Only the name, where `zip -r` keeps the path as given: two sources with one
+# name (alpha/config.txt and beta/config.txt, or two folders called src) made
+# two entries of that name, and extracting kept only the last. So every entry
+# name is checked before $Dest is created, and two paths that would be stored
+# under one name throw, naming both. On Windows the names are compared without
+# regard to case (_ArNameComparer): a case-sensitive folder there (WSL makes
+# them) can hold config.txt and CONFIG.TXT, which would extract onto one file.
+# A source named twice, as the same full path however it is written (p1/src,
+# ./p1/src, the absolute path), is one source and is stored once. Only the
+# same full path counts: another route to the same folder (a symlinked parent)
+# is a second source, refused when its names clash; and compared without
+# regard to case, config.txt and CONFIG.TXT in such a folder were taken for
+# one source, and one of the two files was silently left out.
+# (`zip -r` stores a path given twice in one spelling once, but refuses
+# p1/src next to ./p1/src: "cannot repeat names in zip file".)
 # $Skip is the final output: a source directory that holds it does not
-# archive the old archive into the new one. Every path is listed before $Dest
+# archive the old archive into the new one. A file whose name differs from
+# it only in case is left out only when it is the output (see _DenOneEntry):
+# in a case-sensitive folder it is a file of its own, and on Windows it used
+# to be left out without a word; on a case-insensitive volume elsewhere
+# (macOS's default) only Windows' folders were asked, and the old archive,
+# spelled otherwise, was stored inside the new one. Every path is listed before $Dest
 # is created, so the zip being written is never one of its own entries. Any
 # unreadable source throws, and the caller discards $Dest.
 function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = '') {
@@ -487,25 +522,41 @@ function _ArZipTo([string[]]$Sources = @(), [string]$Skip = '', [string]$Dest = 
   Add-Type -AssemblyName System.IO.Compression
   $sess = $ExecutionContext.SessionState.Path
   $skipFull = if ($Skip) { $sess.GetUnresolvedProviderPathFromPSPath($Skip) } else { '' }
+  $skipThere = $skipFull -and (Test-Path -LiteralPath $skipFull)
   $onWindows = ($env:OS -eq 'Windows_NT' -or $IsWindows)
-  # (file item or $null for a folder, entry name) pairs, in archive order.
+  # The separators of the file system the paths come from. On Linux and macOS
+  # a '\' is part of a name: turned into '/' as well, a file 'a\b.txt' and a
+  # file 'b.txt' in a folder 'a' were stored under one entry name.
+  $sep = [System.IO.Path]::DirectorySeparatorChar
+  $seps = [char[]]@($sep, [System.IO.Path]::AltDirectorySeparatorChar)
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  # (file item or $null for a folder, entry name, the path it is stored
+  # from) triples, in archive order.
   $entries = [System.Collections.Generic.List[object]]::new()
   foreach ($src in $Sources) {
     $item = Get-Item -LiteralPath $sess.GetUnresolvedProviderPathFromPSPath($src) -Force -ErrorAction Stop
+    $root = $item.FullName.TrimEnd($seps)
+    if (-not $seen.Add($root)) { continue }
     if (-not $item.PSIsContainer) {
-      $entries.Add(@($item, $item.Name))
+      $entries.Add(@($item, $item.Name, $src))
       continue
     }
-    $root = $item.FullName.TrimEnd('\', '/')
-    $entries.Add(@($null, "$($item.Name)/"))
+    $entries.Add(@($null, "$($item.Name)/", $src))
     foreach ($c in Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction Stop) {
       $full = $c.FullName
       $rel = if ($full.Length -gt $root.Length) { $full.Substring($root.Length + 1) } else { $c.Name }
-      $name = "$($item.Name)/" + $rel.Replace('\', '/')
-      if ($c.PSIsContainer) { $entries.Add(@($null, "$name/")); continue }
-      $isOutput = if ($onWindows) { $full -eq $skipFull } else { $full -ceq $skipFull }
-      if (-not $isOutput) { $entries.Add(@($c, $name)) }
+      $name = "$($item.Name)/" + $rel.Replace($sep, [char]'/')
+      if ($c.PSIsContainer) { $entries.Add(@($null, "$name/", $full)); continue }
+      $isOutput = ($full -ceq $skipFull) -or ($skipThere -and $full -eq $skipFull -and (_DenOneEntry $full $skipFull))
+      if (-not $isOutput) { $entries.Add(@($c, $name, $full)) }
     }
+  }
+  # Each entry name (a folder's without its '/') and the path stored under it.
+  $taken = [System.Collections.Generic.Dictionary[string, string]]::new((_ArNameComparer $onWindows))
+  foreach ($e in $entries) {
+    $key = $e[1].TrimEnd('/')
+    if ($taken.ContainsKey($key)) { throw "'$($taken[$key])' and '$($e[2])' would both be stored as '$key'" }
+    $taken[$key] = $e[2]
   }
   $fs = [System.IO.File]::Open($sess.GetUnresolvedProviderPathFromPSPath($Dest), [System.IO.FileMode]::CreateNew)
   try {
@@ -560,15 +611,25 @@ function extract {
     $global:LASTEXITCODE = 0
     $ok = $true
     switch -Regex ($Path) {
-      '\.tar\.gz$|\.tgz$'    { tar xzf $Path; break }
-      '\.tar\.bz2$|\.tbz2$'  { tar xjf $Path; break }
-      '\.tar\.xz$|\.txz$'    { tar xJf $Path; break }
-      # tar shells zstd out for these, so the guard is on zstd, not tar.
+      # tar is resolved like every tool below (see the 7z comment): a bare
+      # `tar` that is not installed raised only a non-terminating
+      # CommandNotFound and left $LASTEXITCODE at 0, so the archive counted as
+      # extracted, and `extract a.tgz && Remove-Item a.tgz` deleted it.
+      '\.tar\.gz$|\.tgz$'    { $t = _ArTool 'tar'; if ($t) { & $t xzf $Path } else { Write-Error 'tar is not installed'; $ok = $false }; break }
+      '\.tar\.bz2$|\.tbz2$'  { $t = _ArTool 'tar'; if ($t) { & $t xjf $Path } else { Write-Error 'tar is not installed'; $ok = $false }; break }
+      '\.tar\.xz$|\.txz$'    { $t = _ArTool 'tar'; if ($t) { & $t xJf $Path } else { Write-Error 'tar is not installed'; $ok = $false }; break }
+      # tar shells zstd out for these, so zstd is checked as well as tar.
       # tar spawns zstd itself, in its own process, so a PowerShell function
       # cannot shadow that one and there is no path to hand tar; the resolved
       # path is only used where THIS shell does the invoking.
-      '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -xf $Path } else { Write-Error 'zstd is not installed'; $ok = $false }; break }
-      '\.tar$'                { tar xf $Path; break }
+      '\.tar\.zst$|\.tzst$'   {
+        $t = _ArTool 'tar'
+        if (-not $t) { Write-Error 'tar is not installed'; $ok = $false }
+        elseif (_ArTool 'zstd') { & $t --zstd -xf $Path }
+        else { Write-Error 'zstd is not installed'; $ok = $false }
+        break
+      }
+      '\.tar$'                { $t = _ArTool 'tar'; if ($t) { & $t xf $Path } else { Write-Error 'tar is not installed'; $ok = $false }; break }
       # Single file: each tool writes the decompressed file next to the
       # archive. gzip/bzip2/xz consume the archive and zstd keeps it — that is
       # each tool's own default, and the POSIX twin behaves the same way. The
@@ -634,18 +695,93 @@ function archive {
   if (Test-Path -LiteralPath $Output -PathType Container) {
     Write-Error "output '$Output' is a directory" -ErrorAction Stop
   }
-  # The tar branches name their tool in $ran, and its exit code is checked
-  # after the switch: a source tar could not read used to leave a partial
-  # archive while archive, and `pwsh -Command`, reported success.
-  $ran = $null
   $global:LASTEXITCODE = 0
   switch -Regex ($Output) {
-    '\.tar\.gz$|\.tgz$'    { tar czf $Output -- @Sources; $ran = 'tar'; break }
-    '\.tar\.bz2$|\.tbz2$'  { tar cjf $Output -- @Sources; $ran = 'tar'; break }
-    '\.tar\.xz$|\.txz$'    { tar cJf $Output -- @Sources; $ran = 'tar'; break }
-    # tar shells zstd out for these, so the guard is on zstd, not tar.
-    '\.tar\.zst$|\.tzst$'   { if (_ArTool 'zstd') { tar --zstd -cf $Output -- @Sources; $ran = 'tar' } else { Write-Error 'zstd is not installed' -ErrorAction Stop }; break }
-    '\.tar$'                { tar cf $Output -- @Sources; $ran = 'tar'; break }
+    # tar, through the program _ArTool resolves: a bare `tar` that was not
+    # installed raised only a non-terminating CommandNotFound and left
+    # $LASTEXITCODE at 0, so archive reported success with nothing written,
+    # and `archive out.tgz src && Remove-Item -Recurse src` deleted the
+    # sources. tar's own exit code is checked too: a source it could not read
+    # used to leave a partial archive while archive reported success.
+    #
+    # GNU tar cannot tell that it is reading its own archive when it
+    # compresses (it writes to the compressor through a pipe), so a rerun in
+    # the folder it archives (`archive all.tgz .`, or a list holding the old
+    # all.tgz) stored the old archive, and the one being written, inside the
+    # new one, and a failed tar left a cut archive where the old one had been.
+    # As in the POSIX twin, tar writes into a staging folder beside the
+    # output, which it leaves out by its random name (letters and digits, so
+    # no pattern to tar), and an existing output waits in that folder while
+    # tar runs. The new archive takes the output's name only once tar has
+    # succeeded; on failure the old one is put back, or, when even that fails,
+    # kept there and named. The folder is made before tar starts, so nothing
+    # new appears in a folder tar is reading (GNU tar exits 1 on "file changed
+    # as we read it"). The renames are File.Move, which never replaces
+    # anything (Move-Item puts a file INTO a directory found at its
+    # destination, so a directory made at the output while tar ran would have
+    # taken the archive in and reported success), and which every PowerShell
+    # has.
+    '\.tar\.gz$|\.tgz$|\.tar\.bz2$|\.tbz2$|\.tar\.xz$|\.txz$|\.tar\.zst$|\.tzst$|\.tar$' {
+      $flag = if     ($Output -match '\.tar\.gz$|\.tgz$')   { '-z' }
+              elseif ($Output -match '\.tar\.bz2$|\.tbz2$') { '-j' }
+              elseif ($Output -match '\.tar\.xz$|\.txz$')   { '-J' }
+              elseif ($Output -match '\.tar\.zst$|\.tzst$') { '--zstd' }
+              else                                         { $null }
+      $tarPath = _ArTool 'tar'
+      if (-not $tarPath) { Write-Error 'tar is not installed' -ErrorAction Stop }
+      # tar shells zstd out for these, so zstd is checked as well as tar.
+      if ($flag -eq '--zstd' -and -not (_ArTool 'zstd')) { Write-Error 'zstd is not installed' -ErrorAction Stop }
+      # A source that IS the output (a rerun over a list, or a glob, that holds
+      # it) would be a missing name once the output is moved aside.
+      try { $srcs = @(_ArDropOutput $Sources $Output) }
+      catch { Write-Error $_.Exception.Message -ErrorAction Stop }
+      $stageName = '.archive.' + ([System.IO.Path]::GetRandomFileName() -replace '\.', '')
+      $parent = Split-Path -Path $Output -Parent
+      $stage = if ($parent) { Join-Path $parent $stageName } else { $stageName }
+      $tmp = Join-Path $stage 'archive'
+      $prev = Join-Path $stage 'previous'
+      # .NET resolves relative paths against the process directory, which
+      # Set-Location never updates.
+      $sess = $ExecutionContext.SessionState.Path
+      $outFull = $sess.GetUnresolvedProviderPathFromPSPath($Output)
+      $stageFull = $sess.GetUnresolvedProviderPathFromPSPath($stage)
+      $tmpFull = $sess.GetUnresolvedProviderPathFromPSPath($tmp)
+      $prevFull = $sess.GetUnresolvedProviderPathFromPSPath($prev)
+      # Private (0700) on Linux and macOS before anything goes in, as the
+      # posix twin's mktemp -d makes it: see _DenNewPrivateDir.
+      try { _DenNewPrivateDir $stageFull }
+      catch { Write-Error "cannot create a temporary directory '$stage': $($_.Exception.Message)" -ErrorAction Stop }
+      $aside = $false
+      if ($null -ne (Get-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue)) {
+        try { [System.IO.File]::Move($outFull, $prevFull) }
+        catch {
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Error "cannot move '$Output' aside: $($_.Exception.GetBaseException().Message)" -ErrorAction Stop
+        }
+        $aside = $true
+      }
+      $tarArgs = @('-c')
+      if ($flag) { $tarArgs += $flag }
+      $tarArgs += @('-f', $tmp, "--exclude=$stageName", '--') + $srcs
+      $done = $false
+      try {
+        & $tarPath @tarArgs
+        if ($LASTEXITCODE -ne 0) { Write-Error "tar exited $LASTEXITCODE" -ErrorAction Stop }
+        try { [System.IO.File]::Move($tmpFull, $outFull) }
+        catch { Write-Error "cannot put the archive at '$Output': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop }
+        $done = $true
+      } finally {
+        if (-not $done -and $aside) { try { [System.IO.File]::Move($prevFull, $outFull) } catch { } }
+        if (-not $done -and $aside -and $null -ne (Get-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue)) {
+          # Not terminating: the error on its way out is the one that failed.
+          Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+          Write-Error "previous '$Output' kept at $prev" -ErrorAction Continue
+        } else {
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+        }
+      }
+      break
+    }
     # Single-file compression. Every '.tar.*' form and its 't*' alias is
     # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and these
     # four tools compress exactly ONE file: several sources or a directory is a
@@ -789,6 +925,13 @@ function archive {
         if (-not $done) {
           Remove-Item -LiteralPath $Output -Force -ErrorAction SilentlyContinue
           if ($aside) { Move-Item -LiteralPath $prev -Destination $Output -Force -ErrorAction SilentlyContinue }
+          # The move back can fail as well (the folder turned read-only while
+          # 7z ran). The old archive then stays at $prev, a random name nothing
+          # pointed to, so say where it is, as the bash/zsh twin does. Not
+          # terminating: the error on its way out is 7z's.
+          if ($aside -and $null -ne (Get-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue)) {
+            Write-Error "previous '$Output' kept at $prev" -ErrorAction Continue
+          }
         } elseif ($aside) {
           Remove-Item -LiteralPath $prev -Force -ErrorAction SilentlyContinue
         }
@@ -797,7 +940,6 @@ function archive {
     }
     default                 { Write-Error "unsupported format '$Output'" -ErrorAction Stop }
   }
-  if ($ran -and $LASTEXITCODE -ne 0) { Write-Error "$ran exited $LASTEXITCODE" -ErrorAction Stop }
 }
 
 # xt / pk → short names for extract / archive. Aliases (as `snip` is for

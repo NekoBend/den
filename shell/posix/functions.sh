@@ -590,6 +590,30 @@ _ar_stage() {
     fi
 }
 
+# _ar_rename <from> <to> → rename <from> to <to> for archive(), and fail
+# rather than move it INTO a directory at <to>. archive refuses a directory
+# at the output before it starts, but another program can make one there while
+# the archiver runs, and a plain `mv` then put the archive inside it: the new
+# one, with success reported, or the previous one, with nothing said. GNU mv's
+# -T takes <to> as the name to replace, never as a folder. BSD mv has no -T:
+# there a directory is refused before the move, and one made during it fails
+# the step and says where <from> went.
+_ar_rename() {
+    if command mv --version >/dev/null 2>&1; then
+        command mv -fT -- "$1" "$2"
+        return
+    fi
+    if [ -d "$2" ]; then
+        echo "archive: output '$2' is a directory" >&2
+        return 1
+    fi
+    command mv -f -- "$1" "$2" || return
+    if [ -d "$2" ]; then
+        echo "archive: output '$2' is a directory; '${1##*/}' went into it" >&2
+        return 1
+    fi
+}
+
 # archive → create archive (format auto-detected from output filename)
 # NOTE: './' normalisation on $out is required, and so is the end-of-options
 # marker in front of the sources: every argument after $out is a source, never
@@ -618,16 +642,11 @@ archive() {
         return 1
     fi
     case "$_ar_fmt" in
-        tar.gz)             tar czf "$out" -- "$@"   ;;
-        tar.bz2)            tar cjf "$out" -- "$@"   ;;
-        tar.xz)             tar cJf "$out" -- "$@"   ;;
-        # tar shells zstd out for these, so the guard is on zstd, not tar.
-        tar.zst)            _ar_have archive zstd && tar --zstd -cf "$out" -- "$@" ;;
-        tar)                tar cf "$out" -- "$@"    ;;
-        # Single-file compression. Every '.tar.*' form and its 't*' alias is
-        # matched above, so only a bare .gz/.bz2/.xz/.zst reaches here, and
-        # these four tools compress exactly ONE file: several sources or a
-        # directory is a usage error, not something to silently tar up first.
+        # Single-file compression. _ar_format gives every '.tar.*' form and
+        # its 't*' alias a tar format (staged below, with zip and 7z), so only
+        # a bare .gz/.bz2/.xz/.zst reaches here, and these four tools compress
+        # exactly ONE file: several sources or a directory is a usage error,
+        # not something to silently tar up first.
         gz|bz2|xz|zst)
             case "$_ar_fmt" in
                 gz)  _ar_tool=gzip  ;;
@@ -690,42 +709,64 @@ archive() {
             # outputs do -- 'umask -S' gives the directory form, so strip the
             # execute bits it carries.
             chmod "$(umask -S)" "$_ar_tmp" 2>/dev/null && chmod a-x "$_ar_tmp" 2>/dev/null
-            # Publishing can fail too (a read-only directory, a full disk).
-            # Report that, and take the staging directory with it on every exit
-            # path rather than leaving one behind for the caller to find.
-            mv -f -- "$_ar_tmp" "$out"
+            # Publishing can fail too (a read-only directory, a full disk, a
+            # directory made at $out meanwhile: see _ar_rename). Report that,
+            # and take the staging directory with it on every exit path rather
+            # than leaving one behind for the caller to find.
+            _ar_rename "$_ar_tmp" "$out"
             _ar_rc=$?
             rm -rf -- "$_ar_tmpd"
             return "$_ar_rc"
             ;;
+        # tar, zip and 7z write with an existing output moved aside into a
+        # private staging directory beside it (see _ar_stage). On success the
+        # old one is dropped; on failure whatever the archiver left is removed
+        # and the old one is put back (or, when even that fails, left in the
+        # staging directory, named).
+        #
         # zip and 7z UPDATE an archive that already exists: entries for files
         # since deleted from the source stayed in the "new" archive (a removed
-        # secret shipped again), where the tar branches and the pwsh twin
-        # write a fresh one. An existing output is moved aside into a private
-        # staging directory beside it (see _ar_stage), so the archiver always
-        # creates a new file; on success the old one is dropped, on failure
-        # whatever the archiver left is removed and the old one is put back.
-        #
-        # The archiver still writes $out itself, not a staged name: when $out
+        # secret shipped again). Moved aside, the old one is not there to
+        # update. They still write $out itself, not a staged name: when $out
         # lies inside a source directory (`archive all.zip .`), zip and 7z
         # leave the file they are writing out of the archive, and the staging
         # directory, which holds the previous archive, is excluded by its
         # unique name (zip's '*' also matches '/').
         #
+        # tar cannot tell that it is reading its own archive when it
+        # compresses (it writes to the compressor through a pipe; only an
+        # uncompressed `tar cf` notices), so `archive all.tgz .` or
+        # `archive all.tgz *` run again in the folder it archives stored the
+        # old all.tgz, and the one being written, inside the new one. tar
+        # therefore writes into the staging directory, which it leaves out by
+        # its unique name, and the result is renamed over $out only once tar
+        # has succeeded: a failed tar also used to leave a cut archive where
+        # the old one had been.
+        #
         # A source that IS the output, as in `pk all.7z *` run again in the
         # folder it archives, is dropped. Moved aside, the old archive is a
-        # name that no longer exists, so 7z failed on it (and zip warned); left
-        # in place it would be stored inside the new archive. The names are
-        # compared first, because '-ef' stats both files and a glob of
-        # thousands would pay that for each; '-ef' then settles './all.7z', an
-        # absolute path, a symlink and a hard link alike. eval: array syntax
+        # name that no longer exists, so 7z and tar fail on it (and zip
+        # warns); left in place it would be stored inside the new archive.
+        # '-ef' settles './all.7z', an absolute path, a symlink and a hard link
+        # alike, and every source is asked, whatever its name: a hard link to
+        # the output under another name (latest.zip beside backup.zip) still
+        # holds the old archive once it is moved aside, and the archiver stats
+        # each source anyway. Only the sources as given are asked: a hard link
+        # to the output inside a source folder is still stored, since the
+        # archivers cannot leave a file out by its inode. eval: array syntax
         # would stop a POSIX parser reading this file, and an array keeps the
-        # rebuild linear (see the 7z case below for why `set -- "$@" x` is not).
-        zip|7z)
+        # rebuild linear (see the 7z case below for why `set -- "$@" x` is
+        # not).
+        tar.gz|tar.bz2|tar.xz|tar.zst|tar|zip|7z)
+            # tar shells zstd out for .tar.zst, so the guard is on zstd, not
+            # tar; like every check here, it comes before anything is written.
+            if [ "$_ar_fmt" = tar.zst ]; then
+                _ar_have archive zstd || return 1
+            fi
             if [ -e "$out" ] || [ -L "$out" ]; then
                 eval '_ar_keep=()
                     for _ar_s in "$@"; do
-                        if [ "${_ar_s##*/}" = "${out##*/}" ] && [ "$_ar_s" -ef "$out" ]; then
+                        if [ "$_ar_s" -ef "$out" ]; then
                             continue
                         fi
                         _ar_keep+=("$_ar_s")
@@ -746,6 +787,12 @@ archive() {
             # so the caller (a loop at the prompt, a script) still sees an
             # interrupted command. The subshell keeps these traps away from
             # the user's own.
+            #
+            # Each step in it that can fail (the archiver, rm, mv) runs in a
+            # condition or with `|| true`, for the same end: the subshell
+            # inherits a caller's `set -e`, and a failing archiver, rm or mv
+            # left in plain sight ended it on the spot, with the old archive
+            # in the staging directory and nothing said.
             (
                 _ar_sig=
                 trap '_ar_sig=INT' INT
@@ -755,11 +802,24 @@ archive() {
                 _ar_rc=1
                 if { [ ! -e "$out" ] && [ ! -L "$out" ]; } || mv -f -- "$out" "$_ar_prev"; then
                     if [ -z "$_ar_sig" ]; then
+                        # Each branch asks about the signal again once the
+                        # archiver is done, before the new archive counts as
+                        # published (tar's rename; zip and 7z wrote $out
+                        # itself): a signal that did not stop the archiver
+                        # (sent to this shell alone, or ignored by it) still
+                        # makes this an interrupted run, and the old archive
+                        # goes back as after a failure. Unasked, the new
+                        # archive stayed and the old one was deleted just
+                        # before the signal was raised again.
                         case "$_ar_fmt" in
                             zip)
-                                zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@"
+                                if zip -r "$out" -x "*${_ar_tmpd##*/}*" -- "$@" && [ -z "$_ar_sig" ]; then
+                                    _ar_rc=0
+                                else
+                                    _ar_rc=$?
+                                fi
                                 ;;
-                            *)
+                            7z)
                                 # 7z is not in the test image
                                 # (tests/shell/Dockerfile), so a '--' marker
                                 # here cannot be exercised; give the two
@@ -780,21 +840,58 @@ archive() {
                                 # is sourced by those two only), which a POSIX
                                 # parser reading the file would reject.
                                 eval 'set -- "${@/#-/./-}"; set -- "${@/#@/./@}"'
-                                7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@"
+                                if 7z a "$out" '-xr!'"${_ar_tmpd##*/}" "$@" && [ -z "$_ar_sig" ]; then
+                                    _ar_rc=0
+                                else
+                                    _ar_rc=$?
+                                fi
+                                ;;
+                            *)
+                                case "$_ar_fmt" in
+                                    tar.gz)  _ar_z=-z ;;
+                                    tar.bz2) _ar_z=-j ;;
+                                    tar.xz)  _ar_z=-J ;;
+                                    tar.zst) _ar_z=--zstd ;;
+                                    *)       _ar_z= ;;
+                                esac
+                                if tar -c ${_ar_z:+"$_ar_z"} -f "$_ar_tmpd/archive" \
+                                    --exclude="${_ar_tmpd##*/}" -- "$@" &&
+                                    [ -z "$_ar_sig" ] &&
+                                    _ar_rename "$_ar_tmpd/archive" "$out"; then
+                                    _ar_rc=0
+                                else
+                                    _ar_rc=$?
+                                fi
                                 ;;
                         esac
-                        _ar_rc=$?
-                        # What a failed archiver left at $out is not the old
-                        # archive, and must not stay in its place.
-                        [ "$_ar_rc" -ne 0 ] && rm -f -- "$out"
+                        # What a failed zip or 7z left at $out is not the old
+                        # archive, and must not stay in its place. tar wrote
+                        # into the staging directory, so whatever is at $out
+                        # after a failed tar is not archive's to remove.
+                        if [ "$_ar_rc" -ne 0 ]; then
+                            case "$_ar_fmt" in
+                                zip|7z) rm -f -- "$out" || true ;;
+                            esac
+                        fi
                     fi
                 fi
                 # Tested by what is in the staging directory rather than by a
                 # flag: a move-aside cut short may still have moved the file.
                 if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
-                    mv -f -- "$_ar_prev" "$out"
+                    _ar_rename "$_ar_prev" "$out" || true
                 fi
-                rm -rf -- "$_ar_tmpd"
+                # The restore can fail as well: the directory turned read-only
+                # while the archiver ran, another program made a directory at
+                # $out (see _ar_rename), or a second Ctrl-C stopped mv. The
+                # staging directory then holds the only copy of the old
+                # archive, and removing it with the rest lost that archive, so
+                # it is kept and named instead. Asked of the directory once
+                # more, not of mv's status, for the reason above.
+                if [ "$_ar_rc" -ne 0 ] && { [ -e "$_ar_prev" ] || [ -L "$_ar_prev" ]; }; then
+                    echo "archive: previous '$out' kept at $_ar_prev" >&2
+                else
+                    rm -rf -- "$_ar_tmpd" || true
+                fi
                 if [ -n "$_ar_sig" ]; then
                     trap - "$_ar_sig"
                     # $$ is the parent shell's pid, even in a subshell; the sh

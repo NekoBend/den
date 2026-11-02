@@ -437,13 +437,15 @@ for sh in bash zsh; do
     # output: `ptar backup.tgz dir && prm -f dir` deleted unarchived data.
     setup_fixtures
     echo "PRECIOUS" > "$WORK/keep.tgz"
-    for _out in out.tar.xz out.tgz out.tbz2 keep.tgz; do
+    echo "PRECIOUS" > "$WORK/keep.tar"
+    for _out in out.tar.xz out.tgz out.tbz2 keep.tgz keep.tar; do
         $runner "$PARALLEL_SH" "cd '$WORK' && ptar '$WORK/$_out' src missing-src" >/dev/null 2>&1
         assert_failure "$sh/ptar $_out with a missing source fails" "$?"
     done
     assert_not_exists "$sh/ptar failed .tar.xz leaves no archive" "$WORK/out.tar.xz"
     assert_not_exists "$sh/ptar failed .tgz leaves no archive" "$WORK/out.tgz"
     assert_eq "$sh/ptar failed run keeps an existing output" "PRECIOUS" "$(cat "$WORK/keep.tgz")"
+    assert_eq "$sh/ptar failed .tar run keeps an existing output" "PRECIOUS" "$(cat "$WORK/keep.tar")"
     assert_eq "$sh/ptar failed run leaves no staging directory" "" "$(ls -A "$WORK" | grep '^\.ptar\.' | tr -d '\n')"
     $runner "$PARALLEL_SH" "cd '$WORK' && ptar '$WORK/keep.tgz' src" >/dev/null 2>&1
     assert_success "$sh/ptar .tgz over an existing output exit code" "$?"
@@ -467,6 +469,242 @@ for sh in bash zsh; do
         assert_not_contains "$sh/ptar $_out inside its source left staging out" ".ptar." "$actual"
     done
     rm -f "$WORK"/src/out.*
+
+    echo "[$sh] ptar: a rerun leaves the previous archive out of the new one"
+    # On the threaded forms tar writes to a pipe, so it could not tell that
+    # <out> was its own archive: a rerun of `ptar backup.tgz .` stored the
+    # previous backup.tgz, files deleted since and all, inside the new one.
+    setup_fixtures
+    for _out in out.tar.xz out.tgz out.tbz2; do
+        $runner "$PARALLEL_SH" "cd '$WORK/src' && ptar $_out . && ptar $_out ." >/dev/null 2>&1
+        assert_success "$sh/ptar $_out rerun exit code" "$?"
+        actual=$(tar tf "$WORK/src/$_out" 2>/dev/null)
+        assert_contains "$sh/ptar $_out rerun stored the files" "subdir/file3.txt" "$actual"
+        assert_not_contains "$sh/ptar $_out rerun left the previous archive out" "$_out" "$actual"
+        assert_eq "$sh/ptar $_out rerun leaves no staging directory" "" "$(ls -A "$WORK/src" | grep '^\.ptar\.' | tr -d '\n')"
+        rm -f "$WORK/src/$_out"
+    done
+
+    echo "[$sh] ptar: the single-threaded fallbacks leave their own output out too"
+    # Without pigz or pbzip2, ptar ran `tar czf <out>` or `tar cjf <out>`,
+    # which cannot tell that it is reading its own archive either (its
+    # compressor is a pipe too): a rerun stored the old archive inside the new
+    # one, and a failed run left a cut archive where the old one had been. A
+    # PATH with tar, gzip and bzip2 but none of the threaded tools, and no xz,
+    # takes the fallbacks.
+    rm -rf "$WORK/fb"
+    mkdir -p "$WORK/fb/bin" "$WORK/fb/d"
+    for _t in tar gzip bzip2 mktemp mv rm sh cat; do ln -s "$(command -v "$_t")" "$WORK/fb/bin/$_t"; done
+    echo a > "$WORK/fb/d/a.txt"; echo b > "$WORK/fb/d/b.txt"
+    for _out in all.tgz all.tbz2; do
+        actual=$($runner "$PARALLEL_SH" "PATH='$WORK/fb/bin' && cd '$WORK/fb/d' && ptar $_out * && ptar $_out *" 2>&1)
+        assert_success "$sh/ptar $_out fallback rerun over a glob holding the output exit code" "$?"
+        assert_contains "$sh/ptar $_out ran the fallback" "(using standard)" "$actual"
+        assert_eq "$sh/ptar $_out fallback rerun over a glob holding the output" "a.txt b.txt " "$(tar tf "$WORK/fb/d/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+        $runner "$PARALLEL_SH" "PATH='$WORK/fb/bin' && cd '$WORK/fb/d' && ptar $_out ." >/dev/null 2>&1
+        assert_success "$sh/ptar $_out fallback over its own folder exit code" "$?"
+        assert_eq "$sh/ptar $_out fallback over its own folder leaves itself out" "./ ./a.txt ./b.txt " "$(tar tf "$WORK/fb/d/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+        cp "$WORK/fb/d/$_out" "$WORK/fb/before"
+        $runner "$PARALLEL_SH" "PATH='$WORK/fb/bin' && cd '$WORK/fb/d' && ptar $_out a.txt missing" >/dev/null 2>&1
+        assert_failure "$sh/ptar $_out fallback with a missing source fails" "$?"
+        assert_eq "$sh/ptar $_out fallback failed run keeps the previous archive" "$(sha256sum < "$WORK/fb/before")" "$(sha256sum < "$WORK/fb/d/$_out")"
+        assert_eq "$sh/ptar $_out fallback leaves no staging directory" "" "$(ls -A "$WORK/fb/d" | grep '^\.ptar\.' | tr -d '\n')"
+        rm -f "$WORK/fb/d/$_out" "$WORK/fb/before"
+    done
+    # With no xz at all, .txz fails, and what was there stays.
+    echo PRECIOUS > "$WORK/fb/d/keep.txz"
+    $runner "$PARALLEL_SH" "PATH='$WORK/fb/bin' && cd '$WORK/fb/d' && ptar keep.txz a.txt" >/dev/null 2>&1
+    assert_failure "$sh/ptar .txz with no xz fails" "$?"
+    assert_eq "$sh/ptar .txz with no xz keeps what was there" "PRECIOUS" "$(cat "$WORK/fb/d/keep.txz")"
+    assert_eq "$sh/ptar .txz with no xz leaves no staging directory" "" "$(ls -A "$WORK/fb/d" | grep '^\.ptar\.' | tr -d '\n')"
+    rm -rf "$WORK/fb"
+
+    echo "[$sh] ptar: a source that is the output itself is left out"
+    # `ptar all.tgz *` run again: the glob holds the old all.tgz.
+    rm -rf "$WORK/glob"
+    mkdir -p "$WORK/glob"
+    echo a > "$WORK/glob/a.txt"; echo b > "$WORK/glob/b.txt"
+    for _out in all.tar.xz all.tgz all.tbz2; do
+        $runner "$PARALLEL_SH" "cd '$WORK/glob' && ptar $_out * && ptar $_out *" >/dev/null 2>&1
+        assert_success "$sh/ptar $_out rerun over a glob holding the output exit code" "$?"
+        assert_eq "$sh/ptar $_out rerun over a glob holding the output" "a.txt b.txt " "$(tar tf "$WORK/glob/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+        rm -f "$WORK/glob/$_out"
+    done
+    $runner "$PARALLEL_SH" "cd '$WORK/glob' && ptar all.tgz a.txt" >/dev/null 2>&1
+    cp "$WORK/glob/all.tgz" "$WORK/all.tgz.before"
+    err=$($runner_err "$PARALLEL_SH" "cd '$WORK/glob' && ptar all.tgz ./all.tgz '$WORK/glob/all.tgz'")
+    assert_contains "$sh/ptar with only the output as a source says so" "no source besides the output" "$err"
+    $runner "$PARALLEL_SH" "cd '$WORK/glob' && ptar all.tgz ./all.tgz" >/dev/null 2>&1
+    assert_failure "$sh/ptar with only the output as a source fails" "$?"
+    assert_eq "$sh/ptar with only the output as a source keeps it" "$(sha256sum < "$WORK/all.tgz.before")" "$(sha256sum < "$WORK/glob/all.tgz")"
+    rm -rf "$WORK/glob" "$WORK/all.tgz.before"
+
+    echo "[$sh] ptar: a hard link to the output is left out too"
+    # Under another name: only a source with the output's name was checked,
+    # so latest.tgz, a hard link to backup.tgz, stayed a source, and with
+    # backup.tgz moved aside it still held the previous archive.
+    rm -rf "$WORK/hl"
+    mkdir -p "$WORK/hl"
+    echo a > "$WORK/hl/a.txt"; echo b > "$WORK/hl/b.txt"
+    $runner "$PARALLEL_SH" "cd '$WORK/hl' && ptar backup.tgz a.txt" >/dev/null 2>&1
+    ln "$WORK/hl/backup.tgz" "$WORK/hl/latest.tgz"
+    cp "$WORK/hl/backup.tgz" "$WORK/hl.before"
+    $runner "$PARALLEL_SH" "cd '$WORK/hl' && ptar backup.tgz latest.tgz" >/dev/null 2>"$WORK/hl.err"
+    assert_failure "$sh/ptar with only a hard link to the output as a source fails" "$?"
+    assert_contains "$sh/ptar with only a hard link to the output as a source says so" "no source besides the output" "$(cat "$WORK/hl.err")"
+    assert_eq "$sh/ptar with only a hard link to the output as a source keeps it" "$(sha256sum < "$WORK/hl.before")" "$(sha256sum < "$WORK/hl/backup.tgz")"
+    $runner "$PARALLEL_SH" "cd '$WORK/hl' && ptar backup.tgz *" >/dev/null 2>&1
+    assert_success "$sh/ptar over a glob holding a hard link to the output exit code" "$?"
+    assert_eq "$sh/ptar over a glob holding a hard link to the output" "a.txt b.txt " "$(tar tf "$WORK/hl/backup.tgz" 2>/dev/null | sort | tr '\n' ' ')"
+    rm -rf "$WORK/hl" "$WORK/hl.before" "$WORK/hl.err"
+
+    echo "[$sh] ptar: a previous archive that cannot be put back is kept and named"
+    # The existing output now waits in the staging directory while tar runs.
+    # A pigz stub that fails after putting a directory (holding a 'previous'
+    # directory) where the archive goes makes moving it back fail, as a
+    # directory that turned read-only would, even as root.
+    rm -rf "$WORK/back"
+    mkdir -p "$WORK/back/bin" "$WORK/back/src"
+    echo x > "$WORK/back/src/x"
+    echo PRECIOUS > "$WORK/back/keep.tgz"
+    printf '#!/bin/sh\ncat > /dev/null\nmkdir -p keep.tgz/previous\nexit 3\n' > "$WORK/back/bin/pigz"
+    chmod +x "$WORK/back/bin/pigz"
+    err=$($runner_err "$PARALLEL_SH" "PATH='$WORK/back/bin:$PATH' && cd '$WORK/back' && ptar keep.tgz src")
+    assert_contains "$sh/ptar says where the previous archive was kept" "ptar: previous 'keep.tgz' kept at ./.ptar." "$err"
+    assert_eq "$sh/ptar kept the previous archive it could not put back" "PRECIOUS" "$(cat "$WORK/back"/.ptar.*/previous 2>/dev/null)"
+    rm -rf "$WORK/back"
+
+    echo "[$sh] ptar: a directory made at the output while tar runs takes in neither archive"
+    # ptar refuses a directory at <out> before it starts, but another program
+    # can make one there while tar runs, and the old archive is out of the way
+    # then. mv moved the new archive INTO that directory, ptar reported
+    # success, and the old archive went with the staging directory. A pigz
+    # stub that makes an empty directory at <out> stands in for that program.
+    # The same runs again with a BSD-like mv (no --version, no -T): once with
+    # the directory there before the rename, once with it made by mv's own
+    # call, after the check (the race the check cannot close).
+    rm -rf "$WORK/race"
+    mkdir -p "$WORK/race/bin" "$WORK/race/bsd" "$WORK/race/src"
+    echo x > "$WORK/race/src/x"
+    printf '#!/bin/sh\ngzip -c\nmkdir keep.tgz\n' > "$WORK/race/bin/pigz"
+    chmod +x "$WORK/race/bin/pigz"
+    printf '#!/bin/sh\ncase "$1" in --version|-*T*) echo "mv: illegal option" >&2; exit 64 ;; esac\nif [ -n "${MKDIR_AT-}" ] && [ "$4" = "$MKDIR_AT" ] && [ ! -e "$4" ]; then mkdir "$4"; fi\nexec %s "$@"\n' "$(command -v mv)" > "$WORK/race/bsd/mv"
+    chmod +x "$WORK/race/bsd/mv"
+    for _mv in gnu bsd bsd-late; do
+        case $_mv in
+            gnu) _path="$WORK/race/bin:$PATH" _env= ;;
+            bsd) _path="$WORK/race/bin:$WORK/race/bsd:$PATH" _env= ;;
+            *) _path="$WORK/race/bsd:$PATH" _env="MKDIR_AT=keep.tgz" ;;
+        esac
+        rm -rf "$WORK/race/keep.tgz" "$WORK/race"/.ptar.*
+        echo PRECIOUS > "$WORK/race/keep.tgz"
+        $runner "$PARALLEL_SH" "PATH='$_path' && export $_env PATH && cd '$WORK/race' && ptar keep.tgz src" >/dev/null 2>"$WORK/race.err"
+        assert_failure "$sh/ptar ($_mv mv) with a directory made at the output fails" "$?"
+        assert_contains "$sh/ptar ($_mv mv) with a directory made at the output says where the previous archive is" "ptar: previous 'keep.tgz' kept at ./.ptar." "$(cat "$WORK/race.err")"
+        assert_eq "$sh/ptar ($_mv mv) with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/race"/.ptar.*/previous 2>/dev/null)"
+        if [ "$_mv" = bsd-late ]; then
+            # mv itself made the directory, so the new archive is in it, and
+            # ptar says so.
+            assert_contains "$sh/ptar ($_mv mv) says where the new archive went" "ptar: output 'keep.tgz' is a directory; 'archive' went into it" "$(cat "$WORK/race.err")"
+        else
+            assert_eq "$sh/ptar ($_mv mv) put nothing in the directory made at the output" "" "$(ls -A "$WORK/race/keep.tgz")"
+        fi
+    done
+    # With no previous archive, the run that used to report success fails.
+    rm -rf "$WORK/race/keep.tgz" "$WORK/race"/.ptar.*
+    $runner "$PARALLEL_SH" "PATH='$WORK/race/bin:$PATH' && cd '$WORK/race' && ptar keep.tgz src" >/dev/null 2>&1
+    assert_failure "$sh/ptar with a directory made at a new output fails" "$?"
+    assert_eq "$sh/ptar with a directory made at a new output put nothing in it" "" "$(ls -A "$WORK/race/keep.tgz")"
+    assert_eq "$sh/ptar with a directory made at a new output leaves no staging directory" "" "$(ls -A "$WORK/race" | grep '^\.ptar\.' | tr -d '\n')"
+    rm -rf "$WORK/race" "$WORK/race.err"
+
+    # The steps run in a subshell, which inherits a caller's `set -e`. A
+    # failing tar or mv in plain sight ended it before the restore: the
+    # previous archive stayed in the staging directory, and nothing said so.
+    # A pigz stub stands in for the compressor, as above.
+    echo "[$sh] ptar under set -euo pipefail puts the previous archive back, or says where it is"
+    rm -rf "$WORK/strict"
+    mkdir -p "$WORK/strict/bin" "$WORK/strict/src"
+    echo x > "$WORK/strict/src/x"
+    _strict="set -euo pipefail; source '$PARALLEL_SH'; PATH='$WORK/strict/bin:$PATH'; cd '$WORK/strict'"
+    printf '#!/bin/sh\nexec gzip -c\n' > "$WORK/strict/bin/pigz"
+    chmod +x "$WORK/strict/bin/pigz"
+    echo PRECIOUS > "$WORK/strict/keep.tgz"
+    actual=$("$sh" -c "$_strict; ptar keep.tgz src missing; echo after" 2>&1)
+    assert_failure "$sh/ptar under set -e with tar failing fails" "$?"
+    assert_not_contains "$sh/ptar under set -e with tar failing stops its caller" "after" "$actual"
+    assert_eq "$sh/ptar under set -e with tar failing puts the previous archive back" "PRECIOUS" "$(cat "$WORK/strict/keep.tgz" 2>/dev/null)"
+    assert_eq "$sh/ptar under set -e with tar failing leaves no staging directory" "" "$(ls -A "$WORK/strict" | grep '^\.ptar\.' | tr -d '\n')"
+    # The compressor fails, and then the move back (as above).
+    printf '#!/bin/sh\ncat > /dev/null\nmkdir -p keep.tgz/previous\nexit 3\n' > "$WORK/strict/bin/pigz"
+    actual=$("$sh" -c "$_strict; ptar keep.tgz src; echo after" 2>&1)
+    assert_contains "$sh/ptar under set -e with the move back failing says where the previous archive is" "ptar: previous 'keep.tgz' kept at ./.ptar." "$actual"
+    assert_eq "$sh/ptar under set -e with the move back failing keeps the previous archive" "PRECIOUS" "$(cat "$WORK/strict"/.ptar.*/previous 2>/dev/null)"
+    rm -rf "$WORK/strict/keep.tgz" "$WORK/strict"/.ptar.*
+    # The archive is written, and putting it in place fails, then the move back.
+    echo PRECIOUS > "$WORK/strict/keep.tgz"
+    printf '#!/bin/sh\ncat > /dev/null\nmkdir -p keep.tgz/archive keep.tgz/previous\n' > "$WORK/strict/bin/pigz"
+    actual=$("$sh" -c "$_strict; ptar keep.tgz src; echo after" 2>&1)
+    assert_contains "$sh/ptar under set -e with publishing failing says where the previous archive is" "ptar: previous 'keep.tgz' kept at ./.ptar." "$actual"
+    assert_eq "$sh/ptar under set -e with publishing failing keeps the previous archive" "PRECIOUS" "$(cat "$WORK/strict"/.ptar.*/previous 2>/dev/null)"
+    # And with no staging directory to be had, ptar says so.
+    actual=$("$sh" -c "$_strict; ptar nodir/out.tgz src; echo after" 2>&1)
+    assert_contains "$sh/ptar under set -e says it cannot create a staging directory" "ptar: cannot create a temporary directory in 'nodir'" "$actual"
+    # A cleanup that fails (an rm that refuses the staging directory) is not
+    # a failed ptar: the new archive is already in place, so ptar still
+    # succeeds and its caller goes on.
+    rm -rf "$WORK/strict/keep.tgz" "$WORK/strict"/.ptar.*
+    printf '#!/bin/sh\nexec gzip -c\n' > "$WORK/strict/bin/pigz"
+    printf '#!/bin/sh\nfor a; do case $a in *.ptar.*) exit 1 ;; esac; done\nexec %s "$@"\n' "$(command -v rm)" > "$WORK/strict/bin/rm"
+    chmod +x "$WORK/strict/bin/rm"
+    echo PRECIOUS > "$WORK/strict/keep.tgz"
+    actual=$("$sh" -c "$_strict; ptar keep.tgz src; echo after" 2>&1)
+    assert_success "$sh/ptar under set -e with the cleanup failing succeeds" "$?"
+    assert_contains "$sh/ptar under set -e with the cleanup failing lets its caller go on" "after" "$actual"
+    assert_eq "$sh/ptar under set -e with the cleanup failing published the archive" "src/ src/x " "$(tar tzf "$WORK/strict/keep.tgz" 2>/dev/null | sort | tr '\n' ' ')"
+    rm -rf "$WORK/strict"
+
+    # Between moving the existing output aside and putting it back there is
+    # no <out>, so a Ctrl-C (or a TERM or HUP) while tar runs must not end the
+    # function there; and a run whose tar and compressor finish all the same
+    # must not publish the new archive, deleting the old one, before the
+    # signal is raised again. A tar stub runs the real tar, then sends the
+    # signal to its whole process group, as Ctrl-C at a terminal does,
+    # ignores it itself and exits 0; a pigz stub ignores it too. The run gets
+    # a process group of its own (set -m), with SIGINT at its default (env
+    # --default-signal, coreutils 8.31+), as test_functions.sh does for
+    # archive, and its output is read through a pipe, which ends only when
+    # every process of the run has, the subshell that puts things back
+    # included: no timing decides what the checks see.
+    if ! env --default-signal=INT true 2>/dev/null; then
+        echo "[$sh] ptar that gets a signal while tar runs"
+        echo "  SKIP: env has no --default-signal"
+    else
+        rm -rf "$WORK/sig"
+        mkdir -p "$WORK/sig/bin"
+        printf '#!/bin/sh\ntrap "" INT TERM HUP\n%s "$@" || exit\nkill -s "$SIG" 0\nexit 0\n' "$(command -v tar)" > "$WORK/sig/bin/tar"
+        printf '#!/bin/sh\ntrap "" INT TERM HUP\nexec %s -c\n' "$(command -v gzip)" > "$WORK/sig/bin/pigz"
+        chmod +x "$WORK/sig/bin/tar" "$WORK/sig/bin/pigz"
+        for _sig in INT TERM HUP; do
+            echo "[$sh] ptar that gets SIG$_sig while tar runs puts the previous archive back"
+            rm -rf "$WORK/sig/run"
+            mkdir -p "$WORK/sig/run/src"
+            echo x > "$WORK/sig/run/src/x"
+            echo PRECIOUS > "$WORK/sig/run/keep.tgz"
+            actual=$(
+                set -m
+                env --default-signal=INT SIG="$_sig" "$sh" -c "source '$PARALLEL_SH' && PATH='$WORK/sig/bin:$PATH' && cd '$WORK/sig/run' && ptar keep.tgz src; echo after" 2>&1 &
+                wait "$!"
+                echo "status=$?"
+            )
+            assert_eq "$sh/ptar after SIG$_sig keeps the previous archive" "PRECIOUS" "$(cat "$WORK/sig/run/keep.tgz" 2>/dev/null)"
+            assert_eq "$sh/ptar after SIG$_sig leaves no staging directory" "" "$(ls -A "$WORK/sig/run" | grep '^\.ptar\.' | tr -d '\n')"
+            # The signal is raised again, so the caller stops as it would have.
+            assert_not_contains "$sh/ptar after SIG$_sig stops its caller" "after" "$actual"
+            assert_not_contains "$sh/ptar after SIG$_sig does not report success" "status=0" "$actual"
+        done
+        rm -rf "$WORK/sig"
+    fi
 
     echo "[$sh] pcp/pmv/prm hand each job a batch of operands, not one each"
     # One cp/mv/rm per operand made `pcp * dest` over a few thousand small
@@ -592,6 +830,224 @@ assert_contains "pwsh/ptar names tar's exit code" "tar exited 2" "$err"
 actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { ptar out.tgz src missing-src 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
 assert_eq "pwsh/ptar failure is a terminating error" "caught" "$actual"
 rm -f "$WORK"/out.*
+
+echo "[pwsh] ptar: a rerun leaves the previous archive out, and a failed run keeps it"
+# pwsh's ptar ran `tar czf <out>`, and GNU tar cannot tell that it is reading
+# its own archive when it compresses: a rerun of `ptar backup.tgz .` stored
+# the old archive (and the one being written) inside the new one, and a
+# failed tar left a cut archive where the old one had been.
+for _out in all.tgz all.tbz2 all.txz all.tar; do
+    rm -rf "$WORK/own" "$WORK/own.before"
+    mkdir -p "$WORK/own"
+    echo a > "$WORK/own/a.txt"; echo b > "$WORK/own/b.txt"
+    run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/own'; ptar $_out a.txt b.txt; ptar $_out (Get-ChildItem -Name)" >/dev/null 2>&1
+    assert_success "pwsh/ptar $_out rerun over a list holding the output exit code" "$?"
+    assert_eq "pwsh/ptar $_out rerun over a list holding the output" "a.txt b.txt " "$(tar tf "$WORK/own/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+    run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/own'; ptar $_out ." >/dev/null 2>&1
+    assert_success "pwsh/ptar $_out over its own folder exit code" "$?"
+    assert_eq "pwsh/ptar $_out over its own folder leaves itself out" "./ ./a.txt ./b.txt " "$(tar tf "$WORK/own/$_out" 2>/dev/null | sort | tr '\n' ' ')"
+    cp "$WORK/own/$_out" "$WORK/own.before"
+    err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK/own'; ptar $_out a.txt missing")
+    assert_contains "pwsh/ptar $_out with a missing source names tar's exit code" "tar exited 2" "$err"
+    assert_not_contains "pwsh/ptar $_out put the old archive back and says nothing of a kept copy" "kept at" "$err"
+    assert_eq "pwsh/ptar $_out failed run keeps the previous archive" "$(sha256sum < "$WORK/own.before")" "$(sha256sum < "$WORK/own/$_out")"
+    assert_eq "pwsh/ptar $_out leaves nothing behind" "" "$(ls -A "$WORK/own" | grep '^\.ptar\.' | tr -d '\n')"
+done
+err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK/own'; ptar all.tar ./all.tar")
+assert_contains "pwsh/ptar with only the output as a source says so" "no source besides the output" "$err"
+# A directory made at the output while tar runs (a gzip stub, which tar runs
+# for -z, makes it) takes in neither archive.
+rm -rf "$WORK/own" "$WORK/own.before"
+mkdir -p "$WORK/own/bin" "$WORK/own/src"
+echo x > "$WORK/own/src/x"
+echo PRECIOUS > "$WORK/own/keep.tgz"
+printf '#!/bin/sh\n%s "$@"\nmkdir keep.tgz\n' "$(command -v gzip)" > "$WORK/own/bin/gzip"
+chmod +x "$WORK/own/bin/gzip"
+err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "\$env:PATH='$WORK/own/bin:' + \$env:PATH; Set-Location '$WORK/own'; ptar keep.tgz src")
+assert_contains "pwsh/ptar with a directory made at the output says where the previous archive is" "ptar: previous 'keep.tgz' kept at .ptar." "$err"
+assert_eq "pwsh/ptar with a directory made at the output keeps the previous archive" "PRECIOUS" "$(cat "$WORK/own"/.ptar.*/previous 2>/dev/null)"
+assert_eq "pwsh/ptar put nothing in the directory made at the output" "" "$(ls -A "$WORK/own/keep.tgz")"
+rm -rf "$WORK/own"
+
+echo "[pwsh] ptar on Windows drops a source spelled like the output but for case only when it is the output"
+# Windows takes BACKUP.TGZ for backup.tgz in an ordinary folder, but a
+# case-sensitive one (WSL makes them) holds the two as files of their own,
+# and ptar left BACKUP.TGZ out of the archive without a word. The folder is
+# asked now (_DenOneEntry). Linux's file system stands in for a
+# case-sensitive folder, and $env:OS = 'Windows_NT' selects Windows' rule,
+# as test_functions.sh does for archive.
+rm -rf "$WORK/cs"
+mkdir -p "$WORK/cs/src"
+echo x > "$WORK/cs/src/x"
+echo upper > "$WORK/cs/BACKUP.TGZ"
+tar czf "$WORK/cs/backup.tgz" -C "$WORK/cs" src
+actual=$(run_pwsh "$PARALLEL_PS1" "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; ptar backup.tgz BACKUP.TGZ src" 2>&1; echo "status=$?")
+assert_contains "pwsh/ptar on Windows with a source that differs from the output only in case exits 0" "status=0" "$actual"
+assert_eq "pwsh/ptar on Windows keeps a source that differs from the output only in case" "BACKUP.TGZ src/ src/x " "$(tar tzf "$WORK/cs/backup.tgz" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+actual=$(run_pwsh "$PARALLEL_PS1" "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; ptar backup.tgz BACKUP.TGZ" 2>&1; echo "status=$?")
+assert_contains "pwsh/ptar on Windows with only that source exits 0" "status=0" "$actual"
+assert_eq "pwsh/ptar on Windows with only that source archives it" "BACKUP.TGZ " "$(tar tzf "$WORK/cs/backup.tgz" 2>/dev/null | tr '\n' ' ')"
+# A folder that cannot be listed cannot say whether the two are one file:
+# the source is refused, naming both, before anything is moved. Root lists
+# any folder.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: root can list any folder"
+else
+    echo PRECIOUS > "$WORK/cs/backup.tgz"
+    chmod 311 "$WORK/cs"
+    actual=$(run_pwsh "$PARALLEL_PS1" "\$env:OS = 'Windows_NT'; Set-Location '$WORK/cs'; ptar backup.tgz BACKUP.TGZ src" 2>&1 | tr -d '\r'; echo "status=${PIPESTATUS[0]}")
+    chmod 755 "$WORK/cs"
+    assert_contains "pwsh/ptar on Windows that cannot list the folder fails" "status=1" "$actual"
+    assert_contains "pwsh/ptar on Windows that cannot list the folder names both" "cannot tell whether '$WORK/cs/BACKUP.TGZ' and '$WORK/cs/backup.tgz' are one file" "$actual"
+    assert_eq "pwsh/ptar on Windows that cannot list the folder keeps the old archive" "PRECIOUS" "$(cat "$WORK/cs/backup.tgz" 2>/dev/null)"
+    assert_eq "pwsh/ptar on Windows that cannot list the folder leaves no staging folder" "" "$(ls -A "$WORK/cs" | grep '^\.ptar\.' | tr -d '\n')"
+fi
+rm -rf "$WORK/cs"
+
+echo "[pwsh] ptar on Linux and macOS drops a source spelled like the output but for case only when it is the output"
+# Elsewhere only Windows' folders were asked: on a case-insensitive volume
+# (macOS's default), `ptar backup.tgz BACKUP.TGZ src` kept BACKUP.TGZ as a
+# source, moved it aside with the output, and tar failed on the name. A
+# case-sensitive folder (Linux's) still holds the two as files of their own.
+# The case-insensitive part needs such a folder: $WORK when it is one, or
+# DEN_TEST_NOCASE_DIR. It names the output's other spelling as the only
+# source, so the check ends before anything is moved: on a folder shared from
+# Windows into Linux (virtiofs), the kernel keeps the old spelling cached
+# after a rename, and putting the new archive in place fails there for a
+# reason of that mount's own.
+mkdir -p "$WORK/cs/src"
+echo x > "$WORK/cs/src/x"
+echo upper > "$WORK/cs/BACKUP.TGZ"
+tar czf "$WORK/cs/backup.tgz" -C "$WORK/cs" src
+actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/cs'; ptar backup.tgz BACKUP.TGZ src" 2>&1; echo "status=$?")
+assert_contains "pwsh/ptar in a case-sensitive folder with the output's twin as a source exits 0" "status=0" "$actual"
+assert_eq "pwsh/ptar in a case-sensitive folder keeps the output's twin as a source" "BACKUP.TGZ src/ src/x " "$(tar tzf "$WORK/cs/backup.tgz" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+rm -rf "$WORK/cs"
+_nc=$(mktemp -d "${DEN_TEST_NOCASE_DIR:-$WORK}/nocase.XXXXXX")
+: > "$_nc/CaseProbe"
+if [ -e "$_nc/caseprobe" ]; then
+    mkdir -p "$_nc/src"
+    echo x > "$_nc/src/x"
+    tar czf "$_nc/BACKUP.TGZ" -C "$_nc" src
+    actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$_nc'; ptar backup.tgz BACKUP.TGZ" 2>&1 | tr -d '\r'; echo "status=${PIPESTATUS[0]}")
+    assert_contains "pwsh/ptar in a case-insensitive folder with only the output spelled otherwise fails" "status=1" "$actual"
+    assert_contains "pwsh/ptar in a case-insensitive folder takes the output spelled otherwise for the output" "no source besides the output 'backup.tgz'" "$actual"
+    assert_eq "pwsh/ptar in a case-insensitive folder leaves the old archive in place" "src/ src/x " "$(tar tzf "$_nc/BACKUP.TGZ" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+    assert_eq "pwsh/ptar in a case-insensitive folder leaves no staging folder" "" "$(ls -A "$_nc" | grep '^\.ptar\.' | tr -d '\n')"
+else
+    echo "  SKIP: no case-insensitive folder (DEN_TEST_NOCASE_DIR names one)"
+fi
+rm -rf "$_nc"
+
+echo "[pwsh] ptar makes its staging folder private, whatever the umask"
+# Made with the umask's mode (0777 under umask 000), the staging folder let
+# another user who can write to the output's folder plant a symlink where tar
+# writes the new archive, or delete the previous one waiting there. A tar
+# stub notes the mode of the folder it is told to write into. A folder that
+# is not a plain one of this user's (a mkdir stub leaves a symlink to another
+# folder at the name) is refused before anything goes in.
+rm -rf "$WORK/pv"
+mkdir -p "$WORK/pv/bin" "$WORK/pv/src" "$WORK/pv/elsewhere"
+echo x > "$WORK/pv/src/x"
+printf '#!/bin/sh\nprev=\nfor a; do [ "$prev" = -f ] && stat -c %%a "$(dirname "$a")" > "%s/mode"; prev=$a; done\nexec %s "$@"\n' "$WORK/pv" "$(command -v tar)" > "$WORK/pv/bin/tar"
+chmod +x "$WORK/pv/bin/tar"
+actual=$(umask 000; run_pwsh "$PARALLEL_PS1" "\$env:PATH = '$WORK/pv/bin:' + \$env:PATH; Set-Location '$WORK/pv'; ptar out.tgz src" 2>&1; echo "status=$?")
+assert_contains "pwsh/ptar under umask 000 exits 0" "status=0" "$actual"
+assert_eq "pwsh/ptar under umask 000 stages in a 0700 folder" "700" "$(cat "$WORK/pv/mode" 2>/dev/null)"
+echo PRECIOUS > "$WORK/pv/keep.tgz"
+printf '#!/bin/sh\nln -s "%s/elsewhere" "$4"\n' "$WORK/pv" > "$WORK/pv/bin/mkdir"
+chmod +x "$WORK/pv/bin/mkdir"
+actual=$(run_pwsh "$PARALLEL_PS1" "\$env:PATH = '$WORK/pv/bin:' + \$env:PATH; Set-Location '$WORK/pv'; ptar keep.tgz src" 2>&1 | tr -d '\r'; echo "status=${PIPESTATUS[0]}")
+assert_contains "pwsh/ptar with a staging folder that is not its own fails" "status=1" "$actual"
+assert_contains "pwsh/ptar with a staging folder that is not its own says why" "not a plain directory owned by this user" "$actual"
+assert_eq "pwsh/ptar with a staging folder that is not its own keeps the old archive" "PRECIOUS" "$(cat "$WORK/pv/keep.tgz" 2>/dev/null)"
+assert_eq "pwsh/ptar put nothing in the folder that symlink leads to" "" "$(ls -A "$WORK/pv/elsewhere")"
+rm -rf "$WORK/pv"
+
+echo "[pwsh] pcp/pmv/prm: a path that fails is a failure"
+# Each path runs in a ForEach-Object -Parallel worker, and the workers' errors
+# reached neither $? nor the process status: `pcp missing dest` exited 0, and
+# `pcp a b dest && prm -Force a b` went on to remove a file never copied.
+setup_fixtures
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; pcp src/file1.txt missing.txt dest && prm -Force src/file1.txt" >/dev/null 2>&1
+assert_failure "pwsh/pcp with a missing source exits nonzero" "$?"
+assert_exists "pwsh/pcp with a missing source still copied the others" "$WORK/dest/file1.txt"
+assert_exists "pwsh/pcp failure stops a && chain" "$WORK/src/file1.txt"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; pmv src/file2.txt missing.txt dest" >/dev/null 2>&1
+assert_failure "pwsh/pmv with a missing source exits nonzero" "$?"
+assert_exists "pwsh/pmv with a missing source still moved the others" "$WORK/dest/file2.txt"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; prm -Force src/subdir missing.txt" >/dev/null 2>&1
+assert_failure "pwsh/prm with a missing path exits nonzero" "$?"
+assert_not_exists "pwsh/prm with a missing path still removed the others" "$WORK/src/subdir"
+# The count is of the errors the workers reported, not of paths: one
+# unreadable file can report two.
+for _fn in pcp pmv; do
+    err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK'; $_fn missing.txt dest")
+    assert_contains "pwsh/$_fn counts the errors" "$_fn: 1 error(s)" "$err"
+    actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { $_fn missing.txt dest 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
+    assert_eq "pwsh/$_fn failure is a terminating error" "caught" "$actual"
+done
+err=$(run_pwsh_stderr_oneline "$PARALLEL_PS1" "Set-Location '$WORK'; prm -Force missing.txt also-missing.txt")
+assert_contains "pwsh/prm counts the errors" "prm: 2 error(s)" "$err"
+actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; try { prm -Force missing.txt 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
+assert_eq "pwsh/prm failure is a terminating error" "caught" "$actual"
+
+echo "[pwsh] pcp/pmv/prm: a failure under a caller's Ignore is still a failure"
+# Ignore, as the preference or as -ErrorAction Ignore on the call, dropped the
+# workers' errors before -ErrorVariable collected them: the failed call
+# returned success and the step after its && ran.
+for _how in pref param; do
+    for _fn in pcp pmv prm; do
+        setup_fixtures
+        _pre=""; _opt=""
+        if [ "$_how" = pref ]; then _pre="\$ErrorActionPreference = 'Ignore'; "; else _opt="-ErrorAction Ignore "; fi
+        case "$_fn" in
+            pcp) _call="pcp ${_opt}src/file1.txt missing.txt dest" ;;
+            pmv) _call="pmv ${_opt}src/file2.txt missing.txt dest" ;;
+            prm) _call="prm -Force ${_opt}src/subdir missing.txt" ;;
+        esac
+        actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK'; ${_pre}${_call} && 'CHAIN CONTINUED'" 2>/dev/null | tr -d '\r'; echo "status=${PIPESTATUS[0]}")
+        assert_not_contains "pwsh/$_fn failure under Ignore ($_how) stops a && chain" "CHAIN CONTINUED" "$actual"
+        assert_not_contains "pwsh/$_fn failure under Ignore ($_how) exits nonzero" "status=0" "$actual"
+    done
+done
+
+echo "[pwsh] pcp/pmv/prm/ptar: a refusal is a failure"
+# Each refusal was a plain Write-Error and return, which leaves $? true and
+# `pwsh -Command` exiting 0: `pcp a b nodir && prm -Force a b` removed both
+# files after pcp had refused the destination and copied nothing.
+setup_fixtures
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; pcp file1.txt file2.txt nodir && prm -Force file1.txt file2.txt" >/dev/null 2>&1
+assert_failure "pwsh/pcp into a destination that is not a directory exits nonzero" "$?"
+assert_exists "pwsh/pcp refusal stops a && chain" "$WORK/src/file1.txt"
+# The cases below start from a full tree again: where the chain above went
+# on and removed both files, each of them must still pass or fail for its
+# own reason.
+setup_fixtures
+mkdir -p "$WORK/nobin"
+while IFS='|' read -r _label _call; do
+    actual=$(run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; try { $_call 2>\$null } catch { 'caught' }" 2>/dev/null | tr -d '\r' | tail -1)
+    assert_eq "pwsh/$_label is a terminating error" "caught" "$actual"
+done <<CALLS
+pcp without arguments|pcp
+pcp with one argument|pcp file1.txt
+pmv without arguments|pmv
+pmv into a destination that is not a directory|pmv file1.txt file2.txt nodir
+prm without paths|prm --force
+prm declined|function Read-Host { 'n' }; prm file1.txt
+ptar without arguments|ptar
+ptar with an unsupported format|ptar out.zip file1.txt
+ptar without tar|\$env:PATH = '$WORK/nobin'; ptar out.tar file1.txt
+CALLS
+# A declined prm and a refused pmv stop a && chain as well, and touch nothing
+# themselves.
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; function Read-Host { 'n' }; prm file1.txt && Remove-Item -LiteralPath file1.txt" >/dev/null 2>&1
+assert_failure "pwsh/declined prm exits nonzero" "$?"
+assert_exists "pwsh/declined prm stops a && chain and keeps the file" "$WORK/src/file1.txt"
+run_pwsh "$PARALLEL_PS1" "Set-Location '$WORK/src'; pmv file1.txt file2.txt nodir && Remove-Item -LiteralPath file2.txt" >/dev/null 2>&1
+assert_failure "pwsh/refused pmv exits nonzero" "$?"
+assert_exists "pwsh/refused pmv stops a && chain and moved nothing" "$WORK/src/file2.txt"
+rm -rf "$WORK/nobin"
 
 echo "[pwsh] prm: a confirmed removal takes hidden entries too"
 # Remove-Item without -Force refuses hidden items, so a confirmed prm removed

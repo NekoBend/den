@@ -288,11 +288,50 @@ its tool, though: `xz` and `zstd` refuse to decompress an upper-case `.XZ` or
 `.ZST`, and `bzip2` writes `NAME.BZ2.out`. `archive` always writes a fresh
 archive: over an existing `.zip` or `.7z` it replaces the file instead of
 updating it, so files deleted from the sources do not linger, and a source that
-is the output itself (a rerun of `pk all.7z *`) is left out. Every format exits
-non-zero when its archiver fails. A failed or interrupted `.zip`, `.7z` or
-single-file run keeps the existing output as it was; the tar formats replace it
-with whatever tar wrote. On pwsh the `.zip` holds hidden files and folders
-(`.env`, `.git`) too, as `zip -r` does.
+is the output itself (a rerun of `pk all.7z *`, or on bash/zsh a hard link to
+it under another name) is left out. On Windows, pwsh asks the folder whether a
+source spelled like the output but for case is the output: a case-sensitive
+folder (WSL makes them) can hold `BACKUP.ZIP` beside `backup.zip` as a file of
+its own, which is then archived, and a folder pwsh cannot list makes it stop
+and name both. The tar formats leave their own output out
+too: GNU tar cannot tell that it is reading its own archive when it
+compresses, so `archive all.tgz .` or `archive all.tgz *` run again in the
+folder it archives used to store the previous archive inside the new one. Only
+the sources as given are checked: a hard link to the output inside a source
+folder (`sub/latest.zip` when archiving `.`) is still stored, since the
+archivers cannot leave a file out by its inode. Every format exits non-zero
+when its archiver fails or is not installed (tar included). A failed or
+interrupted run keeps the existing output as it was, whatever the format. On
+bash/zsh a Ctrl-C, TERM or HUP that comes before the new archive is in place
+interrupts the run even when the archiver finishes all the same: the old
+archive is put back, and the signal is then raised again so the caller stops. On
+bash/zsh, and for the tar formats on pwsh, a directory that another program
+makes at the output while the archiver runs fails the run instead of taking
+in either archive (with BSD mv, which has no `-T`, one made in the instant
+before the rename still can, and `archive` then says where the file went).
+Should the existing output fail to go back in place as well (its folder
+turned read-only meanwhile, or such a directory stands there), bash/zsh leave
+it where it waited and say where
+(`archive: previous 'out.zip' kept at ./.archive.XXXXXX/previous`), and so
+does pwsh for the tar formats (`.archive.<random>/previous`) and for a `.7z`
+(`out.7z.previous.<random>`, beside it). These staging folders are private
+(`0700`) on Linux and macOS whatever the umask, as `mktemp -d` makes them on
+bash/zsh, and pwsh stops before it moves anything into one that it did not just
+make as a plain folder of its own.
+On pwsh the `.zip` holds hidden files and folders (`.env`, `.git`) too, as
+`zip -r` does, but it stores each source under its own name (a folder as
+`name/`), where `zip -r` keeps the path as given (`alpha/config.txt`). Two
+sources with one name, such as `alpha/config.txt` and `beta/config.txt` or two
+folders called `src`, would then overwrite each other when extracted, so pwsh
+refuses them before it writes anything and names both. It checks every name in
+the zip, the files inside a folder too, and on Windows names that differ only
+in case count as one (a case-sensitive folder, as WSL makes, can hold
+`config.txt` and `CONFIG.TXT`). Only the same full path, compared exactly,
+counts as one source: `p1/src`, `./p1/src` and its absolute path are stored
+once, but another route to the same folder (through a symlinked parent, say)
+is a second source, and is refused when the names clash. `zip -r` stores a
+repeat of one spelling once but refuses a second spelling
+(`cannot repeat names in zip file`).
 
 On Windows PowerShell 5.1, `archive` stops with an error that a bare `.gz` /
 `.bz2` / `.xz` output requires PowerShell 7+ (pwsh), before it writes anything.
@@ -451,12 +490,34 @@ longer starts one `cp` (or one parallel item) per file. Each call still pays
 the parallel tool's own startup, GNU parallel's most of all, so for a quick
 copy of small files a plain `cp` stays faster. `pcp` and `pmv` overwrite an
 existing destination file on both shells, read-only or not. Once confirmed,
-`prm` removes hidden entries too on both shells.
+`prm` removes hidden entries too on both shells. `pcp`, `pmv` and `prm` fail
+when any path fails (on pwsh with a terminating error that counts the errors)
+and when they refuse to start (a usage error, a destination that is not a
+directory, a declined `prm`), so `pcp a b dest && prm --force a b` stops before
+it removes anything. On pwsh every `ptar` refusal is a terminating error too.
 `ptar` is threaded on bash/zsh (pigz/pbzip2/pxz when installed) but a plain `tar`
 wrapper on pwsh; both accept `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`,
-`.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). The
-threaded forms write the archive only once tar and the compressor have both
-succeeded, so a failed run leaves no truncated archive.
+`.tar.xz`/`.txz`, and both fail when tar does (a source it cannot read). Every
+form, threaded or not, writes the archive only once tar (and the compressor)
+have succeeded, so a failed run leaves no truncated archive and an existing
+output as it was. Every form also leaves an existing output out of the new
+archive (on bash/zsh a hard link to it under another name too), so running
+`ptar backup.tgz .` or `ptar all.tgz *` again does not store the previous
+archive inside the new one.
+On Windows a source spelled like the output but for case is left out only when
+it is the output, as with `archive`.
+Only the sources as given are checked: a hard link
+to the output inside a source folder is still stored, as with `archive`. The
+existing output waits in a staging directory beside it while tar runs; should
+it fail to go back in place after a failed or interrupted run, `ptar` leaves
+it there and says where, as `archive` does
+(`ptar: previous 'backup.tgz' kept at ./.ptar.XXXXXX/previous`). On bash/zsh,
+a signal that comes before the new archive is in place puts the old one back,
+as with `archive`.
+The staging directory is private on pwsh as on bash/zsh.
+A directory that another program makes at the output while tar runs fails the
+run instead of taking in either archive, with the same BSD mv exception as
+`archive`.
 
 | Command | Does | bash/zsh | pwsh | cmd |
 |---|---|:---:|:---:|:---:|

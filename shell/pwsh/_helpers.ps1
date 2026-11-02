@@ -679,6 +679,92 @@ function _DenWritePrivate([string]$Path, [string]$Text) {
     }
 }
 
+# ========== archive's and ptar's staging folders ==========
+
+# _DenNewPrivateDir <full path> - make a new, empty folder at <path> for
+# archive's and ptar's staging (the previous archive waits in it while tar
+# writes the new one there), or throw. On Linux and macOS it is
+# `mkdir -m 700`, as `mktemp -d` is for the bash/zsh twins: made with the
+# umask's mode instead (0775 under umask 002, 0777 under 000), the folder let
+# another user who can write to the output's directory plant a symlink where
+# tar writes the new archive, or delete the previous one. mkdir also fails
+# when anything is at <path> already, where .NET's CreateDirectory takes an
+# existing folder, or a symlink to one, as made; and what it made must be a
+# plain directory (no symlink) this user owns, or nothing goes into it. On
+# Windows the folder is made after a check that nothing is at <path>, and
+# keeps the ACL it inherits.
+function _DenNewPrivateDir([string]$Path) {
+    if (-not $Path) { throw 'no path given' }
+    # Edition first, as in _OnWindows: 5.1 has no $IsWindows to read.
+    if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows) {
+        if ([System.IO.Directory]::Exists($Path) -or [System.IO.File]::Exists($Path)) {
+            throw "'$Path' already exists"
+        }
+        try { $null = [System.IO.Directory]::CreateDirectory($Path) }
+        catch { throw $_.Exception.GetBaseException().Message }
+        return
+    }
+    if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { throw '/bin/sh not found' }
+    # mkdir says why it failed on stderr; the checks after it, on stdout. The
+    # script holds no double quotes, which pwsh before 7.3 strips from a
+    # native command's arguments (see _DenLegacyArgPassing): IFS= and set -f
+    # keep an unquoted $1 one word, as quotes would.
+    $script = 'IFS=; set -f; mkdir -m 700 -- $1 || exit 1; ' +
+        '[ -d $1 ] && [ ! -h $1 ] && [ -O $1 ] && exit 0; ' +
+        'echo not a plain directory owned by this user; exit 1'
+    $why = & /bin/sh -c $script _ $Path
+    if ($LASTEXITCODE -ne 0) {
+        if ($why) { throw "$why" }
+        throw "mkdir -m 700 failed"
+    }
+}
+
+# ========== names that differ only in case ==========
+
+# _DenOneEntry <a> <b> - for two full paths spelled alike but for case: $true
+# when they name one directory entry, $false when they name two, and a throw
+# when that cannot be told; the caller has seen that both exist. Windows, and
+# macOS's default volume, compare names without regard to case, but how many
+# files two such spellings are depends on the folder: such a folder finds its
+# one entry under either, while a case-sensitive one (Linux's, or one WSL
+# makes on Windows) can hold backup.tgz and BACKUP.TGZ as two files. So at each level where the
+# spellings differ, the folder's own listing is asked: a spelling it holds
+# exactly is that entry, and one it does not hold is its only name that
+# differs from it in case. A folder it cannot list, or one that holds several
+# such names but not this one, cannot tell.
+function _DenOneEntry([string]$A, [string]$B) {
+    # GetPathRoot('') is $null, and its .Length an error under strict mode.
+    if (-not $A -or -not $B) { return $false }
+    $seps = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $root = [System.IO.Path]::GetPathRoot($A)
+    $pa = $A.Substring($root.Length).Split($seps, [System.StringSplitOptions]::RemoveEmptyEntries)
+    $pb = $B.Substring($root.Length).Split($seps, [System.StringSplitOptions]::RemoveEmptyEntries)
+    if ($pa.Count -ne $pb.Count) { return $false }
+    $dir = $root
+    for ($i = 0; $i -lt $pa.Count; $i++) {
+        $name = $pa[$i]
+        if ($name -cne $pb[$i]) {
+            try {
+                $held = @(foreach ($e in [System.IO.Directory]::EnumerateFileSystemEntries($dir)) {
+                    $n = [System.IO.Path]::GetFileName($e)
+                    if ([string]::Equals($n, $name, [System.StringComparison]::OrdinalIgnoreCase)) { $n }
+                })
+            } catch {
+                throw "cannot tell whether '$A' and '$B' are one file: $($_.Exception.GetBaseException().Message)"
+            }
+            $ea = if ($held -ccontains $name) { $name } elseif ($held.Count -eq 1) { $held[0] }
+            $eb = if ($held -ccontains $pb[$i]) { $pb[$i] } elseif ($held.Count -eq 1) { $held[0] }
+            if ($null -eq $ea -or $null -eq $eb) {
+                throw "cannot tell whether '$A' and '$B' are one file: '$dir' holds several names that differ from them only in case"
+            }
+            if ($ea -cne $eb) { return $false }
+            $name = $ea
+        }
+        $dir = [System.IO.Path]::Combine($dir, $name)
+    }
+    return $true
+}
+
 # ========== wrapper generator ==========
 
 # The functions these generators define, and the coreutils.ps1 ones that can hand
