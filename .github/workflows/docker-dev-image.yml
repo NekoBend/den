@@ -115,7 +115,7 @@ jobs:
             docker exec --user dev den-dev zsh -lc 'print -r -- "$HOME"'
           check 'dev zsh -ic: HOME' /home/dev \
             docker exec --user dev den-dev zsh -ic 'print -r -- "$HOME"'
-          for tool in den uv starship claude; do
+          for tool in den uv starship rg; do
             check "dev zsh -lc: $tool runs from /home/dev" '/home/dev/*' \
               docker exec --user dev den-dev zsh -lc "$tool --version >/dev/null && whence -p $tool"
           done
@@ -130,8 +130,8 @@ jobs:
           # Without a shell, dev keeps the image's HOME; docker/README.md says
           # to pass HOME and the full path.
           check 'dev exec: HOME' /root docker exec --user dev den-dev printenv HOME
-          check 'dev exec -e HOME: claude --version' '?*' \
-            docker exec --user dev -e HOME=/home/dev den-dev /home/dev/.local/bin/claude --version
+          check 'dev exec -e HOME: den --version' 'den ?*' \
+            docker exec --user dev -e HOME=/home/dev den-dev /home/dev/.local/bin/den --version
 
           # The entrypoint runs its default command, and any other, as dev with
           # dev's home and tool directories.
