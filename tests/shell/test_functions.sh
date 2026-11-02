@@ -864,6 +864,55 @@ run_bash "$FUNCTIONS_SH" "cd '$WORK' && mkfile 1K -dashfile" >/dev/null 2>&1
 assert_exists "bash/mkfile leading-dash created" "$WORK/-dashfile"
 rm -f "$WORK/-dashfile"
 
+# mkfile's refusals and failures, the same for bash and zsh: $1 is the shell.
+# The size is digits with an optional K, M, G or T, as pwsh takes it, checked
+# before truncate runs: truncate read -1 as "one byte shorter" and went on.
+# A failure is mkfile's status: a trailing unset used to turn every one into
+# 0, so `mkfile 10X f && ...` and `mkfile 1K nodir/f && ...` went on.
+mkfile_posix_cases() {
+    local sh="$1" run="run_$1" d="$WORK/mkfile" size out
+    rm -rf "$d"
+    mkdir -p "$d/nobin"
+    printf 'IMPORTANT DATA\n' > "$d/orig.bin"
+
+    echo "[$sh] mkfile refuses a size that is not digits with an optional K, M, G or T"
+    for size in -1 10X 1KB 99999999999T; do
+        cp "$d/orig.bin" "$d/keep.bin"
+        out=$($run "$FUNCTIONS_SH" "mkfile '$size' '$d/keep.bin' && echo chain-ran" 2>/dev/null)
+        assert_failure "$sh/mkfile $size exits nonzero" "$?"
+        assert_eq "$sh/mkfile $size stops a && chain" "" "$out"
+        cmp -s "$d/orig.bin" "$d/keep.bin"
+        assert_success "$sh/mkfile $size keeps the file as it was" "$?"
+    done
+
+    echo "[$sh] mkfile fails when truncate does: no such folder, a read-only file, no truncate"
+    out=$($run "$FUNCTIONS_SH" "mkfile 1K '$d/nodir/x.bin' && echo chain-ran" 2>/dev/null)
+    assert_failure "$sh/mkfile into a missing folder exits nonzero" "$?"
+    assert_eq "$sh/mkfile into a missing folder stops a && chain" "" "$out"
+    # root ignores the mode bits, so there it is skipped.
+    : > "$d/ro.bin"
+    if [ "$(id -u)" -ne 0 ] && chmod 444 "$d/ro.bin" 2>/dev/null && [ ! -w "$d/ro.bin" ]; then
+        out=$($run "$FUNCTIONS_SH" "mkfile 1K '$d/ro.bin' && echo chain-ran" 2>/dev/null)
+        assert_failure "$sh/mkfile on a read-only file exits nonzero" "$?"
+        assert_eq "$sh/mkfile on a read-only file stops a && chain" "" "$out"
+        chmod 644 "$d/ro.bin"
+    else
+        echo "  SKIP: $sh/mkfile on a read-only file (running as root)"
+    fi
+    out=$($run "$FUNCTIONS_SH" "PATH='$d/nobin'; mkfile 1K '$d/x.bin' && echo chain-ran" 2>/dev/null)
+    assert_failure "$sh/mkfile without truncate exits nonzero" "$?"
+    assert_eq "$sh/mkfile without truncate stops a && chain" "" "$out"
+
+    echo "[$sh] mkfile reads 010 as ten bytes and 1k as 1024, as pwsh does"
+    # uutils' truncate reads a leading 0 as octal: 010 was 8 bytes there.
+    $run "$FUNCTIONS_SH" "mkfile 010 '$d/ten.bin' && mkfile 1k '$d/kib.bin'" >/dev/null 2>&1
+    assert_success "$sh/mkfile 010 and 1k exit 0" "$?"
+    assert_eq "$sh/mkfile 010 is ten bytes" "10" "$(stat -c%s "$d/ten.bin" 2>/dev/null)"
+    assert_eq "$sh/mkfile 1k is 1024 bytes" "1024" "$(stat -c%s "$d/kib.bin" 2>/dev/null)"
+    rm -rf "$d"
+}
+mkfile_posix_cases bash
+
 # --- archive + extract (tar.gz) ---
 echo "[bash] archive + extract tar.gz"
 setup_fixtures
@@ -1957,6 +2006,7 @@ assert_exists "zsh/mkfile created" "$WORK/dummy.bin"
 actual=$(stat -c%s "$WORK/dummy.bin")
 assert_eq "zsh/mkfile size" "1024" "$actual"
 rm -f "$WORK/dummy.bin"
+mkfile_posix_cases zsh
 
 echo "[zsh] archive + extract tar.gz"
 setup_fixtures
@@ -2496,6 +2546,68 @@ assert_exists "pwsh/mkfile created" "$WORK/dummy.bin"
 actual=$(stat -c%s "$WORK/dummy.bin")
 assert_eq "pwsh/mkfile size" "1024" "$actual"
 rm -f "$WORK/dummy.bin"
+
+# The size is checked before the file is opened: [int64] of a bad size, or a
+# size that overflowed, failed only at SetLength, after File.Create had emptied
+# the file, and mkfile still printed "Created" and returned success. Each
+# refusal and failure is a terminating error, so it stops a && chain.
+echo "[pwsh] mkfile refuses a size that is not digits with an optional K, M, G or T"
+d="$WORK/mkfile"
+rm -rf "$d"
+mkdir -p "$d"
+printf 'IMPORTANT DATA\n' > "$d/orig.bin"
+for size in -1 10X 1KB 99999999999T 8388608T; do
+    cp "$d/orig.bin" "$d/keep.bin"
+    out=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile '$size' '$d/keep.bin' && 'chain-ran'" 2>/dev/null)
+    assert_failure "pwsh/mkfile $size exits nonzero" "$?"
+    assert_eq "pwsh/mkfile $size stops a && chain" "" "$(printf '%s' "$out" | tr -d '\r')"
+    cmp -s "$d/orig.bin" "$d/keep.bin"
+    assert_success "pwsh/mkfile $size keeps the file as it was" "$?"
+done
+err=$(run_pwsh_stderr_oneline "$FUNCTIONS_PS1_COMBINED" "mkfile 10X '$d/keep.bin'")
+assert_contains "pwsh/mkfile names the size it refuses" "invalid size '10X'" "$err"
+assert_not_contains "pwsh/mkfile no double prefix" "mkfile: mkfile:" "$err"
+
+echo "[pwsh] mkfile fails when the file cannot be made: no such folder, a read-only file"
+out=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 1K '$d/nodir/x.bin' && 'chain-ran'" 2>/dev/null)
+assert_failure "pwsh/mkfile into a missing folder exits nonzero" "$?"
+assert_not_contains "pwsh/mkfile into a missing folder prints no Created" "Created" "$out"
+assert_not_contains "pwsh/mkfile into a missing folder stops a && chain" "chain-ran" "$out"
+# root ignores the mode bits, so there it is skipped.
+: > "$d/ro.bin"
+if [ "$(id -u)" -ne 0 ] && chmod 444 "$d/ro.bin" 2>/dev/null && [ ! -w "$d/ro.bin" ]; then
+    out=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 1K '$d/ro.bin' && 'chain-ran'" 2>/dev/null)
+    assert_failure "pwsh/mkfile on a read-only file exits nonzero" "$?"
+    assert_not_contains "pwsh/mkfile on a read-only file stops a && chain" "chain-ran" "$out"
+    chmod 644 "$d/ro.bin"
+else
+    echo "  SKIP: pwsh/mkfile on a read-only file (running as root)"
+fi
+
+echo "[pwsh] mkfile reads 010 as ten bytes and 1k as 1024, as the posix mkfile does"
+run_pwsh "$FUNCTIONS_PS1_COMBINED" "mkfile 010 '$d/ten.bin'; mkfile 1k '$d/kib.bin'" >/dev/null 2>&1
+assert_success "pwsh/mkfile 010 and 1k exit 0" "$?"
+assert_eq "pwsh/mkfile 010 is ten bytes" "10" "$(stat -c%s "$d/ten.bin" 2>/dev/null)"
+assert_eq "pwsh/mkfile 1k is 1024 bytes" "1024" "$(stat -c%s "$d/kib.bin" 2>/dev/null)"
+
+# A length the target cannot take (/dev/null refuses any) made SetLength throw
+# after the file was open, and nothing closed the stream: under Stop the caller
+# caught the error and the handle stayed open. Counted in /proc (Linux).
+echo "[pwsh] mkfile closes the file when SetLength fails"
+if [ -d /proc/self/fd ]; then
+    actual=$(run_pwsh "$FUNCTIONS_PS1_COMBINED" "
+        function fds { @(Get-ChildItem /proc/\$PID/fd | Where-Object { \$_.LinkTarget -eq '/dev/null' }).Count }
+        \$before = fds
+        \$ErrorActionPreference = 'Stop'
+        try { mkfile 1K /dev/null 6>\$null; 'no error' } catch { 'failed' }
+        'open: ' + ((fds) - \$before)
+    " 2>/dev/null | tr -d '\r')
+    assert_eq "pwsh/mkfile fails and leaves no handle open" "failed
+open: 0" "$actual"
+else
+    echo "  SKIP: pwsh/mkfile handle count (no /proc)"
+fi
+rm -rf "$d"
 
 echo "[pwsh] archive + extract tar.gz"
 setup_fixtures

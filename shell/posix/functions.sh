@@ -451,12 +451,32 @@ mkfile() {
         echo "usage: mkfile <size> <path>  (e.g. mkfile 10M test.bin)" >&2
         return 1
     fi
+    # The size is digits with an optional K, M, G or T (powers of 1024), the
+    # grammar pwsh's mkfile takes. It is checked here, before truncate runs:
+    # truncate reads -1 or +5 as a change to an existing file's length and
+    # 1KB as 1000 bytes, so `mkfile -1 f` shortened f and reported it created.
+    case "${1%[KMGTkmgt]}" in
+        ''|*[!0-9]*)
+            echo "mkfile: invalid size '$1' (digits, optionally followed by K, M, G or T)" >&2
+            return 1
+            ;;
+    esac
+    # Leading zeros go: uutils' truncate reads 010 as octal (8 bytes).
+    _mf_size="$1"
+    while :; do
+        case "$_mf_size" in 0[0-9]*) _mf_size=${_mf_size#0} ;; *) break ;; esac
+    done
     # Neutralise a leading-dash path so truncate cannot parse it as an option
     # (parity with extract/archive/digest/mkcd).
     _mf_path="$2"
     case "$_mf_path" in -*) _mf_path="./$_mf_path" ;; esac
-    truncate -s "$1" "$_mf_path" && echo "Created $_mf_path ($1)"
-    unset _mf_path
+    # truncate's status is mkfile's: the unset after it used to replace a
+    # failure (no such folder, no permission, no truncate) with 0, so
+    # `mkfile 1K nodir/f && ...` went on as if f had been made.
+    truncate -s "$_mf_size" "$_mf_path" && echo "Created $_mf_path ($1)"
+    set -- "$?"
+    unset _mf_path _mf_size
+    return "$1"
 }
 
 # _ar_have → guard one branch of extract()/archive() on the tool it needs.

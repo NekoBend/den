@@ -257,18 +257,34 @@ function mkfile {
     [Parameter(Mandatory)][string]$Size,
     [Parameter(Mandatory)][string]$Path
   )
-  $mult = @{ 'K'=1KB; 'M'=1MB; 'G'=1GB; 'T'=1TB }
-  $bytes = if ($Size -match '^(\d+)([KMGTkmgt])$') {
-    [int64]$Matches[1] * $mult[$Matches[2].ToUpper()]
-  } else {
-    [int64]$Size
+  # The size is digits with an optional K, M, G or T (powers of 1024), the
+  # grammar the posix mkfile checks too, and it is checked before the file is
+  # opened. A size that failed to parse or overflowed used to surface only at
+  # SetLength, after the file had been opened, so it left a 0-byte file,
+  # printed "Created" and returned success. A refusal, like a failure below,
+  # is a terminating error, so it stops a && chain.
+  $n = 0L
+  $shift = @{ '' = 0; 'K' = 10; 'M' = 20; 'G' = 30; 'T' = 40 }
+  if ($Size -notmatch '^([0-9]+)([KMGTkmgt]?)\z' -or -not [long]::TryParse($Matches[1], [ref]$n) -or
+      $n -gt ([long]::MaxValue -shr $shift[$Matches[2].ToUpper()])) {
+    Write-Error "invalid size '$Size' (digits, optionally followed by K, M, G or T)" -ErrorAction Stop
   }
-  # .NET resolves relative paths against the process directory, which
-  # Set-Location never updates; resolve against the PowerShell location first.
-  $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
-  $fs = [System.IO.File]::Create($Path)
-  $fs.SetLength($bytes)
-  $fs.Close()
+  $bytes = $n -shl $shift[$Matches[2].ToUpper()]
+  # A file that cannot be made (no such folder, no permission) or a length the
+  # file system refuses fails here, and the stream is closed either way: an
+  # exception from SetLength used to leave it open.
+  $fs = $null
+  try {
+    # .NET resolves relative paths against the process directory, which
+    # Set-Location never updates; resolve against the PowerShell location first.
+    $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $fs = [System.IO.File]::Create($Path)
+    $fs.SetLength($bytes)
+  } catch {
+    Write-Error "'$Path': $($_.Exception.GetBaseException().Message)" -ErrorAction Stop
+  } finally {
+    if ($fs) { $fs.Dispose() }
+  }
   Write-Host "Created $Path ($Size → $bytes bytes)"
 }
 

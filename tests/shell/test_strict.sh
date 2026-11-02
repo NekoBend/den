@@ -634,6 +634,8 @@ Case 'dg -c, no checksum line' { dg -c empty.txt }
 Case 'digest' { digest hash.txt }
 Case 'mkfile' { mkfile 1K made.bin }
 Case 'mkfile, bytes' { mkfile 16 made2.bin }
+Case 'mkfile, invalid size' { mkfile 10X bad.bin }
+Case 'mkfile, no such folder' { mkfile 1K nodir/made.bin }
 Case '_ArVolumeRelative' { _ArVolumeRelative 'C:\Users\x'; _ArVolumeRelative 'rel\path' }
 Case '_ArLinkTarget' { _ArLinkTarget (Get-Item -LiteralPath a.txt); _ArLinkTarget (Get-Item -LiteralPath link.txt) }
 Case '_ArSameFile' { _ArSameFile a.txt a.txt; _ArSameFile a.txt link.txt; _ArSameFile a.txt nothere.gz }
