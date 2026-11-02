@@ -1366,6 +1366,25 @@ err=$(run_pwsh_stderr "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
     grep findme grepdir top.txt
 " < /dev/null)
 assert_contains "pwsh/grep findme grepdir top.txt: grepdir is an error" "grep: grepdir: Is a directory" "$err"
+# -r searches hidden files and folders, as grep -r does, with a folder operand
+# and without one; Get-ChildItem skipped them, so only v.txt was found.
+mkdir -p "$WORK/gr/hd/.hid" || abort_suite "cannot make $WORK/gr/hd"
+echo 'needle' > "$WORK/gr/hd/v.txt"
+echo 'needle' > "$WORK/gr/hd/.hidden.txt"
+echo 'needle' > "$WORK/gr/hd/.hid/x.txt"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
+    grep -r needle hd | Sort-Object
+    '--'
+    Set-Location -LiteralPath hd
+    grep -r needle | Sort-Object
+" 2>&1 < /dev/null | tr -d '\r')
+assert_eq "pwsh/grep -r needle hd, and grep -r needle in hd: hidden ones too" "$WORK/gr/hd/.hid/x.txt:needle
+$WORK/gr/hd/.hidden.txt:needle
+$WORK/gr/hd/v.txt:needle
+--
+$WORK/gr/hd/.hid/x.txt:needle
+$WORK/gr/hd/.hidden.txt:needle
+$WORK/gr/hd/v.txt:needle" "$actual"
 rm -rf "$WORK/gr"
 unset _t _i _w _got
 
