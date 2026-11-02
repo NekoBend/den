@@ -195,16 +195,20 @@ actual=$(wc_run "wc '$WORK/wc_dir'")
 assert_eq "wc: a folder" "rc=1
 --- stderr
 wc: 'wc_dir': Is a directory" "$actual"
-actual=$(wc_run "wc -l '$WORK/wc_noread.txt' '$WORK/wc_b.txt'")
-assert_contains "wc: a file it may not read is an error" \
-    "wc: 'wc_noread.txt': Access to the path 'wc_noread.txt' is denied." "$actual"
-assert_contains "wc: the others are still counted" "wc_b.txt 1" "$actual"
-assert_eq "wc: and it fails" "rc=1" "$(printf '%s\n' "$actual" | head -n 1)"
-assert_eq "wc: no count for the one it may not read" "" \
-    "$(printf '%s\n' "$actual" | sed '/^--- stderr$/,$d' | grep -F 'wc_noread.txt' || true)"
-actual=$(wc_run "wc -l '$WORK/wc_noread.txt'")
-assert_eq "wc: a file it may not read, alone, prints no count" "rc=1
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: root reads a file whatever its mode (CI's test image runs as root)"
+else
+    actual=$(wc_run "wc -l '$WORK/wc_noread.txt' '$WORK/wc_b.txt'")
+    assert_contains "wc: a file it may not read is an error" \
+        "wc: 'wc_noread.txt': Access to the path 'wc_noread.txt' is denied." "$actual"
+    assert_contains "wc: the others are still counted" "wc_b.txt 1" "$actual"
+    assert_eq "wc: and it fails" "rc=1" "$(printf '%s\n' "$actual" | head -n 1)"
+    assert_eq "wc: no count for the one it may not read" "" \
+        "$(printf '%s\n' "$actual" | sed '/^--- stderr$/,$d' | grep -F 'wc_noread.txt' || true)"
+    actual=$(wc_run "wc -l '$WORK/wc_noread.txt'")
+    assert_eq "wc: a file it may not read, alone, prints no count" "rc=1
 --- stderr" "$(printf '%s\n' "$actual" | sed -n '1,2p')"
+fi
 chmod 600 "$WORK/wc_noread.txt"
 actual=$(wc_run "wc -l '$WORK/wc_a.txt' '$WORK/wc_b.txt'")
 assert_eq "wc: files it reads still exit 0" "rc=0" "$(printf '%s\n' "$actual" | head -n 1)"

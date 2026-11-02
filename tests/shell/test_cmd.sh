@@ -1040,7 +1040,18 @@ if command -v pwsh >/dev/null 2>&1; then
     printf 'x\n' > "$WORK/wc-noread.txt"
     chmod 000 "$WORK/wc-noread.txt"
     res=""
-    for c in missing:"$WORK/wc-missing.txt" folder:"$WORK/wc-dir" noread:"$WORK/wc-noread.txt" none:; do
+    # Root reads a file whatever its mode (CI's test image runs as root).
+    cases=(missing:"$WORK/wc-missing.txt" folder:"$WORK/wc-dir")
+    want_noread=""
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "  SKIP: the unreadable file, as root"
+    else
+        cases+=(noread:"$WORK/wc-noread.txt")
+        want_noread="noread rc=1 stdout=0 stderr=yes
+"
+    fi
+    cases+=(none:)
+    for c in "${cases[@]}"; do
         if [ "${c#*:}" ]; then
             out=$(_ARG1="${c#*:}" pwsh -NoProfile -NonInteractive -Command "$WC_CMD" 2>"$WORK/wc-err.txt")
         else
@@ -1055,8 +1066,7 @@ if command -v pwsh >/dev/null 2>&1; then
     chmod 600 "$WORK/wc-noread.txt"
     assert_eq "cmd/wc: an error on stderr, nothing on stdout, exit 1" "missing rc=1 stdout=0 stderr=yes
 folder rc=1 stdout=0 stderr=yes
-noread rc=1 stdout=0 stderr=yes
-none rc=1 stdout=0 stderr=yes" "${res%
+${want_noread}none rc=1 stdout=0 stderr=yes" "${res%
 }"
     out=$(_ARG1="$WORK/wc-blank.txt" pwsh -NoProfile -NonInteractive -Command "$WC_CMD" 2>&1)
     assert_eq "cmd/wc: a file it reads still exits 0" "0" "$?"
