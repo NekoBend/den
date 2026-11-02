@@ -596,12 +596,19 @@ function touch {
   }
 }
 
+# The counts of one file. A file it cannot count (missing, a folder, one it
+# may not read) throws the reason, which wc reports as GNU wc does: it took a
+# missing file for no operand at all, and a read that failed for an empty file.
 function _wcOne {
   param([string]$Path, [hashtable]$mo, [bool]$needChar)
 
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-
-  $raw = Get-Content -Raw -LiteralPath $Path -ErrorAction SilentlyContinue
+  if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { throw "'$Path': No such file or directory" }
+  if (Test-Path -LiteralPath $Path -PathType Container) { throw "'$Path': Is a directory" }
+  try {
+    $raw = Get-Content -Raw -LiteralPath $Path -ErrorAction Stop
+  } catch {
+    throw "'$Path': $($_.Exception.Message)"
+  }
   if ($null -eq $raw) { $raw = '' }
 
   # @(): the if-block's output reaches $lines as $null for an empty file, and a
@@ -623,6 +630,10 @@ function _wcOne {
 # Piped input is counted an object at a time, not held: Measure-Object takes
 # each one as it arrives, and the characters (with a newline after each line,
 # as in a file) are added up alongside.
+# A file it cannot count is an error of its own, after which wc counts the
+# others, and the call then fails with one terminating error, so $? is false
+# and `pwsh -Command` exits 1 (dg's shape): a plain Write-Error in a function
+# leaves that 0.
 function wc {
   begin {
     $__sp = $null
@@ -676,7 +687,7 @@ function wc {
       }
       $r
     } elseif ($files.Count -eq 1) {
-      $r = _wcOne $files[0] $mo $needChar
+      try { $r = _wcOne $files[0] $mo $needChar } catch { Write-Error $_.Exception.Message -ErrorAction Stop }
       $r
     } else {
       $results = @()
@@ -685,9 +696,15 @@ function wc {
         Words = 0
         Characters = 0
       }
+      $failed = 0
       foreach ($f in $files) {
-        $r = _wcOne $f $mo $needChar
-        if ($null -eq $r) { continue }
+        try {
+          $r = _wcOne $f $mo $needChar
+        } catch {
+          Write-Error $_.Exception.Message
+          $failed++
+          continue
+        }
         $r | Add-Member -NotePropertyName 'File' -NotePropertyValue $f -Force
         if ($r.PSObject.Properties['Lines']) { $totals['Lines'] += $r.Lines }
         if ($r.PSObject.Properties['Words']) { $totals['Words'] += $r.Words }
@@ -708,6 +725,7 @@ function wc {
       $total | Add-Member -NotePropertyName 'File' -NotePropertyValue 'total' -Force
       $results += $total
       $results | Format-Table -AutoSize
+      if ($failed) { Write-Error "$failed of $($files.Count) files could not be read" -ErrorAction Stop }
     }
   }
 }
