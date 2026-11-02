@@ -1,563 +1,186 @@
-"""den hook - install per-tool hooks that imprint context every turn.
+"""den hook - what is left of den's per-turn hooks.
 
-Soft enforcement only: these hooks never block a tool call. Each turn the
-agent's tool runs `den hook run`, which injects two things as additional
-context and then checkpoints memory:
+den no longer installs hooks or keeps a workspace memory (MIGRATIONS.md,
+section 9). Two pieces stay, for the workspaces an older den set up:
 
-  .den/imprint.md   static, human-owned directives that must not fall out of
-                    context (read the skill, use a subagent, record memory).
-  .den/memory.md    agent-owned, overwritable session memory (via den hook memory).
+  run      the command those hooks still call. A no-op: it reads nothing,
+           writes nothing, and answers each tool with the response that tool
+           takes for "nothing to add", so a hook that still fires neither
+           fails nor blocks the session.
+  remove   behind `den uninstall hook`: takes den's hooks and the cline-cli
+           rule files back out of a workspace, leaving everything else in the
+           files it edits.
 
-Because weak models forget on-demand instructions, the per-turn hook re-injects
-both every turn. checkpoint runs first so the previous turn's direct edits to
-memory.md are captured before this turn proceeds.
-
-Hooks install per WORKSPACE: `install` writes each tool's project-level hook
-config (e.g. .claude/settings.local.json, .clinerules/hooks/) under the current
-directory and seeds <cwd>/.den/imprint.md, so hook + imprint + memory all share
-one .den scope. Run it once inside each workspace you want imprinting in.
-
-Subcommands (install/remove are also `den install hook` / `den uninstall hook`):
-  run --event E --tool T   worker the tool invokes; prints injection for T
-  install [--tool T ...]    register hooks into the workspace (cwd)
-          [--all-tools] [--config PATH]
-  memory <subcommand>       workspace session memory (den hook memory -h)
-  imprint                   print the composed injection (imprint + memory)
-  list [--config PATH]      show den-managed hooks per tool
-  remove [--tool T ...]     unregister den-managed hooks
-         [--config PATH]
-
-Generic events (mapped to each tool's own event names): session-start,
-per-turn, post-tool, stop.
+Every other subcommand an older den had (install, list, imprint, memory, and
+`den hook remove` itself) ends with one line that names the removal.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
-import shlex
-import subprocess
 import sys
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Iterator
 
-from ._exe import find_tool
-from ._fsafe import _find_den_dir, _symlink_component, _write_guarded
-from ._memory import (
-    _CLINERULES_IMPRINT,
-    _CLINERULES_MEMORY,
-    _clinerules_dir,
-    _do_checkpoint,
-    _first_line,
-    _foreign_history,
-    _history_dir,
-    _memory_path,
-    _read_guarded_text,
-    _read_text_or_empty,
-    _snap_stamp,
-    _snapshots,
-    mirror_to_clinerules,
-    utf8_stdout,
-)
-from ._memory import (
-    main as _memory_main,
-)
+from ._fsafe import _find_den_dir, _symlink_component
 
-_IMPRINT_NAME = "imprint.md"
+_MIGRATIONS = "MIGRATIONS.md, https://github.com/NekoBend/den/blob/main/MIGRATIONS.md"
 
-# stderr prefixes, matching the subcommand the message comes from.
-_ERR_HOOK = "den hook"
-_ERR_INSTALL = "den hook install"
+# stderr prefix of `den uninstall hook`, the one command that edits hooks now.
+_ERR = "den uninstall hook"
 
-# Marker embedded in every den-managed hook command so install/list/remove can
-# find and replace exactly the entries den owns, leaving foreign hooks alone.
+# Marker embedded in every hook command den wrote, so remove can find and take
+# out exactly the entries den owns, leaving foreign hooks alone.
 _MARKER = "den hook run"
 
-_DEFAULT_IMPRINT = """\
-# Imprint (always-on directives)
+# The first bytes of both .clinerules files den wrote for cline-cli, in every
+# version that wrote them (den-imprint.md: "<!-- den-managed. Edit ...",
+# den-memory.md: "<!-- den-managed mirror of .den/memory.md ...").
+_CLINERULES_HEADER = b"<!-- den-managed"
+_CLINERULES_DIRNAME = ".clinerules"
+_CLINERULES_IMPRINT = "den-imprint.md"
+_CLINERULES_MEMORY = "den-memory.md"
 
-These directives apply every turn. Do not let them fall out of context.
-
-- SAVING A STATED RULE IS MANDATORY. When the user states a rule, convention,
-  decision, or fact to remember (signal words: "rule", "always", "never",
-  "from now on", "remember this", or Japanese forms such as "規約", "決定",
-  "覚えておいて"), run this command in that SAME turn, before you finish:
-      den hook memory add "<the fact, one line>"
-  Example: the user says the retry limit is 7, so you run:
-      den hook memory add "Retry limit constant: MAX_RETRIES = 7"
-  Saying "I will remember" without running den hook memory add is a FAILURE: chat
-  memory does not survive the session, only den hook memory add persists. Do NOT
-  store a rule in a source file instead; it goes in den hook memory add. For a
-  larger cleanup, overwrite .den/memory.md wholesale.
-- Before writing code, check whether a skill applies and read its SKILL.md.
-- For multi step or broad tasks, delegate to a subagent instead of doing
-  everything inline.
-- State assumptions explicitly; ask before assuming when scope is ambiguous.
-"""
-
-# Per-tool registry. event map: generic name -> the tool's own event name.
-# verified=False tools are scaffolded but refuse install/run until their hook
-# output contract has been checked against the real CLI.
+# Where earlier dens installed each tool's hooks, per workspace.
 _TOOLS: dict[str, dict] = {
     "claude": {
-        # Claude Code's personal, uncommitted settings file: the commands pin
-        # this machine's absolute .den path, which must not travel with the
-        # repo (on the other OS of a WSL/Windows pair it is not even absolute).
-        # install keeps it out of git (_git_exclude).
+        # Claude Code's personal, uncommitted settings file.
         "config": ".claude/settings.local.json",
-        # The shared, committed file earlier dens wrote to. install moves den's
-        # entries out of it; list and remove read it too.
+        # The shared, committed file earlier dens wrote to. remove reads it too.
         "legacy_config": ".claude/settings.json",
-        "git_exclude": True,
-        "emit": "claude",
         "format": "settings_json",
-        "events": {
-            "session-start": "SessionStart",
-            "per-turn": "UserPromptSubmit",
-            "post-tool": "PostToolUse",
-            "stop": "Stop",
-        },
-        "post_tool_matcher": "Write|Edit|MultiEdit",
-        "verified": True,
-    },
-    # gemini: RETIRED (2026-07). gemini-cli hit upstream EOL for individual
-    # accounts (2026-06-18); its successor Antigravity reads the cross-tool
-    # ~/.agents/skills + AGENTS.md that den already deploys, so no
-    # tool-specific entry is needed. Existing workspace .gemini hook configs
-    # only fire inside the dead CLI, so they are inert. Re-add a verified
-    # entry only after checking the real Antigravity CLI's hook contract.
-    # codex: DEFERRED. The output contract is the same as claude
-    # (UserPromptSubmit/SessionStart with hookSpecificOutput.additionalContext;
-    # confirmed in the codex binary's hook schema), so `emit` could reuse the
-    # hookspecific emitter. The blocker is DELIVERY: codex has no direct hooks
-    # config file. Hooks ship only inside a PLUGIN (plugin.json -> hooks.json),
-    # installed from a registered marketplace via `codex plugin marketplace add`
-    # + `codex plugin add NAME@MARKETPLACE`, and gated by hook trust
-    # (`--dangerously-bypass-hook-trust`). Implementing a "codex_plugin" format
-    # means generating that plugin tree + a local marketplace and driving those
-    # commands. Left verified=False until that is built and live-tested.
-    "codex": {
-        "config": "~/.codex/plugins",  # plugin install root (not a direct file)
-        "emit": "claude",  # same hookSpecificOutput.additionalContext contract
-        "events": {
-            "session-start": "SessionStart",
-            "per-turn": "UserPromptSubmit",
-            "post-tool": "PostToolUse",
-            "stop": "Stop",
-        },
-        "verified": False,
     },
     "copilot": {
         "config": ".github/hooks/den.json",
-        "emit": "copilot",
         "format": "copilot_json",
-        # userPromptSubmitted is notification-only (cannot inject), so the
-        # imprint loads once at sessionStart; per-turn only drives checkpoint.
-        "events": {
-            "session-start": "sessionStart",
-            "per-turn": "userPromptSubmitted",
-            "post-tool": "postToolUse",
-        },
-        "verified": True,
     },
     "cline": {
-        # The VS Code EXTENSION. It runs workspace project hooks and DOES inject
-        # `contextModification` per turn (apps/vscode .../task: wraps it in a
-        # <hook_context> block), gated by the extension's `hooksEnabled` setting.
-        # Workspace-local so hook + imprint + memory share one .den scope.
+        # The VS Code extension: one script per event, named for the event.
         "config": ".clinerules/hooks",
-        "emit": "cline",
         "format": "cline_scripts",
-        "events": {
-            "session-start": "TaskStart",
-            "per-turn": "UserPromptSubmit",
-            "post-tool": "PostToolUse",
-        },
-        "verified": True,
+        "scripts": ("TaskStart", "UserPromptSubmit", "PostToolUse"),
     },
     "cline-cli": {
-        # The cline CLI canNOT inject context via hooks: its file hooks are
-        # observe-only (prompt_submit/agent_start are fire-and-forget) and the one
-        # applied control is cancel/overrideInput on tool_call -- context /
-        # contextModification are parsed then ignored (verified in cline/cline
-        # sdk/packages/core .../hook-file-hooks.ts). It DOES load .clinerules/*.md
-        # as always-on rules at session start, so den delivers the imprint + memory
-        # as rule files there instead of a hook. There is no `den hook run` for it.
+        # The cline CLI got .clinerules rule files instead of a hook; `config`
+        # is not used (see _remove_clinerules).
         "config": ".clinerules",
         "format": "clinerules",
-        "events": {},
-        "verified": True,
     },
 }
 
-_INJECT_EVENTS = ("session-start", "per-turn")  # events that emit context
+
+def removed(command: str, instead: str = "") -> int:
+    """`command` was removed from den: one line on stderr that says so and
+    where to read more, and exit 1. Not 2: Claude Code takes exit 2 from a hook
+    for "block the prompt", and a stale hook or script may still call one."""
+    hint = f"; {instead}" if instead else ""
+    print(
+        f"{command}: removed from den (2026-11){hint}; see {_MIGRATIONS}",
+        file=sys.stderr,
+    )
+    return 1
 
 
 # --------------------------------------------------------------------------- #
-# composition
+# run: the no-op
 # --------------------------------------------------------------------------- #
 
-
-def _imprint_path(den_dir: Path) -> Path:
-    return den_dir / _IMPRINT_NAME
-
-
-def _compose(den_dir: Path) -> str:
-    """Build the injection: imprint then memory, each in a tagged block.
-
-    Empty / missing sources are skipped. Returns "" when both are empty.
-    """
-    blocks: list[str] = []
-
-    # Guarded reads: a repo-shipped symlink at .den/imprint.md or .den/memory.md
-    # would otherwise inject an arbitrary file (an ssh key, an auth.json) into the
-    # model's context every turn. A refused read yields nothing and says so once.
-    for tag, path in (
-        ("imprint", _imprint_path(den_dir)),
-        ("memory", _memory_path(den_dir)),
-    ):
-        text = _read_text_or_empty(den_dir, path, _ERR_HOOK).strip()
-        if text:
-            blocks.append(f"<den:{tag}>\n{text}\n</den:{tag}>")
-
-    return "\n\n".join(blocks)
-
-
-# --------------------------------------------------------------------------- #
-# per-tool output emitters
-# --------------------------------------------------------------------------- #
-
-
-def _emit_hookspecific(event_name: str, text: str) -> None:
-    """stdout JSON with hookSpecificOutput.additionalContext (exit 0).
-
-    Shared by Claude Code and Gemini CLI: both parse exit-0 stdout as JSON and
-    append additionalContext to the turn. Verified end to end against both.
-    """
-    if not text:
-        return
-    out = {
-        "hookSpecificOutput": {
-            "hookEventName": event_name,
-            "additionalContext": text,
-        }
-    }
-    print(json.dumps(out))
-
-
-def _emit_copilot(event_name: str, text: str) -> None:
-    """stdout JSON for Copilot CLI. additionalContext injects on sessionStart
-    (and postToolUse); other events ignore output. {} means no-op."""
-    out: dict = {}
-    if text:
-        out["additionalContext"] = text
-    print(json.dumps(out))
-
-
-def _emit_cline(event_name: str, text: str) -> None:
-    """stdout JSON for Cline. contextModification injects into the conversation;
-    cancel=false always allows the turn. Cline expects a JSON response."""
-    out: dict = {"cancel": False}
-    if text:
-        out["contextModification"] = text
-    print(json.dumps(out))
-
-
-_EMITTERS = {
-    "claude": _emit_hookspecific,
-    "copilot": _emit_copilot,
-    "cline": _emit_cline,
+# What each tool takes from a hook for "nothing to add", exactly what `den
+# hook run` printed when it had nothing to inject. copilot and cline expect
+# JSON on every hook; claude (and codex, which shared its contract) reads
+# empty stdout as nothing. cline-cli never had a runtime hook, and a tool this
+# den does not know (gemini, retired; a hand-written command) gets nothing.
+_NOTHING_TO_ADD = {
+    "copilot": "{}",
+    "cline": '{"cancel": false}',
 }
 
 
-# --------------------------------------------------------------------------- #
-# run
-# --------------------------------------------------------------------------- #
+def _cmd_run(argv: list[str]) -> int:
+    """The no-op the hooks an older den installed still call.
 
-
-def _cmd_run(argv: list[str]) -> int:  # ruff: ignore[too-many-return-statements]  # one exit per skip
-    """The per-event worker. It FAILS OPEN: every problem -- a bad argument, a
-    --den-dir that is not absolute here (a command written on the other OS of a
-    WSL/Windows pair), an event or tool this den version does not know, an error
-    while reading memory -- is one line on stderr, the tool's empty response on
-    stdout, and exit 0. Never 2: Claude Code treats exit 2 as "block", which
-    erases every prompt and keeps Stop from stopping, and a hook that can only
-    imprint must never take the session down with it."""
-    event, tool, den_dir_arg, problem = _parse_run_args(argv)
-    spec = _TOOLS.get(tool) if tool else None
-    emit = _EMITTERS.get(spec.get("emit", "")) if spec else None
-    native = spec["events"].get(event, event) if spec and event else ""
-
-    def skip(reason: str) -> int:
-        print(f"den hook run: {reason}; nothing injected", file=sys.stderr)
-        if emit is not None:
-            emit(native, "")
-        return 0
-
-    if problem:
-        return skip(problem)
-    if spec is None:
-        return skip(f"unknown tool '{tool}'")
-    if spec.get("format") == "clinerules":
-        print(
-            f"den hook run: '{tool}' delivers via .clinerules rule files, not a "
-            "runtime hook",
-            file=sys.stderr,
-        )
-        return 0
-    if event not in spec["events"]:
-        return skip(f"tool '{tool}' has no event '{event}'")
-
-    try:
-        # Guarded too: `~nouser` makes expanduser raise RuntimeError, and a
-        # deleted working directory makes Path.cwd raise FileNotFoundError.
-        den_dir = _run_den_dir(den_dir_arg)
-    except Exception as exc:  # ruff: ignore[blind-except]  # fail open, see above
-        return skip(f"{type(exc).__name__}: {exc}")
-    if den_dir is None:
-        return skip(f"--den-dir must be absolute, got '{den_dir_arg}'")
-
-    # Inject only on inject-events; other events still get an (empty) response
-    # because some tools (cline, copilot) require valid JSON on every hook.
-    # copilot's per-turn (userPromptSubmitted) is notification-only, so do not
-    # compose for it -- it injects only at session-start.
-    inject = event in _INJECT_EVENTS and not (tool == "copilot" and event == "per-turn")
-    try:
-        # Always checkpoint: captures the previous turn's direct edits to
-        # memory.md. Cheap and content-gated, so unconditional is fine on every
-        # event. The mirror keeps cline-cli's .clinerules copy current with
-        # those edits (a no-op unless cline-cli is installed here).
-        _do_checkpoint(den_dir)
-        mirror_to_clinerules(den_dir)
-        text = _compose(den_dir) if inject else ""
-    except Exception as exc:  # ruff: ignore[blind-except]  # fail open, see above
-        return skip(f"{type(exc).__name__}: {exc}")
-    if emit is None:
-        # Fallback for tools whose emitter is not implemented yet: plain stdout.
-        if text:
-            sys.stdout.write(text + "\n")
-    else:
-        emit(native, text)
-
+    It takes every argument form those hooks carry (`--event E --tool T`, with
+    or without `--den-dir D`, from any den version) and any other, reads only
+    `--tool` from them, and then reads nothing: no file, no stdin. It writes
+    nothing, prints only the tool's "nothing to add" response, and exits 0, so
+    a stale hook can neither fail nor block a session."""
+    tool = None
+    for i, arg in enumerate(argv[:-1]):
+        if arg == "--tool":
+            tool = argv[i + 1]
+    response = _NOTHING_TO_ADD.get(tool or "")
+    if response is not None:
+        print(response)
     return 0
 
 
-def _run_den_dir(den_dir_arg: str | None) -> Path | None:
-    """The .den dir a hook run works on, or None for a --den-dir that is not
-    absolute.
-
-    The den dir pinned at install time (--den-dir) wins: it binds the hook to
-    the workspace the user explicitly set up, so a checked-out repo cannot get
-    its own ancestor/nested .den injected. The cwd-ancestor walk is only for
-    hooks installed before pinning existed (backward compat)."""
-    if not den_dir_arg:
-        return _find_den_dir(Path.cwd())
-    den_dir = Path(den_dir_arg).expanduser()
-    # install always bakes an ABSOLUTE path; a relative --den-dir resolves
-    # against the agent's cwd, which is exactly the cwd-dependence pinning
-    # exists to remove (a repo could ship a hook with --den-dir .den). Refuse
-    # rather than silently re-open the injection vector.
-    return den_dir if den_dir.is_absolute() else None
-
-
-def _parse_run_args(
-    argv: list[str],
-) -> tuple[str | None, str | None, str | None, str | None]:
-    """(event, tool, den_dir, problem). Whatever parsed is returned even when
-    there is a problem, so the caller can still answer the tool it names."""
-    event = tool = den_dir = None
-    i = 0
-    while i < len(argv):
-        if argv[i] == "--event" and i + 1 < len(argv):
-            event = argv[i + 1]
-            i += 2
-        elif argv[i] == "--tool" and i + 1 < len(argv):
-            tool = argv[i + 1]
-            i += 2
-        elif argv[i] == "--den-dir" and i + 1 < len(argv):
-            den_dir = argv[i + 1]
-            i += 2
-        else:
-            return event, tool, den_dir, f"unexpected arg '{argv[i]}'"
-    if event is None or tool is None:
-        return event, tool, den_dir, "--event and --tool are required"
-    return event, tool, den_dir, None
-
-
 # --------------------------------------------------------------------------- #
-# install / list / remove
-#
-# claude uses format "settings_json": a settings.json with a hooks object
-# keyed by native event name. codex/copilot/cline use other formats.
+# remove (den uninstall hook)
 # --------------------------------------------------------------------------- #
 
 
-def _leaves_workspace(path: Path, prefix: str = _ERR_HOOK) -> bool:
+def _leaves_workspace(path: Path) -> bool:
     """True (after one line on stderr) when `path` is under cwd but only reaches
     it through a symlink -- a dangling one included, since `is_symlink()` does not
     care whether the target exists.
 
-    A path OUTSIDE cwd passes: that is an explicit --config (and its backup), the
-    user's own choice. What must not happen is a workspace-relative path leaving
-    the workspace, because a cloned repo controls those.
+    A path OUTSIDE cwd passes: that is an explicit --config, the user's own
+    choice. What must not happen is a workspace-relative path leaving the
+    workspace, because a cloned repo controls those.
     """
     bad = _symlink_component(Path.cwd(), path)
     if bad is None:
         return False
     print(
-        f"{prefix}: refusing {path}: {bad} is a symlink "
+        f"{_ERR}: refusing {path}: {bad} is a symlink "
         "(the workspace config must stay in the workspace)",
         file=sys.stderr,
     )
     return True
 
 
-def _resolve_config(
-    spec: dict, override: str | None, prefix: str = _ERR_HOOK
-) -> Path | None:
-    """The config file/dir to operate on, or None (after one line on stderr,
-    starting with `prefix`: install passes its own name) when the
-    workspace-relative default is unusable.
+def _resolve_config(spec: dict, override: str | None) -> Path | None:
+    """The config file/dir to operate on, or None (after one line on stderr)
+    when the workspace-relative default is unusable.
 
     An explicit --config is the user's own choice and is taken as given -- but
-    RESOLVED, so the paths derived from it are real ones. Dotfiles managers
-    symlink `~/.claude`, and an unresolved override left `<config>.den.bak` with a
-    symlinked parent, which _backup_if_unmergeable's guard then refused: install
-    worked until the day the JSON was unmergeable, and only then failed.
+    RESOLVED, so the paths derived from it are real ones (dotfiles managers
+    symlink `~/.claude`).
 
     The default is workspace-relative, so it must STAY in the workspace: a cloned
-    repo that ships `.claude` (or `.claude/settings.json`) as a symlink would
-    otherwise make install read-modify-write the user's GLOBAL hook config.
+    repo that ships `.claude` (or `.claude/settings.local.json`) as a symlink
+    would otherwise make remove rewrite the user's GLOBAL hook config.
     """
     if override:
         return Path(override).expanduser().resolve()
     config = Path.cwd() / spec["config"]
-    if _leaves_workspace(config, prefix):
+    if _leaves_workspace(config):
         return None
     # No symlink component left, so resolve() only normalizes the path.
     return config.resolve()
 
 
+def _clinerules_dir(den_dir: Path) -> Path:
+    return den_dir.parent / _CLINERULES_DIRNAME
+
+
 def _display_config(spec: dict, config: Path) -> Path:
-    """The path a format actually writes to, for status messages. Most formats
-    operate on `config`, but clinerules ignores it and uses the workspace
-    `.clinerules` beside the resolved `.den` (which may be an ancestor's). Report
-    that real target so the message never names a dir that was not touched."""
+    """The path a format actually works on, for status messages. Most formats
+    operate on `config`, but clinerules ignores it and uses the `.clinerules`
+    beside the resolved `.den` (which may be an ancestor's). Report that real
+    target so the message never names a dir that was not touched."""
     if spec.get("format") == "clinerules":
         return _clinerules_dir(_find_den_dir(Path.cwd()))
     return config
 
 
-def _run_command(
-    tool: str, generic: str, den_dir: Path, *, powershell: bool = False
-) -> str:
-    """The `den hook run` line baked into a tool's hook config. `--den-dir` pins
-    the ABSOLUTE workspace .den resolved at install time, so the hook always reads
-    the workspace where `den hook install` ran -- not a .den found by walking the
-    agent's cwd ancestors, which a checked-out repo could plant to inject its own
-    imprint every turn (see _cmd_run). The path is quoted for its target language."""
-    d = str(den_dir)
-    quoted = _ps_quote(d) if powershell else shlex.quote(d)
-    return f"den hook run --event {generic} --tool {tool} --den-dir {quoted}"
-
-
-# Every character PowerShell accepts as a single quote: ASCII ' and U+2018..U+201B
-# (what CodeGeneration.EscapeSingleQuotedStringContent doubles). Doubling only the
-# ASCII one let a directory named like x<U+2019>;<code>;<U+2019>y end the string
-# early, and the rest of the name then ran as code in the cline .ps1 hook on
-# every prompt.
-_PS_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
-
-
-def _ps_quote(text: str) -> str:
-    """`text` as a PowerShell single-quoted string literal."""
-    return "'" + "".join(c + c if c in _PS_SINGLE_QUOTES else c for c in text) + "'"
-
-
-def _settings_entries(tool: str, spec: dict, den_dir: Path) -> dict[str, list]:
-    """Build the per-event hook entries den manages for a settings_json config."""
-    entries: dict[str, list] = {}
-    for generic, native in spec["events"].items():
-        cmd = _run_command(tool, generic, den_dir)
-        entry: dict = {"hooks": [{"type": "command", "command": cmd}]}
-        if generic == "post-tool" and spec.get("post_tool_matcher"):
-            entry["matcher"] = spec["post_tool_matcher"]
-        entries.setdefault(native, []).append(entry)
-    return entries
-
-
-def _mergeable(config: Path, events: Iterable[str]) -> bool:
-    """True when config is already a JSON object den can merge its hooks for
-    `events` into, so nothing of the user's is lost by writing it back: its
-    `hooks`, if it has one, is an object, and each of those events in it holds
-    a list. ValueError covers both JSONDecodeError and UnicodeDecodeError."""
-    try:
-        data = json.loads(config.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    if not isinstance(data, dict):
-        return False
-    hooks = data.get("hooks", {})
-    return isinstance(hooks, dict) and all(
-        isinstance(hooks.get(event, []), list) for event in events
-    )
-
-
-def _backup_if_unmergeable(config: Path, events: Iterable[str]) -> bool:
-    """Back up config before install overwrites it, UNLESS den can merge its
-    hooks for `events` into it (_mergeable). _read_json reads anything but a
-    JSON object as {} -- a malformed file, a non-UTF-8 file, OR
-    valid-but-non-object JSON (a list/string/number) -- so without this, install
-    would write back only den's keys and silently discard the user's file. Inside
-    an object, a `hooks` that is not an object, or one of den's events holding
-    something other than a list, is a shape den never writes and cannot add to:
-    install replaces it (_add_den_entries), so the file is backed up first too.
-
-    The copy is the one `--force` makes (_Writer._backup): <config>.den.bak, or
-    the first free .den.bak.N when an earlier backup holds something else, and
-    one that holds these very bytes, with the config's owner, group and
-    extended attributes, is reused. An earlier backup proves nothing
-    about the file there now: den never writes an unmergeable file itself, so a
-    backup it made before holds an earlier edit, and taking it for this one let
-    install overwrite the new edit with no copy anywhere. The copy takes the
-    config's owner, group and, on Linux, extended attributes and ACL (not its
-    directory's), and its permission bits minus execute, so a private settings
-    file does not get a backup others can read; a config whose owner, group or
-    extended attributes the copy cannot take gets no backup.
-
-    False (one line on stderr) when no backup could be made, and the caller must
-    not write: writing den's hooks over a file we could not preserve is exactly
-    the loss the backup exists to prevent. A symlink at a backup name is refused,
-    not written through (a repo can ship a DANGLING one, where `exists()` is
-    False), and so is anything else that is not a regular file there (a repo can
-    ship `settings.json.den.bak/` as a DIRECTORY, which preserves nothing). The
-    backup's directory is the config's own, which _resolve_config already
-    vetted.
-    """
-    if not config.is_file() or _mergeable(config, events):
-        return True
-    # Imported here: install's module is not needed on the per-turn hook path.
-    from ._install import _Writer
-
-    bak = _Writer._backup(config, None, _ERR_INSTALL)  # ruff: ignore[private-member-access]  # the --force backup, shared
-    if bak is None:
-        return False
-    print(
-        f"{_ERR_INSTALL}: {config} is not a JSON object den can merge its hooks "
-        f"into; backed up to {bak} before writing den's hooks",
-        file=sys.stderr,
-    )
-    return True
-
-
 def _read_json(config: Path) -> dict:
     """Load an existing JSON config, or {} if absent/unreadable/not an object.
-    Keeps install/remove from crashing on a malformed or hand-edited file."""
+    Keeps remove from crashing on a malformed or hand-edited file."""
     if not config.is_file():
         return {}
     try:
@@ -567,58 +190,36 @@ def _read_json(config: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _write_config(config: Path, data: dict, prefix: str) -> bool:
-    """Write `data` to the JSON config at `config` without truncating what is
-    there first: an existing file is replaced in one rename
-    (_shell._replace_bytes, which gives the new file the old one's owner,
-    group and permission bits and, on Linux, its extended attributes and
-    ACLs), and a new one is created whole or not at all. Written in place, a
-    write that failed part-way (a full disk, an I/O error) left the user's
-    settings empty or cut short.
+def _write_config(config: Path, data: dict) -> bool:
+    """Write `data` to the existing JSON config at `config` without truncating
+    it first: the file is replaced in one rename (_shell._replace_bytes, which
+    gives the new file the old one's owner, group and permission bits and, on
+    Linux, its extended attributes and ACLs). Written in place, a write that
+    failed part-way (a full disk, an I/O error) left the user's settings empty
+    or cut short.
 
-    False (one line on stderr, starting with `prefix`, the command that was
-    run) when it cannot be written, and the file is then as it was: a write
-    that failed, or a file _replace_bytes refuses, one with a second hard
-    link among them (a new copy would take only this name), which the user
-    edits by hand, as `den uninstall` leaves such an rc file."""
-    # Imported here: the shell installer is not needed on the per-turn hook path.
+    False (one line on stderr) when it cannot be written, and the file is then
+    as it was: a write that failed, or a file _replace_bytes refuses, one with
+    a second hard link among them (a new copy would take only this name),
+    which the user edits by hand, as `den uninstall` leaves such an rc file."""
+    # Imported here: the shell installer is not needed for anything else here.
     from ._shell import _replace_bytes
 
     # Line ends as write_text wrote them: os.linesep (CRLF on Windows).
     raw = (json.dumps(data, indent=2) + "\n").replace("\n", os.linesep)
     try:
-        if config.is_file():
-            _replace_bytes(config, raw.encode("utf-8"))
-        else:
-            config.parent.mkdir(parents=True, exist_ok=True)
-            _create_whole(config, raw.encode("utf-8"))
+        _replace_bytes(config, raw.encode("utf-8"))
     except OSError as e:
-        print(f"{prefix}: left {config} as it was: {e}", file=sys.stderr)
+        print(f"{_ERR}: left {config} as it was: {e}", file=sys.stderr)
         return False
     return True
-
-
-def _create_whole(path: Path, data: bytes) -> None:
-    """Create `path` holding `data`, or raise OSError and leave no file there:
-    one a failed write cut short is removed again. A file that appeared there
-    since the caller looked is not written over (O_EXCL)."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    fd = os.open(path, flags, 0o666)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-    except BaseException:
-        with suppress(OSError):
-            path.unlink()
-        raise
 
 
 def _is_den_hook(hook: object, key: str = "command") -> bool:
     """Whether a hook entry is one den wrote: an object whose command (`key`:
     settings_json's "command", copilot's "bash") is text carrying the marker.
-    list and strip both ask this, so what `den hook list` shows is exactly what
-    install and remove take out, and an entry den never wrote (a command that
-    is null or a number) is neither listed nor taken out, nor makes them raise."""
+    An entry den never wrote (a command that is null or a number) is not taken
+    out, nor makes remove raise."""
     if not isinstance(hook, dict):
         return False
     command = hook.get(key)
@@ -630,12 +231,11 @@ def _strip_den_hooks(hooks: object) -> object:
 
     Only a hook whose command carries the den marker comes out. Its group stays,
     with its matcher and every other key, while anything is left in it: a hook
-    someone added to a group den wrote is theirs, and dropping the whole group
-    deleted it on every install and remove, and on the move out of a shared
-    .claude/settings.json. A group goes only when den's hooks were all it held,
-    and an event only when that leaves it with no group. A shape den never
-    writes (a `hooks` that is not an object, an event whose value is not a
-    list) holds nothing den can tell is its own, so it stays as it is.
+    someone added to a group den wrote is theirs. A group goes only when den's
+    hooks were all it held, and an event only when that leaves it with no group.
+    A shape den never writes (a `hooks` that is not an object, an event whose
+    value is not a list) holds nothing den can tell is its own, so it stays as
+    it is.
 
     When nothing of den's is in it, `hooks` itself comes back, whatever its
     shape: remove then leaves the file byte-identical."""
@@ -666,48 +266,13 @@ def _strip_den_hooks(hooks: object) -> object:
     return hooks if cleaned == hooks else cleaned
 
 
-def _add_den_entries(hooks: object, entries: dict[str, list]) -> dict:
-    """`hooks`, den's own entries already taken out, with den's `entries` added
-    after what each event holds. What den cannot add to (a `hooks` that is not
-    an object, one of den's events holding something other than a list) is
-    replaced: _backup_if_unmergeable has copied the file first."""
-    merged = dict(hooks) if isinstance(hooks, dict) else {}
-    for event, new in entries.items():
-        old = merged.get(event)
-        merged[event] = [*old, *new] if isinstance(old, list) else list(new)
-    return merged
+def _holds_den_hooks(config: Path) -> bool:
+    """Whether the settings_json file at `config` holds a hook den wrote."""
+    hooks = _read_json(config).get("hooks")
+    return _strip_den_hooks(hooks) is not hooks
 
 
-def _install_settings_json(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    entries = _settings_entries(tool, spec, den_dir)
-    if not _backup_if_unmergeable(config, entries):
-        return False
-    data = _read_json(config)
-    data["hooks"] = _add_den_entries(_strip_den_hooks(data.get("hooks", {})), entries)
-    return _write_config(config, data, _ERR_INSTALL)
-
-
-def _list_settings_json(tool: str, spec: dict, config: Path) -> list[str]:
-    hooks = _read_json(config).get("hooks", {})
-    if not isinstance(hooks, dict):
-        return []
-    lines = []
-    for event, groups in hooks.items():
-        if not isinstance(groups, list):
-            continue
-        for g in groups:
-            inner = g.get("hooks") if isinstance(g, dict) else None
-            if not isinstance(inner, list):
-                continue
-            lines.extend(
-                f"{tool}  {event}  {h['command']}" for h in inner if _is_den_hook(h)
-            )
-    return lines
-
-
-def _remove_settings_json(
-    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
-) -> bool:
+def _remove_settings_json(tool: str, spec: dict, config: Path) -> bool:
     if not config.is_file():
         return True
     data = _read_json(config)
@@ -719,7 +284,7 @@ def _remove_settings_json(
     data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
-    return _write_config(config, data, prefix)
+    return _write_config(config, data)
 
 
 # --- copilot: flat {version, hooks:{event:[{type,bash}]}}, marker in "bash" --- #
@@ -745,35 +310,7 @@ def _strip_copilot(hooks: object) -> object:
     return hooks if cleaned == hooks else cleaned
 
 
-def _install_copilot(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    entries = {
-        native: [{"type": "command", "bash": _run_command(tool, generic, den_dir)}]
-        for generic, native in spec["events"].items()
-    }
-    if not _backup_if_unmergeable(config, entries):
-        return False
-    data = _read_json(config)
-    data["version"] = data.get("version", 1)
-    data["hooks"] = _add_den_entries(_strip_copilot(data.get("hooks", {})), entries)
-    return _write_config(config, data, _ERR_INSTALL)
-
-
-def _list_copilot(tool: str, spec: dict, config: Path) -> list[str]:
-    hooks = _read_json(config).get("hooks", {})
-    if not isinstance(hooks, dict):
-        return []
-    return [
-        f"{tool}  {event}  {h['bash']}"
-        for event, arr in hooks.items()
-        if isinstance(arr, list)
-        for h in arr
-        if _is_den_hook(h, "bash")
-    ]
-
-
-def _remove_copilot(
-    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
-) -> bool:
+def _remove_copilot(tool: str, spec: dict, config: Path) -> bool:
     if not config.is_file():
         return True
     data = _read_json(config)
@@ -785,205 +322,94 @@ def _remove_copilot(
     data["hooks"] = cleaned
     if not data["hooks"]:
         del data["hooks"]
-    return _write_config(config, data, prefix)
+    return _write_config(config, data)
 
 
 # --- cline: one executable script per event, named exactly the event name --- #
 
 
-def _is_windows() -> bool:
-    # Indirection so tests can flip platform without touching os.name globally
-    # (pathlib reads os.name to pick WindowsPath/PosixPath).
-    return os.name == "nt"
-
-
-def _cline_script_name(native: str) -> str:
-    """Cline reads <Event>.ps1 (PowerShell) on Windows, extensionless <Event>
-    (executable bash) on macOS/Linux."""
-    return f"{native}.ps1" if _is_windows() else native
-
-
-def _install_cline(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    try:
-        config.mkdir(parents=True, exist_ok=True)
-    except (FileExistsError, NotADirectoryError):
-        # A regular file on the way: typically cline's classic single-file
-        # `.clinerules`, which has no room for a hooks/ dir. Leave it alone.
-        print(
-            f"{_ERR_INSTALL}: refusing {config}: it or a parent is not a directory",
-            file=sys.stderr,
-        )
-        return False
-    for generic, native in spec["events"].items():
-        script = config / _cline_script_name(native)
-        if script.is_symlink():
-            # Writing through it would land outside the hooks dir; a repo can ship
-            # this file, so never follow it (a symlinked target that happens to
-            # carry the marker would otherwise pass the den-managed check below).
-            print(f"{_ERR_INSTALL}: {script} is a symlink; skipping", file=sys.stderr)
-            continue
-        if script.exists() and _MARKER not in script.read_text(
-            encoding="utf-8", errors="ignore"
-        ):
-            print(
-                f"den hook install: {script} exists and is not den-managed; skipping",
-                file=sys.stderr,
-            )
-            continue
-        cmd = _run_command(tool, generic, den_dir, powershell=_is_windows())
-        if _is_windows():
-            # PowerShell hook: Cline runs <Event>.ps1 and reads its stdout JSON.
-            # With a BOM: Windows PowerShell 5.1 reads a BOM-less script in the
-            # ANSI code page, which garbles a non-ASCII workspace path.
-            script.write_text(
-                f"# {_MARKER} (den-managed; do not edit)\n{cmd}\n",
-                encoding="utf-8-sig",
-            )
-        else:
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                f"# {_MARKER} (den-managed; do not edit)\nexec {cmd}\n",
-                encoding="utf-8",
-            )
-            script.chmod(0o755)
-    return True
-
-
-def _cline_scripts(spec: dict, config: Path) -> Iterator[tuple[str, Path]]:
-    # Check both names so list/remove work regardless of the platform that
-    # installed (extensionless on Unix, .ps1 on Windows).
-    for native in spec["events"].values():
+def _cline_scripts(spec: dict, config: Path) -> Iterator[Path]:
+    # Both names, whichever platform installed: extensionless on Unix, .ps1 on
+    # Windows.
+    for native in spec["scripts"]:
         for cand in (native, f"{native}.ps1"):
             script = config / cand
             if script.is_file() and _MARKER in script.read_text(
                 encoding="utf-8", errors="ignore"
             ):
-                yield native, script
+                yield script
 
 
-def _list_cline(tool: str, spec: dict, config: Path) -> list[str]:
-    if not config.is_dir():
-        return []
-    return [
-        f"{tool}  {native}  {script}" for native, script in _cline_scripts(spec, config)
-    ]
-
-
-def _remove_cline(tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK) -> bool:
+def _remove_cline(tool: str, spec: dict, config: Path) -> bool:
     if not config.is_dir():
         return True
-    for _native, script in _cline_scripts(spec, config):
+    for script in list(_cline_scripts(spec, config)):
         script.unlink()
     return True
 
 
-# --- cline-cli: deliver imprint + memory as .clinerules rule files (no hook) --- #
+# --- cline-cli: the .clinerules rule files den wrote (no hook) --- #
 #
-# These ignore the passed `config` and always use the workspace's `.clinerules/`
-# (beside `.den/`), because that is the only place cline reads rules from -- and
-# the memory mirror (`den memory`) targets the same dir, so imprint + memory stay
-# colocated. (`--config` is meaningless for this format.)
-
-_CLINERULES_RULE_HEADER = (
-    "<!-- den-managed. Edit .den/imprint.md, then re-run "
-    "`den install hook --tool cline-cli`. -->\n\n"
-    "cline reads den's memory from .clinerules/den-memory.md, a copy of "
-    ".den/memory.md. After you edit .den/memory.md directly, run "
-    "`den hook memory checkpoint` so the copy is refreshed.\n\n"
-)
+# These ignore the passed `config` and always use the `.clinerules/` beside the
+# resolved `.den/`, because that is where den wrote them (`--config` is
+# meaningless for this format). cline keeps loading every `.clinerules/*.md` as
+# an always-on rule, so a stale imprint or memory copy left there keeps
+# reaching the model after den stopped refreshing it.
 
 
-def _clinerules_targets(den_dir: Path, prefix: str = _ERR_HOOK) -> list[Path] | None:
-    """The two rule files this format owns, or None (one line on stderr) when the
-    `.clinerules` dir is not usable as one, or a symlink sits at it or at either
-    file.
+def _clinerules_targets(den_dir: Path) -> list[Path] | None:
+    """The two rule files this format wrote, or None (one line on stderr) when
+    the `.clinerules` dir is not usable as one, or a symlink sits at it or at
+    either file.
 
-    The dir is derived HERE, the way the format itself derives it: beside the
+    The dir is derived HERE, the way the format itself derived it: beside the
     resolved `.den`, which may be an ANCESTOR's while cwd is a subdirectory. That
-    is not the path `_resolve_config` vetted, so an ancestor `.clinerules` symlink
-    sails past that guard; remove would then unlink real den-imprint.md /
-    den-memory.md files outside the workspace through it.
+    is not the path `_resolve_config` vetted, so an ancestor `.clinerules`
+    symlink would sail past that guard, and remove would then unlink real
+    den-imprint.md / den-memory.md files outside the workspace through it.
     """
     rules = _clinerules_dir(den_dir)
     if rules.is_symlink():
-        print(f"{prefix}: refusing {rules}: it is a symlink", file=sys.stderr)
+        print(f"{_ERR}: refusing {rules}: it is a symlink", file=sys.stderr)
         return None
     if rules.exists() and not rules.is_dir():
-        # A repo controls this path too, and a regular FILE at it passed the
-        # symlink test and then blew up in install's mkdir(exist_ok=True).
-        print(f"{prefix}: refusing {rules}: it is not a directory", file=sys.stderr)
+        print(f"{_ERR}: refusing {rules}: it is not a directory", file=sys.stderr)
         return None
     targets = [rules / _CLINERULES_IMPRINT, rules / _CLINERULES_MEMORY]
     for path in targets:
         if path.is_symlink():
-            print(f"{prefix}: refusing {path}: it is a symlink", file=sys.stderr)
+            print(f"{_ERR}: refusing {path}: it is a symlink", file=sys.stderr)
             return None
         if path.exists() and not path.is_file():
-            # A DIRECTORY at den-memory.md let install write the imprint and then
-            # report success while the mirror refused, and let remove unlink the
-            # imprint and report success while the invalid target stayed. Both
-            # must stop here, before anything is half-done.
-            print(f"{prefix}: refusing {path}: not a regular file", file=sys.stderr)
+            # A DIRECTORY at den-memory.md let remove unlink the imprint and
+            # report success while the invalid target stayed. Stop here, before
+            # anything is half-done.
+            print(f"{_ERR}: refusing {path}: not a regular file", file=sys.stderr)
             return None
     return targets
 
 
-def _install_clinerules(tool: str, spec: dict, config: Path, den_dir: Path) -> bool:
-    # den_dir is pinned by the caller; clinerules delivers via always-on rule
-    # files (no `den hook run`), so it only needs the dir, not a baked command.
-    rules = _clinerules_dir(den_dir)
-    # Guard before the mkdir: on a DANGLING .clinerules symlink mkdir(exist_ok=True)
-    # re-raises FileExistsError, because is_dir() is False for a broken link.
-    if _clinerules_targets(den_dir, _ERR_INSTALL) is None:
+def _is_dens_rule(path: Path) -> bool:
+    """Whether the rule file at `path` is one den wrote: it starts (after a
+    UTF-8 BOM an editor may have added) with den's header. A file there that
+    does not is someone else's, and stays as it is."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(len(_CLINERULES_HEADER) + 3)
+    except OSError:
         return False
-    rules.mkdir(parents=True, exist_ok=True)
-    # Anything but text -- absent, symlinked, unreadable -- means there is no
-    # imprint to deliver. Skipping the write and falling through to success used
-    # to report an install that put nothing in .clinerules.
-    text = _read_guarded_text(den_dir, _imprint_path(den_dir), _ERR_INSTALL)
-    if not isinstance(text, str):
-        print(
-            f"{_ERR_INSTALL}: no usable imprint at {_imprint_path(den_dir)}; "
-            f"nothing delivered to {rules}",
-            file=sys.stderr,
-        )
-        return False
-    # The imprint rule is also the cline-cli marker mirror_to_clinerules gates on,
-    # so write it BEFORE mirroring the memory. Without the marker there is no
-    # memory mirror either: a refused write delivers nothing at all.
-    if not _write_guarded(
-        rules,
-        rules / _CLINERULES_IMPRINT,
-        (_CLINERULES_RULE_HEADER + text).encode("utf-8"),
-        _ERR_INSTALL,
-    ):
-        return False
-    mirror_to_clinerules(den_dir)
-    return True
+    return head.removeprefix(b"\xef\xbb\xbf").startswith(_CLINERULES_HEADER)
 
 
 def _single_file_clinerules(den_dir: Path) -> bool:
     """True when `.clinerules` is a regular file: cline's classic single-file
-    rules format, so cline-cli (which needs the directory) is not installed
-    here. list and remove take that as "nothing of den's" and stay quiet; only
-    install, which would have to replace the file, refuses it."""
+    rules format, so cline-cli (which needs the directory) was never installed
+    here. remove takes that as "nothing of den's" and stays quiet."""
     rules = _clinerules_dir(den_dir)
     return not rules.is_symlink() and rules.is_file()
 
 
-def _list_clinerules(tool: str, spec: dict, config: Path) -> list[str]:
-    den_dir = _find_den_dir(Path.cwd())
-    if _single_file_clinerules(den_dir):
-        return []
-    targets = _clinerules_targets(den_dir)
-    if targets is None:
-        return []
-    return [f"{tool}  {p.name}  {p}" for p in targets if p.is_file()]
-
-
-def _remove_clinerules(
-    tool: str, spec: dict, config: Path, prefix: str = _ERR_HOOK
-) -> bool:
+def _remove_clinerules(tool: str, spec: dict, config: Path) -> bool:
     # `config` is ignored by this format (see the section comment above), so the
     # path _resolve_config vetted is not the one being unlinked here. Derive and
     # guard the real one, or the unlinks follow a planted link out of the
@@ -991,16 +417,24 @@ def _remove_clinerules(
     den_dir = _find_den_dir(Path.cwd())
     if _single_file_clinerules(den_dir):
         return True
-    targets = _clinerules_targets(den_dir, prefix)
+    targets = _clinerules_targets(den_dir)
     if targets is None:
         return False
     for path in targets:
-        if path.is_file():
+        if not path.is_file():
+            continue
+        if _is_dens_rule(path):
             path.unlink()
+        else:
+            print(
+                f"{_ERR}: left {path}: it does not start with den's header, "
+                "so it is not a file den wrote",
+                file=sys.stderr,
+            )
     return True
 
 
-# --- a tool's earlier config location, and keeping a local file out of git --- #
+# --- claude's earlier config location --- #
 
 
 def _legacy_config(spec: dict, override: str | None) -> Path | None:
@@ -1011,26 +445,7 @@ def _legacy_config(spec: dict, override: str | None) -> Path | None:
     return None if override or not name else Path.cwd() / name
 
 
-def _legacy_lines(tool: str, spec: dict, override: str | None) -> list[str]:
-    """`den hook list` lines for den's entries still in the legacy file. Read
-    through a symlink too: reading is harmless, and only stripping is refused."""
-    legacy = _legacy_config(spec, override)
-    if legacy is None or not legacy.is_file():
-        return []
-    lines = _FORMATS[spec["format"]][1](tool, spec, legacy.resolve())
-    if _symlink_component(Path.cwd(), legacy) is not None:
-        note = (
-            f"(in {spec['legacy_config']}, a symlink den will not edit;"
-            " remove it there by hand)"
-        )
-    else:
-        note = f"(in {spec['legacy_config']}; re-run den install hook to move it)"
-    return [f"{line}  {note}" for line in lines]
-
-
-def _strip_legacy(
-    tool: str, spec: dict, override: str | None, prefix: str, moved_to: Path | None
-) -> bool:
+def _strip_legacy(tool: str, spec: dict, override: str | None) -> bool:
     """Remove den's entries from the legacy file, leaving everything else in it.
 
     True when nothing of den's is (left) there, and a file without den entries
@@ -1044,373 +459,32 @@ def _strip_legacy(
     legacy = _legacy_config(spec, override)
     if legacy is None or not (legacy.is_file() or legacy.is_symlink()):
         return True
-    _install, list_fn, remove_fn = _FORMATS[spec["format"]]
     if _symlink_component(Path.cwd(), legacy) is not None:
-        if not legacy.is_file() or not list_fn(tool, spec, legacy.resolve()):
+        if not legacy.is_file() or not _holds_den_hooks(legacy.resolve()):
             return True
-        _leaves_workspace(legacy, prefix)  # says why on stderr
+        _leaves_workspace(legacy)  # says why on stderr
         return False
     legacy = legacy.resolve()
-    if not list_fn(tool, spec, legacy):
+    if not _holds_den_hooks(legacy):
         return True
-    if not remove_fn(tool, spec, legacy, prefix):
+    if not _remove_settings_json(tool, spec, legacy):
         return False
-    done = f"moved them to {moved_to}" if moved_to else "removed them"
-    print(f"{prefix}: {legacy} held den's {tool} hooks; {done}", file=sys.stderr)
+    print(f"{_ERR}: {legacy} held den's {tool} hooks; removed them", file=sys.stderr)
     return True
 
 
-def _git(git: str, cwd: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
-    """Run a read-only git query in the workspace. core.fsmonitor is forced off:
-    it is the repository-config setting that runs a command on reads, and the
-    workspace may be an extracted archive with a .git/config of its own."""
-    try:
-        return subprocess.run(
-            [git, "-c", "core.fsmonitor=false", "-C", str(cwd), *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def _git_ignored(git: str, path: Path) -> bool | None:
-    """Whether git ignores `path`; None outside a work tree or when git fails."""
-    out = _git(git, path.parent, "check-ignore", "-q", "--", str(path))
-    if out is None or out.returncode not in {0, 1}:
-        return None
-    return out.returncode == 0
-
-
-def _git_exclude(path: Path) -> None:
-    """Keep a machine-local hook file out of commits: add it to the repository's
-    info/exclude unless git already ignores it. Silent without git or outside a
-    work tree; otherwise one line on stderr saying what happened."""
-    git = find_tool("git", _ERR_INSTALL)
-    if git is None or _git_ignored(git, path) is not False:
-        return
-    top = _git(git, path.parent, "rev-parse", "--show-toplevel")
-    excl = _git(git, path.parent, "rev-parse", "--git-path", "info/exclude")
-    if not top or not excl or top.returncode or excl.returncode:
-        return
-    top_dir = Path(top.stdout.strip()).resolve()
-    try:
-        rel = path.resolve().relative_to(top_dir)
-    except ValueError:
-        return
-    exclude = Path(excl.stdout.strip())
-    if not exclude.is_absolute():
-        # git prints it relative to the -C dir; normpath only drops the `..`
-        # (resolve() would also follow a symlinked exclude file, refused below)
-        exclude = Path(os.path.normpath(path.parent / exclude))
-    # Anchored to the repo root, with gitignore's glob characters escaped so a
-    # directory named `[ws]` matches itself.
-    pattern = "/" + re.sub(r"([\\*?\[])", r"\\\1", rel.as_posix())
-    try:
-        # Inside the work tree every component counts: an extracted archive can
-        # ship .git/info itself as a link. Outside it (a linked worktree's
-        # common dir) the layout is the user's, and only the file is checked.
-        bad = _symlink_component(top_dir, exclude)
-        if bad is None and exclude.is_symlink():
-            bad = exclude
-        if bad is not None:
-            print(
-                f"{_ERR_INSTALL}: not editing {exclude}: {bad} is a symlink",
-                file=sys.stderr,
-            )
-            return
-        text = (
-            exclude.read_text(encoding="utf-8", errors="replace")
-            if exclude.is_file()
-            else ""
-        )
-        if pattern not in text.splitlines():
-            exclude.parent.mkdir(parents=True, exist_ok=True)
-            sep = "" if not text or text.endswith("\n") else "\n"
-            with exclude.open("a", encoding="utf-8", newline="\n") as fh:
-                fh.write(f"{sep}{pattern}\n")
-    except OSError as exc:
-        print(
-            f"{_ERR_INSTALL}: cannot add {pattern} to {exclude}: {exc}", file=sys.stderr
-        )
-        return
-    if _git_ignored(git, path):
-        print(
-            f"{_ERR_INSTALL}: added {pattern} to {exclude} (its hook commands "
-            "carry this machine's paths)",
-            file=sys.stderr,
-        )
-    else:
-        print(
-            f"{_ERR_INSTALL}: {path} is still not ignored by git (tracked, or "
-            "re-included by a .gitignore rule); keep it out of commits, its hook "
-            "commands carry this machine's paths",
-            file=sys.stderr,
-        )
-
-
-# format -> (install, list, remove). remove takes the prefix of the command
-# that was run: install also moves den's entries out of a legacy file with it.
+# format -> remove
 _FORMATS = {
-    "settings_json": (
-        _install_settings_json,
-        _list_settings_json,
-        _remove_settings_json,
-    ),
-    "copilot_json": (_install_copilot, _list_copilot, _remove_copilot),
-    "cline_scripts": (_install_cline, _list_cline, _remove_cline),
-    "clinerules": (_install_clinerules, _list_clinerules, _remove_clinerules),
+    "settings_json": _remove_settings_json,
+    "copilot_json": _remove_copilot,
+    "cline_scripts": _remove_cline,
+    "clinerules": _remove_clinerules,
 }
 
 
-def _seed_imprint(den_dir: Path) -> bool:
-    """Create .den/imprint.md with defaults if absent. Returns True if seeded."""
-    path = _imprint_path(den_dir)
-    if path.is_file():
-        return False
-    # Bytes, so the seeded file keeps LF on Windows too and matches the bundled
-    # LF content byte-for-byte (den's text artifacts are LF on every platform).
-    return _write_guarded(den_dir, path, _DEFAULT_IMPRINT.encode("utf-8"), _ERR_INSTALL)
-
-
-def _safe_for_terminal(text: str) -> str:
-    """Repo-controlled text on its way to the user's TERMINAL, defanged.
-
-    The imprint and memory previews echo a file a cloned repo may have written,
-    and a raw ESC in it drives the terminal: an ANSI sequence can repaint the
-    screen (hiding the very lines the preview exists to show) and an OSC one can
-    set the window title or, on some terminals, stage a paste. Every
-    non-printable character becomes a hex escape, so the preview stays
-    readable and inert. Only the terminal copy is filtered: what `_compose`
-    sends to the MODEL is left byte-exact.
-    """
-    return "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in text)
-
-
-def _surface_existing_imprint(den_dir: Path) -> None:
-    """Show a pre-existing imprint at install time. The imprint is injected every
-    turn as standing directives; if it came from a checked-out repo rather than
-    the user, that is silent instruction injection. Pinning (--den-dir) stops a
-    NESTED/ancestor .den, but the install dir's own imprint is still trusted, so
-    surface it here and let the user see what they are about to make authoritative."""
-    path = _imprint_path(den_dir)
-    text = _read_text_or_empty(den_dir, path, _ERR_INSTALL, errors="replace").strip()
-    if not text:
-        return
-    print(
-        f"{_ERR_INSTALL}: using the existing imprint at {path}.\n"
-        "  It is injected every turn as standing directives -- verify you trust "
-        "it (e.g. if it came from a checked-out repo, not you):",
-        file=sys.stderr,
-    )
-    for line in text.splitlines():
-        print(f"  | {_safe_for_terminal(line)}", file=sys.stderr)
-
-
-def _surface_existing_memory(den_dir: Path) -> None:
-    """Show a pre-existing memory file and its history at install time.
-
-    `_compose` injects .den/memory.md every turn exactly like the imprint, and
-    install pins whatever .den/ is already here -- so a memory.md (and history)
-    that came with a checked-out repo is instruction injection the user has never
-    seen. `restore` can bring any snapshot back into memory.md, so each one's
-    first line is shown too, and files in history/ den does not take for
-    snapshots are named (it never reads them).
-    """
-    mem = _memory_path(den_dir)
-    text = _read_text_or_empty(den_dir, mem, _ERR_INSTALL, errors="replace")
-    snaps = _snapshots(den_dir)
-    foreign = _foreign_history(den_dir)
-    if text.strip() or snaps:
-        print(
-            f"{_ERR_INSTALL}: using the existing memory at {mem} "
-            f"({len(text.encode('utf-8'))} bytes, {len(snaps)} snapshot(s) in "
-            f"{_history_dir(den_dir)}) -- it is injected every turn:",
-            file=sys.stderr,
-        )
-        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-        if first:
-            print(f"  | {_safe_for_terminal(first)[:80]}", file=sys.stderr)
-        for i, snap in enumerate(snaps, start=1):
-            line = _safe_for_terminal(_first_line(snap))
-            print(f"  #{i} {_snap_stamp(snap)} | {line}", file=sys.stderr)
-    if foreign:
-        print(
-            f"{_ERR_INSTALL}: ignoring {len(foreign)} file(s) in "
-            f"{_history_dir(den_dir)} that are not den snapshots: "
-            + ", ".join(_safe_for_terminal(n) for n in foreign),
-            file=sys.stderr,
-        )
-
-
-# cline (the extension's per-turn hook) and cline-cli (the .clinerules rule files)
-# both reach the VS Code extension, which then gets the imprint and memory twice.
-_CLINE_PAIR = ("cline", "cline-cli")
-_CLINE_PAIR_REASON = (
-    "cline (the VS Code extension's per-turn hook) and cline-cli (.clinerules "
-    "rule files) together make the extension load the imprint and memory twice; "
-    "install one of them"
-)
-
-
-def _both_clines(tools: list[str]) -> bool:
-    return all(t in tools for t in _CLINE_PAIR)
-
-
-def _install_all_tools() -> list[str]:
-    """What `den install hook --all-tools` installs: every verified tool, with
-    cline standing for both cline flavors (see _CLINE_PAIR). An unverified tool
-    is not "all" of anything installable, so it is not attempted either."""
-    return [t for t, s in _TOOLS.items() if s["verified"] and t != "cline-cli"]
-
-
-def _pick_tools_interactive() -> list[str] | None:
-    """Ask which tools to install hooks for (checkbox). Returns --tool flags,
-    or None if nothing was selected. Asks again when both cline flavors are
-    picked."""
-    from . import _ui
-
-    _ui.say("den hook install -- per-turn imprint hooks in this workspace.")
-    while True:
-        chosen = _ui.select(
-            "Which tools? (space to toggle, enter to confirm)",
-            [(t, t == "claude") for t, s in _TOOLS.items() if s["verified"]],
-        )
-        if not _both_clines(chosen):
-            break
-        _ui.say(f"  {_CLINE_PAIR_REASON}.", style="yellow")
-    if not chosen:
-        _ui.say("  (none selected; nothing to install)")
-        return None
-    flags: list[str] = []
-    for tool in chosen:
-        flags += ["--tool", tool]
-    return flags
-
-
-def _cmd_install(argv: list[str]) -> int:
-    # In a terminal with no tool selected, ask rather than silently defaulting
-    # to claude.
-    selected = any(a in {"--tool", "--all-tools"} for a in argv)
-    if not selected and "--config" not in argv and sys.stdin.isatty():
-        picked = _pick_tools_interactive()
-        if picked is None:
-            return 0
-        argv = picked + list(argv)
-
-    tools, override = _parse_tool_args(argv, all_tools=_install_all_tools())
-    if tools is None:
-        return 2
-    if _both_clines(tools):
-        print(f"{_ERR_INSTALL}: {_CLINE_PAIR_REASON}.", file=sys.stderr)
-        return 2
-
-    den_dir = _find_den_dir(Path.cwd())
-    if _seed_imprint(den_dir):
-        print(f"seeded {_imprint_path(den_dir)}", file=sys.stderr)
-    else:
-        _surface_existing_imprint(den_dir)
-    # Unconditional: a repo can ship memory.md without an imprint.md, and then the
-    # seeded-imprint branch above would say nothing about it.
-    _surface_existing_memory(den_dir)
-
-    rc = 0
-    for tool in tools:
-        spec = _TOOLS[tool]
-        handlers = _FORMATS.get(spec.get("format", ""))
-        if not spec["verified"] or handlers is None:
-            verified = ", ".join(t for t, s in _TOOLS.items() if s["verified"])
-            print(
-                f"den hook install: '{tool}' is not verified yet; skipping. "
-                f"Verified: {verified}.",
-                file=sys.stderr,
-            )
-            rc = 1
-            continue
-        config = _resolve_config(spec, override, _ERR_INSTALL)
-        if config is None:  # symlinked workspace config: refuse, write nothing
-            rc = 1
-            continue
-        if not handlers[0](tool, spec, config, den_dir):
-            rc = 1  # the installer refused and wrote nothing; it said why
-            continue
-        print(
-            f"installed {tool} hooks -> {_display_config(spec, config)}",
-            file=sys.stderr,
-        )
-        # Written first, so the hooks keep working if the old file is refused.
-        if not _strip_legacy(tool, spec, override, _ERR_INSTALL, config):
-            rc = 1
-        if spec.get("git_exclude") and override is None:
-            _git_exclude(config)
-    return rc
-
-
-def _cmd_list(argv: list[str]) -> int:
-    tools, override = _parse_tool_args(argv, default_all=True)
-    if tools is None:
-        return 2
-    for tool in tools:
-        spec = _TOOLS[tool]
-        handlers = _FORMATS.get(spec.get("format", ""))
-        if handlers is None:
-            continue
-        config = _resolve_config(spec, override)
-        if config is None:
-            continue
-        for line in handlers[1](tool, spec, config):
-            print(line)
-        for line in _legacy_lines(tool, spec, override):
-            print(line)
-    return 0
-
-
-def _cmd_remove(argv: list[str]) -> int:
-    tools, override = _parse_tool_args(argv, default_all=True)
-    if tools is None:
-        return 2
-    rc = 0
-    for tool in tools:
-        spec = _TOOLS[tool]
-        handlers = _FORMATS.get(spec.get("format", ""))
-        if handlers is None:
-            continue
-        config = _resolve_config(spec, override)
-        if config is None:  # symlinked workspace config: refuse, touch nothing
-            rc = 1
-            continue
-        if not handlers[2](tool, spec, config):
-            rc = 1  # the remover refused and touched nothing; it said why
-            continue
-        print(
-            f"removed den hooks from {tool} -> {_display_config(spec, config)}",
-            file=sys.stderr,
-        )
-        if not _strip_legacy(tool, spec, override, _ERR_HOOK, None):
-            rc = 1
-    return rc
-
-
-def _cmd_imprint(argv: list[str]) -> int:
-    den_dir = _find_den_dir(Path.cwd())
-    text = _compose(den_dir)
-    if text:
-        sys.stdout.write(text + "\n")
-    return 0
-
-
-def _parse_tool_args(
-    argv: list[str], *, default_all: bool = False, all_tools: list[str] | None = None
-) -> tuple[list[str] | None, str | None]:
-    """(tools, --config) from argv. --all-tools adds `all_tools` (install's
-    installable set), else every tool den knows, so list and remove still reach
-    whatever an explicit --tool installed. It adds to the --tool list rather
-    than replacing it, so the flags' order cannot drop a tool the user named
-    (`--tool cline-cli --all-tools` reaches install's cline pair refusal)."""
+def _parse_tool_args(argv: list[str]) -> tuple[list[str] | None, str | None]:
+    """(tools, --config) from argv; every tool when none is named. --all-tools
+    adds every tool to the --tool list."""
     tools: list[str] = []
     override: str | None = None
     i = 0
@@ -1418,56 +492,69 @@ def _parse_tool_args(
         if argv[i] == "--tool" and i + 1 < len(argv):
             name = argv[i + 1]
             if name not in _TOOLS:
-                print(f"den hook: unknown tool '{name}'", file=sys.stderr)
+                print(f"{_ERR}: unknown tool '{name}'", file=sys.stderr)
                 return None, None
             if name not in tools:
                 tools.append(name)
             i += 2
         elif argv[i] == "--all-tools":
-            every = list(_TOOLS) if all_tools is None else all_tools
-            tools += [t for t in every if t not in tools]
+            tools += [t for t in _TOOLS if t not in tools]
             i += 1
         elif argv[i] == "--config" and i + 1 < len(argv):
             override = argv[i + 1]
             i += 2
         else:
-            print(f"den hook: unexpected arg '{argv[i]}'", file=sys.stderr)
+            print(f"{_ERR}: unexpected arg '{argv[i]}'", file=sys.stderr)
             return None, None
-    if not tools:
-        tools = list(_TOOLS) if default_all else ["claude"]
-    return tools, override
+    return tools or list(_TOOLS), override
+
+
+def _cmd_remove(argv: list[str]) -> int:
+    """`den uninstall hook`: take den's hooks out of the current workspace."""
+    tools, override = _parse_tool_args(argv)
+    if tools is None:
+        return 2
+    rc = 0
+    for tool in tools:
+        spec = _TOOLS[tool]
+        config = _resolve_config(spec, override)
+        if config is None:  # symlinked workspace config: refuse, touch nothing
+            rc = 1
+            continue
+        if not _FORMATS[spec["format"]](tool, spec, config):
+            rc = 1  # the remover refused and touched nothing; it said why
+            continue
+        print(
+            f"removed den hooks from {tool} -> {_display_config(spec, config)}",
+            file=sys.stderr,
+        )
+        if not _strip_legacy(tool, spec, override):
+            rc = 1
+    return rc
 
 
 # --------------------------------------------------------------------------- #
 # dispatch
 # --------------------------------------------------------------------------- #
 
-
-_HANDLERS = {
-    "run": _cmd_run,
-    "install": _cmd_install,
-    "list": _cmd_list,
-    "remove": _cmd_remove,
-    "imprint": _cmd_imprint,
-    "memory": _memory_main,
+# Subcommands an older den had, and what to use instead where something does.
+_REMOVED = {
+    "install": "'den uninstall hook' removes what it installed",
+    "remove": "use 'den uninstall hook'",
+    "list": "",
+    "imprint": "",
+    "memory": "",
 }
 
 
 def _usage() -> None:
     print(
-        "usage: den hook <subcommand> [args]\n"
+        "usage: den hook run [args]\n"
         "\n"
-        "Subcommands:\n"
-        "  run --event E --tool T   worker the tool invokes (prints injection)\n"
-        "  memory <subcommand>      workspace session memory (den hook memory -h)\n"
-        "  imprint                  print composed injection (imprint + memory)\n"
-        "  list [--tool T] [--all-tools] [--config PATH]  show den-managed hooks\n"
-        "  install / remove [...]   prefer 'den install hook' / 'den uninstall hook'\n"
-        "\n"
-        "Events: session-start, per-turn, post-tool, stop.\n"
-        "Verified: claude, cline (per-turn inject); copilot "
-        "(session-start inject only). codex is scaffolded (verified=False);\n"
-        "gemini is retired (upstream EOL; Antigravity reads the cross-tool files)."
+        "den no longer installs hooks. 'den hook run' stays as a no-op for the\n"
+        "hooks an older den installed: it answers each tool with an empty\n"
+        "response. Run 'den uninstall hook' in each workspace that has them.\n"
+        "See MIGRATIONS.md."
     )
 
 
@@ -1479,13 +566,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cmd, rest = args[0], args[1:]
-    handler = _HANDLERS.get(cmd)
-    if handler is None:
-        print(f"den hook: unknown subcommand '{cmd}'", file=sys.stderr)
-        _usage()
-        return 2
-    utf8_stdout()  # imprint, memory and list print UTF-8 text
-    return handler(rest)
+    if cmd == "run":
+        return _cmd_run(rest)
+    if cmd in _REMOVED:
+        return removed(f"den hook {cmd}", _REMOVED[cmd])
+    print(f"den hook: unknown subcommand '{cmd}'", file=sys.stderr)
+    _usage()
+    return 2
 
 
 if __name__ == "__main__":

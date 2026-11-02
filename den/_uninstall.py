@@ -666,8 +666,8 @@ def _interactive() -> int:
     _ui.say("\n# offline cheatsheets")
     rc |= _uninstall_cheatsheets([])
     _ui.say(
-        "\nHooks are per-workspace: run 'den uninstall hook' inside a project to "
-        "remove them there."
+        "\nden no longer installs hooks: run 'den uninstall hook' inside each "
+        "project where an older den installed them."
     )
     return rc
 
@@ -688,8 +688,9 @@ def _usage() -> None:
         "[--dry-run] show the plan only.\n"
         "\n"
         "Only files identical to den's version are removed; files you changed are\n"
-        "kept. The rc-file '# ===== den =====' block is stripped. Hooks are\n"
-        "per-workspace: 'den uninstall hook' unregisters them in the current one."
+        "kept. The rc-file '# ===== den =====' block is stripped.\n"
+        "'den uninstall hook' removes the hooks an older den installed in the\n"
+        "current workspace."
     )
 
 
@@ -705,8 +706,8 @@ def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-
         return 0
     target, rest = args[0], args[1:]
     # Leaf-level help: `den uninstall skills --help` etc. should print usage, not
-    # error. hook owns its own arg handling in _hook, so it is excluded here.
-    if target in {"skills", "shell", "cheatsheets"} and any(
+    # error.
+    if target in {"skills", "shell", "hook", "cheatsheets"} and any(
         a in {"-h", "--help", "help"} for a in rest
     ):
         _usage()

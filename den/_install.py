@@ -1175,10 +1175,6 @@ def _interactive() -> int:
     if _ui.confirm("Install the offline cheatsheets?", default=False):
         rc |= _install_cheatsheets([])
 
-    _ui.say(
-        "\nHooks install per workspace: run 'den install hook' inside a project "
-        "to imprint context every turn there."
-    )
     return rc
 
 
@@ -1233,8 +1229,6 @@ def _usage() -> None:
         "         [--dry-run] [--codex-config] [--force]\n"
         "  shell  [--dry-run] [--no-extras] [--force]\n"
         "         [--coreutils|--no-coreutils] [--bin|--no-bin] [--zsh-plugins]\n"
-        "  hook   [--tool T]... [--all-tools] [--config PATH]"
-        "  per-workspace imprint hooks\n"
         "  cheatsheets [--dry-run] [--force]                  "
         " bundled sheets -> data dir\n"
         "\n"
@@ -1261,7 +1255,7 @@ def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-
         return 0
     target, rest = args[0], args[1:]
     # Leaf-level help: `den install skills --help` etc. should print usage, not
-    # error. hook owns its own arg handling in _hook, so it is excluded here.
+    # error.
     if target in {"skills", "shell", "cheatsheets"} and any(
         a in {"-h", "--help", "help"} for a in rest
     ):
@@ -1274,14 +1268,15 @@ def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-return-
 
         return install_shell(rest)
     if target == "hook":
-        from ._hook import _cmd_install
+        from ._hook import removed
 
-        return _cmd_install(rest)
+        return removed(
+            "den install hook", "'den uninstall hook' removes what it installed"
+        )
     if target == "cheatsheets":
         return _install_cheatsheets(rest)
     print(
-        f"den install: unknown target '{target}' "
-        "(try: skills, shell, hook, cheatsheets)",
+        f"den install: unknown target '{target}' (try: skills, shell, cheatsheets)",
         file=sys.stderr,
     )
     return 2
