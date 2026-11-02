@@ -29,8 +29,25 @@ set "_py="
 set "_m="
 if defined VIRTUAL_ENV if exist "%VIRTUAL_ENV%\Scripts\python.exe" set "_py=%VIRTUAL_ENV%\Scripts\python.exe"
 if defined _py goto run
+rem The lookup reads PATH's absolute entries alone (a drive's or a UNC
+rem path, quotes dropped): an empty or relative entry (., ..\bin, tools) is
+rem the current directory or a folder in it, whose program would run. Each
+rem entry is read with delayed expansion off, so a "!" in it survives, and
+rem tested with it on; the list leaves that setlocal through for /f.
+set "_abs=x"
+set "_ar="
+if defined PATH set "_ar=%PATH:"=%"
+if defined _ar for %%e in ("%_ar:;=" "%") do (
+    set "_ae=x%%~e"
+    setlocal EnableDelayedExpansion
+    if "!_ae:~2,2!"==":\" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~2,2!"==":/" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~1,2!"=="\\" set "_abs=!_abs!!_ae:~1!;"
+    for /f "delims=" %%v in ("!_abs!") do endlocal & set "_abs=%%v"
+)
+set "_abs=%_abs:~1,-1%"
 set "_uv="
-if not "%_DEN_UV_OVERRIDE%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
+if not "%_DEN_UV_OVERRIDE%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $_abs:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
 if not defined _uv goto plain
 rem The file uv run would read: here, then each directory up. A
 rem .python-version, or a .python-versions, which uv reads the same way,
@@ -84,7 +101,7 @@ if not defined _py goto nopython
 call :warn
 goto run
 :plain
-for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $PATH:%_n%.exe 2^>nul') do if not defined _py set "_py=%%p"
+for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $_abs:%_n%.exe 2^>nul') do if not defined _py set "_py=%%p"
 if defined _py goto run
 >&2 echo %_n%: %_n%.exe is not on PATH
 exit /b 9009

@@ -9,7 +9,8 @@ rem typed find is find.exe; cat expands each wildcard itself, refuses a name
 rem that starts with - and names a file, a typed --, and an option or an
 rem option's value that holds * or ?, and hands bat every name in quotes,
 rem the run of backslashes it ends in doubled, then a last --paging=never;
-rem no where.* or tool in the current directory runs;
+rem no where.* or tool in the current directory runs, nor one from an
+rem empty or a relative PATH entry;
 rem touch takes several files; uv passes the arguments after `run` through
 rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
@@ -692,6 +693,81 @@ set "_DEN_UV_OVERRIDE="
 >>"%W%" echo [--version]
 call "%BIN%\uv.cmd" --version >"%O%" 2>&1
 call :expect %errorlevel% 0 "uv: uv.exe from PATH, not the current directory"
+
+rem --- no tool from an empty or a relative PATH entry runs: ., an empty entry
+rem and rel (a folder of the current directory) come before the tools on
+rem PATH, and each holds a copy of every tool, which would name its folder.
+mkdir "%T%\relpath\rel" || exit /b 1
+for %%t in (lsd bat rg fd uv python pip) do (
+    copy /y "%T%\tools\fake.exe" "%T%\relpath\%%t.exe" >nul || exit /b 1
+    copy /y "%T%\tools\fake.exe" "%T%\relpath\rel\%%t.exe" >nul || exit /b 1
+)
+cd /d "%T%\relpath" || exit /b 1
+set "PATH=.;;rel;%T%\tools;%BASEPATH%"
+>"%W%" echo [@tools]
+>>"%W%" echo [q]
+call "%BIN%\ls.cmd" q >"%O%" 2>&1
+call :expect %errorlevel% 0 "ls: lsd from PATH's absolute entries, not from ., an empty or a relative one"
+>"%W%" echo [@tools]
+>>"%W%" echo [-a]
+call "%BIN%\la.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "la: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [-l]
+call "%BIN%\ll.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "ll: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [-la]
+call "%BIN%\lla.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "lla: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [--tree]
+call "%BIN%\lt.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "lt: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [-l]
+>>"%W%" echo [--tree]
+call "%BIN%\llt.cmd" >"%O%" 2>&1
+call :expect %errorlevel% 0 "llt: lsd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [zzz]
+call "%BIN%\grep.cmd" zzz >"%O%" 2>&1
+call :expect %errorlevel% 0 "grep: rg from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [zzz]
+call "%BIN%\findw.cmd" zzz >"%O%" 2>&1
+call :expect %errorlevel% 0 "findw: fd from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [--style=plain]
+>>"%W%" echo [--paging=never]
+>>"%W%" echo [zz]
+>>"%W%" echo [--paging=never]
+call "%BIN%\cat.cmd" zz >"%O%" 2>&1
+call :expect %errorlevel% 0 "cat: bat from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [--version]
+call "%BIN%\uv.cmd" --version >"%O%" 2>&1
+call :expect %errorlevel% 0 "uv: uv.exe from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [run]
+>>"%W%" echo [--]
+>>"%W%" echo [python]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>nul
+call :expect %errorlevel% 0 "python3: uv.exe from PATH's absolute entries"
+set "_DEN_UV_OVERRIDE=0"
+>"%W%" echo [@tools]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: python.exe from PATH's absolute entries"
+>"%W%" echo [@tools]
+>>"%W%" echo [list]
+call "%BIN%\pip.cmd" list >"%O%" 2>&1
+call :expect %errorlevel% 0 "pip: pip.exe from PATH's absolute entries"
+set "_DEN_UV_OVERRIDE="
+set "PATH=%T%\tools;%BASEPATH%"
 del "%T%\tools\python.exe" "%T%\tools\pip.exe"
 set "FAKE_SELF="
 set "FAKE_FIND_SYSTEM="

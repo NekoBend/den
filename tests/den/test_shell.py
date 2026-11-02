@@ -167,7 +167,7 @@ def test_cmd_wrappers_branch_on_the_tool_not_its_exit_code():
         code = _cmd_code(name)
         joined = "\n".join(code)
         assert not any("&&" in ln and "||" in ln for ln in code), name
-        assert f"where.exe $PATH:{tool}.exe" in joined, name
+        assert f"where.exe $_abs:{tool}.exe" in joined, name
         assert 'if defined _t "%_t%" ' in joined, name
         assert "if not defined _t " in joined, name
         assert code[-1] == "exit /b %errorlevel%", name
@@ -189,7 +189,7 @@ def test_cmd_cat_expands_wildcards_and_hands_bat_quoted_names():
     code = _cmd_code("cat")
     joined = "\n".join(code)
     assert not any("&&" in ln and "||" in ln for ln in code)
-    assert "where.exe $PATH:bat.exe" in joined
+    assert "where.exe $_abs:bat.exe" in joined
     assert "if not defined _t goto :type" in joined
     assert [ln for ln in code if "%*" in ln] == ["type %*"]
     assert "for /l %%i in (1,1,%_n%) do call :quote %%i" in joined
@@ -241,7 +241,7 @@ def test_cmd_find_is_find_exe_and_fd_is_findw():
     joined = "\n".join(code)
     assert "_DEN_WRAPPERS" not in joined
     assert "find.exe" not in joined.lower()
-    assert "%SystemRoot%\\System32\\where.exe $PATH:fd.exe" in joined
+    assert "%SystemRoot%\\System32\\where.exe $_abs:fd.exe" in joined
     assert code[code.index("if not defined _t (") + 1 :][:3] == [
         ">&2 echo findw: fd is not installed.",
         "exit /b 1",
@@ -284,7 +284,7 @@ def test_cmd_uv_passes_the_run_arguments_through_as_typed():
     assert not [ln for ln in code if ln.lower().split()[0] == "shift"]
     assert "set _raw=%*" in code
     assert 'set "_rest=!_raw:*run=!"' in code
-    where_uv = "%SystemRoot%\\System32\\where.exe $PATH:uv.exe 2^>nul"
+    where_uv = "%SystemRoot%\\System32\\where.exe $_abs:uv.exe 2^>nul"
     find_uv = f"for /f \"delims=\" %%p in ('{where_uv}')"
     assert f'{find_uv} do if not defined _uv set "_uv=%%p"' in code
     assert '"!_uv!" run --python "!_DEN_VENV_PYTHON!"!_sep!!_rest!' in code

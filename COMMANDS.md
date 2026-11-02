@@ -447,7 +447,9 @@ through `uv run --python <venv version>` outside a project. Inside a venv on cmd
 `python` and `python3` run the venv's `python.exe` (a Windows venv has no
 `python3.exe`). cmd's python, python3, pip and uv shims find each program they
 run on `PATH` (System32's `where.exe`) or by its full path, never in the current
-directory. Flip the redirects with `toggle-uv`.
+directory: they read `PATH`'s absolute entries alone, since an empty or a
+relative one (`.`, `..\bin`) is the current directory or a folder in it, and so
+do cmd's `ls`, `cat`, `grep` and `findw`. Flip the redirects with `toggle-uv`.
 On pwsh the redirects apply to commands typed at the prompt; a script gets the
 `python`, `pip` and `uv` on `PATH` (see "How to read this"). `py`, which Linux
 and macOS do not have, stays den's in scripts there.

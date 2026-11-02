@@ -958,6 +958,50 @@ named=$(tr -d '\r' < "$CMD_BIN/pip.cmd" | sed -n '/^:refuse$/,/^:plain$/p' | gre
 assert_eq "cmd/pip: the refusal names no .venv" "" "$named"
 
 # =============================================================================
+# The PATH lookup of the tool shims (run for real by the Windows job:
+# tests/shell/cmd_shims.cmd)
+# =============================================================================
+echo "[cmd] every where.exe lookup reads PATH's absolute entries alone"
+# where.exe $PATH:<tool> searched every PATH entry, an empty or a relative one
+# (., ..\bin, tools) too, and such an entry is the current directory or a
+# folder in it: with . on PATH, ls ran the lsd.exe a clone keeps. Each shim
+# now builds _abs from PATH's drive and UNC entries, as starship.lua's
+# find_on_path picks them, and looks its tool up there. A plain for splits
+# PATH at each ; with every entry quoted (no quote is left in them), and
+# the list leaves each entry's setlocal through for /f, so a ! survives.
+abs_block() { cmd_code "$1" | sed -n '/^set "_abs=x"$/,/^set "_abs=%_abs:~1,-1%"$/p'; }
+want_block=$(abs_block ls)
+assert_eq "cmd/abs PATH: ls.cmd's block keeps drive and UNC entries alone" 'set "_abs=x"
+set "_ar="
+if defined PATH set "_ar=%PATH:"=%"
+if defined _ar for %%e in ("%_ar:;=" "%") do (
+    set "_ae=x%%~e"
+    setlocal EnableDelayedExpansion
+    if "!_ae:~2,2!"==":\" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~2,2!"==":/" set "_abs=!_abs!!_ae:~1!;"
+    if "!_ae:~1,2!"=="\\" set "_abs=!_abs!!_ae:~1!;"
+    for /f "delims=" %%v in ("!_abs!") do endlocal & set "_abs=%%v"
+)
+set "_abs=%_abs:~1,-1%"' "$want_block"
+lookups=""
+bad=""
+for f in "$CMD_BIN"/*.cmd; do
+    n=$(basename "$f" .cmd)
+    code=$(cmd_code "$n")
+    printf '%s\n' "$code" | grep -q 'where\.exe \$' || continue
+    lookups="$lookups $n"
+    if printf '%s\n' "$code" | grep -q 'where\.exe \$PATH:'; then bad="$bad $n:PATH"; fi
+    [ "$(abs_block "$n")" = "$want_block" ] || bad="$bad $n:block"
+    first_abs=$(printf '%s\n' "$code" | grep -n -m1 '^set "_abs=x"$' | cut -d: -f1)
+    first_where=$(printf '%s\n' "$code" | grep -n -m1 'where\.exe \$' | cut -d: -f1)
+    [ -n "$first_abs" ] && [ "$first_abs" -lt "$first_where" ] || bad="$bad $n:order"
+    printf '%s\n' "$code" | grep -q '^setlocal EnableExtensions DisableDelayedExpansion$' || bad="$bad $n:setlocal"
+done
+assert_eq "cmd/abs PATH: the shims that look a tool up" \
+    " cat findw grep la ll lla llt ls lt pip python python3 uv" "$lookups"
+assert_eq "cmd/abs PATH: each has the block before its lookup, delayed expansion off, and no \$PATH: lookup" "" "$bad"
+
+# =============================================================================
 # The PowerShell the head / tail / wc shims run
 # =============================================================================
 # A shim hands powershell.exe -Command "<text>" with its arguments in _ARG1 /
