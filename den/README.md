@@ -42,7 +42,9 @@ they were listed: one you save again or delete while that prompt is open
 stays as you left it, and the run exits non-zero.
 Pass `--force` to overwrite without asking; each file it overwrites is first
 copied to `<file>.den.bak` (`.den.bak.1`, `.2`, ... when an earlier backup
-holds something else; the copy keeps the file's permissions minus execute).
+holds something else; the copy takes the file's owner, group and, on Linux,
+its ACL and extended attributes, and its permissions minus execute, and a file
+it cannot copy that way is not overwritten).
 Non-interactive runs skip the changed files and exit non-zero,
 so a scripted install cannot mistake a full skip for success. `den install hook`
 into a tool's settings file merges (it preserves foreign hooks and other keys).
@@ -295,7 +297,22 @@ Hooks install **per workspace**: run `den install hook` inside a project and it
 writes that tool's project-level hook config under the current directory and
 seeds `<cwd>/.den/imprint.md`, so hook + imprint + memory share one `.den` scope.
 `install` writes only the hooks den manages (marked by a sentinel) and leaves
-foreign hooks untouched. Generic events map to each tool's own names:
+foreign hooks untouched, one added to a group den wrote included: install and
+`uninstall hook` take out only den's own hooks, and a group only when those
+were all it held; `uninstall hook` leaves a file with nothing of den's in it
+byte-identical. A settings file den cannot merge its hooks into (not a JSON
+object, a `hooks` that is not an object, or one of den's events holding
+something other than a list) is first copied to `<file>.den.bak`, or to the
+first free `.den.bak.N` when an earlier backup holds something else, with the
+file's owner, group and permissions minus execute (and, on Linux, its ACL),
+and den's hooks then take the place of what
+it could not merge into; when no copy can be made, install leaves the file
+alone and exits non-zero. Install and `uninstall hook` rewrite a settings file
+through a new copy that replaces it in one step, so a write that fails
+part-way leaves the file as it was; the copy takes the file's owner, group and
+permissions, as with an rc file, and a file with a second hard link is left as
+it is and named for you to edit by hand (the command exits non-zero).
+Generic events map to each tool's own names:
 `session-start`, `per-turn`, `post-tool`, `stop`.
 
 `--all-tools` installs every verified tool: claude, copilot and cline (the

@@ -723,6 +723,30 @@ def test_install_force_never_replaces_an_earlier_backup(
     assert not skill.with_name("SKILL.md.den.bak.2").exists()
 
 
+@pytest.mark.parametrize("where", ["target", "tool"])
+def test_install_force_backs_up_beside_a_hard_link_to_the_file(
+    tmp_path, monkeypatch, capsys, hard_link, where
+):
+    """A hard link at .den.bak is the file under another name. It holds the
+    file's very bytes, so it was reused as the backup, and the write that
+    followed changed it too: the edit was kept nowhere. The copy goes to the
+    first free .den.bak.N instead."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    deployed = skill.read_text()
+    skill.write_text("MINE\n")
+    hard_link(skill, skill.with_name("SKILL.md.den.bak"))
+    capsys.readouterr()
+    assert install_main([*args, "--force"]) == 0
+    assert skill.read_text() == deployed
+    assert skill.with_name("SKILL.md.den.bak.1").read_text() == "MINE\n"
+    assert "SKILL.md.den.bak.1" in capsys.readouterr().err
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 @pytest.mark.parametrize("where", ["target", "tool"])
 @pytest.mark.parametrize(
@@ -747,6 +771,120 @@ def test_install_force_backup_keeps_the_files_permissions(
     assert backup.stat().st_mode & 0o777 == want
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("where", ["target", "tool"])
+def test_install_force_narrows_a_reused_backup_to_the_files_permissions(
+    tmp_path, monkeypatch, where
+):
+    """A backup that holds the file's bytes is reused, and it kept whatever
+    mode it had, a world-readable one included beside a private file."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    skill.chmod(0o600)
+    backup = skill.with_name("SKILL.md.den.bak")
+    backup.write_text("MINE\n")
+    backup.chmod(0o644)
+    assert install_main([*args, "--force"]) == 0
+    assert backup.stat().st_mode & 0o777 == 0o600
+    assert not skill.with_name("SKILL.md.den.bak.1").exists(), "it was reused"
+
+
+@pytest.mark.parametrize("where", ["target", "tool"])
+@pytest.mark.parametrize("mode", [0o640, 0o750], ids=oct)
+def test_install_force_backup_keeps_the_files_acl(
+    tmp_path, monkeypatch, let_65534_in, mode, where
+):
+    """The backup took none of the file's ACL, only what its directory gives a
+    new file. It now carries the ACL over under its own mode: a backed-up
+    executable is not executable, and the ACL's owner, mask and other entries
+    lose execute with it (a file a default ACL reached at deploy has one)."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    let_65534_in(skill)  # uid 65534 may read it too, so its copy as well
+    skill.chmod(mode)
+    # What that ACL becomes under the backup's mode, read off a scratch file.
+    ref = tmp_path / "acl-under-the-backups-mode"
+    ref.touch()
+    acl = "system.posix_acl_access"
+    os.setxattr(ref, acl, os.getxattr(skill, acl))
+    ref.chmod(mode & 0o666)
+    want = os.getxattr(ref, acl)
+    ref.unlink()
+    assert install_main([*args, "--force"]) == 0
+    backup = skill.with_name("SKILL.md.den.bak")
+    assert backup.read_text() == "MINE\n"
+    assert backup.stat().st_mode & 0o777 == mode & 0o666
+    assert os.getxattr(backup, acl) == want
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="POSIX owners; root may give a file to anyone",
+)
+@pytest.mark.parametrize("where", ["target", "tool"])
+@pytest.mark.parametrize("whose", ["owner", "group"])
+def test_install_force_keeps_a_file_whose_owner_or_group_a_backup_cannot_take(
+    tmp_path, monkeypatch, capsys, foreign_stat, whose, where
+):
+    """A backup that belongs to den's user or group, not the file's, may be
+    read by others than the file; --force then leaves the file, as for any
+    backup it cannot make. Only root gives a file away, so stat reports
+    another owner or group here, and the chown to the copy fails."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    foreign_stat(skill.name, whose)
+    capsys.readouterr()
+    assert install_main([*args, "--force"]) == 1
+    assert skill.read_text() == "MINE\n", "not replaced without a backup"
+    assert not list(skill.parent.glob("SKILL.md.den.bak*")), "no copy is left"
+    refusals = [
+        ln for ln in capsys.readouterr().err.splitlines() if "not replacing" in ln
+    ]
+    assert len(refusals) == 1
+    assert refusals[0].startswith(f"den install: not replacing {skill}: ")
+    assert "copying it would change its owner or group (" in refusals[0]
+
+
+@pytest.mark.parametrize("where", ["target", "tool"])
+def test_install_force_does_not_reuse_a_backup_that_took_its_directorys_acl(
+    tmp_path, monkeypatch, let_65534_in, where
+):
+    """A copy an older den made beside a default ACL took that ACL, so the
+    user it names could read it; it held the file's bytes, so --force reused
+    it. It is now passed over, and the copy goes to .den.bak.1."""
+    from den._install import main as install_main
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args, skills = _skill_install(where, tmp_path)
+    assert install_main(args) == 0
+    skill = skills / "coding" / "SKILL.md"
+    skill.write_text("MINE\n")
+    skill.chmod(0o640)
+    backup = skill.with_name("SKILL.md.den.bak")
+    backup.write_text("MINE\n")
+    let_65534_in(backup)
+    assert install_main([*args, "--force"]) == 0
+    second = skill.with_name("SKILL.md.den.bak.1")
+    assert second.read_text() == "MINE\n"
+    assert "system.posix_acl_access" not in os.listxattr(second)
+    assert second.stat().st_mode & 0o777 == 0o640
+
+
 def test_install_force_refuses_to_back_up_through_a_symlink(
     tmp_path, monkeypatch, symlink, capsys
 ):
@@ -763,7 +901,12 @@ def test_install_force_refuses_to_back_up_through_a_symlink(
     assert install_main(["skills", "--target", str(ws), "--force"]) == 1
     assert outside.read_text() == "not den's\n"
     assert skill.read_text() == "MINE\n", "not replaced without a backup"
-    assert "symlink" in capsys.readouterr().err
+    err = capsys.readouterr().err.splitlines()
+    refusals = [line for line in err if "not replacing" in line]
+    assert len(refusals) == 1
+    # the prefix --force keeps now that hook and shell pass their own
+    assert refusals[0].startswith("den install: not replacing ")
+    assert refusals[0].endswith("SKILL.md.den.bak is a symlink")
 
 
 @pytest.mark.parametrize("flag", ["--no-extras", "--bin", "--no-bin"])

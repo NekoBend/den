@@ -33,6 +33,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
@@ -344,52 +345,91 @@ class _Writer:
         return False, True
 
     @staticmethod
-    def _backup(dest: Path, guard: tuple[Path, Path] | None) -> Path | None:
+    def _backup(
+        dest: Path, guard: tuple[Path, Path] | None, prefix: str = _ERR
+    ) -> Path | None:
         """Copy `dest` beside itself before --force replaces it; the copy's
-        path, or None (one line on stderr) when no backup could be made, and
-        the caller then leaves `dest` alone, since replacing what could not be
-        kept is the loss the backup exists to prevent.
+        path, or None (one line on stderr, starting with `prefix`, the command
+        that was run) when no backup could be made, and the caller then leaves
+        `dest` alone, since replacing what could not be kept is the loss the
+        backup exists to prevent.
 
         The copy is <dest>.den.bak, or the first free one of .den.bak.1, .2,
         ...: an earlier backup holding something else (the edit an earlier
         --force saved) is never replaced, and one holding these very bytes is
-        reused. It keeps the file's permission bits minus execute, so a private
-        file's copy stays private and a backed-up ~/.local/bin helper is not
-        left executable on PATH. A symlink (or anything not a regular file) at
-        a backup name refuses the backup instead of writing through it."""
+        reused, unless it is a hard link to `dest`: that is `dest` under
+        another name, which the write that follows changes too, so it holds
+        no copy at all. Nor is it reused unless its owner, group and extended
+        attributes are the file's (an older den's copy took its directory's
+        group and default ACL): a copy someone else may read is passed over
+        like one holding something else. A copy that is reused loses whatever
+        permission bits it allows beyond the file's.
+
+        A new copy gets what decides who may read the file
+        (_shell._match_access): its owner and group and, on Linux, its
+        extended attributes, ACL included, without the ones it would take from
+        its directory (a setgid directory's group, a default ACL), while it is
+        still 0600; then the file's permission bits minus execute, so a
+        private file's copy stays private and a backed-up ~/.local/bin helper
+        is not left executable on PATH. When it cannot take them (only root
+        gives a file to another user, or to a group it is not in), or its
+        write fails, no copy is left. A symlink (or anything not a regular
+        file) at a backup name refuses the backup instead of writing through
+        it."""
+        # Imported here: _shell imports this module.
+        from ._shell import _match_access, _xattrs
+
         # Under a confined root, `guard` holds the resolved path commit()
         # already checked for symlinked components; the copy is its sibling.
         real = guard[1] if guard is not None else dest
         try:
             data = dest.read_bytes()
-            mode = stat.S_IMODE(dest.stat().st_mode) & 0o666
+            st = dest.stat()
+            mode = stat.S_IMODE(st.st_mode) & 0o666
+            want = _xattrs(dest)
             n = 0
             while True:
                 bak = real.with_name(real.name + ".den.bak" + (f".{n}" if n else ""))
                 if bak.is_symlink() or (bak.exists() and not bak.is_file()):
                     what = "a symlink" if bak.is_symlink() else "not a regular file"
                     print(
-                        f"{_ERR}: not replacing {dest}: {bak} is {what}",
+                        f"{prefix}: not replacing {dest}: {bak} is {what}",
                         file=sys.stderr,
                     )
                     return None
                 if not bak.exists():
                     break
-                if bak.read_bytes() == data:
+                held = bak.stat()
+                if (
+                    not os.path.samestat(held, st)
+                    and (held.st_uid, held.st_gid) == (st.st_uid, st.st_gid)
+                    and _xattrs(bak) == want
+                    and bak.read_bytes() == data
+                ):
+                    # It allows no more than the file: an older den made its
+                    # copies with the umask's mode, world-readable.
+                    if stat.S_IMODE(held.st_mode) & ~mode:
+                        _chmod_no_follow(bak, stat.S_IMODE(held.st_mode) & mode)
                     return bak
                 n += 1
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
             fd = os.open(bak, flags, 0o600)
-            fchmod = getattr(os, "fchmod", None)  # not on Windows before 3.13
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
-                if fchmod is not None:
-                    fchmod(fh.fileno(), mode)
-            if fchmod is None:
-                _chmod_no_follow(bak, mode)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    # Through the open file where it can be (no fchmod on
+                    # Windows before 3.13), not the name, which could be a
+                    # link by now.
+                    copy = fh.fileno() if hasattr(os, "fchmod") else bak
+                    _match_access(copy, dest, st, mode, doing="copying it")
+            except BaseException:
+                with suppress(OSError):
+                    bak.unlink()
+                raise
         except OSError as exc:
             print(
-                f"{_ERR}: not replacing {dest}: cannot back it up: {exc}",
+                f"{prefix}: not replacing {dest}: cannot back it up: {exc}",
                 file=sys.stderr,
             )
             return None
