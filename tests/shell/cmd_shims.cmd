@@ -19,7 +19,7 @@ rem elsewhere uv run for those as well; pip runs nothing outside a venv,
 rem and in a venv without pip.exe runs uv pip with --config-file and your
 rem own uv.toml, or with --no-config without one;
 rem path lists PATH; again asks before it re-runs, and only Enter or y
-rem runs it.
+rem runs it; dg hashes with System32's certutil.exe.
 rem CRLF line endings: with LF only, cmd can miss a label.
 setlocal EnableExtensions DisableDelayedExpansion
 for %%b in ("%~dp0..\..\shell\cmd\bin") do set "BIN=%%~fb"
@@ -719,6 +719,21 @@ call :check "again: the message is cleared"
 >"%W%" echo again: type it on a line of its own (needs Clink 1.3.18 or newer)
 call "%BIN%\again.cmd" >"%O%" 2>&1
 call :expect %errorlevel% 1 "again: run without the lookup"
+
+rem --- dg: certutil.exe from System32 hashes, never a certutil.* of the
+rem current directory (cmd looks a bare name up there first)
+mkdir "%T%\dg" || exit /b 1
+cd /d "%T%\dg" || exit /b 1
+<nul >a.txt set /p "=hello"
+>certutil.bat echo @echo certutil.bat ran^>"%T%\certutil-ran.txt"
+>"%W%" echo 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+call "%BIN%\dg.cmd" a.txt >"%O%" 2>&1
+call :expect %errorlevel% 0 "dg: System32's certutil.exe hashes a.txt"
+set "OK=1"
+if exist "%T%\certutil-ran.txt" set "OK="
+call :check "dg: no certutil.bat from the current directory runs"
+del certutil.bat
+cd /d "%T%\work" || exit /b 1
 
 cd /d "%~dp0"
 if not "%FAILS%"=="0" (

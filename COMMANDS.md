@@ -362,7 +362,8 @@ check at all (a missing file, or an algo that disagrees with the hash's length);
   (`dg 256 a -e b`); bash/zsh and cmd take them only before the algo and the
   files. Hash mode keeps Get-FileHash's uppercase hex; the other forms print
   lowercase.
-- **cmd**: hashes with `certutil`. It reads a checksum file in the console code
+- **cmd**: hashes with System32's `certutil.exe`, never a `certutil` of the
+  current directory, which cmd would otherwise run first. It reads a checksum file in the console code
   page, so run `chcp 65001` first when its names are UTF-8. Only `\\` is undone in
   a GNU-escaped name (a Windows name cannot hold a newline). An unknown `-x` is
   a file name here; bash/zsh refuse it as an unknown option.

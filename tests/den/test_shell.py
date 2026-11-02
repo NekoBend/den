@@ -232,8 +232,11 @@ def test_cmd_shims_call_where_and_powershell_by_system32_path():
     # cmd looks a bare command name up in the current directory first, with
     # every PATHEXT extension: a where.js (ramda ships one) or a committed
     # where.bat ran in place of where.exe whenever ls, grep, cat or which did
-    # their lookup, and a powershell.bat in place of head, tail, wc and path.
-    bare = re.compile(r"(?i)(?<![\\\w.$:-])(where|powershell)(\.exe)?(?=[\s\"']|$)")
+    # their lookup, a powershell.bat in place of head, tail, wc and path, and
+    # a certutil.bat beside the files dg hashed in place of certutil.exe.
+    bare = re.compile(
+        r"(?i)(?<![\\\w.$:-])(where|powershell|certutil)(\.exe)?(?=[\s\"']|$)"
+    )
     found = [
         f"{f.name}: {ln}"
         for f in sorted(_CMD_BIN.glob("*.cmd"))
