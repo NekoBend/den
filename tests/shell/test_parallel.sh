@@ -121,6 +121,44 @@ assert_eq "zsh/_count_entries dir" "5" "$actual"
 actual=$(run_zsh "$PARALLEL_SH" "_count_entries '$WORK/src/file1.txt'")
 assert_eq "zsh/_count_entries single file" "1" "$actual"
 
+echo "[bash/zsh] pcp, pmv and prm --: a folder named -delete is counted as a path"
+# A glob handed _count_entries a folder named -delete as find's first word:
+# `command find "$p" -print` became `find -delete -print`, which find reads
+# as an expression with '.' as the start, so it emptied the current folder
+# while pcp or pmv were only counting, and before prm -- asked [y/N].
+for _sh in bash zsh; do
+    _run="run_$_sh"
+    for _fn in pcp pmv prm; do
+        setup_fixtures
+        mkdir -p "$WORK/cwd/-delete" "$WORK/cwd/sub" "$WORK/out"
+        echo keep > "$WORK/cwd/a.txt"
+        echo keep > "$WORK/cwd/sub/b.txt"
+        echo in > "$WORK/cwd/-delete/c.txt"
+        case "$_fn" in
+            pcp) _call="pcp * '$WORK/out'" ;;
+            pmv) _call="pmv * '$WORK/out'" ;;
+            prm) _call="prm -- *" ;;
+        esac
+        actual=$(printf 'n\n' | "$_run" "$PARALLEL_SH" "cd '$WORK/cwd' && $_call" 2>&1)
+        assert_contains "$_sh/$_fn * counts the -delete folder as a path" "(5 entries)" "$actual"
+        case "$_fn" in
+            pcp)
+                assert_exists "$_sh/pcp * leaves the current folder as it was" "$WORK/cwd/sub/b.txt"
+                assert_exists "$_sh/pcp * copies the -delete folder" "$WORK/out/-delete/c.txt"
+                ;;
+            pmv)
+                assert_exists "$_sh/pmv * moves every source" "$WORK/out/sub/b.txt"
+                assert_exists "$_sh/pmv * moves the -delete folder" "$WORK/out/-delete/c.txt"
+                ;;
+            prm)
+                assert_exists "$_sh/prm -- * answered n removes nothing" "$WORK/cwd/sub/b.txt"
+                assert_exists "$_sh/prm -- * answered n keeps the -delete folder" "$WORK/cwd/-delete/c.txt"
+                ;;
+        esac
+    done
+done
+unset _sh _run _fn _call
+
 echo "[zsh] pcp single file"
 setup_fixtures
 run_zsh "$PARALLEL_SH" "pcp '$WORK/src/file1.txt' '$WORK/dest/'"

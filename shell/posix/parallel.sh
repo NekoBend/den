@@ -76,6 +76,12 @@ _parallel_exec() {
 _count_entries() {
     local limit=10000 total=0 p remaining count
     for p in "$@"; do
+        # A path from a glob can start with '-', and find reads such a first
+        # word as its expression, with '.' as the starting point: a folder
+        # named -delete made `find -delete -print`, which emptied the
+        # current folder while pcp or pmv were only counting, and before
+        # prm -- asked [y/N]. './' keeps it a path.
+        case "$p" in -*) p="./$p" ;; esac
         if [ -d "$p" ]; then
             if [ "$total" -ge "$limit" ]; then
                 echo "${limit}+"
