@@ -240,7 +240,10 @@ Ways to get the native command:
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
 tool, ignoring the toggle, and print no notice. cmd has only `findw`, and no
 `find` wrapper: typed `find` there stays Windows' `find.exe`, which reads piped
-text (`netstat -ano | find "8080"`) where `fd` reads none.
+text (`netstat -ano | find "8080"`) where `fd` reads none. PowerShell's `find`
+on Windows hands a call with input piped in to `find.exe` too, wrappers on or
+off, and puts the text to look for in the double quotes `find.exe` needs
+(PowerShell drops the ones you type); a call without piped input runs `fd`.
 
 On bash/zsh a wrapper that replaces a native command (`ls`, `cat`, `grep`,
 `find`) runs the modern tool only when typed at the prompt (`eval` and `$(...)`

@@ -1254,6 +1254,53 @@ assert_eq "pwsh/native grep gets 'foo*' as it is, and foo* expanded" "grep [--co
 grep [--color=auto] [needle] [foo1] [foo2]" "$actual"
 rm -rf "$WORK/g6"
 
+# =============================================================================
+# PowerShell on Windows: find with input piped in is Windows' find.exe
+# =============================================================================
+# Typed at the prompt, find is den's wrapper, which runs fd, and fd reads no
+# input: `netstat -ano | find "8080"` printed nothing and succeeded. cmd's typed
+# find is find.exe (owner decision 13); pwsh's now hands a call with input piped
+# in to find.exe too, on Windows only, with the text to look for in the double
+# quotes find.exe needs (pwsh drops the ones typed). _OnWindows says true here,
+# and a stand-in find.exe under $env:SystemRoot/System32 logs its arguments
+# and what reached it. On pwsh's Linux, find.exe gets its arguments as they are
+# (pwsh's Standard passing); on Windows pwsh passes them in its Legacy way,
+# which keeps those quotes on the command line.
+echo ""
+echo "[pwsh, Windows] find with input piped in runs find.exe; without, fd"
+mkdir -p "$WORK/winroot/System32" || abort_suite "cannot create $WORK/winroot"
+cat > "$WORK/winroot/System32/find.exe" <<EOF || abort_suite "cannot write the find.exe stand-in"
+#!/bin/sh
+{ printf 'find.exe'; for a in "\$@"; do printf ' [%s]' "\$a"; done; printf '\n'; while IFS= read -r l; do printf 'in: %s\n' "\$l"; done; } >> '$G6_LOG'
+EOF
+chmod +x "$WORK/winroot/System32/find.exe"
+rm -f "$G6_LOG"
+PATH="$G6_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    'tcp 8080', 'udp 53' | find 8080
+    function global:_OnWindows { \$true }
+    \$env:SystemRoot = '$WORK/winroot'
+    'tcp 8080', 'udp 53' | find \"8080\"
+    'x' | find /i /c 'a\"b'
+    'y' | find '\"q\"'
+    find 8080
+    \$env:_DEN_WRAPPERS = '0'
+    'z 8080' | find 8080
+" > /dev/null 2>&1 < /dev/null
+actual=$(cat "$G6_LOG" 2>/dev/null)
+assert_eq "pwsh/find with input: fd on Linux, find.exe on Windows (wrappers on or off), fd without input" "fd [8080]
+find.exe [\"8080\"]
+in: tcp 8080
+in: udp 53
+find.exe [/i] [/c] [\"a\"\"b\"]
+in: x
+find.exe [\"q\"]
+in: y
+fd [8080]
+find.exe [\"8080\"]
+in: z 8080" "$actual"
+rm -rf "$WORK/winroot"
+
 unset _t _i _w _got
 
 # =============================================================================

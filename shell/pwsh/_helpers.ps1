@@ -1190,6 +1190,36 @@ function _DenBatWords($Words) {
     }
 }
 
+# _DenWinFind - Windows' find.exe ($env:SystemRoot\System32\find.exe), or $null
+# when it is not there: on Windows, den's find hands it a call with input
+# piped in (New-Wrapper).
+function _DenWinFind {
+    if (-not $env:SystemRoot) { return $null }
+    $exe = [System.IO.Path]::Combine($env:SystemRoot, 'System32', 'find.exe')
+    if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+    return $null
+}
+
+# _DenFindWords <words> - <words>, the words of a call of den's find
+# (_DenArgs), as find.exe needs them. find.exe takes the text to look for only
+# in double quotes (`find "8080"`, with each " inside it doubled), and pwsh
+# drops the quotes typed around a word, so a typed `find "8080"` would hand
+# find.exe a bare 8080, which it refuses. So the first word that is not an
+# option (/i, /v, ...) goes in double quotes, unless it starts with one: the
+# way to write it for find.exe typed by name in pwsh (`find '"8080"'`). pwsh
+# passes the quotes on as they are, since it hands find.exe its arguments in
+# its Legacy way.
+function _DenFindWords([object[]]$Words) {
+    if ($null -eq $Words) { return }
+    $quoted = $false
+    foreach ($w in $Words) {
+        $s = "$w"
+        if ($quoted -or $s.StartsWith('/')) { , $w; continue }
+        $quoted = $true
+        if ($s.StartsWith('"')) { $s } else { '"' + $s.Replace('"', '""') + '"' }
+    }
+}
+
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr> [modernTail]
 # <modernTail>: flags the modern tool gets after the call's arguments.
 function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr, [string]$ModernTail) {
@@ -1215,6 +1245,11 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # On Windows, bat runs nothing either when an option or an option's value
     # holds a wildcard (_DenBatWild), and gets each other word it would expand
     # replaced by what it stands for (_DenBatWords).
+    # On Windows, den's find hands a call with input piped in to Windows'
+    # find.exe (_DenWinFind), which reads it (`netstat -ano | find "8080"`), as
+    # cmd's typed find does, whether or not the wrappers are on; fd reads none,
+    # and printed nothing. The text to look for goes in the double quotes
+    # find.exe needs (_DenFindWords).
     # The tools get the call's words as _DenArgs gives them, through
     # _DenNativeBlock; the fallback gets the call's arguments ($__a).
     $optionCheck = ''
@@ -1225,6 +1260,12 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
                 "if (_OnWindows) { `$__o = _DenBatWild `$__w; if (`$__o) { Write-Error `$__o -ErrorAction Stop } }; " +
                 $optionCheck + "; if (_OnWindows) { `$__w = @(_DenBatWords `$__w) }"
         }
+    }
+    $pipeFind = ''
+    $chain = 'if'
+    if ($FuncName -eq 'find' -and $NativeCmd -eq 'find') {
+        $pipeFind = "`$__fx = if (`$MyInvocation.ExpectingInput -and (_OnWindows)) { _DenWinFind } else { `$null }"
+        $chain = "if (`$__fx) {`n        `$__w = @(_DenFindWords `$__w)`n        `$__run = _DenNativeBlock '& `$__fx' `$__w`n    } elseif"
     }
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
     $winNativeSkip = @('find', 'sort', 'more')
@@ -1240,7 +1281,8 @@ begin {
     `$__sp = `$null
     `$__a = `$args
     `$__w = @(_DenArgs `$MyInvocation `$args)
-    if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
+    $pipeFind
+    $chain (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
         $optionCheck
         _WrapLog '$FuncName' '$Modern'
         `$__run = _DenNativeBlock '& ''$Modern'' $ModernFlags' `$__w '$ModernTail'

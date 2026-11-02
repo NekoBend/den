@@ -73,6 +73,10 @@ stub "$STUBS/bin" git 'if [ "$1" = -C ] && [ "$3" = ls-files ]; then [ -f "$2/.t
 stub "$STUBS/bin" yazi 'for a; do case "$a" in --cwd-file=*) printf %s "$HOME" > "${a#--cwd-file=}" ;; esac; done'
 stub "$STUBS/bin" denstrict-init 'echo "# den strict-mode fixture"'
 stub "$STUBS/cmdbin" code.cmd
+# Windows' find.exe, which den's find hands a call with input piped in, under
+# a SystemRoot of its own.
+mkdir -p "$STUBS/winroot/System32"
+stub "$STUBS/winroot/System32" find.exe 'cat > /dev/null; echo "find.exe $*"'
 for t in tar gzip bzip2 xz zstd cat ls grep find; do
     p=$(command -v "$t") && ln -s "$p" "$STUBS/sys/$t"
 done
@@ -434,6 +438,13 @@ Case '_DenNativeBlock' {
 Case '_DenCall' { _DenCall 'rg' @('a*', 'b'); _DenCall 'rg' $null }
 Case '_DenPass' { _DenPass $MyInvocation @('a*') 'rg' 'x'; _DenPass $null $null 'rg' $null }
 Case '_DenRun' { _DenRun rg -x:y 'a*' a*; _DenRun }
+Case '_DenWinFind' { _DenWinFind }
+Case '_DenFindWords' {
+    _DenFindWords @('/i', 'a"b', 'c')
+    _DenFindWords @('/v', '')
+    _DenFindWords @('"q"')
+    _DenFindWords $null
+}
 Case 'grep, a file name that reads as an option' {
     $StrictOpt = Join-Path $PWD.ProviderPath '-strict-opt'
     $null = New-Item -ItemType File -Path $StrictOpt -Force
@@ -474,6 +485,12 @@ Case 'cat, an option with a wildcard' { try { cat -l '*' a.txt } catch { $null =
 Case 'cat, a quoted --' { try { cat '--' a.txt } catch { $null = $_ } }
 Case 'cat, piped' { 'x' | cat }
 Case 'find' { find a }
+Case 'find, piped' { 'x 8080' | find 8080 }
+Case 'find, piped, find.exe there' {
+    $StrictRoot = $env:SystemRoot
+    $env:SystemRoot = Join-Path $env:STRICT_ROOT 'winroot'
+    try { 'x 8080' | find /i 8080 } finally { $env:SystemRoot = $StrictRoot }
+}
 Case 'grep' { grep alpha a.txt }
 Case 'grep, quoted and bare wildcards, a -name:value, a quoted ~' { grep 'a*' a* -e:alpha '~/a' }
 Case 'la' { la }
