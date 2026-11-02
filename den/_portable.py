@@ -1,7 +1,7 @@
 """den-free skill copies: agents/dist/skills/ and `den install skills --no-den-cli`.
 
-The skills under agents/src/ mention den's own CLI (`den verify`, `den board`)
-and reference shared/ resources relative to the source tree. Someone without
+The skills under agents/src/ mention den's own CLI (`den verify`) and
+reference shared/ resources relative to the source tree. Someone without
 den cannot use them as-is. This module builds copies that stand alone: every
 den CLI mention is replaced or removed through the substitution table in
 agents/src/no-den-cli.toml (each anchor must match exactly once, so a source
@@ -45,9 +45,9 @@ Generated from `agents/src/skills/` by `python3 -m den._portable`; do not edit
 here. Each directory is a self-contained skill: copy it into the directory your
 tool reads skills from (for example `~/.claude/skills/<name>/`) and it works
 without den installed. Compared with the source skills: the `den verify`
-shortcut mentions, the den board paragraphs and the pointers to den's
-cheatsheets are removed (each skill names its checks tool-by-tool), and
-`shared/`, `examples/` and `reference/` paths are relative to the skill.
+shortcut mentions and the pointers to den's cheatsheets are removed (each
+skill names its checks tool-by-tool), and `shared/`, `examples/` and
+`reference/` paths are relative to the skill.
 
 Each skill restates a short set of rules for a run with no parent prompt.
 den's parent prompts (`agents/dist/parents/`) hold the full set, so place one
