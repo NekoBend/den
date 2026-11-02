@@ -2,9 +2,10 @@
 
 `docker/ubuntu/Dockerfile` builds the development container this repo is worked
 on in: Ubuntu 26.04 with an unprivileged `dev` user, the language toolchains,
-the coding-agent CLIs, and den with its shell setup, skills and parent prompts.
-The build fetches den's `main` branch from GitHub, so it reads nothing from the
-checkout.
+command-line tools, and den with its shell setup. It ships no coding-agent CLI
+and no den skills: add those in an image of your own (see
+[Adding your own tools](#adding-your-own-tools)). The build fetches den's
+`main` branch from GitHub, so it reads nothing from the checkout.
 
 ## What the image contains
 
@@ -14,10 +15,10 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | Stage | Contents |
 | --- | --- |
 | `system` | apt base (build-essential, git, curl, zsh, tmux, fzf, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
-| `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, broot, du-dust, eza, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
-| `tools` | starship, uv, ruff, ty, nvm + Node, acpx (plus its Claude skill), and the claude, codex, grok, muse and antigravity (`agy`) CLIs |
-| `utilities` | gh, bubblewrap, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; rsync built from source; rclone |
-| `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins` and `den install skills --tool claude --tool codex --with-parent --force`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
+| `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
+| `tools` | starship, uv, ruff, ty, nvm + Node |
+| `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; rsync built from source; rclone |
+| `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
 User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
 `~/.nvm/current/bin`). They are on `dev`'s `PATH`, not the image's, and the
@@ -44,9 +45,10 @@ The context directory is never read, so any small directory works. To give
 add `--build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)"`. Do this
 when your UID or GID is not 1000 (macOS, LDAP and second accounts): remapping
 at run time re-owns everything in `/home/dev`, and on overlayfs that copies
-about 2 GB into each new container before the shell starts.
+all of it, the toolchains included, into each new container before the shell
+starts.
 
-Downloads and compile outputs for cargo, npm and uv go to BuildKit cache
+Downloads and compile outputs for cargo and uv go to BuildKit cache
 mounts, so a rebuild reuses them. Most installers fetch the latest release, and
 layer caching keeps whichever release was fetched first. Add `--no-cache` when
 you want every tool refreshed. After a security fix in the base image, in an
@@ -76,7 +78,6 @@ Override any of these with `--build-arg NAME=value`.
 | `RUSTUP_USE_CURL` | `0` | `1` selects rustup's deprecated curl backend as a TLS workaround. |
 | `NVM_VERSION` | `v0.40.7` | Exact nvm release, including the `v` prefix. |
 | `NODE_MAJOR` | `22` | Node major version; nvm installs it and makes it the default. |
-| `ACPX_VERSION` | `0.19` | acpx version series for `npm install -g`. |
 | `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. |
 | `RSYNC_VERSION` | `3.5.1` | Exact rsync release, built from source into `~/.local`. |
 | `RCLONE_VERSION` | `current` | `current`, or an exact rclone release including the `v` prefix. |
@@ -106,7 +107,7 @@ prints a warning that shows this command.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs den-dev`). On overlayfs the re-owning copies about 2 GB into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
+| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs den-dev`). On overlayfs the re-owning copies the whole home, the toolchains included, into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
 | `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. |
 
@@ -146,8 +147,8 @@ Run it through zsh (`zsh -c` or `zsh -lc`), or pass `dev`'s home and the
 command's full path:
 
 ```sh
-docker exec --user dev den-dev zsh -lc 'claude --version'
-docker exec --user dev -e HOME=/home/dev den-dev /home/dev/.local/bin/claude --version
+docker exec --user dev den-dev zsh -lc 'den --version'
+docker exec --user dev -e HOME=/home/dev den-dev /home/dev/.local/bin/den --version
 ```
 
 `.github/workflows/docker-dev-image.yml` builds the image when `docker/`
@@ -167,9 +168,54 @@ write to ([zsh completion](../shell/README.md#zsh-completion) in
 `shell/README.md` has the rules). To have new functions at once, run `reload`,
 which deletes the dump. A new container starts without one.
 
+## Adding your own tools
+
+The image leaves out the coding-agent CLIs (Claude Code, Codex and the like)
+and den's skills. Add those, and any other tool you want, in an image of your
+own built `FROM` this one:
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM den-dev
+
+# Tools for dev, installed as dev with its home and tool directories.
+USER dev
+ENV HOME=/home/dev \
+    PATH=/home/dev/.nvm/current/bin:/home/dev/.local/bin:/home/dev/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN npm install -g --no-audit --no-fund <package>
+
+# System packages, as root with root's home and the system PATH.
+USER root
+ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends <package> && \
+    rm -rf /var/lib/apt/lists/*
+```
+
+- Before a root step that follows a `dev` step, set `HOME=/root` and the
+  system `PATH` again, as den's Dockerfile does. A `dev` step can leave files
+  in `dev`'s home that root's tools read (`~/.curlrc`, `~/.dpkg.cfg`), or a
+  program named like `curl` or `apt-get` in a directory on `dev`'s `PATH`.
+- End the image as root with that `HOME` and `PATH`, as den's image does:
+  `docker exec` starts every process with the image's environment (see
+  [PATH and HOME in `docker exec`](#path-and-home-in-docker-exec)), and the
+  entrypoint starts as root before it drops to `dev`.
+- If you built den's image with another `USERNAME`, use that name and its home
+  in the `dev` steps.
+
+Build den's image first (see [Build](#build)), then yours with the default
+`docker` builder, which finds the local `den-dev` image. Leave out `--pull`
+there: it makes the build pull every base image from a registry, and
+`den-dev` exists only on your machine.
+
+```sh
+docker buildx build --load -t my-dev -f Dockerfile .
+```
+
 ## Keeping state across rebuilds
 
 `/home/dev` lives in the container's writable layer. It survives
 `docker restart` but not `docker rm`, and moving to a rebuilt image means a new
-container. Logins and history go with it (`~/.claude`, `~/.claude.json`,
-`~/.codex`, `~/.config/gh`), so log in again in the new container.
+container. Logins and history go with it (`~/.config/gh`, `~/.zsh_history`,
+and whatever the tools you add keep there), so log in again in the new
+container.
