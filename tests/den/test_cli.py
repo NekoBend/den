@@ -34,10 +34,11 @@ def test_removed_dev_tool_commands_are_unknown(capsys):
         assert den_main([cmd, "x"]) == 2
 
 
-# den memory and the per-turn hook were removed (MIGRATIONS.md). A stale
-# script, alias or imprint that still runs one of these gets one line naming
-# the removal, not a traceback or an argparse error, and exit 1 (not 2, which a
-# Claude Code hook reads as "block the prompt").
+# den memory, the per-turn hook and den board were removed (MIGRATIONS.md). A
+# stale script, alias or imprint that still runs one of these gets one line
+# naming the removal, not a traceback or an argparse error, and exit 1 (not 2,
+# which a Claude Code hook reads as "block the prompt"). den board's forms
+# neither start a server nor write a file.
 _REMOVED = [
     ["memory"],
     ["memory", "--help"],
@@ -63,6 +64,13 @@ _REMOVED = [
     ["install", "hook"],
     ["install", "hook", "--tool", "cline-cli"],
     ["install", "hook", "--help"],
+    ["board"],
+    ["board", "--help"],
+    ["board", "--open"],
+    ["board", "--port", "9000", "--dir", "."],
+    ["board", "task", "retest the boss fight after this fix"],
+    ["board", "task", "--dir", ".", "retest"],
+    ["board", "reply", "r-1", "seen, please retry"],
 ]
 
 
@@ -77,7 +85,10 @@ def test_a_removed_command_says_so_in_one_line(tmp_path, monkeypatch, capsys, ar
     assert out.out == ""
     lines = out.err.splitlines()
     assert len(lines) == 1, lines
-    command = " ".join(["den", *argv[:2]]) if argv[0] != "memory" else "den memory"
+    if argv[0] in {"memory", "board"}:
+        command = f"den {argv[0]}"
+    else:
+        command = " ".join(["den", *argv[:2]])
     assert lines[0].startswith(f"{command}: removed from den (2026-11)")
     assert lines[0].endswith(
         "see MIGRATIONS.md, https://github.com/NekoBend/den/blob/main/MIGRATIONS.md"
@@ -90,6 +101,7 @@ def test_help_names_no_removed_command(capsys):
     assert den_main(["--help"]) == 0
     out = capsys.readouterr().out
     assert "memory" not in out
+    assert "board" not in out
     assert "install   [skills|shell|cheatsheets]" in out
 
 

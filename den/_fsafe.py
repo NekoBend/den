@@ -1,13 +1,14 @@
 """File-safety helpers shared by den's commands.
 
 A cloned repository ships the CONTENT and LAYOUT of the workspace files den
-reads and writes (`.den/`, `.clinerules/`, a hook config), so a symlink there
-is an attempt to make den read a file from outside the workspace or to
-overwrite one. These helpers never follow a symlink at a root or below it. A
-symlinked component ABOVE the root (the workspace dir itself) is out of scope:
-the attacker owns repo content, not the local shell. So is the TOCTOU window
-between the check and the open; O_NOFOLLOW narrows it where the platform has
-the flag (Windows does not, and CI runs there too).
+reads and writes (what `den install skills --target` deploys, `.clinerules/`,
+a hook config), so a symlink there is an attempt to make den read a file from
+outside the workspace or to overwrite one. These helpers never follow a
+symlink at a root or below it. A symlinked component ABOVE the root (the
+workspace dir itself) is out of scope: the attacker owns repo content, not
+the local shell. So is the TOCTOU window between the check and the open;
+O_NOFOLLOW narrows it where the platform has the flag (Windows does not, and
+CI runs there too).
 
 Every message starts with `prefix`, the command the caller runs for the user.
 """
@@ -64,41 +65,6 @@ def _refuse_symlink(root: Path, path: Path, action: str, prefix: str) -> bool:
     return True
 
 
-class _Unreadable:
-    """Sentinel type: the file is THERE but den could not read it (a symlink it
-    refuses to follow, a permission error, a directory in its place).
-
-    Kept distinct from None ("absent"): a caller that reads the old content
-    before rewriting it would otherwise take a failed read for an empty file
-    and truncate content it never saw.
-    """
-
-    __slots__ = ()
-
-
-_UNREADABLE = _Unreadable()
-
-
-def _read_guarded(root: Path, path: Path, prefix: str) -> bytes | _Unreadable | None:
-    """Bytes of `path`; None when it is ABSENT; `_UNREADABLE` (one line on
-    stderr) when it exists but cannot be read."""
-    if _refuse_symlink(root, path, "read", prefix):
-        return _UNREADABLE
-    try:
-        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        print(f"{prefix}: cannot read {path}: {exc}", file=sys.stderr)
-        return _UNREADABLE
-    try:
-        with os.fdopen(fd, "rb") as fh:
-            return fh.read()
-    except OSError as exc:
-        print(f"{prefix}: cannot read {path}: {exc}", file=sys.stderr)
-        return _UNREADABLE
-
-
 def _write_guarded(root: Path, path: Path, data: bytes, prefix: str) -> bool:
     """Create/truncate `path` and write `data`; False when a symlink is in the way.
 
@@ -108,7 +74,7 @@ def _write_guarded(root: Path, path: Path, data: bytes, prefix: str) -> bool:
     if _refuse_symlink(root, path, "write", prefix):
         return False
     if path.exists() and not path.is_file():
-        # A repo can ship any target (say `.den/board/server.json/`) as a
+        # A repo can ship any target (say a skill's `SKILL.md/`) as a
         # DIRECTORY. os.open would raise IsADirectoryError straight out of den;
         # and the callers that check `is_file()` first read that as "absent"
         # and write. (A symlink cannot reach here: _refuse_symlink covers the

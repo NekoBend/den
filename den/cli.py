@@ -3,7 +3,6 @@
   install    deploy skills, the shell environment, or cheatsheets
   uninstall  remove den-installed files (keeping ones you changed)
   upgrade    upgrade den itself via uv; --refresh redeploys bundled content
-  board      serve the project's report board (user-side debug reports)
 
 Runtime plumbing invoked by skills and by hooks an older den installed (not
 part of the everyday surface):
@@ -32,8 +31,6 @@ def _usage() -> None:
         "  remove den-installed files\n"
         "  upgrade   [--refresh] [--force]           "
         " upgrade den via uv (alias: update)\n"
-        "  board     [--port N] [--open] [--dir PATH]"
-        " serve the local report board\n"
         "\n"
         "Run 'den <command> --help' for command-specific options.\n"
         "(den hook / den verify are runtime plumbing"
@@ -69,10 +66,10 @@ def _dispatch(args: list[str]) -> int:  # ruff: ignore[too-many-return-statement
 
         return _main(rest)
 
-    if cmd == "memory":
+    if cmd in {"memory", "board"}:
         from ._hook import removed
 
-        return removed("den memory")
+        return removed(f"den {cmd}")
 
     if cmd == "hook":
         from ._hook import main as _main
@@ -91,11 +88,6 @@ def _dispatch(args: list[str]) -> int:  # ruff: ignore[too-many-return-statement
 
     if cmd in {"upgrade", "update"}:
         from ._upgrade import main as _main
-
-        return _main(rest)
-
-    if cmd == "board":
-        from ._board import main as _main
 
         return _main(rest)
 

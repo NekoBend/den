@@ -245,50 +245,50 @@ the `.den`: an install in a subdirectory wrote its hook config there but
 used the nearest `.den` above it, and cline-cli's two files sit beside that
 `.den`.
 
-Then delete the three entries by hand in each `.den` that still has them.
-Do not delete `.den` as a whole: `.den/board/` belongs to `den board`, which
-stays; `rmdir` removes `.den` only once nothing is left in it. In
-`.den/history` the recipes delete only den's snapshots
-(`memory.<UTC stamp>.md`, plain files): den never read, rotated or deleted
-anything else there, so a file of yours in it stays, and so does the folder.
-They stop at once when `.den` or `.den/history` is a link (a symlink or a
-junction): den refused those too, and what they lead to is not den's.
+Then delete `.den` itself, by hand, in each place that has one. den reads
+and writes nothing under `.den/` any more (section 10 removed `den board`,
+the last command that did), and it deletes nothing there either. Where you
+installed hooks, do it only after `den uninstall hook` has run: that command
+looks for cline-cli's two files beside the nearest `.den`, so with `.den`
+gone, a run from a subdirectory looks in the wrong place. Look inside first:
+a file you kept there yourself goes with it. The recipes stop at once when
+`.den`, or anything in it, is a link (a symlink or a junction): what it
+leads to is not den's, so look at it by hand. They delete only inside the
+directory you name, and nothing at all when they cannot go there, so a
+mistyped path never removes the `.den` of the folder you happen to be in.
 
 ```sh
-command find ~/src -path '*/.den/imprint.md' 2>/dev/null   # where they are
-cd <the directory holding that .den>
-if [ -L .den ] || [ -L .den/history ]; then
-  echo ".den or .den/history is a link: look at it by hand" >&2
-else
-  rm -f .den/imprint.md .den/memory.md
-  d8='[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' d4='[0-9][0-9][0-9][0-9]'
-  command find .den/history -maxdepth 1 -type f \( \
-    -name "memory.${d8}T${d8}${d4}.md" -o -name "memory.${d8}T${d8}${d4}_[0-9][0-9][0-9].md" \
-    \) -delete 2>/dev/null
-  rmdir .den/history .den 2>/dev/null
-fi
+command find ~/src -name .den -prune 2>/dev/null   # where they are
+d='<the directory holding that .den>'
+case $d in /*) ;; *) d="./$d" ;; esac              # so cd never looks in CDPATH
+ls -AlR -- "$d/.den"                               # anything of yours in it?
+(
+  cd -- "$d" || exit 1
+  if [ -n "$(command find .den -type l -print -quit)" ]; then
+    echo "$d/.den is or holds a link: look at it by hand" >&2
+  else
+    rm -rf .den
+  fi
+)
 ```
 
 ```powershell
-Get-ChildItem ~/src -Recurse -Force -Filter imprint.md -ErrorAction SilentlyContinue |
-  Where-Object { $_.Directory.Name -eq '.den' }
-Set-Location <the directory holding that .den>
-$link = foreach ($d in '.den', '.den/history') {
-  $i = Get-Item -Force -LiteralPath $d -ErrorAction SilentlyContinue
-  if ($i -and ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $d }
-}
-if ($link) {
-  Write-Warning "$($link -join ', ') is a link: look at it by hand"
-} else {
-  Remove-Item -Force -LiteralPath .den/imprint.md, .den/memory.md -ErrorAction SilentlyContinue
-  Get-ChildItem -Force -File -LiteralPath .den/history -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -cmatch '^memory\.\d{8}T\d{12}(_\d{3,})?\.md$' -and
-      -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
-    Remove-Item -Force
-  foreach ($d in '.den/history', '.den') {
-    if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -Force -LiteralPath $d)) {
-      Remove-Item -Force -LiteralPath $d   # -Force: pwsh counts a dot-name as hidden
+Get-ChildItem ~/src -Recurse -Force -Filter .den -ErrorAction SilentlyContinue |
+  ForEach-Object FullName                          # where they are
+$d = '<the directory holding that .den>'
+Get-ChildItem -Force -Recurse -LiteralPath (Join-Path $d .den)   # anything of yours in it?
+& {
+  Push-Location -LiteralPath $d -ErrorAction Stop   # nothing below runs if this fails
+  try {
+    $link = @(Get-Item -Force -LiteralPath .den) + @(Get-ChildItem -Force -Recurse -LiteralPath .den) |
+      Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }
+    if ($link) {
+      Write-Warning "$($link.FullName -join ', ') is a link: look at it by hand"
+    } else {
+      Remove-Item -Recurse -Force -LiteralPath .den
     }
+  } finally {
+    Pop-Location
   }
 }
 ```
@@ -330,6 +330,23 @@ Two older shapes live outside that layout:
   den uninstall hook --tool copilot --config ~/.copilot/hooks/den.json
   den uninstall hook --tool cline --config ~/.cline/hooks
   ```
+
+## 10. `den board` removed (2026-11)
+
+`den board` served a page on localhost, one per project, where you filed
+reports (a button press and a note) that an agent read from
+`.den/board/reports.jsonl`; `den board task` and `den board reply` let the
+agent write back. It was the one den command that ran a network server, and
+it was removed. `den board`, with any arguments, now prints one line saying
+so, naming this file, and exits 1. The troubleshoot skill no longer looks
+for `.den/board/`.
+
+Left behind in each project where you ran it: `.den/board/`, with
+`board.json` (the page's title and buttons), `reports.jsonl` (your
+reports), `agent.jsonl` (the agent's tasks and replies) and, after a server
+that did not stop cleanly, `server.json`. den reads none of them now. Copy
+`reports.jsonl` somewhere else if you want to keep the reports, then delete
+`.den` as a whole, as section 9 says.
 
 ## Why there is no `den prune`
 

@@ -413,8 +413,9 @@ def test_uninstall_hook_removes_every_tools_install(tmp_path, monkeypatch, pinne
 
 
 def test_uninstall_hook_leaves_the_den_dir_alone(tmp_path, monkeypatch):
-    # .den/imprint.md, memory.md and history/ are the user's to delete
-    # (MIGRATIONS.md), and .den/board/ belongs to den board.
+    # den uses nothing under .den/ any more, and deletes nothing there either:
+    # .den/imprint.md, memory.md, history/ and an old den board's board/ are
+    # the user's to delete (MIGRATIONS.md).
     _installed(tmp_path, "claude", "cline-cli")
     den = tmp_path / ".den"
     (den / "memory.md").write_text("- a fact\n")

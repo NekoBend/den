@@ -14,6 +14,11 @@ THIS repository able to catch a violation:
 
 The preamble tests keep the rules every skill carries for a run with no parent
 prompt identical across the nine skills and worded like the parents' DECIDE.
+
+The removed-command test keeps the skills and parents from naming a den
+command that was removed (MIGRATIONS.md, sections 9 and 10), or a `.den` file
+only such a command wrote: nothing else here checks that a den command the
+den-aware skills name still exists.
 """
 
 from __future__ import annotations
@@ -65,6 +70,27 @@ def test_no_banned_dashes_in_any_model_facing_markdown() -> None:
                 if ch in text:
                     line = text[: text.index(ch)].count("\n") + 1
                     offenders.append(f"{f.relative_to(AGENTS)}:{line} {name}")
+    assert not offenders, offenders
+
+
+# The den commands MIGRATIONS.md sections 9 and 10 removed, and the `.den`
+# files only they wrote. Each command now just prints that it was removed.
+REMOVED_DEN = re.compile(
+    r"\bden (board|memory|install hook|hook (install|list|imprint|memory|remove))\b"
+    r"|\.den/(board|memory\.md|imprint\.md|history)\b"
+)
+
+
+def test_no_model_facing_markdown_names_a_removed_den_command() -> None:
+    offenders: list[str] = []
+    for base in ("src", "dist"):
+        files = sorted((AGENTS / base).rglob("*.md"))
+        assert files, f"no markdown found under {AGENTS / base}"
+        for f in files:
+            text = f.read_text(encoding="utf-8")
+            for m in REMOVED_DEN.finditer(text):
+                line = text[: m.start()].count("\n") + 1
+                offenders.append(f"{f.relative_to(AGENTS)}:{line} {m.group(0)}")
     assert not offenders, offenders
 
 

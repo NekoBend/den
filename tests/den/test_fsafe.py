@@ -1,13 +1,8 @@
 """Tests for den's shared file-safety helpers (den/_fsafe.py).
 
-board, install, uninstall and the hook cleanup all read and write through
-these, so they are pinned here directly rather than only through a command.
+install, uninstall and the hook cleanup all go through these, so they are
+pinned here directly rather than only through a command.
 """
-
-import os
-import sys
-
-import pytest
 
 from den import _fsafe
 
@@ -47,8 +42,8 @@ def test_symlink_component_names_the_first_link_under_root(tmp_path, symlink):
     root = tmp_path / ".den"
     (tmp_path / "elsewhere").mkdir()
     root.mkdir()
-    symlink(tmp_path / "elsewhere", root / "board")
-    assert _fsafe._symlink_component(root, root / "board" / "x.json") == root / "board"
+    symlink(tmp_path / "elsewhere", root / "sub")
+    assert _fsafe._symlink_component(root, root / "sub" / "x.json") == root / "sub"
 
 
 def test_symlink_component_names_a_symlinked_root(tmp_path, symlink):
@@ -78,9 +73,9 @@ def test_refuse_symlink_says_why_with_the_callers_prefix(tmp_path, symlink, caps
     root = tmp_path / ".den"
     root.mkdir()
     symlink(_outside(tmp_path), root / "x")
-    assert _fsafe._refuse_symlink(root, root / "x", "read", "den board") is True
+    assert _fsafe._refuse_symlink(root, root / "x", "read", "den x") is True
     err = capsys.readouterr().err
-    assert err.startswith("den board: refusing to read ")
+    assert err.startswith("den x: refusing to read ")
     assert "is a symlink" in err
 
 
@@ -88,73 +83,8 @@ def test_refuse_symlink_passes_a_real_file(tmp_path, capsys):
     root = tmp_path / ".den"
     root.mkdir()
     (root / "x").write_text("mine")
-    assert _fsafe._refuse_symlink(root, root / "x", "read", "den board") is False
+    assert _fsafe._refuse_symlink(root, root / "x", "read", "den x") is False
     assert capsys.readouterr().err == ""
-
-
-# --------------------------------------------------------------------------- #
-# _read_guarded: absent (None) and unreadable (_UNREADABLE) stay distinct, so
-# a caller never takes a failed read for an empty file.
-# --------------------------------------------------------------------------- #
-
-
-def test_read_guarded_reads_bytes_exactly(tmp_path):
-    root = tmp_path / ".den"
-    root.mkdir()
-    (root / "x").write_bytes(b"a\r\nb\xff")
-    assert _fsafe._read_guarded(root, root / "x", "den board") == b"a\r\nb\xff"
-
-
-def test_read_guarded_absent_is_none(tmp_path, capsys):
-    root = tmp_path / ".den"
-    assert _fsafe._read_guarded(root, root / "x", "den board") is None
-    assert capsys.readouterr().err == ""
-
-
-def test_read_guarded_refuses_a_symlinked_file(tmp_path, symlink, capsys):
-    root = tmp_path / ".den"
-    root.mkdir()
-    symlink(_outside(tmp_path), root / "x")
-    assert _fsafe._read_guarded(root, root / "x", "den board") is _fsafe._UNREADABLE
-    assert "is a symlink" in capsys.readouterr().err
-
-
-def test_read_guarded_refuses_a_symlinked_root(tmp_path, symlink, capsys):
-    outside = tmp_path / "elsewhere"
-    outside.mkdir()
-    (outside / "x").write_text("INJECTED\n")
-    root = tmp_path / "repo" / ".den"
-    root.parent.mkdir()
-    symlink(outside, root)
-    assert _fsafe._read_guarded(root, root / "x", "den board") is _fsafe._UNREADABLE
-    assert "is a symlink" in capsys.readouterr().err
-
-
-def test_read_guarded_a_directory_in_place_is_unreadable(tmp_path, capsys):
-    # Same _UNREADABLE path as the 0o200 test below, but it bites as root and
-    # on Windows too, so this one always runs.
-    root = tmp_path / ".den"
-    (root / "x").mkdir(parents=True)
-    assert _fsafe._read_guarded(root, root / "x", "den board") is _fsafe._UNREADABLE
-    assert "den board: cannot read" in capsys.readouterr().err
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX mode bits do not bite on Windows"
-)
-def test_read_guarded_an_unreadable_file_is_unreadable(tmp_path, capsys):
-    if getattr(os, "geteuid", lambda: 1)() == 0:
-        pytest.skip("root reads through mode 0o200")
-    root = tmp_path / ".den"
-    root.mkdir()
-    path = root / "x"
-    path.write_text("important prior content\n")
-    path.chmod(0o200)
-    try:
-        assert _fsafe._read_guarded(root, path, "den board") is _fsafe._UNREADABLE
-    finally:
-        path.chmod(0o600)
-    assert "cannot read" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- #
@@ -164,8 +94,8 @@ def test_read_guarded_an_unreadable_file_is_unreadable(tmp_path, capsys):
 
 def test_write_guarded_writes_bytes_and_makes_the_parent(tmp_path):
     root = tmp_path / ".den"
-    path = root / "board" / "server.json"
-    assert _fsafe._write_guarded(root, path, b"a\nb\n", "den board") is True
+    path = root / "sub" / "x.json"
+    assert _fsafe._write_guarded(root, path, b"a\nb\n", "den x") is True
     assert path.read_bytes() == b"a\nb\n", "LF stays LF on every platform"
 
 
@@ -173,7 +103,7 @@ def test_write_guarded_replaces_what_is_there(tmp_path):
     root = tmp_path / ".den"
     root.mkdir()
     (root / "x").write_bytes(b"old content that is longer\n")
-    assert _fsafe._write_guarded(root, root / "x", b"new\n", "den board") is True
+    assert _fsafe._write_guarded(root, root / "x", b"new\n", "den x") is True
     assert (root / "x").read_bytes() == b"new\n"
 
 
