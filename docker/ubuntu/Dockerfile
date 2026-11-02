@@ -128,9 +128,11 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh -o /tmp/agy.sh && \
 FROM tools AS utilities
 USER root
 # The installers above ran as the user and could leave files in its home that
-# root's tools read (~/.curlrc for curl, ~/.dpkg.cfg for dpkg's hooks), so this
-# root step uses root's home.
-ENV HOME=/root
+# root's tools read (~/.curlrc for curl, ~/.dpkg.cfg for dpkg's hooks), or a
+# program named like one this step runs (curl, dpkg, apt-get) in the user's
+# PATH directories (~/.local/bin, ~/.cargo/bin, ~/.nvm/current/bin), so this
+# root step uses root's home and a PATH of root-owned system directories.
+ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Build setting: latest, or an exact package version from the official repository.
 ARG GH_VERSION=latest
 RUN <<'INSTALL_UTILITIES_DEPS'
@@ -159,6 +161,9 @@ INSTALL_UTILITIES_DEPS
 
 USER ${USER_UID}:${USER_GID}
 ENV HOME=/home/${USERNAME}
+# The user's tool directories again, as before the root step: the workspace
+# stage runs uv and den by name.
+ENV PATH="${NVM_DIR}/current/bin:${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Build setting: exact official rsync release.
 ARG RSYNC_VERSION=3.5.1
 RUN <<'INSTALL_RSYNC'

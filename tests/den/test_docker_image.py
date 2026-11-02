@@ -227,6 +227,56 @@ def test_root_build_steps_after_the_user_steps_use_roots_home():
         assert env["HOME"] == "/root", stage
 
 
+def test_root_build_steps_resolve_commands_from_system_directories_only():
+    # The user's steps put ~/.nvm/current/bin, ~/.local/bin and ~/.cargo/bin
+    # first on PATH, and the user can write there. A root step that kept that
+    # PATH ran an installer's planted curl, dpkg or apt-get as root.
+    steps = _run_steps()
+    as_root = [
+        (i, stage, env)
+        for i, (stage, user, env, _) in enumerate(steps)
+        if user.partition(":")[0] in {"root", "0"}
+    ]
+    first_user = next(
+        i
+        for i, (_, user, _, _) in enumerate(steps)
+        if user.partition(":")[0] not in {"root", "0"}
+    )
+    assert any(i > first_user for i, _, _ in as_root), (
+        "the parser no longer sees a root step after the user's"
+    )
+    for i, stage, env in as_root:
+        entries = env["PATH"].split(":")
+        assert all(entry in SYSTEM_DIRS for entry in entries), (
+            f"RUN #{i} (stage {stage}): {env['PATH']}"
+        )
+
+
+def test_build_steps_that_run_as_the_user_after_a_root_one_get_its_path_back():
+    # The user's steps after the root one run uv and den by name from
+    # ~/.local/bin, so they get the user's tool directories back: the list the
+    # entrypoint gives the user at run time.
+    steps = _run_steps()
+    first_user = next(
+        i
+        for i, (_, user, _, _) in enumerate(steps)
+        if user.partition(":")[0] not in {"root", "0"}
+    )
+    first_root_after = next(
+        i
+        for i, (_, user, _, _) in enumerate(steps)
+        if i > first_user and user.partition(":")[0] in {"root", "0"}
+    )
+    as_user = [
+        (stage, env)
+        for stage, user, env, _ in steps[first_root_after:]
+        if user.partition(":")[0] not in {"root", "0"}
+    ]
+    assert as_user, "the parser no longer sees a user step after a root one"
+    for stage, env in as_user:
+        assert env["PATH"] == _user_path(env["HOME"]), stage
+
+
 def test_den_comes_from_a_git_source_of_main_mounted_into_the_install():
     # A RUN that cloned den was cached on its command text, so a rebuild after
     # main moved kept the first build's den. BuildKit resolves a git source's
