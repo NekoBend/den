@@ -4,11 +4,6 @@ install, uninstall and the hook cleanup all go through these, so they are
 pinned here directly rather than only through a command.
 """
 
-import os
-import sys
-
-import pytest
-
 from den import _fsafe
 
 _OUTSIDE_TEXT = "PRIVATE KEY MATERIAL\n"
@@ -90,71 +85,6 @@ def test_refuse_symlink_passes_a_real_file(tmp_path, capsys):
     (root / "x").write_text("mine")
     assert _fsafe._refuse_symlink(root, root / "x", "read", "den x") is False
     assert capsys.readouterr().err == ""
-
-
-# --------------------------------------------------------------------------- #
-# _read_guarded: absent (None) and unreadable (_UNREADABLE) stay distinct, so
-# a caller never takes a failed read for an empty file.
-# --------------------------------------------------------------------------- #
-
-
-def test_read_guarded_reads_bytes_exactly(tmp_path):
-    root = tmp_path / ".den"
-    root.mkdir()
-    (root / "x").write_bytes(b"a\r\nb\xff")
-    assert _fsafe._read_guarded(root, root / "x", "den x") == b"a\r\nb\xff"
-
-
-def test_read_guarded_absent_is_none(tmp_path, capsys):
-    root = tmp_path / ".den"
-    assert _fsafe._read_guarded(root, root / "x", "den x") is None
-    assert capsys.readouterr().err == ""
-
-
-def test_read_guarded_refuses_a_symlinked_file(tmp_path, symlink, capsys):
-    root = tmp_path / ".den"
-    root.mkdir()
-    symlink(_outside(tmp_path), root / "x")
-    assert _fsafe._read_guarded(root, root / "x", "den x") is _fsafe._UNREADABLE
-    assert "is a symlink" in capsys.readouterr().err
-
-
-def test_read_guarded_refuses_a_symlinked_root(tmp_path, symlink, capsys):
-    outside = tmp_path / "elsewhere"
-    outside.mkdir()
-    (outside / "x").write_text("INJECTED\n")
-    root = tmp_path / "repo" / ".den"
-    root.parent.mkdir()
-    symlink(outside, root)
-    assert _fsafe._read_guarded(root, root / "x", "den x") is _fsafe._UNREADABLE
-    assert "is a symlink" in capsys.readouterr().err
-
-
-def test_read_guarded_a_directory_in_place_is_unreadable(tmp_path, capsys):
-    # Same _UNREADABLE path as the 0o200 test below, but it bites as root and
-    # on Windows too, so this one always runs.
-    root = tmp_path / ".den"
-    (root / "x").mkdir(parents=True)
-    assert _fsafe._read_guarded(root, root / "x", "den x") is _fsafe._UNREADABLE
-    assert "den x: cannot read" in capsys.readouterr().err
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX mode bits do not bite on Windows"
-)
-def test_read_guarded_an_unreadable_file_is_unreadable(tmp_path, capsys):
-    if getattr(os, "geteuid", lambda: 1)() == 0:
-        pytest.skip("root reads through mode 0o200")
-    root = tmp_path / ".den"
-    root.mkdir()
-    path = root / "x"
-    path.write_text("important prior content\n")
-    path.chmod(0o200)
-    try:
-        assert _fsafe._read_guarded(root, path, "den x") is _fsafe._UNREADABLE
-    finally:
-        path.chmod(0o600)
-    assert "cannot read" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- #

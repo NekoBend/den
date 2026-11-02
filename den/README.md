@@ -277,7 +277,7 @@ Python only; for other languages the coding and code-audit skills name each lang
 (`_hook`, `_install`, `_uninstall`, `_upgrade`, `_verify`) with a
 `main(argv)`
 entry point and relative imports (`_shell`/`_ui` are shared helpers, and
-`_fsafe` holds the symlink guard and the guarded reads and writes).
+`_fsafe` holds the symlink guard and the guarded write).
 `_content.py`
 locates bundled content (wheel `den/_data/`, or the repo root from a checkout).
 `_hook` keeps one remover per format an older den installed (`settings_json`,

@@ -65,41 +65,6 @@ def _refuse_symlink(root: Path, path: Path, action: str, prefix: str) -> bool:
     return True
 
 
-class _Unreadable:
-    """Sentinel type: the file is THERE but den could not read it (a symlink it
-    refuses to follow, a permission error, a directory in its place).
-
-    Kept distinct from None ("absent"): a caller that reads the old content
-    before rewriting it would otherwise take a failed read for an empty file
-    and truncate content it never saw.
-    """
-
-    __slots__ = ()
-
-
-_UNREADABLE = _Unreadable()
-
-
-def _read_guarded(root: Path, path: Path, prefix: str) -> bytes | _Unreadable | None:
-    """Bytes of `path`; None when it is ABSENT; `_UNREADABLE` (one line on
-    stderr) when it exists but cannot be read."""
-    if _refuse_symlink(root, path, "read", prefix):
-        return _UNREADABLE
-    try:
-        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        print(f"{prefix}: cannot read {path}: {exc}", file=sys.stderr)
-        return _UNREADABLE
-    try:
-        with os.fdopen(fd, "rb") as fh:
-            return fh.read()
-    except OSError as exc:
-        print(f"{prefix}: cannot read {path}: {exc}", file=sys.stderr)
-        return _UNREADABLE
-
-
 def _write_guarded(root: Path, path: Path, data: bytes, prefix: str) -> bool:
     """Create/truncate `path` and write `data`; False when a symlink is in the way.
 
