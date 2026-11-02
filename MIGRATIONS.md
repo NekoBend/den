@@ -260,6 +260,7 @@ mistyped path never removes the `.den` of the folder you happen to be in.
 ```sh
 command find ~/src -name .den -prune 2>/dev/null   # where they are
 d='<the directory holding that .den>'
+case $d in /*) ;; *) d="./$d" ;; esac              # so cd never looks in CDPATH
 ls -AlR -- "$d/.den"                               # anything of yours in it?
 (
   cd -- "$d" || exit 1
