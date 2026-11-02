@@ -1337,6 +1337,36 @@ def test_removed_javascript_names_holding_a_dollar_are_reported(
         ]
 
 
+def test_a_removed_dollar_name_right_before_a_brace_in_code_is_reported(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The `${` of a template literal ends no name, and that rule hid a `$`
+    # name standing right before `{` in code: deleting `class Store${}`
+    # left `class Child extends Store${}` unreported. A template's `${` is
+    # now told by a backtick before it on the line.
+    init_repo(tmp_path)
+    write(tmp_path, "lib.js", "export class Store${}\nexport function keep() {}\n")
+    write(
+        tmp_path,
+        "app.js",
+        'import { Store$, keep } from "./lib.js";\n'
+        "class Child extends Store${}\n"
+        "const s = `${keep()} Store${keep()}`;\n",
+    )
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "base")
+
+    write(tmp_path, "lib.js", "export function keep() {}\n")
+
+    for env in backends:
+        proc = run("--base", "HEAD", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert report(proc, tmp_path) == [
+            'app.js:1:broken_ref:Store$:import { Store$, keep } from "./lib.js";',
+            "app.js:2:broken_ref:Store$:class Child extends Store${}",
+        ]
+
+
 def test_go_and_rust_methods_are_searched_as_members_only(tmp_path: Path) -> None:
     # A Go receiver method, every fn of a Rust impl and a fn nested in a fn
     # were "top-level" names, so deleting their file searched `String`,

@@ -737,9 +737,11 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     (MEMBER_ACCESS: `.symbol`, and `::symbol` in Rust). A whole word has no
     character of a name (NAME_CHARS) right before or after it: in a
     JavaScript or TypeScript file `users$` does not name `users`, and
-    `$fetch()` names `$fetch`. There a `$` right before a `{` opens the
-    `${...}` of a template literal and ends no name: `${x}` does not name
-    `$`, nor does `users${x}` name `users$`.
+    `$fetch()` names `$fetch`. There a `$` right before a `{`, with a
+    backtick before it on the line, opens the `${...}` of a template literal
+    and ends no name: in `` `${x}` `` it does not name `$`, nor in
+    `` `users${x}` `` does it name `users$`. With no backtick before it the
+    name stands: `class X extends Store${}` names `Store$`.
     """
     ignore_case = ext in CASE_INSENSITIVE_EXTS
     if not ignore_case and symbol not in line:  # the cheap test first
@@ -750,10 +752,13 @@ def mentions(line: str, ext: str, symbol: str, *, member: bool = False) -> bool:
     else:
         prefix = f"(?<!{name_chars})"
     suffix = f"(?!{name_chars})"
-    if ext in _JS_EXTS and symbol.endswith("$"):
-        suffix += r"(?!\{)"
     rx = _word_rx(symbol, ignore_case=ignore_case, prefix=prefix, suffix=suffix)
-    return rx.search(line) is not None
+    if not (ext in _JS_EXTS and symbol.endswith("$")):
+        return rx.search(line) is not None
+    return any(
+        not (line.startswith("{", m.end()) and "`" in line[: m.start()])
+        for m in rx.finditer(line)
+    )
 
 
 # ---------- external tools ----------

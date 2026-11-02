@@ -1396,6 +1396,32 @@ def test_typescript_enum_and_namespace_are_definitions(tmp_path: Path) -> None:
     ]
 
 
+def test_a_dollar_name_right_before_a_brace_in_code_is_found(
+    tmp_path: Path, backends: list[dict[str, str] | None]
+) -> None:
+    # The `${` of a template literal ends no name, and that rule hid a `$`
+    # name standing right before `{` in code: `extends Store${}` was no use
+    # of Store$. A template's `${` is now told by a backtick before it.
+    write(tmp_path, "lib.js", "export class Store${}\n")
+    write(
+        tmp_path,
+        "app.js",
+        'import { Store$ } from "./lib.js";\n'
+        "class Child extends Store${}\n"
+        "const s = `${n} Store${n}`;\n",
+    )
+    for env in backends:
+        proc = run("--def", "Store$", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == ["lib.js:1:def:export class Store${}"]
+        proc = run("--uses", "Store$", "--root", str(tmp_path), env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert rows(proc, tmp_path) == [
+            'app.js:1:use:import { Store$ } from "./lib.js";',
+            "app.js:2:use:class Child extends Store${}",
+        ]
+
+
 def test_javascript_names_holding_a_dollar_are_found(
     tmp_path: Path, backends: list[dict[str, str] | None]
 ) -> None:
