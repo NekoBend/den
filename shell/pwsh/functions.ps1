@@ -1144,7 +1144,9 @@ function y {
     return
   }
   $tmp = [System.IO.Path]::GetTempFileName()
-  & yazi @Args --cwd-file="$tmp"
+  # Through _DenCall: a quoted word, and the file name, reach yazi as they are
+  # (see _DenArgs in _helpers.ps1).
+  _DenCall 'yazi' (@(_DenArgs $MyInvocation $Args) + @("--cwd-file=$tmp"))
   # yazi writes the directory as UTF-8, which Windows PowerShell 5.1 would
   # otherwise read in the ANSI code page, and [ ] in it are not wildcards: read
   # and move as upstream yazi's own PowerShell wrapper does.

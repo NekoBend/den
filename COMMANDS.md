@@ -205,7 +205,14 @@ cmd has no `find` wrapper: Clink expands an alias after a `|` too, and
 `netstat -ano | find "8080"` needs Windows' `find.exe`, which reads the piped
 text; `fd` ignores it, looks for file names instead and exits 0 when none
 match. Typed `find` is always `find.exe`; `findw` runs `fd`, whatever the
-toggle, and without `fd` says so and exits 1.
+toggle, and without `fd` says so and exits 1. PowerShell's `find` on Windows
+hands a call with input piped in to `find.exe` too (the text to look for in
+the double quotes `find.exe` needs), and runs `fd` otherwise.
+
+On Linux and macOS PowerShell's wrappers hand a quoted word, or a value from a
+variable, to the tool as it is, and expand only a word typed without quotes,
+as typing the tool's name does (`grep 'foo*' notes.txt` searches for `foo*`;
+see shell/README.md, "The wrapper system").
 
 Typed `cat`, `grep` and `find` (bash/zsh, pwsh), and cmd's `cat`, run
 nothing and say why (bash/zsh and cmd: status 2; pwsh: a terminating error)

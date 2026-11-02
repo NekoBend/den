@@ -765,6 +765,231 @@ function _DenOneEntry([string]$A, [string]$B) {
     return $true
 }
 
+# ========== the words a program gets ==========
+
+# On Linux and macOS, pwsh expands each argument of a program that holds * ? [
+# or ] against the file system, as a POSIX shell does, and one that is ~ or
+# starts with ~/ to the home folder; on Windows it expands the ~ only (pwsh
+# 7.6; Windows PowerShell 5.1 expands nothing). It decides by the code that
+# calls the program, not by the value: only a word written in quotes there is
+# left alone (NativeCommandParameterBinder.PossiblyGlobArg in pwsh 7.6.0's
+# source; pwsh has no setting that turns this off). A function that handed the
+# words it was called with to a program as @args, or in a variable, so had
+# each of them expanded, a quoted one too: `grep 'foo*' data` in a folder
+# holding foo1 and foo2 had rg search the files foo2 and data for foo1. So the
+# functions that hand their words to a program build that call each time
+# (_DenNativeBlock): a word typed without quotes where the function was called
+# goes as $__w[<i>], which pwsh expands as it would for the program typed by
+# name (`grep needle *`, `ls ~/src`), and every other word goes as
+# "$($__w[<i>])", which pwsh hands on as it is: a quoted word, a value from a
+# variable, an expression or a splat, and every word den made itself. Which
+# words were typed without quotes comes from the call (_DenArgs).
+
+# _DenArgKinds <invocation> <arguments> - for _DenArgs: what each of
+# <arguments>, the $args of the call that <invocation> ($MyInvocation)
+# describes, was where the call was written. 'bare' for a word written without
+# quotes (foo*, ~/x, $PWD/*, -x), 'value' for anything else (a quoted word, a
+# variable, an expression, the words a splat brought), and for a -name: whose
+# value came with it, which reaches $args as the two words '-name:' and the
+# value, 'join' when nothing stood between the colon and the value (-c:v) and
+# 'split' when a blank did (-c: v). $null when the call cannot be lined up with
+# <arguments>: its text is unknown (a host that gives none, Windows PowerShell
+# 5.1), it holds more than one splat, or its words do not account for
+# <arguments> one by one. The text is the call's own (InvocationInfo.Statement,
+# the extent of its CommandAst), parsed again on its own.
+function _DenArgKinds($Invocation, [object[]]$Arguments) {
+    if ($null -eq $Invocation -or $null -eq $Arguments) { return $null }
+    $p = $Invocation.PSObject.Properties['Statement']
+    if ($null -eq $p -or -not $p.Value) { return $null }
+    $text = [string]$p.Value
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -or $null -eq $ast.EndBlock -or $ast.EndBlock.Statements.Count -ne 1) { return $null }
+    $pipe = $ast.EndBlock.Statements[0]
+    if ($pipe -isnot [System.Management.Automation.Language.PipelineAst] -or $pipe.PipelineElements.Count -ne 1) { return $null }
+    $cmd = $pipe.PipelineElements[0]
+    if ($cmd -isnot [System.Management.Automation.Language.CommandAst]) { return $null }
+    # One kind per word of $args, and the text that word must have (or $null
+    # when the code does not say: a variable, an expression).
+    $kinds = [System.Collections.Generic.List[string]]::new()
+    $texts = [System.Collections.Generic.List[object]]::new()
+    $splat = -1
+    $els = $cmd.CommandElements
+    for ($i = 1; $i -lt $els.Count; $i++) {
+        $e = $els[$i]
+        if ($e -is [System.Management.Automation.Language.CommandParameterAst]) {
+            # pwsh drops the first -- typed to a function (a later one is a
+            # plain word to the parser).
+            if ($e.Extent.Text -ceq '--') { continue }
+            if ($null -eq $e.Argument) {
+                $kinds.Add('bare')
+                $texts.Add($e.Extent.Text)
+                continue
+            }
+            $gap = $e.Argument.Extent.StartOffset - $e.Extent.StartOffset - $e.ParameterName.Length - 2
+            $kinds.Add($(if ($gap -gt 0) { 'split' } else { 'join' }))
+            $texts.Add('-' + $e.ParameterName + ':')
+            $e = $e.Argument
+        } elseif ($e -is [System.Management.Automation.Language.VariableExpressionAst] -and $e.Splatted) {
+            if ($splat -ge 0) { return $null }
+            $splat = $kinds.Count
+            continue
+        }
+        $kind = 'value'
+        $want = $null
+        if ($e -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+            $want = $e.Value
+            if ($e.StringConstantType -eq 'BareWord') { $kind = 'bare' }
+        } elseif ($e -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
+            if ($e.StringConstantType -eq 'BareWord') { $kind = 'bare' }
+        }
+        $kinds.Add($kind)
+        $texts.Add($want)
+    }
+    if ($splat -ge 0) {
+        $n = $Arguments.Count - $kinds.Count
+        if ($n -lt 0) { return $null }
+        for ($i = 0; $i -lt $n; $i++) {
+            $kinds.Insert($splat, 'value')
+            $texts.Insert($splat, $null)
+        }
+    }
+    if ($kinds.Count -ne $Arguments.Count) { return $null }
+    for ($i = 0; $i -lt $kinds.Count; $i++) {
+        if ($null -ne $texts[$i] -and "$($Arguments[$i])" -cne $texts[$i]) { return $null }
+    }
+    return , $kinds.ToArray()
+}
+
+# _DenColonWord <word> - for _DenArgs: whether <word> is a -name: that pwsh
+# put in $args for a parameter written with its value (-c:v), whose value is
+# the next word.
+function _DenColonWord($Word) {
+    if ($null -eq $Word) { return $false }
+    return $null -ne $Word.PSObject.Properties['<CommandParameterName>'] -and "$Word".EndsWith(':')
+}
+
+# _DenArgs <invocation> <arguments> - <arguments>, the $args of the call that
+# <invocation> ($MyInvocation) describes, as the words a program gets for them
+# from _DenNativeBlock: an array goes as its elements, a $null not at all (as
+# @args gave them), and a -name: written with its value goes as one word
+# (-c:v), and before each element of an array value (-e:one -e:two), as when
+# the program is typed by name, where @args lost the -name:.
+# A word typed without quotes (_DenArgKinds) is marked (_DenBare), so that pwsh
+# expands it; when the call cannot be read, none is, and every word goes as
+# it is. The call is read only when pwsh could change a word (one that holds
+# * ? [ or ], or starts with ~) or a -name: is to be joined.
+function _DenArgs($Invocation, [object[]]$Arguments) {
+    if ($null -eq $Arguments) { return }
+    $read = $false
+    foreach ($a in $Arguments) {
+        if ($null -eq $a) { continue }
+        $s = "$a"
+        if ($s.IndexOfAny([char[]]'*?[]') -ge 0 -or $s.StartsWith('~') -or (_DenColonWord $a)) { $read = $true; break }
+    }
+    $kinds = $null
+    if ($read) { $kinds = _DenArgKinds $Invocation $Arguments }
+    for ($j = 0; $j -lt $Arguments.Count; $j++) {
+        $a = $Arguments[$j]
+        if ($null -eq $a) { continue }
+        $kind = if ($null -ne $kinds) { $kinds[$j] } else { 'value' }
+        if ((_DenColonWord $a) -and $j + 1 -lt $Arguments.Count) {
+            # The -name: goes before each of the value's elements, as one word
+            # with it (-e:one -e:two for -e:$v, $v = 'one', 'two') or, when a
+            # blank stood after the colon, as a word of its own before it; a
+            # $null element and a $null or empty value give no word, and an
+            # empty string gives the -name: (AddToArgumentList and
+            # AppendOneNativeArgument in pwsh 7.6.0's
+            # NativeCommandParameterBinder). With a blank, a single value goes
+            # as any other word, so that pwsh expands one typed bare.
+            $v = $Arguments[$j + 1]
+            $items = [System.Management.Automation.LanguagePrimitives]::GetEnumerator($v)
+            if ($kind -eq 'split' -and $null -eq $items -and $null -ne $v) { "$a"; continue }
+            $j++
+            if ($null -eq $items) { $items = @(, $v).GetEnumerator() }
+            while ($items.MoveNext()) {
+                if ($null -eq $items.Current) { continue }
+                if ($kind -eq 'split') { "$a"; "$($items.Current)" } else { "$a" + "$($items.Current)" }
+            }
+            continue
+        }
+        $items = [System.Management.Automation.LanguagePrimitives]::GetEnumerator($a)
+        if ($null -ne $items) {
+            while ($items.MoveNext()) { if ($null -ne $items.Current) { , $items.Current } }
+            continue
+        }
+        if ($kind -eq 'bare') {
+            $w = [psobject]::new("$a")
+            $w.PSObject.Properties.Add([psnoteproperty]::new('<DenBare>', $true))
+            $w
+            continue
+        }
+        if (_DenColonWord $a) { "$a"; continue }
+        , $a
+    }
+}
+
+# _DenBare <word> - whether _DenArgs marked <word> as typed without quotes.
+function _DenBare($Word) {
+    return $null -ne $Word -and $null -ne $Word.PSObject.Properties['<DenBare>']
+}
+
+# _DenNativeBlock <head> <words> [tail] - the scriptblock that runs the call
+# <head> (code, such as "& 'rg' --flag" or '& $exe'), then <words>, then
+# <tail> (code). The scriptblock reads <words> from the variable $__w where it
+# runs, so the caller keeps them there: each goes as $__w[<i>] when it is
+# marked (_DenBare), for pwsh to expand, and else as "$($__w[<i>])", which pwsh
+# hands on as it is. Made anew for each call, it can be run (& $__run) or
+# stepped (GetSteppablePipeline) in the caller's scope.
+function _DenNativeBlock([string]$Head, [object[]]$Words, [string]$Tail) {
+    $code = [System.Text.StringBuilder]::new($Head)
+    if ($null -ne $Words) {
+        for ($i = 0; $i -lt $Words.Count; $i++) {
+            if (_DenBare $Words[$i]) { $null = $code.Append(" `$__w[$i]") }
+            else { $null = $code.Append(" `"`$(`$__w[$i])`"") }
+        }
+    }
+    if ($Tail) { $null = $code.Append(' ').Append($Tail) }
+    return [scriptblock]::Create($code.ToString())
+}
+
+# _DenCall <program> <words> - run <program> (a name or a path; a path where a
+# den function has the program's name) with <words>, through _DenNativeBlock,
+# for the functions that hand words on to a program and take no piped input.
+# What the program writes goes where the function's output goes, the console
+# included.
+function _DenCall($Program, [object[]]$Words) {
+    $__p = $Program
+    $__w = @()
+    if ($null -ne $Words) { $__w = $Words }
+    & (_DenNativeBlock '& $__p' $__w)
+}
+
+# _DenPass <invocation> <arguments> <program> [head] - run <program> with the
+# words <head> (den's own), then <arguments>, the $args of the call that
+# <invocation> ($MyInvocation) describes, as _DenArgs gives them: for the
+# functions that hand their arguments on to a program
+# (`function gcm { _DenPass $MyInvocation $args 'git' @('commit', '-m') }`).
+function _DenPass($Invocation, [object[]]$Arguments, $Program, [object[]]$Head) {
+    $words = @()
+    if ($null -ne $Head) { $words += $Head }
+    $words += @(_DenArgs $Invocation $Arguments)
+    _DenCall $Program $words
+}
+
+# _DenRun <program> <arguments...> - run <program> with <arguments> as the
+# same line with the program's name in place of _DenRun would, except that
+# pwsh expands only the words written there without quotes (_DenArgs): a
+# value from a variable, an expression or a splat goes as it is. For den's
+# own calls of a program with values in variables
+# (`_DenRun ffmpeg -y -i $In @extra $Out`).
+function _DenRun {
+    $words = @(_DenArgs $MyInvocation $args)
+    if ($words.Count -eq 0) { return }
+    _DenCall "$($words[0])" @($words | Select-Object -Skip 1)
+}
+
 # ========== wrapper generator ==========
 
 # The functions these generators define, and the coreutils.ps1 ones that can hand
@@ -779,8 +1004,9 @@ function _DenOneEntry([string]$A, [string]$B) {
 # program: when the next object goes in, and at the end. A call with nothing
 # piped in runs the tool directly, so its stdin stays the console's (rg searches
 # the current directory rather than an empty stdin, and `rm -i` can ask). The
-# generated body reads its arguments as $__a, and the scriptblock in $__run is
-# the one command the call runs (a steppable pipeline holds exactly one); end
+# generated body reads its arguments as $__a, and the words the tool gets as
+# $__w (_DenArgs), and the scriptblock in $__run (_DenNativeBlock) is the one
+# command the call runs (a steppable pipeline holds exactly one); end
 # sets $__sp back to $null once it has ended the pipeline. When a line stops
 # before the end (Ctrl+C, an error, or Select-Object -First further down), the
 # clean block that _DenSpClean adds on PowerShell 7.3 and later ends it instead,
@@ -821,22 +1047,25 @@ function _DenAddClean([string[]]$Names) {
     }
 }
 
-# _DenOptionFile <name> <tool> <args> - for New-Wrapper: why <tool> must not run
-# with <args>, the arguments of den's <name>, else $null. bat, fd and rg have
-# options that run a program (rg --pre and --hostname-bin, fd -x and -X in any
-# spelling, bat --pager with --paging), and they read a word that starts with -
-# as an option, also when it is the name of a file: `grep needle *` beside a
-# file named --pre=sh had rg run sh on every file it searched. So <tool> must
-# not run when one of <args> starts with - and names an existing path, or
-# when one is a wildcard that stands for such a name and the wildcard is
-# expanded: by pwsh, for a native command on Linux and macOS, after this
-# function has seen it, each name relative to the current directory (./*
-# included: it hands on ./--pre=sh as --pre=sh); by den's cat on Windows, for
-# bat (_DenBatWords), in the same way. So the names are looked up the way pwsh
-# does it. On Windows pwsh expands nothing, and rg and fd do not either.
+# _DenOptionFile <name> <tool> <words> - for New-Wrapper: why <tool> must not
+# run with <words>, the words den's <name> hands it (_DenArgs), else $null.
+# bat, fd and rg have options that run a program (rg --pre and --hostname-bin,
+# fd -x and -X in any spelling, bat --pager with --paging), and they read a
+# word that starts with - as an option, also when it is the name of a file:
+# `grep needle *` beside a file named --pre=sh had rg run sh on every file it
+# searched. So <tool> must not run when one of <words> starts with - and names
+# an existing path, or when one is a wildcard that stands for such a name and
+# the wildcard is expanded: by pwsh on Linux and macOS, for a word typed
+# without quotes (_DenBare; _DenNativeBlock hands a quoted one on as it is),
+# after this function has seen it, each name relative to the current
+# directory (./* included: it hands on ./--pre=sh as --pre=sh); by den's cat
+# on Windows, for bat (_DenBatWords), in the same way, quoted or not. So the
+# names are looked up the way pwsh does it. On Windows pwsh expands nothing,
+# and rg and fd do not either.
 function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
     $loc = $ExecutionContext.SessionState.Path.CurrentLocation
-    $expand = (-not (_OnWindows) -or $Tool -eq 'bat') -and $loc.Provider.Name -eq 'FileSystem'
+    $onWindows = _OnWindows
+    $expand = (-not $onWindows -or $Tool -eq 'bat') -and $loc.Provider.Name -eq 'FileSystem'
     # <tool> runs in the session's file-system location, also while the session
     # is on another drive (Env:, a registry drive), so a name is looked up there,
     # as a file.
@@ -853,8 +1082,8 @@ function _DenOptionFile([string]$Name, [string]$Tool, $Words) {
             }
         }
         # pwsh expands a rooted pattern (/x/*, ~/x/*) to rooted names.
-        if (-not $expand -or $s.StartsWith('~') -or [System.IO.Path]::IsPathRooted($s) -or
-            -not [WildcardPattern]::ContainsWildcardCharacters($s)) { continue }
+        if (-not $expand -or -not ($onWindows -or (_DenBare $w)) -or $s.StartsWith('~') -or
+            [System.IO.Path]::IsPathRooted($s) -or -not [WildcardPattern]::ContainsWildcardCharacters($s)) { continue }
         $items = @()
         try { $items = @($ExecutionContext.SessionState.InvokeProvider.ChildItem.Get($s, $false)) } catch { $null = $_ }
         foreach ($i in $items) {
@@ -977,6 +1206,37 @@ function _DenBatWords($Words) {
     }
 }
 
+# _DenWinFind - Windows' find.exe ($env:SystemRoot\System32\find.exe), or $null
+# when it is not there: on Windows, den's find hands it a call with input
+# piped in (New-Wrapper).
+function _DenWinFind {
+    if (-not $env:SystemRoot) { return $null }
+    $exe = [System.IO.Path]::Combine($env:SystemRoot, 'System32', 'find.exe')
+    if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe }
+    return $null
+}
+
+# _DenFindWords <words> - <words>, the words of a call of den's find
+# (_DenArgs), as find.exe needs them. find.exe takes the text to look for only
+# in double quotes (`find "8080"`, with each " inside it doubled), and pwsh
+# drops the quotes typed around a word, so a typed `find "8080"` would hand
+# find.exe a bare 8080, which it refuses. So the first word that is not one of
+# find.exe's switches (/v /c /n /i /off /offline /?, in any case) goes in
+# double quotes, unless it starts with one: the way to write it for find.exe
+# typed by name in pwsh (`find '"8080"'`). Any other word that starts with /
+# is text to look for (`find /api`). pwsh passes the quotes on as they are,
+# since it hands find.exe its arguments in its Legacy way.
+function _DenFindWords([object[]]$Words) {
+    if ($null -eq $Words) { return }
+    $quoted = $false
+    foreach ($w in $Words) {
+        $s = "$w"
+        if ($quoted -or $s -in '/v', '/c', '/n', '/i', '/off', '/offline', '/?') { , $w; continue }
+        $quoted = $true
+        if ($s.StartsWith('"')) { $s } else { '"' + $s.Replace('"', '""') + '"' }
+    }
+}
+
 # New-Wrapper <func> <modern> <modernFlags> <nativeCmd> <nativeCmdFlags> <fallbackExpr> [modernTail]
 # <modernTail>: flags the modern tool gets after the call's arguments.
 function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [string]$NativeCmd, [string]$NativeCmdFlags, [string]$FallbackExpr, [string]$ModernTail) {
@@ -1002,14 +1262,27 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
     # On Windows, bat runs nothing either when an option or an option's value
     # holds a wildcard (_DenBatWild), and gets each other word it would expand
     # replaced by what it stands for (_DenBatWords).
+    # On Windows, den's find hands a call with input piped in to Windows'
+    # find.exe (_DenWinFind), which reads it (`netstat -ano | find "8080"`), as
+    # cmd's typed find does, whether or not the wrappers are on; fd reads none,
+    # and printed nothing. The text to look for goes in the double quotes
+    # find.exe needs (_DenFindWords).
+    # The tools get the call's words as _DenArgs gives them, through
+    # _DenNativeBlock; the fallback gets the call's arguments ($__a).
     $optionCheck = ''
     if ($FuncName -eq $NativeCmd -and $Modern -in @('bat', 'fd', 'rg')) {
-        $optionCheck = "`$__o = _DenOptionFile '$FuncName' '$Modern' `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }"
+        $optionCheck = "`$__o = _DenOptionFile '$FuncName' '$Modern' `$__w; if (`$__o) { Write-Error `$__o -ErrorAction Stop }"
         if ($Modern -eq 'bat') {
-            $optionCheck = "`$__o = _DenBatDashDash `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop }; " +
-                "if (_OnWindows) { `$__o = _DenBatWild `$__a; if (`$__o) { Write-Error `$__o -ErrorAction Stop } }; " +
-                $optionCheck + "; if (_OnWindows) { `$__a = @(_DenBatWords `$__a) }"
+            $optionCheck = "`$__o = _DenBatDashDash `$__w; if (`$__o) { Write-Error `$__o -ErrorAction Stop }; " +
+                "if (_OnWindows) { `$__o = _DenBatWild `$__w; if (`$__o) { Write-Error `$__o -ErrorAction Stop } }; " +
+                $optionCheck + "; if (_OnWindows) { `$__w = @(_DenBatWords `$__w) }"
         }
+    }
+    $pipeFind = ''
+    $chain = 'if'
+    if ($FuncName -eq 'find' -and $NativeCmd -eq 'find') {
+        $pipeFind = "`$__fx = if (`$MyInvocation.ExpectingInput -and (_OnWindows)) { _DenWinFind } else { `$null }"
+        $chain = "if (`$__fx) {`n        `$__w = @(_DenFindWords `$__w)`n        `$__run = _DenNativeBlock '& `$__fx' `$__w`n    } elseif"
     }
     $fallbackCode = if ($FallbackExpr) { $FallbackExpr } else { "Write-Warning '${FuncName}: $Modern is not installed.'" }
     $winNativeSkip = @('find', 'sort', 'more')
@@ -1024,17 +1297,19 @@ function New-Wrapper([string]$FuncName, [string]$Modern, [string]$ModernFlags, [
 begin {
     `$__sp = `$null
     `$__a = `$args
-    if (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
+    `$__w = @(_DenArgs `$MyInvocation `$args)
+    $pipeFind
+    $chain (`$env:_DEN_WRAPPERS -ne '0' -and (_ResolveCmd '$Modern')) {
         $optionCheck
         _WrapLog '$FuncName' '$Modern'
-        `$__run = { & '$Modern' $ModernFlags @__a $ModernTail }
+        `$__run = _DenNativeBlock '& ''$Modern'' $ModernFlags' `$__w '$ModernTail'
     } else {
         `$__cu = if ('$NativeCmd') { _CoreutilsBin } else { `$null }
         `$__nc = if (-not `$__cu -and ($nativeGuard)) { _ResolveCmd '$NativeCmd' 'App' } else { `$null }
         if (`$__cu) {
-            `$__run = { & `$__cu $NativeCmd $NativeCmdFlags @__a }
+            `$__run = _DenNativeBlock '& `$__cu $NativeCmd $NativeCmdFlags' `$__w
         } elseif (`$__nc) {
-            `$__run = { & `$__nc $NativeCmdFlags @__a }
+            `$__run = _DenNativeBlock '& `$__nc $NativeCmdFlags' `$__w
         } elseif (`$MyInvocation.ExpectingInput) {
             `$__fb = { $fallbackCode }
             `$__run = { & `$__fb @__a }
@@ -1065,10 +1340,10 @@ function New-WrapperSuffix([string]$FuncName, [string]$Modern, [string]$ModernFl
     $sb = [scriptblock]::Create(@"
 begin {
     `$__sp = `$null
-    `$__a = `$args
+    `$__w = @(_DenArgs `$MyInvocation `$args)
     `$__run = `$null
     if (_ResolveCmd '$Modern') {
-        `$__run = { & '$Modern' $ModernFlags @__a }
+        `$__run = _DenNativeBlock '& ''$Modern'' $ModernFlags' `$__w
         if (`$MyInvocation.ExpectingInput) {
             `$__sp = `$__run.GetSteppablePipeline()
             `$__sp.Begin(`$true, `$ExecutionContext)
@@ -1101,7 +1376,8 @@ begin {
     `$__a = `$args
     `$__cu = _CoreutilsBin
     if (`$__cu) {
-        `$__run = { & `$__cu $CmdName @__a }
+        `$__w = @(_DenArgs `$MyInvocation `$args)
+        `$__run = _DenNativeBlock '& `$__cu $CmdName' `$__w
     } else {
         `$__run = { $BuiltinCmd @__a }
     }

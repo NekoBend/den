@@ -781,6 +781,28 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
 " | tr -d '\r')
 assert_eq "pwsh/uv run separates script.py" "mock-uv run --python 3.12 -- script.py" "$actual"
 
+# On Linux and macOS pwsh expands a wildcard in a program's argument unless the
+# call writes it in quotes, and uv, pip, pip3 and python handed theirs on as
+# @Args: a quoted word was expanded too, so `pip install 'foo[x1]'` beside foox
+# installed foox. Now a quoted word reaches uv as it is, and one typed without
+# quotes is still expanded, as for uv typed by name.
+echo "[pwsh] uv, pip and python hand a quoted wildcard on as it is; a bare one is expanded"
+mkdir -p "$WORK/g6py" && : > "$WORK/g6py/foo1" && : > "$WORK/g6py/foox"
+actual=$(cd "$WORK/g6py" && run_pwsh "$PYTHON_PS1_COMBINED" "
+    uv pip install 'foo[x1]'
+    \$env:VIRTUAL_ENV = '$WORK/venv_nopip'; \$env:_DEN_VENV_PYTHON = '3.12'
+    uv run 'foo*'
+    pip install 'foo[x1]' 6>\$null
+    python 'foo*' 6>\$null
+    uv run foo?
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/uv, pip and python: 'foo[x1]' and 'foo*' as they are, foo? expanded" "mock-uv pip install foo[x1]
+mock-uv run --python 3.12 -- foo*
+mock-uv --no-config pip install foo[x1]
+mock-uv run --python 3.12 -- python foo*
+mock-uv run --python 3.12 -- foo1 foox" "$actual"
+rm -rf "$WORK/g6py"
+
 # den's uv, pip and python3 take over the ones on PATH, so they are den's only
 # when typed at the prompt of an interactive session: a user's script, and a
 # pwsh -Command run that loaded the profile, get the uv, pip and python3 on

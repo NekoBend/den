@@ -180,9 +180,9 @@ argument starts with `-` and names a file (a symlink that points nowhere
 included); they say which one (bash/zsh: status 2; pwsh: a terminating
 error). Write such a file as `./--pre=sh`
 (a glob as `./*`), or use the native command (`command grep`).
-PowerShell on Linux and macOS expands a wildcard for a native command itself,
-after the wrapper has seen it (quoted ones too, and `./*` to bare names), so
-the pwsh wrappers look the names up as pwsh will; there write the wildcard
+PowerShell on Linux and macOS expands a wildcard typed without quotes for a
+native command itself, after the wrapper has seen it (`./*` to bare names),
+so the pwsh wrappers look the names up as pwsh will; there write the wildcard
 with a full path (`$PWD/*`), or turn the wrappers off. On Windows, cmd and
 PowerShell pass `*` on as it is, and `bat` expands it itself, one word at a
 time: `cat ???* *` beside files named `--`, `--pager=cmd` and
@@ -214,6 +214,20 @@ PowerShell. cmd splits an unquoted `--file-name=*.py` into `--file-name` and
 and `findw` hand them `*` unexpanded. The `w`-suffix forms and `ripgrep` run
 the tool as typing its name does, without this check.
 
+On Linux and macOS, PowerShell expands each argument of a program that holds
+`*`, `?`, `[` or `]` against the files there, and a leading `~` to your home
+folder, unless the code that calls the program writes it in quotes; on Windows
+PowerShell 7.6 expands the `~` only. A function that hands its arguments on to a
+program therefore had every one of them expanded, a quoted one too: `grep
+'foo*' notes.txt` beside `foo1` and `foo2` searched for `foo1`. den's
+PowerShell wrappers, the git and docker shortcuts, `uv`, `pip`, `python`,
+`vv`, the ffmpeg helpers and `y` now hand on a word you quoted, or a value
+from a variable, as it is, and expand only a word typed without quotes, as
+typing the program's name does (`grep needle *`, `ls ~/src`). `-c:v` reaches
+the program as one word, as in bash and zsh (PowerShell splits it into `-c:`
+and `v`). A call den cannot read back (one with two splats, or from a host
+that does not give the command line) hands every word on as it is.
+
 Ways to get the native command:
 
 - **One-off (POSIX):** prefix `command`, e.g. `command ls -la --color=never`.
@@ -226,7 +240,10 @@ Ways to get the native command:
 The `w`-suffix forms (`catw`, `findw`, `grepw`, `lsw`) always use the modern
 tool, ignoring the toggle, and print no notice. cmd has only `findw`, and no
 `find` wrapper: typed `find` there stays Windows' `find.exe`, which reads piped
-text (`netstat -ano | find "8080"`) where `fd` reads none.
+text (`netstat -ano | find "8080"`) where `fd` reads none. PowerShell's `find`
+on Windows hands a call with input piped in to `find.exe` too, wrappers on or
+off, and puts the text to look for in the double quotes `find.exe` needs
+(PowerShell drops the ones you type); a call without piped input runs `fd`.
 
 On bash/zsh a wrapper that replaces a native command (`ls`, `cat`, `grep`,
 `find`) runs the modern tool only when typed at the prompt (`eval` and `$(...)`

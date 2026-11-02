@@ -15,14 +15,18 @@ foreach ($a in 'gc', 'gcm', 'gl', 'gps', 'gu') {
     Remove-Item "alias:$a" -Force -ErrorAction SilentlyContinue
 }
 
+# The functions below that hand their arguments on to a program do it through
+# _DenPass, so that a quoted word reaches the program as it is on Linux and
+# macOS too (`gcm 'wip*'`), where pwsh expanded every word of @Args.
+
 # ===== Git =====
 
 function g {
-  & git @Args
+  _DenPass $MyInvocation $Args 'git'
 }
 
 function ga {
-  & git add @Args
+  _DenPass $MyInvocation $Args 'git' 'add'
 }
 
 function gaa {
@@ -30,27 +34,27 @@ function gaa {
 }
 
 function gb {
-  & git branch @Args
+  _DenPass $MyInvocation $Args 'git' 'branch'
 }
 
 function gc {
-  & git commit @Args
+  _DenPass $MyInvocation $Args 'git' 'commit'
 }
 
 function gcm {
-  & git commit -m @Args
+  _DenPass $MyInvocation $Args 'git' @('commit', '-m')
 }
 
 function gco {
-  & git checkout @Args
+  _DenPass $MyInvocation $Args 'git' 'checkout'
 }
 
 function gd {
-  & git diff @Args
+  _DenPass $MyInvocation $Args 'git' 'diff'
 }
 
 function gds {
-  & git diff --staged @Args
+  _DenPass $MyInvocation $Args 'git' @('diff', '--staged')
 }
 
 function gf {
@@ -58,15 +62,15 @@ function gf {
 }
 
 function gl {
-  & git log --oneline --graph @Args
+  _DenPass $MyInvocation $Args 'git' @('log', '--oneline', '--graph')
 }
 
 function gpl {
-  & git pull @Args
+  _DenPass $MyInvocation $Args 'git' 'pull'
 }
 
 function gps {
-  & git push @Args
+  _DenPass $MyInvocation $Args 'git' 'push'
 }
 
 function gst {
@@ -74,53 +78,53 @@ function gst {
 }
 
 function gsw {
-  & git switch @Args
+  _DenPass $MyInvocation $Args 'git' 'switch'
 }
 
 # ===== Docker =====
 
 function d {
-  & docker @Args
+  _DenPass $MyInvocation $Args 'docker'
 }
 
 function dc {
-  & docker compose @Args
+  _DenPass $MyInvocation $Args 'docker' 'compose'
 }
 
 function dcb {
-  & docker compose build @Args
+  _DenPass $MyInvocation $Args 'docker' @('compose', 'build')
 }
 
 function dcd {
-  & docker compose down @Args
+  _DenPass $MyInvocation $Args 'docker' @('compose', 'down')
 }
 
 function dce {
-  & docker compose exec @Args
+  _DenPass $MyInvocation $Args 'docker' @('compose', 'exec')
 }
 
 function dcl {
-  & docker compose logs @Args
+  _DenPass $MyInvocation $Args 'docker' @('compose', 'logs')
 }
 
 function dcu {
-  & docker compose up @Args
+  _DenPass $MyInvocation $Args 'docker' @('compose', 'up')
 }
 
 function di {
-  & docker images @Args
+  _DenPass $MyInvocation $Args 'docker' 'images'
 }
 
 function dps {
-  & docker ps @Args
+  _DenPass $MyInvocation $Args 'docker' 'ps'
 }
 
 function dri {
-  & docker run -it @Args
+  _DenPass $MyInvocation $Args 'docker' @('run', '-it')
 }
 
 function drir {
-  & docker run -it --rm @Args
+  _DenPass $MyInvocation $Args 'docker' @('run', '-it', '--rm')
 }
 
 # ===== Editor =====
@@ -184,13 +188,13 @@ function code {
     & $exe @shaped
     return
   }
-  & $exe @Args
+  _DenPass $MyInvocation $Args $exe
 }
 
 # gu → gitui (terminal git UI)
 function gu {
   if (Get-Command gitui -ErrorAction SilentlyContinue) {
-    & gitui @Args
+    _DenPass $MyInvocation $Args 'gitui'
   }
   else {
     Write-Warning "gitui is not installed. Install: winget install gitui"

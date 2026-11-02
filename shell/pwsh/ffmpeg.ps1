@@ -4,18 +4,24 @@
 # All functions accept ffmpeg arg overrides: once a hyphen-prefixed arg is
 # encountered after the positional args, all remaining args replace the
 # default preset (the args between -i and output).
-# Uses $args (no param blocks) so ffmpeg flags like -c:v pass through.
+# Uses $args (no param blocks) so ffmpeg flags like -c:v pass through. The
+# arguments are read through _DenArgs (_helpers.ps1), which gives -c:v back as
+# one word (in $args it is -c: and v), and ffmpeg and ffprobe run through
+# _DenRun, which hands each file name and option on as it is: on Linux and
+# macOS pwsh expanded them as wildcards, so `tomp4 'in[1].avi'` beside in1.avi
+# converted in1.avi.
 
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { return }
 
 # _SplitPosExtra: the positional arguments, then the ffmpeg options from the first
 # dash on. The callers read $pos[N] only below $pos.Count: a caller's Set-StrictMode
 # makes an index past the end an error, where it otherwise reads as $null.
-function _SplitPosExtra {
+# <invocation> and <args> are the caller's $MyInvocation and $args.
+function _SplitPosExtra($Invocation, [object[]]$Arguments) {
     $pos   = [System.Collections.Generic.List[string]]::new()
     $extra = [System.Collections.Generic.List[string]]::new()
     $hitDash = $false
-    foreach ($a in $args) {
+    foreach ($a in @(_DenArgs $Invocation $Arguments)) {
         if (-not $hitDash -and "$a".StartsWith('-')) { $hitDash = $true }
         if ($hitDash) { $extra.Add($a) } else { $pos.Add($a) }
     }
@@ -49,75 +55,75 @@ function _AssertNoExtraPos([string]$Fn, $Pos = @(), [int]$Max) {
 }
 
 function tomp4 {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.mp4') }
     if (-not (_AssertOutExt 'tomp4' $Out 'mp4')) { return }
     if (-not (_AssertNoExtraPos 'tomp4' $pos 2)) { return }
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
-        ffmpeg -hide_banner -loglevel error -y -i $In -c:v libx264 -c:a aac $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -c:v libx264 -c:a aac $Out
     }
 }
 
 # towebm <input> [output] [-ffmpeg overrides] — Convert to VP9/Opus webm.
 #   towebm input.mp4 -c:v libsvtav1 -crf 30  → override with AV1
 function towebm {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.webm') }
     if (-not (_AssertOutExt 'towebm' $Out 'webm')) { return }
     if (-not (_AssertNoExtraPos 'towebm' $pos 2)) { return }
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
-        ffmpeg -hide_banner -loglevel error -y -i $In -c:v libvpx-vp9 -c:a libopus $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -c:v libvpx-vp9 -c:a libopus $Out
     }
 }
 
 # tomp3 <input> [output] [-ffmpeg overrides] — Extract/convert audio to MP3 192k.
 #   tomp3 input.wav -b:a 320k  → override bitrate
 function tomp3 {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.mp3') }
     if (-not (_AssertOutExt 'tomp3' $Out 'mp3')) { return }
     if (-not (_AssertNoExtraPos 'tomp3' $pos 2)) { return }
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
-        ffmpeg -hide_banner -loglevel error -y -i $In -vn -c:a libmp3lame -b:a 192k $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -vn -c:a libmp3lame -b:a 192k $Out
     }
 }
 
 # towav <input> [output] [-ffmpeg overrides] — Convert to WAV PCM 16-bit.
 #   towav input.flac -c:a pcm_s24le  → override to 24-bit
 function towav {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.wav') }
     if (-not (_AssertOutExt 'towav' $Out 'wav')) { return }
     if (-not (_AssertNoExtraPos 'towav' $pos 2)) { return }
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
-        ffmpeg -hide_banner -loglevel error -y -i $In -c:a pcm_s16le $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -c:a pcm_s16le $Out
     }
 }
 
 # toflac <input> [output] [-ffmpeg overrides] — Convert to FLAC lossless.
 #   toflac input.wav -compression_level 12  → override compression
 function toflac {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.flac') }
     if (-not (_AssertOutExt 'toflac' $Out 'flac')) { return }
     if (-not (_AssertNoExtraPos 'toflac' $pos 2)) { return }
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
-        ffmpeg -hide_banner -loglevel error -y -i $In -c:a flac $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -c:a flac $Out
     }
 }
 
@@ -126,22 +132,22 @@ function toflac {
 #   togif input.mp4 out.gif 15 640             → custom params
 #   togif input.mp4 -vf "fps=5,scale=320:-1"  → single-pass override
 function togif {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In  = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Out = if ($pos.Count -gt 1) { $pos[1] } else { [IO.Path]::ChangeExtension($In, '.gif') }
     if (-not (_AssertOutExt 'togif' $Out 'gif')) { return }
     $Fps   = if ($pos.Count -gt 2) { $pos[2] } else { '10' }
     $Width = if ($pos.Count -gt 3) { $pos[3] } else { '480' }
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In @extra $Out
     } else {
         $filters = "fps=${Fps},scale=${Width}:-1:flags=lanczos"
         $tmpDir = Join-Path ([IO.Path]::GetTempPath()) ("togif-" + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path $tmpDir -Force
         try {
             $palette = Join-Path $tmpDir 'palette.png'
-            ffmpeg -hide_banner -loglevel error -y -i $In -vf "${filters},palettegen" -update 1 $palette
-            ffmpeg -hide_banner -loglevel error -y -i $In -i $palette -lavfi "${filters} [x]; [x][1:v] paletteuse" $Out
+            _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -vf "${filters},palettegen" -update 1 $palette
+            _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -i $palette -lavfi "${filters} [x]; [x][1:v] paletteuse" $Out
         } finally {
             Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -152,12 +158,12 @@ function togif {
 #   minfo input.mp4 -show_streams -of json  → extra ffprobe args
 function minfo {
     # Several inputs are fine: each is probed in turn with the same options.
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     if ($pos.Count -eq 0) {
         Write-Error "usage: minfo <file...> [ffprobe args]"
         return
     }
-    foreach ($In in $pos) { ffprobe -hide_banner @extra -i $In }
+    foreach ($In in $pos) { _DenRun ffprobe -hide_banner @extra -i $In }
 }
 
 # mclip <input> <start> <end> [output] [-ffmpeg overrides] - Cut video segment.
@@ -167,7 +173,7 @@ function minfo {
 # Not `clip`: that is Windows' clipboard command (clip.exe), and a function of
 # that name took a typed `... | clip` over.
 function mclip {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In    = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Start = if ($pos.Count -gt 1) { $pos[1] } else { $null }
     $End   = if ($pos.Count -gt 2) { $pos[2] } else { $null }
@@ -186,9 +192,9 @@ function mclip {
     # -to as relative to the new start. Re-encoding stays frame-accurate;
     # -c copy starts at a keyframe either way.
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -ss $Start -to $End -i $In @extra $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -ss $Start -to $End -i $In @extra $Out
     } else {
-        ffmpeg -hide_banner -loglevel error -y -ss $Start -to $End -i $In -c copy $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -ss $Start -to $End -i $In -c copy $Out
     }
 }
 
@@ -196,7 +202,7 @@ function mclip {
 #   strip-audio input.mp4                  → copy video, drop audio
 #   strip-audio input.mp4 -c:v libx265    → re-encode video, drop audio
 function strip-audio {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     if ($pos.Count -gt 1) {
         $Out = $pos[1]
@@ -208,9 +214,9 @@ function strip-audio {
     }
     if (-not (_AssertNoExtraPos 'strip-audio' $pos 2)) { return }
     if ($extra.Count -gt 0) {
-        ffmpeg -hide_banner -loglevel error -y -i $In -an @extra $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -an @extra $Out
     } else {
-        ffmpeg -hide_banner -loglevel error -y -i $In -an -c:v copy $Out
+        _DenRun ffmpeg -hide_banner -loglevel error -y -i $In -an -c:v copy $Out
     }
 }
 
@@ -220,7 +226,7 @@ function strip-audio {
 #   thumbnail input.mp4 00:00:30 -vf "scale=1920:-1"  → override
 #   thumbnail input.mp4 00:00:30 out.png -q:v 2    → custom output + override
 function thumbnail {
-    $pos, $extra = _SplitPosExtra @args
+    $pos, $extra = _SplitPosExtra $MyInvocation $args
     $In   = if ($pos.Count -gt 0) { $pos[0] } else { $null }
     $Time = if ($pos.Count -gt 1) { $pos[1] } else { '00:00:01' }
     $Out  = if ($pos.Count -gt 2) { $pos[2] } else { [IO.Path]::ChangeExtension($In, '.jpg') }
@@ -229,5 +235,5 @@ function thumbnail {
     # time (mclip says more). -frames:v 1 comes first in the override form too:
     # without it ffmpeg writes every remaining frame to the one image file and
     # exits with an error; an override that sets -frames:v itself still wins.
-    ffmpeg -hide_banner -loglevel error -y -ss $Time -i $In -frames:v 1 @extra $Out
+    _DenRun ffmpeg -hide_banner -loglevel error -y -ss $Time -i $In -frames:v 1 @extra $Out
 }

@@ -859,9 +859,11 @@ done
 # -x / -X (in any spelling) ran a program on what it found, and bat --pager
 # with a later --paging=always piped the files into one. A wrapper cannot tell
 # a typed word from a glob's, so it runs nothing when an argument starts with
-# - and names a file. pwsh expands a wildcard for a native command itself on
-# Linux and macOS (quoted too, and ./* to bare names), after the wrapper has
-# seen it, so the pwsh wrappers look the names up as pwsh will. The stand-ins
+# - and names a file. pwsh expands a wildcard typed without quotes for a native
+# command itself on Linux and macOS (./* to bare names), after the wrapper has
+# seen it, so the pwsh wrappers look the names up as pwsh will; a quoted one
+# reaches the tool as it is (see the words a wrapper hands its tool, below).
+# The stand-ins
 # log each run; each case is a fresh directory holding data.txt and the
 # given files.
 echo ""
@@ -1008,7 +1010,7 @@ while IFS='|' read -r _call _tool _names; do
     OPT_PWSH_WANT+=("typed $_call beside $_names: $_tool does not run|refused; ran: no")
 done <<< "$OPT_CASES"
 OPT_PWSH_WANT+=(
-    "grep needle '*' (quoted, still expanded) beside --pre=sh: rg does not run|refused; ran: no"
+    "grep needle '*' (quoted, so not expanded) beside --pre=sh runs rg on the word *|ran; ran: rg needle *"
     "grep needle (Get-ChildItem -Name) beside --pre=sh: rg does not run|refused; ran: no"
     "beside --pre=sh, grep needle data.txt runs rg|ran; ran: rg needle data.txt"
     "beside --pre=sh, a full path (\$PWD/--pre*) runs rg on it|ran; ran: rg needle $WORK/opt/pc/--pre=sh"
@@ -1142,6 +1144,249 @@ done
 err=$(cd "$WORK/opt/pdd" && PATH="$OPT_BIN:$PATH" run_pwsh_stderr_oneline "$WRAPPERS_PS1_STRIPPED" "\$env:_DEN_WRAPPER_LOG = '0'; cat '--' data.txt" < /dev/null)
 assert_eq "pwsh/the refusal of cat '--' data.txt" "cat: '--' would make bat read den's last --paging=never as a file name: bat did not run. Write a file whose name starts with - as ./-name instead, or run bat or catw by name." "$err"
 unset _sh _run _call _tool _names _i _c _d _w _got
+
+# =============================================================================
+# PowerShell: the words a wrapper hands its tool
+# =============================================================================
+# On Linux and macOS pwsh expands a wildcard (* ? [ ]) and a leading ~ in an
+# argument of a program unless the code that calls the program writes it in
+# quotes, and the wrappers handed the tool their arguments as @__a: every word
+# was expanded, so `grep 'foo*' x` beside foo1 and foo2 had rg search the files
+# foo2 and x for foo1. A word quoted at the prompt, or one from a variable,
+# now reaches the tool as it is; one typed without quotes is still expanded,
+# as for the tool typed by name. -c:v, which reaches $args as -c: and v and
+# which @__a handed on as v alone, goes as one word, and -e:$v with an array
+# in $v as -e: before each element (it went as the one word '-e:one two'), as
+# for the tool typed by name. The stand-ins log one line per call, each
+# argument in [ ].
+echo ""
+echo "================================================"
+echo "  Testing the words a pwsh wrapper hands its tool"
+echo "================================================"
+G6_BIN="$TESTTMP/g6-bin"
+G6_NATIVE_BIN="$TESTTMP/g6-native-bin"
+G6_LOG="$TESTTMP/g6.log"
+mkdir -p "$G6_BIN" "$G6_NATIVE_BIN" || abort_suite "cannot create $G6_BIN"
+# g6_stub <path> <name> - a stand-in that logs <name> and its arguments, after
+# it has read what was piped in.
+g6_stub() {
+    cat > "$1" <<EOF || return 1
+#!/bin/sh
+cat > /dev/null
+{ printf '%s' '$2'; for a in "\$@"; do printf ' [%s]' "\$a"; done; printf '\n'; } >> '$G6_LOG'
+EOF
+    chmod +x "$1"
+}
+for _t in bat fd rg lsd; do g6_stub "$G6_BIN/$_t" "$_t" || abort_suite "cannot write $G6_BIN/$_t"; done
+g6_stub "$G6_NATIVE_BIN/grep" grep || abort_suite "cannot write $G6_NATIVE_BIN/grep"
+rm -rf "$WORK/g6" && mkdir -p "$WORK/g6" && : > "$WORK/g6/foo1" && : > "$WORK/g6/foo2" && : > "$WORK/g6/x" ||
+    abort_suite "cannot make $WORK/g6"
+
+echo "[pwsh] a quoted wildcard reaches each wrapper's tool as it is; one typed bare is expanded"
+rm -f "$G6_LOG"
+PATH="$G6_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    Set-Location -LiteralPath '$WORK/g6'
+    grep 'foo*' x
+    grep \"foo?\" x
+    find 'foo[12]'
+    cat 'foo*'
+    ls 'foo?'
+    la 'foo*'
+    ll 'foo*'
+    lla 'foo*'
+    lt 'foo*'
+    llt 'foo*'
+    ripgrep 'foo*'
+    grepw 'foo*'
+    findw 'foo?'
+    catw 'foo[12]'
+    lsw 'foo*'
+    grep '~/foo' x
+    \$p = 'foo*'; grep \$p x
+    \$s = @('foo?', 'x'); grep @s
+    grep -c:v x
+    \$v = @('one', 'two'); grep -e:\$v x
+    \$v = @('a', \$null, ''); grep -e: \$v x
+    \$v = @(); \$n = \$null; grep -e:\$v -e:\$n x
+    'piped' | grep 'foo*'
+    grep needle foo*
+    grep needle foo?
+    ls ~
+" > /dev/null 2>&1 < /dev/null
+G6_WANT=(
+    "grep 'foo*' x|rg [foo*] [x]"
+    "grep \"foo?\" x|rg [foo?] [x]"
+    "find 'foo[12]'|fd [foo[12]]"
+    "cat 'foo*'|bat [--style=plain] [--paging=never] [foo*] [--paging=never]"
+    "ls 'foo?'|lsd [foo?]"
+    "la 'foo*'|lsd [-a] [foo*]"
+    "ll 'foo*'|lsd [-l] [foo*]"
+    "lla 'foo*'|lsd [-la] [foo*]"
+    "lt 'foo*'|lsd [--tree] [foo*]"
+    "llt 'foo*'|lsd [-l] [--tree] [foo*]"
+    "ripgrep 'foo*'|rg [foo*]"
+    "grepw 'foo*'|rg [foo*]"
+    "findw 'foo?'|fd [foo?]"
+    "catw 'foo[12]'|bat [--style=plain] [--paging=never] [foo[12]]"
+    "lsw 'foo*'|lsd [foo*]"
+    "grep '~/foo' x (a quoted ~)|rg [~/foo] [x]"
+    "grep \$p x, \$p = 'foo*'|rg [foo*] [x]"
+    "grep @s, \$s = @('foo?', 'x')|rg [foo?] [x]"
+    "grep -c:v x (one word, as typed)|rg [-c:v] [x]"
+    "grep -e:\$v x, \$v = @('one', 'two') (-e: before each)|rg [-e:one] [-e:two] [x]"
+    "grep -e: \$v x, \$v = @('a', \$null, '') (no word for \$null)|rg [-e:] [a] [-e:] [] [x]"
+    "grep -e:@() -e:\$null x (no word at all)|rg [x]"
+    "grep 'foo*' with input piped in|rg [foo*]"
+    "grep needle foo* (bare: expanded)|rg [needle] [foo1] [foo2]"
+    "grep needle foo? (bare: expanded)|rg [needle] [foo1] [foo2]"
+    "ls ~ (bare: the home folder)|lsd [$HOME]"
+)
+mapfile -t _got < <(cat "$G6_LOG" 2>/dev/null)
+assert_eq "pwsh/one tool call per wrapper call" "${#G6_WANT[@]}" "${#_got[@]}"
+for _i in "${!G6_WANT[@]}"; do
+    _w=${G6_WANT[$_i]}
+    assert_eq "pwsh/${_w%%|*}" "${_w#*|}" "${_got[$_i]-}"
+done
+
+echo "[pwsh] the native tier: a quoted wildcard reaches grep as it is; one typed bare is expanded"
+rm -f "$G6_LOG"
+PATH="$G6_NATIVE_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    Set-Location -LiteralPath '$WORK/g6'
+    grep 'foo*' x
+    grep needle foo*
+" > /dev/null 2>&1 < /dev/null
+actual=$(cat "$G6_LOG" 2>/dev/null)
+assert_eq "pwsh/native grep gets 'foo*' as it is, and foo* expanded" "grep [--color=auto] [foo*] [x]
+grep [--color=auto] [needle] [foo1] [foo2]" "$actual"
+rm -rf "$WORK/g6"
+
+# =============================================================================
+# PowerShell on Windows: find with input piped in is Windows' find.exe
+# =============================================================================
+# Typed at the prompt, find is den's wrapper, which runs fd, and fd reads no
+# input: `netstat -ano | find "8080"` printed nothing and succeeded. cmd's typed
+# find is find.exe (owner decision 13); pwsh's now hands a call with input piped
+# in to find.exe too, on Windows only, with the text to look for in the double
+# quotes find.exe needs (pwsh drops the ones typed). _OnWindows says true here,
+# and a stand-in find.exe under $env:SystemRoot/System32 logs its arguments
+# and what reached it. On pwsh's Linux, find.exe gets its arguments as they are
+# (pwsh's Standard passing); on Windows pwsh passes them in its Legacy way,
+# which keeps those quotes on the command line.
+echo ""
+echo "[pwsh, Windows] find with input piped in runs find.exe; without, fd"
+mkdir -p "$WORK/winroot/System32" || abort_suite "cannot create $WORK/winroot"
+cat > "$WORK/winroot/System32/find.exe" <<EOF || abort_suite "cannot write the find.exe stand-in"
+#!/bin/sh
+{ printf 'find.exe'; for a in "\$@"; do printf ' [%s]' "\$a"; done; printf '\n'; while IFS= read -r l; do printf 'in: %s\n' "\$l"; done; } >> '$G6_LOG'
+EOF
+chmod +x "$WORK/winroot/System32/find.exe"
+rm -f "$G6_LOG"
+PATH="$G6_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    'tcp 8080', 'udp 53' | find 8080
+    function global:_OnWindows { \$true }
+    \$env:SystemRoot = '$WORK/winroot'
+    'tcp 8080', 'udp 53' | find \"8080\"
+    'x' | find /i /c 'a\"b'
+    'y' | find '\"q\"'
+    find 8080
+    \$env:_DEN_WRAPPERS = '0'
+    'z 8080' | find 8080
+" > /dev/null 2>&1 < /dev/null
+actual=$(cat "$G6_LOG" 2>/dev/null)
+assert_eq "pwsh/find with input: fd on Linux, find.exe on Windows (wrappers on or off), fd without input" "fd [8080]
+find.exe [\"8080\"]
+in: tcp 8080
+in: udp 53
+find.exe [/i] [/c] [\"a\"\"b\"]
+in: x
+find.exe [\"q\"]
+in: y
+fd [8080]
+find.exe [\"8080\"]
+in: z 8080" "$actual"
+# Only find.exe's own switches (/v /c /n /i /off /offline /?, in any case)
+# stay bare: text to look for that starts with / goes in the double quotes
+# too. Every word that started with / was taken for a switch, so
+# `'GET /api' | find '/api'` handed find.exe no text to look for.
+rm -f "$G6_LOG"
+PATH="$G6_BIN:$PATH" run_pwsh "$WRAPPERS_PS1_STRIPPED" "
+    \$env:_DEN_WRAPPER_LOG = '0'
+    function global:_OnWindows { \$true }
+    \$env:SystemRoot = '$WORK/winroot'
+    'GET /api' | find '/api'
+    'GET /API' | find /i /api
+    'x 8080' | find /OFFLINE /N '/?' 8080
+" > /dev/null 2>&1 < /dev/null
+actual=$(cat "$G6_LOG" 2>/dev/null)
+assert_eq "pwsh/find /api and find /i /api: /api is the text to look for, in quotes" "find.exe [\"/api\"]
+in: GET /api
+find.exe [/i] [\"/api\"]
+in: GET /API
+find.exe [/OFFLINE] [/N] [/?] [\"8080\"]
+in: x 8080" "$actual"
+rm -rf "$WORK/winroot"
+
+# =============================================================================
+# PowerShell: the grep fallback searches a folder with -r
+# =============================================================================
+# With no rg, no microsoft/coreutils and no grep on PATH, grep falls back to
+# _grep_ps_fallback, which gave a folder operand to Select-String, and
+# Select-String skips a folder without a word: `grep -r findme dir` printed
+# nothing and succeeded. With -r it now searches the files under each folder
+# operand, and the file operands as they are; without -r a folder is an error,
+# as in grep, and the files are still searched.
+echo ""
+echo "[pwsh] the grep fallback: -r with a folder operand, and a folder without -r"
+rm -rf "$WORK/gr" && mkdir -p "$WORK/gr/grepdir/sub" "$WORK/gr/nobin" || abort_suite "cannot make $WORK/gr"
+echo 'findme' > "$WORK/gr/grepdir/a.txt"
+echo 'nope' > "$WORK/gr/grepdir/sub/b.txt"
+echo 'findme too' > "$WORK/gr/grepdir/sub/c.txt"
+echo 'findme here' > "$WORK/gr/top.txt"
+GR_SETUP="\$env:PATH = '$WORK/gr/nobin'; \$env:_DEN_WRAPPER_LOG = '0'; Set-Location -LiteralPath '$WORK/gr'"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
+    'tools: ' + @(Get-Command rg, grep, coreutils -CommandType Application -ErrorAction SilentlyContinue).Count
+    grep -r findme grepdir | Sort-Object
+    '--'
+    grep -rn findme top.txt grepdir/sub | Sort-Object
+" 2>&1 < /dev/null | tr -d '\r')
+assert_eq "pwsh/grep -r findme grepdir, and a file with a folder" "tools: 0
+$WORK/gr/grepdir/a.txt:findme
+$WORK/gr/grepdir/sub/c.txt:findme too
+--
+$WORK/gr/grepdir/sub/c.txt:1:findme too
+$WORK/gr/top.txt:1:findme here" "$actual"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
+    grep findme grepdir top.txt
+" 2>/dev/null < /dev/null | tr -d '\r')
+assert_eq "pwsh/grep findme grepdir top.txt searches top.txt" "$WORK/gr/top.txt:findme here" "$actual"
+err=$(run_pwsh_stderr "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
+    grep findme grepdir top.txt
+" < /dev/null)
+assert_contains "pwsh/grep findme grepdir top.txt: grepdir is an error" "grep: grepdir: Is a directory" "$err"
+# -r searches hidden files and folders, as grep -r does, with a folder operand
+# and without one; Get-ChildItem skipped them, so only v.txt was found.
+mkdir -p "$WORK/gr/hd/.hid" || abort_suite "cannot make $WORK/gr/hd"
+echo 'needle' > "$WORK/gr/hd/v.txt"
+echo 'needle' > "$WORK/gr/hd/.hidden.txt"
+echo 'needle' > "$WORK/gr/hd/.hid/x.txt"
+actual=$(run_pwsh "$WRAPPERS_PS1_STRIPPED" "$GR_SETUP
+    grep -r needle hd | Sort-Object
+    '--'
+    Set-Location -LiteralPath hd
+    grep -r needle | Sort-Object
+" 2>&1 < /dev/null | tr -d '\r')
+assert_eq "pwsh/grep -r needle hd, and grep -r needle in hd: hidden ones too" "$WORK/gr/hd/.hid/x.txt:needle
+$WORK/gr/hd/.hidden.txt:needle
+$WORK/gr/hd/v.txt:needle
+--
+$WORK/gr/hd/.hid/x.txt:needle
+$WORK/gr/hd/.hidden.txt:needle
+$WORK/gr/hd/v.txt:needle" "$actual"
+rm -rf "$WORK/gr"
+unset _t _i _w _got
 
 # =============================================================================
 # Wrapper notice of the real wrappers (stub modern tools)

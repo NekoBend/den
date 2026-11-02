@@ -33,8 +33,22 @@ function _grep_ps_fallback {
     if($fl.ContainsKey("v")){$ss.NotMatch=$true}
     # $fp becomes the files the operands stand for, so that $mf counts files: '*.txt'
     # matching two of them names each file in the output, as grep given both does.
-    if($fp.Count -gt 0){$fp=_ResolvePaths $fp;$r=Select-String @ss -LiteralPath $fp}
-    elseif($fl.ContainsKey("r")){$r=Get-ChildItem -Recurse -File|Select-String @ss}
+    # Select-String reads the files among them, and the files under a folder
+    # among them with -r, as grep -r does; without -r a folder is an error, as
+    # in grep. Select-String skipped a folder without a word, so
+    # `grep -r findme dir` printed nothing and succeeded.
+    # -r walks hidden files and folders too (.gitignore, .github/), as grep -r
+    # does: Get-ChildItem skips them without -Force.
+    if($fp.Count -gt 0){
+        $fp=_ResolvePaths $fp
+        $files=@(foreach($p in $fp){
+            if(-not (Test-Path -LiteralPath $p -PathType Container)){$p}
+            elseif($fl.ContainsKey("r")){Get-ChildItem -LiteralPath $p -Recurse -File -Force|ForEach-Object{$_.FullName}}
+            else{Write-Error "grep: ${p}: Is a directory"}
+        })
+        $r=if($files.Count -gt 0){Select-String @ss -LiteralPath $files}
+    }
+    elseif($fl.ContainsKey("r")){$r=Get-ChildItem -Recurse -File -Force|Select-String @ss}
     else{$r=$input|Select-String @ss}
     $mf=$fp.Count -gt 1 -or $fl.ContainsKey("r")
     if($fl.ContainsKey("l")){$r|ForEach-Object{$_.Path}|Sort-Object -Unique}

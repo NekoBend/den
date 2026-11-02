@@ -308,6 +308,42 @@ actual=$(run_pwsh "$HELPERS_PS1" "
 " | tr -d '\r')
 assert_not_contains "pwsh/code does not reach the shim when refusing" "STUB-CMD" "$actual"
 
+# On Linux and macOS pwsh expands a wildcard in a program's argument unless the
+# call writes it in quotes, and the git, docker, gitui and code shortcuts
+# handed theirs on as @Args: a quoted word was expanded too, so
+# `gcm 'wip*'` beside wip1 and wip2 committed with the message wip1 and the
+# path wip2. Now a quoted word reaches the program as it is, and one typed
+# without quotes is still expanded, as for the program typed by name.
+echo "[pwsh] git, docker, gitui and code hand a quoted wildcard on as it is; a bare one is expanded"
+FWD_BIN="$WORK/fwd-bin"
+mkdir -p "$FWD_BIN" "$WORK/fwd"
+for t in git docker gitui code; do
+    printf '#!/bin/sh\nprintf "%%s" "%s"; for a in "$@"; do printf " [%%s]" "$a"; done; printf "\\n"\n' "$t" > "$FWD_BIN/$t"
+    chmod +x "$FWD_BIN/$t"
+done
+: > "$WORK/fwd/wip1" && : > "$WORK/fwd/wip2"
+actual=$(run_pwsh "$HELPERS_PS1" "
+    \$env:_DEN_FORCE_INTERACTIVE = '1'
+    \$env:PATH = '$FWD_BIN' + [IO.Path]::PathSeparator + \$env:PATH
+    . '$P/aliases.ps1'
+    Set-Location -LiteralPath '$WORK/fwd'
+    gcm 'wip*'
+    ga 'wip[12]'
+    gds 'wip?'
+    dps 'wip*'
+    gu 'wip*'
+    code 'wip*'
+    ga wip*
+" 2>&1 | tr -d '\r')
+assert_eq "pwsh/git, docker, gitui and code get 'wip*' as it is, and wip* expanded" "git [commit] [-m] [wip*]
+git [add] [wip[12]]
+git [diff] [--staged] [wip?]
+docker [ps] [wip*]
+gitui [wip*]
+code [wip*]
+git [add] [wip1] [wip2]" "$actual"
+rm -rf "$WORK/fwd"
+
 echo "[pwsh] the pwsh runs above kept their caches in this suite's directory"
 assert_pwsh_data_private "pwsh/LocalApplicationData in the suite's directory"
 

@@ -42,9 +42,12 @@ FFMPEG_SH_TEST="$TESTTMP/ffmpeg_test.sh"
     cat "$FFMPEG_SH_SOURCE"
 } > "$FFMPEG_SH_TEST"
 
-# pwsh: prepend mock PATH + strip guard line
+# pwsh: prepend mock PATH + strip guard line. ffmpeg.ps1 reads its arguments
+# and runs ffmpeg through _helpers.ps1 (_DenArgs, _DenRun), which init.ps1
+# loads first.
 FFMPEG_PS1_TEST="$TESTTMP/ffmpeg_test.ps1"
 {
+    echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
     echo "\$env:PATH = '$WORK' + [IO.Path]::PathSeparator + \$env:PATH"
     grep -v 'Get-Command ffmpeg.*SilentlyContinue.*return' "$FFMPEG_PS1"
 } > "$FFMPEG_PS1_TEST"
@@ -237,12 +240,29 @@ actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 input.avi' | tr -d '\r')
 assert_contains "pwsh/tomp4 auto ext" "input.mp4" "$actual"
 assert_contains "pwsh/tomp4 codec" "-c:v libx264" "$actual"
 
-# NOTE: PowerShell splits "-c:v" into "-c:" + "v" through $args (known PS limitation).
-# Use non-colon flags to test the override path.
 echo "[pwsh] tomp4 override"
 actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 input.avi -crf 18' | tr -d '\r')
 assert_contains "pwsh/tomp4 override crf" "-crf 18" "$actual"
 assert_not_contains "pwsh/tomp4 no default" "-c:v libx264" "$actual"
+
+# PowerShell puts -c:v into $args as -c: and v, and @args then handed ffmpeg
+# v alone; _DenArgs gives it back as the one word -c:v, as bash and zsh pass it.
+echo "[pwsh] tomp4 and mclip take an override written -c:v"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'tomp4 input.avi -c:v libx265 -crf 18' | tr -d '\r')
+assert_contains "pwsh/tomp4 override codec" "-i input.avi -c:v libx265 -crf 18 input.mp4" "$actual"
+actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'mclip input.mp4 00:01:00 00:02:00 out.mp4 -c:v libx264' | tr -d '\r')
+assert_contains "pwsh/mclip override codec" "-ss 00:01:00 -to 00:02:00 -i input.mp4 -c:v libx264 out.mp4" "$actual"
+
+# On Linux and macOS pwsh expanded each file name as a wildcard, $In and $Out
+# from a variable as much as @extra: beside in1.avi, tomp4 'in[1].avi'
+# converted in1.avi, and with in1.mp4 there too, ffmpeg -y would overwrite it.
+echo "[pwsh] tomp4, minfo and thumbnail hand a file name on as it is"
+rm -rf "$WORK/br" && mkdir -p "$WORK/br" && : > "$WORK/br/in1.avi" && : > "$WORK/br/in1.mp4" && : > "$WORK/br/in1.jpg"
+actual=$(cd "$WORK/br" && run_pwsh "$FFMPEG_PS1_TEST" "tomp4 'in[1].avi'; minfo 'in[1].avi'; thumbnail 'in[1].avi' 00:00:02 -q:v 2" | tr -d '\r')
+assert_eq "pwsh/a name with [ ] reaches ffmpeg and ffprobe as it is" "FFMPEG -hide_banner -loglevel error -y -i in[1].avi -c:v libx264 -c:a aac in[1].mp4
+FFPROBE -hide_banner -i in[1].avi
+FFMPEG -hide_banner -loglevel error -y -ss 00:00:02 -i in[1].avi -frames:v 1 -q:v 2 in[1].jpg" "$actual"
+rm -rf "$WORK/br"
 
 echo "[pwsh] mclip auto output"
 actual=$(run_pwsh "$FFMPEG_PS1_TEST" 'mclip input.mp4 00:01:00 00:02:00' | tr -d '\r')
