@@ -160,9 +160,12 @@ For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`, so den's quick
 `compinit` runs. Without it, Ubuntu's `/etc/zsh/zshrc` would run a full one
 before `init.zsh` (which then runs none of its own), a few ms more for every
 shell. den's `compinit -C` reuses `~/.zcompdump` as it is while the dump is
-less than a day old; an older one gets the full `compinit`, which takes in
-completion functions added since (an apt package, a new tool). To have them at
-once, run `reload`, which deletes the dump. A new container starts without one.
+less than a day old and `compaudit` finds nothing wrong in `fpath`; otherwise
+the full `compinit -i` runs, which takes in completion functions added since
+(an apt package, a new tool) and leaves out those in directories others may
+write to ([zsh completion](../shell/README.md#zsh-completion) in
+`shell/README.md` has the rules). To have new functions at once, run `reload`,
+which deletes the dump. A new container starts without one.
 
 ## Keeping state across rebuilds
 
