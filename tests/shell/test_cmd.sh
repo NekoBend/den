@@ -21,7 +21,8 @@ fi
 # The stub: H.boot(opts) installs fake os/io/clink/rl/settings tables and runs
 # starship.lua. Files live in H.files (lower-cased path -> content), so a tool
 # is "on PATH" when its file is there; every spawn is recorded (os.execute in
-# H.execs, io.popen in H.popens) and io.popen answers with opts.popen(cmdline).
+# H.execs, io.popen in H.popens, and in H.ran both as cmd /c runs them, after
+# H.expand) and io.popen answers with opts.popen(cmdline).
 # opts.old drops the Clink APIs a version lacks: "1.6" no os.setalias, "1.1"
 # no os.createtmpfile either, "1.2" no clink.onfilterinput / onprovideline /
 # rl history. H.input(line) types a line: Clink adds it to its history, then
@@ -29,7 +30,7 @@ fi
 # the result is what cmd runs. H.provide() is the next onprovideline answer.
 CMD_STUB="$TESTTMP/cmd_stub.lua"
 cat > "$CMD_STUB" <<'LUA'
-local H = { env = {}, files = {}, dirs = {}, execs = {}, popens = {}, written = {},
+local H = { env = {}, files = {}, dirs = {}, execs = {}, popens = {}, ran = {}, written = {},
             aliases = {}, alias_names = {}, filters = {}, inputs = {}, provides = {},
             history = {}, cwd = "C:\\start" }
 -- The real ones, for a scenario that runs a tool for real (pwsh).
@@ -82,8 +83,16 @@ io.open = function(path, mode)
     if t == nil then return nil, path .. ": No such file or directory" end
     return reader(t)
 end
+-- What cmd makes of a line: each %NAME% of a set variable is replaced by its
+-- value, once (a value is never read again), and one that is not set stays as
+-- it is, as on cmd's command line.
+function H.expand(c)
+    return (c:gsub("%%([^%%]+)%%", function(n) return H.env[n] end))
+end
+
 io.popen = function(c)
     H.popens[#H.popens + 1] = c
+    H.ran[#H.ran + 1] = H.expand(c)
     local out = H.popen_out and H.popen_out(c) or ""
     if out == nil then return nil end
     return reader(out)
@@ -101,6 +110,7 @@ os.isdir = function(p) return H.dirs[key(abs(p))] == true end
 os.mkdir = function(p) H.dirs[key(p)] = true; return true end
 os.execute = function(c)
     H.execs[#H.execs + 1] = c
+    H.ran[#H.ran + 1] = H.expand(c)
     local mf = c:match('/macrofile="([^"]+)"')
     if mf then H.macrofile = H.files[key(mf)] end
     return true
@@ -414,13 +424,15 @@ zx()
 print("popens=" .. #H.popens .. " execs=" .. #H.execs .. " handlers=" .. #H.inputs)')
 assert_eq "cmd/zoxide: startup spawns nothing" 'popens=0 execs=0 handlers=2' "$out"
 
+# A directory reaches a line through a variable (see the % case below):
+# H.expand shows what cmd makes of the cd line, and H.ran what zoxide got.
 echo "[cmd] z / zd ask zoxide query for the keywords and cd there"
 out=$(run_lua zx_query "$ZX"'
 zx()
-print(H.input("z foo bar"))
-print(H.popens[1])
-print(H.input("zd \"my dir\" \"a&b\""))
-print(H.popens[2])
+print(H.expand(H.input("z foo bar")))
+print(H.ran[1])
+print(H.expand(H.input("zd \"my dir\" \"a&b\"")))
+print(H.ran[2])
 print(H.input("Z nomatch"))')
 assert_eq "cmd/zoxide: z and zd" 'cd /d "C:\proj\bar"
 ""C:\tools\zoxide.exe" query --exclude "C:\start" -- "foo" "bar""
@@ -431,7 +443,7 @@ verify other 2>nul' "$out"
 echo "[cmd] zi / zdi use zoxide's interactive picker"
 out=$(run_lua zx_interactive "$ZX"'
 zx()
-print(H.input("zi foo"))
+print(H.expand(H.input("zi foo")))
 print(H.popens[1])
 print(H.input("zdi"))
 print(H.popens[2])')
@@ -443,14 +455,14 @@ verify other 2>nul
 echo "[cmd] z alone goes home, z - back, z <dir> straight there, a drive root stays quoted"
 out=$(run_lua zx_forms "$ZX"'
 zx{ dirs = { "C:\\sub" }, cwd = "C:\\" }
-print(H.input("z"))
+print(H.expand(H.input("z")))
 print(H.input("z -") .. " " .. #H.popens)
 H.env._OLDPWD = "C:\\prev"
-print(H.input("z -"))
-print(H.input("z sub"))
+print(H.expand(H.input("z -")))
+print(H.expand(H.input("z sub")))
 print("popens=" .. #H.popens)
-print(H.input("z x"))
-print(H.popens[1])' 2>&1)
+print(H.expand(H.input("z x")))
+print(H.ran[1])' 2>&1)
 assert_eq "cmd/zoxide: the special forms" 'cd /d "C:\Users\me"
 zoxide: _OLDPWD is not set
 verify other 2>nul 0
@@ -474,13 +486,51 @@ echo "[cmd] each directory change is fed to zoxide add, once"
 out=$(run_lua zx_add "$ZX"'
 zx()
 H.prompt(); print("first prompt: " .. #H.execs)
-H.cwd = "C:\\a"; H.prompt(); print(H.execs[1])
+H.cwd = "C:\\a"; H.prompt(); print(H.ran[1])
 H.prompt(); print("same dir: " .. #H.execs)
-H.cwd = "C:\\"; H.prompt(); print(H.execs[2])')
+H.cwd = "C:\\"; H.prompt(); print(H.ran[2])')
 assert_eq "cmd/zoxide: zoxide add on change" 'first prompt: 0
 ""C:\tools\zoxide.exe" add -- "C:\a""
 same dir: 1
 ""C:\tools\zoxide.exe" add -- "C:\\""' "$out"
+
+# cmd expands a %NAME% of a set variable anywhere in a line, inside quotes
+# too: written into the line, C:\repos\%USERNAME%\project became
+# C:\repos\me\project, another folder, or (with %TEMP%, whose value holds a
+# drive) none. The directory goes through _DEN_Z (cd) or _DEN_ZARG (zoxide),
+# whose value cmd puts in once and never reads again.
+echo "[cmd] a % in a directory's name stays as it is, for z, z -, zoxide add and --exclude"
+out=$(run_lua zx_percent "$ZX"'
+zx{ env = { USERNAME = "me", TEMP = "C:\\T" } }
+H.popen_out = function(c)
+    return c:find(" query ", 1, true) and "C:\\repos\\%USERNAME%\\project\n" or ""
+end
+local line = H.input("z proj")
+print(line)
+print("_DEN_Z=" .. H.show(H.env._DEN_Z))
+print("cmd runs: " .. H.expand(line))
+H.env._OLDPWD = "C:\\w\\%TEMP%x"
+print("cmd runs: " .. H.expand(H.input("z -")))
+H.cwd = "C:\\repos\\%TEMP%\\project"; H.prompt()
+print("after the prompt: _DEN_Z=" .. H.show(H.env._DEN_Z) .. " _DEN_ZARG=" .. H.show(H.env._DEN_ZARG))
+print(H.ran[#H.ran])
+H.input("z other")
+print(H.ran[#H.ran])
+print("after the query: _DEN_ZARG=" .. H.show(H.env._DEN_ZARG))')
+assert_eq "cmd/zoxide: % in a directory name" 'cd /d "%_DEN_Z%"
+_DEN_Z=C:\repos\%USERNAME%\project
+cmd runs: cd /d "C:\repos\%USERNAME%\project"
+cmd runs: cd /d "C:\w\%TEMP%x"
+after the prompt: _DEN_Z=nil _DEN_ZARG=nil
+""C:\tools\zoxide.exe" add -- "C:\repos\%TEMP%\project""
+""C:\tools\zoxide.exe" query --exclude "C:\repos\%TEMP%\project" -- "other""
+after the query: _DEN_ZARG=nil' "$out"
+
+echo "[cmd] a cmd started from this one does not inherit z's variables"
+out=$(run_lua zx_inherit "$ZX"'
+zx{ env = { _DEN_Z = "C:\\old", _DEN_ZARG = "C:\\old" } }
+print(H.show(H.env._DEN_Z) .. " " .. H.show(H.env._DEN_ZARG))')
+assert_eq "cmd/zoxide: _DEN_Z and _DEN_ZARG start unset" 'nil nil' "$out"
 
 echo "[cmd] without zoxide nothing is added or rewritten"
 out=$(run_lua zx_none '

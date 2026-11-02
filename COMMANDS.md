@@ -95,7 +95,9 @@ is just `z ...` / `zi ...` (or `zd ...` / `zdi ...`, the same) becomes a `cd /d`
 the directory `zoxide query` picks. As with zoxide's own `z`, `z` alone goes to
 `%USERPROFILE%`, `z -` to the previous directory and `z <existing dir>` straight
 there. This needs zoxide on `PATH` when cmd starts and Clink 1.2.16 or newer, and
-works only on a line of its own (`z foo & dir` is left to cmd).
+works only on a line of its own (`z foo & dir` is left to cmd). The directory
+reaches that line, and zoxide, through a variable (`cd /d "%_DEN_Z%"`), so a
+`%NAME%` in a folder's name stays as it is instead of being expanded.
 
 `back` / `fwd` work like a browser's back and forward buttons over this shell
 session's directory history (kept in memory, never written to disk):

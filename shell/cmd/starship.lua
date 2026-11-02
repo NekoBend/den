@@ -364,6 +364,23 @@ local function quote_arg(s)
     return '"' .. (s:gsub("(\\+)$", "%1%1")) .. '"'
 end
 
+-- A directory goes into a command line as "%<name>%", its value in that
+-- environment variable: cmd puts a variable's value into the line once and
+-- never reads it again. Written into the line itself, a %TEMP% or %USERNAME%
+-- in a folder's name was expanded, inside the quotes too, so z went to
+-- another folder (or none), and zoxide add and --exclude got a name that was
+-- not the folder's. For a program's argument (arg), a trailing backslash is
+-- doubled as quote_arg doubles it; cd takes the value as it is.
+local function via_env(name, dir, arg)
+    os.setenv(name, arg and (dir:gsub("(\\+)$", "%1%1")) or dir)
+    return '"%' .. name .. '%"'
+end
+-- _DEN_Z holds the directory of the cd line a z line becomes, until the next
+-- prompt; _DEN_ZARG the one handed to zoxide, while it runs. A child cmd
+-- inherits them from its parent; this session starts without.
+os.setenv("_DEN_Z", nil)
+os.setenv("_DEN_ZARG", nil)
+
 -- ===== Directory history for back / fwd (and _OLDPWD) =====
 -- Browser-style history for this cmd session. It lives in two environment
 -- variables, where the back.cmd / fwd.cmd shims (run by this same cmd process)
@@ -417,6 +434,8 @@ end
 local _prev_dir = os.getcwd()
 local dirhist_filter = clink.promptfilter(99)
 function dirhist_filter:filter(prompt)
+    -- The cd line a z line became has run.
+    os.setenv("_DEN_Z", nil)
     local cur = os.getcwd()
     local back = dirhist_get("_DEN_DIRBACK")
     local fwd = dirhist_get("_DEN_DIRFWD")
@@ -462,7 +481,8 @@ function dirhist_filter:filter(prompt)
         os.setenv("_OLDPWD", _prev_dir)
         _prev_dir = cur
         if zoxide_exe then
-            os.execute(cmd_line(zoxide_exe, "add -- " .. quote_arg(cur)))
+            os.execute(cmd_line(zoxide_exe, "add -- " .. via_env("_DEN_ZARG", cur, true)))
+            os.setenv("_DEN_ZARG", nil)
         end
     end
     return nil  -- don't modify prompt
@@ -507,11 +527,12 @@ local function zoxide_query(opts, words)
         args[#args + 1] = quote_arg(w)
     end
     local h = io.popen(cmd_line(zoxide_exe, table.concat(args, " ")))
-    if not h then
-        return nil
+    local dir = ""
+    if h then
+        dir = (h:read("*l") or ""):gsub("%s+$", "")
+        h:close()
     end
-    local dir = (h:read("*l") or ""):gsub("%s+$", "")
-    h:close()
+    os.setenv("_DEN_ZARG", nil)
     return dir ~= "" and dir or nil
 end
 
@@ -539,12 +560,12 @@ local function zoxide_filter(line)
     elseif #words == 1 and os.isdir(words[1]) then
         dir = words[1]
     else
-        dir = zoxide_query({ "--exclude", quote_arg(os.getcwd()) }, words)
+        dir = zoxide_query({ "--exclude", via_env("_DEN_ZARG", os.getcwd(), true) }, words)
     end
     if not dir then
         return "verify other 2>nul"
     end
-    return 'cd /d "' .. dir .. '"'
+    return "cd /d " .. via_env("_DEN_Z", dir)
 end
 
 if zoxide_exe and clink.onfilterinput then
