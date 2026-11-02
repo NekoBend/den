@@ -159,6 +159,26 @@ for _sh in bash zsh; do
 done
 unset _sh _run _fn _call
 
+echo "[bash/zsh] _count_entries and ptar: other names find or mktemp read as options"
+# `(` and `!` are find expression words too: a folder named `(` counted 0 and
+# one named `!` counted the current folder. mktemp read a template under a
+# folder named -folder as its options, so ptar could not archive there.
+for _sh in bash zsh; do
+    _run="run_$_sh"
+    setup_fixtures
+    mkdir -p "$WORK/cwd/(" "$WORK/cwd/!" "$WORK/cwd/-folder" "$WORK/cwd/src"
+    echo x > "$WORK/cwd/(/a"
+    echo y > "$WORK/cwd/!/b"
+    echo z > "$WORK/cwd/src/f"
+    actual=$("$_run" "$PARALLEL_SH" "cd '$WORK/cwd' && _count_entries '('")
+    assert_eq "$_sh/_count_entries counts a folder named (" "2" "$actual"
+    actual=$("$_run" "$PARALLEL_SH" "cd '$WORK/cwd' && _count_entries '!'")
+    assert_eq "$_sh/_count_entries counts a folder named !" "2" "$actual"
+    "$_run" "$PARALLEL_SH" "cd '$WORK/cwd' && ptar -folder/out.tar src" >/dev/null 2>&1
+    assert_eq "$_sh/ptar archives into a folder named -folder" "src/ src/f " "$(tar tf "$WORK/cwd/-folder/out.tar" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
+done
+unset _sh _run
+
 echo "[zsh] pcp single file"
 setup_fixtures
 run_zsh "$PARALLEL_SH" "pcp '$WORK/src/file1.txt' '$WORK/dest/'"
