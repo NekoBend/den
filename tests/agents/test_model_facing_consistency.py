@@ -101,7 +101,11 @@ def test_no_model_facing_markdown_names_a_removed_den_command() -> None:
 # Flags other tools removed in the version the references target. Biome 2.0.0
 # removed `--apply` and `--apply-unsafe` ("Use `--write` and `--write --unsafe`
 # instead", Biome's CHANGELOG), and typescript.md targets Biome v2.3+, where
-# `biome check --apply` stops with an unknown-option error.
+# `biome check --apply` stops with an unknown-option error. The check is strict
+# on purpose: model-facing text does not show the removed command at all, not
+# even in a warning, because weaker models copy the commands they read. A note
+# about the change names the old flag in a code span of its own, apart from the
+# biome command, as the last passing row below does.
 REMOVED_FLAGS = re.compile(r"\bbiome\b[^`\n]*?(?<![\w-])--apply(?:-unsafe)?(?![\w-])")
 
 
@@ -111,6 +115,7 @@ REMOVED_FLAGS = re.compile(r"\bbiome\b[^`\n]*?(?<![\w-])--apply(?:-unsafe)?(?![\
         "**Rule:** Default formatter and linter is `biome check --apply`",
         "**Run order:** `biome check --apply` then `tsc --noEmit`.",
         "npx @biomejs/biome lint --apply-unsafe src/",
+        "Never run biome check --apply; use --write instead.",
     ],
 )
 def test_removed_flag_check_flags_a_removed_biome_flag(row: str) -> None:
@@ -123,6 +128,7 @@ def test_removed_flag_check_flags_a_removed_biome_flag(row: str) -> None:
         "**Run order:** `biome check --write` then `tsc --noEmit`.",
         "`biome check --write --unsafe`",
         "`git apply --check` then `biome check --write`",
+        "`biome check --write` (Biome 2.0 removed `--apply`)",
     ],
 )
 def test_removed_flag_check_passes_a_current_biome_call(row: str) -> None:
