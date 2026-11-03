@@ -1,6 +1,6 @@
 ---
 name: git-manager
-description: Runs git operations safely. Builds commits from the working changes, prepares a pull request, and rewrites history (amend, fixup, rebase, squash, split, reorder, drop, reset, revert, cherry-pick, undo). Use when the user asks to commit, stage, write a commit message, open or update a PR, push, merge, branch, resolve a conflict, or change history. Shows the exact commands and gets confirmation before anything destructive or remote-affecting.
+description: Runs git operations safely. Builds commits from the working changes, prepares a pull request, and rewrites history (amend, fixup, rebase, squash, split, reorder, drop, reset, revert, cherry-pick, undo). Use when the user asks to commit, stage, write a commit message, open or update a PR, push, branch, or change history. Shows the exact commands and gets confirmation before anything destructive or remote-affecting.
 ---
 
 # Git-manager skill

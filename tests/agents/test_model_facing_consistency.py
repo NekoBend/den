@@ -20,6 +20,9 @@ command that was removed (MIGRATIONS.md, sections 9 and 10), or a `.den` file
 only such a command wrote: nothing else here checks that a den command the
 den-aware skills name still exists. The removed-flag test does the same for
 another tool's flags that the version a reference targets no longer accepts.
+
+The git-manager description test keeps that skill's description from naming
+an operation that no mode, trigger or step of the skill covers.
 """
 
 from __future__ import annotations
@@ -311,3 +314,37 @@ def test_copied_blocks_stay_identical() -> None:
         assert len(set(blocks.values())) == 1, (
             f"copies of {start!r} differ across {files}; edit them together"
         )
+
+
+# Requests git-manager's description may name only when a mode, a mode
+# trigger or a step heading of the skill covers them. The description once
+# said "merge" and "resolve a conflict" while nothing in SKILL.md or its
+# references did, so a tool that picks skills by description sent those
+# requests to a skill with no mode to run them.
+_GIT_MANAGER_NEEDS_STEPS = {"merge": r"\bmerg", "conflict": r"\bconflict"}
+
+
+def test_git_manager_description_names_only_requests_it_has_steps_for() -> None:
+    skill = AGENTS / "src" / "skills" / "git-manager" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    desc = re.search(r"^description: (.+)$", text, re.MULTILINE)
+    assert desc, "git-manager: no description line"
+    modes = re.search(r"^## Detect the mode\n(.*?)^## ", text, re.MULTILINE | re.DOTALL)
+    assert modes, "git-manager: no '## Detect the mode' section"
+    refs = sorted((AGENTS / "src" / "shared" / "reference").glob("git-manager-*.md"))
+    assert refs, "git-manager: no shared/reference/git-manager-*.md"
+    covered = [modes.group(1)]
+    for f in (skill, *refs):
+        body = f.read_text(encoding="utf-8")
+        covered += re.findall(r"^#+ .*$", body, re.MULTILINE)
+    steps = "\n".join(covered)
+    unbacked = [
+        word
+        for word, pattern in _GIT_MANAGER_NEEDS_STEPS.items()
+        if re.search(pattern, desc.group(1), re.IGNORECASE)
+        and not re.search(pattern, steps, re.IGNORECASE)
+    ]
+    assert not unbacked, (
+        f"git-manager's description names {unbacked}, which no mode, trigger"
+        " or step covers; add the steps or drop the words"
+    )
