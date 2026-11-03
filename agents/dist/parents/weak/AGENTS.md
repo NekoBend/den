@@ -546,7 +546,7 @@ pick "general".
 | compressor         | Summarize text for a reader, or compress a prompt/context to fewer tokens keeping its behavior.   | summarize, condense, TLDR, shorten, compress this prompt, reduce tokens                     |
 | prompt-engineering | Write a new prompt from a goal, or improve an existing prompt's clarity and reliability.          | write a prompt, design a system prompt, improve this prompt, why does this prompt fail      |
 | documenter         | Write a document as the deliverable: API reference from code; a README, how-to, tutorial, spec, design doc, proposal, report, runbook, meeting minutes, decision record, slide outline, or concept explanation, also as a Confluence page; revise a draft; or translate a document between Japanese and English. | document this, write API docs, write a README, write a how-to, write a spec, requirements document, write a design doc, write a proposal, write a report, meeting minutes, decision record, slide outline, Confluence page, explain a concept as a document, revise this draft, proofread this draft, translate this, 英訳, 和訳, check this translation |
-| git-manager        | Run git safely: make commits, prepare a PR, or change history (amend, rebase, revert, undo).      | commit, write a commit message, open a PR, push, merge, conflict, rebase, amend, undo       |
+| git-manager        | Run git safely: make commits, prepare a PR, or change history (amend, rebase, revert, undo).      | commit, write a commit message, open a PR, push, rebase, amend, undo                        |
 
 Disambiguation hints. Apply when two skills overlap:
 

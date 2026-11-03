@@ -18,7 +18,11 @@ prompt identical across the nine skills and worded like the parents' DECIDE.
 The removed-command test keeps the skills and parents from naming a den
 command that was removed (MIGRATIONS.md, sections 9 and 10), or a `.den` file
 only such a command wrote: nothing else here checks that a den command the
-den-aware skills name still exists.
+den-aware skills name still exists. The removed-flag test does the same for
+another tool's flags that the version a reference targets no longer accepts.
+
+The git-manager description test keeps that skill's description from naming
+an operation that no mode, trigger or step of the skill covers.
 """
 
 from __future__ import annotations
@@ -91,6 +95,60 @@ def test_no_model_facing_markdown_names_a_removed_den_command() -> None:
             for m in REMOVED_DEN.finditer(text):
                 line = text[: m.start()].count("\n") + 1
                 offenders.append(f"{f.relative_to(AGENTS)}:{line} {m.group(0)}")
+    assert not offenders, offenders
+
+
+# Flags other tools removed in the version the references target. Biome 2.0.0
+# removed `--apply` and `--apply-unsafe` ("Use `--write` and `--write --unsafe`
+# instead", Biome's CHANGELOG), and typescript.md targets Biome v2.3+, where
+# `biome check --apply` stops with an unknown-option error. The check is strict
+# on purpose: model-facing text does not show the removed command at all, not
+# even in a warning, because weaker models copy the commands they read. A note
+# about the change names the old flag in a code span of its own, apart from the
+# biome command, as the last passing row below does.
+REMOVED_FLAGS = re.compile(r"\bbiome\b[^`\n]*?(?<![\w-])--apply(?:-unsafe)?(?![\w-])")
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "**Rule:** Default formatter and linter is `biome check --apply`",
+        "**Run order:** `biome check --apply` then `tsc --noEmit`.",
+        "npx @biomejs/biome lint --apply-unsafe src/",
+        "Never run biome check --apply; use --write instead.",
+    ],
+)
+def test_removed_flag_check_flags_a_removed_biome_flag(row: str) -> None:
+    assert REMOVED_FLAGS.search(row)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "**Run order:** `biome check --write` then `tsc --noEmit`.",
+        "`biome check --write --unsafe`",
+        "`git apply --check` then `biome check --write`",
+        "`biome check --write` (Biome 2.0 removed `--apply`)",
+    ],
+)
+def test_removed_flag_check_passes_a_current_biome_call(row: str) -> None:
+    assert not REMOVED_FLAGS.search(row)
+
+
+def test_no_model_facing_file_names_a_removed_tool_flag() -> None:
+    offenders: list[str] = []
+    cheatsheets = AGENTS.parent / "cheatsheets"
+    for directory in (AGENTS / "src", AGENTS / "dist", cheatsheets):
+        files = sorted(
+            f for f in directory.rglob("*") if f.suffix in {".md", ".py", ".sh"}
+        )
+        assert files, f"no files found under {directory}"
+        for f in files:
+            text = f.read_text(encoding="utf-8")
+            for m in REMOVED_FLAGS.finditer(text):
+                line = text[: m.start()].count("\n") + 1
+                where = f.relative_to(AGENTS.parent)
+                offenders.append(f"{where}:{line} {m.group(0)}")
     assert not offenders, offenders
 
 
@@ -262,3 +320,45 @@ def test_copied_blocks_stay_identical() -> None:
         assert len(set(blocks.values())) == 1, (
             f"copies of {start!r} differ across {files}; edit them together"
         )
+
+
+# Requests git-manager's description may name only when a mode, a mode
+# trigger or a step heading of the skill covers them. The description once
+# said "merge" and "resolve a conflict" while nothing in SKILL.md or its
+# references did, so a tool that picks skills by description sent those
+# requests to a skill with no mode to run them. git-manager's row in the weak
+# router's skill catalog (dist/parents/weak/AGENTS.md) is held to the same rule:
+# it listed "merge, conflict" among the trigger words.
+_GIT_MANAGER_NEEDS_STEPS = {"merge": r"\bmerg", "conflict": r"\bconflict"}
+
+
+def test_git_manager_listings_name_only_requests_it_has_steps_for() -> None:
+    skill = AGENTS / "src" / "skills" / "git-manager" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    desc = re.search(r"^description: (.+)$", text, re.MULTILINE)
+    assert desc, "git-manager: no description line"
+    router = AGENTS / "dist" / "parents" / "weak" / "AGENTS.md"
+    catalog = router.read_text(encoding="utf-8")
+    row = re.search(r"^\| git-manager +\|.*$", catalog, re.MULTILINE)
+    assert row, "weak/AGENTS.md: no git-manager row in the skill catalog"
+    claims = {"description": desc.group(1), "weak router row": row.group(0)}
+    modes = re.search(r"^## Detect the mode\n(.*?)^## ", text, re.MULTILINE | re.DOTALL)
+    assert modes, "git-manager: no '## Detect the mode' section"
+    refs = sorted((AGENTS / "src" / "shared" / "reference").glob("git-manager-*.md"))
+    assert refs, "git-manager: no shared/reference/git-manager-*.md"
+    covered = [modes.group(1)]
+    for f in (skill, *refs):
+        body = f.read_text(encoding="utf-8")
+        covered += re.findall(r"^#+ .*$", body, re.MULTILINE)
+    steps = "\n".join(covered)
+    unbacked = [
+        f"{where}: {word}"
+        for where, claim in claims.items()
+        for word, pattern in _GIT_MANAGER_NEEDS_STEPS.items()
+        if re.search(pattern, claim, re.IGNORECASE)
+        and not re.search(pattern, steps, re.IGNORECASE)
+    ]
+    assert not unbacked, (
+        f"git-manager is offered for {unbacked}, which no mode, trigger or step"
+        " covers; add the steps or drop the words"
+    )

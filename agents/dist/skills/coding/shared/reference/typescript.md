@@ -68,7 +68,7 @@ export class CustomerOrderRepository {
 
 ## 3. Tooling: Biome (or ESLint + Prettier) + tsc
 
-**Rule:** Default formatter and linter is `biome check --apply`
+**Rule:** Default formatter and linter is `biome check --write`
 (single Rust binary).
 Default type checker is `tsc --noEmit`;
 the TypeScript compiler is the canonical type checker
@@ -84,7 +84,7 @@ or type-aware lint rules that Biome has not yet shipped.
 with production adoptions at Coinbase, Discord, Slack, Vercel, and Astro.
 One binary replaces ESLint + Prettier + import-sort
 with consistent formatting and 491 lint rules.
-**Run order:** `biome check --apply` then `tsc --noEmit`.
+**Run order:** `biome check --write` then `tsc --noEmit`.
 `tsc` checks the project, not one file:
 run it as `tsc --noEmit -p <dir>` with the directory of the nearest `tsconfig.json`,
 because a file argument makes tsc ignore `tsconfig.json` (before TypeScript 6.0)
