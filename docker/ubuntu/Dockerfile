@@ -181,10 +181,11 @@ INSTALL_UTILITIES_DEPS
 # hashes.sha256, installed for every user. With pwsh present, den's shell
 # setup in the workspace stage also wires den into dev's pwsh profile.
 # pwsh sends telemetry unless POWERSHELL_TELEMETRY_OPTOUT is set when it
-# starts. The image ENV sets it for the build steps from here on and for every
-# docker exec; the entrypoint and the zsh and bash startup files below set it
-# again.
-ENV POWERSHELL_TELEMETRY_OPTOUT=1
+# starts, and POWERSHELL_UPDATECHECK=Off stops its update check at startup
+# (a rebuild updates this image's pwsh). The image ENV sets both for the build
+# steps from here on and for every docker exec; the entrypoint and the zsh and
+# bash startup files below set them again.
+ENV POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
 # Build setting: latest, or an exact PowerShell release without the v prefix.
 ARG PWSH_VERSION=latest
 RUN <<'INSTALL_PWSH'
@@ -310,8 +311,9 @@ EOF
 # The image PATH holds system directories only; the command runs as the user
 # with the user's tool directories first (the same list as /etc/zsh/zshenv).
 runtime_path="$user_home/.nvm/current/bin:$user_home/.local/bin:$user_home/.cargo/bin:$inherited_path"
-# pwsh sends no telemetry, as in the image ENV, whatever docker run -e passed.
-export POWERSHELL_TELEMETRY_OPTOUT=1
+# pwsh sends no telemetry and skips its update check, as in the image ENV,
+# whatever docker run -e passed.
+export POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
 
 target_uid=${HOST_UID:-$old_uid}
 target_gid=${HOST_GID:-$old_gid}
@@ -374,9 +376,10 @@ cat >> /etc/zsh/zshenv <<'CONTAINER_ZSH_ENV'
 # and PATH (system directories only). The container user gets its own HOME
 # back, non-root shells add the user's tool directories (the entrypoint's
 # list), and a root shell given the user's HOME (-e HOME=...) gets /root.
-# Every zsh, root's included, keeps pwsh's telemetry off as the image ENV
-# does, also one started with an emptied environment (env -i, su -).
-export POWERSHELL_TELEMETRY_OPTOUT=1
+# Every zsh, root's included, keeps pwsh's telemetry and update check off as
+# the image ENV does, also one started with an emptied environment (env -i,
+# su -).
+export POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
 if [[ "$EUID" == 0 ]]; then
     if [[ "$HOME" == "/home/$(</etc/container-user)" ]]; then
         export HOME=/root USER=root LOGNAME=root
@@ -404,7 +407,7 @@ cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
 # The /etc/zsh/zshenv block for interactive bash. It runs before ~/.bashrc,
 # so each bash reads its own user's ~/.bashrc. bash set HISTFILE from the HOME
 # it started with before it read this file.
-export POWERSHELL_TELEMETRY_OPTOUT=1
+export POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
 _container_user=$(< /etc/container-user)
 if [ "$EUID" -eq 0 ]; then
     if [ "$HOME" = "/home/$_container_user" ]; then

@@ -40,6 +40,8 @@ SYSTEM_DIRS = (
 SYSTEM_PATH = ":".join(SYSTEM_DIRS)
 # The tool directories dev gets, in PATH order.
 USER_TOOL_DIRS = (".nvm/current/bin", ".local/bin", ".cargo/bin")
+# What pwsh reads when it starts: no telemetry, and no check for a newer release.
+PWSH_ENV = {"POWERSHELL_TELEMETRY_OPTOUT": "1", "POWERSHELL_UPDATECHECK": "Off"}
 
 
 def _text() -> str:
@@ -420,8 +422,9 @@ def _source_block(
     # with -f, and in this image that file runs the very block under test.
     probe = (
         f"export HOME={shlex.quote(home)} PATH={SYSTEM_PATH}; "
-        "unset skip_global_compinit HISTFILE USER LOGNAME "
-        "POWERSHELL_TELEMETRY_OPTOUT; "
+        "unset skip_global_compinit HISTFILE USER LOGNAME"
+        + "".join(f" {name}" for name in extra)
+        + "; "
         + (f"HISTFILE={shlex.quote(histfile)}; " if histfile else "")
         + f". {shlex.quote(str(block))}; . {shlex.quote(str(block))}; "
         'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}" '
@@ -631,9 +634,12 @@ def test_bashrc_keeps_a_history_file_it_did_not_derive_from_the_user_home(tmp_pa
     ("shell", "target"), [("zsh", "/etc/zsh/zshenv"), ("bash", "/etc/bash.bashrc")]
 )
 @pytest.mark.parametrize("euid", [0, 1000])
-def test_shells_turn_powershell_telemetry_off(tmp_path, shell, target, euid):
-    # pwsh started from a shell sends no telemetry, also when the shell started
-    # without the image's environment (env -i, su -).
+def test_shells_turn_powershell_telemetry_and_update_check_off(
+    tmp_path, shell, target, euid
+):
+    # pwsh started from a shell sends no telemetry and checks for no update,
+    # also when the shell started without the image's environment (env -i,
+    # su -).
     out = _source_block(
         tmp_path,
         shell,
@@ -641,9 +647,9 @@ def test_shells_turn_powershell_telemetry_off(tmp_path, shell, target, euid):
         euid=euid,
         home=str(tmp_path / "home"),
         user="dev",
-        extra=("POWERSHELL_TELEMETRY_OPTOUT",),
+        extra=tuple(PWSH_ENV),
     )
-    assert out[5] == "1"
+    assert out[5:] == list(PWSH_ENV.values())
 
 
 def _profile_script() -> str:
@@ -711,8 +717,8 @@ def _run_entrypoint(
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
 
     The account is dev, 1000:1000, home /home/dev. setpriv prints its
-    arguments, the HOME it got and POWERSHELL_TELEMETRY_OPTOUT; the commands
-    that change accounts or files only log theirs.
+    arguments, the HOME it got and the PWSH_ENV variables; the commands that
+    change accounts or files only log theirs.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -738,8 +744,8 @@ def _run_entrypoint(
         stub(name, f'echo "{name} $*" >> {shlex.quote(str(log))}')
     stub(
         "setpriv",
-        'printf "%s\\n" "$@" "HOME=$HOME" '
-        '"POWERSHELL_TELEMETRY_OPTOUT=${POWERSHELL_TELEMETRY_OPTOUT-unset}"',
+        'printf "%s\\n" "$@" "HOME=$HOME"'
+        + "".join(f' "{name}=${{{name}-unset}}"' for name in PWSH_ENV),
     )
     user_file = tmp_path / "container-user"
     user_file.write_text("dev\n", encoding="utf-8")
@@ -794,14 +800,18 @@ def test_entrypoint_gives_the_command_the_user_home(tmp_path, uid):
 
 @_needs("sh", "env")
 @pytest.mark.parametrize("uid", [0, 1000])
-def test_entrypoint_starts_the_command_without_powershell_telemetry(tmp_path, uid):
-    # pwsh sends telemetry unless POWERSHELL_TELEMETRY_OPTOUT is set when it
-    # starts; the command gets it even when docker run passed another value.
+def test_entrypoint_turns_powershell_telemetry_and_update_check_off(tmp_path, uid):
+    # pwsh reads both settings when it starts; the command gets them even when
+    # docker run passed other values.
     result, _ = _run_entrypoint(
-        tmp_path, uid=uid, env={"POWERSHELL_TELEMETRY_OPTOUT": "0"}
+        tmp_path,
+        uid=uid,
+        env={"POWERSHELL_TELEMETRY_OPTOUT": "0", "POWERSHELL_UPDATECHECK": "LTS"},
     )
     assert result.returncode == 0, result.stderr
-    assert "POWERSHELL_TELEMETRY_OPTOUT=1" in result.stdout.splitlines()
+    lines = result.stdout.splitlines()
+    for name, value in PWSH_ENV.items():
+        assert f"{name}={value}" in lines
 
 
 @_needs("sh", "env")
@@ -1218,11 +1228,13 @@ def test_powershell_that_its_hashes_do_not_vouch_for_is_not_installed(tmp_path, 
     assert "apt-get" not in calls
 
 
-def test_powershell_telemetry_is_off_in_the_image_env():
+def test_powershell_telemetry_and_update_check_are_off_in_the_image_env():
     # Every docker exec, root's included, starts with the image's ENV, and
     # the build's own pwsh runs (its --version check, den's shell setup)
     # start with the ENV of their step.
-    assert _stages()[-1][1].get("POWERSHELL_TELEMETRY_OPTOUT") == "1"
+    image_env = _stages()[-1][1]
+    for name, value in PWSH_ENV.items():
+        assert image_env.get(name) == value, name
     steps = _run_scripts()
     pwsh = next(
         i
@@ -1230,7 +1242,8 @@ def test_powershell_telemetry_is_off_in_the_image_env():
         if script.startswith("<<'INSTALL_PWSH'")
     )
     for stage, _, env, _, _ in steps[pwsh:]:
-        assert env.get("POWERSHELL_TELEMETRY_OPTOUT") == "1", stage
+        for name, value in PWSH_ENV.items():
+            assert env.get(name) == value, (stage, name)
 
 
 # gh

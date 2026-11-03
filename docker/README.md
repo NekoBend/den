@@ -26,10 +26,11 @@ image's `HOME` is `/root`: see
 [PATH and HOME in `docker exec`](#path-and-home-in-docker-exec).
 
 PowerShell (`pwsh`) is installed for every user, and den's shell setup wires
-den into `dev`'s pwsh profile. Its telemetry is off: the image's environment,
-the entrypoint and the zsh and bash startup files set
-`POWERSHELL_TELEMETRY_OPTOUT=1`. opencode is left out on purpose; install it
-in the container when you need it.
+den into `dev`'s pwsh profile. Its telemetry and its update check at startup
+are off: the image's environment, the entrypoint and the zsh and bash startup
+files set `POWERSHELL_TELEMETRY_OPTOUT=1` and `POWERSHELL_UPDATECHECK=Off`.
+A newer pwsh comes from a rebuild with `--no-cache` (see [Build](#build)).
+opencode is left out on purpose; install it in the container when you need it.
 
 fzf and PowerShell come from their GitHub releases and rclone from its
 release folder; each download is checked against that release's checksums
