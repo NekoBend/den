@@ -11,7 +11,6 @@ FAKE_EUID so the root branches run without root. The script tests are skipped
 on native Windows and where the shell they need is missing.
 """
 
-import base64
 import hashlib
 import io
 import re
@@ -809,11 +808,6 @@ _AGENT_INSTALLERS = {
     "https://dev.meta.ai/install.sh",
     "https://antigravity.google/cli/install.sh",
 }
-# The rsync release keys INSTALL_RSYNC pins, by primary key fingerprint.
-_RSYNC_RELEASE_KEYS = (
-    "9FEF112DCE19A0DC7E882CB81BB24997A8535F6F",
-    "C0E1054505704F757D925AB26A64E8AA2EFBCF5D",
-)
 _INSTALL_TOOLS = ("bash", "awk", "install", "mktemp", "sha256sum", "tar")
 
 
@@ -875,10 +869,42 @@ def test_every_download_is_https_only_with_the_same_curl_options():
     assert not wrong, "\n".join(wrong)
 
 
+def _apt_packages(script: str) -> list[str]:
+    """What each apt-get install in a shell script installs, options left out."""
+    packages = []
+    for line in re.sub(r"\\\n\s*", " ", script).splitlines():
+        if line.lstrip().startswith("#") or "apt-get install" not in line:
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+        for i, word in enumerate(words[:-1]):
+            if word != "apt-get" or words[i + 1] != "install":
+                continue
+            for arg in words[i + 2 :]:
+                if _is_operator(arg):
+                    break
+                if not arg.startswith("-"):
+                    packages.append(arg)
+    return packages
+
+
 def test_fzf_is_not_an_apt_package():
     # Ubuntu's fzf trails fzf's releases; the tools stage installs fzf's own.
     for stage, _, _, _, script in _run_scripts():
-        assert not re.search(r"\bapt-get install\b[^\n]*\sfzf\b", script), stage
+        assert "fzf" not in _apt_packages(script), stage
+
+
+def test_rsync_is_ubuntus_package():
+    # Ubuntu's rsync gets rsync's security fixes as package updates, which the
+    # workspace stage's apt-get upgrade brings in. The image built the release
+    # RSYNC_VERSION named from source instead, with a check of its own.
+    scripts = _run_scripts()
+    assert any("rsync" in _apt_packages(script) for *_, script in scripts)
+    for stage, _, _, args, script in scripts:
+        assert "RSYNC_VERSION" not in args, stage
+        for curl in _curl_commands(script):
+            assert not any("rsync" in arg for arg in curl), f"{stage}: {curl}"
 
 
 def _tar_gz(members: dict[str, bytes]) -> bytes:
@@ -944,25 +970,11 @@ fi
 [ -f "$file" ] || { echo "curl: (22) HTTP 404: $url" >&2; exit 22; }
 if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi
 """
-# The build commands an install step runs after its download check: they only
-# log their arguments. make install puts a fake rsync where rsync's would go,
-# and gpgv keeps the keyring it was given and reports $FAKE_GPGV_STATUS.
+# The commands an install step runs after its download check: they only log
+# their arguments, and pwsh prints a version.
 _BUILD_STUBS = {
     "apt-get": "",
     "pwsh": "echo 'PowerShell 7.9.1'",
-    "make": """\
-if [ "$1" = install ]; then
-    printf '#!/bin/sh\\necho rsync\\n' > "$HOME/.local/bin/rsync"
-    chmod 0755 "$HOME/.local/bin/rsync"
-fi""",
-    "gpgv": """\
-while [ "$#" -gt 0 ]; do
-    [ "$1" != --keyring ] || cp "$2" "$GPGV_KEYRING"
-    shift
-done
-printf '%s\\n' "$FAKE_GPGV_STATUS"
-exit "$FAKE_GPGV_EXIT"
-""",
 }
 
 
@@ -1025,9 +1037,6 @@ def _run_install(
         "TARGETARCH": arch,
         "FAKE_WEB": str(root),
         "CALLS_LOG": str(log),
-        "GPGV_KEYRING": str(tmp_path / "keyring.gpg"),
-        "FAKE_GPGV_STATUS": "",
-        "FAKE_GPGV_EXIT": "2",
         **(env or {}),
     }
     result = subprocess.run(
@@ -1227,95 +1236,6 @@ def test_rclone_that_its_sha256sums_do_not_vouch_for_is_not_installed(tmp_path, 
     result, _, home = _run_install(tmp_path, "INSTALL_RCLONE", web)
     assert result.returncode != 0
     assert not (home / ".local" / "bin" / "rclone").exists()
-
-
-# rsync
-
-
-def _armored_key(fingerprint: str) -> bytes:
-    """Stand-in key bytes, ASCII-armored as keys.openpgp.org serves keys."""
-    body = base64.encodebytes(f"key {fingerprint}\n".encode() * 4).decode()
-    return (
-        "-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
-        f"Comment: {fingerprint}\n"
-        "\n"
-        f"{body}"
-        "=AbCd\n"
-        "-----END PGP PUBLIC KEY BLOCK-----\n"
-    ).encode()
-
-
-def _rsync_web(version: str) -> dict[str, bytes]:
-    src = "https://download.samba.org/pub/rsync/src"
-    configure = b'#!/bin/sh\necho "configure $*" >> "$CALLS_LOG"\n'
-    web = {
-        f"https://keys.openpgp.org/vks/v1/by-fingerprint/{fingerprint}": _armored_key(
-            fingerprint
-        )
-        for fingerprint in _RSYNC_RELEASE_KEYS
-    }
-    web[f"{src}/rsync-{version}.tar.gz"] = _tar_gz(
-        {f"rsync-{version}/configure": configure}
-    )
-    web[f"{src}/rsync-{version}.tar.gz.asc"] = b"signature"
-    return web
-
-
-def _validsig(primary: str) -> str:
-    """gpgv's status lines for a good signature by a subkey of ``primary``."""
-    return (
-        "[GNUPG:] NEWSIG\n"
-        "[GNUPG:] GOODSIG 0123456789ABCDEF rsync maintainer\n"
-        "[GNUPG:] VALIDSIG 8EDF88F4731A1E8B45D67FBE6909546B2C52EC2D 2026-09-21"
-        f" 1789963226 0 4 0 22 10 00 {primary}"
-    )
-
-
-@_needs(*_INSTALL_TOOLS, "sed", "base64", "nproc")
-@pytest.mark.parametrize("primary", _RSYNC_RELEASE_KEYS)
-def test_rsync_signed_by_a_release_key_is_built(tmp_path, primary):
-    _, step_env, _ = _install_step("INSTALL_RSYNC")
-    version = step_env["RSYNC_VERSION"]
-    result, calls, home = _run_install(
-        tmp_path,
-        "INSTALL_RSYNC",
-        _rsync_web(version),
-        env={"FAKE_GPGV_STATUS": _validsig(primary), "FAKE_GPGV_EXIT": "0"},
-    )
-    assert result.returncode == 0, result.stderr
-    assert "make install" in calls
-    assert (home / ".local" / "bin" / "rsync").exists()
-    # gpgv read the pinned keys, unarmored, and nothing else.
-    expected = b"".join(
-        f"key {fingerprint}\n".encode() * 4 for fingerprint in _RSYNC_RELEASE_KEYS
-    )
-    assert (tmp_path / "keyring.gpg").read_bytes() == expected
-
-
-@_needs(*_INSTALL_TOOLS, "sed", "base64", "nproc")
-@pytest.mark.parametrize(
-    ("status", "exit_code"),
-    [
-        ("[GNUPG:] NEWSIG\n[GNUPG:] BADSIG 0123456789ABCDEF rsync maintainer", "1"),
-        (_validsig("0000000000000000000000000000000000000000"), "0"),
-        ("", "0"),
-    ],
-    ids=["bad-signature", "other-key", "no-signature"],
-)
-def test_rsync_without_a_release_key_signature_is_not_built(
-    tmp_path, status, exit_code
-):
-    # Before the check, the image built whatever tarball the download gave.
-    _, step_env, _ = _install_step("INSTALL_RSYNC")
-    result, calls, home = _run_install(
-        tmp_path,
-        "INSTALL_RSYNC",
-        _rsync_web(step_env["RSYNC_VERSION"]),
-        env={"FAKE_GPGV_STATUS": status, "FAKE_GPGV_EXIT": exit_code},
-    )
-    assert result.returncode != 0
-    assert "configure" not in calls
-    assert not (home / ".local" / "bin" / "rsync").exists()
 
 
 # apt

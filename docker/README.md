@@ -14,10 +14,10 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 
 | Stage | Contents |
 | --- | --- |
-| `system` | apt base (build-essential, git, curl, gpgv, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
+| `system` | apt base (build-essential, git, curl, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
 | `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, fzf, nvm + Node |
-| `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; PowerShell (`pwsh`); rsync built from source; rclone |
+| `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
 | `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
 User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
@@ -31,9 +31,9 @@ the container when you need it.
 
 fzf and PowerShell come from their GitHub releases and rclone from its
 release folder; each download is checked against that release's checksums
-file before it is installed. rsync publishes no checksums, so its tarball must
-carry a signature by one of the rsync release keys that the Dockerfile pins by
-fingerprint, and a release signed by any other key fails the build.
+file before it is installed. rsync is Ubuntu's package, so its security
+fixes come as Ubuntu package updates, which a refresh build brings in (see
+[Build](#build)).
 
 ## Build
 
@@ -89,7 +89,6 @@ Override any of these with `--build-arg NAME=value`.
 | `NODE_MAJOR` | `22` | Node major version; nvm installs it and makes it the default. |
 | `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. |
 | `PWSH_VERSION` | `latest` | `latest`, or an exact PowerShell release without the `v` prefix. |
-| `RSYNC_VERSION` | `3.5.1` | Exact rsync release, built from source into `~/.local`. Its tarball must be signed by a pinned rsync release key. |
 | `RCLONE_VERSION` | `current` | `current`, or an exact rclone release including the `v` prefix. |
 | `TZ` | `Asia/Tokyo` | IANA time zone name. The container also exports it as `TZ`. |
 

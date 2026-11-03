@@ -17,11 +17,10 @@ RUN printf '%s\n' 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries
 
 # 1. OS packages and user. Compilers remain available for development.
 # fzf is not taken from apt: Ubuntu's package trails fzf's releases, so the
-# tools stage installs fzf's own release. gpgv checks the rsync tarball's
-# signature in the utilities stage.
+# tools stage installs fzf's own release.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl git gpgv less libssl-dev \
+        build-essential ca-certificates curl git less libssl-dev \
         openssh-client pkg-config procps python3 tmux unzip util-linux wget xz-utils zip zsh \
     && rm -rf /var/lib/apt/lists/*
 
@@ -168,13 +167,13 @@ gh_package=gh
 if [[ "$GH_VERSION" != latest ]]; then
     gh_package="gh=$GH_VERSION"
 fi
-apt-get install -y --no-install-recommends "$gh_package" \
-    libacl1-dev libattr1-dev libidn2-dev liblz4-dev libpopt-dev \
-    libxxhash-dev libzstd-dev zlib1g-dev
-# Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq)
-# plus the archive and media tools den's shell functions wrap.
+apt-get install -y --no-install-recommends "$gh_package"
+# Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq),
+# the archive and media tools den's shell functions wrap, and rsync. rsync is
+# Ubuntu's package: its security fixes arrive as package updates, which the
+# workspace stage's apt-get upgrade brings in.
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    bats ffmpeg jq lua5.4 p7zip-full parallel pbzip2 pigz shellcheck unrar-free zstd
+    bats ffmpeg jq lua5.4 p7zip-full parallel pbzip2 pigz rsync shellcheck unrar-free zstd
 rm -rf /var/lib/apt/lists/*
 INSTALL_UTILITIES_DEPS
 
@@ -213,51 +212,6 @@ ENV HOME=/home/${USERNAME}
 # The user's tool directories again, as before the root step: the workspace
 # stage runs uv and den by name.
 ENV PATH="${NVM_DIR}/current/bin:${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# Build setting: exact official rsync release.
-ARG RSYNC_VERSION=3.5.1
-RUN <<'INSTALL_RSYNC'
-build_dir=$(mktemp -d)
-trap 'rm -rf "$build_dir"' EXIT
-rsync_src=https://download.samba.org/pub/rsync/src
-# rsync publishes no checksum file, only a signature (.asc) per tarball, so
-# the tarball is checked against the rsync release keys pinned here by their
-# primary key fingerprints: Andrew Tridgell's, who signs the releases from
-# 3.4.0 (rsync.samba.org/download.html), and Zen Dodd's, who has had release
-# authority since 3.5.1 (NEWS) and signed it. A release signed by any other
-# key fails the build until that key is checked and added here. The keys
-# come from keys.openpgp.org, but only the fingerprint check below decides
-# whether a signature counts.
-release_keys=(
-    9FEF112DCE19A0DC7E882CB81BB24997A8535F6F
-    C0E1054505704F757D925AB26A64E8AA2EFBCF5D
-)
-for fingerprint in "${release_keys[@]}"; do
-    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-        "https://keys.openpgp.org/vks/v1/by-fingerprint/$fingerprint" -o "$build_dir/key.asc"
-    # gpgv reads binary keys only: drop the armor's header lines (up to the
-    # first empty line) and its checksum line, and decode the rest.
-    sed -e '1,/^$/d' -e '/^=/,$d' "$build_dir/key.asc" | base64 -d >> "$build_dir/release-keys.gpg"
-done
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    "$rsync_src/rsync-${RSYNC_VERSION}.tar.gz" \
-    -o "$build_dir/rsync.tar.gz"
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    "$rsync_src/rsync-${RSYNC_VERSION}.tar.gz.asc" \
-    -o "$build_dir/rsync.tar.gz.asc"
-gpgv --status-fd 1 --keyring "$build_dir/release-keys.gpg" \
-    "$build_dir/rsync.tar.gz.asc" "$build_dir/rsync.tar.gz" > "$build_dir/gpgv.status"
-# The last field of VALIDSIG is the primary key fingerprint of the signing key.
-signer=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $NF }' "$build_dir/gpgv.status")
-[[ " ${release_keys[*]} " == *" $signer "* ]] \
-    || { echo "rsync-${RSYNC_VERSION}.tar.gz has no signature by a pinned rsync release key" >&2; exit 1; }
-tar -xzf "$build_dir/rsync.tar.gz" -C "$build_dir"
-cd "$build_dir/rsync-${RSYNC_VERSION}"
-./configure --prefix="$HOME/.local"
-make -j "$(nproc)"
-make install
-"$HOME/.local/bin/rsync" --version
-INSTALL_RSYNC
-
 # Build setting: current, or an exact rclone release including the v prefix.
 ARG RCLONE_VERSION=current
 RUN <<'INSTALL_RCLONE'
