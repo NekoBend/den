@@ -2506,6 +2506,42 @@ assert_eq "zsh/builtin cd, pushd, mkcd recorded" "  3  ~/start
   1  ~/b
   *  ~/c" "$out"
 
+# init.zsh turns on HIST_IGNORE_SPACE, so a line typed with a leading space
+# stays out of the history, as init.bash's ignorespace keeps it out of bash's;
+# it used to set only HISTFILE, HISTSIZE, SAVEHIST and HISTORY_IGNORE, and zsh
+# saved such a line. zs_run starts an interactive zsh on the fixture's
+# ~/.zshrc (den's line, then <after>) with the global rc files off, as in
+# test_proxy.sh, feeds it the lines from stdin, and prints the history file
+# zsh writes as it exits. zsh drops a space-led line once the next line runs,
+# and does not write one that is still the last line at exit. zoxide and
+# starship are left off PATH, so nothing is cached.
+echo "[zsh] init.zsh: a line typed with a leading space stays out of the history"
+ZS="$WORK/zspace"
+zs_path=$(path_without zoxide starship)
+# zs_run <after> <line>... - <after> goes after den's line in ~/.zshrc
+zs_run() {
+    local after=$1
+    shift
+    rm -rf "$ZS"
+    mkdir -p "$ZS/home/.config/shell"
+    cp "$DOTFILES"/shell/posix/*.sh "$DOTFILES/shell/zsh/init.zsh" "$ZS/home/.config/shell/"
+    printf '%s\n' 'setopt no_global_rcs' > "$ZS/home/.zshenv"
+    printf '%s\n' '. ~/.config/shell/init.zsh' "$after" > "$ZS/home/.zshrc"
+    printf '%s\n' "$@" | (cd "$ZS/home" && env -i HOME="$ZS/home" ZDOTDIR="$ZS/home" PATH="$zs_path" TERM=dumb \
+        XDG_CACHE_HOME="$ZS/home/.cache" XDG_CONFIG_HOME="$ZS/home/.config" zsh -i >/dev/null 2>&1)
+    cat "$ZS/home/.zsh_history" 2>&1
+}
+assert_eq "zsh/init.zsh: HIST_IGNORE_SPACE is on" "on" \
+    "$(zs_run : '[[ -o histignorespace ]] && echo on >> ~/opt || echo off >> ~/opt' >/dev/null; cat "$ZS/home/opt")"
+assert_eq "zsh/init.zsh: a line typed with a leading space stays out of the history file, in the middle or last" \
+    "echo one
+echo two" "$(zs_run : 'echo one' ' echo spaced' 'echo two' ' echo spaced-last')"
+assert_eq "zsh/init.zsh: an unsetopt HIST_IGNORE_SPACE after den's line has such lines saved" \
+    "echo one
+ echo spaced
+echo two" "$(zs_run 'unsetopt HIST_IGNORE_SPACE' 'echo one' ' echo spaced' 'echo two')"
+rm -rf "$ZS"
+
 # reload saves this session's history before it restarts zsh. It used `fc -W`,
 # which rewrites $HISTFILE from this session's own list: a line another session
 # saved after this one started is not in that list, so it was erased. An

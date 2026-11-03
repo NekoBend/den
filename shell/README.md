@@ -566,7 +566,13 @@ of zoxide and starship. zsh and PowerShell mirror this.
   `HISTIGNORE` it adds the patterns that keep `again` / `sagain` lines out of
   the history, after yours, each once however often it loads. init.zsh sets
   `HISTFILE`, `HISTSIZE` / `SAVEHIST` (8192) and `HISTORY_IGNORE` (the
-  `again` / `sagain` pattern) as it loads, replacing values set before it.
+  `again` / `sagain` pattern) as it loads, replacing values set before it,
+  and turns on `HIST_IGNORE_SPACE`, so a line typed with a leading space
+  stays out of the history there too. zsh keeps such a line until the next
+  one runs, so it can be recalled and edited until then, and then drops it;
+  it does not write it at exit either. To drop it at once, type a space and
+  press Enter. To have such lines saved, `unsetopt HIST_IGNORE_SPACE` after
+  den's line in `~/.zshrc`.
 - `~/.cache/shell/` holds the zoxide/starship init caches. Each one's first
   line is a key, the binary's path and the arguments it was made with; a cache
   is made again when that line differs (the tool moved: starship's full init
