@@ -18,7 +18,8 @@ prompt identical across the nine skills and worded like the parents' DECIDE.
 The removed-command test keeps the skills and parents from naming a den
 command that was removed (MIGRATIONS.md, sections 9 and 10), or a `.den` file
 only such a command wrote: nothing else here checks that a den command the
-den-aware skills name still exists.
+den-aware skills name still exists. The removed-flag test does the same for
+another tool's flags that the version a reference targets no longer accepts.
 """
 
 from __future__ import annotations
@@ -91,6 +92,54 @@ def test_no_model_facing_markdown_names_a_removed_den_command() -> None:
             for m in REMOVED_DEN.finditer(text):
                 line = text[: m.start()].count("\n") + 1
                 offenders.append(f"{f.relative_to(AGENTS)}:{line} {m.group(0)}")
+    assert not offenders, offenders
+
+
+# Flags other tools removed in the version the references target. Biome 2.0.0
+# removed `--apply` and `--apply-unsafe` ("Use `--write` and `--write --unsafe`
+# instead", Biome's CHANGELOG), and typescript.md targets Biome v2.3+, where
+# `biome check --apply` stops with an unknown-option error.
+REMOVED_FLAGS = re.compile(r"\bbiome\b[^`\n]*?(?<![\w-])--apply(?:-unsafe)?(?![\w-])")
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "**Rule:** Default formatter and linter is `biome check --apply`",
+        "**Run order:** `biome check --apply` then `tsc --noEmit`.",
+        "npx @biomejs/biome lint --apply-unsafe src/",
+    ],
+)
+def test_removed_flag_check_flags_a_removed_biome_flag(row: str) -> None:
+    assert REMOVED_FLAGS.search(row)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "**Run order:** `biome check --write` then `tsc --noEmit`.",
+        "`biome check --write --unsafe`",
+        "`git apply --check` then `biome check --write`",
+    ],
+)
+def test_removed_flag_check_passes_a_current_biome_call(row: str) -> None:
+    assert not REMOVED_FLAGS.search(row)
+
+
+def test_no_model_facing_file_names_a_removed_tool_flag() -> None:
+    offenders: list[str] = []
+    cheatsheets = AGENTS.parent / "cheatsheets"
+    for directory in (AGENTS / "src", AGENTS / "dist", cheatsheets):
+        files = sorted(
+            f for f in directory.rglob("*") if f.suffix in {".md", ".py", ".sh"}
+        )
+        assert files, f"no files found under {directory}"
+        for f in files:
+            text = f.read_text(encoding="utf-8")
+            for m in REMOVED_FLAGS.finditer(text):
+                line = text[: m.start()].count("\n") + 1
+                where = f.relative_to(AGENTS.parent)
+                offenders.append(f"{where}:{line} {m.group(0)}")
     assert not offenders, offenders
 
 
