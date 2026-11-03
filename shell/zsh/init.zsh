@@ -99,6 +99,11 @@ HISTFILE=~/.zsh_history
 HISTSIZE=8192
 SAVEHIST=8192
 HISTORY_IGNORE="(again|again *|sagain|sagain *)"
+# A line typed with a leading space stays out of the history, as init.bash's
+# ignorespace keeps it out of bash's. zsh drops it once the next line runs
+# (until then it can be recalled), and does not write it at exit. To have
+# such lines saved, unsetopt HIST_IGNORE_SPACE after den's line in ~/.zshrc.
+setopt HIST_IGNORE_SPACE
 
 # ===== Helpers =====
 . "$HOME/.config/shell/_helpers.sh"
