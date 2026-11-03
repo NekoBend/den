@@ -971,9 +971,11 @@ fi
 if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi
 """
 # The commands an install step runs after its download check: they only log
-# their arguments, and pwsh prints a version.
+# their arguments, pwsh prints a version, and dpkg the target architecture.
 _BUILD_STUBS = {
     "apt-get": "",
+    "apt-mark": "",
+    "dpkg": 'echo "$TARGETARCH"',
     "pwsh": "echo 'PowerShell 7.9.1'",
 }
 
@@ -986,12 +988,14 @@ def _run_install(
     redirects: dict[str, str] | None = None,
     arch: str = "amd64",
     env: dict[str, str] | None = None,
+    paths: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str, Path]:
     """Run the RUN <<'marker' step against a fake web of ``web`` (URL -> body).
 
     It runs with the step's build args and ENV, as the Dockerfile's SHELL
     (bash -euo pipefail -c) does, but with HOME and TMPDIR in tmp_path and the
-    stubs first on PATH; the apt lists it deletes are a directory in tmp_path.
+    stubs first on PATH; the apt lists it deletes are a directory in tmp_path,
+    and ``paths`` replaces other paths in the step (old -> new).
     Returns the result, the call log and HOME.
     """
     bash = _tool("bash")
@@ -1000,6 +1004,7 @@ def _run_install(
     apt_lists.mkdir()
     if "/var/lib/apt/lists" in body:
         body = _patched(body, {"rm -rf /var/lib/apt/lists/*": f"rm -rf {apt_lists}/*"})
+    body = _patched(body, paths or {})
     assert "/var/" not in body and "/etc/" not in body, (
         "the step writes outside tmp_path"
     )
@@ -1171,6 +1176,51 @@ def test_powershell_that_its_hashes_do_not_vouch_for_is_not_installed(tmp_path, 
     )
     assert result.returncode != 0
     assert "apt-get" not in calls
+
+
+# gh
+
+_GH_KEYRING = "https://cli.github.com/packages/githubcli-archive-keyring.gpg"
+
+
+@_needs("bash", "install", "sed")
+@pytest.mark.parametrize(
+    ("gh_version", "package", "held"),
+    [("latest", "gh", False), ("2.99.0", "gh=2.99.0", True)],
+    ids=["latest-upgrades", "exact-is-held"],
+)
+def test_gh_at_an_exact_version_is_held_against_the_upgrade(
+    tmp_path, gh_version, package, held
+):
+    # The workspace stage's apt-get upgrade moves every package that is not
+    # held to the newest version in its repository, and GitHub's repository
+    # stays enabled: gh at an exact GH_VERSION came out of the image at the
+    # newest version. latest is left to the upgrade.
+    sysconf = tmp_path / "sysconf" / "apt"
+    (sysconf / "sources.list.d").mkdir(parents=True)
+    (sysconf / "sources.list.d" / "ubuntu.sources").write_text(
+        "URIs: http://archive.ubuntu.com/ubuntu/\n", encoding="utf-8"
+    )
+    result, calls, _ = _run_install(
+        tmp_path,
+        "INSTALL_UTILITIES_DEPS",
+        {_GH_KEYRING: b"keyring"},
+        env={"GH_VERSION": gh_version},
+        paths={"/etc/apt/": f"{sysconf}/"},
+    )
+    assert result.returncode == 0, result.stderr
+    apt = [line for line in calls.splitlines() if line.startswith("apt-")]
+    gh = next(
+        i
+        for i, line in enumerate(apt)
+        if line.startswith("apt-get install") and package in line.split()
+    )
+    holds = [line for line in apt if line.startswith("apt-mark")]
+    if held:
+        assert holds == ["apt-mark hold gh"], calls
+        assert apt.index("apt-mark hold gh") > gh, calls
+    else:
+        assert holds == [], calls
 
 
 # rclone

@@ -87,7 +87,7 @@ Override any of these with `--build-arg NAME=value`.
 | `FZF_VERSION` | `latest` | `latest`, or an exact fzf release without the `v` prefix. |
 | `NVM_VERSION` | `v0.40.7` | Exact nvm release, including the `v` prefix. |
 | `NODE_MAJOR` | `22` | Node major version; nvm installs it and makes it the default. |
-| `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. |
+| `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. An exact version is held (`apt-mark hold gh`), so `apt-get upgrade` keeps it, in the build and in the container. |
 | `PWSH_VERSION` | `latest` | `latest`, or an exact PowerShell release without the `v` prefix. |
 | `RCLONE_VERSION` | `current` | `current`, or an exact rclone release including the `v` prefix. |
 | `TZ` | `Asia/Tokyo` | IANA time zone name. The container also exports it as `TZ`. |

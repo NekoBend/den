@@ -168,6 +168,12 @@ if [[ "$GH_VERSION" != latest ]]; then
     gh_package="gh=$GH_VERSION"
 fi
 apt-get install -y --no-install-recommends "$gh_package"
+# The workspace stage's apt-get upgrade moves every package that is not held
+# to the newest version its repository has, and GitHub's stays enabled, so
+# an exact GH_VERSION is held.
+if [[ "$GH_VERSION" != latest ]]; then
+    apt-mark hold gh
+fi
 # Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq),
 # the archive and media tools den's shell functions wrap, and rsync. rsync is
 # Ubuntu's package: its security fixes arrive as package updates, which the
