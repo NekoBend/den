@@ -326,15 +326,22 @@ def test_copied_blocks_stay_identical() -> None:
 # trigger or a step heading of the skill covers them. The description once
 # said "merge" and "resolve a conflict" while nothing in SKILL.md or its
 # references did, so a tool that picks skills by description sent those
-# requests to a skill with no mode to run them.
+# requests to a skill with no mode to run them. git-manager's row in the weak
+# router's skill catalog (dist/parents/weak/AGENTS.md) is held to the same rule:
+# it listed "merge, conflict" among the trigger words.
 _GIT_MANAGER_NEEDS_STEPS = {"merge": r"\bmerg", "conflict": r"\bconflict"}
 
 
-def test_git_manager_description_names_only_requests_it_has_steps_for() -> None:
+def test_git_manager_listings_name_only_requests_it_has_steps_for() -> None:
     skill = AGENTS / "src" / "skills" / "git-manager" / "SKILL.md"
     text = skill.read_text(encoding="utf-8")
     desc = re.search(r"^description: (.+)$", text, re.MULTILINE)
     assert desc, "git-manager: no description line"
+    router = AGENTS / "dist" / "parents" / "weak" / "AGENTS.md"
+    catalog = router.read_text(encoding="utf-8")
+    row = re.search(r"^\| git-manager +\|.*$", catalog, re.MULTILINE)
+    assert row, "weak/AGENTS.md: no git-manager row in the skill catalog"
+    claims = {"description": desc.group(1), "weak router row": row.group(0)}
     modes = re.search(r"^## Detect the mode\n(.*?)^## ", text, re.MULTILINE | re.DOTALL)
     assert modes, "git-manager: no '## Detect the mode' section"
     refs = sorted((AGENTS / "src" / "shared" / "reference").glob("git-manager-*.md"))
@@ -345,12 +352,13 @@ def test_git_manager_description_names_only_requests_it_has_steps_for() -> None:
         covered += re.findall(r"^#+ .*$", body, re.MULTILINE)
     steps = "\n".join(covered)
     unbacked = [
-        word
+        f"{where}: {word}"
+        for where, claim in claims.items()
         for word, pattern in _GIT_MANAGER_NEEDS_STEPS.items()
-        if re.search(pattern, desc.group(1), re.IGNORECASE)
+        if re.search(pattern, claim, re.IGNORECASE)
         and not re.search(pattern, steps, re.IGNORECASE)
     ]
     assert not unbacked, (
-        f"git-manager's description names {unbacked}, which no mode, trigger"
-        " or step covers; add the steps or drop the words"
+        f"git-manager is offered for {unbacked}, which no mode, trigger or step"
+        " covers; add the steps or drop the words"
     )
