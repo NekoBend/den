@@ -10,9 +10,11 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # 1. OS packages and user. Compilers remain available for development.
+# fzf is not taken from apt: Ubuntu's package trails fzf's releases, so the
+# tools stage installs fzf's own release.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl fzf git less libssl-dev \
+        build-essential ca-certificates curl git less libssl-dev \
         openssh-client pkg-config procps python3 tmux unzip util-linux wget xz-utils zip zsh \
     && rm -rf /var/lib/apt/lists/*
 
@@ -61,7 +63,7 @@ FROM system AS rust-tools
 ARG TARGETARCH
 # Build setting: 1 selects the deprecated curl backend as a TLS workaround.
 ARG RUSTUP_USE_CURL=0
-RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup.sh && \
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://sh.rustup.rs -o /tmp/rustup.sh && \
     sh /tmp/rustup.sh -y --no-modify-path --profile minimal --component rustfmt,clippy && \
     rm /tmp/rustup.sh
 
@@ -85,19 +87,45 @@ RUN --mount=type=cache,id=cargo-registry-${TARGETARCH}-${USER_UID}-${USER_GID},t
 # 3. User-installed language tools.
 FROM rust-tools AS tools
 # Download each official installer completely before executing it as the user.
-RUN curl -fsSL https://starship.rs/install.sh -o /tmp/starship.sh && \
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://starship.rs/install.sh -o /tmp/starship.sh && \
     sh /tmp/starship.sh --yes --bin-dir "$HOME/.local/bin" && rm /tmp/starship.sh
-RUN curl -fsSL https://astral.sh/uv/install.sh -o /tmp/uv.sh && \
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/uv/install.sh -o /tmp/uv.sh && \
     sh /tmp/uv.sh && rm /tmp/uv.sh && \
-    curl -fsSL https://astral.sh/ty/install.sh -o /tmp/ty.sh && \
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/ty/install.sh -o /tmp/ty.sh && \
     sh /tmp/ty.sh && rm /tmp/ty.sh && \
-    curl -fsSL https://astral.sh/ruff/install.sh -o /tmp/ruff.sh && \
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/ruff/install.sh -o /tmp/ruff.sh && \
     sh /tmp/ruff.sh && rm /tmp/ruff.sh
+
+# fzf from its GitHub release, checked against the release's checksums file.
+# Build setting: latest, or an exact fzf release without the v prefix.
+ARG FZF_VERSION=latest
+RUN <<'INSTALL_FZF'
+version=$FZF_VERSION
+if [[ "$version" == latest ]]; then
+    # GitHub redirects releases/latest to the newest release's tag.
+    latest_url=$(curl --proto '=https' --tlsv1.2 -fsSLI --retry 3 -o /dev/null -w '%{url_effective}' \
+        https://github.com/junegunn/fzf/releases/latest)
+    version=${latest_url##*/v}
+fi
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected fzf version: '$version'" >&2; exit 1; }
+release=https://github.com/junegunn/fzf/releases/download/v${version}
+archive=fzf-${version}-linux_${TARGETARCH}.tar.gz
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/$archive" -o "$work_dir/$archive"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/fzf_${version}_checksums.txt" -o "$work_dir/checksums.txt"
+# One "<sha256>  <file>" line per release file; check the archive's own line.
+# A missing line fails too: sha256sum -c rejects an empty list.
+(cd "$work_dir" && awk -v name="$archive" '$2 == name' checksums.txt | sha256sum -c -)
+tar -xzf "$work_dir/$archive" -C "$work_dir" fzf
+install -m 0755 "$work_dir/fzf" "$HOME/.local/bin/fzf"
+"$HOME/.local/bin/fzf" --version
+INSTALL_FZF
 
 ENV NVM_DIR="${HOME}/.nvm"
 # Build setting: exact nvm release, including the v prefix.
 ARG NVM_VERSION=v0.40.7
-RUN curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o /tmp/nvm.sh && \
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o /tmp/nvm.sh && \
     bash /tmp/nvm.sh && rm /tmp/nvm.sh
 # Build setting: project-selected version series, not an exact patch version.
 ARG NODE_MAJOR=22
@@ -133,51 +161,88 @@ gh_package=gh
 if [[ "$GH_VERSION" != latest ]]; then
     gh_package="gh=$GH_VERSION"
 fi
-apt-get install -y --no-install-recommends "$gh_package" \
-    libacl1-dev libattr1-dev libidn2-dev liblz4-dev libpopt-dev \
-    libxxhash-dev libzstd-dev zlib1g-dev
-# Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq)
-# plus the archive and media tools den's shell functions wrap.
+apt-get install -y --no-install-recommends "$gh_package"
+# The workspace stage's apt-get upgrade moves every package that is not held
+# to the newest version its repository has, and GitHub's stays enabled, so
+# an exact GH_VERSION is held.
+if [[ "$GH_VERSION" != latest ]]; then
+    apt-mark hold gh
+fi
+# Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq),
+# the archive and media tools den's shell functions wrap, and rsync. rsync is
+# Ubuntu's package: its security fixes arrive as package updates, which the
+# workspace stage's apt-get upgrade brings in.
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    bats ffmpeg jq lua5.4 p7zip-full parallel pbzip2 pigz shellcheck unrar-free zstd
+    bats ffmpeg jq lua5.4 p7zip-full parallel pbzip2 pigz rsync shellcheck unrar-free zstd
 rm -rf /var/lib/apt/lists/*
 INSTALL_UTILITIES_DEPS
+
+# PowerShell from its GitHub release, checked against the release's
+# hashes.sha256, installed for every user. With pwsh present, den's shell
+# setup in the workspace stage also wires den into dev's pwsh profile.
+# pwsh sends telemetry unless POWERSHELL_TELEMETRY_OPTOUT is set when it
+# starts, and POWERSHELL_UPDATECHECK=Off stops its update check at startup
+# (a rebuild updates this image's pwsh). The image ENV sets both for the build
+# steps from here on and for every docker exec; the entrypoint and the zsh and
+# bash startup files below set them again.
+ENV POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
+# Build setting: latest, or an exact PowerShell release without the v prefix.
+ARG PWSH_VERSION=latest
+RUN <<'INSTALL_PWSH'
+version=$PWSH_VERSION
+if [[ "$version" == latest ]]; then
+    # GitHub redirects releases/latest to the newest release's tag.
+    latest_url=$(curl --proto '=https' --tlsv1.2 -fsSLI --retry 3 -o /dev/null -w '%{url_effective}' \
+        https://github.com/PowerShell/PowerShell/releases/latest)
+    version=${latest_url##*/v}
+fi
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected PowerShell version: '$version'" >&2; exit 1; }
+release=https://github.com/PowerShell/PowerShell/releases/download/v${version}
+package=powershell_${version}-1.deb_${TARGETARCH}.deb
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/$package" -o "$work_dir/$package"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/hashes.sha256" -o "$work_dir/hashes.sha256"
+# hashes.sha256 is UTF-16 text with CRLF line ends and one "<sha256> *<file>"
+# line per release file; check the package's own line.
+(cd "$work_dir" && iconv -f UTF-16 -t UTF-8 hashes.sha256 | tr -d '\r' \
+    | awk -v name="*$package" '$2 == name' | sha256sum -c -)
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$work_dir/$package"
+rm -rf /var/lib/apt/lists/*
+pwsh --version
+INSTALL_PWSH
 
 USER ${USER_UID}:${USER_GID}
 ENV HOME=/home/${USERNAME}
 # The user's tool directories again, as before the root step: the workspace
 # stage runs uv and den by name.
 ENV PATH="${NVM_DIR}/current/bin:${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# Build setting: exact official rsync release.
-ARG RSYNC_VERSION=3.5.1
-RUN <<'INSTALL_RSYNC'
-build_dir=$(mktemp -d)
-trap 'rm -rf "$build_dir"' EXIT
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    "https://download.samba.org/pub/rsync/src/rsync-${RSYNC_VERSION}.tar.gz" \
-    -o "$build_dir/rsync.tar.gz"
-tar -xzf "$build_dir/rsync.tar.gz" -C "$build_dir"
-cd "$build_dir/rsync-${RSYNC_VERSION}"
-./configure --prefix="$HOME/.local"
-make -j "$(nproc)"
-make install
-"$HOME/.local/bin/rsync" --version
-INSTALL_RSYNC
-
 # Build setting: current, or an exact rclone release including the v prefix.
 ARG RCLONE_VERSION=current
 RUN <<'INSTALL_RCLONE'
 archive_dir=$(mktemp -d)
 trap 'rm -rf "$archive_dir"' EXIT
-download_base=https://downloads.rclone.org
-if [[ "$RCLONE_VERSION" != current ]]; then
-    download_base="$download_base/$RCLONE_VERSION"
+version=$RCLONE_VERSION
+if [[ "$version" == current ]]; then
+    # version.txt names the current release ("rclone v1.2.3"). Only a
+    # release's own folder has a SHA256SUMS file, so download from there.
+    version=$(curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://downloads.rclone.org/version.txt)
+    version=${version#rclone }
 fi
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    "$download_base/rclone-${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
-    -o "$archive_dir/rclone.zip"
-unzip -q -j "$archive_dir/rclone.zip" '*/rclone' -d "$archive_dir"
+[[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected rclone version: '$version'" >&2; exit 1; }
+release=https://downloads.rclone.org/$version
+archive=rclone-${version}-linux-${TARGETARCH}.zip
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/$archive" -o "$archive_dir/$archive"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/SHA256SUMS" -o "$archive_dir/SHA256SUMS"
+# One "<sha256>  <file>" line per release file; check the archive's own line.
+(cd "$archive_dir" && awk -v name="$archive" '$2 == name' SHA256SUMS | sha256sum -c -)
+unzip -q -j "$archive_dir/$archive" '*/rclone' -d "$archive_dir"
 install -m 0755 "$archive_dir/rclone" "$HOME/.local/bin/rclone"
+# rclone reads every RCLONE_<FLAG> environment variable as that flag's value,
+# so the RCLONE_VERSION build arg would be its --version flag, and "current"
+# is not a valid value for it.
+env -u RCLONE_VERSION "$HOME/.local/bin/rclone" version
 INSTALL_RCLONE
 
 # den's main branch as a BuildKit git source. Every build resolves main to a
@@ -205,7 +270,14 @@ ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Build setting: IANA timezone name; also exported to application processes.
 ARG TZ=Asia/Tokyo
 ENV TZ=${TZ}
+# apt-get upgrade runs in this last stage, which a refresh build redoes on its
+# own (--no-cache-filter workspace), so a refresh also brings the updates for
+# the packages that the earlier stages installed. It runs before the next step
+# appends to /etc/zsh/zshenv, /etc/bash.bashrc and /etc/zsh/zshrc: those are
+# package conffiles, and an upgrade that met them changed would stop at
+# dpkg's question about keeping them.
 RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata gnu-coreutils && \
     test -f "/usr/share/zoneinfo/$TZ" && \
     ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime && \
@@ -242,6 +314,9 @@ EOF
 # The image PATH holds system directories only; the command runs as the user
 # with the user's tool directories first (the same list as /etc/zsh/zshenv).
 runtime_path="$user_home/.nvm/current/bin:$user_home/.local/bin:$user_home/.cargo/bin:$inherited_path"
+# pwsh sends no telemetry and skips its update check, as in the image ENV,
+# whatever docker run -e passed.
+export POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
 
 target_uid=${HOST_UID:-$old_uid}
 target_gid=${HOST_GID:-$old_gid}
@@ -304,6 +379,10 @@ cat >> /etc/zsh/zshenv <<'CONTAINER_ZSH_ENV'
 # and PATH (system directories only). The container user gets its own HOME
 # back, non-root shells add the user's tool directories (the entrypoint's
 # list), and a root shell given the user's HOME (-e HOME=...) gets /root.
+# Every zsh, root's included, keeps pwsh's telemetry and update check off as
+# the image ENV does, also one started with an emptied environment (env -i,
+# su -).
+export POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
 if [[ "$EUID" == 0 ]]; then
     if [[ "$HOME" == "/home/$(</etc/container-user)" ]]; then
         export HOME=/root USER=root LOGNAME=root
@@ -331,6 +410,7 @@ cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
 # The /etc/zsh/zshenv block for interactive bash. It runs before ~/.bashrc,
 # so each bash reads its own user's ~/.bashrc. bash set HISTFILE from the HOME
 # it started with before it read this file.
+export POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
 _container_user=$(< /etc/container-user)
 if [ "$EUID" -eq 0 ]; then
     if [ "$HOME" = "/home/$_container_user" ]; then

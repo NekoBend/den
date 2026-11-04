@@ -119,6 +119,13 @@ jobs:
             check "dev zsh -lc: $tool runs from /home/dev" '/home/dev/*' \
               docker exec --user dev den-dev zsh -lc "$tool --version >/dev/null && whence -p $tool"
           done
+          # fzf comes from its release into dev's ~/.local/bin; PowerShell
+          # from its release as a package for root and dev.
+          check 'dev zsh -lc: fzf --version' '/home/dev/*' \
+            docker exec --user dev den-dev zsh -lc 'fzf --version >/dev/null && whence -p fzf'
+          check 'root exec: pwsh --version' 'PowerShell *' docker exec den-dev pwsh --version
+          check 'dev zsh -lc: pwsh --version' 'PowerShell *' \
+            docker exec --user dev den-dev zsh -lc 'pwsh --version'
           check 'dev bash -ic: HOME' /home/dev \
             docker exec --user dev den-dev bash -ic 'echo "$HOME"'
           check 'dev bash -ic: HISTFILE' /home/dev/.bash_history \

@@ -11,11 +11,15 @@ FAKE_EUID so the root branches run without root. The script tests are skipped
 on native Windows and where the shell they need is missing.
 """
 
+import hashlib
+import io
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -36,14 +40,16 @@ SYSTEM_DIRS = (
 SYSTEM_PATH = ":".join(SYSTEM_DIRS)
 # The tool directories dev gets, in PATH order.
 USER_TOOL_DIRS = (".nvm/current/bin", ".local/bin", ".cargo/bin")
+# What pwsh reads when it starts: no telemetry, and no check for a newer release.
+PWSH_ENV = {"POWERSHELL_TELEMETRY_OPTOUT": "1", "POWERSHELL_UPDATECHECK": "Off"}
 
 
 def _text() -> str:
     return DOCKERFILE.read_text(encoding="utf-8")
 
 
-def _instructions() -> list[tuple[str, str]]:
-    """(KEYWORD, arguments) per instruction, without comments or heredoc bodies."""
+def _parse() -> list[tuple[str, str, str]]:
+    """(KEYWORD, arguments, heredoc body) per instruction, without comments."""
     lines = _text().splitlines()
     out = []
     i = 0
@@ -55,14 +61,22 @@ def _instructions() -> list[tuple[str, str]]:
         while line.endswith("\\") and i < len(lines):
             line = line[:-1] + " " + lines[i].strip()
             i += 1
+        body = ""
         heredoc = re.search(r"<<-?['\"]?(\w+)['\"]?", line)
         if heredoc:
+            start = i
             while i < len(lines) and lines[i] != heredoc.group(1):
                 i += 1
+            body = "\n".join(lines[start:i]) + "\n"
             i += 1
         keyword, _, rest = line.strip().partition(" ")
-        out.append((keyword.upper(), rest.strip()))
+        out.append((keyword.upper(), rest.strip(), body))
     return out
+
+
+def _instructions() -> list[tuple[str, str]]:
+    """(KEYWORD, arguments) per instruction, without comments or heredoc bodies."""
+    return [(keyword, rest) for keyword, rest, _ in _parse()]
 
 
 def _expand(value: str, env: dict[str, str], args: dict[str, str]) -> str:
@@ -127,6 +141,32 @@ def _run_steps() -> list[tuple[str, str, dict[str, str], dict[str, str]]]:
         for stage, keyword, user, env, args in _walk()
         if keyword == "RUN"
     ]
+
+
+def _run_scripts() -> list[tuple[str, str, dict[str, str], dict[str, str], str]]:
+    """(stage, USER, ENV, build args, script) per RUN.
+
+    The script is the RUN line, then its heredoc body if it has one.
+    """
+    bodies = [(rest, body) for keyword, rest, body in _parse() if keyword == "RUN"]
+    return [
+        (stage, user, env, args, f"{rest}\n{body}")
+        for (stage, user, env, args), (rest, body) in zip(
+            _run_steps(), bodies, strict=True
+        )
+    ]
+
+
+def _install_step(marker: str) -> tuple[str, dict[str, str], str]:
+    """(USER, environment, body) of the RUN heredoc named ``marker``.
+
+    The environment is what the step runs with: its build args and the ENV,
+    which wins over a build arg of the same name.
+    """
+    for _, user, env, args, script in _run_scripts():
+        if script.startswith(f"<<'{marker}'\n"):
+            return user, {**args, **env}, script.partition("\n")[2]
+    raise AssertionError(f"the Dockerfile has no RUN <<'{marker}' step")
 
 
 def _appended_block(target: str) -> str:
@@ -356,10 +396,12 @@ def _source_block(
     home: str,
     user: str,
     histfile: str = "",
+    extra: tuple[str, ...] = (),
 ) -> list[str]:
     """Source the block twice in ``shell``.
 
-    Returns HOME, PATH, skip_global_compinit, HISTFILE and USER. ``histfile``
+    Returns HOME, PATH, skip_global_compinit, HISTFILE and USER, then the
+    variables ``extra`` names ("unset" for one that is not set). ``histfile``
     stands in for the HISTFILE bash sets from HOME before it reads its startup
     files.
     """
@@ -380,11 +422,14 @@ def _source_block(
     # with -f, and in this image that file runs the very block under test.
     probe = (
         f"export HOME={shlex.quote(home)} PATH={SYSTEM_PATH}; "
-        "unset skip_global_compinit HISTFILE USER LOGNAME; "
+        "unset skip_global_compinit HISTFILE USER LOGNAME"
+        + "".join(f" {name}" for name in extra)
+        + "; "
         + (f"HISTFILE={shlex.quote(histfile)}; " if histfile else "")
         + f". {shlex.quote(str(block))}; . {shlex.quote(str(block))}; "
         'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}" '
         '"${HISTFILE-unset}" "${USER-unset}"'
+        + "".join(f' "${{{name}-unset}}"' for name in extra)
     )
     flags = {"zsh": ["-f"], "bash": ["--norc"], "sh": []}[shell]
     argv = [_tool(shell), *flags, "-c", probe]
@@ -584,6 +629,29 @@ def test_bashrc_keeps_a_history_file_it_did_not_derive_from_the_user_home(tmp_pa
     assert dev[3] == f"{home}/.bash_history"
 
 
+@_needs("zsh", "bash")
+@pytest.mark.parametrize(
+    ("shell", "target"), [("zsh", "/etc/zsh/zshenv"), ("bash", "/etc/bash.bashrc")]
+)
+@pytest.mark.parametrize("euid", [0, 1000])
+def test_shells_turn_powershell_telemetry_and_update_check_off(
+    tmp_path, shell, target, euid
+):
+    # pwsh started from a shell sends no telemetry and checks for no update,
+    # also when the shell started without the image's environment (env -i,
+    # su -).
+    out = _source_block(
+        tmp_path,
+        shell,
+        target,
+        euid=euid,
+        home=str(tmp_path / "home"),
+        user="dev",
+        extra=tuple(PWSH_ENV),
+    )
+    assert out[5:] == list(PWSH_ENV.values())
+
+
 def _profile_script() -> str:
     match = re.search(r"cat > (/etc/profile\.d/\S+) <<'", _text())
     assert match, "the Dockerfile writes no /etc/profile.d script"
@@ -649,8 +717,8 @@ def _run_entrypoint(
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
 
     The account is dev, 1000:1000, home /home/dev. setpriv prints its
-    arguments and the HOME it got; the commands that change accounts or files
-    only log theirs.
+    arguments, the HOME it got and the PWSH_ENV variables; the commands that
+    change accounts or files only log theirs.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -674,7 +742,11 @@ def _run_entrypoint(
     )
     for name in ("usermod", "groupadd", "find", "mountpoint", "gnuchown"):
         stub(name, f'echo "{name} $*" >> {shlex.quote(str(log))}')
-    stub("setpriv", 'printf "%s\\n" "$@" "HOME=$HOME"')
+    stub(
+        "setpriv",
+        'printf "%s\\n" "$@" "HOME=$HOME"'
+        + "".join(f' "{name}=${{{name}-unset}}"' for name in PWSH_ENV),
+    )
     user_file = tmp_path / "container-user"
     user_file.write_text("dev\n", encoding="utf-8")
     system = "/usr/sbin:/usr/bin:/sbin:/bin"  # the entrypoint's own PATH
@@ -727,6 +799,22 @@ def test_entrypoint_gives_the_command_the_user_home(tmp_path, uid):
 
 
 @_needs("sh", "env")
+@pytest.mark.parametrize("uid", [0, 1000])
+def test_entrypoint_turns_powershell_telemetry_and_update_check_off(tmp_path, uid):
+    # pwsh reads both settings when it starts; the command gets them even when
+    # docker run passed other values.
+    result, _ = _run_entrypoint(
+        tmp_path,
+        uid=uid,
+        env={"POWERSHELL_TELEMETRY_OPTOUT": "0", "POWERSHELL_UPDATECHECK": "LTS"},
+    )
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    for name, value in PWSH_ENV.items():
+        assert f"{name}={value}" in lines
+
+
+@_needs("sh", "env")
 def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
     # A UID other than the build's re-owns all of /home/dev, which overlayfs
     # copies into each new container; the build args avoid it.
@@ -757,6 +845,552 @@ def test_test_helpers_see_the_whole_dockerfile():
     names = [name for name, _, _ in _stages()]
     assert names[0] == "system"
     assert names[-1] == "workspace"
+
+
+# --- downloads -----------------------------------------------------------------
+
+_INSTALL_TOOLS = ("bash", "awk", "install", "mktemp", "sha256sum", "tar")
+
+
+def _is_operator(word: str) -> bool:
+    return set(word) <= set("();<>|&")
+
+
+def _curl_commands(script: str) -> list[list[str]]:
+    """The arguments of each curl command in a shell script, comments left out.
+
+    curl is a command where it starts the line or follows an operator (&&, |,
+    the ( of $(...)); elsewhere it is an argument, such as apt's package name.
+    """
+    commands = []
+    for line in re.sub(r"\\\n\s*", " ", script).splitlines():
+        if line.lstrip().startswith("#") or not re.search(r"\bcurl\b", line):
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+        for i, word in enumerate(words):
+            if word != "curl" or (i and not _is_operator(words[i - 1])):
+                continue
+            args = []
+            for arg in words[i + 1 :]:
+                if _is_operator(arg):
+                    break
+                args.append(arg)
+            commands.append(args)
+    return commands
+
+
+def _option(args: list[str], name: str) -> str | None:
+    return args[args.index(name) + 1] if name in args[:-1] else None
+
+
+def test_every_download_is_https_only_with_the_same_curl_options():
+    # Without --proto '=https', curl -L follows a redirect to plain http: the
+    # image ran the starship, uv, ty, ruff and nvm installers it got that way.
+    checked = 0
+    wrong = []
+    for stage, _, _, _, script in _run_scripts():
+        for args in _curl_commands(script):
+            checked += 1
+            if (
+                _option(args, "--proto") != "=https"
+                or "--tlsv1.2" not in args
+                or _option(args, "--retry") != "3"
+                or not any(
+                    re.fullmatch(r"-[A-Za-z]+", arg) and set("fsSL") <= set(arg)
+                    for arg in args
+                )
+                or any("://" in arg and not arg.startswith("https://") for arg in args)
+            ):
+                wrong.append(f"{stage}: curl {shlex.join(args)}")
+    assert checked >= 15, "the scan no longer finds the image's downloads"
+    assert not wrong, "\n".join(wrong)
+
+
+def _apt_packages(script: str) -> list[str]:
+    """What each apt-get install in a shell script installs, options left out."""
+    packages = []
+    for line in re.sub(r"\\\n\s*", " ", script).splitlines():
+        if line.lstrip().startswith("#") or "apt-get install" not in line:
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+        for i, word in enumerate(words[:-1]):
+            if word != "apt-get" or words[i + 1] != "install":
+                continue
+            for arg in words[i + 2 :]:
+                if _is_operator(arg):
+                    break
+                if not arg.startswith("-"):
+                    packages.append(arg)
+    return packages
+
+
+def test_fzf_is_not_an_apt_package():
+    # Ubuntu's fzf trails fzf's releases; the tools stage installs fzf's own.
+    for stage, _, _, _, script in _run_scripts():
+        assert "fzf" not in _apt_packages(script), stage
+
+
+def test_rsync_is_ubuntus_package():
+    # Ubuntu's rsync gets rsync's security fixes as package updates, which the
+    # workspace stage's apt-get upgrade brings in. The image built the release
+    # RSYNC_VERSION named from source instead, with a check of its own.
+    scripts = _run_scripts()
+    assert any("rsync" in _apt_packages(script) for *_, script in scripts)
+    for stage, _, _, args, script in scripts:
+        assert "RSYNC_VERSION" not in args, stage
+        for curl in _curl_commands(script):
+            assert not any("rsync" in arg for arg in curl), f"{stage}: {curl}"
+
+
+def _tar_gz(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o755
+            tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _zip(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, data in members.items():
+            info = zipfile.ZipInfo(name)
+            info.external_attr = 0o755 << 16
+            archive.writestr(info, data)
+    return buffer.getvalue()
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _fake_program(output: str) -> bytes:
+    return f"#!/bin/sh\necho {shlex.quote(output)}\n".encode()
+
+
+# curl that serves https://HOST/PATH from $FAKE_WEB/HOST/PATH. A HEAD request
+# (-I) writes the URL that $FAKE_WEB/HOST/PATH.redirect names for -w
+# '%{url_effective}'. It refuses a call without --proto =https and --tlsv1.2.
+_CURL_STUB = """\
+printf 'curl %s\\n' "$*" >> "$CALLS_LOG"
+url='' out='' head='' write='' proto='' tls=''
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --proto) proto=$2; shift ;;
+        --tlsv1.2) tls=1 ;;
+        --retry) shift ;;
+        -o) out=$2; shift ;;
+        -w) write=$2; shift ;;
+        -*I*) head=1 ;;
+        -*) ;;
+        *) url=$1 ;;
+    esac
+    shift
+done
+if [ "$proto" != =https ] || [ "$tls" != 1 ]; then
+    echo "curl stub: insecure call" >&2
+    exit 2
+fi
+case $url in https://*) ;; *) echo "curl stub: $url" >&2; exit 2 ;; esac
+file=$FAKE_WEB/${url#https://}
+if [ -n "$head" ]; then
+    target=$url
+    [ ! -f "$file.redirect" ] || target=$(cat "$file.redirect")
+    [ "$write" != '%{url_effective}' ] || printf '%s' "$target"
+    exit 0
+fi
+[ -f "$file" ] || { echo "curl: (22) HTTP 404: $url" >&2; exit 22; }
+if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi
+"""
+# The commands an install step runs after its download check: they only log
+# their arguments, pwsh prints a version, and dpkg the target architecture.
+_BUILD_STUBS = {
+    "apt-get": "",
+    "apt-mark": "",
+    "dpkg": 'echo "$TARGETARCH"',
+    "pwsh": "echo 'PowerShell 7.9.1'",
+}
+
+
+def _run_install(
+    tmp_path: Path,
+    marker: str,
+    web: dict[str, bytes],
+    *,
+    redirects: dict[str, str] | None = None,
+    arch: str = "amd64",
+    env: dict[str, str] | None = None,
+    paths: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], str, Path]:
+    """Run the RUN <<'marker' step against a fake web of ``web`` (URL -> body).
+
+    It runs with the step's build args and ENV, as the Dockerfile's SHELL
+    (bash -euo pipefail -c) does, but with HOME and TMPDIR in tmp_path and the
+    stubs first on PATH; the apt lists it deletes are a directory in tmp_path,
+    and ``paths`` replaces other paths in the step (old -> new).
+    Returns the result, the call log and HOME.
+    """
+    bash = _tool("bash")
+    _, step_env, body = _install_step(marker)
+    apt_lists = tmp_path / "apt-lists"
+    apt_lists.mkdir()
+    if "/var/lib/apt/lists" in body:
+        body = _patched(body, {"rm -rf /var/lib/apt/lists/*": f"rm -rf {apt_lists}/*"})
+    body = _patched(body, paths or {})
+    assert "/var/" not in body and "/etc/" not in body, (
+        "the step writes outside tmp_path"
+    )
+    root = tmp_path / "web"
+    for url, data in web.items():
+        path = root / url.removeprefix("https://")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    for url, target in (redirects or {}).items():
+        path = root / (url.removeprefix("https://") + ".redirect")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(target, encoding="utf-8")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    log = tmp_path / "calls.log"
+    log.touch()
+    for name, stub in {"curl": _CURL_STUB, **_BUILD_STUBS}.items():
+        path = stubs / name
+        path.write_text(
+            f'#!{bash}\nprintf "{name} %s\\n" "$*" >> "$CALLS_LOG"\n{stub}\n'
+            if name != "curl"
+            else f"#!{bash}\n{stub}",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    run_env = {
+        **step_env,
+        "HOME": str(home),
+        "PATH": f"{stubs}:{SYSTEM_PATH}",
+        "TMPDIR": str(scratch),
+        "TARGETARCH": arch,
+        "FAKE_WEB": str(root),
+        "CALLS_LOG": str(log),
+        **(env or {}),
+    }
+    result = subprocess.run(
+        [bash, "-euo", "pipefail", "-c", body],
+        env=run_env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert not any(scratch.iterdir()), "the step left its work directory behind"
+    return result, log.read_text(encoding="utf-8"), home
+
+
+# fzf
+
+_FZF = "https://github.com/junegunn/fzf/releases"
+
+
+def _fzf_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
+    """fzf 0.99.1 for amd64 and arm64, with its checksums file.
+
+    ``served_arch`` serves that architecture's archive with other contents
+    than the checksums file lists; ``listed=False`` lists no amd64 archive.
+    """
+    web = {}
+    sums = []
+    for arch in ("amd64", "arm64"):
+        name = f"fzf-0.99.1-linux_{arch}.tar.gz"
+        archive = _tar_gz({"fzf": _fake_program(f"0.99.1 linux_{arch}")})
+        if listed or arch != "amd64":
+            sums.append(f"{_sha256(archive)}  {name}\n")
+        if arch == served_arch:
+            archive = _tar_gz({"fzf": _fake_program("0.99.1 tampered")})
+        web[f"{_FZF}/download/v0.99.1/{name}"] = archive
+    web[f"{_FZF}/download/v0.99.1/fzf_0.99.1_checksums.txt"] = "".join(sums).encode()
+    return web
+
+
+_FZF_LATEST = {f"{_FZF}/latest": f"{_FZF}/tag/v0.99.1"}
+
+
+@_needs(*_INSTALL_TOOLS)
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_fzf_comes_from_its_release_into_the_user_bin(tmp_path, arch):
+    result, calls, home = _run_install(
+        tmp_path, "INSTALL_FZF", _fzf_web(), redirects=_FZF_LATEST, arch=arch
+    )
+    assert result.returncode == 0, result.stderr
+    fzf = home / ".local" / "bin" / "fzf"
+    assert f"0.99.1 linux_{arch}" in fzf.read_text(encoding="utf-8")
+    assert f"{_FZF}/download/v0.99.1/fzf-0.99.1-linux_{arch}.tar.gz" in calls
+
+
+@_needs(*_INSTALL_TOOLS)
+@pytest.mark.parametrize(
+    "web",
+    [_fzf_web(served_arch="amd64"), _fzf_web(listed=False)],
+    ids=["other-contents", "not-listed"],
+)
+def test_fzf_that_its_checksums_do_not_vouch_for_is_not_installed(tmp_path, web):
+    result, _, home = _run_install(tmp_path, "INSTALL_FZF", web, redirects=_FZF_LATEST)
+    assert result.returncode != 0
+    assert not (home / ".local" / "bin" / "fzf").exists()
+
+
+# PowerShell
+
+_PWSH = "https://github.com/PowerShell/PowerShell/releases"
+
+
+def _pwsh_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
+    """PowerShell 7.9.1 packages, with hashes.sha256 as the release writes it.
+
+    That file is UTF-16 with a byte order mark and CRLF line ends. The
+    arguments work as _fzf_web's do.
+    """
+    web = {}
+    # Lines for other release files, as the real file has.
+    others = (
+        "powershell-lts_7.9.1-1.deb_amd64.deb",
+        "powershell-7.9.1-linux-x64.tar.gz",
+    )
+    lines = [f"{_sha256(name.encode())} *{name}" for name in others]
+    for arch in ("amd64", "arm64"):
+        name = f"powershell_7.9.1-1.deb_{arch}.deb"
+        package = f"package for {arch}".encode()
+        if listed or arch != "amd64":
+            lines.append(f"{_sha256(package)} *{name}")
+        if arch == served_arch:
+            package = b"tampered package"
+        web[f"{_PWSH}/download/v7.9.1/{name}"] = package
+    hashes = "".join(f"{line}\r\n" for line in lines).encode("utf-16")
+    web[f"{_PWSH}/download/v7.9.1/hashes.sha256"] = hashes
+    return web
+
+
+_PWSH_LATEST = {f"{_PWSH}/latest": f"{_PWSH}/tag/v7.9.1"}
+
+
+def test_powershell_is_installed_by_root():
+    # A system package for every user; apt-get needs root.
+    user, env, _ = _install_step("INSTALL_PWSH")
+    assert user == "root"
+    assert env["PATH"] == SYSTEM_PATH
+
+
+@_needs(*_INSTALL_TOOLS, "iconv", "tr")
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_powershell_comes_from_its_release_as_a_package(tmp_path, arch):
+    result, calls, _ = _run_install(
+        tmp_path, "INSTALL_PWSH", _pwsh_web(), redirects=_PWSH_LATEST, arch=arch
+    )
+    assert result.returncode == 0, result.stderr
+    installs = [
+        line for line in calls.splitlines() if line.startswith("apt-get install")
+    ]
+    assert len(installs) == 1, calls
+    assert installs[0].endswith(f"/powershell_7.9.1-1.deb_{arch}.deb"), calls
+
+
+@_needs(*_INSTALL_TOOLS, "iconv", "tr")
+@pytest.mark.parametrize(
+    "web",
+    [_pwsh_web(served_arch="amd64"), _pwsh_web(listed=False)],
+    ids=["other-contents", "not-listed"],
+)
+def test_powershell_that_its_hashes_do_not_vouch_for_is_not_installed(tmp_path, web):
+    result, calls, _ = _run_install(
+        tmp_path, "INSTALL_PWSH", web, redirects=_PWSH_LATEST
+    )
+    assert result.returncode != 0
+    assert "apt-get" not in calls
+
+
+def test_powershell_telemetry_and_update_check_are_off_in_the_image_env():
+    # Every docker exec, root's included, starts with the image's ENV, and
+    # the build's own pwsh runs (its --version check, den's shell setup)
+    # start with the ENV of their step.
+    image_env = _stages()[-1][1]
+    for name, value in PWSH_ENV.items():
+        assert image_env.get(name) == value, name
+    steps = _run_scripts()
+    pwsh = next(
+        i
+        for i, (*_, script) in enumerate(steps)
+        if script.startswith("<<'INSTALL_PWSH'")
+    )
+    for stage, _, env, _, _ in steps[pwsh:]:
+        for name, value in PWSH_ENV.items():
+            assert env.get(name) == value, (stage, name)
+
+
+# gh
+
+_GH_KEYRING = "https://cli.github.com/packages/githubcli-archive-keyring.gpg"
+
+
+@_needs("bash", "install", "sed")
+@pytest.mark.parametrize(
+    ("gh_version", "package", "held"),
+    [("latest", "gh", False), ("2.99.0", "gh=2.99.0", True)],
+    ids=["latest-upgrades", "exact-is-held"],
+)
+def test_gh_at_an_exact_version_is_held_against_the_upgrade(
+    tmp_path, gh_version, package, held
+):
+    # The workspace stage's apt-get upgrade moves every package that is not
+    # held to the newest version in its repository, and GitHub's repository
+    # stays enabled: gh at an exact GH_VERSION came out of the image at the
+    # newest version. latest is left to the upgrade.
+    sysconf = tmp_path / "sysconf" / "apt"
+    (sysconf / "sources.list.d").mkdir(parents=True)
+    (sysconf / "sources.list.d" / "ubuntu.sources").write_text(
+        "URIs: http://archive.ubuntu.com/ubuntu/\n", encoding="utf-8"
+    )
+    result, calls, _ = _run_install(
+        tmp_path,
+        "INSTALL_UTILITIES_DEPS",
+        {_GH_KEYRING: b"keyring"},
+        env={"GH_VERSION": gh_version},
+        paths={"/etc/apt/": f"{sysconf}/"},
+    )
+    assert result.returncode == 0, result.stderr
+    apt = [line for line in calls.splitlines() if line.startswith("apt-")]
+    gh = next(
+        i
+        for i, line in enumerate(apt)
+        if line.startswith("apt-get install") and package in line.split()
+    )
+    holds = [line for line in apt if line.startswith("apt-mark")]
+    if held:
+        assert holds == ["apt-mark hold gh"], calls
+        assert apt.index("apt-mark hold gh") > gh, calls
+    else:
+        assert holds == [], calls
+
+
+# rclone
+
+_RCLONE = "https://downloads.rclone.org"
+
+
+def _fake_rclone(output: str) -> bytes:
+    """A program that prints ``output``, or fails as rclone does on RCLONE_VERSION.
+
+    rclone reads every RCLONE_<FLAG> environment variable as that flag's value,
+    so the RCLONE_VERSION build arg, in the environment of the build steps, is
+    its --version flag: the image build failed on RCLONE_VERSION=current.
+    """
+    return (
+        "#!/bin/sh\n"
+        'if [ -n "${RCLONE_VERSION+set}" ]; then\n'
+        "    echo 'CRITICAL: Invalid value when setting --version from"
+        " environment variable RCLONE_VERSION' >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        f"echo {shlex.quote(output)}\n"
+    ).encode()
+
+
+def _rclone_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
+    """rclone v1.99.1 as the current release, with its PGP-signed SHA256SUMS.
+
+    The archives are also served under their rclone-current names, which the
+    download used before it was checked. The arguments work as _fzf_web's do.
+    """
+    web = {f"{_RCLONE}/version.txt": b"rclone v1.99.1\n"}
+    sums = ["-----BEGIN PGP SIGNED MESSAGE-----\n", "Hash: SHA1\n", "\n"]
+    for arch in ("amd64", "arm64"):
+        name = f"rclone-v1.99.1-linux-{arch}.zip"
+        archive = _zip(
+            {
+                f"rclone-v1.99.1-linux-{arch}/rclone": _fake_rclone(
+                    f"rclone linux-{arch}"
+                )
+            }
+        )
+        if listed or arch != "amd64":
+            sums.append(f"{_sha256(archive)}  {name}\n")
+        if arch == served_arch:
+            archive = _zip(
+                {f"rclone-v1.99.1-linux-{arch}/rclone": _fake_rclone("rclone tampered")}
+            )
+        web[f"{_RCLONE}/v1.99.1/{name}"] = archive
+        web[f"{_RCLONE}/rclone-current-linux-{arch}.zip"] = archive
+    sums += ["-----BEGIN PGP SIGNATURE-----\n", "\n", "c2lnbmF0dXJl\n"]
+    sums.append("-----END PGP SIGNATURE-----\n")
+    web[f"{_RCLONE}/v1.99.1/SHA256SUMS"] = "".join(sums).encode()
+    return web
+
+
+@_needs(*_INSTALL_TOOLS, "unzip")
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_rclone_comes_from_the_current_release_folder(tmp_path, arch):
+    result, calls, home = _run_install(
+        tmp_path, "INSTALL_RCLONE", _rclone_web(), arch=arch
+    )
+    assert result.returncode == 0, result.stderr
+    rclone = home / ".local" / "bin" / "rclone"
+    assert f"rclone linux-{arch}" in rclone.read_text(encoding="utf-8")
+    assert f"{_RCLONE}/v1.99.1/rclone-v1.99.1-linux-{arch}.zip" in calls
+    # The step runs the installed rclone, with the build arg in its environment.
+    assert f"rclone linux-{arch}" in result.stdout
+
+
+@_needs(*_INSTALL_TOOLS, "unzip")
+@pytest.mark.parametrize(
+    "web",
+    [_rclone_web(served_arch="amd64"), _rclone_web(listed=False)],
+    ids=["other-contents", "not-listed"],
+)
+def test_rclone_that_its_sha256sums_do_not_vouch_for_is_not_installed(tmp_path, web):
+    # Before the check, the image installed whatever the download gave.
+    result, _, home = _run_install(tmp_path, "INSTALL_RCLONE", web)
+    assert result.returncode != 0
+    assert not (home / ".local" / "bin" / "rclone").exists()
+
+
+# apt
+
+
+def test_the_last_stage_upgrades_apt_packages_before_it_changes_their_conffiles():
+    # A refresh build (--no-cache-filter workspace) redoes only the last stage,
+    # so the upgrade there brings the updates for every stage's packages. An
+    # upgrade after the image appends to zshenv, bash.bashrc and zshrc (bash
+    # and zsh conffiles) would stop at dpkg's question about keeping them.
+    last = _stages()[-1][0]
+    scripts = [
+        (user, script) for stage, user, _, _, script in _run_scripts() if stage == last
+    ]
+    upgrades = [
+        i
+        for i, (user, script) in enumerate(scripts)
+        if re.search(r"apt-get update && .*apt-get upgrade -y", script)
+    ]
+    assert len(upgrades) == 1, (
+        "the last stage runs no apt-get update && apt-get upgrade -y"
+    )
+    user, script = scripts[upgrades[0]]
+    assert user == "root"
+    assert "DEBIAN_FRONTEND=noninteractive apt-get upgrade" in script
+    appends = [
+        i
+        for i, (_, script) in enumerate(scripts)
+        if re.search(r"cat >> /etc/(zsh/zshenv|bash\.bashrc|zsh/zshrc)\b", script)
+    ]
+    assert appends, "the parser no longer sees the startup files"
+    assert upgrades[0] < min(appends)
 
 
 # --- the CI workflow that builds the image -------------------------------------
@@ -813,3 +1447,19 @@ def test_the_image_workflow_budget_covers_its_steps():
     assert steps["Build the dev image"].get("timeout-minutes", 0) > 0
     total = sum(step.get("timeout-minutes", 0) for step in job["steps"])
     assert job["timeout-minutes"] >= total
+
+
+def test_the_image_workflow_runs_fzf_and_pwsh_in_the_image():
+    # Both come from their releases, not from apt: the checks find fzf on
+    # dev's PATH and pwsh for root and dev in the built image.
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    checks = next(
+        step
+        for step in steps
+        if step.get("name") == "Check HOME and PATH for root and dev"
+    )
+    assert re.search(
+        r"docker exec --user dev den-dev zsh -lc '[^']*\bfzf --version", checks["run"]
+    )
+    assert re.search(r"docker exec den-dev pwsh --version\b", checks["run"])
+    assert "docker exec --user dev den-dev zsh -lc 'pwsh --version'" in checks["run"]

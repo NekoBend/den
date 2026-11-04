@@ -14,10 +14,10 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 
 | Stage | Contents |
 | --- | --- |
-| `system` | apt base (build-essential, git, curl, zsh, tmux, fzf, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
+| `system` | apt base (build-essential, git, curl, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
 | `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
-| `tools` | starship, uv, ruff, ty, nvm + Node |
-| `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg; rsync built from source; rclone |
+| `tools` | starship, uv, ruff, ty, fzf, nvm + Node |
+| `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
 | `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
 User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
@@ -25,8 +25,18 @@ User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
 image's `HOME` is `/root`: see
 [PATH and HOME in `docker exec`](#path-and-home-in-docker-exec).
 
-PowerShell and opencode are left out on purpose; install them in the container
-when you need them.
+PowerShell (`pwsh`) is installed for every user, and den's shell setup wires
+den into `dev`'s pwsh profile. Its telemetry and its update check at startup
+are off: the image's environment, the entrypoint and the zsh and bash startup
+files set `POWERSHELL_TELEMETRY_OPTOUT=1` and `POWERSHELL_UPDATECHECK=Off`.
+A newer pwsh comes from a rebuild with `--no-cache` (see [Build](#build)).
+opencode is left out on purpose; install it in the container when you need it.
+
+fzf and PowerShell come from their GitHub releases and rclone from its
+release folder; each download is checked against that release's checksums
+file before it is installed. rsync is Ubuntu's package, so its security
+fixes come as Ubuntu package updates, which a refresh build brings in (see
+[Build](#build)).
 
 ## Build
 
@@ -60,10 +70,11 @@ keeps is in [Keeping state across rebuilds](#keeping-state-across-rebuilds).
 den is the exception: each build resolves den's `main` to a commit, so a
 rebuild after `main` moves redoes the `workspace` stage and nothing before it.
 To redo that stage when `main` has not moved, for example to pick up new
-releases of den's Python dependencies or of the stage's apt packages (tzdata,
-GNU coreutils), add `--no-cache-filter workspace`; the Rust tools are not
-recompiled. The zsh plugins den installs are pinned to commits in den itself,
-so they change only when `main` does.
+releases of den's Python dependencies or updates of the apt packages, add
+`--no-cache-filter workspace`; the Rust tools are not recompiled. The stage
+runs `apt-get upgrade`, so this also brings the updates for the apt packages
+that the earlier stages installed. The zsh plugins den installs are pinned to
+commits in den itself, so they change only when `main` does.
 
 ### Build ARGs
 
@@ -76,10 +87,11 @@ Override any of these with `--build-arg NAME=value`.
 | `USER_UID` | `1000` | Nonzero UID for the account. On Ubuntu, UID 1000 reuses the stock `ubuntu` account and renames it. The build fails if any other account already has the UID. |
 | `USER_GID` | `1000` | Nonzero primary GID. An existing group with this GID is reused. |
 | `RUSTUP_USE_CURL` | `0` | `1` selects rustup's deprecated curl backend as a TLS workaround. |
+| `FZF_VERSION` | `latest` | `latest`, or an exact fzf release without the `v` prefix. |
 | `NVM_VERSION` | `v0.40.7` | Exact nvm release, including the `v` prefix. |
 | `NODE_MAJOR` | `22` | Node major version; nvm installs it and makes it the default. |
-| `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. |
-| `RSYNC_VERSION` | `3.5.1` | Exact rsync release, built from source into `~/.local`. |
+| `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. An exact version is held (`apt-mark hold gh`), so `apt-get upgrade` keeps it, in the build and in the container. |
+| `PWSH_VERSION` | `latest` | `latest`, or an exact PowerShell release without the `v` prefix. |
 | `RCLONE_VERSION` | `current` | `current`, or an exact rclone release including the `v` prefix. |
 | `TZ` | `Asia/Tokyo` | IANA time zone name. The container also exports it as `TZ`. |
 
