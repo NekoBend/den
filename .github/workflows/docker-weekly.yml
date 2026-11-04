@@ -1,0 +1,154 @@
+name: dev image weekly scan
+
+# Once a week this workflow builds docker/ubuntu/Dockerfile from scratch, as
+# `docker buildx build --pull --no-cache` does, and scans the image with Trivy.
+# The run fails when the build fails, or when Trivy finds a CRITICAL or HIGH
+# vulnerability that already has a fixed version; the notify job then opens
+# an issue, or comments on the one still open. Nothing is pushed anywhere.
+# docker/README.md, "Weekly build and scan", says how to run it by hand.
+#
+# docker-dev-image.yml builds the same image, but it is not reused through
+# workflow_call: the image only exists in the build job's Docker engine, so
+# the scan runs in that job, and this build skips that workflow's cache.
+on:
+  schedule:
+    # Mondays at 00:42 in Tokyo, which has no daylight saving time: Sunday
+    # 15:42 UTC all year. Off the hour on purpose: GitHub delays, and under
+    # high load may drop, scheduled runs at the start of an hour.
+    - cron: "42 0 * * 1"
+      timezone: "Asia/Tokyo"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # bash -eo pipefail: a failed command anywhere in a pipe fails the step.
+    shell: bash
+
+jobs:
+  scan:
+    name: dev image (cold build + Trivy scan)
+    runs-on: ubuntu-latest
+    # The sum of the step budgets below plus a few minutes for the rest.
+    timeout-minutes: 215
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        timeout-minutes: 5
+        with:
+          # Nothing in this job uses git after the checkout.
+          persist-credentials: false
+      # The cold build keeps every layer and the loaded image on the runner's
+      # disk, and the scan reads the image from there again.
+      - name: Free disk space
+        timeout-minutes: 10
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        timeout-minutes: 5
+      # No layer cache: the build fetches the base image and every package and
+      # release again, as a user's build would, so the scan sees today's
+      # packages and the run fails when an upstream download no longer works.
+      # The budget is docker-dev-image.yml's for a cold build.
+      - name: Build the dev image
+        timeout-minutes: 150
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: docker/ubuntu
+          file: docker/ubuntu/Dockerfile
+          tags: den-dev
+          load: true
+          no-cache: true
+      # Trivy comes from its GitHub release, not from an action: a moved
+      # action tag runs its new code with this job's token, as the tags of
+      # aquasecurity/trivy-action and setup-trivy did in March 2026
+      # (GHSA-69fq-xp46-6x23).
+      - name: Install Trivy
+        timeout-minutes: 5
+        env:
+          # renovate: datasource=github-releases depName=aquasecurity/trivy
+          TRIVY_VERSION: v0.76.1
+        run: |
+          version=${TRIVY_VERSION#v}
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected TRIVY_VERSION: '$TRIVY_VERSION'"
+            exit 1
+          fi
+          case $RUNNER_ARCH in
+            X64) platform=Linux-64bit ;;
+            ARM64) platform=Linux-ARM64 ;;
+            *) echo "::error::No Trivy archive for runner architecture $RUNNER_ARCH"; exit 1 ;;
+          esac
+          release=https://github.com/aquasecurity/trivy/releases/download/v${version}
+          archive=trivy_${version}_${platform}.tar.gz
+          work_dir=$(mktemp -d)
+          trap 'rm -rf "$work_dir"' EXIT
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/$archive" -o "$work_dir/$archive"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+            "$release/trivy_${version}_checksums.txt" -o "$work_dir/checksums.txt"
+          # One "<sha256>  <file>" line per release file; check the archive's own
+          # line. A missing line fails too: sha256sum -c rejects an empty list.
+          (cd "$work_dir" && awk -v name="$archive" '$2 == name' checksums.txt | sha256sum -c -)
+          tar -xzf "$work_dir/$archive" -C "$work_dir" trivy
+          install -D -m 0755 "$work_dir/trivy" "$RUNNER_TEMP/trivy/trivy"
+          # Trivy reads each TRIVY_<FLAG> variable as that flag, and --version
+          # is one of its flags: run it without this step's TRIVY_VERSION.
+          env -u TRIVY_VERSION "$RUNNER_TEMP/trivy/trivy" --version
+      # The table in the log lists each CRITICAL or HIGH vulnerability that has
+      # a fixed version; any such finding exits 1 and fails the run. Findings
+      # without a fix and lower severities are left out. Only the image built
+      # above is scanned (--image-src docker), for vulnerabilities only, and
+      # no usage data or version check goes to Aqua.
+      - name: Scan the dev image
+        timeout-minutes: 30
+        run: |
+          "$RUNNER_TEMP/trivy/trivy" image \
+            --image-src docker \
+            --scanners vuln \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --format table \
+            --no-progress \
+            --timeout 25m \
+            --disable-telemetry \
+            --skip-version-check \
+            den-dev
+
+  notify:
+    name: open or update the failure issue
+    needs: scan
+    # A failed scan job notifies; a run cancelled by hand does not.
+    if: ${{ !cancelled() && needs.scan.result != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # One notice at a time, across every run and branch: two failed runs that
+    # overlap would otherwise both find no open issue and both open one.
+    concurrency:
+      group: docker-weekly-notify
+      cancel-in-progress: false
+    permissions:
+      issues: write
+    steps:
+      - name: Comment on the open issue, or open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SCAN_RESULT: ${{ needs.scan.result }}
+          ISSUE_TITLE: dev image weekly scan failed
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          body="[Run $GITHUB_RUN_ID]($run_url) ($GITHUB_EVENT_NAME on $GITHUB_REF_NAME, $GITHUB_SHA): the build and scan job ended with \`$SCAN_RESULT\`. Its log shows the build error or Trivy's table of findings."
+          # Failures pile up as comments on one open issue with this exact title.
+          number=$(gh issue list --state open --limit 500 --json number,title |
+            jq -r --arg title "$ISSUE_TITLE" 'map(select(.title == $title))[0].number // empty')
+          if [[ -n "$number" ]]; then
+            gh issue comment "$number" --body "$body"
+          else
+            note='While this issue is open, each failed run of .github/workflows/docker-weekly.yml adds a comment here instead of opening another issue. Close it once a run passes again.'
+            gh issue create --title "$ISSUE_TITLE" --body "$body"$'\n\n'"$note"
+          fi

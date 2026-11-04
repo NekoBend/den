@@ -83,6 +83,9 @@ sourceless install), `shell` (shellcheck + PSScriptAnalyzer, errors only),
 `.github/workflows/docker-dev-image.yml` builds the dev image
 (`docker/ubuntu/Dockerfile`) when `docker/` or that workflow changes, or when
 run by hand, and checks the `HOME` and `PATH` root and `dev` get in it.
+`.github/workflows/docker-weekly.yml` builds it without cache every Monday,
+scans it with Trivy, and opens an issue when that fails (`docker/README.md`,
+"Weekly build and scan").
 
 ## Status
 
@@ -90,7 +93,7 @@ run by hand, and checks the `HOME` and `PATH` root and `dev` get in it.
 - The environment (`shell/`, `cheatsheets/`, `tests/`) has been migrated out
   of the old dotfiles repo, security- and performance-reviewed, and wired into
   CI. The shell layer keeps its existing modern -> native -> fallback wrapper
-  design. `docker/` holds the dev container image, which CI builds only when
-  `docker/` changes.
+  design. `docker/` holds the dev container image, which CI builds when
+  `docker/` changes and once a week.
 - The bash/PowerShell installers were retired; `den install` is the one
   cross-platform installer.
