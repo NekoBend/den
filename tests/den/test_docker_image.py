@@ -849,15 +849,6 @@ def test_test_helpers_see_the_whole_dockerfile():
 
 # --- downloads -----------------------------------------------------------------
 
-# The agent CLI installers keep their own curl lines: the change that removes
-# them from the image owns those lines.
-_AGENT_INSTALLERS = {
-    "https://claude.ai/install.sh",
-    "https://chatgpt.com/codex/install.sh",
-    "https://x.ai/cli/install.sh",
-    "https://dev.meta.ai/install.sh",
-    "https://antigravity.google/cli/install.sh",
-}
 _INSTALL_TOOLS = ("bash", "awk", "install", "mktemp", "sha256sum", "tar")
 
 
@@ -901,8 +892,6 @@ def test_every_download_is_https_only_with_the_same_curl_options():
     wrong = []
     for stage, _, _, _, script in _run_scripts():
         for args in _curl_commands(script):
-            if _AGENT_INSTALLERS & set(args):
-                continue
             checked += 1
             if (
                 _option(args, "--proto") != "=https"
