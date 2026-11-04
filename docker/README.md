@@ -60,11 +60,11 @@ at run time re-owns everything in `/home/dev`, and on overlayfs that copies
 all of it, the toolchains included, into each new container before the shell
 starts.
 
-Downloads and compile outputs for cargo and uv go to BuildKit cache
-mounts, so a rebuild reuses them. The base image and every tool are pinned to
-exact versions (see [Versions](#versions)), so a rebuild installs the same
-releases, with `--no-cache` too; a fix in one of them arrives as a version
-update. After a security fix in an apt package, rebuild with the
+Downloads and compile outputs for cargo and uv go to BuildKit cache mounts,
+so a rebuild reuses them. The base image and the tools are pinned to exact
+versions ([Versions](#versions) lists what is not), so a rebuild installs the
+same releases, with `--no-cache` too; a fix in one of them arrives as a
+version update. After a security fix in an apt package, rebuild with the
 `--no-cache-filter workspace` below. Either way, start a new container from
 the new image: a running container keeps the binaries it started with. What
 a new container keeps is in

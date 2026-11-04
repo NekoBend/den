@@ -3,7 +3,8 @@
 # ARG settings: override with --build-arg NAME=value.
 # HOST_UID/HOST_GID and FIX_WORKSPACE_OWNERSHIP: runtime settings, passed with -e.
 # Every version below is an exact pin, and Renovate (renovate.json) proposes
-# each update as a pull request. The "# renovate:" comment above a *_VERSION
+# each update as a pull request; apt packages (Ubuntu's archive) and den (its
+# main branch) are not pinned. The "# renovate:" comment above a *_VERSION
 # build arg says where Renovate looks up its releases; keep it on the line
 # right above the ARG, which is where Renovate reads it.
 
