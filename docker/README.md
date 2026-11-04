@@ -15,7 +15,7 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | Stage | Contents |
 | --- | --- |
 | `system` | apt base (build-essential, git, curl, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
-| `rust-tools` | rustup (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
+| `rust-tools` | rustup and Rust (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, fzf, nvm + Node |
 | `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
 | `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
@@ -29,14 +29,16 @@ PowerShell (`pwsh`) is installed for every user, and den's shell setup wires
 den into `dev`'s pwsh profile. Its telemetry and its update check at startup
 are off: the image's environment, the entrypoint and the zsh and bash startup
 files set `POWERSHELL_TELEMETRY_OPTOUT=1` and `POWERSHELL_UPDATECHECK=Off`.
-A newer pwsh comes from a rebuild with `--no-cache` (see [Build](#build)).
+A newer pwsh comes with a new `PWSH_VERSION` (see [Versions](#versions)).
 opencode is left out on purpose; install it in the container when you need it.
 
-fzf and PowerShell come from their GitHub releases and rclone from its
-release folder; each download is checked against that release's checksums
-file before it is installed. rsync is Ubuntu's package, so its security
-fixes come as Ubuntu package updates, which a refresh build brings in (see
-[Build](#build)).
+rustup comes from its release archive, fzf, gh and PowerShell from their
+GitHub releases and rclone from its release folder; each download is checked
+against that release's checksums file before it is installed. uv, ty and ruff
+come from the installer each of their releases publishes, which checks the
+archive it downloads against the checksum it carries. rsync is Ubuntu's
+package, so its security fixes come as Ubuntu package updates, which a
+refresh build brings in (see [Build](#build)).
 
 ## Build
 
@@ -59,13 +61,14 @@ all of it, the toolchains included, into each new container before the shell
 starts.
 
 Downloads and compile outputs for cargo and uv go to BuildKit cache
-mounts, so a rebuild reuses them. Most installers fetch the latest release, and
-layer caching keeps whichever release was fetched first. Add `--no-cache` when
-you want every tool refreshed. After a security fix in the base image, in an
-apt package or in one of these tools, build with `--pull --no-cache` and start
-a new container from the new image: `--pull` fetches the newest base image, and
-a running container keeps the binaries it started with. What a new container
-keeps is in [Keeping state across rebuilds](#keeping-state-across-rebuilds).
+mounts, so a rebuild reuses them. The base image and every tool are pinned to
+exact versions (see [Versions](#versions)), so a rebuild installs the same
+releases, with `--no-cache` too; a fix in one of them arrives as a version
+update. After a security fix in an apt package, rebuild with the
+`--no-cache-filter workspace` below. Either way, start a new container from
+the new image: a running container keeps the binaries it started with. What
+a new container keeps is in
+[Keeping state across rebuilds](#keeping-state-across-rebuilds).
 
 den is the exception: each build resolves den's `main` to a commit, so a
 rebuild after `main` moves redoes the `workspace` stage and nothing before it.
@@ -76,23 +79,64 @@ runs `apt-get upgrade`, so this also brings the updates for the apt packages
 that the earlier stages installed. The zsh plugins den installs are pinned to
 commits in den itself, so they change only when `main` does.
 
+### Versions
+
+`docker/ubuntu/Dockerfile` pins every version the image installs: the base
+image by tag and digest (`BASE_IMAGE`), the Dockerfile syntax image on its
+first line by version and digest, and each tool by a `*_VERSION` build arg.
+apt packages are not pinned: they come from Ubuntu's archive as it is when
+the build runs, and the `workspace` stage's `apt-get upgrade` brings their
+updates. den is `main` (see above). yazi follows its own releases: yazi-build,
+pinned by `YAZI_BUILD_VERSION`, builds the release yazi's `shipped` tag names
+when the step runs.
+
+[Renovate](https://docs.renovatebot.com/) keeps the pins current, with the
+settings in `renovate.json` at the repository root:
+
+- It opens a pull request for each update: the base image, the syntax image,
+  each `*_VERSION` build arg and each GitHub Action the workflows use (those
+  are pinned to commit SHAs, with the version in a comment). A new major
+  version gets a pull request of its own.
+- It proposes a release only once it has been out for 7 days
+  (`minimumReleaseAge`), so a release that is withdrawn or found broken in its
+  first week never reaches the image. Its Dependency Dashboard issue lists the
+  updates still waiting.
+- It merges nothing: every pull request waits for a review. One that
+  changes the Dockerfile runs the `dev image` workflow, which builds the
+  image with the new version.
+
+Each `*_VERSION` build arg has a `# renovate:` comment on the line right
+above it, which names where Renovate looks up the releases (a datasource and
+a package name); keep the two together. To bump a version by hand, change the
+build arg's default in the Dockerfile, in the form the table below gives.
+To try another version without a commit, pass it as a build arg, for example
+`--build-arg RIPGREP_VERSION=15.2.0`. For the base image, keep the tag and
+take the digest from the `Digest:` line of
+`docker buildx imagetools inspect ubuntu:26.04`.
+
 ### Build ARGs
 
-Override any of these with `--build-arg NAME=value`.
+Override any of these with `--build-arg NAME=value`. A version build arg's
+default is the release pinned in the Dockerfile (see [Versions](#versions)).
 
 | ARG | Default | Meaning |
 | --- | --- | --- |
-| `BASE_IMAGE` | `ubuntu:26.04` | Base image. The apt steps assume Ubuntu (`ubuntu.sources`). |
+| `BASE_IMAGE` | `ubuntu:26.04` with its digest | Base image, by tag and digest. The apt steps assume Ubuntu (`ubuntu.sources`). |
 | `USERNAME` | `dev` | Account name. The entrypoint reads it from `/etc/container-user`. |
 | `USER_UID` | `1000` | Nonzero UID for the account. On Ubuntu, UID 1000 reuses the stock `ubuntu` account and renames it. The build fails if any other account already has the UID. |
 | `USER_GID` | `1000` | Nonzero primary GID. An existing group with this GID is reused. |
 | `RUSTUP_USE_CURL` | `0` | `1` selects rustup's deprecated curl backend as a TLS workaround. |
-| `FZF_VERSION` | `latest` | `latest`, or an exact fzf release without the `v` prefix. |
-| `NVM_VERSION` | `v0.40.7` | Exact nvm release, including the `v` prefix. |
-| `NODE_MAJOR` | `22` | Node major version; nvm installs it and makes it the default. |
-| `GH_VERSION` | `latest` | `latest`, or an exact apt version of gh from GitHub's repository. An exact version is held (`apt-mark hold gh`), so `apt-get upgrade` keeps it, in the build and in the container. |
-| `PWSH_VERSION` | `latest` | `latest`, or an exact PowerShell release without the `v` prefix. |
-| `RCLONE_VERSION` | `current` | `current`, or an exact rclone release including the `v` prefix. |
+| `RUSTUP_VERSION` | pinned | Exact rustup release, such as `1.29.2`. |
+| `RUST_VERSION` | pinned | Exact Rust release, such as `1.99.1`; rustup makes it the default toolchain. |
+| `BAT_VERSION`, `BOTTOM_VERSION`, `DU_DUST_VERSION`, `FD_FIND_VERSION`, `GIT_DELTA_VERSION`, `GITUI_VERSION`, `GREX_VERSION`, `HYPERFINE_VERSION`, `LSD_VERSION`, `PROCS_VERSION`, `RIPGREP_VERSION`, `SD_VERSION`, `TEALDEER_VERSION`, `XH_VERSION`, `ZOXIDE_VERSION`, `YAZI_BUILD_VERSION` | pinned | Exact release of each cargo-built crate (`du-dust`, `fd-find`, `git-delta` and `yazi-build` are crate names), such as `15.2.0`. |
+| `STARSHIP_VERSION` | pinned | Exact starship release without the `v` prefix. |
+| `UV_VERSION`, `TY_VERSION`, `RUFF_VERSION` | pinned | Exact uv, ty and ruff releases. |
+| `FZF_VERSION` | pinned | Exact fzf release without the `v` prefix. |
+| `NVM_VERSION` | pinned | Exact nvm release, including the `v` prefix. |
+| `NODE_VERSION` | pinned | Exact Node.js release, such as `22.23.4`; nvm installs it and makes it the default. A major version, such as `24`, takes that line's newest release. |
+| `GH_VERSION` | pinned | Exact gh release without the `v` prefix. |
+| `PWSH_VERSION` | pinned | Exact PowerShell release without the `v` prefix. |
+| `RCLONE_VERSION` | pinned | Exact rclone release including the `v` prefix. |
 | `TZ` | `Asia/Tokyo` | IANA time zone name. The container also exports it as `TZ`. |
 
 `TARGETARCH` comes from BuildKit (`--platform`); do not set it. A stage built

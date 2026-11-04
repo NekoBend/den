@@ -366,6 +366,24 @@ the command above in a `dev` step: `docker/README.md` shows how, under
 "Adding your own tools". den's eza cheatsheet stays, for machines that have
 eza.
 
+## 12. Pinned versions in the dev image (2026-11)
+
+`docker/ubuntu/Dockerfile` now pins every tool to an exact release, and
+Renovate proposes each update as a pull request (`docker/README.md`,
+"Versions"). What changes for a build with build args of your own:
+
+- `NODE_MAJOR` is gone: pass `NODE_VERSION`, an exact release or a major
+  version such as `24`. With `--build-arg NODE_MAJOR=...` Docker warns that
+  the build arg was not used, and the image gets the pinned Node.js.
+- `FZF_VERSION`, `GH_VERSION` and `PWSH_VERSION` no longer take `latest`,
+  nor `RCLONE_VERSION` `current`: the build fails on them. Pass an exact
+  release.
+- gh comes from its GitHub release, not from GitHub's apt repository. A
+  container from a rebuilt image has no `/etc/apt/sources.list.d/github-cli.list`,
+  so `apt-get upgrade` there leaves gh alone; a newer gh comes with a newer
+  image. A container you already have keeps the repository and what it
+  started with.
+
 ## Why there is no `den prune`
 
 Deliberate: a prune command needs a durable record of everything den has

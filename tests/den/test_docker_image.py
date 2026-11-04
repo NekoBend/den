@@ -160,12 +160,14 @@ def _run_scripts() -> list[tuple[str, str, dict[str, str], dict[str, str], str]]
 def _install_step(marker: str) -> tuple[str, dict[str, str], str]:
     """(USER, environment, body) of the RUN heredoc named ``marker``.
 
-    The environment is what the step runs with: its build args and the ENV,
-    which wins over a build arg of the same name.
+    The RUN line may hold flags (--mount) before the heredoc. The environment
+    is what the step runs with: its build args and the ENV, which wins over a
+    build arg of the same name.
     """
     for _, user, env, args, script in _run_scripts():
-        if script.startswith(f"<<'{marker}'\n"):
-            return user, {**args, **env}, script.partition("\n")[2]
+        line, _, body = script.partition("\n")
+        if line.rstrip().endswith(f"<<'{marker}'"):
+            return user, {**args, **env}, body
     raise AssertionError(f"the Dockerfile has no RUN <<'{marker}' step")
 
 
@@ -975,20 +977,17 @@ def _fake_program(output: str) -> bytes:
     return f"#!/bin/sh\necho {shlex.quote(output)}\n".encode()
 
 
-# curl that serves https://HOST/PATH from $FAKE_WEB/HOST/PATH. A HEAD request
-# (-I) writes the URL that $FAKE_WEB/HOST/PATH.redirect names for -w
-# '%{url_effective}'. It refuses a call without --proto =https and --tlsv1.2.
+# curl that serves https://HOST/PATH from $FAKE_WEB/HOST/PATH. It refuses a
+# call without --proto =https and --tlsv1.2.
 _CURL_STUB = """\
 printf 'curl %s\\n' "$*" >> "$CALLS_LOG"
-url='' out='' head='' write='' proto='' tls=''
+url='' out='' proto='' tls=''
 while [ "$#" -gt 0 ]; do
     case $1 in
         --proto) proto=$2; shift ;;
         --tlsv1.2) tls=1 ;;
         --retry) shift ;;
         -o) out=$2; shift ;;
-        -w) write=$2; shift ;;
-        -*I*) head=1 ;;
         -*) ;;
         *) url=$1 ;;
     esac
@@ -1000,21 +999,17 @@ if [ "$proto" != =https ] || [ "$tls" != 1 ]; then
 fi
 case $url in https://*) ;; *) echo "curl stub: $url" >&2; exit 2 ;; esac
 file=$FAKE_WEB/${url#https://}
-if [ -n "$head" ]; then
-    target=$url
-    [ ! -f "$file.redirect" ] || target=$(cat "$file.redirect")
-    [ "$write" != '%{url_effective}' ] || printf '%s' "$target"
-    exit 0
-fi
 [ -f "$file" ] || { echo "curl: (22) HTTP 404: $url" >&2; exit 22; }
 if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi
 """
 # The commands an install step runs after its download check: they only log
-# their arguments, pwsh prints a version, and dpkg the target architecture.
+# their arguments, gh and pwsh print a version, and dpkg the target
+# architecture.
 _BUILD_STUBS = {
     "apt-get": "",
     "apt-mark": "",
     "dpkg": 'echo "$TARGETARCH"',
+    "gh": "echo 'gh version 9.9.1'",
     "pwsh": "echo 'PowerShell 7.9.1'",
 }
 
@@ -1024,17 +1019,18 @@ def _run_install(
     marker: str,
     web: dict[str, bytes],
     *,
-    redirects: dict[str, str] | None = None,
     arch: str = "amd64",
     env: dict[str, str] | None = None,
     paths: dict[str, str] | None = None,
+    stubs: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str, Path]:
     """Run the RUN <<'marker' step against a fake web of ``web`` (URL -> body).
 
     It runs with the step's build args and ENV, as the Dockerfile's SHELL
     (bash -euo pipefail -c) does, but with HOME and TMPDIR in tmp_path and the
-    stubs first on PATH; the apt lists it deletes are a directory in tmp_path,
-    and ``paths`` replaces other paths in the step (old -> new).
+    stubs first on PATH; ``stubs`` adds more (name -> script after the line
+    that logs the call). The apt lists it deletes are a directory in
+    tmp_path, and ``paths`` replaces other paths in the step (old -> new).
     Returns the result, the call log and HOME.
     """
     bash = _tool("bash")
@@ -1052,16 +1048,12 @@ def _run_install(
         path = root / url.removeprefix("https://")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    for url, target in (redirects or {}).items():
-        path = root / (url.removeprefix("https://") + ".redirect")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(target, encoding="utf-8")
-    stubs = tmp_path / "stubs"
-    stubs.mkdir()
+    stub_dir = tmp_path / "stubs"
+    stub_dir.mkdir()
     log = tmp_path / "calls.log"
     log.touch()
-    for name, stub in {"curl": _CURL_STUB, **_BUILD_STUBS}.items():
-        path = stubs / name
+    for name, stub in {"curl": _CURL_STUB, **_BUILD_STUBS, **(stubs or {})}.items():
+        path = stub_dir / name
         path.write_text(
             f'#!{bash}\nprintf "{name} %s\\n" "$*" >> "$CALLS_LOG"\n{stub}\n'
             if name != "curl"
@@ -1076,7 +1068,7 @@ def _run_install(
     run_env = {
         **step_env,
         "HOME": str(home),
-        "PATH": f"{stubs}:{SYSTEM_PATH}",
+        "PATH": f"{stub_dir}:{SYSTEM_PATH}",
         "TMPDIR": str(scratch),
         "TARGETARCH": arch,
         "FAKE_WEB": str(root),
@@ -1121,14 +1113,15 @@ def _fzf_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
     return web
 
 
-_FZF_LATEST = {f"{_FZF}/latest": f"{_FZF}/tag/v0.99.1"}
+# The release the fake web serves, in place of the one the Dockerfile pins.
+_FZF_RELEASE = {"FZF_VERSION": "0.99.1"}
 
 
 @_needs(*_INSTALL_TOOLS)
 @pytest.mark.parametrize("arch", ["amd64", "arm64"])
 def test_fzf_comes_from_its_release_into_the_user_bin(tmp_path, arch):
     result, calls, home = _run_install(
-        tmp_path, "INSTALL_FZF", _fzf_web(), redirects=_FZF_LATEST, arch=arch
+        tmp_path, "INSTALL_FZF", _fzf_web(), env=_FZF_RELEASE, arch=arch
     )
     assert result.returncode == 0, result.stderr
     fzf = home / ".local" / "bin" / "fzf"
@@ -1143,7 +1136,7 @@ def test_fzf_comes_from_its_release_into_the_user_bin(tmp_path, arch):
     ids=["other-contents", "not-listed"],
 )
 def test_fzf_that_its_checksums_do_not_vouch_for_is_not_installed(tmp_path, web):
-    result, _, home = _run_install(tmp_path, "INSTALL_FZF", web, redirects=_FZF_LATEST)
+    result, _, home = _run_install(tmp_path, "INSTALL_FZF", web, env=_FZF_RELEASE)
     assert result.returncode != 0
     assert not (home / ".local" / "bin" / "fzf").exists()
 
@@ -1179,7 +1172,7 @@ def _pwsh_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]
     return web
 
 
-_PWSH_LATEST = {f"{_PWSH}/latest": f"{_PWSH}/tag/v7.9.1"}
+_PWSH_RELEASE = {"PWSH_VERSION": "7.9.1"}
 
 
 def test_powershell_is_installed_by_root():
@@ -1193,7 +1186,7 @@ def test_powershell_is_installed_by_root():
 @pytest.mark.parametrize("arch", ["amd64", "arm64"])
 def test_powershell_comes_from_its_release_as_a_package(tmp_path, arch):
     result, calls, _ = _run_install(
-        tmp_path, "INSTALL_PWSH", _pwsh_web(), redirects=_PWSH_LATEST, arch=arch
+        tmp_path, "INSTALL_PWSH", _pwsh_web(), env=_PWSH_RELEASE, arch=arch
     )
     assert result.returncode == 0, result.stderr
     installs = [
@@ -1210,9 +1203,7 @@ def test_powershell_comes_from_its_release_as_a_package(tmp_path, arch):
     ids=["other-contents", "not-listed"],
 )
 def test_powershell_that_its_hashes_do_not_vouch_for_is_not_installed(tmp_path, web):
-    result, calls, _ = _run_install(
-        tmp_path, "INSTALL_PWSH", web, redirects=_PWSH_LATEST
-    )
+    result, calls, _ = _run_install(tmp_path, "INSTALL_PWSH", web, env=_PWSH_RELEASE)
     assert result.returncode != 0
     assert "apt-get" not in calls
 
@@ -1237,47 +1228,70 @@ def test_powershell_telemetry_and_update_check_are_off_in_the_image_env():
 
 # gh
 
-_GH_KEYRING = "https://cli.github.com/packages/githubcli-archive-keyring.gpg"
+_GH = "https://github.com/cli/cli/releases"
+_GH_RELEASE = {"GH_VERSION": "9.9.1"}
 
 
-@_needs("bash", "install", "sed")
-@pytest.mark.parametrize(
-    ("gh_version", "package", "held"),
-    [("latest", "gh", False), ("2.99.0", "gh=2.99.0", True)],
-    ids=["latest-upgrades", "exact-is-held"],
-)
-def test_gh_at_an_exact_version_is_held_against_the_upgrade(
-    tmp_path, gh_version, package, held
-):
-    # The workspace stage's apt-get upgrade moves every package that is not
-    # held to the newest version in its repository, and GitHub's repository
-    # stays enabled: gh at an exact GH_VERSION came out of the image at the
-    # newest version. latest is left to the upgrade.
-    sysconf = tmp_path / "sysconf" / "apt"
-    (sysconf / "sources.list.d").mkdir(parents=True)
-    (sysconf / "sources.list.d" / "ubuntu.sources").write_text(
-        "URIs: http://archive.ubuntu.com/ubuntu/\n", encoding="utf-8"
-    )
+def _gh_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
+    """gh 9.9.1 packages, with the release's checksums file.
+
+    The arguments work as _fzf_web's do.
+    """
+    web = {}
+    sums = [f"{_sha256(b'gh tarball')}  gh_9.9.1_linux_amd64.tar.gz\n"]
+    for arch in ("amd64", "arm64"):
+        name = f"gh_9.9.1_linux_{arch}.deb"
+        package = f"gh package for {arch}".encode()
+        if listed or arch != "amd64":
+            sums.append(f"{_sha256(package)}  {name}\n")
+        if arch == served_arch:
+            package = b"tampered package"
+        web[f"{_GH}/download/v9.9.1/{name}"] = package
+    web[f"{_GH}/download/v9.9.1/gh_9.9.1_checksums.txt"] = "".join(sums).encode()
+    return web
+
+
+def test_gh_is_installed_by_root():
+    # A system package for every user; apt-get needs root.
+    user, env, _ = _install_step("INSTALL_GH")
+    assert user == "root"
+    assert env["PATH"] == SYSTEM_PATH
+
+
+@_needs(*_INSTALL_TOOLS)
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_gh_comes_from_its_release_as_a_package(tmp_path, arch):
+    # GitHub's apt repository lists only its newest gh, so `apt-get install
+    # gh=<pinned>` failed once a newer gh was out.
     result, calls, _ = _run_install(
-        tmp_path,
-        "INSTALL_UTILITIES_DEPS",
-        {_GH_KEYRING: b"keyring"},
-        env={"GH_VERSION": gh_version},
-        paths={"/etc/apt/": f"{sysconf}/"},
+        tmp_path, "INSTALL_GH", _gh_web(), env=_GH_RELEASE, arch=arch
     )
     assert result.returncode == 0, result.stderr
-    apt = [line for line in calls.splitlines() if line.startswith("apt-")]
-    gh = next(
-        i
-        for i, line in enumerate(apt)
-        if line.startswith("apt-get install") and package in line.split()
-    )
-    holds = [line for line in apt if line.startswith("apt-mark")]
-    if held:
-        assert holds == ["apt-mark hold gh"], calls
-        assert apt.index("apt-mark hold gh") > gh, calls
-    else:
-        assert holds == [], calls
+    installs = [
+        line for line in calls.splitlines() if line.startswith("apt-get install")
+    ]
+    assert len(installs) == 1, calls
+    assert installs[0].endswith(f"/gh_9.9.1_linux_{arch}.deb"), calls
+
+
+@_needs(*_INSTALL_TOOLS)
+@pytest.mark.parametrize(
+    "web",
+    [_gh_web(served_arch="amd64"), _gh_web(listed=False)],
+    ids=["other-contents", "not-listed"],
+)
+def test_gh_that_its_checksums_do_not_vouch_for_is_not_installed(tmp_path, web):
+    result, calls, _ = _run_install(tmp_path, "INSTALL_GH", web, env=_GH_RELEASE)
+    assert result.returncode != 0
+    assert "apt-get" not in calls
+
+
+def test_no_step_adds_githubs_apt_repository_or_holds_a_package():
+    # Its index lists only the newest gh, so it cannot serve a pinned one, and
+    # with no package from it there is nothing for apt-mark hold to keep.
+    for stage, _, _, _, script in _run_scripts():
+        assert "cli.github.com" not in script, stage
+        assert "apt-mark" not in script, stage
 
 
 # rclone
@@ -1304,12 +1318,12 @@ def _fake_rclone(output: str) -> bytes:
 
 
 def _rclone_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
-    """rclone v1.99.1 as the current release, with its PGP-signed SHA256SUMS.
+    """rclone v1.99.1, with its PGP-signed SHA256SUMS.
 
     The archives are also served under their rclone-current names, which the
     download used before it was checked. The arguments work as _fzf_web's do.
     """
-    web = {f"{_RCLONE}/version.txt": b"rclone v1.99.1\n"}
+    web = {}
     sums = ["-----BEGIN PGP SIGNED MESSAGE-----\n", "Hash: SHA1\n", "\n"]
     for arch in ("amd64", "arm64"):
         name = f"rclone-v1.99.1-linux-{arch}.zip"
@@ -1334,11 +1348,14 @@ def _rclone_web(*, served_arch: str = "", listed: bool = True) -> dict[str, byte
     return web
 
 
+_RCLONE_RELEASE = {"RCLONE_VERSION": "v1.99.1"}
+
+
 @_needs(*_INSTALL_TOOLS, "unzip")
 @pytest.mark.parametrize("arch", ["amd64", "arm64"])
-def test_rclone_comes_from_the_current_release_folder(tmp_path, arch):
+def test_rclone_comes_from_its_release_folder(tmp_path, arch):
     result, calls, home = _run_install(
-        tmp_path, "INSTALL_RCLONE", _rclone_web(), arch=arch
+        tmp_path, "INSTALL_RCLONE", _rclone_web(), env=_RCLONE_RELEASE, arch=arch
     )
     assert result.returncode == 0, result.stderr
     rclone = home / ".local" / "bin" / "rclone"
@@ -1356,7 +1373,7 @@ def test_rclone_comes_from_the_current_release_folder(tmp_path, arch):
 )
 def test_rclone_that_its_sha256sums_do_not_vouch_for_is_not_installed(tmp_path, web):
     # Before the check, the image installed whatever the download gave.
-    result, _, home = _run_install(tmp_path, "INSTALL_RCLONE", web)
+    result, _, home = _run_install(tmp_path, "INSTALL_RCLONE", web, env=_RCLONE_RELEASE)
     assert result.returncode != 0
     assert not (home / ".local" / "bin" / "rclone").exists()
 
@@ -1391,6 +1408,234 @@ def test_the_last_stage_upgrades_apt_packages_before_it_changes_their_conffiles(
     ]
     assert appends, "the parser no longer sees the startup files"
     assert upgrades[0] < min(appends)
+
+
+# --- versions ------------------------------------------------------------------
+
+# Renovate's customManagers:dockerfileVersions preset (renovate.json extends
+# it): its regex, as https://docs.renovatebot.com/presets-customManagers/
+# gives it, with Python's spelling of named groups. A comment it does not
+# match is a version Renovate never updates.
+_RENOVATE_DOCKERFILE_VERSIONS = re.compile(
+    (
+        r"# renovate: datasource=(?<datasource>[a-zA-Z0-9-._]+?)"
+        r" depName=(?<depName>[^\s]+?)"
+        r"(?: (lookupName|packageName)=(?<packageName>[^\s]+?))?"
+        r"(?: versioning=(?<versioning>[^\s]+?))?"
+        r"(?: extractVersion=(?<extractVersion>[^\s]+?))?"
+        r"(?: registryUrl=(?<registryUrl>[^\s]+?))?"
+        r"\s(?:ENV|ARG)\s+[A-Za-z0-9_]+?_VERSION[ =][\"']?(?<currentValue>.+?)[\"']?\s"
+    ).replace("(?<", "(?P<")
+)
+# The datasources whose releases carry a publish date on the registries the
+# image uses (https://docs.renovatebot.com/key-concepts/minimum-release-age/).
+# renovate.json's minimumReleaseAge requires one: without it, Renovate holds
+# an update for good.
+_DATED_DATASOURCES = {
+    "crate",
+    "github-releases",
+    "github-tags",
+    "node-version",
+    "rust-version",
+}
+_EXACT_VERSION = re.compile(r"v?\d+\.\d+\.\d+")
+
+
+def _version_args() -> dict[str, str]:
+    """Each ARG *_VERSION in the Dockerfile and its default."""
+    found = {}
+    for line in _text().splitlines():
+        match = re.fullmatch(r"ARG (\w+_VERSION)(?:=(\S*))?", line.strip())
+        if match:
+            assert match.group(1) not in found, f"{match.group(1)} is declared twice"
+            found[match.group(1)] = match.group(2) or ""
+    return found
+
+
+def _renovate_deps() -> dict[str, dict[str, str | None]]:
+    """What the preset reads from the Dockerfile, by build arg name."""
+    deps = {}
+    for match in _RENOVATE_DOCKERFILE_VERSIONS.finditer(_text()):
+        name = re.search(r"(?:ENV|ARG)\s+(\w+?_VERSION)", match.group(0))
+        assert name
+        deps[name.group(1)] = match.groupdict()
+    return deps
+
+
+def test_every_version_build_arg_is_an_exact_release():
+    # latest and current took whatever was newest on the day of the build.
+    args = _version_args()
+    assert len(args) > 20, "the scan no longer finds the version build args"
+    for name, value in args.items():
+        assert _EXACT_VERSION.fullmatch(value), f"{name}={value}"
+
+
+def test_renovate_reads_every_version_build_arg_from_the_comment_above_it():
+    # The preset's regex allows one whitespace character between the comment
+    # and the ARG: a version whose comment is missing, misspelt or not on the
+    # line right above it stays where it is.
+    args = _version_args()
+    deps = _renovate_deps()
+    assert set(deps) == set(args), set(args) ^ set(deps)
+    for name, dep in deps.items():
+        assert dep["currentValue"] == args[name], name
+        assert dep["datasource"] in _DATED_DATASOURCES, (name, dep["datasource"])
+        assert dep["depName"], name
+
+
+def test_the_base_image_and_the_syntax_image_are_pinned_by_digest():
+    # A tag alone is whatever its registry serves today.
+    lines = _text().splitlines()
+    assert re.fullmatch(
+        r"# syntax=docker/dockerfile:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", lines[0]
+    ), lines[0]
+    base = [line for line in lines if line.startswith("ARG BASE_IMAGE=")]
+    assert len(base) == 1, base
+    assert re.fullmatch(r"ARG BASE_IMAGE=ubuntu:\d+\.\d+@sha256:[0-9a-f]{64}", base[0])
+    stages: list[str] = []
+    for keyword, rest in _instructions():
+        if keyword == "FROM":
+            image, *alias = rest.split()
+            assert image in {"${BASE_IMAGE}", "scratch", *stages}, rest
+            stages += alias[-1:]
+    assert _instructions()[0] == ("ARG", base[0].removeprefix("ARG "))
+
+
+def test_every_version_build_arg_reaches_a_build_step():
+    # A pin no step reads leaves its tool at whatever the step fetches.
+    scripts = _run_scripts()
+    for name in _version_args():
+        assert any(
+            name in args and re.search(rf"\$\{{?{name}\b", script)
+            for _, _, _, args, script in scripts
+        ), name
+
+
+def test_every_download_url_is_built_from_a_version():
+    # releases/latest, version.txt, sh.rustup.rs and the unversioned
+    # installers each served whatever was newest on the day of the build.
+    for stage, _, _, _, script in _run_scripts():
+        for args in _curl_commands(script):
+            assert not any(re.fullmatch(r"-\w*I\w*", arg) for arg in args), args
+            urls = [arg for arg in args if "://" in arg or arg.startswith("$")]
+            assert urls, f"{stage}: curl {shlex.join(args)}"
+            for url in urls:
+                assert "$" in url, f"{stage}: {url}"
+
+
+# Rust
+
+_RUSTUP = "https://static.rust-lang.org/rustup/archive"
+_TRIPLES = {"amd64": "x86_64-unknown-linux-gnu", "arm64": "aarch64-unknown-linux-gnu"}
+_RUST_RELEASE = {"RUSTUP_VERSION": "9.9.1", "RUST_VERSION": "1.999.0"}
+
+
+def _rustup_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
+    """rustup-init 9.9.1 for both architectures, each with its .sha256 file.
+
+    The fake rustup-init logs its arguments. The arguments work as _fzf_web's
+    do; ``listed=False`` gives amd64 a .sha256 file for another file.
+    """
+    web = {}
+    for arch, triple in _TRIPLES.items():
+        program = (
+            f'#!/bin/sh\nprintf \'rustup-init {arch} %s\\n\' "$*" >> "$CALLS_LOG"\n'
+        ).encode()
+        name = "./rustup-init" if listed or arch != "amd64" else "./rustup-init.exe"
+        web[f"{_RUSTUP}/9.9.1/{triple}/rustup-init.sha256"] = (
+            f"{_sha256(program)} *{name}\n".encode()
+        )
+        if arch == served_arch:
+            program += b"# tampered\n"
+        web[f"{_RUSTUP}/9.9.1/{triple}/rustup-init"] = program
+    return web
+
+
+@_needs(*_INSTALL_TOOLS)
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_rustup_installs_the_pinned_rust_release(tmp_path, arch):
+    result, calls, _ = _run_install(
+        tmp_path, "INSTALL_RUST", _rustup_web(), env=_RUST_RELEASE, arch=arch
+    )
+    assert result.returncode == 0, result.stderr
+    runs = [line for line in calls.splitlines() if line.startswith("rustup-init")]
+    assert runs == [
+        f"rustup-init {arch} -y --no-modify-path --profile minimal"
+        " --default-toolchain 1.999.0 --component rustfmt,clippy"
+    ], calls
+
+
+@_needs(*_INSTALL_TOOLS)
+@pytest.mark.parametrize(
+    "web",
+    [_rustup_web(served_arch="amd64"), _rustup_web(listed=False)],
+    ids=["other-contents", "not-listed"],
+)
+def test_rustup_init_that_its_sha256_does_not_vouch_for_is_not_run(tmp_path, web):
+    result, calls, _ = _run_install(tmp_path, "INSTALL_RUST", web, env=_RUST_RELEASE)
+    assert result.returncode != 0
+    assert "rustup-init" not in "".join(
+        line for line in calls.splitlines() if not line.startswith("curl")
+    )
+
+
+# cargo
+
+# A cargo that only logs its arguments.
+_CARGO_STUB = ""
+
+
+def _run_cargo_step(
+    tmp_path: Path, marker: str
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Run a cargo step with cargo, yazi and ya as stubs.
+
+    yazi-build's leftovers it deletes from /tmp are a directory in tmp_path.
+    """
+    result, calls, _ = _run_install(
+        tmp_path,
+        marker,
+        {},
+        paths=(
+            {"rm -rf /tmp/yazi-build-": f"rm -rf {tmp_path}/yazi-build-"}
+            if marker == "INSTALL_YAZI"
+            else {}
+        ),
+        stubs={"cargo": _CARGO_STUB, "yazi": "", "ya": ""},
+    )
+    return result, calls
+
+
+def _cargo_calls(calls: str) -> list[list[str]]:
+    """The arguments of each cargo call in a call log."""
+    return [
+        line.split()[1:] for line in calls.splitlines() if line.startswith("cargo ")
+    ]
+
+
+@_needs("bash")
+def test_cargo_installs_each_crate_at_the_release_its_comment_names(tmp_path):
+    # cargo install takes name@1.2.3 as exactly that release; Renovate updates
+    # the build arg under the crate its comment names.
+    crates = {
+        dep["depName"]: name
+        for name, dep in _renovate_deps().items()
+        if dep["datasource"] == "crate"
+    }
+    assert len(crates) > 10, crates
+    installed: list[str] = []
+    for marker in ("INSTALL_CRATES", "INSTALL_YAZI"):
+        step_dir = tmp_path / marker
+        step_dir.mkdir()
+        result, calls = _run_cargo_step(step_dir, marker)
+        assert result.returncode == 0, result.stderr
+        args, *_ = _cargo_calls(calls)
+        assert args[:2] == ["install", "--locked"], args
+        installed += args[2:]
+    args = _version_args()
+    assert sorted(installed) == sorted(
+        f"{crate}@{args[name]}" for crate, name in crates.items()
+    )
 
 
 # --- the CI workflow that builds the image -------------------------------------
