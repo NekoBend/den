@@ -1581,14 +1581,14 @@ def test_rustup_init_that_its_sha256_does_not_vouch_for_is_not_run(tmp_path, web
 
 # cargo
 
-# A cargo that only logs its arguments.
-_CARGO_STUB = ""
+# A cargo that logs the parallel job limit it got and its arguments.
+_CARGO_STUB = 'echo "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS-unset}" >> "$CALLS_LOG"'
 
 
 def _run_cargo_step(
-    tmp_path: Path, marker: str
+    tmp_path: Path, marker: str, build_jobs: str
 ) -> tuple[subprocess.CompletedProcess[str], str]:
-    """Run a cargo step with cargo, yazi and ya as stubs.
+    """Run a cargo step with BUILD_JOBS, cargo, yazi and ya as stubs.
 
     yazi-build's leftovers it deletes from /tmp are a directory in tmp_path.
     """
@@ -1596,6 +1596,7 @@ def _run_cargo_step(
         tmp_path,
         marker,
         {},
+        env={"BUILD_JOBS": build_jobs},
         paths=(
             {"rm -rf /tmp/yazi-build-": f"rm -rf {tmp_path}/yazi-build-"}
             if marker == "INSTALL_YAZI"
@@ -1606,11 +1607,38 @@ def _run_cargo_step(
     return result, calls
 
 
-def _cargo_calls(calls: str) -> list[list[str]]:
-    """The arguments of each cargo call in a call log."""
+def _cargo_calls(calls: str) -> list[tuple[str, list[str]]]:
+    """(CARGO_BUILD_JOBS, arguments) per cargo call in a call log."""
+    lines = calls.splitlines()
     return [
-        line.split()[1:] for line in calls.splitlines() if line.startswith("cargo ")
+        (lines[i + 1].partition("=")[2], line.split()[1:])
+        for i, line in enumerate(lines)
+        if line.startswith("cargo ")
     ]
+
+
+@_needs("bash")
+@pytest.mark.parametrize("marker", ["INSTALL_CRATES", "INSTALL_YAZI"])
+@pytest.mark.parametrize(("build_jobs", "limit"), [("", "unset"), ("3", "3")])
+def test_build_jobs_reaches_every_cargo_build(tmp_path, marker, build_jobs, limit):
+    # Empty leaves cargo's own default (one job per logical CPU).
+    result, calls = _run_cargo_step(tmp_path, marker, build_jobs)
+    assert result.returncode == 0, result.stderr
+    cargo = _cargo_calls(calls)
+    assert len(cargo) == 1, calls
+    assert cargo[0][0] == limit
+
+
+@_needs("bash")
+@pytest.mark.parametrize("marker", ["INSTALL_CRATES", "INSTALL_YAZI"])
+@pytest.mark.parametrize("build_jobs", ["0", "-1", "four"])
+def test_a_build_jobs_that_is_no_positive_number_stops_the_build(
+    tmp_path, marker, build_jobs
+):
+    result, calls = _run_cargo_step(tmp_path, marker, build_jobs)
+    assert result.returncode != 0
+    assert "BUILD_JOBS" in result.stderr
+    assert not _cargo_calls(calls)
 
 
 @_needs("bash")
@@ -1627,15 +1655,75 @@ def test_cargo_installs_each_crate_at_the_release_its_comment_names(tmp_path):
     for marker in ("INSTALL_CRATES", "INSTALL_YAZI"):
         step_dir = tmp_path / marker
         step_dir.mkdir()
-        result, calls = _run_cargo_step(step_dir, marker)
+        result, calls = _run_cargo_step(step_dir, marker, "")
         assert result.returncode == 0, result.stderr
-        args, *_ = _cargo_calls(calls)
+        (_, args), *_ = _cargo_calls(calls)
         assert args[:2] == ["install", "--locked"], args
         installed += args[2:]
     args = _version_args()
     assert sorted(installed) == sorted(
         f"{crate}@{args[name]}" for crate, name in crates.items()
     )
+
+
+# apt
+
+_NO_PIPELINING = 'Acquire::http::Pipeline-Depth "0";\n'
+
+
+@_needs("bash")
+@pytest.mark.parametrize(
+    ("setting", "conf"), [("1", None), ("0", _NO_PIPELINING)], ids=["on", "off"]
+)
+def test_apt_http_pipelining_is_turned_off_only_on_request(tmp_path, setting, conf):
+    # On some networks apt-get update fails with "Hash Sum mismatch" while the
+    # same files download intact without pipelining.
+    conf_dir = tmp_path / "apt.conf.d"
+    conf_dir.mkdir()
+    result, _, _ = _run_install(
+        tmp_path,
+        "CONFIGURE_APT",
+        {},
+        env={"APT_HTTP_PIPELINING": setting},
+        paths={"/etc/apt/apt.conf.d/": f"{conf_dir}/"},
+    )
+    assert result.returncode == 0, result.stderr
+    written = {
+        path.name: path.read_text(encoding="utf-8") for path in conf_dir.iterdir()
+    }
+    assert written == ({} if conf is None else {"90-no-http-pipelining": conf})
+
+
+@_needs("bash")
+def test_an_apt_http_pipelining_other_than_0_or_1_stops_the_build(tmp_path):
+    conf_dir = tmp_path / "apt.conf.d"
+    conf_dir.mkdir()
+    result, _, _ = _run_install(
+        tmp_path,
+        "CONFIGURE_APT",
+        {},
+        env={"APT_HTTP_PIPELINING": "off"},
+        paths={"/etc/apt/apt.conf.d/": f"{conf_dir}/"},
+    )
+    assert result.returncode != 0
+    assert "APT_HTTP_PIPELINING" in result.stderr
+    assert not any(conf_dir.iterdir())
+
+
+def test_apt_http_pipelining_is_set_before_any_apt_get():
+    # Every later stage starts from the first one's files, so the setting there
+    # reaches every apt-get of the build.
+    scripts = _run_scripts()
+    first_apt = next(i for i, (*_, script) in enumerate(scripts) if "apt-get" in script)
+    configure = [
+        i
+        for i, (*_, script) in enumerate(scripts)
+        if script.startswith("<<'CONFIGURE_APT'")
+    ]
+    assert configure, "no RUN <<'CONFIGURE_APT' step"
+    assert configure[0] < first_apt
+    stage, user, _, _, _ = scripts[configure[0]]
+    assert (stage, user) == (_stages()[0][0], "root")
 
 
 # --- the CI workflow that builds the image -------------------------------------

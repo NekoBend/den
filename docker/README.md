@@ -122,12 +122,14 @@ default is the release pinned in the Dockerfile (see [Versions](#versions)).
 | ARG | Default | Meaning |
 | --- | --- | --- |
 | `BASE_IMAGE` | `ubuntu:26.04` with its digest | Base image, by tag and digest. The apt steps assume Ubuntu (`ubuntu.sources`). |
+| `APT_HTTP_PIPELINING` | `1` | `1` leaves apt's HTTP pipelining on, as apt ships it. `0` turns it off for every `apt-get` in the build, and in the container too (`/etc/apt/apt.conf.d/90-no-http-pipelining`): on some networks `apt-get update` fails with `Hash Sum mismatch` while the same files download intact without pipelining. |
 | `USERNAME` | `dev` | Account name. The entrypoint reads it from `/etc/container-user`. |
 | `USER_UID` | `1000` | Nonzero UID for the account. On Ubuntu, UID 1000 reuses the stock `ubuntu` account and renames it. The build fails if any other account already has the UID. |
 | `USER_GID` | `1000` | Nonzero primary GID. An existing group with this GID is reused. |
 | `RUSTUP_USE_CURL` | `0` | `1` selects rustup's deprecated curl backend as a TLS workaround. |
 | `RUSTUP_VERSION` | pinned | Exact rustup release, such as `1.29.2`. |
 | `RUST_VERSION` | pinned | Exact Rust release, such as `1.99.1`; rustup makes it the default toolchain. |
+| `BUILD_JOBS` | empty | The most compile jobs each cargo build runs at once (cargo's `CARGO_BUILD_JOBS`), a positive number. Empty leaves cargo's default, one per logical CPU. Lower it when the Rust tools' compile runs out of memory; cargo is the only compiler the build runs. Changing it rebuilds the Rust tools. |
 | `BAT_VERSION`, `BOTTOM_VERSION`, `DU_DUST_VERSION`, `FD_FIND_VERSION`, `GIT_DELTA_VERSION`, `GITUI_VERSION`, `GREX_VERSION`, `HYPERFINE_VERSION`, `LSD_VERSION`, `PROCS_VERSION`, `RIPGREP_VERSION`, `SD_VERSION`, `TEALDEER_VERSION`, `XH_VERSION`, `ZOXIDE_VERSION`, `YAZI_BUILD_VERSION` | pinned | Exact release of each cargo-built crate (`du-dust`, `fd-find`, `git-delta` and `yazi-build` are crate names), such as `15.2.0`. |
 | `STARSHIP_VERSION` | pinned | Exact starship release without the `v` prefix. |
 | `UV_VERSION`, `TY_VERSION`, `RUFF_VERSION` | pinned | Exact uv, ty and ruff releases. |

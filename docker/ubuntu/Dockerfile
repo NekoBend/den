@@ -14,6 +14,20 @@ FROM ${BASE_IMAGE} AS system
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
+# Build setting: 1 leaves apt's HTTP pipelining on, as apt ships it; 0 turns
+# it off for every apt-get in the build and in the container. On some
+# networks apt-get update fails with "Hash Sum mismatch" while the same files
+# download intact without pipelining. https sources take the http setting
+# (apt-transport-https(1)).
+ARG APT_HTTP_PIPELINING=1
+RUN <<'CONFIGURE_APT'
+case "$APT_HTTP_PIPELINING" in
+    1) ;;
+    0) printf 'Acquire::http::Pipeline-Depth "0";\n' > /etc/apt/apt.conf.d/90-no-http-pipelining ;;
+    *) echo "APT_HTTP_PIPELINING must be 0 or 1, not '$APT_HTTP_PIPELINING'" >&2; exit 2 ;;
+esac
+CONFIGURE_APT
+
 # 1. OS packages and user. Compilers remain available for development.
 # fzf is not taken from apt: Ubuntu's package trails fzf's releases, so the
 # tools stage installs fzf's own release.
@@ -99,6 +113,12 @@ chmod 0755 "$work_dir/rustup-init"
     --default-toolchain "$RUST_VERSION" --component rustfmt,clippy
 INSTALL_RUST
 
+# Build setting: the most compile jobs each cargo build below runs at once
+# (cargo's CARGO_BUILD_JOBS), for a machine whose memory cannot hold one job
+# per CPU. Empty leaves cargo's default, one per logical CPU. These cargo
+# builds are the image's only compiles; the cargo that yazi-build starts
+# inherits the limit.
+ARG BUILD_JOBS=
 # One build arg per crate, so Renovate proposes each crate's update on its own.
 # renovate: datasource=crate depName=bat versioning=semver
 ARG BAT_VERSION=0.26.1
@@ -137,6 +157,8 @@ ARG ZOXIDE_VERSION=0.10.0
 RUN --mount=type=cache,id=cargo-registry-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/registry,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     --mount=type=cache,id=cargo-git-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/git,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     --mount=type=cache,id=cargo-target-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/cargo-target,uid=${USER_UID},gid=${USER_GID},sharing=locked <<'INSTALL_CRATES'
+[[ -z "$BUILD_JOBS" || "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "BUILD_JOBS must be empty or a positive number, not '$BUILD_JOBS'" >&2; exit 2; }
+[[ -z "$BUILD_JOBS" ]] || export CARGO_BUILD_JOBS=$BUILD_JOBS
 CARGO_TARGET_DIR="$HOME/.cache/cargo-target" cargo install --locked \
     "bat@$BAT_VERSION" "bottom@$BOTTOM_VERSION" "du-dust@$DU_DUST_VERSION" \
     "fd-find@$FD_FIND_VERSION" "git-delta@$GIT_DELTA_VERSION" "gitui@$GITUI_VERSION" \
@@ -154,6 +176,8 @@ INSTALL_CRATES
 ARG YAZI_BUILD_VERSION=26.9.1
 RUN --mount=type=cache,id=cargo-registry-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/registry,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     --mount=type=cache,id=cargo-git-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/git,uid=${USER_UID},gid=${USER_GID},sharing=locked <<'INSTALL_YAZI'
+[[ -z "$BUILD_JOBS" || "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "BUILD_JOBS must be empty or a positive number, not '$BUILD_JOBS'" >&2; exit 2; }
+[[ -z "$BUILD_JOBS" ]] || export CARGO_BUILD_JOBS=$BUILD_JOBS
 cargo install --locked "yazi-build@$YAZI_BUILD_VERSION"
 command -v yazi && command -v ya
 rm -rf /tmp/yazi-build-*
