@@ -1,13 +1,33 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 # Development image. Save with LF line endings; usage: docker/README.md.
 # ARG settings: override with --build-arg NAME=value.
 # HOST_UID/HOST_GID and FIX_WORKSPACE_OWNERSHIP: runtime settings, passed with -e.
+# Every version below is an exact pin, and Renovate (renovate.json) proposes
+# each update as a pull request; apt packages (Ubuntu's archive) and den (its
+# main branch) are not pinned. The "# renovate:" comment above a *_VERSION
+# build arg says where Renovate looks up its releases; keep it on the line
+# right above the ARG, which is where Renovate reads it.
 
-ARG BASE_IMAGE=ubuntu:26.04
+# Build setting: the base image, by tag and digest. The apt steps assume Ubuntu.
+ARG BASE_IMAGE=ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 FROM ${BASE_IMAGE} AS system
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# Build setting: 1 leaves apt's HTTP pipelining on, as apt ships it; 0 turns
+# it off for every apt-get in the build and in the container. On some
+# networks apt-get update fails with "Hash Sum mismatch" while the same files
+# download intact without pipelining. https sources take the http setting
+# (apt-transport-https(1)).
+ARG APT_HTTP_PIPELINING=1
+RUN <<'CONFIGURE_APT'
+case "$APT_HTTP_PIPELINING" in
+    1) ;;
+    0) printf 'Acquire::http::Pipeline-Depth "0";\n' > /etc/apt/apt.conf.d/90-no-http-pipelining ;;
+    *) echo "APT_HTTP_PIPELINING must be 0 or 1, not '$APT_HTTP_PIPELINING'" >&2; exit 2 ;;
+esac
+CONFIGURE_APT
 
 # 1. OS packages and user. Compilers remain available for development.
 # fzf is not taken from apt: Ubuntu's package trails fzf's releases, so the
@@ -63,50 +83,139 @@ FROM system AS rust-tools
 ARG TARGETARCH
 # Build setting: 1 selects the deprecated curl backend as a TLS workaround.
 ARG RUSTUP_USE_CURL=0
-RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://sh.rustup.rs -o /tmp/rustup.sh && \
-    sh /tmp/rustup.sh -y --no-modify-path --profile minimal --component rustfmt,clippy && \
-    rm /tmp/rustup.sh
+# rustup-init from rustup's release archive, checked against the .sha256 file
+# next to it, installs rustup and the Rust release RUST_VERSION names. rustup
+# reads RUSTUP_VERSION as the rustup release to download, which is the one
+# this build arg names.
+# Build setting: an exact rustup release.
+# renovate: datasource=github-tags depName=rust-lang/rustup
+ARG RUSTUP_VERSION=1.29.2
+# Build setting: an exact Rust release.
+# renovate: datasource=rust-version depName=rust
+ARG RUST_VERSION=1.99.1
+RUN <<'INSTALL_RUST'
+case "$TARGETARCH" in
+    amd64) triple=x86_64-unknown-linux-gnu ;;
+    arm64) triple=aarch64-unknown-linux-gnu ;;
+    *) echo "Unsupported TARGETARCH: '$TARGETARCH'" >&2; exit 1 ;;
+esac
+[[ "$RUSTUP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected rustup version: '$RUSTUP_VERSION'" >&2; exit 1; }
+[[ "$RUST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected Rust version: '$RUST_VERSION'" >&2; exit 1; }
+release=https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${triple}
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/rustup-init" -o "$work_dir/rustup-init"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/rustup-init.sha256" -o "$work_dir/rustup-init.sha256"
+# One "<sha256> *./rustup-init" line. A missing line fails too: sha256sum -c
+# rejects an empty list.
+(cd "$work_dir" && awk '$2 == "*./rustup-init"' rustup-init.sha256 | sha256sum -c -)
+chmod 0755 "$work_dir/rustup-init"
+"$work_dir/rustup-init" -y --no-modify-path --profile minimal \
+    --default-toolchain "$RUST_VERSION" --component rustfmt,clippy
+INSTALL_RUST
 
+# Build setting: the most compile jobs each cargo build below runs at once
+# (cargo's CARGO_BUILD_JOBS), for a machine whose memory cannot hold one job
+# per CPU. Empty leaves cargo's default, one per logical CPU. These cargo
+# builds are the image's only compiles; the cargo that yazi-build starts
+# inherits the limit.
+ARG BUILD_JOBS=
+# One build arg per crate, so Renovate proposes each crate's update on its own.
+# renovate: datasource=crate depName=bat versioning=semver
+ARG BAT_VERSION=0.26.1
+# renovate: datasource=crate depName=bottom versioning=semver
+ARG BOTTOM_VERSION=0.14.9
+# renovate: datasource=crate depName=du-dust versioning=semver
+ARG DU_DUST_VERSION=1.2.6
+# renovate: datasource=crate depName=fd-find versioning=semver
+ARG FD_FIND_VERSION=10.5.0
+# renovate: datasource=crate depName=git-delta versioning=semver
+ARG GIT_DELTA_VERSION=0.20.1
+# renovate: datasource=crate depName=gitui versioning=semver
+ARG GITUI_VERSION=0.28.1
+# renovate: datasource=crate depName=grex versioning=semver
+ARG GREX_VERSION=1.4.6
+# renovate: datasource=crate depName=hyperfine versioning=semver
+ARG HYPERFINE_VERSION=2.0.0
+# renovate: datasource=crate depName=lsd versioning=semver
+ARG LSD_VERSION=1.2.0
+# renovate: datasource=crate depName=procs versioning=semver
+ARG PROCS_VERSION=0.14.12
+# renovate: datasource=crate depName=ripgrep versioning=semver
+ARG RIPGREP_VERSION=15.2.0
+# renovate: datasource=crate depName=sd versioning=semver
+ARG SD_VERSION=1.0.0
+# renovate: datasource=crate depName=tealdeer versioning=semver
+ARG TEALDEER_VERSION=1.9.1
+# renovate: datasource=crate depName=xh versioning=semver
+ARG XH_VERSION=0.26.3
+# renovate: datasource=crate depName=zoxide versioning=semver
+ARG ZOXIDE_VERSION=0.10.0
 # Put expensive compiles before frequently changed tools. Cache downloads and
 # compilation outputs outside the image; keep installed binaries in ~/.cargo/bin.
+# cargo install installs exactly the version after @, with the crate's own
+# Cargo.lock (--locked).
 RUN --mount=type=cache,id=cargo-registry-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/registry,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     --mount=type=cache,id=cargo-git-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/git,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    --mount=type=cache,id=cargo-target-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/cargo-target,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    CARGO_TARGET_DIR="$HOME/.cache/cargo-target" cargo install --locked \
-        bat bottom du-dust fd-find git-delta gitui grex hyperfine \
-        lsd procs ripgrep sd tealdeer xh zoxide
+    --mount=type=cache,id=cargo-target-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/cargo-target,uid=${USER_UID},gid=${USER_GID},sharing=locked <<'INSTALL_CRATES'
+[[ -z "$BUILD_JOBS" || "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "BUILD_JOBS must be empty or a positive number, not '$BUILD_JOBS'" >&2; exit 2; }
+[[ -z "$BUILD_JOBS" ]] || export CARGO_BUILD_JOBS=$BUILD_JOBS
+CARGO_TARGET_DIR="$HOME/.cache/cargo-target" cargo install --locked \
+    "bat@$BAT_VERSION" "bottom@$BOTTOM_VERSION" "du-dust@$DU_DUST_VERSION" \
+    "fd-find@$FD_FIND_VERSION" "git-delta@$GIT_DELTA_VERSION" "gitui@$GITUI_VERSION" \
+    "grex@$GREX_VERSION" "hyperfine@$HYPERFINE_VERSION" "lsd@$LSD_VERSION" \
+    "procs@$PROCS_VERSION" "ripgrep@$RIPGREP_VERSION" "sd@$SD_VERSION" \
+    "tealdeer@$TEALDEER_VERSION" "xh@$XH_VERSION" "zoxide@$ZOXIDE_VERSION"
+INSTALL_CRATES
 
 # yazi-build installs yazi/ya from its build script. Reusing its compiled target
 # skips that side effect, so cache downloads and the Docker layer, not its target.
+# The build script builds yazi's "shipped" tag, which yazi moves to each new
+# release: YAZI_BUILD_VERSION pins the installer, and the yazi it builds is the
+# release that tag names when this step runs.
+# renovate: datasource=crate depName=yazi-build versioning=semver
+ARG YAZI_BUILD_VERSION=26.9.1
 RUN --mount=type=cache,id=cargo-registry-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/registry,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    --mount=type=cache,id=cargo-git-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/git,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    cargo install --locked yazi-build && \
-    command -v yazi && command -v ya && \
-    rm -rf /tmp/yazi-build-*
+    --mount=type=cache,id=cargo-git-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cargo/git,uid=${USER_UID},gid=${USER_GID},sharing=locked <<'INSTALL_YAZI'
+[[ -z "$BUILD_JOBS" || "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "BUILD_JOBS must be empty or a positive number, not '$BUILD_JOBS'" >&2; exit 2; }
+[[ -z "$BUILD_JOBS" ]] || export CARGO_BUILD_JOBS=$BUILD_JOBS
+cargo install --locked "yazi-build@$YAZI_BUILD_VERSION"
+command -v yazi && command -v ya
+rm -rf /tmp/yazi-build-*
+INSTALL_YAZI
 
 # 3. User-installed language tools.
 FROM rust-tools AS tools
 # Download each official installer completely before executing it as the user.
-RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://starship.rs/install.sh -o /tmp/starship.sh && \
-    sh /tmp/starship.sh --yes --bin-dir "$HOME/.local/bin" && rm /tmp/starship.sh
-RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/uv/install.sh -o /tmp/uv.sh && \
+# starship's installer from the release's tag, told to install that release.
+# Build setting: an exact starship release without the v prefix.
+# renovate: datasource=github-releases depName=starship/starship extractVersion=^v(?<version>.+)$
+ARG STARSHIP_VERSION=1.27.0
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+        "https://raw.githubusercontent.com/starship/starship/v${STARSHIP_VERSION}/install/install.sh" -o /tmp/starship.sh && \
+    sh /tmp/starship.sh --yes --version "v${STARSHIP_VERSION}" --bin-dir "$HOME/.local/bin" && rm /tmp/starship.sh
+# Each uv, ty and ruff release publishes its own installer, which checks the
+# archive it downloads against the checksum it carries.
+# Build settings: exact uv, ty and ruff releases.
+# renovate: datasource=github-releases depName=astral-sh/uv
+ARG UV_VERSION=0.13.6
+# renovate: datasource=github-releases depName=astral-sh/ty
+ARG TY_VERSION=0.0.93
+# renovate: datasource=github-releases depName=astral-sh/ruff
+ARG RUFF_VERSION=0.17.3
+RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://astral.sh/uv/${UV_VERSION}/install.sh" -o /tmp/uv.sh && \
     sh /tmp/uv.sh && rm /tmp/uv.sh && \
-    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/ty/install.sh -o /tmp/ty.sh && \
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://astral.sh/ty/${TY_VERSION}/install.sh" -o /tmp/ty.sh && \
     sh /tmp/ty.sh && rm /tmp/ty.sh && \
-    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://astral.sh/ruff/install.sh -o /tmp/ruff.sh && \
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://astral.sh/ruff/${RUFF_VERSION}/install.sh" -o /tmp/ruff.sh && \
     sh /tmp/ruff.sh && rm /tmp/ruff.sh
 
 # fzf from its GitHub release, checked against the release's checksums file.
-# Build setting: latest, or an exact fzf release without the v prefix.
-ARG FZF_VERSION=latest
+# Build setting: an exact fzf release without the v prefix.
+# renovate: datasource=github-releases depName=junegunn/fzf extractVersion=^v(?<version>.+)$
+ARG FZF_VERSION=0.74.5
 RUN <<'INSTALL_FZF'
 version=$FZF_VERSION
-if [[ "$version" == latest ]]; then
-    # GitHub redirects releases/latest to the newest release's tag.
-    latest_url=$(curl --proto '=https' --tlsv1.2 -fsSLI --retry 3 -o /dev/null -w '%{url_effective}' \
-        https://github.com/junegunn/fzf/releases/latest)
-    version=${latest_url##*/v}
-fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected fzf version: '$version'" >&2; exit 1; }
 release=https://github.com/junegunn/fzf/releases/download/v${version}
 archive=fzf-${version}-linux_${TARGETARCH}.tar.gz
@@ -124,14 +233,18 @@ INSTALL_FZF
 
 ENV NVM_DIR="${HOME}/.nvm"
 # Build setting: exact nvm release, including the v prefix.
-ARG NVM_VERSION=v0.40.7
+# renovate: datasource=github-releases depName=nvm-sh/nvm
+ARG NVM_VERSION=v0.40.8
 RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o /tmp/nvm.sh && \
     bash /tmp/nvm.sh && rm /tmp/nvm.sh
-# Build setting: project-selected version series, not an exact patch version.
-ARG NODE_MAJOR=22
+# Build setting: an exact Node.js release, which nvm installs and makes the
+# default. It comes after nvm's installer, which installs the Node.js release
+# a NODE_VERSION in its environment names.
+# renovate: datasource=node-version depName=node versioning=node
+ARG NODE_VERSION=22.23.4
 RUN source "$NVM_DIR/nvm.sh" && \
-    nvm install "$NODE_MAJOR" && \
-    nvm alias default "$NODE_MAJOR" && \
+    nvm install "$NODE_VERSION" && \
+    nvm alias default "$NODE_VERSION" && \
     ln -sfn "$NVM_DIR/versions/node/$(nvm version default)" "$NVM_DIR/current" && \
     nvm cache clear
 ENV PATH="${NVM_DIR}/current/bin:${PATH}"
@@ -145,29 +258,9 @@ USER root
 # PATH directories (~/.local/bin, ~/.cargo/bin, ~/.nvm/current/bin), so this
 # root step uses root's home and a PATH of root-owned system directories.
 ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# Build setting: latest, or an exact package version from the official repository.
-ARG GH_VERSION=latest
 RUN <<'INSTALL_UTILITIES_DEPS'
-install -d -m 0755 /etc/apt/keyrings
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
-chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg
-printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
-    "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/github-cli.list
 sed -i 's,http://,https://,g' /etc/apt/sources.list.d/ubuntu.sources
 apt-get update
-gh_package=gh
-if [[ "$GH_VERSION" != latest ]]; then
-    gh_package="gh=$GH_VERSION"
-fi
-apt-get install -y --no-install-recommends "$gh_package"
-# The workspace stage's apt-get upgrade moves every package that is not held
-# to the newest version its repository has, and GitHub's stays enabled, so
-# an exact GH_VERSION is held.
-if [[ "$GH_VERSION" != latest ]]; then
-    apt-mark hold gh
-fi
 # Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq),
 # the archive and media tools den's shell functions wrap, and rsync. rsync is
 # Ubuntu's package: its security fixes arrive as package updates, which the
@@ -177,25 +270,44 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 rm -rf /var/lib/apt/lists/*
 INSTALL_UTILITIES_DEPS
 
+# gh from its GitHub release, checked against the release's checksums file,
+# as a package for every user. GitHub's apt repository lists only its newest
+# gh, so a pinned release would stop installing from there when the next one
+# came out.
+# Build setting: an exact gh release without the v prefix.
+# renovate: datasource=github-releases depName=cli/cli extractVersion=^v(?<version>.+)$
+ARG GH_VERSION=2.103.3
+RUN <<'INSTALL_GH'
+version=$GH_VERSION
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected gh version: '$version'" >&2; exit 1; }
+release=https://github.com/cli/cli/releases/download/v${version}
+package=gh_${version}_linux_${TARGETARCH}.deb
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/$package" -o "$work_dir/$package"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/gh_${version}_checksums.txt" -o "$work_dir/checksums.txt"
+# One "<sha256>  <file>" line per release file; check the package's own line.
+(cd "$work_dir" && awk -v name="$package" '$2 == name' checksums.txt | sha256sum -c -)
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$work_dir/$package"
+rm -rf /var/lib/apt/lists/*
+gh --version
+INSTALL_GH
+
 # PowerShell from its GitHub release, checked against the release's
 # hashes.sha256, installed for every user. With pwsh present, den's shell
 # setup in the workspace stage also wires den into dev's pwsh profile.
 # pwsh sends telemetry unless POWERSHELL_TELEMETRY_OPTOUT is set when it
 # starts, and POWERSHELL_UPDATECHECK=Off stops its update check at startup
-# (a rebuild updates this image's pwsh). The image ENV sets both for the build
-# steps from here on and for every docker exec; the entrypoint and the zsh and
-# bash startup files below set them again.
+# (a new PWSH_VERSION updates this image's pwsh). The image ENV sets both for
+# the build steps from here on and for every docker exec; the entrypoint and
+# the zsh and bash startup files below set them again.
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
-# Build setting: latest, or an exact PowerShell release without the v prefix.
-ARG PWSH_VERSION=latest
+# Build setting: an exact PowerShell release without the v prefix.
+# renovate: datasource=github-releases depName=PowerShell/PowerShell extractVersion=^v(?<version>.+)$
+ARG PWSH_VERSION=7.6.9
 RUN <<'INSTALL_PWSH'
 version=$PWSH_VERSION
-if [[ "$version" == latest ]]; then
-    # GitHub redirects releases/latest to the newest release's tag.
-    latest_url=$(curl --proto '=https' --tlsv1.2 -fsSLI --retry 3 -o /dev/null -w '%{url_effective}' \
-        https://github.com/PowerShell/PowerShell/releases/latest)
-    version=${latest_url##*/v}
-fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected PowerShell version: '$version'" >&2; exit 1; }
 release=https://github.com/PowerShell/PowerShell/releases/download/v${version}
 package=powershell_${version}-1.deb_${TARGETARCH}.deb
@@ -218,18 +330,14 @@ ENV HOME=/home/${USERNAME}
 # The user's tool directories again, as before the root step: the workspace
 # stage runs uv and den by name.
 ENV PATH="${NVM_DIR}/current/bin:${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# Build setting: current, or an exact rclone release including the v prefix.
-ARG RCLONE_VERSION=current
+# rclone from its release's own folder, the one with a SHA256SUMS file.
+# Build setting: an exact rclone release including the v prefix.
+# renovate: datasource=github-releases depName=rclone/rclone
+ARG RCLONE_VERSION=v1.75.2
 RUN <<'INSTALL_RCLONE'
 archive_dir=$(mktemp -d)
 trap 'rm -rf "$archive_dir"' EXIT
 version=$RCLONE_VERSION
-if [[ "$version" == current ]]; then
-    # version.txt names the current release ("rclone v1.2.3"). Only a
-    # release's own folder has a SHA256SUMS file, so download from there.
-    version=$(curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://downloads.rclone.org/version.txt)
-    version=${version#rclone }
-fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected rclone version: '$version'" >&2; exit 1; }
 release=https://downloads.rclone.org/$version
 archive=rclone-${version}-linux-${TARGETARCH}.zip
@@ -240,8 +348,8 @@ curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/SHA256SUMS" -o "$archi
 unzip -q -j "$archive_dir/$archive" '*/rclone' -d "$archive_dir"
 install -m 0755 "$archive_dir/rclone" "$HOME/.local/bin/rclone"
 # rclone reads every RCLONE_<FLAG> environment variable as that flag's value,
-# so the RCLONE_VERSION build arg would be its --version flag, and "current"
-# is not a valid value for it.
+# so the RCLONE_VERSION build arg would be its --version flag, and a release
+# name is not a valid value for it.
 env -u RCLONE_VERSION "$HOME/.local/bin/rclone" version
 INSTALL_RCLONE
 

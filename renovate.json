@@ -1,0 +1,27 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Renovate proposes every version update as a pull request and merges none of them.",
+    "It covers docker/ubuntu/Dockerfile (its base image and syntax image, pinned by tag and digest, and each *_VERSION build arg under a '# renovate:' comment) and the GitHub Actions in .github/workflows (pinned to commit SHAs with the version in a comment).",
+    "A release becomes an update 7 days after it is published. docker/README.md has the rules."
+  ],
+  "extends": [
+    "config:recommended",
+    "customManagers:dockerfileVersions",
+    "customManagers:githubActionsVersions",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigestsToSemver"
+  ],
+  "enabledManagers": ["dockerfile", "github-actions", "custom.regex"],
+  "minimumReleaseAge": "7 days",
+  "minimumReleaseAgeBehaviour": "timestamp-required",
+  "automerge": false,
+  "packageRules": [
+    {
+      "description": "The Python versions CI runs (setup-python's python-version) are chosen by hand, as den's Python dependencies are.",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["uses-with"],
+      "enabled": false
+    }
+  ]
+}
