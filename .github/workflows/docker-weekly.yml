@@ -126,6 +126,11 @@ jobs:
     if: ${{ !cancelled() && needs.scan.result != 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # One notice at a time, across every run and branch: two failed runs that
+    # overlap would otherwise both find no open issue and both open one.
+    concurrency:
+      group: docker-weekly-notify
+      cancel-in-progress: false
     permissions:
       issues: write
     steps:

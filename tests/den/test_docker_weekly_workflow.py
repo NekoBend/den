@@ -505,6 +505,14 @@ def test_the_notice_runs_when_the_scan_job_did_not_succeed():
     assert job["if"] == "${{ !cancelled() && needs.scan.result != 'success' }}"
 
 
+def test_notices_run_one_at_a_time_across_runs():
+    # Two failed runs that overlap would both find no open issue and both open
+    # one. Every notify job shares one fixed concurrency group (no expression
+    # that would split it by branch or run), and none cancels a running one.
+    concurrency = _notify_job()["concurrency"]
+    assert concurrency == {"group": "docker-weekly-notify", "cancel-in-progress": False}
+
+
 _NOTICE_EXPRESSIONS = {
     "${{ github.token }}": "fake-token",
     "${{ github.repository }}": "owner/den",
