@@ -348,6 +348,24 @@ that did not stop cleanly, `server.json`. den reads none of them now. Copy
 `reports.jsonl` somewhere else if you want to keep the reports, then delete
 `.den` as a whole, as section 9 says.
 
+## 11. Agent CLIs, eza and broot left out of the dev image (2026-11)
+
+`docker/ubuntu/Dockerfile` no longer installs the coding-agent CLIs (claude,
+codex, grok, muse and agy), acpx with its Claude skill, bubblewrap, eza or
+broot, and no longer runs
+`den install skills --tool claude --tool codex --with-parent --force`. nvm
+and Node stay.
+
+A container you already have keeps what it started with. A container from a
+rebuilt image has none of these tools, and its new `/home/dev` holds none of
+the old container's agent logins and settings (`~/.claude`, `~/.claude.json`,
+`~/.codex`). Copy those out with `docker cp` before you remove the old
+container if you want to keep them. To get the tools back, build an image of
+your own `FROM` den's and install them there, den's skills included, with
+the command above in a `dev` step: `docker/README.md` shows how, under
+"Adding your own tools". den's eza cheatsheet stays, for machines that have
+eza.
+
 ## Why there is no `den prune`
 
 Deliberate: a prune command needs a durable record of everything den has
