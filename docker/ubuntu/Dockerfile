@@ -239,7 +239,10 @@ curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$release/SHA256SUMS" -o "$archi
 (cd "$archive_dir" && awk -v name="$archive" '$2 == name' SHA256SUMS | sha256sum -c -)
 unzip -q -j "$archive_dir/$archive" '*/rclone' -d "$archive_dir"
 install -m 0755 "$archive_dir/rclone" "$HOME/.local/bin/rclone"
-"$HOME/.local/bin/rclone" version
+# rclone reads every RCLONE_<FLAG> environment variable as that flag's value,
+# so the RCLONE_VERSION build arg would be its --version flag, and "current"
+# is not a valid value for it.
+env -u RCLONE_VERSION "$HOME/.local/bin/rclone" version
 INSTALL_RCLONE
 
 # den's main branch as a BuildKit git source. Every build resolves main to a

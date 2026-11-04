@@ -1285,6 +1285,24 @@ def test_gh_at_an_exact_version_is_held_against_the_upgrade(
 _RCLONE = "https://downloads.rclone.org"
 
 
+def _fake_rclone(output: str) -> bytes:
+    """A program that prints ``output``, or fails as rclone does on RCLONE_VERSION.
+
+    rclone reads every RCLONE_<FLAG> environment variable as that flag's value,
+    so the RCLONE_VERSION build arg, in the environment of the build steps, is
+    its --version flag: the image build failed on RCLONE_VERSION=current.
+    """
+    return (
+        "#!/bin/sh\n"
+        'if [ -n "${RCLONE_VERSION+set}" ]; then\n'
+        "    echo 'CRITICAL: Invalid value when setting --version from"
+        " environment variable RCLONE_VERSION' >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        f"echo {shlex.quote(output)}\n"
+    ).encode()
+
+
 def _rclone_web(*, served_arch: str = "", listed: bool = True) -> dict[str, bytes]:
     """rclone v1.99.1 as the current release, with its PGP-signed SHA256SUMS.
 
@@ -1297,7 +1315,7 @@ def _rclone_web(*, served_arch: str = "", listed: bool = True) -> dict[str, byte
         name = f"rclone-v1.99.1-linux-{arch}.zip"
         archive = _zip(
             {
-                f"rclone-v1.99.1-linux-{arch}/rclone": _fake_program(
+                f"rclone-v1.99.1-linux-{arch}/rclone": _fake_rclone(
                     f"rclone linux-{arch}"
                 )
             }
@@ -1306,11 +1324,7 @@ def _rclone_web(*, served_arch: str = "", listed: bool = True) -> dict[str, byte
             sums.append(f"{_sha256(archive)}  {name}\n")
         if arch == served_arch:
             archive = _zip(
-                {
-                    f"rclone-v1.99.1-linux-{arch}/rclone": _fake_program(
-                        "rclone tampered"
-                    )
-                }
+                {f"rclone-v1.99.1-linux-{arch}/rclone": _fake_rclone("rclone tampered")}
             )
         web[f"{_RCLONE}/v1.99.1/{name}"] = archive
         web[f"{_RCLONE}/rclone-current-linux-{arch}.zip"] = archive
@@ -1330,6 +1344,8 @@ def test_rclone_comes_from_the_current_release_folder(tmp_path, arch):
     rclone = home / ".local" / "bin" / "rclone"
     assert f"rclone linux-{arch}" in rclone.read_text(encoding="utf-8")
     assert f"{_RCLONE}/v1.99.1/rclone-v1.99.1-linux-{arch}.zip" in calls
+    # The step runs the installed rclone, with the build arg in its environment.
+    assert f"rclone linux-{arch}" in result.stdout
 
 
 @_needs(*_INSTALL_TOOLS, "unzip")
