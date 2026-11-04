@@ -231,3 +231,37 @@ docker buildx build --load -t my-dev -f Dockerfile .
 container. Logins and history go with it (`~/.config/gh`, `~/.zsh_history`,
 and whatever the tools you add keep there), so log in again in the new
 container.
+
+## Weekly build and scan
+
+`.github/workflows/docker-weekly.yml` builds the image every Monday at 00:42
+Japan time (Sunday 15:42 UTC) and scans it with
+[Trivy](https://trivy.dev/). The build uses no layer cache, as
+`docker buildx build --pull --no-cache` does, so it fetches today's base
+image, packages and releases. The image stays on the runner; nothing is
+pushed.
+
+- The run fails when the build fails, or when Trivy finds a CRITICAL or HIGH
+  vulnerability that already has a fixed version (`--severity CRITICAL,HIGH
+  --ignore-unfixed --exit-code 1`). Findings without a fix and lower
+  severities do not fail it. The scan step's log shows Trivy's table of
+  findings.
+- When a run fails, its `notify` job opens an issue titled
+  "dev image weekly scan failed" that links the run, or, while that issue is
+  open, adds a comment to it instead. Close the issue once a run passes
+  again. For a scheduled run, GitHub also sends its own failure notification
+  to whoever last changed the workflow's `cron` line.
+- Trivy comes from its GitHub release, checked against the release's
+  checksums file, at the version `TRIVY_VERSION` in the workflow names. The
+  `# renovate:` comment above it is in the form Renovate's
+  `customManagers:githubActionsVersions` preset reads.
+
+To run it by hand: the Actions tab, "dev image weekly scan", "Run workflow";
+or `gh workflow run docker-weekly.yml`, with `--ref <branch>` for a branch
+other than `main`. Like every `workflow_dispatch` workflow, it can be run
+only once the file is on `main`.
+
+GitHub turns a scheduled workflow off in a public repository after 60 days
+without activity in the repository. To turn it back on: the Actions tab,
+select "dev image weekly scan", then "Enable workflow"; or
+`gh workflow enable docker-weekly.yml`.
