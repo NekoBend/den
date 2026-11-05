@@ -1696,9 +1696,7 @@ def test_npm_is_installed_right_after_node_for_the_user():
     # The npm that dev's tool PATH finds first replaces the one nvm installed
     # with Node.js.
     scripts = _run_scripts()
-    node = [
-        i for i, (*_, script) in enumerate(scripts) if "nvm install" in script
-    ]
+    node = [i for i, (*_, script) in enumerate(scripts) if "nvm install" in script]
     assert len(node) == 1, node
     node_stage, node_user, *_ = scripts[node[0]]
     stage, user, env, _, script = scripts[node[0] + 1]
