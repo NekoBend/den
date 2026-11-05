@@ -173,7 +173,7 @@ prints a warning that shows this command.
 | `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. |
 | `DEN_STATE` | `1` | `0` turns the state step off, even with a volume mounted at `/state`: the home keeps its own files. See [What survives where](#what-survives-where). |
-| `DEN_CLEAN_TMP` | `0` | `1` empties `/tmp` at each start, but only when `/tmp` is a mount point of its own (a tmpfs or a volume). See [What survives where](#what-survives-where). |
+| `DEN_CLEAN_TMP` | `0` | `1` empties `/tmp` at each start, but only when `/tmp` is a mount point of its own (a tmpfs or a volume, or a host directory, which you should never bind there). See [What survives where](#what-survives-where). |
 
 On a root start, the entrypoint also makes `dev` the owner of `/workspace`
 when nothing is mounted there, and links `dev`'s logins and history into
@@ -328,8 +328,14 @@ docker exec -it --user dev den-dev zsh
 `sleep infinity` keeps the container running without a shell of its own, and
 `--init` puts a small init process in front of it as PID 1: it passes
 `docker stop`'s signal on, so the container stops at once, and it reaps the
-processes that `docker exec` sessions leave behind. The same with
-`docker compose` (`docker compose up -d`, then
+processes that `docker exec` sessions leave behind. The start is over once
+`sleep` runs: a `docker exec` session that starts before that can find the
+home not linked yet, and lose what it puts in `/tmp`. Wait for it first, for
+example with
+`until docker exec den-dev pgrep -x sleep >/dev/null; do sleep 1; done`.
+
+The same with `docker compose`
+(`HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker compose up -d`, then
 `docker compose exec --user dev den-dev zsh`), with `/tmp` in memory:
 
 ```yaml
@@ -338,21 +344,39 @@ services:
     image: den-dev
     init: true
     command: ["sleep", "infinity"]
+    environment:
+      # Your IDs, as in the docker run example. Keep them for this volume.
+      HOST_UID: "${HOST_UID:?set HOST_UID to your user ID}"
+      HOST_GID: "${HOST_GID:?set HOST_GID to your group ID}"
     volumes:
       - .:/workspace
       - den-state:/state
-    # In memory, and empty at each start. For a /tmp on disk, mount a named
-    # volume there instead, and set DEN_CLEAN_TMP: "1" under environment to
-    # have it emptied at each start.
+    # In memory, and empty at each start. exec lets programs run what they
+    # put there (a tmpfs is noexec unless told). For a /tmp on disk, mount a
+    # named volume there instead, and set DEN_CLEAN_TMP: "1" under
+    # environment to have it emptied at each start.
     tmpfs:
-      - /tmp
+      - /tmp:exec
 volumes:
   den-state:
 ```
 
-compose names the volume after the project (`<project>_den-state`). To back
-it up, archive it from any container that mounts it, for example
-`docker run --rm -v den-state:/state -v "$PWD:/backup" --entrypoint tar den-dev -czf /backup/den-state.tgz -C /state .`.
+compose names the volume after the project: `<project>_den-state`, as
+`docker volume ls` lists it. `/state` holds your logins and keys, and so does
+an archive of it: keep it private, and outside any project. To back the
+volume up, read it as your host user, read-only, into a directory of your
+own:
+
+```sh
+mkdir -p -m 0700 ~/den-backups
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v den-state:/state:ro -v ~/den-backups:/backup \
+  --entrypoint sh den-dev -c 'umask 077 && tar -czf /backup/den-state.tgz -C /state .'
+```
+
+With compose, name `<project>_den-state` there instead of `den-state`:
+`docker run` makes a new, empty volume for a name it does not find, and the
+archive would hold nothing.
 
 ### How the home is linked into `/state`
 
@@ -364,26 +388,57 @@ link to the same path under `/state/home`, for example
 `~/.zsh_history -> /state/home/.zsh_history`:
 
 - A path the home has and the volume does not moves into the volume, so the
-  first start on a new volume keeps what the home had.
+  first start on a new volume keeps what the home had. It is copied into
+  `/state/home/.den-staging`, the whole copy is renamed into place, and only
+  then is the home's removed. A copy that a start left there unfinished is
+  removed at the next start while the home still has the path, and set aside
+  (below) otherwise; it never becomes the volume's copy. A path that `dev`
+  cannot read and remove whole (a directory in it that root owns, or a
+  read-only home) is skipped before anything is copied.
 - A path neither has: a `d` entry becomes an empty directory in the volume,
   an `F` entry an empty file, and an `f` entry stays unlinked until one of
   them has it.
-- A path both have, such as one a rebuilt image ships: the volume's copy
+- A file both have, such as one a rebuilt image ships: the volume's copy
   stays, and the home's moves to
-  `/state/home/.den-set-aside/<UTC time>/<path>` with a warning. An empty
-  directory in the home is deleted instead.
+  `/state/home/.den-set-aside/<UTC time>/<path>`, with a note in the log. A
+  directory both have: each name in the home's moves into the volume's, or
+  aside the same way when the volume's has it too, and the emptied directory
+  in the home is deleted; a link in it to the same name in the volume is
+  just removed.
 - A link that is already right is left as it is, so a restart changes
-  nothing.
+  nothing. A dangling link is replaced. A link to something that exists is
+  yours: it stays, with a warning that names its target.
 - An entry with a symbolic link on its way, in the home or in the volume, is
   skipped, and so is one whose path in the volume is a link or not of the
   entry's kind.
+- An entry whose path in the home is a mount point, is inside one, or holds
+  one is skipped with a warning that names the mount point: moving a host
+  directory bound into the home (`-v ~/.ssh:/home/dev/.ssh`) into the volume
+  would delete it on the host. Such an entry warns at each start. With the
+  whole home on a volume of its own, set `DEN_STATE=0`.
 
-Each problem is one warning in the container's log (`docker logs den-dev`),
-which names the list file and line, and the container starts anyway. With
-`DEN_STATE=0`, or a non-root `--user` (which warns), nothing is linked and
-the home keeps its own files. When `HOST_UID` or `HOST_GID` changes `dev`'s
-IDs, the entrypoint re-owns the files under `/state` that had the old ones,
-as it does for `/home/dev`.
+Each problem is a warning in the container's log (`docker logs den-dev`)
+that starts with `state-link:`, after the failing tool's own message when
+there is one. A problem with an entry or a line names the list file and
+line; one with a whole list, or with the home or the volume, names that file
+or directory. After them the entrypoint adds
+`state-link reported problems (see above)`, and the container starts anyway.
+A set-aside, or a copy cleared from an earlier start, is a note in the same
+form, and the entrypoint adds nothing for it. The entrypoint waits for
+state-link 300 seconds at most; past that it stops it, says the run was cut
+short, and the rest is done at the next start, or at once with
+`docker exec --user dev den-dev zsh -lc /usr/local/lib/den/state-link`.
+
+With `DEN_STATE=0`, or a non-root `--user` (which warns), nothing is linked
+and the home keeps its own files. When `HOST_UID` or `HOST_GID` gives `dev`
+other IDs than the image's, the entrypoint re-owns what under `/state` has
+the image's IDs, as it does for `/home/dev`. It does not re-own what another
+`HOST_UID` left there: start the containers of one volume with the same
+`HOST_UID` and `HOST_GID` each time. To give a volume to other IDs once, as
+root, with the IDs `dev` will run as:
+`docker run --rm -v den-state:/state --entrypoint /usr/bin/gnuchown den-dev -hR <uid>:<gid> /state`
+(GNU `chown`: with `-h` and no `-L` it changes links, not what they point
+to).
 
 The image's list, `/etc/den/state-paths.d/den.list`:
 
@@ -400,9 +455,10 @@ The image's list, `/etc/den/state-paths.d/den.list`:
 
 zsh, bash and pwsh keep their history files as links: `/etc/zsh/zshenv`
 turns zsh's `HIST_SAVE_BY_COPY` off for `dev` while `~/.zsh_history` is a link
-(by default zsh writes a new file beside the link and renames it over the
-link), bash writes a new history file next to the link's target, and pwsh's
-history is a file in the linked directory.
+(by default, when zsh rewrites its history file, to trim it or on `fc -W`,
+it writes a new file beside the link and renames it over the link), bash
+writes a new history file next to the link's target, and pwsh's history is a
+file in the linked directory.
 
 #### The lists
 
@@ -427,15 +483,21 @@ The lists, in this order:
   container again, or apply it at once:
   `docker exec --user dev den-dev zsh -lc /usr/local/lib/den/state-link`.
 
-An entry inside a directory that another entry links is skipped, as it has a
-link on its way: `d .config/gh` once `d .config` links `~/.config`.
+An entry inside a directory that another entry links into the volume needs
+nothing more: once `d .config` links `~/.config`, `d .config/gh` only makes
+`/state/home/.config/gh` when it is missing. Which of them comes first does
+not matter: the volume's `.config` that `d .config/gh` made is a directory
+both have, so the home's `.config` moves into it name by name.
 
 ### `/tmp`
 
 `/tmp` is left as it is unless `DEN_CLEAN_TMP=1`. Then each start as root
-empties it, before any of `dev`'s processes runs, but only when `/tmp` is a
-mount point of its own: a tmpfs, or a volume that keeps `/tmp` on disk. In
-the image's own `/tmp`, the variable does nothing but warn.
+empties it before the command starts, but only when `/tmp` is a mount point
+of its own: a tmpfs, a volume that keeps `/tmp` on disk, or a host directory
+bound there, which it empties too (never bind one). In the image's own
+`/tmp`, the variable does nothing but warn. A `docker exec` session started
+before the start is over can lose what it puts there; wait for the start as
+[What survives where](#what-survives-where) shows.
 
 ## Weekly build and scan
 
