@@ -1428,14 +1428,16 @@ _RENOVATE_DOCKERFILE_VERSIONS = re.compile(
     ).replace("(?<", "(?P<")
 )
 # The datasources whose releases carry a publish date on the registries the
-# image uses (https://docs.renovatebot.com/key-concepts/minimum-release-age/).
-# renovate.json's minimumReleaseAge requires one: without it, Renovate holds
-# an update for good.
+# image uses (https://docs.renovatebot.com/key-concepts/minimum-release-age/;
+# npm's is the registry's `time` field, https://docs.renovatebot.com/modules/
+# datasource/npm/). renovate.json's minimumReleaseAge requires one: without
+# it, Renovate holds an update for good.
 _DATED_DATASOURCES = {
     "crate",
     "github-releases",
     "github-tags",
     "node-version",
+    "npm",
     "rust-version",
 }
 _EXACT_VERSION = re.compile(r"v?\d+\.\d+\.\d+")
@@ -1664,6 +1666,89 @@ def test_cargo_installs_each_crate_at_the_release_its_comment_names(tmp_path):
     assert sorted(installed) == sorted(
         f"{crate}@{args[name]}" for crate, name in crates.items()
     )
+
+
+# Node.js and npm
+
+
+def test_node_is_a_release_of_the_26_lts_line():
+    # The image follows the Node.js line of the owner's own environment, 26
+    # (Lithium, LTS since 2026-10-28). Renovate proposes its releases; a pull
+    # request that moves the image to another line changes this test too.
+    node = _renovate_deps()["NODE_VERSION"]
+    assert (node["datasource"], node["depName"], node["versioning"]) == (
+        "node-version",
+        "node",
+        "node",
+    )
+    assert node["currentValue"].split(".")[0] == "26", node["currentValue"]
+
+
+def test_npm_is_pinned_to_a_release_of_the_npm_package():
+    # npm's bundled dependencies get their fixes with npm releases, which the
+    # npm that comes with Node.js trails. The version tests above check that
+    # the pin is an exact release under a comment Renovate reads.
+    npm = _renovate_deps()["NPM_VERSION"]
+    assert (npm["datasource"], npm["depName"]) == ("npm", "npm")
+
+
+def test_npm_is_installed_right_after_node_for_the_user():
+    # The npm that dev's tool PATH finds first replaces the one nvm installed
+    # with Node.js.
+    scripts = _run_scripts()
+    node = [i for i, (*_, script) in enumerate(scripts) if "nvm install" in script]
+    assert len(node) == 1, node
+    node_stage, node_user, *_ = scripts[node[0]]
+    stage, user, env, _, script = scripts[node[0] + 1]
+    assert script.startswith("<<'INSTALL_NPM'"), script
+    assert (stage, user) == (node_stage, node_user)
+    assert env["PATH"].split(":")[0] == f"{env['NVM_DIR']}/current/bin"
+
+
+# An npm that reports $FAKE_NPM_VERSION as the release on PATH after the step
+# installed one (_run_install logs every call).
+_NPM_STUB = 'if [ "$1" = --version ]; then echo "$FAKE_NPM_VERSION"; fi'
+# The release the step installs, in place of the one the Dockerfile pins.
+_NPM_RELEASE = {"NPM_VERSION": "99.1.2"}
+
+
+def _run_npm_step(
+    tmp_path: Path, env: dict[str, str]
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run the npm step with npm as a stub; returns the result and npm's calls."""
+    result, calls, _ = _run_install(
+        tmp_path, "INSTALL_NPM", {}, env=env, stubs={"npm": _NPM_STUB}
+    )
+    return result, [line for line in calls.splitlines() if line.startswith("npm ")]
+
+
+@_needs("bash")
+def test_npm_installs_the_pinned_release_globally(tmp_path):
+    result, calls = _run_npm_step(
+        tmp_path, {**_NPM_RELEASE, "FAKE_NPM_VERSION": "99.1.2"}
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls[0] == "npm install -g --no-audit --no-fund npm@99.1.2"
+    assert "npm --version" in calls
+
+
+@_needs("bash")
+def test_a_build_whose_npm_on_path_is_another_release_fails(tmp_path):
+    # The install went elsewhere, or did not replace the npm Node.js brought.
+    result, _ = _run_npm_step(tmp_path, {**_NPM_RELEASE, "FAKE_NPM_VERSION": "11.20.0"})
+    assert result.returncode != 0
+    assert "11.20.0, not 99.1.2" in result.stderr
+
+
+@_needs("bash")
+@pytest.mark.parametrize("version", ["latest", "12", "^12.2.1", "12.2.1 --force"])
+def test_an_npm_version_that_is_no_exact_release_stops_the_build(tmp_path, version):
+    result, calls = _run_npm_step(
+        tmp_path, {"NPM_VERSION": version, "FAKE_NPM_VERSION": version}
+    )
+    assert result.returncode != 0
+    assert "Unexpected npm version" in result.stderr
+    assert not calls
 
 
 # apt

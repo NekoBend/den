@@ -16,7 +16,7 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | --- | --- |
 | `system` | apt base (build-essential, git, curl, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
 | `rust-tools` | rustup and Rust (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
-| `tools` | starship, uv, ruff, ty, fzf, nvm + Node |
+| `tools` | starship, uv, ruff, ty, fzf, nvm + Node.js 26 (LTS), npm |
 | `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
 | `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
@@ -101,6 +101,10 @@ settings in `renovate.json` at the repository root:
   (`minimumReleaseAge`), so a release that is withdrawn or found broken in its
   first week never reaches the image. Its Dependency Dashboard issue lists the
   updates still waiting.
+- When the weekly scan finds a CVE that an upstream release already fixes,
+  request that update from the Dependency Dashboard issue (its "Pending Status
+  Checks" list): Renovate then opens its pull request without waiting the
+  7 days.
 - It merges nothing: every pull request waits for a review. One that
   changes the Dockerfile runs the `dev image` workflow, which builds the
   image with the new version.
@@ -135,7 +139,8 @@ default is the release pinned in the Dockerfile (see [Versions](#versions)).
 | `UV_VERSION`, `TY_VERSION`, `RUFF_VERSION` | pinned | Exact uv, ty and ruff releases. |
 | `FZF_VERSION` | pinned | Exact fzf release without the `v` prefix. |
 | `NVM_VERSION` | pinned | Exact nvm release, including the `v` prefix. |
-| `NODE_VERSION` | pinned | Exact Node.js release, such as `22.23.4`; nvm installs it and makes it the default. A major version, such as `24`, takes that line's newest release. |
+| `NODE_VERSION` | pinned | Exact Node.js release, such as `26.13.0`; nvm installs it and makes it the default. A major version, such as `26`, takes that line's newest release. |
+| `NPM_VERSION` | pinned | Exact npm release, such as `12.2.2`, which `npm install -g` installs over the npm that comes with Node.js. npm's own dependencies get their fixes with npm releases, which the npm in a Node.js release trails. An npm release supports the Node.js releases its `engines` field names: with another `NODE_VERSION`, pass an `NPM_VERSION` that supports it. |
 | `GH_VERSION` | pinned | Exact gh release without the `v` prefix. |
 | `PWSH_VERSION` | pinned | Exact PowerShell release without the `v` prefix. |
 | `RCLONE_VERSION` | pinned | Exact rclone release including the `v` prefix. |
@@ -250,6 +255,19 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 ```
 
+- The image's npm skips the install scripts (`preinstall`, `install`,
+  `postinstall`) of the package `npm install -g` installs and of its
+  dependencies, unless `--allow-scripts=<package>,...` names them (npm 12
+  made this the default). A tool that sets itself up in such a script needs
+  its name there.
+- npm 12 also stops on a CLI flag it does not know, or on a flag cut short
+  (`--par` for `--parseable`), where earlier releases warned. And it installs
+  a package from a git repository, or from a tarball URL on a host other
+  than the registry's, only when `--allow-git=root` or `--allow-remote=root`
+  lets it: `root` lets in the package you name, not the git or URL
+  dependencies it brings.
+- Node.js 26 does not ship corepack (Node.js stopped with 25.0.0), so the
+  image has no `corepack` command: `npm install -g corepack` if you need it.
 - Before a root step that follows a `dev` step, set `HOME=/root` and the
   system `PATH` again, as den's Dockerfile does. A `dev` step can leave files
   in `dev`'s home that root's tools read (`~/.curlrc`, `~/.dpkg.cfg`), or a
@@ -289,9 +307,22 @@ pushed.
 
 - The run fails when the build fails, or when Trivy finds a CRITICAL or HIGH
   vulnerability that already has a fixed version (`--severity CRITICAL,HIGH
-  --ignore-unfixed --exit-code 1`). Findings without a fix and lower
-  severities do not fail it. The scan step's log shows Trivy's table of
-  findings.
+  --ignore-unfixed --exit-code 1`), unless `.trivyignore.yaml` lists it.
+  Findings without a fix and lower severities do not fail it. The scan
+  step's log shows Trivy's table of findings.
+- `.trivyignore.yaml` at the repository root, which the scan reads with
+  `--ignorefile`, holds the findings whose fix exists but has not reached the
+  image yet: a Go binary built with a Go release older than the fix, until
+  its next release or a new base image. Each entry names one CVE id (`id`)
+  in one file of the image (`paths`), and covers every package in that file
+  with that id. It says what it waits for (`statement`), and expires
+  (`expired_at`) no more than 45 days after it is written. From
+  that date Trivy applies the entry no more, and the scan fails again if the
+  finding is still there. The way out is Renovate's update that brings the
+  fix (a new `*_VERSION` release or a new base image digest): delete the
+  entry once that update is merged, and the next run fails if the finding is
+  still there. Findings in npm's own dependencies do not go there: a new
+  `NPM_VERSION` fixes those. `tests/den` checks every entry.
 - When a run fails, its `notify` job opens an issue titled
   "dev image weekly scan failed" that links the run, or, while that issue is
   open, adds a comment to it instead. Close the issue once a run passes

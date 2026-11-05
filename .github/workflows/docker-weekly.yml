@@ -3,8 +3,9 @@ name: dev image weekly scan
 # Once a week this workflow builds docker/ubuntu/Dockerfile from scratch, as
 # `docker buildx build --pull --no-cache` does, and scans the image with Trivy.
 # The run fails when the build fails, or when Trivy finds a CRITICAL or HIGH
-# vulnerability that already has a fixed version; the notify job then opens
-# an issue, or comments on the one still open. Nothing is pushed anywhere.
+# vulnerability that already has a fixed version and that no unexpired entry
+# of .trivyignore.yaml lists; the notify job then opens an issue, or comments
+# on the one still open. Nothing is pushed anywhere.
 # docker/README.md, "Weekly build and scan", says how to run it by hand.
 #
 # docker-dev-image.yml builds the same image, but it is not reused through
@@ -103,6 +104,10 @@ jobs:
       # without a fix and lower severities are left out. Only the image built
       # above is scanned (--image-src docker), for vulnerabilities only, and
       # no usage data or version check goes to Aqua.
+      # .trivyignore.yaml in the checkout lists the findings that wait on an
+      # upstream fix, each until its expired_at. Trivy reads a YAML ignore
+      # file only when --ignorefile names it, and --show-suppressed lists what
+      # it left out, so the log still shows what is being waited on.
       - name: Scan the dev image
         timeout-minutes: 30
         run: |
@@ -111,6 +116,8 @@ jobs:
             --scanners vuln \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
+            --ignorefile "$GITHUB_WORKSPACE/.trivyignore.yaml" \
+            --show-suppressed \
             --exit-code 1 \
             --format table \
             --no-progress \
