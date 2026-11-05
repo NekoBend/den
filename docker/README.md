@@ -16,7 +16,7 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | --- | --- |
 | `system` | apt base (build-essential, git, curl, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
 | `rust-tools` | rustup and Rust (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
-| `tools` | starship, uv, ruff, ty, fzf, nvm + Node |
+| `tools` | starship, uv, ruff, ty, fzf, nvm + Node.js 26 (LTS), npm |
 | `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
 | `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
 
@@ -135,7 +135,8 @@ default is the release pinned in the Dockerfile (see [Versions](#versions)).
 | `UV_VERSION`, `TY_VERSION`, `RUFF_VERSION` | pinned | Exact uv, ty and ruff releases. |
 | `FZF_VERSION` | pinned | Exact fzf release without the `v` prefix. |
 | `NVM_VERSION` | pinned | Exact nvm release, including the `v` prefix. |
-| `NODE_VERSION` | pinned | Exact Node.js release, such as `22.23.4`; nvm installs it and makes it the default. A major version, such as `24`, takes that line's newest release. |
+| `NODE_VERSION` | pinned | Exact Node.js release, such as `26.13.0`; nvm installs it and makes it the default. A major version, such as `26`, takes that line's newest release. |
+| `NPM_VERSION` | pinned | Exact npm release, such as `12.2.1`, which `npm install -g` installs over the npm that comes with Node.js. npm's own dependencies get their fixes with npm releases, which the npm in a Node.js release trails. An npm release supports the Node.js releases its `engines` field names: with another `NODE_VERSION`, pass an `NPM_VERSION` that supports it. |
 | `GH_VERSION` | pinned | Exact gh release without the `v` prefix. |
 | `PWSH_VERSION` | pinned | Exact PowerShell release without the `v` prefix. |
 | `RCLONE_VERSION` | pinned | Exact rclone release including the `v` prefix. |
@@ -250,6 +251,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 ```
 
+- The image's npm skips the install scripts (`preinstall`, `install`,
+  `postinstall`) of the package `npm install -g` installs and of its
+  dependencies, unless `--allow-scripts=<package>,...` names them (npm 12
+  made this the default). A tool that sets itself up in such a script needs
+  its name there.
 - Before a root step that follows a `dev` step, set `HOME=/root` and the
   system `PATH` again, as den's Dockerfile does. A `dev` step can leave files
   in `dev`'s home that root's tools read (`~/.curlrc`, `~/.dpkg.cfg`), or a

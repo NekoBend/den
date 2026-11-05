@@ -241,13 +241,27 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://raw.githubuserconte
 # default. It comes after nvm's installer, which installs the Node.js release
 # a NODE_VERSION in its environment names.
 # renovate: datasource=node-version depName=node versioning=node
-ARG NODE_VERSION=22.23.4
+ARG NODE_VERSION=26.13.0
 RUN source "$NVM_DIR/nvm.sh" && \
     nvm install "$NODE_VERSION" && \
     nvm alias default "$NODE_VERSION" && \
     ln -sfn "$NVM_DIR/versions/node/$(nvm version default)" "$NVM_DIR/current" && \
     nvm cache clear
 ENV PATH="${NVM_DIR}/current/bin:${PATH}"
+# npm, installed over the one that comes with Node.js: npm ships its own
+# dependencies, and their fixes come with npm releases, which the npm in a
+# Node.js release trails.
+# Build setting: an exact npm release.
+# renovate: datasource=npm depName=npm
+ARG NPM_VERSION=12.2.1
+RUN <<'INSTALL_NPM'
+[[ "$NPM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected npm version: '$NPM_VERSION'" >&2; exit 1; }
+npm install -g --no-audit --no-fund "npm@$NPM_VERSION"
+# The npm that dev's PATH finds is the one the build arg names.
+installed=$(npm --version)
+[[ "$installed" == "$NPM_VERSION" ]] || { echo "npm on PATH is $installed, not $NPM_VERSION" >&2; exit 1; }
+npm cache clean --force
+INSTALL_NPM
 
 # 4. System utilities and file-transfer tools, before workspace configuration.
 FROM tools AS utilities
