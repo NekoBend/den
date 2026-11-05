@@ -1,0 +1,60 @@
+# Findings the weekly scan of the dev image (.github/workflows/docker-weekly.yml)
+# does not fail on while their fix waits on an upstream release. Each entry is
+# one finding (id) in one file of the image (paths), says what it waits for
+# (statement), and expires no more than 45 days after it was written
+# (expired_at). From that date Trivy applies it no more, and the scan fails
+# again if the finding is still there. docker/README.md, "Weekly build and
+# scan", has the rules.
+vulnerabilities:
+  - id: CVE-2026-111943
+    paths:
+      - home/dev/.local/bin/fzf
+    expired_at: 2026-12-05
+    statement: >-
+      Go standard library in the fzf release FZF_VERSION pins, built with
+      Go 1.27.2. Waits for an fzf release built with Go 1.26.10+ or 1.27.3+,
+      which Renovate proposes as an FZF_VERSION update.
+  - id: CVE-2026-111943
+    paths:
+      - home/dev/.local/bin/rclone
+    expired_at: 2026-12-05
+    statement: >-
+      Go standard library in the rclone release RCLONE_VERSION pins, built with
+      Go 1.26.9. Waits for an rclone release built with Go 1.26.10+ or 1.27.3+,
+      which Renovate proposes as an RCLONE_VERSION update.
+  - id: CVE-2026-111943
+    paths:
+      - usr/bin/pebble
+    expired_at: 2026-12-05
+    statement: >-
+      Go standard library in pebble, which the ubuntu:26.04 base image ships
+      (no apt step installs it), built with Go 1.27.1. Waits for a ubuntu:26.04
+      image whose pebble is rebuilt with Go 1.26.10+ or 1.27.3+, which
+      Renovate's digest update of BASE_IMAGE brings.
+  - id: CVE-2026-78667
+    paths:
+      - usr/bin/pebble
+    expired_at: 2026-12-05
+    statement: >-
+      Go standard library in pebble, which the ubuntu:26.04 base image ships
+      (no apt step installs it), built with Go 1.27.1. Waits for a ubuntu:26.04
+      image whose pebble is rebuilt with Go 1.26.10+ or 1.27.3+, which
+      Renovate's digest update of BASE_IMAGE brings.
+  - id: CVE-2026-78669
+    paths:
+      - usr/bin/pebble
+    expired_at: 2026-12-05
+    statement: >-
+      Go standard library in pebble, which the ubuntu:26.04 base image ships
+      (no apt step installs it), built with Go 1.27.1. Waits for a ubuntu:26.04
+      image whose pebble is rebuilt with Go 1.26.10+ or 1.27.3+, which
+      Renovate's digest update of BASE_IMAGE brings.
+  - id: CVE-2026-97031
+    paths:
+      - usr/bin/pebble
+    expired_at: 2026-12-05
+    statement: >-
+      Go standard library in pebble, which the ubuntu:26.04 base image ships
+      (no apt step installs it), built with Go 1.27.1. Waits for a ubuntu:26.04
+      image whose pebble is rebuilt with Go 1.26.10+ or 1.27.3+, which
+      Renovate's digest update of BASE_IMAGE brings.

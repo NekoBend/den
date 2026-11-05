@@ -2,7 +2,8 @@
 
 The workflow runs only on GitHub, on its schedule or by hand, so these tests
 read it instead: its triggers, its token's permissions, the build, how it pins
-what it runs, and the scan's flags. They also run its shell steps in a scratch
+what it runs, the scan's flags, and the entries of the ignore file the scan
+reads (.trivyignore.yaml). They also run its shell steps in a scratch
 directory the way the runner runs them (bash --noprofile --norc -eo pipefail),
 with curl, gh and Trivy as stubs: the Trivy install against a fake release,
 the scan with a fake Trivy, and the failure notice against a fake issue list.
@@ -10,6 +11,7 @@ The step tests are skipped on native Windows and where a tool they need is
 missing.
 """
 
+import datetime
 import hashlib
 import io
 import json
@@ -29,6 +31,8 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 WORKFLOW = WORKFLOWS / "docker-weekly.yml"
 DEV_IMAGE_WORKFLOW = WORKFLOWS / "docker-dev-image.yml"
+# The findings the scan does not fail on while they wait on an upstream fix.
+IGNORE_FILE = ROOT / ".trivyignore.yaml"
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # What the runner runs a step with under `shell: bash`; the step's script is
 # the file {0}.
@@ -483,11 +487,96 @@ def test_the_scan_step_fails_when_trivy_finds_something(tmp_path, trivy_exit):
         tools=_INSTALL_TOOLS,
     )
     assert installed.returncode == 0, installed.stderr
+    workspace = tmp_path / "workspace"
     result, calls = _run_step(
-        tmp_path, _scan_step(), env={"FAKE_TRIVY_EXIT": str(trivy_exit)}
+        tmp_path,
+        _scan_step(),
+        env={"FAKE_TRIVY_EXIT": str(trivy_exit), "GITHUB_WORKSPACE": str(workspace)},
     )
     assert result.returncode == trivy_exit, result.stderr
-    assert any(call.startswith("trivy image ") for call in calls)
+    scans = [call for call in calls if call.startswith("trivy image ")]
+    assert len(scans) == 1, calls
+    assert f" --ignorefile {workspace}/.trivyignore.yaml " in scans[0]
+
+
+# --- the ignore file -------------------------------------------------------------
+
+
+def test_the_scan_reads_the_ignore_file_of_the_checkout():
+    # Trivy 0.76 reads a .trivyignore.yaml only when --ignorefile names it (its
+    # docs/guide/configuration/filtering.md), as YAML for a .yml or .yaml
+    # name, and quietly ignores nothing when the file is missing. The checkout
+    # puts the repository in $GITHUB_WORKSPACE.
+    assert IGNORE_FILE.is_file()
+    args = _trivy_args(_scan_step()["run"])
+    assert _option(args, "--ignorefile") == "$GITHUB_WORKSPACE/.trivyignore.yaml"
+    checkouts = [
+        step
+        for step in _workflow()["jobs"]["scan"]["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    ]
+    assert len(checkouts) == 1
+    assert "path" not in checkouts[0].get("with", {})
+
+
+def _ignore_entries() -> list[dict]:
+    data = yaml.safe_load(IGNORE_FILE.read_text(encoding="utf-8"))
+    # The scan looks for vulnerabilities only.
+    assert isinstance(data, dict), data
+    assert set(data) == {"vulnerabilities"}, data
+    entries = data["vulnerabilities"]
+    assert isinstance(entries, list), entries
+    return entries
+
+
+def test_every_ignore_entry_is_one_finding_in_one_image_file_with_a_reason():
+    # Without paths an entry would ignore the finding in every file of the
+    # image, the next tool to bring it included.
+    for entry in _ignore_entries():
+        assert set(entry) == {"id", "paths", "expired_at", "statement"}, entry
+        # One finding's ID, such as CVE-2026-111943 or a GHSA-... advisory.
+        assert isinstance(entry["id"], str), entry
+        assert re.fullmatch(r"[A-Z]+(-[0-9A-Za-z]+)+", entry["id"]), entry
+        paths = entry["paths"]
+        assert isinstance(paths, list), entry
+        assert len(paths) == 1, entry
+        path = paths[0]
+        # A path in the image as Trivy names it: relative to its root, and no
+        # glob (Trivy matches each entry with doublestar).
+        assert isinstance(path, str), entry
+        assert re.fullmatch(r"[\w.+-]+(/[\w.+-]+)*", path), path
+        assert ".." not in path.split("/"), path
+        assert isinstance(entry["statement"], str), entry
+        assert entry["statement"].strip(), entry
+
+
+def test_no_ignore_entry_covers_an_npm_package():
+    # npm's bundled dependencies get their fixes with a new NPM_VERSION; the
+    # scan keeps failing on them until that comes.
+    for entry in _ignore_entries():
+        for path in entry["paths"]:
+            parts = path.split("/")
+            assert "node_modules" not in parts, path
+            assert parts[-1] != "package.json", path
+
+
+# The longest an entry may wait: its expired_at is at most this many days
+# after the day it was written.
+_IGNORE_DAYS = 45
+
+
+def test_every_ignore_entry_expires_within_45_days():
+    # Checked against today: the pull request that writes or renews an entry
+    # runs this on that day, or soon after. Once an entry has expired, Trivy
+    # applies it no more and the weekly scan fails on the finding again.
+    limit = datetime.datetime.now(datetime.UTC).date() + datetime.timedelta(
+        days=_IGNORE_DAYS
+    )
+    for entry in _ignore_entries():
+        expired_at = entry["expired_at"]
+        # A YAML date, yyyy-mm-dd, as Trivy reads it; not a string or a time.
+        assert type(expired_at) is datetime.date, entry
+        assert expired_at <= limit, entry
 
 
 # --- the failure notice --------------------------------------------------------

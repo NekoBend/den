@@ -295,9 +295,21 @@ pushed.
 
 - The run fails when the build fails, or when Trivy finds a CRITICAL or HIGH
   vulnerability that already has a fixed version (`--severity CRITICAL,HIGH
-  --ignore-unfixed --exit-code 1`). Findings without a fix and lower
-  severities do not fail it. The scan step's log shows Trivy's table of
-  findings.
+  --ignore-unfixed --exit-code 1`), unless `.trivyignore.yaml` lists it.
+  Findings without a fix and lower severities do not fail it. The scan
+  step's log shows Trivy's table of findings.
+- `.trivyignore.yaml` at the repository root, which the scan reads with
+  `--ignorefile`, holds the findings whose fix exists but has not reached the
+  image yet: a Go binary built with a Go release older than the fix, until
+  its next release or a new base image. Each entry names one finding (`id`)
+  in one file of the image (`paths`), says what it waits for (`statement`),
+  and expires (`expired_at`) no more than 45 days after it is written. From
+  that date Trivy applies the entry no more, and the scan fails again if the
+  finding is still there. The way out is Renovate's update that brings the
+  fix (a new `*_VERSION` release or a new base image digest); once a run
+  passes without an entry, delete it. Findings in npm's own dependencies do
+  not go there: a new `NPM_VERSION` fixes those. `tests/den` checks every
+  entry.
 - When a run fails, its `notify` job opens an issue titled
   "dev image weekly scan failed" that links the run, or, while that issue is
   open, adds a comment to it instead. Close the issue once a run passes
