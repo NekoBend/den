@@ -305,9 +305,10 @@ pushed.
 - `.trivyignore.yaml` at the repository root, which the scan reads with
   `--ignorefile`, holds the findings whose fix exists but has not reached the
   image yet: a Go binary built with a Go release older than the fix, until
-  its next release or a new base image. Each entry names one finding (`id`)
-  in one file of the image (`paths`), says what it waits for (`statement`),
-  and expires (`expired_at`) no more than 45 days after it is written. From
+  its next release or a new base image. Each entry names one CVE id (`id`)
+  in one file of the image (`paths`), and covers every package in that file
+  with that id. It says what it waits for (`statement`), and expires
+  (`expired_at`) no more than 45 days after it is written. From
   that date Trivy applies the entry no more, and the scan fails again if the
   finding is still there. The way out is Renovate's update that brings the
   fix (a new `*_VERSION` release or a new base image digest): delete the

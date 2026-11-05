@@ -1,10 +1,11 @@
 # Findings the weekly scan of the dev image (.github/workflows/docker-weekly.yml)
 # does not fail on while their fix waits on an upstream release. Each entry is
-# one finding (id) in one file of the image (paths), says what it waits for
-# (statement), and expires no more than 45 days after it was written
-# (expired_at). From that date Trivy applies it no more, and the scan fails
-# again if the finding is still there. docker/README.md, "Weekly build and
-# scan", has the rules.
+# one CVE id (id) in one file of the image (paths), and covers every package in
+# that file with that id. It says what it waits for (statement), and expires no
+# more than 45 days after it was written (expired_at). From that date Trivy
+# applies it no more, and the scan fails again if the finding is still there.
+# An empty list is fine: `vulnerabilities:` alone, or `vulnerabilities: []`.
+# docker/README.md, "Weekly build and scan", has the rules.
 vulnerabilities:
   - id: CVE-2026-111943
     paths:
@@ -38,7 +39,7 @@ vulnerabilities:
     statement: >-
       Go standard library in pebble, which the ubuntu:26.04 base image ships
       (no apt step installs it), built with Go 1.27.1. Waits for a ubuntu:26.04
-      image whose pebble is rebuilt with Go 1.26.10+ or 1.27.3+, which
+      image whose pebble is rebuilt with Go 1.26.9+ or 1.27.2+, which
       Renovate's digest update of BASE_IMAGE brings.
   - id: CVE-2026-78669
     paths:
@@ -47,7 +48,7 @@ vulnerabilities:
     statement: >-
       Go standard library in pebble, which the ubuntu:26.04 base image ships
       (no apt step installs it), built with Go 1.27.1. Waits for a ubuntu:26.04
-      image whose pebble is rebuilt with Go 1.26.10+ or 1.27.3+, which
+      image whose pebble is rebuilt with Go 1.26.9+ or 1.27.2+, which
       Renovate's digest update of BASE_IMAGE brings.
   - id: CVE-2026-97031
     paths:
@@ -56,5 +57,5 @@ vulnerabilities:
     statement: >-
       Go standard library in pebble, which the ubuntu:26.04 base image ships
       (no apt step installs it), built with Go 1.27.1. Waits for a ubuntu:26.04
-      image whose pebble is rebuilt with Go 1.26.10+ or 1.27.3+, which
+      image whose pebble is rebuilt with Go 1.26.9+ or 1.27.2+, which
       Renovate's digest update of BASE_IMAGE brings.
