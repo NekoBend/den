@@ -18,9 +18,11 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
+import threading
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -941,23 +943,26 @@ def test_entrypoint_keeps_an_existing_state_home(tmp_path):
     ("link_status", "warning"),
     [
         ("1", "state-link reported problems (see above)"),
-        *(
-            (
-                stopped,
-                "state-link was stopped after 300 seconds, so the run was cut"
-                f" short; run {_STATE_LINK} as dev to finish it",
-            )
-            for stopped in ("124", "137")
+        (
+            "124",
+            "state-link was stopped after 300 seconds, so the run was cut"
+            f" short; run {_STATE_LINK} as dev to finish it",
+        ),
+        (
+            "137",
+            "state-link was killed, by the time limit or by a signal, so the run"
+            f" was cut short; run {_STATE_LINK} as dev to finish it",
         ),
     ],
-    ids=["failed", "stopped-by-term", "stopped-by-kill"],
+    ids=["failed", "stopped-by-term", "killed"],
 )
 def test_entrypoint_starts_the_command_when_state_link_fails_or_is_stopped(
     tmp_path, link_status, warning
 ):
     # B5: state-link's warnings are above this line; the start goes on, under
-    # set -e too. gnutimeout exits 124 when TERM stopped state-link, and 137
-    # when it took KILL.
+    # set -e too. gnutimeout exits 124 when its TERM stopped state-link, and
+    # 137 when a KILL did: its own, 10 seconds later, or anyone else's (the
+    # OOM killer), so that message does not claim the time limit.
     state = tmp_path / "state"
     state.mkdir()
     result, calls = _run_entrypoint(
@@ -1233,6 +1238,8 @@ def test_the_image_has_no_volume_instruction():
 # --- state-link: the home's paths in the state volume --------------------------
 
 _IMAGE_LIST = "/etc/den/state-paths.d/den.list"
+# The file in the volume each run holds a lock on, so that runs take turns.
+_LOCK = ".den-lock"
 
 
 def _needs_linux() -> pytest.MarkDecorator:
@@ -1319,6 +1326,19 @@ class _Roots:
         path = self.home / rel
         return path.is_symlink() and path.readlink() == self.volume / rel
 
+    def volume_names(self) -> list[str]:
+        """The names in the volume but the lock file, which each run leaves."""
+        return sorted(p.name for p in self.volume.iterdir() if p.name != _LOCK)
+
+    def fake(self, name: str, body: str) -> str:
+        """Put a NAME command running BODY first on PATH; return that PATH."""
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        path = bin_dir / name
+        path.write_text(f"#!{_tool('sh')}\n{body}", encoding="utf-8")
+        path.chmod(0o755)
+        return f"{bin_dir}:{SYSTEM_PATH}"
+
 
 @_needs_linux()
 def test_state_link_links_each_kind(tmp_path):
@@ -1335,6 +1355,11 @@ def test_state_link_links_each_kind(tmp_path):
     assert not (roots.home / ".toolrc").exists()
     assert not (roots.home / ".toolrc").is_symlink()
     assert not (roots.volume / ".toolrc").exists()
+    # The lock file each run holds is the user's alone, and stays.
+    lock = roots.volume / _LOCK
+    assert lock.is_file()
+    assert not lock.is_symlink()
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o600
 
 
 @_needs_linux()
@@ -1501,72 +1526,200 @@ def test_state_link_reads_an_escaped_mount_point(tmp_path):
 
 
 @_needs_linux()
-def test_state_link_removes_an_unfinished_copy_while_the_home_has_the_path(tmp_path):
-    # A run cut short while it copied ~/.ssh left part of it in the staging
-    # directory. The home's is whole, so that is what moves, and the part goes.
+@pytest.mark.parametrize("spelling", ["slash", "dot", "double-slash", "linked-parent"])
+def test_state_link_finds_a_mount_point_whatever_the_spelling_of_home(
+    tmp_path, spelling
+):
+    # The mount table names mount points by their physical paths: HOME with a
+    # trailing slash, a '.', a '//' or a linked directory above it must not
+    # hide a host directory bound into the home from that check.
     roots = _Roots(tmp_path)
     roots.image_list("d .ssh\n")
     (roots.home / ".ssh").mkdir()
     (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
-    (roots.home / ".ssh" / "known_hosts").write_text("host\n", encoding="utf-8")
-    slot = roots.volume / ".den-staging" / ".ssh"
+    roots.mount(roots.home / ".ssh")
+    (tmp_path / "alias").symlink_to(tmp_path)
+    home = {
+        "slash": f"{roots.home}/",
+        "dot": f"{roots.home}/.",
+        "double-slash": f"{tmp_path}//home",
+        "linked-parent": f"{tmp_path}/alias/home",
+    }[spelling]
+    result = roots.run(HOME=home)
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"state-link: {roots.lists}/den.list:1: skipped .ssh: mount point"
+        f" {roots.home}/.ssh is at, above or inside {roots.home}/.ssh\n"
+    )
+    assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert not (roots.home / ".ssh").is_symlink()
+    assert roots.volume_names() == []
+
+
+@_needs_linux()
+def test_state_link_links_to_the_physical_path_of_the_volume(tmp_path):
+    # So the next run, given the usual spelling, finds the link right.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\n")
+    result = roots.run(DEN_STATE_ROOT=f"{roots.state}//")
+    assert (result.returncode, result.stderr) == (0, "")
+    # The link's text as it is: Path.readlink would fold a '//' away.
+    target = os.readlink(roots.home / ".ssh")  # ruff: ignore[os-readlink]
+    assert target == str(roots.volume / ".ssh")
+
+
+@_needs_linux()
+@pytest.mark.parametrize("home_has_it", [True, False])
+def test_state_link_sets_aside_the_unfinished_copies_an_earlier_run_left(
+    tmp_path, home_has_it
+):
+    # A run that KILL or a crash stopped while it copied ~/.ssh left part of
+    # it in the staging directory. In a new container on the volume, the home
+    # that held the only whole copy is gone, and a .ssh the image ships may
+    # stand in its place: the part is never deleted, and never taken for the
+    # volume's copy. It goes aside, named after its path, with what a list no
+    # longer names.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\n")
+    if home_has_it:
+        (roots.home / ".ssh").mkdir()
+        (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
+    staging = roots.volume / ".den-staging"
+    (staging / ".ssh").mkdir(parents=True)
+    (staging / ".ssh" / "id_ed25519").write_text("k", encoding="utf-8")
+    (staging / ".gone").mkdir()
+    result = roots.run()
+    assert result.returncode == 0, result.stderr
+    [aside] = _aside_dirs(roots)
+    assert result.stderr == (
+        f"state-link: moved {staging}, unfinished copies that an earlier run left,"
+        f" to {aside}/.den-staging\n"
+    )
+    left = aside / ".den-staging"
+    assert (left / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "k"
+    assert (left / ".gone").is_dir()
+    assert roots.linked(".ssh")
+    if home_has_it:
+        assert (roots.volume / ".ssh/id_ed25519").read_text(encoding="utf-8") == "key\n"
+    else:
+        assert list((roots.volume / ".ssh").iterdir()) == []
+    assert not staging.exists()
+
+
+@_needs_linux()
+def test_state_link_copies_nothing_over_a_leftover_it_could_not_set_aside(tmp_path):
+    # B2: with the set-aside root a link, the leftover stays where it is, and
+    # no copy goes into its name or through the link.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\n")
+    (roots.home / ".ssh").mkdir()
+    (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    aside_root = roots.volume / ".den-set-aside"
+    aside_root.symlink_to(outside)
+    staging = roots.volume / ".den-staging"
+    slot = staging / ".ssh"
     slot.mkdir(parents=True)
     (slot / "id_ed25519").write_text("k", encoding="utf-8")
     result = roots.run()
-    assert result.returncode == 0, result.stderr
-    assert result.stderr == (
-        f"state-link: {roots.lists}/den.list:1: removed {slot}, an unfinished"
-        f" copy of {roots.home}/.ssh that an earlier run left\n"
-    )
-    assert roots.linked(".ssh")
-    assert sorted(p.name for p in (roots.volume / ".ssh").iterdir()) == [
-        "id_ed25519",
-        "known_hosts",
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        f"state-link: {aside_root} is not a directory",
+        f"state-link: could not set {staging} aside",
+        f"state-link: {slot} is in the way",
+        f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
+        f" {roots.home}/.ssh into {roots.volume}",
     ]
-    assert (roots.volume / ".ssh/id_ed25519").read_text(encoding="utf-8") == "key\n"
-    assert not (roots.volume / ".den-staging").exists()
-    assert not (roots.volume / ".den-set-aside").exists()
+    assert [p.name for p in slot.iterdir()] == ["id_ed25519"]
+    assert (slot / "id_ed25519").read_text(encoding="utf-8") == "k"
+    assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert list(outside.iterdir()) == []
 
 
 @_needs_linux()
-def test_state_link_sets_an_unfinished_copy_aside_when_the_home_lacks_the_path(
-    tmp_path,
-):
-    # Without the path in the home (a new container), the unfinished copy is
-    # all there is: it is kept, but never taken for the volume's copy.
+def test_state_link_removes_the_copy_it_was_making_when_a_signal_stops_it(tmp_path):
+    # The entrypoint's time limit sends TERM. The copy under way is part of
+    # what the home still has whole, so it goes, and the next start starts
+    # that path again instead of setting one more part aside.
     roots = _Roots(tmp_path)
-    roots.image_list("d .config/tool\n")
-    slot = roots.volume / ".den-staging" / ".config:tool"
-    slot.mkdir(parents=True)
-    (slot / "part").write_text("p\n", encoding="utf-8")
-    result = roots.run()
-    assert result.returncode == 0, result.stderr
-    [aside] = _aside_dirs(roots)
-    assert result.stderr == (
-        f"state-link: {roots.lists}/den.list:1: moved {slot}, an unfinished copy"
-        f" that an earlier run left, to {aside}/.config/tool\n"
+    roots.image_list("d .ssh\n")
+    (roots.home / ".ssh").mkdir()
+    (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
+    slot = roots.volume / ".den-staging" / ".ssh"
+    stopping_cp = roots.fake(
+        "cp",
+        "for arg do last=$arg; done\n"
+        'mkdir "$last" && : > "$last/part"\n'
+        'kill -TERM "$PPID"\n'
+        'kill -TERM "$$"\n',
     )
-    assert (aside / ".config/tool/part").read_text(encoding="utf-8") == "p\n"
-    assert roots.linked(".config/tool")
-    assert list((roots.volume / ".config/tool").iterdir()) == []
-    assert not (roots.volume / ".den-staging").exists()
+    result = roots.run(PATH=stopping_cp)
+    assert result.returncode == 143
+    assert result.stderr.splitlines()[-1] == (
+        f"state-link: stopped by a signal; removed {slot}, the unfinished copy it"
+        " was making"
+    )
+    assert not slot.exists()
+    assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert not (roots.home / ".ssh").is_symlink()
+    again = roots.run()
+    assert (again.returncode, again.stderr) == (0, "")
+    assert roots.linked(".ssh")
+    assert roots.volume_names() == [".ssh"]
 
 
 @_needs_linux()
-def test_state_link_sets_aside_unfinished_copies_that_no_entry_clears(tmp_path):
+def test_state_link_takes_turns_with_another_run_on_the_volume(tmp_path):
+    # Two runs at once (a second container's start, or a run by hand during
+    # one) would each take the other's staging copy for a leftover. Each
+    # holds a lock on a file in the volume; a run waits for it a while, and
+    # then gives up and links nothing.
+    # fcntl is Unix only, and this test runs on Linux alone.
+    import fcntl
+
     roots = _Roots(tmp_path)
-    roots.image_list("F .after\n")
-    (roots.volume / ".den-staging" / ".gone").mkdir(parents=True)
+    roots.image_list("d .ssh\n")
+    (roots.home / ".ssh").mkdir()
+    (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
+    lock = roots.volume / _LOCK
+    with lock.open("a", encoding="utf-8") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        result = roots.run(DEN_STATE_LOCK_WAIT="1")
+        assert result.returncode == 1
+        assert result.stderr == (
+            f"state-link: another run of state-link holds {lock}; nothing is linked\n"
+        )
+        assert not (roots.home / ".ssh").is_symlink()
+        assert roots.volume_names() == []
+        # A run that waits goes on once the other run lets go.
+        release = threading.Timer(1, fcntl.flock, (held, fcntl.LOCK_UN))
+        release.start()
+        result = roots.run(DEN_STATE_LOCK_WAIT="30")
+        release.join()
+    assert (result.returncode, result.stderr) == (0, "")
+    assert roots.linked(".ssh")
+
+
+@_needs_linux()
+@pytest.mark.parametrize("kind", ["link", "directory"])
+def test_state_link_takes_no_lock_but_on_a_regular_file(tmp_path, kind):
+    roots = _Roots(tmp_path)
+    roots.image_list("F .first\n")
+    lock = roots.volume / _LOCK
+    target = tmp_path / "elsewhere"
+    target.write_text("kept\n", encoding="utf-8")
+    if kind == "link":
+        lock.symlink_to(target)
+    else:
+        lock.mkdir()
     result = roots.run()
-    assert result.returncode == 0, result.stderr
-    [aside] = _aside_dirs(roots)
+    assert result.returncode == 1
     assert result.stderr == (
-        f"state-link: moved {roots.volume}/.den-staging, unfinished copies that an"
-        f" earlier run left, to {aside}/.den-staging\n"
+        f"state-link: {lock} is not a regular file; nothing is linked\n"
     )
-    assert (aside / ".den-staging" / ".gone").is_dir()
-    assert not (roots.volume / ".den-staging").exists()
-    assert roots.linked(".after")
+    assert not (roots.home / ".first").exists()
+    assert target.read_text(encoding="utf-8") == "kept\n"
 
 
 @_needs_linux()
@@ -1577,19 +1730,14 @@ def test_state_link_removes_a_copy_that_failed_and_keeps_the_home_path(tmp_path)
     roots.image_list("d .ssh\n")
     (roots.home / ".ssh").mkdir()
     (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_cp = bin_dir / "cp"
-    fake_cp.write_text(
-        f"#!{_tool('sh')}\n"
+    failing_cp = roots.fake(
+        "cp",
         "for arg do last=$arg; done\n"
         'mkdir "$last" && : > "$last/part"\n'
         "echo 'cp: write error: No space left on device' >&2\n"
         "exit 1\n",
-        encoding="utf-8",
     )
-    fake_cp.chmod(0o755)
-    result = roots.run(PATH=f"{bin_dir}:{SYSTEM_PATH}")
+    result = roots.run(PATH=failing_cp)
     assert result.returncode == 1
     assert result.stderr.splitlines() == [
         "cp: write error: No space left on device",
@@ -1598,7 +1746,7 @@ def test_state_link_removes_a_copy_that_failed_and_keeps_the_home_path(tmp_path)
     ]
     assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
     assert not (roots.home / ".ssh").is_symlink()
-    assert list(roots.volume.iterdir()) == []
+    assert roots.volume_names() == []
 
 
 @_needs_linux()
@@ -1624,10 +1772,45 @@ def test_state_link_copies_nothing_that_it_could_not_remove_from_the_home(tmp_pa
                 f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
                 f" {roots.home}/.ssh into {roots.volume}",
             ]
-            assert list(roots.volume.iterdir()) == []
+            assert roots.volume_names() == []
             assert (locked / "id_ed25519").read_text(encoding="utf-8") == "key\n"
     finally:
         locked.chmod(0o700)
+
+
+@_needs_linux()
+@pytest.mark.parametrize("where", ["inside", "above"])
+def test_state_link_copies_nothing_that_a_sticky_directory_keeps(tmp_path, where):
+    # In a sticky directory (mode 1000) that another user owns, only the
+    # owner of a name may remove it, and access(2) does not say so: cp and mv
+    # would succeed, rm would fail, and each start would add a copy. A fake
+    # id names another user here, so the directories this user made stand
+    # for another user's: one in the path, or the one the path is in.
+    if os.geteuid() == 0:
+        pytest.skip("root removes every file")
+    roots = _Roots(tmp_path)
+    rel = ".ssh" if where == "inside" else "shared/.ssh"
+    sticky = (
+        roots.home / ".ssh" / "shared" if where == "inside" else roots.home / "shared"
+    )
+    sticky.mkdir(parents=True)
+    (roots.home / rel).mkdir(exist_ok=True)
+    (roots.home / rel / "id_ed25519").write_text("key\n", encoding="utf-8")
+    roots.image_list(f"d {rel}\n")
+    other_user = roots.fake("id", "echo 4242\n")
+    sticky.chmod(0o1700)
+    try:
+        result = roots.run(PATH=other_user)
+    finally:
+        sticky.chmod(0o700)
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        f"state-link: {roots.home}/{rel}: this user cannot read and remove all of it",
+        f"state-link: {roots.lists}/den.list:1: skipped {rel}: could not move"
+        f" {roots.home}/{rel} into {roots.volume}",
+    ]
+    assert (roots.home / rel / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert not (roots.volume / rel).exists()
 
 
 @_needs_linux()
@@ -1655,6 +1838,151 @@ def test_state_link_moves_a_parent_entry_into_the_volume_name_by_name(tmp_path):
         assert not (roots.volume / ".config/gh").is_symlink()
         assert not (roots.volume / ".den-set-aside").exists()
         assert not (roots.volume / ".den-staging").exists()
+
+
+@_needs_linux()
+def test_state_link_merges_nothing_unless_all_of_the_home_directory_can_move(
+    tmp_path,
+):
+    # The same `d .config`, with a directory in ~/.config that this user
+    # cannot move (an image built FROM den left it root's): nothing moves,
+    # the link for gh stays, and the next start does the same, not another
+    # half of the merge.
+    if os.geteuid() == 0:
+        pytest.skip("root removes every file")
+    roots = _Roots(tmp_path)
+    roots.image_list("d .config/gh\n")
+    plugins = roots.home / ".config" / "zsh" / "plugins"
+    plugins.mkdir(parents=True)
+    (plugins / "init.zsh").write_text("p\n", encoding="utf-8")
+    first = roots.run()
+    assert (first.returncode, first.stderr) == (0, "")
+    locked = roots.home / ".config" / "starship"
+    locked.mkdir()
+    (locked / "starship.toml").write_text("s\n", encoding="utf-8")
+    env_list = roots.env_list("d .config\n")
+    locked.chmod(0o500)
+    try:
+        for _ in range(2):
+            result = roots.run()
+            assert result.returncode == 1
+            assert result.stderr.splitlines() == [
+                f"state-link: {roots.home}/.config: this user cannot read and remove"
+                " all of it",
+                f"state-link: {env_list}:1: skipped .config: could not move all of"
+                f" {roots.home}/.config into {roots.volume}/.config or aside",
+            ]
+            assert roots.linked(".config/gh")
+            assert sorted(p.name for p in (roots.home / ".config").iterdir()) == [
+                "gh",
+                "starship",
+                "zsh",
+            ]
+            assert (plugins / "init.zsh").read_text(encoding="utf-8") == "p\n"
+            assert sorted(p.name for p in (roots.volume / ".config").iterdir()) == [
+                "den",
+                "gh",
+            ]
+            assert not (roots.volume / ".den-set-aside").exists()
+    finally:
+        locked.chmod(0o700)
+
+
+@_needs_linux()
+def test_state_link_keeps_the_links_in_a_directory_whose_merge_stops_part_way(
+    tmp_path,
+):
+    # A copy that fails during the merge (a full volume, say) stops it. The
+    # links that entries inside the directory made go only after all else
+    # moved, so they still work until a later start finishes the merge.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .config/gh\n")
+    plugins = roots.home / ".config" / "zsh" / "plugins"
+    plugins.mkdir(parents=True)
+    (plugins / "init.zsh").write_text("p\n", encoding="utf-8")
+    first = roots.run()
+    assert (first.returncode, first.stderr) == (0, "")
+    env_list = roots.env_list("d .config\n")
+    failing_cp = roots.fake(
+        "cp", "echo 'cp: write error: No space left on device' >&2\nexit 1\n"
+    )
+    result = roots.run(PATH=failing_cp)
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        "cp: write error: No space left on device",
+        f"state-link: {env_list}:1: skipped .config: could not move all of"
+        f" {roots.home}/.config into {roots.volume}/.config or aside",
+    ]
+    assert roots.linked(".config/gh")
+    assert (plugins / "init.zsh").read_text(encoding="utf-8") == "p\n"
+    again = roots.run()
+    assert (again.returncode, again.stderr) == (0, "")
+    assert roots.linked(".config")
+    assert (roots.volume / ".config/zsh/plugins/init.zsh").read_text(
+        encoding="utf-8"
+    ) == "p\n"
+
+
+@_needs_linux()
+def test_state_link_merges_a_directory_both_have_at_any_depth(tmp_path):
+    # `d .local` after the image's `d .local/share/zoxide`: ~/.local/share is
+    # in both, and so is ~/.local/share/powershell. Each is merged name by
+    # name, so uv's tools (den's own install among them) move into the volume
+    # instead of going aside while ~/.local becomes a link to a volume without
+    # them. A name both have, however deep, still goes aside to its own path.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .local/share/zoxide\nd .local/share/powershell/PSReadLine\n")
+    local = roots.home / ".local"
+    (local / "bin").mkdir(parents=True)
+    (local / "bin" / "den").write_text("bin\n", encoding="utf-8")
+    (local / "share" / "uv" / "tools" / "den").mkdir(parents=True)
+    (local / "share" / "uv" / "tools" / "den" / "x").write_text(
+        "uv\n", encoding="utf-8"
+    )
+    (local / "share" / "powershell" / "Modules").mkdir(parents=True)
+    (local / "share" / "powershell" / "Modules" / "m").write_text(
+        "home\n", encoding="utf-8"
+    )
+    first = roots.run()
+    assert (first.returncode, first.stderr) == (0, "")
+    deep = ".local/share/powershell/Modules/m"
+    (roots.volume / deep).parent.mkdir()
+    (roots.volume / deep).write_text("volume\n", encoding="utf-8")
+    env_list = roots.env_list("d .local\n")
+    # Each copy is staged under its own path, with ':' for '/'.
+    staged = tmp_path / "staged"
+    logging_cp = roots.fake(
+        "cp",
+        "for arg do last=$arg; done\n"
+        f'printf "%s\\n" "${{last##*/}}" >> {shlex.quote(str(staged))}\n'
+        f'exec {shlex.quote(_tool("cp"))} "$@"\n',
+    )
+    result = roots.run(PATH=logging_cp)
+    assert result.returncode == 0, result.stderr
+    [aside] = _aside_dirs(roots)
+    assert result.stderr == (
+        f"state-link: {env_list}:1: {roots.volume}/{deep} and {roots.home}/{deep}"
+        f" both existed: kept {roots.volume}/{deep}, moved {roots.home}/{deep}"
+        f" to {aside}/{deep}\n"
+    )
+    assert roots.linked(".local")
+    assert (roots.volume / ".local/bin/den").read_text(encoding="utf-8") == "bin\n"
+    uv_file = roots.volume / ".local/share/uv/tools/den/x"
+    assert uv_file.read_text(encoding="utf-8") == "uv\n"
+    assert (roots.volume / deep).read_text(encoding="utf-8") == "volume\n"
+    assert (aside / deep).read_text(encoding="utf-8") == "home\n"
+    assert [p.name for p in aside.iterdir()] == [".local"]
+    for rel in (".local/share/zoxide", ".local/share/powershell/PSReadLine"):
+        assert (roots.volume / rel).is_dir(), rel
+        assert not (roots.volume / rel).is_symlink(), rel
+    assert staged.read_text(encoding="utf-8").split() == [
+        ".local:bin",
+        ".local:share:powershell:Modules:m",
+        ".local:share:uv",
+    ]
+    again = roots.run()
+    assert (again.returncode, again.stderr) == (0, "")
+    assert not (roots.volume / ".den-staging").exists()
 
 
 @_needs_linux()
@@ -1795,7 +2123,7 @@ def test_state_link_skips_a_line_that_is_no_valid_entry(tmp_path, line, where):
     assert roots.linked(".first")
     assert roots.linked(".last")
     assert not (tmp_path / "outside").exists()
-    assert sorted(p.name for p in roots.volume.iterdir()) == sorted(
+    assert roots.volume_names() == sorted(
         [".first", ".last", *([".config"] if where == "environment" else [])]
     )
 
