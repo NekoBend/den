@@ -243,7 +243,7 @@ and it is inside the workspace you were asked to work in
 A virtual environment, node_modules, .env,
 or a build you were asked to deliver is not.
 Name what you deleted in your report.
-Three edges of that exemption.
+Three edges of the normal-work exemption.
 Code you fetched from outside your trust boundary
 and have not reviewed runs ITS code under its own scripts
 (build, test, setup): say so and confirm before the first run.

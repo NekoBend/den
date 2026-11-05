@@ -242,7 +242,7 @@ it is inside the workspace you were asked to work in (for example
 __pycache__ or .pytest_cache). A virtual environment,
 node_modules, .env, or a build you were asked to deliver is not.
 Name what you deleted in your report.
-Three edges: unreviewed code you
+Three edges of the normal-work exemption: unreviewed code you
 fetched from outside your trust boundary runs ITS code under its own
 scripts (build, test, setup), so say so and confirm the first run;
 sending workspace contents, credentials, or environment values to a
