@@ -521,32 +521,55 @@ def test_the_scan_reads_the_ignore_file_of_the_checkout():
     assert "path" not in checkouts[0].get("with", {})
 
 
-def _ignore_entries() -> list[dict]:
-    data = yaml.safe_load(IGNORE_FILE.read_text(encoding="utf-8"))
+def _ignore_entries(path: Path = IGNORE_FILE) -> list[dict]:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     # The scan looks for vulnerabilities only.
     assert isinstance(data, dict), data
     assert set(data) == {"vulnerabilities"}, data
     entries = data["vulnerabilities"]
+    # Deleting the last entry leaves `vulnerabilities:` with nothing after it,
+    # which YAML reads as null and Trivy as no entries.
+    if entries is None:
+        entries = []
     assert isinstance(entries, list), entries
     return entries
 
 
-def test_every_ignore_entry_is_one_finding_in_one_image_file_with_a_reason():
-    # Without paths an entry would ignore the finding in every file of the
-    # image, the next tool to bring it included.
+@pytest.mark.parametrize("empty", ["vulnerabilities:", "vulnerabilities: []"])
+def test_an_ignore_file_with_no_entry_left_is_fine(tmp_path, empty):
+    ignore_file = tmp_path / ".trivyignore.yaml"
+    ignore_file.write_text(f"# No finding waits.\n{empty}\n", encoding="utf-8")
+    assert _ignore_entries(ignore_file) == []
+
+
+# The targets under which an image scan lists all language packages of one
+# kind, such as every npm package in the image under "Node.js" (PkgTargets in
+# Trivy's pkg/scan/langpkg/scan.go). Trivy matches an entry's paths against a
+# finding's target as well as its package's path (MatchVulnerability in
+# pkg/result/ignore.go), so one of these names would ignore the id in every
+# package of that kind in the image.
+_AGGREGATE_TARGETS = {"Conda", "Java", "Kubernetes", "Node.js", "Python", "Ruby"}
+
+
+def test_every_ignore_entry_is_one_id_in_one_image_file_with_a_reason():
+    # Without paths an entry would ignore the id in every file of the image,
+    # the next tool to bring it included. With them it still covers every
+    # package in that file with that id.
     for entry in _ignore_entries():
         assert set(entry) == {"id", "paths", "expired_at", "statement"}, entry
-        # One finding's ID, such as CVE-2026-111943 or a GHSA-... advisory.
+        # One id, such as CVE-2026-111943 or a GHSA-... advisory.
         assert isinstance(entry["id"], str), entry
         assert re.fullmatch(r"[A-Z]+(-[0-9A-Za-z]+)+", entry["id"]), entry
         paths = entry["paths"]
         assert isinstance(paths, list), entry
         assert len(paths) == 1, entry
         path = paths[0]
-        # A path in the image as Trivy names it: relative to its root, and no
+        # A path in the image as Trivy names it: relative to its root, in a
+        # directory (a name without a "/" may be an aggregate target), and no
         # glob (Trivy matches each entry with doublestar).
         assert isinstance(path, str), entry
-        assert re.fullmatch(r"[\w.+-]+(/[\w.+-]+)*", path), path
+        assert re.fullmatch(r"[\w.+-]+(/[\w.+-]+)+", path), path
+        assert path not in _AGGREGATE_TARGETS, path
         assert ".." not in path.split("/"), path
         assert isinstance(entry["statement"], str), entry
         assert entry["statement"].strip(), entry
@@ -554,9 +577,11 @@ def test_every_ignore_entry_is_one_finding_in_one_image_file_with_a_reason():
 
 def test_no_ignore_entry_covers_an_npm_package():
     # npm's bundled dependencies get their fixes with a new NPM_VERSION; the
-    # scan keeps failing on them until that comes.
+    # scan keeps failing on them until that comes. "Node.js" is the target
+    # every npm package in the image is listed under (_AGGREGATE_TARGETS).
     for entry in _ignore_entries():
         for path in entry["paths"]:
+            assert path != "Node.js", path
             parts = path.split("/")
             assert "node_modules" not in parts, path
             assert parts[-1] != "package.json", path
@@ -567,13 +592,30 @@ def test_no_ignore_entry_covers_an_npm_package():
 _IGNORE_DAYS = 45
 
 
+def _latest_expiry(utc_today: datetime.date) -> datetime.date:
+    # One day more than _IGNORE_DAYS after the UTC date: the date where an
+    # entry is written is at most one day later (in Japan from 00:00 to 09:00),
+    # and a time zone lookup needs a database the Windows CI job lacks.
+    return utc_today + datetime.timedelta(days=_IGNORE_DAYS + 1)
+
+
+def test_the_45_days_count_from_the_date_where_the_entry_is_written():
+    # 08:00 on 2026-11-06 in Japan is still 2026-11-05 in UTC.
+    written = datetime.datetime(
+        2026, 11, 6, 8, tzinfo=datetime.timezone(datetime.timedelta(hours=9))
+    )
+    utc_today = written.astimezone(datetime.UTC).date()
+    assert utc_today == datetime.date(2026, 11, 5)
+    assert _latest_expiry(utc_today) == written.date() + datetime.timedelta(
+        days=_IGNORE_DAYS
+    )
+
+
 def test_every_ignore_entry_expires_within_45_days():
     # Checked against today: the pull request that writes or renews an entry
     # runs this on that day, or soon after. Once an entry has expired, Trivy
     # applies it no more and the weekly scan fails on the finding again.
-    limit = datetime.datetime.now(datetime.UTC).date() + datetime.timedelta(
-        days=_IGNORE_DAYS
-    )
+    limit = _latest_expiry(datetime.datetime.now(datetime.UTC).date())
     for entry in _ignore_entries():
         expired_at = entry["expired_at"]
         # A YAML date, yyyy-mm-dd, as Trivy reads it; not a string or a time.
