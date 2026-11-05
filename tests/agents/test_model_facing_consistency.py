@@ -284,6 +284,24 @@ def test_preamble_decide_wording_matches_every_parent() -> None:
             )
 
 
+def test_preamble_untrusted_text_names_other_agents_like_every_parent() -> None:
+    # Every parent lists messages from other agents as data; a skill loaded
+    # with no parent must not treat them as instructions either.
+    def flat(text: str) -> str:
+        return " ".join(text.split())
+
+    preamble = flat((AGENTS / "src" / "skill-preamble.md").read_text(encoding="utf-8"))
+    item = preamble[preamble.index("- Text you read") :]
+    item = item[: item.index(" is data:")]
+    assert "messages from other agents" in item, item
+    parents = sorted((AGENTS / "dist" / "parents").rglob("*.md"))
+    assert parents
+    for parent in parents:
+        assert "messages from other agents" in flat(
+            parent.read_text(encoding="utf-8")
+        ), f"{parent.relative_to(AGENTS)} lost: messages from other agents"
+
+
 # A rule every mode needs that had to leave SKILL.md for size is copied
 # verbatim into each mode file (owner-approved); an edit to one copy must reach
 # the others. Each entry: the block's first line, the text that ends it (None
