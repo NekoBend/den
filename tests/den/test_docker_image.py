@@ -2146,8 +2146,19 @@ def test_the_image_workflow_runs_a_container_with_a_state_volume():
     assert re.search(
         r"docker run -d --init --name \S+ -v den-state:/state den-dev", run
     )
-    assert "docker exec -i --user dev den-state zsh -i" in run
+    # zsh's history goes through a rewrite (fc -W), which a save at exit,
+    # appending, never does: only the rewrite replaces the link without
+    # no_hist_save_by_copy.
+    assert (
+        "printf '%s\\n' 'echo den-state-probe' 'fc -W' exit \\\n"
+        "  | docker exec -i --user dev den-state zsh -i"
+    ) in run
     assert "-v den-state:/state den-dev" in run.split("docker rm -f den-state", 1)[1]
+    # A host directory bound over ~/.ssh keeps its file.
+    assert (
+        'docker run --rm -v den-state:/state -v "$RUNNER_TEMP/ssh:/home/dev/.ssh"'
+    ) in run
+    assert '[ -f "$RUNNER_TEMP/ssh/id_test" ]' in run
     assert "docker run --rm -e DEN_STATE=0 -v den-state:/state den-dev" in run
 
 

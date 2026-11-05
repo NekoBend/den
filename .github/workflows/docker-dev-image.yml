@@ -156,9 +156,10 @@ jobs:
             exit 1
           fi
       # docker/README.md's "What survives where": a root start with a volume
-      # at /state links dev's listed paths into it, zsh saves its history
+      # at /state links dev's listed paths into it, zsh rewrites its history
       # through the link, a new container on the same volume finds it there,
-      # and DEN_STATE=0 links nothing.
+      # a bound host directory stays on the host, and DEN_STATE=0 links
+      # nothing.
       - name: Check the state volume
         timeout-minutes: 10
         run: |
@@ -198,17 +199,39 @@ jobs:
           check 'first start: the entrypoint printed no warning' docker logs den-state
           check 'first start: the listed paths link into /state/home' \
             docker exec --user dev den-state sh -c "$linked"
-          # An interactive zsh saves its history when it exits.
-          printf '%s\n' 'echo den-state-probe' exit \
+          # fc -W rewrites the history file, as zsh does when it trims it.
+          # Without no_hist_save_by_copy for dev, the rewrite replaces the link
+          # with a file of the container's layer; a save at exit only appends.
+          printf '%s\n' 'echo den-state-probe' 'fc -W' exit \
             | docker exec -i --user dev den-state zsh -i >/dev/null 2>&1 || true
-          check 'zsh -i: ~/.zsh_history is still a link' \
+          check 'zsh -i, fc -W: ~/.zsh_history is still a link' \
             docker exec --user dev den-state sh -c '[ -L /home/dev/.zsh_history ]'
-          check 'zsh -i: the history is in the volume' \
+          check 'zsh -i, fc -W: the history is in the volume' \
             docker exec --user dev den-state grep -q den-state-probe /state/home/.zsh_history
           docker rm -f den-state
           check 'new container on the volume: linked again, with the history' \
             docker run --rm -v den-state:/state den-dev \
               sh -c "$linked"' && grep -q den-state-probe /home/dev/.zsh_history'
+          # A host directory bound over a listed path stays on the host: the
+          # entry is skipped with a warning. The directory is dev's (1000), so
+          # only that rule keeps state-link from moving its file into the
+          # volume, which deletes it on the host.
+          mkdir "$RUNNER_TEMP/ssh"
+          docker run --rm -v "$RUNNER_TEMP/ssh:/x" --entrypoint sh den-dev \
+            -c 'echo key > /x/id_test && chown -R 1000:1000 /x'
+          docker run --rm -v den-state:/state -v "$RUNNER_TEMP/ssh:/home/dev/.ssh" \
+            den-dev true >"$RUNNER_TEMP/state.out" 2>&1 || true
+          if grep -q '^state-link: .*: skipped \.ssh: mount point /home/dev/\.ssh is at' \
+              "$RUNNER_TEMP/state.out" \
+            && [ "$(grep -c '^state-link:' "$RUNNER_TEMP/state.out")" -eq 1 ] \
+            && [ -f "$RUNNER_TEMP/ssh/id_test" ]; then
+            echo "ok    bound ~/.ssh: skipped with a warning, and its file stays on the host"
+          else
+            echo "::error::bound ~/.ssh: not skipped, or its file left the host"
+            cat "$RUNNER_TEMP/state.out"
+            ls -la "$RUNNER_TEMP/ssh"
+            failed=$((failed + 1))
+          fi
           check 'DEN_STATE=0: nothing linked' \
             docker run --rm -e DEN_STATE=0 -v den-state:/state den-dev sh -c "$unlinked"
           docker volume rm den-state
