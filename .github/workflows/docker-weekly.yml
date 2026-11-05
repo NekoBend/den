@@ -106,7 +106,8 @@ jobs:
       # no usage data or version check goes to Aqua.
       # .trivyignore.yaml in the checkout lists the findings that wait on an
       # upstream fix, each until its expired_at. Trivy reads a YAML ignore
-      # file only when --ignorefile names it.
+      # file only when --ignorefile names it, and --show-suppressed lists what
+      # it left out, so the log still shows what is being waited on.
       - name: Scan the dev image
         timeout-minutes: 30
         run: |
@@ -116,6 +117,7 @@ jobs:
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --ignorefile "$GITHUB_WORKSPACE/.trivyignore.yaml" \
+            --show-suppressed \
             --exit-code 1 \
             --format table \
             --no-progress \

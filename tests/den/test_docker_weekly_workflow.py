@@ -467,6 +467,8 @@ def test_the_scan_fails_on_critical_and_high_findings_that_have_a_fix():
     assert _option(args, "--severity") == "CRITICAL,HIGH"
     assert "--ignore-unfixed" in args
     assert _option(args, "--exit-code") == "1"
+    # The findings .trivyignore.yaml leaves out still show in the log.
+    assert "--show-suppressed" in args
     # A readable table in the log, for vulnerabilities only.
     assert _option(args, "--format") == "table"
     assert _option(args, "--scanners") == "vuln"

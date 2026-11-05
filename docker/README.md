@@ -101,6 +101,10 @@ settings in `renovate.json` at the repository root:
   (`minimumReleaseAge`), so a release that is withdrawn or found broken in its
   first week never reaches the image. Its Dependency Dashboard issue lists the
   updates still waiting.
+- When the weekly scan finds a CVE that an upstream release already fixes,
+  request that update from the Dependency Dashboard issue (its "Pending Status
+  Checks" list): Renovate then opens its pull request without waiting the
+  7 days.
 - It merges nothing: every pull request waits for a review. One that
   changes the Dockerfile runs the `dev image` workflow, which builds the
   image with the new version.
