@@ -274,7 +274,7 @@ def test_preamble_decide_wording_matches_every_parent() -> None:
     parents = sorted((AGENTS / "dist" / "parents").rglob("*.md"))
     assert parents
     for phrase in (
-        "the options, what each costs, and your recommendation",
+        "No recommendation:",
         "the work it gates does not start",
     ):
         assert phrase in preamble, phrase
