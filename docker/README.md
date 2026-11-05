@@ -306,10 +306,10 @@ pushed.
   and expires (`expired_at`) no more than 45 days after it is written. From
   that date Trivy applies the entry no more, and the scan fails again if the
   finding is still there. The way out is Renovate's update that brings the
-  fix (a new `*_VERSION` release or a new base image digest); once a run
-  passes without an entry, delete it. Findings in npm's own dependencies do
-  not go there: a new `NPM_VERSION` fixes those. `tests/den` checks every
-  entry.
+  fix (a new `*_VERSION` release or a new base image digest): delete the
+  entry once that update is merged, and the next run fails if the finding is
+  still there. Findings in npm's own dependencies do not go there: a new
+  `NPM_VERSION` fixes those. `tests/den` checks every entry.
 - When a run fails, its `notify` job opens an issue titled
   "dev image weekly scan failed" that links the run, or, while that issue is
   open, adds a comment to it instead. Close the issue once a run passes
