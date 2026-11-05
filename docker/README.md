@@ -260,6 +260,14 @@ RUN apt-get update && \
   dependencies, unless `--allow-scripts=<package>,...` names them (npm 12
   made this the default). A tool that sets itself up in such a script needs
   its name there.
+- npm 12 also stops on a CLI flag it does not know, or on a flag cut short
+  (`--par` for `--parseable`), where earlier releases warned. And it installs
+  a package from a git repository, or from a tarball URL on a host other
+  than the registry's, only when `--allow-git=root` or `--allow-remote=root`
+  lets it: `root` lets in the package you name, not the git or URL
+  dependencies it brings.
+- Node.js 26 does not ship corepack (Node.js stopped with 25.0.0), so the
+  image has no `corepack` command: `npm install -g corepack` if you need it.
 - Before a root step that follows a `dev` step, set `HOME=/root` and the
   system `PATH` again, as den's Dockerfile does. A `dev` step can leave files
   in `dev`'s home that root's tools read (`~/.curlrc`, `~/.dpkg.cfg`), or a
