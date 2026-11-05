@@ -18,7 +18,7 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | `rust-tools` | rustup and Rust (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, fzf, nvm + Node.js 26 (LTS), npm |
 | `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
-| `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself |
+| `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself, with the state volume's linking (see [What survives where](#what-survives-where)) |
 
 User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
 `~/.nvm/current/bin`). They are on `dev`'s `PATH`, not the image's, and the
@@ -67,8 +67,7 @@ same releases, with `--no-cache` too; a fix in one of them arrives as a
 version update. After a security fix in an apt package, rebuild with the
 `--no-cache-filter workspace` below. Either way, start a new container from
 the new image: a running container keeps the binaries it started with. What
-a new container keeps is in
-[Keeping state across rebuilds](#keeping-state-across-rebuilds).
+a new container keeps is in [What survives where](#what-survives-where).
 
 den is the exception: each build resolves den's `main` to a commit, so a
 rebuild after `main` moves redoes the `workspace` stage and nothing before it.
@@ -173,12 +172,15 @@ prints a warning that shows this command.
 | `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs den-dev`). On overlayfs the re-owning copies the whole home, the toolchains included, into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
 | `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. |
+| `DEN_STATE` | `1` | `0` turns the state step off, even with a volume mounted at `/state`: the home keeps its own files. See [What survives where](#what-survives-where). |
+| `DEN_CLEAN_TMP` | `0` | `1` empties `/tmp` at each start, but only when `/tmp` is a mount point of its own (a tmpfs or a volume). See [What survives where](#what-survives-where). |
 
 On a root start, the entrypoint also makes `dev` the owner of `/workspace`
-when nothing is mounted there. Changing IDs needs the root start: do not pass
-a non-root `--user` to `docker run`. With a non-root `--user`, the entrypoint
-rejects `FIX_WORKSPACE_OWNERSHIP=1` and refuses to start unless the IDs
-already match.
+when nothing is mounted there, and links `dev`'s logins and history into
+`/state` when a volume is mounted there. Changing IDs needs the root start: do
+not pass a non-root `--user` to `docker run`. With a non-root `--user`, the
+entrypoint rejects `FIX_WORKSPACE_OWNERSHIP=1`, refuses to start unless the
+IDs already match, and leaves `/state` and `/tmp` alone with a warning.
 
 ### PATH and HOME in `docker exec`
 
@@ -278,6 +280,12 @@ RUN apt-get update && \
   entrypoint starts as root before it drops to `dev`.
 - If you built den's image with another `USERNAME`, use that name and its home
   in the `dev` steps.
+- To keep paths of your tools in the state volume, add a list of them in
+  `/etc/den/state-paths.d`, in the format of
+  [The lists](#the-lists), as root:
+  `RUN printf '%s\n' 'd .config/mytool' > /etc/den/state-paths.d/mytool.list`.
+- Do not add a `VOLUME` instruction for `/state`: mount the volume at
+  `docker run`, as [What survives where](#what-survives-where) shows.
 
 Build den's image first (see [Build](#build)), then yours with the default
 `docker` builder, which finds the local `den-dev` image. Leave out `--pull`
@@ -288,13 +296,146 @@ there: it makes the build pull every base image from a registry, and
 docker buildx build --load -t my-dev -f Dockerfile .
 ```
 
-## Keeping state across rebuilds
+## What survives where
 
-`/home/dev` lives in the container's writable layer. It survives
-`docker restart` but not `docker rm`, and moving to a rebuilt image means a new
-container. Logins and history go with it (`~/.config/gh`, `~/.zsh_history`,
-and whatever the tools you add keep there), so log in again in the new
-container.
+`docker restart` keeps the container. A new container, which moving to a
+rebuilt image takes (`docker rm`, then `docker run`), starts from the image
+again. What each starts with:
+
+| Path | What it is | After `docker restart` | In a new container | Holds |
+| --- | --- | --- | --- | --- |
+| `/workspace` | a bind mount of the project's host directory | kept | kept | the project |
+| `/state` | a named volume you mount (`-v den-state:/state`) | kept | kept | logins, history and settings: the paths of `/home/dev` the state lists name, under `/state/home` |
+| `/tmp` | the container's layer, or a tmpfs or a volume you mount | kept; a tmpfs is emptied, and with `DEN_CLEAN_TMP=1` a volume too | emptied; a volume is kept unless `DEN_CLEAN_TMP=1` | temporary files |
+| `/home/dev` and the rest | the image, in the container's layer | kept | back to the image's | everything else |
+
+Without a volume at `/state`, logins and history live in the container's
+layer with the rest of `/home/dev`: log in again in a new container. The
+project and `/state` are the only things to back up. Mount a named volume at
+`/state`, not a host directory: the entrypoint gives its top directory and
+`/state/home` to `dev`. Never bind a host directory to `/tmp`: programs in
+the container take what is there as theirs to delete, and `DEN_CLEAN_TMP=1`
+empties it.
+
+```sh
+docker run -d --init --name den-dev \
+  -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -v "$PWD:/workspace" -v den-state:/state \
+  den-dev sleep infinity
+docker exec -it --user dev den-dev zsh
+```
+
+`sleep infinity` keeps the container running without a shell of its own, and
+`--init` puts a small init process in front of it as PID 1: it passes
+`docker stop`'s signal on, so the container stops at once, and it reaps the
+processes that `docker exec` sessions leave behind. The same with
+`docker compose` (`docker compose up -d`, then
+`docker compose exec --user dev den-dev zsh`), with `/tmp` in memory:
+
+```yaml
+services:
+  den-dev:
+    image: den-dev
+    init: true
+    command: ["sleep", "infinity"]
+    volumes:
+      - .:/workspace
+      - den-state:/state
+    # In memory, and empty at each start. For a /tmp on disk, mount a named
+    # volume there instead, and set DEN_CLEAN_TMP: "1" under environment to
+    # have it emptied at each start.
+    tmpfs:
+      - /tmp
+volumes:
+  den-state:
+```
+
+compose names the volume after the project (`<project>_den-state`). To back
+it up, archive it from any container that mounts it, for example
+`docker run --rm -v den-state:/state -v "$PWD:/backup" --entrypoint tar den-dev -czf /backup/den-state.tgz -C /state .`.
+
+### How the home is linked into `/state`
+
+At each start as root (no non-root `--user`), when a volume is mounted at
+`/state` and `DEN_STATE` is not `0`, the entrypoint makes `/state/home` and
+gives `/state` and `/state/home` (not what they hold) to `dev`. Then, as
+`dev`, `/usr/local/lib/den/state-link` makes each listed path of the home a
+link to the same path under `/state/home`, for example
+`~/.zsh_history -> /state/home/.zsh_history`:
+
+- A path the home has and the volume does not moves into the volume, so the
+  first start on a new volume keeps what the home had.
+- A path neither has: a `d` entry becomes an empty directory in the volume,
+  an `F` entry an empty file, and an `f` entry stays unlinked until one of
+  them has it.
+- A path both have, such as one a rebuilt image ships: the volume's copy
+  stays, and the home's moves to
+  `/state/home/.den-set-aside/<UTC time>/<path>` with a warning. An empty
+  directory in the home is deleted instead.
+- A link that is already right is left as it is, so a restart changes
+  nothing.
+- An entry with a symbolic link on its way, in the home or in the volume, is
+  skipped, and so is one whose path in the volume is a link or not of the
+  entry's kind.
+
+Each problem is one warning in the container's log (`docker logs den-dev`),
+which names the list file and line, and the container starts anyway. With
+`DEN_STATE=0`, or a non-root `--user` (which warns), nothing is linked and
+the home keeps its own files. When `HOST_UID` or `HOST_GID` changes `dev`'s
+IDs, the entrypoint re-owns the files under `/state` that had the old ones,
+as it does for `/home/dev`.
+
+The image's list, `/etc/den/state-paths.d/den.list`:
+
+| Entry | Holds |
+| --- | --- |
+| `d .ssh` | ssh keys, `known_hosts`, `config` |
+| `F .gitconfig` | git's global settings |
+| `F .zsh_history`, `F .bash_history` | shell history |
+| `d .config/gh` | gh's login |
+| `d .config/rclone` | rclone's remotes |
+| `d .local/share/zoxide` | zoxide's directory list |
+| `d .local/share/powershell/PSReadLine` | pwsh's history |
+| `d .config/den` | den's proxy profiles and snippets, and this environment's own list |
+
+zsh, bash and pwsh keep their history files as links: `/etc/zsh/zshenv`
+turns zsh's `HIST_SAVE_BY_COPY` off for `dev` while `~/.zsh_history` is a link
+(by default zsh writes a new file beside the link and renames it over the
+link), bash writes a new history file next to the link's target, and pwsh's
+history is a file in the linked directory.
+
+#### The lists
+
+A list holds one entry per line, `<kind> <path>`, with one space between
+them; a line that starts with `#`, and an empty line, is skipped. The path is
+relative to the home, with names of letters, digits, `.`, `_` and `-` that
+are not `.` or `..`, separated by single slashes, with none at the start or
+the end. The kind is one of:
+
+- `d`: a directory, created in the volume when missing;
+- `F`: a file, created empty in the volume when missing;
+- `f`: a file, linked only once the volume or the home has one.
+
+The lists, in this order:
+
+- `/etc/den/state-paths.d/*.list`, in name order: the image's `den.list`, and
+  one of its own from each image built `FROM` this one (see
+  [Adding your own tools](#adding-your-own-tools)).
+- `~/.config/den/state-paths`, this environment's own. `~/.config/den` is a
+  link into the volume, so the file stays with the volume; it is read only
+  when it is a regular file that `dev` owns. Add a line, then start the
+  container again, or apply it at once:
+  `docker exec --user dev den-dev zsh -lc /usr/local/lib/den/state-link`.
+
+An entry inside a directory that another entry links is skipped, as it has a
+link on its way: `d .config/gh` once `d .config` links `~/.config`.
+
+### `/tmp`
+
+`/tmp` is left as it is unless `DEN_CLEAN_TMP=1`. Then each start as root
+empties it, before any of `dev`'s processes runs, but only when `/tmp` is a
+mount point of its own: a tmpfs, or a volume that keeps `/tmp` on disk. In
+the image's own `/tmp`, the variable does nothing but warn.
 
 ## Weekly build and scan
 
