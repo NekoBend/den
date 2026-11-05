@@ -32,6 +32,22 @@ link_store() {
     ln -s "$DOTS/$1" "$SNIPPET_FILE"
 }
 
+# link_store_dir - make the store's directory a symlink to an empty 0755
+# directory under $DOTS, as the dev image's state volume does;
+# unlink_store_dir makes it a plain directory again.
+link_store_dir() {
+    rm -rf "${DOTS:?}" "${SNIPPET_DIR:?}"
+    mkdir -p "$DOTS/den"
+    chmod 755 "$DOTS/den"
+    ln -s "$DOTS/den" "$SNIPPET_DIR"
+}
+unlink_store_dir() {
+    rm -f "$SNIPPET_DIR"
+    rm -rf "${DOTS:?}"
+    mkdir -p "$SNIPPET_DIR"
+    chmod 700 "$SNIPPET_DIR"
+}
+
 TAB=$(printf '\t')
 
 # _den_put copies a store through a symlink with `command cat`, the program
@@ -319,6 +335,18 @@ b${TAB}echo b
 c${TAB}echo c" "$(cat "$SNIPPET_DIR/$left" 2>&1)"
     rm -f "$SNIPPET_FILE" "${SNIPPET_DIR:?}/$left"
 
+    # The dev image links ~/.config/den into its state volume
+    # (docker/README.md, "What survives where"): a store directory that is a
+    # symlink to a directory of the user's works as a real one, and stays one.
+    echo "[$sh] save and rm work in a store directory that is a symlink"
+    link_store_dir
+    "$run" "$SNIPPET_SH" "umask 022; snippet save a 'echo a' 2>/dev/null; snippet save b 'echo b' 2>/dev/null; snippet rm a 2>/dev/null"
+    assert_eq "$sh/linked directory kept" "link" "$([ -L "$SNIPPET_DIR" ] && echo link || echo replaced)"
+    assert_eq "$sh/linked directory: the store is in its target" "b${TAB}echo b" "$(cat "$DOTS/den/snippets" 2>&1)"
+    assert_eq "$sh/linked directory: target 0700, store 0600" "700 600" \
+        "$(stat -c '%a' "$DOTS/den" "$DOTS/den/snippets" | paste -sd' ' -)"
+    unlink_store_dir
+
     # Mode 0200: the store can be written but not read. root reads it anyway,
     # so there the case is skipped.
     echo "[$sh] save leaves a store it cannot read as it was"
@@ -525,6 +553,15 @@ flag=True rest=z" "$actual"
     assert_eq "pwsh/snippet dangling symlink target created" "n${TAB}echo n 600" \
         "$(cat "$DOTS/new-snippets" 2>&1) $(stat -c '%a' "$DOTS/new-snippets" 2>&1)"
     rm -f "$SNIPPET_FILE"
+
+    echo "[pwsh] save and rm work in a store directory that is a symlink"
+    link_store_dir
+    (umask 022; run_pwsh "$SNIPPET_PS1" "snippet save a 'echo a'; snippet save b 'echo b'; snippet rm a" 2>/dev/null)
+    assert_eq "pwsh/snippet linked directory kept" "link" "$([ -L "$SNIPPET_DIR" ] && echo link || echo replaced)"
+    assert_eq "pwsh/snippet linked directory: the store is in its target" "b${TAB}echo b" "$(cat "$DOTS/den/snippets" 2>&1)"
+    assert_eq "pwsh/snippet linked directory: target 0700, store 0600" "700 600" \
+        "$(stat -c '%a' "$DOTS/den" "$DOTS/den/snippets" | paste -sd' ' -)"
+    unlink_store_dir
 
     echo "[pwsh] save leaves a store it cannot read as it was"
     printf 'a\techo a\n' > "$SNIPPET_FILE"
