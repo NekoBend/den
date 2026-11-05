@@ -331,12 +331,17 @@ docker exec -it --user dev den-dev zsh
 processes that `docker exec` sessions leave behind. The start is over once
 `sleep` runs: a `docker exec` session that starts before that can find the
 home not linked yet, and lose what it puts in `/tmp`. Wait for it first, for
-example with
-`until docker exec den-dev pgrep -x sleep >/dev/null; do sleep 1; done`.
+example with this loop, which also ends when the container has stopped
+(`docker logs den-dev` then says why):
 
-The same with `docker compose`
-(`HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker compose up -d`, then
-`docker compose exec --user dev den-dev zsh`), with `/tmp` in memory:
+```sh
+until docker exec den-dev pgrep -x sleep >/dev/null; do
+  [ "$(docker inspect -f '{{.State.Running}}' den-dev)" = true ] || break
+  sleep 1
+done
+```
+
+The same with `docker compose`, with `/tmp` in memory:
 
 ```yaml
 services:
@@ -359,6 +364,22 @@ services:
       - /tmp:exec
 volumes:
   den-state:
+```
+
+compose reads `HOST_UID` and `HOST_GID` again for every command (`exec`,
+`down` and `logs` too), so set them in the shell, for example in its
+startup file, not only for `up`. Then start it, wait for the start, and
+open a shell:
+
+```sh
+HOST_UID=$(id -u) HOST_GID=$(id -g)
+export HOST_UID HOST_GID
+docker compose up -d
+until docker compose exec -T den-dev pgrep -x sleep >/dev/null; do
+  [ -n "$(docker compose ps -q --status running den-dev)" ] || break
+  sleep 1
+done
+docker compose exec --user dev den-dev zsh
 ```
 
 compose names the volume after the project: `<project>_den-state`, as
@@ -390,21 +411,32 @@ link to the same path under `/state/home`, for example
 - A path the home has and the volume does not moves into the volume, so the
   first start on a new volume keeps what the home had. It is copied into
   `/state/home/.den-staging`, the whole copy is renamed into place, and only
-  then is the home's removed. A copy that a start left there unfinished is
-  removed at the next start while the home still has the path, and set aside
-  (below) otherwise; it never becomes the volume's copy. A path that `dev`
-  cannot read and remove whole (a directory in it that root owns, or a
-  read-only home) is skipped before anything is copied.
+  then is the home's removed. A path that `dev` cannot read and remove whole
+  (a directory in it that root owns, a sticky directory another user owns,
+  or a read-only home) is skipped before anything is copied.
 - A path neither has: a `d` entry becomes an empty directory in the volume,
   an `F` entry an empty file, and an `f` entry stays unlinked until one of
   them has it.
 - A file both have, such as one a rebuilt image ships: the volume's copy
   stays, and the home's moves to
   `/state/home/.den-set-aside/<UTC time>/<path>`, with a note in the log. A
-  directory both have: each name in the home's moves into the volume's, or
-  aside the same way when the volume's has it too, and the emptied directory
-  in the home is deleted; a link in it to the same name in the volume is
-  just removed.
+  directory both have is merged, at any depth: each name only the home's has
+  moves into the volume's, a directory both have is merged the same way, any
+  other name both have goes aside as a file does, and the emptied directory
+  in the home is deleted. A link in it to the same name in the volume is
+  removed last, once all else has moved. When `dev` cannot read and remove
+  all of the home's directory, nothing of it moves.
+- A run that a signal stops, the time limit's included, removes the copy it
+  was making: the home still has that path whole. A copy that an earlier run
+  left in `/state/home/.den-staging` (one stopped by `KILL` or a crash) is
+  moved whole to `/state/home/.den-set-aside/<UTC time>/.den-staging`, each
+  copy named after its path with `:` for `/`, with a note: in a new
+  container, the home that held the whole path may be gone. It is never
+  deleted, and never becomes the volume's copy.
+- Runs on one volume take turns: each holds a lock on
+  `/state/home/.den-lock`. A run that waits for it 60 seconds (another
+  container starting on the volume, or a run by hand) links nothing, with a
+  warning.
 - A link that is already right is left as it is, so a restart changes
   nothing. A dangling link is replaced. A link to something that exists is
   yours: it stays, with a warning that names its target.
@@ -420,14 +452,19 @@ link to the same path under `/state/home`, for example
 Each problem is a warning in the container's log (`docker logs den-dev`)
 that starts with `state-link:`, after the failing tool's own message when
 there is one. A problem with an entry or a line names the list file and
-line; one with a whole list, or with the home or the volume, names that file
-or directory. After them the entrypoint adds
+line, and may come after a `state-link:` line of its own that names the path
+it met. One with a whole list, or with the home or the volume, names that
+file or directory. After them the entrypoint adds
 `state-link reported problems (see above)`, and the container starts anyway.
-A set-aside, or a copy cleared from an earlier start, is a note in the same
-form, and the entrypoint adds nothing for it. The entrypoint waits for
-state-link 300 seconds at most; past that it stops it, says the run was cut
-short, and the rest is done at the next start, or at once with
-`docker exec --user dev den-dev zsh -lc /usr/local/lib/den/state-link`.
+A set-aside, or a copy set aside from an earlier start, is a note in the same
+form, and the entrypoint adds nothing for it.
+
+The entrypoint waits for state-link 300 seconds at most; past that it stops
+it and says the run was cut short. What was done stays done, the copy under
+way is removed, and the next start goes on from there. A path whose copy
+alone takes longer than that is never finished at a start: run
+`docker exec --user dev den-dev zsh -lc /usr/local/lib/den/state-link` once,
+which has no time limit.
 
 With `DEN_STATE=0`, or a non-root `--user` (which warns), nothing is linked
 and the home keeps its own files. When `HOST_UID` or `HOST_GID` gives `dev`
@@ -438,7 +475,9 @@ the image's IDs, as it does for `/home/dev`. It does not re-own what another
 root, with the IDs `dev` will run as:
 `docker run --rm -v den-state:/state --entrypoint /usr/bin/gnuchown den-dev -hR <uid>:<gid> /state`
 (GNU `chown`: with `-h` and no `-L` it changes links, not what they point
-to).
+to). With compose, name `<project>_den-state` there instead of `den-state`,
+as for the backup: for a name it does not find, `docker run` re-owns a new,
+empty volume and says nothing.
 
 The image's list, `/etc/den/state-paths.d/den.list`:
 
@@ -486,8 +525,10 @@ The lists, in this order:
 An entry inside a directory that another entry links into the volume needs
 nothing more: once `d .config` links `~/.config`, `d .config/gh` only makes
 `/state/home/.config/gh` when it is missing. Which of them comes first does
-not matter: the volume's `.config` that `d .config/gh` made is a directory
-both have, so the home's `.config` moves into it name by name.
+not matter, however far apart they are: the volume's `.config` that
+`d .config/gh` made is a directory both have, so the home's `.config` is
+merged into it, and so is `~/.local` into the `.local` that
+`d .local/share/zoxide` made.
 
 ### `/tmp`
 
