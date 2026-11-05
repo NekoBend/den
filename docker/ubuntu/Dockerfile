@@ -513,10 +513,12 @@ if [ "$(id -u)" -eq 0 ]; then
         /usr/bin/gnuchown -h "$target_uid:$target_gid" /workspace
     fi
     # /tmp is emptied only on request, and only when it is a mount point of
-    # its own (a volume or a tmpfs): anywhere else it is the image's /tmp or a
-    # host directory, whose files this would delete. No process of the user's
-    # runs yet. find does not follow symbolic links, and -xdev keeps it out of
-    # file systems mounted below /tmp.
+    # its own: a tmpfs or a volume, or a host directory bound there, which this
+    # empties too (docker/README.md says never to bind one). The image's own
+    # /tmp is left alone. A docker exec session started while this runs may
+    # lose its files there. find does not follow symbolic links, so a link
+    # cannot send a deletion elsewhere, and -xdev keeps it out of file systems
+    # mounted below /tmp.
     if [ "$clean_tmp" = 1 ]; then
         if own_mount /tmp; then
             find /tmp -xdev -mindepth 1 -delete \
@@ -530,17 +532,26 @@ if [ "$(id -u)" -eq 0 ]; then
     # neither is a symbolic link (chown -h would not follow one either).
     # state-link then links the home's paths into it as the user, so it never
     # reaches a file the user could not reach already. Its failures are
-    # warnings: the start goes on.
+    # warnings: the start goes on. The user can make it wait (a FIFO swapped
+    # in for the list it opens), so root waits for it 300 seconds at most;
+    # GNU timeout, as for chown, also stops the commands state-link runs.
     if [ "$use_state" = 1 ]; then
         if [ -L "$state_dir/home" ]; then
             warn "$state_dir/home is a symbolic link; the home is not linked into $state_dir"
         elif { [ -d "$state_dir/home" ] || (umask 077 && /usr/bin/gnumkdir "$state_dir/home"); } \
             && [ ! -L "$state_dir/home" ] \
             && /usr/bin/gnuchown -h "$target_uid:$target_gid" "$state_dir" "$state_dir/home"; then
-            /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
+            link_status=0
+            /usr/bin/gnutimeout -k 10 300 \
+                /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
                 /usr/bin/env -i HOME="$user_home" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
                 /usr/local/lib/den/state-link \
-                || warn "some paths of $user_home were not linked into $state_dir (see above)"
+                || link_status=$?
+            case "$link_status" in
+                0) ;;
+                124 | 137) warn "state-link was stopped after 300 seconds, so the run was cut short; run /usr/local/lib/den/state-link as $username to finish it" ;;
+                *) warn 'state-link reported problems (see above)' ;;
+            esac
         else
             warn "could not prepare $state_dir/home; the home is not linked into $state_dir"
         fi
@@ -591,7 +602,7 @@ STATE_PATHS
 chmod 0644 /etc/den/state-paths.d/den.list
 cat > /usr/local/lib/den/state-link <<'STATE_LINK'
 #!/bin/sh
-# Ubuntu's /bin/sh is dash, which has test -O.
+# Ubuntu's /bin/sh is dash, which has test -O and -ef.
 # shellcheck shell=dash
 # state-link - keep paths of the user's home in the state volume.
 # container-entrypoint runs it as the user at each root start, once /state/home
@@ -599,15 +610,25 @@ cat > /usr/local/lib/den/state-link <<'STATE_LINK'
 # "<kind> <path>" line of the lists it links ~/<path> to /state/home/<path>
 # (kinds: /etc/den/state-paths.d/den.list). The lists are every
 # /etc/den/state-paths.d/*.list, then the environment's own
-# /state/home/.config/den/state-paths. A path the home has and the volume
-# does not moves into the volume; when both have one, the volume's stays and
-# the home's moves to /state/home/.den-set-aside/<UTC time>/<path>. Nothing is
-# deleted but an empty directory, and nothing is done through a symbolic link:
-# an entry with one on its way, in the home or in the volume, is skipped. A
-# bad line and an entry that fails are warnings, and the next line goes on;
-# the exit status is 1 when there was one.
-# HOME, DEN_STATE_ROOT (default /state) and DEN_STATE_LISTS (default
-# /etc/den/state-paths.d) name the trees, so tests can run it elsewhere.
+# /state/home/.config/den/state-paths.
+# A path the home has and the volume does not moves into the volume. When both
+# have a file, the volume's stays and the home's moves to
+# /state/home/.den-set-aside/<UTC time>/<path>; when both have a directory,
+# each name in the home's moves into the volume's, or aside when the volume's
+# has it too. A move copies into /state/home/.den-staging, renames the whole
+# copy into place, and only then removes the home's, so the home's goes only
+# once the volume holds all of it. A copy that a run cut short leaves there is
+# removed by the next run while the home still has the path, and set aside
+# otherwise; it is never taken for the volume's.
+# Nothing is done through a symbolic link or on a mount point: an entry with a
+# link on its way, in the home or in the volume, is skipped, and so is one
+# whose path in the home is a mount point, is below one other than /, or has
+# one below it (a host directory bound into the home). A bad line and an entry
+# that fails are warnings, and the next line goes on; the exit status is 1
+# when there was one. A set-aside is a note, which leaves the status alone.
+# HOME, DEN_STATE_ROOT (default /state), DEN_STATE_LISTS (default
+# /etc/den/state-paths.d) and DEN_STATE_MOUNTINFO (default
+# /proc/self/mountinfo) name what it reads, so tests can run it elsewhere.
 set -u
 export LC_ALL=C
 umask 077
@@ -615,18 +636,24 @@ umask 077
 home=${HOME:-}
 volume=${DEN_STATE_ROOT:-/state}/home
 lists_dir=${DEN_STATE_LISTS:-/etc/den/state-paths.d}
+mountinfo=${DEN_STATE_MOUNTINFO:-/proc/self/mountinfo}
 env_list=$volume/.config/den/state-paths
+staging=$volume/.den-staging
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 aside=
 where=
 status=0
 
 warn() { printf 'state-link: %s\n' "$*" >&2; status=1; }
+# Something this run did that the user should know of, and no failure.
+note() { printf 'state-link: %s\n' "$*" >&2; }
 
 # Succeed when DIR is an absolute path to a directory this user owns, not a
 # symbolic link.
 own_dir() {
     case "$1" in /*) ;; *) return 1 ;; esac
+    # test -O is not POSIX; dash, the image's /bin/sh, has it.
+    # shellcheck disable=SC3067
     [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]
 }
 
@@ -701,16 +728,86 @@ kind_name() {
     esac
 }
 
-# Rename SRC to DST, which must not exist: -T never moves SRC into a
-# directory at DST, and -n never replaces anything there. mv -n skips an
-# existing DST and still succeeds, so SRC must be gone afterwards.
-move() {
-    mv -T -n -- "$1" "$2" || return 1
-    if [ -e "$1" ] || [ -L "$1" ]; then
-        printf 'state-link: %s: %s appeared first\n' "$1" "$2" >&2
+# Print the first mount point of the mount table, other than /, that PATH is,
+# is below or has below it, and succeed; fail with 1 when there is none. The
+# table writes a space, tab, newline or backslash in a mount point as a
+# backslash and three octal digits.
+mount_on() {
+    mo_path=$1 awk '
+        function unescape(s,    out, i, d) {
+            out = ""
+            while ((i = index(s, "\\")) > 0) {
+                d = substr(s, i + 1, 3)
+                if (d ~ /^[0-7][0-7][0-7]$/) {
+                    out = out substr(s, 1, i - 1) sprintf("%c", \
+                        substr(d, 1, 1) * 64 + substr(d, 2, 1) * 8 + substr(d, 3, 1))
+                    s = substr(s, i + 4)
+                } else {
+                    out = out substr(s, 1, i)
+                    s = substr(s, i + 1)
+                }
+            }
+            return out s
+        }
+        BEGIN { path = ENVIRON["mo_path"]; found = 0 }
+        {
+            m = unescape($5)
+            if (m != "/" && (m == path || index(path, m "/") == 1 || index(m, path "/") == 1)) {
+                print m
+                found = 1
+                exit
+            }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$mountinfo"
+}
+
+# The directory moves copy into, /state/home/.den-staging, made on first use.
+make_staging() {
+    if [ ! -e "$staging" ] && [ ! -L "$staging" ]; then
+        mkdir -m 0700 -- "$staging" || return 1
+    fi
+    if [ -L "$staging" ] || [ ! -d "$staging" ]; then
+        printf 'state-link: %s is not a directory\n' "$staging" >&2
         return 1
     fi
-    return 0
+}
+
+# Succeed when this user can copy PATH and then remove it: its directory is
+# writable, every directory in it readable, writable and searchable, and every
+# file in it readable. find decides as access(2) does, so a read-only file
+# system fails too.
+removable() {
+    [ -w "${1%/*}" ] || return 1
+    rv_bad=$(find "$1" \( -type d \( ! -readable -o ! -writable -o ! -executable \) \
+        -o -type f ! -readable \) -print -quit 2>&1) || return 1
+    [ -z "$rv_bad" ]
+}
+
+# Move SRC, a path of the home, to DST in the volume, which must not exist:
+# copy it to the entry's staging name, rename the whole copy to DST, and only
+# then remove SRC. A copy that fails is removed again, and SRC stays as it was.
+transfer() {
+    if ! removable "$1"; then
+        printf 'state-link: %s: this user cannot read and remove all of it\n' "$1" >&2
+        return 1
+    fi
+    make_staging || return 1
+    if ! cp -a -T -- "$1" "$slot"; then
+        rm -rf -- "$slot"
+        return 1
+    fi
+    # -T never moves the copy into a directory at DST, and -n never replaces
+    # anything there; mv -n skips an existing DST and may still succeed.
+    if ! mv -T -n -- "$slot" "$2" || [ -e "$slot" ] || [ -L "$slot" ]; then
+        printf 'state-link: %s: could not rename it to %s\n' "$slot" "$2" >&2
+        rm -rf -- "$slot"
+        return 1
+    fi
+    if ! rm -rf -- "$1"; then
+        printf 'state-link: %s: copied to %s, but not all of it could be removed\n' "$1" "$2" >&2
+        return 1
+    fi
 }
 
 # The directory this run sets the home's copies aside in, made on first use:
@@ -742,6 +839,83 @@ make_aside() {
     return 0
 }
 
+# A staging copy for this entry that an earlier run left, cut short while it
+# copied: the home's path was whole then, so while the home has it the copy
+# goes; without one in the home the copy is all there is, and it goes aside.
+clear_slot() {
+    if [ -L "$staging" ] || { [ -e "$staging" ] && [ ! -d "$staging" ]; }; then
+        printf 'state-link: %s is not a directory\n' "$staging" >&2
+        return 1
+    fi
+    [ -e "$slot" ] || [ -L "$slot" ] || return 0
+    if [ -e "$le_home" ] && [ ! -L "$le_home" ]; then
+        rm -rf -- "$slot" || return 1
+        note "$where: removed $slot, an unfinished copy of $le_home that an earlier run left"
+        return 0
+    fi
+    if ! make_aside || ! make_dirs "$aside" "$le_sub" \
+        || ! mv -T -n -- "$slot" "$aside/$le_rel" || [ -e "$slot" ] || [ -L "$slot" ]; then
+        return 1
+    fi
+    note "$where: moved $slot, an unfinished copy that an earlier run left, to $aside/$le_rel"
+}
+
+# Succeed when a directory above ~/REL is a link to the same directory in the
+# volume, as an entry for that directory makes it.
+covered() {
+    cv_home=$home
+    cv_vol=$volume
+    cv_rest=$le_sub
+    while [ -n "$cv_rest" ]; do
+        cv_home=$cv_home/${cv_rest%%/*}
+        cv_vol=$cv_vol/${cv_rest%%/*}
+        case "$cv_rest" in
+            */*) cv_rest=${cv_rest#*/} ;;
+            *) cv_rest= ;;
+        esac
+        if [ -L "$cv_home" ]; then
+            [ "$(readlink -- "$cv_home")" = "$cv_vol" ]
+            return
+        fi
+    done
+    return 1
+}
+
+# Make the volume's REL when it is missing: an empty directory for d, an empty
+# file for F. Return 2 for an f entry that the volume does not have.
+make_entry() {
+    [ -e "$le_vol" ] && return 0
+    case "$le_kind" in
+        f) return 2 ;;
+        d) make_dirs "$volume" "$le_sub" && mkdir -m 0700 -- "$le_vol" ;;
+        *) make_dirs "$volume" "$le_sub" && (set -C && : > "$le_vol") ;;
+    esac || return 1
+}
+
+# Both have directory REL: each name in the home's moves into the volume's, or
+# aside when the volume's has it too, and a link to the same name in the
+# volume's is removed. Then the emptied directory goes.
+merge_dir() {
+    md_failed=0
+    for md_home in "$le_home"/* "$le_home"/.[!.]* "$le_home"/..?*; do
+        [ -e "$md_home" ] || [ -L "$md_home" ] || continue
+        md_name=${md_home##*/}
+        md_vol=$le_vol/$md_name
+        md_aside=
+        if [ -L "$md_home" ] && [ "$(readlink -- "$md_home")" = "$md_vol" ]; then
+            rm -f -- "$md_home" || md_failed=1
+        elif [ ! -e "$md_vol" ] && [ ! -L "$md_vol" ]; then
+            transfer "$md_home" "$md_vol" || md_failed=1
+        elif make_aside && md_aside=$aside/$le_rel/$md_name \
+            && make_dirs "$aside" "$le_rel" && transfer "$md_home" "$md_aside"; then
+            note "$where: $md_vol and $md_home both existed: kept $md_vol, moved $md_home to $md_aside"
+        else
+            md_failed=1
+        fi
+    done
+    [ "$md_failed" = 0 ] && rmdir -- "$le_home"
+}
+
 # Link ~/REL to the volume's REL for one entry of KIND, or warn and skip it.
 link_entry() {
     le_kind=$1
@@ -752,7 +926,19 @@ link_entry() {
         */*) le_sub=${le_rel%/*} ;;
         *) le_sub= ;;
     esac
-    if ! clear_path "$home" "$le_sub" || ! clear_path "$volume" "$le_sub"; then
+    # The entry's staging name: its path with ':', which no name in it has,
+    # for '/'.
+    le_flat=
+    le_rest=$le_rel
+    while :; do
+        le_flat=$le_flat${le_flat:+:}${le_rest%%/*}
+        case "$le_rest" in
+            */*) le_rest=${le_rest#*/} ;;
+            *) break ;;
+        esac
+    done
+    slot=$staging/$le_flat
+    if ! clear_path "$volume" "$le_sub"; then
         warn "$where: skipped $le_rel: a symbolic link or a file is on its way in $home or $volume"
         return
     fi
@@ -760,50 +946,87 @@ link_entry() {
         warn "$where: skipped $le_rel: $le_vol is a symbolic link"
         return
     fi
-    if [ -e "$le_vol" ]; then
-        if ! is_kind "$le_kind" "$le_vol"; then
-            warn "$where: skipped $le_rel: $le_vol is not a $(kind_name "$le_kind")"
+    if [ -e "$le_vol" ] && ! is_kind "$le_kind" "$le_vol"; then
+        warn "$where: skipped $le_rel: $le_vol is not a $(kind_name "$le_kind")"
+        return
+    fi
+    if covered; then
+        # ~/REL is the volume's REL already, through the link above it.
+        make_entry
+        if [ $? -eq 1 ]; then
+            warn "$where: skipped $le_rel: could not make $le_vol"
+        fi
+        return
+    fi
+    if ! clear_path "$home" "$le_sub"; then
+        warn "$where: skipped $le_rel: a symbolic link or a file is on its way in $home or $volume"
+        return
+    fi
+    le_mount=$(mount_on "$le_home")
+    case $? in
+        0)
+            warn "$where: skipped $le_rel: mount point $le_mount is at, above or inside $le_home"
+            return
+            ;;
+        1) ;;
+        *)
+            warn "$where: skipped $le_rel: could not read the mount table $mountinfo"
+            return
+            ;;
+    esac
+    if ! clear_slot; then
+        warn "$where: skipped $le_rel: could not clear $slot"
+        return
+    fi
+    if [ -L "$le_home" ]; then
+        # A link to something that exists is the user's own: it stays. A
+        # dangling one, or one to the volume's path spelled otherwise, is
+        # made right below.
+        le_target=$(readlink -- "$le_home")
+        if [ "$le_target" != "$le_vol" ] && [ -e "$le_home" ] && [ ! "$le_home" -ef "$le_vol" ]; then
+            warn "$where: left $le_rel alone: $le_home is a link to $le_target, not to $le_vol"
             return
         fi
-    elif [ -e "$le_home" ] && [ ! -L "$le_home" ]; then
-        # The volume has none yet: the home's moves into it.
+    elif [ -e "$le_home" ]; then
         if ! is_kind "$le_kind" "$le_home"; then
             warn "$where: skipped $le_rel: $le_home is not a $(kind_name "$le_kind")"
             return
         fi
-        if ! make_dirs "$volume" "$le_sub" || ! move "$le_home" "$le_vol"; then
-            warn "$where: skipped $le_rel: could not move $le_home into $volume"
+        if [ ! -e "$le_vol" ]; then
+            # The volume has none yet: the home's moves into it.
+            if ! make_dirs "$volume" "$le_sub" || ! transfer "$le_home" "$le_vol"; then
+                warn "$where: skipped $le_rel: could not move $le_home into $volume"
+                return
+            fi
+        elif [ "$le_kind" = d ]; then
+            if ! merge_dir; then
+                warn "$where: skipped $le_rel: could not move all of $le_home into $le_vol or aside"
+                return
+            fi
+        elif make_aside && make_dirs "$aside" "$le_sub" \
+            && transfer "$le_home" "$aside/$le_rel"; then
+            # Both have one: the volume's stays, and the home's goes aside in
+            # the volume, which outlives the container's layer.
+            note "$where: $le_vol and $le_home both existed: kept $le_vol, moved $le_home to $aside/$le_rel"
+        else
+            warn "$where: skipped $le_rel: could not set $le_home aside"
             return
         fi
-    else
-        case "$le_kind" in
-            f) return ;;
-            d) make_dirs "$volume" "$le_sub" && mkdir -m 0700 -- "$le_vol" ;;
-            F) make_dirs "$volume" "$le_sub" && (set -C && : > "$le_vol") ;;
-        esac || {
+    fi
+    make_entry
+    case $? in
+        1)
             warn "$where: skipped $le_rel: could not make $le_vol"
             return
-        }
-    fi
+            ;;
+        2) return ;;
+    esac
     if [ -L "$le_home" ]; then
         [ "$(readlink -- "$le_home")" = "$le_vol" ] && return
         # -n replaces a link to a directory instead of linking inside it.
         ln -sfnT -- "$le_vol" "$le_home" \
             || warn "$where: skipped $le_rel: could not replace the link $le_home"
         return
-    fi
-    if [ -e "$le_home" ]; then
-        # Both have one: the volume's stays. An empty directory holds nothing
-        # to keep; anything else goes aside in the volume, which outlives the
-        # container's layer.
-        if ! { [ -d "$le_home" ] && rmdir -- "$le_home" 2>/dev/null; }; then
-            if ! make_aside || ! make_dirs "$aside" "$le_sub" \
-                || ! move "$le_home" "$aside/$le_rel"; then
-                warn "$where: skipped $le_rel: could not set $le_home aside"
-                return
-            fi
-            warn "$where: $le_vol and $le_home both existed: kept $le_vol, moved $le_home to $aside/$le_rel"
-        fi
     fi
     if ! make_dirs "$home" "$le_sub" || ! ln -snT -- "$le_vol" "$le_home"; then
         warn "$where: skipped $le_rel: could not link $le_home to $le_vol"
@@ -841,6 +1064,10 @@ if ! own_dir "$volume"; then
     warn "$volume is not a directory of this user's; nothing is linked"
     exit 1
 fi
+if [ ! -r "$mountinfo" ]; then
+    warn "cannot read the mount table $mountinfo; nothing is linked"
+    exit 1
+fi
 for list in "$lists_dir"/*.list; do
     if [ -f "$list" ] && [ -r "$list" ]; then
         apply_list "$list"
@@ -851,11 +1078,23 @@ done
 # The environment's own list is read from the volume, where the user keeps
 # it: only a regular file of the user's, with no symbolic link on its way.
 if [ -e "$env_list" ] || [ -L "$env_list" ]; then
+    # test -O is not POSIX; dash, the image's /bin/sh, has it.
+    # shellcheck disable=SC3067
     if clear_path "$volume" .config/den && [ ! -L "$env_list" ] && [ -f "$env_list" ] \
         && [ -O "$env_list" ] && [ -r "$env_list" ]; then
         apply_list "$env_list"
     else
         warn "skipped $env_list: not a readable regular file of this user's, or a symbolic link is on its way"
+    fi
+fi
+# Staging copies that no entry of this run cleared: an earlier run left them,
+# for a path no list names now or an entry skipped this time. They go aside.
+if [ -d "$staging" ] && [ ! -L "$staging" ] && ! rmdir -- "$staging" 2>/dev/null; then
+    if make_aside && mv -T -n -- "$staging" "$aside/.den-staging" \
+        && [ ! -e "$staging" ] && [ ! -L "$staging" ]; then
+        note "moved $staging, unfinished copies that an earlier run left, to $aside/.den-staging"
+    else
+        warn "could not set $staging aside"
     fi
 fi
 exit "$status"
@@ -884,10 +1123,11 @@ else
         # the full one /etc/zsh/zshrc would run instead.
         skip_global_compinit=1
         # A ~/.zsh_history that is a link into the state volume is rewritten
-        # in place: by default zsh writes a new file beside the link and
-        # renames it over the link, which leaves the history in the
-        # container's layer. Without the link, zsh keeps its default, under
-        # which an interrupted save loses no history.
+        # in place. By default, when zsh rewrites the history file (to trim
+        # it, or on fc -W) it writes a new file beside the link and renames
+        # it over the link, which leaves the history in the container's
+        # layer. Without the link, zsh keeps its default, under which an
+        # interrupted rewrite loses no history.
         if [[ -L $HOME/.zsh_history ]]; then
             setopt no_hist_save_by_copy
         fi

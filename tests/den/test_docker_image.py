@@ -727,10 +727,13 @@ def _run_entrypoint(
     The account is dev, 1000:1000, home /home/dev. The state volume's mount
     point is tmp_path/state and /tmp is tmp_path/tmp, neither of which this
     makes; mountpoint finds a mount point at each path ``mounts`` names and
-    nowhere else. setpriv logs its call and prints its arguments, the HOME it
-    got and the PWSH_ENV variables, and runs nothing; gnumkdir logs its call
-    and makes the directory; the other commands that change accounts or files
-    (find among them) only log theirs.
+    nowhere else. setpriv logs its call and runs nothing: for state-link it
+    exits with FAKE_STATE_LINK_STATUS (default 0), and otherwise prints its
+    arguments, the HOME it got and the PWSH_ENV variables. gnutimeout logs its
+    call and runs the command after its three options; gnumkdir logs its call
+    and makes the directory; find logs its call and fails when its first
+    argument is FAKE_FIND_FAIL; the other commands that change accounts or
+    files only log theirs.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -753,8 +756,9 @@ def _run_entrypoint(
         "  *) exit 2 ;;\n"
         "esac",
     )
-    for name in ("usermod", "groupadd", "find", "gnuchown"):
+    for name in ("usermod", "groupadd", "gnuchown"):
         stub(name, logged)
+    stub("find", f'{logged}\n[ "$1" != "${{FAKE_FIND_FAIL-}}" ]')
     stub(
         "mountpoint",
         f"{logged}\n"
@@ -763,9 +767,13 @@ def _run_entrypoint(
         "exit 32",
     )
     stub("gnumkdir", f'{logged}\nexec mkdir "$@"')
+    stub("gnutimeout", f'{logged}\nshift 3\nexec "$@"')
     stub(
         "setpriv",
-        f'{logged}\nprintf "%s\\n" "$@" "HOME=$HOME"'
+        f"{logged}\n"
+        f'case " $* " in *" {_STATE_LINK} "*)'
+        ' exit "${FAKE_STATE_LINK_STATUS:-0}" ;; esac\n'
+        'printf "%s\\n" "$@" "HOME=$HOME"'
         + "".join(f' "{name}=${{{name}-unset}}"' for name in PWSH_ENV),
     )
     user_file = tmp_path / "container-user"
@@ -786,6 +794,7 @@ def _run_entrypoint(
                 "/usr/bin/setpriv": str(stubs / "setpriv"),
                 "/usr/bin/gnuchown": str(stubs / "gnuchown"),
                 "/usr/bin/gnumkdir": str(stubs / "gnumkdir"),
+                "/usr/bin/gnutimeout": str(stubs / "gnutimeout"),
             },
         ),
         encoding="utf-8",
@@ -902,9 +911,14 @@ def test_entrypoint_links_the_home_into_a_mounted_state_volume_as_the_user(tmp_p
     assert _calls(calls, "gnumkdir") == [f"gnumkdir {state}/home"]
     assert (state / "home").is_dir()
     assert _calls(calls, "gnuchown") == [f"gnuchown -h 1000:1000 {state} {state}/home"]
-    # Then state-link runs as dev, before the command does.
+    # Then state-link runs as dev, before the command does, and root waits
+    # for it 300 seconds at most.
     assert _calls(calls, "setpriv")[0] == _state_link_call()
     assert len(_calls(calls, "setpriv")) == 2
+    assert _calls(calls, "gnutimeout") == [
+        f"gnutimeout -k 10 300 {tmp_path / 'stubs' / 'setpriv'}"
+        + _state_link_call().removeprefix("setpriv")
+    ]
     # The IDs match, so nothing is walked.
     assert not _calls(calls, "find")
 
@@ -920,6 +934,69 @@ def test_entrypoint_keeps_an_existing_state_home(tmp_path):
     assert not _calls(calls, "gnumkdir")
     assert _calls(calls, "gnuchown") == [f"gnuchown -h 1000:1000 {state} {state}/home"]
     assert _state_link_call() in calls
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize(
+    ("link_status", "warning"),
+    [
+        ("1", "state-link reported problems (see above)"),
+        *(
+            (
+                stopped,
+                "state-link was stopped after 300 seconds, so the run was cut"
+                f" short; run {_STATE_LINK} as dev to finish it",
+            )
+            for stopped in ("124", "137")
+        ),
+    ],
+    ids=["failed", "stopped-by-term", "stopped-by-kill"],
+)
+def test_entrypoint_starts_the_command_when_state_link_fails_or_is_stopped(
+    tmp_path, link_status, warning
+):
+    # B5: state-link's warnings are above this line; the start goes on, under
+    # set -e too. gnutimeout exits 124 when TERM stopped state-link, and 137
+    # when it took KILL.
+    state = tmp_path / "state"
+    state.mkdir()
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"FAKE_STATE_LINK_STATUS": link_status},
+        mounts=("/workspace", str(state)),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == f"container-entrypoint: {warning}\n"
+    assert _state_link_call() in calls
+    assert "HOME=/home/dev" in result.stdout.splitlines()
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("where", ["state", "tmp"])
+def test_entrypoint_starts_the_command_when_a_state_walk_or_the_tmp_delete_fails(
+    tmp_path, where
+):
+    state = tmp_path / "state"
+    state.mkdir()
+    (tmp_path / "tmp").mkdir()
+    if where == "state":
+        env = {"HOST_UID": "501", "HOST_GID": "20"}
+        mounts = ("/workspace", str(state))
+        warning = f"re-owning {state} from 1000:1000 failed part way"
+    else:
+        env = {"DEN_CLEAN_TMP": "1"}
+        mounts = ("/workspace", str(tmp_path / "tmp"))
+        warning = "some entries under /tmp were left in place"
+    result, _ = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={**env, "FAKE_FIND_FAIL": str(tmp_path / where)},
+        mounts=mounts,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"container-entrypoint: {warning}" in result.stderr.splitlines()
+    assert "HOME=/home/dev" in result.stdout.splitlines()
 
 
 @_needs("sh", "env")
@@ -1064,6 +1141,26 @@ def test_entrypoint_leaves_an_unmounted_state_out_of_the_remap(tmp_path):
 
 
 @_needs("sh", "env")
+def test_entrypoint_leaves_a_mounted_state_out_of_the_remap_when_den_state_is_0(
+    tmp_path,
+):
+    # D7: DEN_STATE=0 turns the whole state step off, the /state walk too.
+    state = tmp_path / "state"
+    state.mkdir()
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"DEN_STATE": "0", "HOST_UID": "501", "HOST_GID": "20"},
+        mounts=("/workspace", str(state)),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usermod --uid 501 --gid 20 dev" in calls
+    assert [line for line in _calls(calls, "find") if str(state) in line] == []
+    assert _STATE_LINK not in calls
+    assert not _calls(calls, "gnuchown")
+
+
+@_needs("sh", "env")
 @pytest.mark.parametrize(
     ("clean", "mounted", "link", "emptied"),
     [
@@ -1077,8 +1174,9 @@ def test_entrypoint_leaves_an_unmounted_state_out_of_the_remap(tmp_path):
 def test_entrypoint_empties_tmp_only_on_request_and_on_its_own_mount_point(
     tmp_path, clean, mounted, link, emptied
 ):
-    # B3: emptying the image's /tmp, or a host directory bound there, would
-    # delete what does not belong to this start.
+    # B3: emptying the image's /tmp would delete what does not belong to this
+    # start. A mount point there is emptied, a bound host directory too (the
+    # README says never to bind one).
     tmp = tmp_path / "tmp"
     if link:
         (tmp_path / "elsewhere").mkdir()
@@ -1154,11 +1252,16 @@ def _image_entries() -> list[tuple[str, str]]:
 
 
 class _Roots:
-    """A home, a state volume and a list directory under tmp_path."""
+    """A home, a state volume, a list directory and a mount table under tmp_path.
 
-    def __init__(self, tmp_path: Path) -> None:
+    The mount table lists / alone until mount() adds to it, so the home and
+    the volume are in one file system, as they are not in a container: these
+    tests check what state-link decides, not how far mv or cp copy.
+    """
+
+    def __init__(self, tmp_path: Path, home: str = "home") -> None:
         self.tmp = tmp_path
-        self.home = tmp_path / "home"
+        self.home = tmp_path / home
         self.state = tmp_path / "state"
         self.volume = self.state / "home"
         self.lists = tmp_path / "lists"
@@ -1166,6 +1269,16 @@ class _Roots:
             path.mkdir(parents=True)
         self.script = tmp_path / "state-link"
         self.script.write_text(_appended_block(_STATE_LINK), encoding="utf-8")
+        self.mountinfo = tmp_path / "mountinfo"
+        self.mountinfo.write_text(
+            "22 1 0:21 / / rw,relatime - overlay overlay rw\n", encoding="utf-8"
+        )
+
+    def mount(self, path: Path) -> None:
+        """Add a mount point at PATH, escaped as /proc/self/mountinfo does."""
+        escaped = "".join(f"\\{ord(c):03o}" if c in " \t\n\\" else c for c in str(path))
+        with self.mountinfo.open("a", encoding="utf-8") as table:
+            table.write(f"40 22 0:40 / {escaped} rw,relatime - ext4 /dev/sdb1 rw\n")
 
     def image_list(self, text: str, name: str = "den.list") -> Path:
         path = self.lists / name
@@ -1178,15 +1291,24 @@ class _Roots:
         path.write_text(text, encoding="utf-8")
         return path
 
-    def run(self, *, home: Path | None = None) -> subprocess.CompletedProcess[str]:
+    def env(self, **changes: str) -> dict[str, str]:
+        return {
+            "HOME": str(self.home),
+            "DEN_STATE_ROOT": str(self.state),
+            "DEN_STATE_LISTS": str(self.lists),
+            "DEN_STATE_MOUNTINFO": str(self.mountinfo),
+            "PATH": SYSTEM_PATH,
+            **changes,
+        }
+
+    def run(
+        self, *, home: Path | None = None, **changes: str
+    ) -> subprocess.CompletedProcess[str]:
+        if home is not None:
+            changes["HOME"] = str(home)
         return subprocess.run(
             [_tool("sh"), str(self.script)],
-            env={
-                "HOME": str(home or self.home),
-                "DEN_STATE_ROOT": str(self.state),
-                "DEN_STATE_LISTS": str(self.lists),
-                "PATH": SYSTEM_PATH,
-            },
+            env=self.env(**changes),
             capture_output=True,
             text=True,
             check=False,
@@ -1259,24 +1381,30 @@ def test_state_link_sets_the_home_copy_aside_in_the_volume(tmp_path):
     (roots.home / ".zsh_history").write_text("home\n", encoding="utf-8")
     (roots.home / ".config" / "gh").mkdir(parents=True)
     (roots.home / ".config" / "gh" / "hosts.yml").write_text("h\n", encoding="utf-8")
+    (roots.home / ".config" / "gh" / "extra.yml").write_text("e\n", encoding="utf-8")
     result = roots.run()
-    assert result.returncode == 1
+    # A set-aside is a note: the entry is linked, so the exit status is 0.
+    assert result.returncode == 0, result.stderr
     assert roots.linked(".zsh_history")
     assert roots.linked(".config/gh")
     assert (roots.volume / ".zsh_history").read_text(encoding="utf-8") == "volume\n"
     assert (roots.volume / ".config/gh/hosts.yml").read_text(encoding="utf-8") == "v\n"
+    # Both have the directory: what only the home's holds moves into the
+    # volume's, and only what both hold goes aside.
+    assert (roots.volume / ".config/gh/extra.yml").read_text(encoding="utf-8") == "e\n"
     [aside] = _aside_dirs(roots)
     assert re.fullmatch(r"\d{8}T\d{6}Z", aside.name)
     assert (aside / ".zsh_history").read_text(encoding="utf-8") == "home\n"
+    assert [p.name for p in (aside / ".config/gh").iterdir()] == ["hosts.yml"]
     assert (aside / ".config/gh/hosts.yml").read_text(encoding="utf-8") == "h\n"
-    warnings = result.stderr.splitlines()
-    assert len(warnings) == 2, result.stderr
-    assert warnings[0] == (
-        f"state-link: {roots.lists}/den.list:1: {roots.volume}/.zsh_history and"
-        f" {roots.home}/.zsh_history both existed: kept {roots.volume}/.zsh_history,"
-        f" moved {roots.home}/.zsh_history to {aside}/.zsh_history"
-    )
-    assert warnings[1].startswith(f"state-link: {roots.lists}/den.list:2: ")
+    assert not (roots.volume / ".den-staging").exists()
+    notes = result.stderr.splitlines()
+    assert notes == [
+        f"state-link: {roots.lists}/den.list:{line}: {roots.volume}/{rel} and"
+        f" {roots.home}/{rel} both existed: kept {roots.volume}/{rel},"
+        f" moved {roots.home}/{rel} to {aside}/{rel}"
+        for line, rel in ((1, ".zsh_history"), (2, ".config/gh/hosts.yml"))
+    ]
 
 
 @_needs_linux()
@@ -1307,23 +1435,279 @@ def test_state_link_changes_nothing_the_second_time(tmp_path):
 
 
 @_needs_linux()
-@pytest.mark.parametrize("target", ["elsewhere", "missing"])
-def test_state_link_replaces_a_home_link_that_points_elsewhere(tmp_path, target):
-    # B5: a link that points nowhere (a dangling one included) is replaced,
-    # and what it pointed to is left alone.
+@pytest.mark.parametrize(
+    ("rel", "mounted"),
+    [
+        (".ssh", ".ssh"),  # -v ~/.ssh:/home/dev/.ssh
+        (".ssh", ".ssh/id_ed25519"),  # a file bound into it
+        (".config/gh", ".config"),  # -v ~/.config:/home/dev/.config
+        (".ssh", ""),  # the whole home
+    ],
+)
+def test_state_link_moves_and_links_nothing_on_a_mount_point(tmp_path, rel, mounted):
+    # A host directory bound into the home: a move into the volume, another
+    # file system, would copy it and then delete it on the host. The entry is
+    # skipped with a warning that names the mount point.
+    roots = _Roots(tmp_path)
+    roots.image_list(f"d {rel}\nF .after\n")
+    (roots.home / rel).mkdir(parents=True)
+    (roots.home / rel / "id_ed25519").write_text("key\n", encoding="utf-8")
+    mount = roots.home / mounted if mounted else roots.home
+    roots.mount(mount)
+    result = roots.run()
+    assert result.returncode == 1
+    lines = result.stderr.splitlines()
+    assert lines[0] == (
+        f"state-link: {roots.lists}/den.list:1: skipped {rel}: mount point"
+        f" {mount} is at, above or inside {roots.home}/{rel}"
+    )
+    assert (roots.home / rel / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert not (roots.home / rel).is_symlink()
+    assert not (roots.volume / rel).exists()
+    assert not (roots.volume / ".den-staging").exists()
+    if mounted:
+        # Only that entry: the next line goes on.
+        assert lines[1:] == []
+        assert roots.linked(".after")
+
+
+@_needs_linux()
+def test_state_link_makes_no_link_in_a_mount_point(tmp_path):
+    # Not even a new link: in a bound host directory it would dangle on the
+    # host.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .config/gh\n")
+    (roots.home / ".config").mkdir()
+    roots.mount(roots.home / ".config")
+    result = roots.run()
+    assert result.returncode == 1
+    assert "skipped .config/gh: mount point" in result.stderr
+    assert list((roots.home / ".config").iterdir()) == []
+    assert not (roots.volume / ".config").exists()
+
+
+@_needs_linux()
+def test_state_link_reads_an_escaped_mount_point(tmp_path):
+    # The mount table writes a space in a path as \040.
+    roots = _Roots(tmp_path, home="my home")
+    roots.image_list("d .ssh\n")
+    (roots.home / ".ssh").mkdir()
+    roots.mount(roots.home / ".ssh")
+    assert "my\\040home" in roots.mountinfo.read_text(encoding="utf-8")
+    result = roots.run()
+    assert result.returncode == 1
+    assert f"mount point {roots.home}/.ssh is at" in result.stderr
+    assert not (roots.volume / ".ssh").exists()
+
+
+@_needs_linux()
+def test_state_link_removes_an_unfinished_copy_while_the_home_has_the_path(tmp_path):
+    # A run cut short while it copied ~/.ssh left part of it in the staging
+    # directory. The home's is whole, so that is what moves, and the part goes.
     roots = _Roots(tmp_path)
     roots.image_list("d .ssh\n")
-    other = tmp_path / target
-    if target == "elsewhere":
-        other.mkdir()
-        (other / "keep").write_text("", encoding="utf-8")
-    (roots.home / ".ssh").symlink_to(other)
+    (roots.home / ".ssh").mkdir()
+    (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
+    (roots.home / ".ssh" / "known_hosts").write_text("host\n", encoding="utf-8")
+    slot = roots.volume / ".den-staging" / ".ssh"
+    slot.mkdir(parents=True)
+    (slot / "id_ed25519").write_text("k", encoding="utf-8")
+    result = roots.run()
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        f"state-link: {roots.lists}/den.list:1: removed {slot}, an unfinished"
+        f" copy of {roots.home}/.ssh that an earlier run left\n"
+    )
+    assert roots.linked(".ssh")
+    assert sorted(p.name for p in (roots.volume / ".ssh").iterdir()) == [
+        "id_ed25519",
+        "known_hosts",
+    ]
+    assert (roots.volume / ".ssh/id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert not (roots.volume / ".den-staging").exists()
+    assert not (roots.volume / ".den-set-aside").exists()
+
+
+@_needs_linux()
+def test_state_link_sets_an_unfinished_copy_aside_when_the_home_lacks_the_path(
+    tmp_path,
+):
+    # Without the path in the home (a new container), the unfinished copy is
+    # all there is: it is kept, but never taken for the volume's copy.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .config/tool\n")
+    slot = roots.volume / ".den-staging" / ".config:tool"
+    slot.mkdir(parents=True)
+    (slot / "part").write_text("p\n", encoding="utf-8")
+    result = roots.run()
+    assert result.returncode == 0, result.stderr
+    [aside] = _aside_dirs(roots)
+    assert result.stderr == (
+        f"state-link: {roots.lists}/den.list:1: moved {slot}, an unfinished copy"
+        f" that an earlier run left, to {aside}/.config/tool\n"
+    )
+    assert (aside / ".config/tool/part").read_text(encoding="utf-8") == "p\n"
+    assert roots.linked(".config/tool")
+    assert list((roots.volume / ".config/tool").iterdir()) == []
+    assert not (roots.volume / ".den-staging").exists()
+
+
+@_needs_linux()
+def test_state_link_sets_aside_unfinished_copies_that_no_entry_clears(tmp_path):
+    roots = _Roots(tmp_path)
+    roots.image_list("F .after\n")
+    (roots.volume / ".den-staging" / ".gone").mkdir(parents=True)
+    result = roots.run()
+    assert result.returncode == 0, result.stderr
+    [aside] = _aside_dirs(roots)
+    assert result.stderr == (
+        f"state-link: moved {roots.volume}/.den-staging, unfinished copies that an"
+        f" earlier run left, to {aside}/.den-staging\n"
+    )
+    assert (aside / ".den-staging" / ".gone").is_dir()
+    assert not (roots.volume / ".den-staging").exists()
+    assert roots.linked(".after")
+
+
+@_needs_linux()
+def test_state_link_removes_a_copy_that_failed_and_keeps_the_home_path(tmp_path):
+    # A copy that stops part way (a full volume, say) is never renamed into
+    # place: it is removed, and the home keeps the path for the next start.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\n")
+    (roots.home / ".ssh").mkdir()
+    (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_cp = bin_dir / "cp"
+    fake_cp.write_text(
+        f"#!{_tool('sh')}\n"
+        "for arg do last=$arg; done\n"
+        'mkdir "$last" && : > "$last/part"\n'
+        "echo 'cp: write error: No space left on device' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_cp.chmod(0o755)
+    result = roots.run(PATH=f"{bin_dir}:{SYSTEM_PATH}")
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        "cp: write error: No space left on device",
+        f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
+        f" {roots.home}/.ssh into {roots.volume}",
+    ]
+    assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert not (roots.home / ".ssh").is_symlink()
+    assert list(roots.volume.iterdir()) == []
+
+
+@_needs_linux()
+def test_state_link_copies_nothing_that_it_could_not_remove_from_the_home(tmp_path):
+    # A path this user cannot remove whole (a directory in it another user
+    # owns, or a read-only file system) would be copied at each start and
+    # never moved; it is skipped before anything is copied.
+    if os.geteuid() == 0:
+        pytest.skip("root removes every file")
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\n")
+    locked = roots.home / ".ssh" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "id_ed25519").write_text("key\n", encoding="utf-8")
+    locked.chmod(0o500)
+    try:
+        for _ in range(2):
+            result = roots.run()
+            assert result.returncode == 1
+            assert result.stderr.splitlines() == [
+                f"state-link: {roots.home}/.ssh: this user cannot read and remove"
+                " all of it",
+                f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
+                f" {roots.home}/.ssh into {roots.volume}",
+            ]
+            assert list(roots.volume.iterdir()) == []
+            assert (locked / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    finally:
+        locked.chmod(0o700)
+
+
+@_needs_linux()
+def test_state_link_moves_a_parent_entry_into_the_volume_name_by_name(tmp_path):
+    # An environment's `d .config` after the image's `d .config/gh`: the
+    # volume's .config is there only for gh, so the home's .config moves into
+    # it name by name instead of going aside whole (den's zsh plugins and pwsh
+    # profile are in it), and gh needs nothing more once ~/.config is a link.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .config/gh\n")
+    plugins = roots.home / ".config" / "zsh" / "plugins"
+    plugins.mkdir(parents=True)
+    (plugins / "init.zsh").write_text("p\n", encoding="utf-8")
+    first = roots.run()
+    assert (first.returncode, first.stderr) == (0, "")
+    roots.env_list("d .config\n")
+    for _ in range(2):
+        result = roots.run()
+        assert (result.returncode, result.stderr) == (0, "")
+        assert roots.linked(".config")
+        assert (roots.volume / ".config/zsh/plugins/init.zsh").read_text(
+            encoding="utf-8"
+        ) == "p\n"
+        assert (roots.volume / ".config/gh").is_dir()
+        assert not (roots.volume / ".config/gh").is_symlink()
+        assert not (roots.volume / ".den-set-aside").exists()
+        assert not (roots.volume / ".den-staging").exists()
+
+
+@_needs_linux()
+def test_state_link_replaces_a_dangling_home_link(tmp_path):
+    # B5: a link that points nowhere is replaced, without a word.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\n")
+    (roots.home / ".ssh").symlink_to(tmp_path / "missing")
     result = roots.run()
     assert (result.returncode, result.stderr) == (0, "")
     assert roots.linked(".ssh")
-    if target == "elsewhere":
-        assert [p.name for p in other.iterdir()] == ["keep"]
     assert list((roots.volume / ".ssh").iterdir()) == []
+
+
+@_needs_linux()
+def test_state_link_replaces_a_home_link_to_the_volume_path_spelled_otherwise(
+    tmp_path,
+):
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\n")
+    (roots.volume / ".ssh").mkdir()
+    (roots.home / ".ssh").symlink_to(Path("..", "state", "home", ".ssh"))
+    result = roots.run()
+    assert (result.returncode, result.stderr) == (0, "")
+    assert roots.linked(".ssh")
+
+
+@_needs_linux()
+@pytest.mark.parametrize("volume_has_it", [False, True])
+def test_state_link_leaves_a_home_link_to_an_existing_target_alone(
+    tmp_path, volume_has_it
+):
+    # A link the user made, or one an image ships, to something that exists
+    # stays as it is, with a warning that names its target; the volume gets
+    # no empty entry for it.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\nF .after\n")
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / "keep").write_text("", encoding="utf-8")
+    (roots.home / ".ssh").symlink_to(other)
+    if volume_has_it:
+        (roots.volume / ".ssh").mkdir()
+    result = roots.run()
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"state-link: {roots.lists}/den.list:1: left .ssh alone: {roots.home}/.ssh"
+        f" is a link to {other}, not to {roots.volume}/.ssh\n"
+    )
+    assert (roots.home / ".ssh").readlink() == other
+    assert [p.name for p in other.iterdir()] == ["keep"]
+    assert (roots.volume / ".ssh").exists() == volume_has_it
+    assert roots.linked(".after")
 
 
 @_needs_linux()
@@ -1492,7 +1876,7 @@ def test_state_link_never_sets_aside_through_a_link(tmp_path):
         (roots.volume / rel).write_text("volume\n", encoding="utf-8")
         (roots.home / rel).write_text("home\n", encoding="utf-8")
     result = roots.run()
-    assert result.returncode == 1
+    assert result.returncode == 0, result.stderr
     assert list(outside.iterdir()) == []
     [aside] = [p for p in aside_root.iterdir() if not p.is_symlink()]
     assert aside.name.endswith(".1")
@@ -1519,8 +1903,23 @@ def test_state_link_does_not_set_aside_into_a_linked_set_aside_root(tmp_path):
     )
 
 
+def _unshare_root() -> list[str] | None:
+    """The command that runs another as root of a new user and mount namespace.
+
+    None where the system lets no unprivileged user make one, or this user is
+    root already.
+    """
+    exe = shutil.which("unshare")
+    if exe is None or sys.platform != "linux" or os.geteuid() == 0:
+        return None
+    probe = subprocess.run(
+        [exe, "-rm", "true"], capture_output=True, check=False, timeout=30
+    )
+    return [exe, "-rm"] if probe.returncode == 0 else None
+
+
 @_needs_linux()
-@pytest.mark.parametrize("kind", ["fifo", "directory", "link", "foreign"])
+@pytest.mark.parametrize("kind", ["fifo", "directory", "link", "unreadable"])
 def test_state_link_skips_an_environment_list_that_is_no_file_of_the_users(
     tmp_path, kind
 ):
@@ -1539,7 +1938,6 @@ def test_state_link_skips_an_environment_list_that_is_no_file_of_the_users(
         target.write_text("d .stolen\n", encoding="utf-8")
         path.symlink_to(target)
     else:
-        # A list the user cannot read stands in for one another user owns.
         if os.geteuid() == 0:
             pytest.skip("root reads every file")
         path.write_text("d .stolen\n", encoding="utf-8")
@@ -1552,6 +1950,42 @@ def test_state_link_skips_an_environment_list_that_is_no_file_of_the_users(
     )
     assert roots.linked(".first")
     assert not (roots.home / ".stolen").exists()
+
+
+@_needs_linux()
+def test_state_link_skips_an_environment_list_another_user_owns(tmp_path):
+    # B5: a readable list in the user's own volume that someone else owns is
+    # not the user's. In a user namespace this user is root, and /etc/passwd,
+    # which the real root owns, belongs to an unmapped user; bound over the
+    # list, it passes every other check (root reads it).
+    unshare = _unshare_root()
+    if unshare is None:
+        pytest.skip("needs an unprivileged user and mount namespace")
+    roots = _Roots(tmp_path)
+    roots.image_list("F .first\n")
+    path = roots.env_list("")
+    result = subprocess.run(
+        [
+            *unshare,
+            _tool("sh"),
+            "-c",
+            'mount --bind /etc/passwd "$1" && exec sh "$2"',
+            "sh",
+            str(path),
+            str(roots.script),
+        ],
+        env=roots.env(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"state-link: skipped {path}: not a readable regular file of this"
+        " user's, or a symbolic link is on its way\n"
+    )
+    assert roots.linked(".first")
 
 
 @_needs_linux()
@@ -1581,25 +2015,47 @@ def test_state_link_reads_a_last_line_without_a_newline(tmp_path, where):
 
 
 @_needs_linux()
-@pytest.mark.parametrize("bad", ["home-link", "home-missing", "volume-missing"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "home-link",
+        "home-missing",
+        "home-of-root",
+        "volume-missing",
+        "volume-of-root",
+        "no-mount-table",
+    ],
+)
 def test_state_link_does_nothing_without_a_home_and_a_volume_of_the_users(
     tmp_path, bad
 ):
+    # "of-root": / and /home, which root owns, stand in for a home or a
+    # volume another user owns.
+    if bad.endswith("-of-root") and os.geteuid() == 0:
+        pytest.skip("root owns / and /home")
     roots = _Roots(tmp_path)
     roots.image_list("d .ssh\n")
     home = roots.home
+    changes = {}
     if bad == "home-link":
         home = tmp_path / "home-link"
         home.symlink_to(roots.home)
     elif bad == "home-missing":
         home = tmp_path / "nohome"
-    else:
+    elif bad == "home-of-root":
+        home = Path("/")
+    elif bad == "volume-missing":
         roots.volume.rmdir()
-    result = roots.run(home=home)
+    elif bad == "volume-of-root":
+        changes["DEN_STATE_ROOT"] = "/"
+    else:
+        changes["DEN_STATE_MOUNTINFO"] = str(tmp_path / "no-mountinfo")
+    result = roots.run(home=home, **changes)
     assert result.returncode == 1
-    assert len(result.stderr.splitlines()) == 1
+    assert len(result.stderr.splitlines()) == 1, result.stderr
     assert "nothing is linked" in result.stderr
     assert not (roots.home / ".ssh").exists()
+    assert not (roots.volume / ".ssh").exists()
 
 
 def test_the_image_list_keeps_the_logins_and_histories():
@@ -1639,10 +2095,11 @@ def test_the_image_list_is_valid(tmp_path):
 def test_zshenv_writes_a_linked_zsh_history_in_place(
     tmp_path, euid, same_user, link, by_copy
 ):
-    # By default zsh writes a new history file beside ~/.zsh_history and
-    # renames it over the link into the state volume: the history stays in the
-    # container's layer. Only the container user's zsh with a linked history
-    # gives that up; elsewhere zsh keeps its default.
+    # When zsh rewrites ~/.zsh_history (to trim it, or on fc -W), by default it
+    # writes a new file beside it and renames that over the link into the
+    # state volume: the history stays in the container's layer. Only the
+    # container user's zsh with a linked history gives that up; elsewhere zsh
+    # keeps its default.
     home = tmp_path / "home"
     home.mkdir()
     history = home / ".zsh_history"
