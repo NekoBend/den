@@ -253,7 +253,7 @@ ENV PATH="${NVM_DIR}/current/bin:${PATH}"
 # Node.js release trails.
 # Build setting: an exact npm release.
 # renovate: datasource=npm depName=npm
-ARG NPM_VERSION=12.2.1
+ARG NPM_VERSION=12.2.2
 RUN <<'INSTALL_NPM'
 [[ "$NPM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected npm version: '$NPM_VERSION'" >&2; exit 1; }
 npm install -g --no-audit --no-fund "npm@$NPM_VERSION"

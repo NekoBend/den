@@ -140,7 +140,7 @@ default is the release pinned in the Dockerfile (see [Versions](#versions)).
 | `FZF_VERSION` | pinned | Exact fzf release without the `v` prefix. |
 | `NVM_VERSION` | pinned | Exact nvm release, including the `v` prefix. |
 | `NODE_VERSION` | pinned | Exact Node.js release, such as `26.13.0`; nvm installs it and makes it the default. A major version, such as `26`, takes that line's newest release. |
-| `NPM_VERSION` | pinned | Exact npm release, such as `12.2.1`, which `npm install -g` installs over the npm that comes with Node.js. npm's own dependencies get their fixes with npm releases, which the npm in a Node.js release trails. An npm release supports the Node.js releases its `engines` field names: with another `NODE_VERSION`, pass an `NPM_VERSION` that supports it. |
+| `NPM_VERSION` | pinned | Exact npm release, such as `12.2.2`, which `npm install -g` installs over the npm that comes with Node.js. npm's own dependencies get their fixes with npm releases, which the npm in a Node.js release trails. An npm release supports the Node.js releases its `engines` field names: with another `NODE_VERSION`, pass an `NPM_VERSION` that supports it. |
 | `GH_VERSION` | pinned | Exact gh release without the `v` prefix. |
 | `PWSH_VERSION` | pinned | Exact PowerShell release without the `v` prefix. |
 | `RCLONE_VERSION` | pinned | Exact rclone release including the `v` prefix. |
