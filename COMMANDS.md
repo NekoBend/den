@@ -447,7 +447,9 @@ keeps), except where uv would build or run code that came with a clone:
   that was not there before `uv venv` ran: where uv succeeds but makes none
   (`vva --help`), or keeps or remakes the one there (`--allow-existing`,
   `--clear`), `vva` activates nothing, says so, and fails; `va <path>`
-  activates a venv that was there.
+  activates a venv that was there. Asked for help or a version (`-h`,
+  `--help`, `-V`, `--version`), `vva` activates nothing whatever is at the
+  venv's path after uv ran.
 - Your uv.toml is the one uv reads besides a project's: the one
   `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
   (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows

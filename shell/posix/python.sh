@@ -567,14 +567,35 @@ vv() {
 # --help`. It now activates nothing then, says so, and returns 1; va <path>
 # activates a venv that was there, with va's own checks.
 vva() {
-    local target=.venv dir project venv was=''
+    local target=.venv dir project venv was='' ask='' a
     case ${1-} in ''|-*) ;; *) target=$1; shift ;; esac
     _den_uv_where "$@"
     # uv makes a relative name in the directory it runs in.
     venv=$target
     case $venv in /*) ;; *) [ -z "$dir" ] || venv=${dir%/}/$venv ;; esac
     if [ -e "$venv" ] || [ -L "$venv" ]; then was=1; fi
+    # A request for help or a version (-h, --help, -V, --version, before a
+    # --) makes no venv, so vva activates nothing then, whatever is at the
+    # venv's path after uv ran. Also -h in a cluster of short options (-qh),
+    # up to the first one that takes a value (-p, -i, -f), as uv 0.13.6
+    # reads them: -p/usr/bin/python3 names a python. Limit: another process
+    # that makes the venv's path while uv runs (a shared folder, an archive
+    # being unpacked) still passes the checks below for any other request;
+    # vva does not have uv make the venv in a place of its own to rule that
+    # out.
+    for a in "$@"; do
+        case $a in
+            --) break ;;
+            --help|--version) ask=$a; break ;;
+            --*) ;;
+            -*) case ${a%%[pif]*} in *[hV]*) ask=$a; break ;; esac ;;
+        esac
+    done
     _den_uv_venv vva "$target" "$@" || return
+    if [ -n "$ask" ]; then
+        printf 'vva: %s asks uv venv for help or its version, not a venv, so vva activates nothing\n' "$ask" >&2
+        return 1
+    fi
     if [ -n "$was" ]; then
         printf 'vva: %s was there before uv venv ran, so vva activates nothing; activate it with va %s\n' "$venv" "$venv" >&2
         return 1

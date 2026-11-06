@@ -742,8 +742,30 @@ function global:vva {
     elseif ($found['Here']) { $target = [System.IO.Path]::Combine($found['Here'], $target) }
   }
   $was = $null -ne $target -and ((Test-Path -LiteralPath $target) -or $null -ne (Get-Item -LiteralPath $target -Force -ErrorAction Ignore))
+  # A request for help or a version (-h, --help, -V, --version, before a --)
+  # makes no venv, so vva activates nothing then, whatever is at the venv's
+  # path after uv ran. Also -h in a cluster of short options (-qh), up to the
+  # first one that takes a value (-p, -i, -f), as uv 0.13.6 reads them:
+  # -p/usr/bin/python3 names a python. Limit: another process that makes the
+  # venv's path while uv runs (a shared folder, an archive being unpacked)
+  # still passes the checks below for any other request; vva does not have uv
+  # make the venv in a place of its own to rule that out. Parity with posix
+  # python.sh.
+  $ask = $null
+  foreach ($w in $words) {
+    $s = "$w"
+    if ($s -ceq '--') { break }
+    if ($s -ceq '--help' -or $s -ceq '--version' -or ($s -cmatch '^-[^-]' -and ($s -creplace '[pif].*', '') -cmatch '[hV]')) {
+      $ask = $s
+      break
+    }
+  }
   _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + $words)
   if ($LASTEXITCODE -ne 0) { return }
+  if ($ask) {
+    Write-Error "'$ask' asks uv venv for help or its version, not a venv, so vva activates nothing"
+    return
+  }
   if ($null -eq $target) {
     Write-Error "uv venv made '$name' where vva cannot tell; activate it with va <its path>"
     return

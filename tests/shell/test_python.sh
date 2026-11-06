@@ -1446,6 +1446,13 @@ for d in --python -p; do
     printf 'echo PLANTED%s\n' "$d" > "$R/vvaplant/$d/bin/activate"
     printf "'PLANTED%s'\n" "$d" > "$R/vvaplant/$d/bin/Activate.ps1"
 done
+# vvarace/ starts empty: there the mock uv makes the venv it is named also for
+# a request for help or a version (ROUTE_MAKE_VENV), as another process could
+# make it while uv runs. vvastat/ holds a there/, which vva finds before uv
+# venv runs, and a file, notadir, below which the mock uv makes no venv and
+# fails.
+mkdir -p "$R/vvarace" "$R/vvastat/there"
+: > "$R/vvastat/notadir"
 # Your own uv settings, which pip, vv and vva have uv read in place of a
 # uv.toml or pyproject.toml here or above (--config-file): a user uv.toml in
 # an XDG_CONFIG_HOME (uvuser/), one in a HOME's .config (uvhome/), which uv
@@ -1836,8 +1843,12 @@ rc=1" "$actual"
         expected="${expected}mock-uv --no-config venv .venv $f
 $f rc=1 VE=[]
 "
+        case $f in
+            --allow-existing|--clear) why="vva: .venv was there before uv venv ran, so vva activates nothing; activate it with va .venv" ;;
+            *) why="vva: $f asks uv venv for help or its version, not a venv, so vva activates nothing" ;;
+        esac
         expected_err="${expected_err}vva: uv --no-config venv, as $RP/vvahelp/.venv is here or above ($VV_NONE)
-vva: .venv was there before uv venv ran, so vva activates nothing; activate it with va .venv
+$why
 "
     done
     assert_eq "$sh/vva where the venv was there activates nothing, and fails" "${expected}mock-uv --no-config venv myenv --help
@@ -1845,10 +1856,36 @@ myenv rc=1 VE=[]
 mock-uv --no-config venv gone
 gone rc=1 VE=[]
 rc=0" "$actual"
-    assert_eq "$sh/vva where the venv was there says how to activate it" "${expected_err}vva: uv --no-config venv, as $RP/vvahelp/.venv is here or above ($VV_NONE)
-vva: myenv was there before uv venv ran, so vva activates nothing; activate it with va myenv
+    assert_eq "$sh/vva where the venv was there says why it activates nothing, and how to activate one that was there" "${expected_err}vva: uv --no-config venv, as $RP/vvahelp/.venv is here or above ($VV_NONE)
+vva: --help asks uv venv for help or its version, not a venv, so vva activates nothing
 vva: uv --no-config venv, as $RP/vvahelp/.venv is here or above ($VV_NONE)
 vva: gone was there before uv venv ran, so vva activates nothing; activate it with va gone" "$(cat "$R/err")"
+
+    # A request for help or a version makes no venv, but another process can
+    # make the venv's path while uv runs, as the mock uv does here
+    # (ROUTE_MAKE_VENV): vva took the venv that appeared for one uv made, and
+    # activated it. -h in a cluster of short options (-qh) asks for help too;
+    # -p/usr/bin/python3 names a python, and that venv vva activates.
+    echo "[$sh] vva asked for help or a version: activates nothing, whatever appears at the venv's path while uv runs"
+    actual=$(route_posix "$sh" "$R/vvarace" "
+        export ROUTE_MAKE_VENV=1
+        for f in --help -h --version -V -qh; do vva \$f; echo \"\$f rc=\$? VE=[\${VIRTUAL_ENV-}]\"; rm -rf .venv; done
+        vva myenv --help; echo \"myenv rc=\$? VE=[\${VIRTUAL_ENV-}]\"; rm -rf myenv
+        vva -p/usr/bin/python3; echo \"python rc=\$? VE=[\${VIRTUAL_ENV#'$RP/'}]\"; rm -rf .venv")
+    expected='' expected_err=''
+    for f in --help -h --version -V -qh; do
+        expected="${expected}mock-uv venv .venv $f
+$f rc=1 VE=[]
+"
+        expected_err="${expected_err}vva: $f asks uv venv for help or its version, not a venv, so vva activates nothing
+"
+    done
+    assert_eq "$sh/vva asked for help or a version activates nothing, and fails" "${expected}mock-uv venv myenv --help
+myenv rc=1 VE=[]
+mock-uv venv .venv -p/usr/bin/python3
+python rc=0 VE=[vvarace/.venv]
+rc=0" "$actual"
+    assert_eq "$sh/vva asked for help or a version says so" "${expected_err}vva: --help asks uv venv for help or its version, not a venv, so vva activates nothing" "$(cat "$R/err")"
 
     # link/ is proj/sub/ under another name: from the directory uv runs in,
     # .. is proj/, and by name link/.. is the route directory, which holds
@@ -2257,23 +2294,57 @@ assert_contains "pwsh/vva with an option first names .venv to uv" "mock-uv --no-
 # script that was there.
 echo "[pwsh] vva where uv venv ends well and the venv was there before: dot-sources no activate script there, and says how to"
 actual=$(route_pwsh "$R/vvahelp" "
-    foreach (\$f in '--help', '-h', '--version', '-V', '--allow-existing', '--clear') { vva \$f 3>\$null; \"\$f VE=[\$env:VIRTUAL_ENV]\" }
+    foreach (\$f in '--help', '-h', '--version', '-V', '--allow-existing', '--clear') {
+        try { vva \$f 3>\$null } catch { \"ERROR: \$(\$_.Exception.Message)\" }
+        \"\$f VE=[\$env:VIRTUAL_ENV]\"
+    }
     vva myenv --help 3>\$null; \"myenv VE=[\$env:VIRTUAL_ENV]\"
     vva gone 3>\$null; \"gone VE=[\$env:VIRTUAL_ENV]\"")
 assert_not_contains "pwsh/vva where the venv was there dot-sources no activate script of it" "SOURCED" "$actual"
 expected=''
 for f in --help -h --version -V --allow-existing --clear; do
+    case $f in
+        --allow-existing|--clear) why="'.venv' was there before uv venv ran, so vva activates nothing; activate it with va '.venv'" ;;
+        *) why="'$f' asks uv venv for help or its version, not a venv, so vva activates nothing" ;;
+    esac
     expected="${expected}mock-uv --no-config venv .venv $f
-ERROR: '.venv' was there before uv venv ran, so vva activates nothing; activate it with va '.venv'
+ERROR: $why
 $f VE=[]
 "
 done
-assert_eq "pwsh/vva where the venv was there activates nothing, and says how to activate it" "${expected}mock-uv --no-config venv myenv --help
-ERROR: 'myenv' was there before uv venv ran, so vva activates nothing; activate it with va 'myenv'
+assert_eq "pwsh/vva where the venv was there activates nothing, and says why, and how to activate one that was there" "${expected}mock-uv --no-config venv myenv --help
+ERROR: '--help' asks uv venv for help or its version, not a venv, so vva activates nothing
 myenv VE=[]
 mock-uv --no-config venv gone
 ERROR: 'gone' was there before uv venv ran, so vva activates nothing; activate it with va 'gone'
 gone VE=[]" "$actual"
+
+# A request for help or a version makes no venv, but another process can make
+# the venv's path while uv runs, as the mock uv does here (ROUTE_MAKE_VENV), as
+# on bash and zsh: vva took the venv that appeared for one uv made, and
+# dot-sourced its activate script.
+echo "[pwsh] vva asked for help or a version: activates nothing, whatever appears at the venv's path while uv runs"
+actual=$(route_pwsh "$R/vvarace" "
+    \$env:ROUTE_MAKE_VENV = '1'
+    foreach (\$f in '--help', '-h', '--version', '-V', '-qh') {
+        try { vva \$f } catch { \"ERROR: \$(\$_.Exception.Message)\" }
+        \"\$f VE=[\$env:VIRTUAL_ENV]\"
+        Remove-Item -LiteralPath .venv -Recurse -Force
+    }
+    vva myenv --help; \"myenv VE=[\$env:VIRTUAL_ENV]\"; Remove-Item -LiteralPath myenv -Recurse -Force
+    vva -p/usr/bin/python3; \"python VE=[\$(\$env:VIRTUAL_ENV -replace '^$RP/')]\"; Remove-Item -LiteralPath .venv -Recurse -Force")
+expected=''
+for f in --help -h --version -V -qh; do
+    expected="${expected}mock-uv venv .venv $f
+ERROR: '$f' asks uv venv for help or its version, not a venv, so vva activates nothing
+$f VE=[]
+"
+done
+assert_eq "pwsh/vva asked for help or a version activates nothing, and says so" "${expected}mock-uv venv myenv --help
+ERROR: '--help' asks uv venv for help or its version, not a venv, so vva activates nothing
+myenv VE=[]
+mock-uv venv .venv -p/usr/bin/python3
+python VE=[vvarace/.venv]" "$actual"
 
 echo "[pwsh] vv with --project: the walk starts there, as uv takes it, and a bare name is looked up where uv runs"
 actual=$(route_pwsh "$NOPROJ" "
