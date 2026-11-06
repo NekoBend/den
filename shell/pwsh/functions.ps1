@@ -1302,9 +1302,10 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
 
   # _DenHistWhy <name> <program> <words> - for den's bash, zsh and sh: why
   # <program> (<name>'s full path) must not run with <words>, the words it
-  # gets (_DenArgs), else $null. The words are expanded first, as pwsh will
-  # hand them on (_DenHistArgs): a wildcard can stand for several names, and
-  # the first of them can be the script, the others its arguments. As
+  # gets (_DenArgs), else $null. Each word is expanded before it is read, as
+  # pwsh will hand it on (_DenHistArgs): a wildcard can stand for several
+  # names, and the first of them can be the script, the others its arguments,
+  # or the value of an option before it. As
   # functions.sh's _den_hg_ok, only the script is checked: the first argument
   # that is not an option or an option's value, or the one after - (pwsh drops
   # a -- typed to a function), or in zsh after a word of options with b. With
@@ -1316,64 +1317,63 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
   # other.
   function _DenHistWhy([string]$Name, [string]$Program, $Words) {
     if ($null -eq $Words) { return $null }
-    $argv = [System.Collections.Generic.List[string]]::new()
-    $shown = [System.Collections.Generic.List[string]]::new()
-    foreach ($w in $Words) {
-      # The script is named as typed, or by the name a wildcard matched.
-      $wild = (_DenBare $w) -and [WildcardPattern]::ContainsWildcardCharacters("$w")
-      foreach ($a in @(_DenHistArgs $w)) {
-        $argv.Add($a)
-        $shown.Add($(if ($wild) { $a } else { "$w" }))
-      }
-    }
     $queue = ''
     $noexec = $false
     $end = $false
-    for ($i = 0; $i -lt $argv.Count; $i++) {
-      $w = $argv[$i]
-      if ($queue) {
-        $k = $queue.Substring(0, 1)
-        $queue = $queue.Substring(1)
-        if ($k -cne 'x') { $noexec = _DenHistNoExec $Name $k $w $noexec }
-        continue
-      }
-      if (-not $end) {
-        if ($w -ceq '-' -or $w -ceq '--') { $end = $true; continue }
-        if ($w -cin '--rcfile', '--init-file', '-rcfile', '-init-file', '--emulate') { $queue = 'x'; continue }
-        if ($w.Length -gt 2 -and ($w.StartsWith('--') -or $w.StartsWith('+-'))) {
-          if ($Name -ceq 'zsh') { $noexec = _DenHistNoExec $Name $w.Substring(0, 1) $w.Substring(2) $noexec }
+    foreach ($word in $Words) {
+      # Each word is expanded as it comes, and only one that pwsh can change
+      # (_DenHistArgs), so that the usual words cost no lookup; the script
+      # is named as typed, or by the name a wildcard matched.
+      $got = , "$word"
+      $wild = [WildcardPattern]::ContainsWildcardCharacters($got[0])
+      if (($wild -or $got[0].StartsWith('~')) -and (_DenBare $word)) { $got = @(_DenHistArgs $word) }
+      else { $wild = $false }
+      foreach ($w in $got) {
+        if ($queue) {
+          $k = $queue.Substring(0, 1)
+          $queue = $queue.Substring(1)
+          if ($k -cne 'x') { $noexec = _DenHistNoExec $Name $k $w $noexec }
           continue
         }
-        if ($Name -ne 'zsh' -and $w -cin '-login', '-norc', '-noprofile', '-noediting', '-posix', '-restricted',
-          '-verbose', '-version', '-help', '-debugger', '-dump-strings', '-dump-po-strings', '-pretty-print') { continue }
-        if ($w.Length -gt 1 -and ($w[0] -eq [char]'-' -or $w[0] -eq [char]'+')) {
-          $sign = $w.Substring(0, 1)
-          for ($j = 1; $j -lt $w.Length; $j++) {
-            $c = [string]$w[$j]
-            if ($sign -ceq '-' -and ($c -ceq 'c' -or $c -ceq 's')) { return $null }
-            if ($c -ceq 'n') { $noexec = $sign -ceq '-'; continue }
-            if ($c -ceq 'b') { if ($Name -ceq 'zsh') { $end = $true }; continue }
-            if ($c -ceq 'O') { if ($Name -cne 'zsh') { $queue += 'x' }; continue }
-            if ($c -cne 'o') { continue }
-            if ($Name -ceq 'zsh' -and $j -lt $w.Length - 1) {
-              $noexec = _DenHistNoExec $Name $sign $w.Substring($j + 1) $noexec
-              break
-            }
-            $queue += $sign
+        if (-not $end) {
+          if ($w -ceq '-' -or $w -ceq '--') { $end = $true; continue }
+          if ($w -cin '--rcfile', '--init-file', '-rcfile', '-init-file', '--emulate') { $queue = 'x'; continue }
+          if ($w.Length -gt 2 -and ($w.StartsWith('--') -or $w.StartsWith('+-'))) {
+            if ($Name -ceq 'zsh') { $noexec = _DenHistNoExec $Name $w.Substring(0, 1) $w.Substring(2) $noexec }
+            continue
           }
-          continue
+          if ($Name -ne 'zsh' -and $w -cin '-login', '-norc', '-noprofile', '-noediting', '-posix', '-restricted',
+            '-verbose', '-version', '-help', '-debugger', '-dump-strings', '-dump-po-strings', '-pretty-print') { continue }
+          if ($w.Length -gt 1 -and ($w[0] -eq [char]'-' -or $w[0] -eq [char]'+')) {
+            $sign = $w.Substring(0, 1)
+            for ($j = 1; $j -lt $w.Length; $j++) {
+              $c = [string]$w[$j]
+              if ($sign -ceq '-' -and ($c -ceq 'c' -or $c -ceq 's')) { return $null }
+              if ($c -ceq 'n') { $noexec = $sign -ceq '-'; continue }
+              if ($c -ceq 'b') { if ($Name -ceq 'zsh') { $end = $true }; continue }
+              if ($c -ceq 'O') { if ($Name -cne 'zsh') { $queue += 'x' }; continue }
+              if ($c -cne 'o') { continue }
+              if ($Name -ceq 'zsh' -and $j -lt $w.Length - 1) {
+                $noexec = _DenHistNoExec $Name $sign $w.Substring($j + 1) $noexec
+                break
+              }
+              $queue += $sign
+            }
+            continue
+          }
         }
+        if ($noexec) { return $null }
+        $path = $w
+        if (-not [System.IO.Path]::IsPathRooted($path)) {
+          $path = [System.IO.Path]::Combine($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath, $path)
+        }
+        if (-not (_DenHistFile $path)) { return $null }
+        $run = if ($Program -cmatch '^[A-Za-z0-9_./+-]+$') { $Program } else { "& '" + $Program.Replace("'", "''") + "'" }
+        $line = @(foreach ($x in $Words) { _DenHistShow $x }) -join ' '
+        $shown = if ($wild) { $w } else { "$word" }
+        return "$shown is a shell history file; running it would replay every command in it. Did you mean cat?`n" +
+          "To run it anyway: $run $line"
       }
-      if ($noexec) { return $null }
-      $path = $w
-      if (-not [System.IO.Path]::IsPathRooted($path)) {
-        $path = [System.IO.Path]::Combine($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath, $path)
-      }
-      if (-not (_DenHistFile $path)) { return $null }
-      $run = if ($Program -cmatch '^[A-Za-z0-9_./+-]+$') { $Program } else { "& '" + $Program.Replace("'", "''") + "'" }
-      $line = @(foreach ($x in $Words) { _DenHistShow $x }) -join ' '
-      return "$($shown[$i]) is a shell history file; running it would replay every command in it. Did you mean cat?`n" +
-        "To run it anyway: $run $line"
     }
     return $null
   }
