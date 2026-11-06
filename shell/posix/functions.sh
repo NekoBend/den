@@ -1217,9 +1217,10 @@ _den_hg_say() {
 # with one -, as all its long options: -login, -norc) and zsh's --emulate.
 # With -c the commands come from its string, and nothing is checked. With -s,
 # or with no script, the shell reads its commands from standard input, which
-# is then checked against the history files _den_hg_same knows
-# ([ /dev/stdin -ef ... ]); a script's own standard input is the script's to
-# read, and is not checked. _hg_in is 1 after -s and 2 once the script is
+# is then checked, when it is a regular file, against the history files
+# _den_hg_same knows ([ /dev/stdin -ef ... ]): a HISTFILE of /dev/null does not
+# make /dev/null one. A script's own standard input is the script's to read,
+# and is not checked. _hg_in is 1 after -s and 2 once the script is
 # found. A word of options without o or O is read by its pattern alone,
 # without the loop over its letters, which costs the most.
 _den_hg_ok() {
@@ -1274,7 +1275,7 @@ _den_hg_ok() {
         fi
         break
     done
-    if [ "$_hg_in" != 2 ] && _den_hg_same /dev/stdin; then
+    if [ "$_hg_in" != 2 ] && [ -f /dev/stdin ] && _den_hg_same /dev/stdin; then
         _den_hg_say "$_hg_n" "standard input ($_hg_hit) is a shell history file" "command $_hg_n" "$_hg_hit" "$@"
         _hg_rc=1
     fi

@@ -168,6 +168,9 @@ rc=0"
 rc=0"
     allowed "$sh/sh -c, its stdin the history file" "$sh" "sh -c 'wc -l' < ~/.bash_history" "2
 rc=0"
+    # Only a regular file on stdin is checked: with history off
+    # (HISTFILE=/dev/null), /dev/null on stdin is no history file.
+    allowed "$sh/HISTFILE=/dev/null, /dev/null on stdin" "$sh" "HISTFILE=/dev/null; bash < /dev/null" "rc=0"
     allowed "$sh/--rcfile's value is no script" "$sh" "bash --rcfile ~/.bash_history '$WORK/ok.sh' x" "ok x
 rc=0"
     allowed "$sh/-o's value is no script" "$sh" "bash -o pipefail '$WORK/ok.sh' x" "ok x
