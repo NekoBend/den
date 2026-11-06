@@ -719,10 +719,19 @@ function global:vv {
 # --help`. It now activates nothing then, and says so in an error; va <path>
 # activates a venv that was there, with va's own checks. Parity with posix
 # python.sh.
+# Each time vva activates nothing, its error is terminating, with
+# $LASTEXITCODE 1 (uv's own code where uv failed), as den's other refusals
+# are (pcp, extract, dg): a plain Write-Error and return left $? true, so
+# `vva x --help && next` ran next with no venv active. As any terminating
+# error does, it stops the rest of the line, a || after it too; a script
+# that is to go on catches it. An advanced function's $PSCmdlet.WriteError
+# would make $? false and let a || run, but vva cannot be one: it hands uv
+# its options (-p, -v) as they are typed, which an advanced function would
+# bind to parameters of its own.
 function global:vva {
   if (-not (_ResolveCmd 'uv' 'App')) {
-    Write-Error 'uv is not installed'
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error 'uv is not installed' -ErrorAction Stop
   }
   # [object[]], not @(): _DenPyArgs returns its words as one array.
   $words = [object[]](_DenPyArgs $MyInvocation $Args)
@@ -761,26 +770,28 @@ function global:vva {
     }
   }
   _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + $words)
-  if ($LASTEXITCODE -ne 0) { return }
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "uv venv failed (exit code $LASTEXITCODE), so vva activates nothing" -ErrorAction Stop
+  }
   if ($ask) {
-    Write-Error "'$ask' asks uv venv for help or its version, not a venv, so vva activates nothing"
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error "'$ask' asks uv venv for help or its version, not a venv, so vva activates nothing" -ErrorAction Stop
   }
   if ($null -eq $target) {
-    Write-Error "uv venv made '$name' where vva cannot tell; activate it with va <its path>"
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error "uv venv made '$name' where vva cannot tell; activate it with va <its path>" -ErrorAction Stop
   }
   if ($was) {
-    Write-Error "'$target' was there before uv venv ran, so vva activates nothing; activate it with va '$target'"
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error "'$target' was there before uv venv ran, so vva activates nothing; activate it with va '$target'" -ErrorAction Stop
   }
   $made = $false
   foreach ($rel in 'Scripts/Activate.ps1', 'Scripts/activate.ps1', 'bin/Activate.ps1', 'bin/activate.ps1') {
     if (Test-Path -LiteralPath (Join-Path $target $rel) -PathType Leaf) { $made = $true; break }
   }
   if (-not $made) {
-    Write-Error "uv venv made no activate script under '$target' (Scripts/ or bin/), so vva activates nothing"
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error "uv venv made no activate script under '$target' (Scripts/ or bin/), so vva activates nothing" -ErrorAction Stop
   }
   va $target
 }

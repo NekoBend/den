@@ -2023,13 +2023,20 @@ PYTHON_PS1_ROUTE="$TESTTMP/python_route.ps1"
     echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
     cat "$PYTHON_PS1"
 } > "$PYTHON_PS1_ROUTE"
+# vva's refusals are terminating errors: the trap prints one as any other
+# error and goes on with the next statement of <commands>, as PowerShell goes
+# on with the next line typed at its prompt. Only a statement of <commands>
+# itself: in a loop, a refusal ends the loop, so the checks catch it there.
 route_pwsh() {
     : > "$ROUTE_LOG"
     $ROUTE_TIMEOUT pwsh -NoProfile -NonInteractive -Command "
         . '$PYTHON_PS1_ROUTE'
         Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
         Set-Location -LiteralPath '$1'
-        & { $2 } *>&1 | ForEach-Object {
+        & {
+            trap { \"ERROR: \$(\$_.Exception.Message)\"; continue }
+            $2
+        } *>&1 | ForEach-Object {
             if (\$_ -is [System.Management.Automation.WarningRecord]) { \"WARNING: \$(\$_.Message)\" }
             elseif (\$_ -is [System.Management.Automation.ErrorRecord]) { \"ERROR: \$(\$_.Exception.Message)\" }
             elseif (\$_ -is [System.Management.Automation.InformationRecord]) { \"HOST: \$_\" }
@@ -2439,6 +2446,68 @@ mock-uv --no-config venv --directory work" "$actual"
 ERROR: uv venv made 'v' where vva cannot tell; activate it with va <its path>" "$actual"
 fi
 
+# route_pwsh_lines <directory> <lines>: python.ps1 as route_pwsh loads it,
+# then each of <lines> on its own, as PowerShell runs a line typed at its
+# prompt (pwsh -Command - reads them one at a time): a line sees the $? and
+# $LASTEXITCODE the one before it left. Standard error goes to $R/err.
+route_pwsh_lines() {
+    : > "$ROUTE_LOG"
+    printf '%s\n' ". '$PYTHON_PS1_ROUTE'" 'Remove-Item Env:\VIRTUAL_ENV, Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue' \
+        "Set-Location -LiteralPath '$1'" "$2" |
+        TERM=dumb $ROUTE_TIMEOUT pwsh -NoProfile -NonInteractive -Command - 2>"$R/err" | tr -d '\r'
+}
+# vva_status_lines <tag> <before> <vva arguments>: vva on a line of its own,
+# then before && and before ||, and in a script's try, each time after
+# <before> on the same line and with its output dropped, and a line after
+# each that shows $? and $LASTEXITCODE.
+vva_status_lines() {
+    printf '%s\n' \
+        "${2}vva $3 *>\$null" \
+        "\"$1 q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV]\"" \
+        "\$global:LASTEXITCODE = 0; ${2}vva $3 *>\$null && '$1 THEN-RAN'" \
+        "\"$1 and q=\$? code=\$LASTEXITCODE\"" \
+        "\$global:LASTEXITCODE = 0; ${2}vva $3 *>\$null || '$1 ELSE-RAN'" \
+        "\"$1 or q=\$? code=\$LASTEXITCODE\"" \
+        "\$global:LASTEXITCODE = 0; try { ${2}vva $3 *>\$null; '$1 NOT-CAUGHT' } catch { \"$1 caught code=\$LASTEXITCODE\" }"
+}
+# vva_status <tag> <code>: what vva_status_lines shows where vva fails with
+# <code>: no part after && or || ran.
+vva_status() {
+    printf '%s q=False code=%s VE=[]\n%s and q=False code=%s\n%s or q=False code=%s\n%s caught code=%s' "$1" "$2" "$1" "$2" "$1" "$2" "$1" "$2"
+}
+
+# Each time vva activates nothing it fails, as on bash and zsh, where it
+# returns 1 (uv's own status where uv failed). A Write-Error and return left
+# $? true and $LASTEXITCODE 0, so `vva x --help && next` ran next with no venv
+# active. Now each is a terminating error, as den's other refusals on
+# PowerShell are: $? false, $LASTEXITCODE 1 (uv's code where uv failed), the
+# rest of the line does not run, a part after || neither, and a script
+# catches it.
+echo "[pwsh] vva that activates nothing fails: \$? false, \$LASTEXITCODE 1 or uv's, the rest of the line does not run"
+actual=$(route_pwsh_lines "$R/vvastat" "$(vva_status_lines help '' 'x --help')
+$(vva_status_lines there '' there)
+$(vva_status_lines noscript '' y)
+\$env:ROUTE_MAKE_VENV = '1'
+$(vva_status_lines uvfail '' notadir/v)") || true
+assert_eq "pwsh/vva that activates nothing fails, and no part after && or || runs" "$(vva_status help 1)
+$(vva_status there 1)
+$(vva_status noscript 1)
+$(vva_status uvfail 2)" "$actual"
+err=$(cat "$R/err")
+assert_contains "pwsh/vva asked for help fails with its error" "'--help' asks uv venv for help or its version, not a venv, so vva activates nothing" "$err"
+assert_contains "pwsh/vva where the venv was there fails with its error" "'there' was there before uv venv ran, so vva activates nothing" "$err"
+assert_contains "pwsh/vva where uv made no activate script fails with its error" "uv venv made no activate script under 'y' (Scripts/ or bin/), so vva activates nothing" "$err"
+assert_contains "pwsh/vva where uv venv failed fails with its error" "uv venv failed (exit code 2), so vva activates nothing" "$err"
+actual=$(route_pwsh_lines "$R/vvastat" "\$env:PATH = '$R/sys'; \$global:_DenCmdCache = @{}
+$(vva_status_lines noinstall '' z)") || true
+assert_eq "pwsh/vva without uv fails, and no part after && or || runs" "$(vva_status noinstall 1)" "$actual"
+assert_contains "pwsh/vva without uv says so" "uv is not installed" "$(cat "$R/err")"
+if [ -d /proc/self ]; then
+    actual=$(route_pwsh_lines "$R/procrel" "$(vva_status_lines cannot "[System.IO.Directory]::SetCurrentDirectory('$NOPROJ'); " 'v --directory work')") || true
+    assert_eq "pwsh/vva where it cannot tell where uv made the venv fails, and no part after && or || runs" "$(vva_status cannot 1)" "$actual"
+    assert_contains "pwsh/vva where it cannot tell says so" "uv venv made 'v' where vva cannot tell" "$(cat "$R/err")"
+fi
+
 # PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
 # PowerShell's location, and so its LocationChangedAction, and the process's
 # current directory stay as they were.
@@ -2475,7 +2544,7 @@ if git -C "$DOTFILES" show "$OLD_PY_PS1_COMMIT:shell/pwsh/python.ps1" > "$OLD_VV
         toggle-uv *>\$null
         toggle-uv *>\$null
         vv 3>\$null
-        vva v 3>\$null 2>\$null
+        try { vva v 3>\$null 2>\$null } catch { }
     " 2>&1 | tr -d '\r') || true
     assert_eq "pwsh/vv and vva after an update from 8e5eeba's python.ps1 run uv --no-config venv in a project" "mock-uv --no-config venv
 mock-uv --no-config venv v" "$actual"
@@ -2651,7 +2720,7 @@ VE=[] PATH=[True] PY=[] PROMPT=[PS> ] DEACTIVATE=[False]" "$actual"
     actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
         Set-Location '$WORK/uv_vva_pwsh'
         \$env:VIRTUAL_ENV = \$null
-        vva --relocatable other *>\$null
+        try { vva --relocatable other *>\$null } catch { }
         \"VE=[\$env:VIRTUAL_ENV] OTHER=[\$(Test-Path other)] VENV=[\$(Test-Path .venv)]\"
     " 2>&1 | tr -d '\r')
     assert_eq "pwsh/vva with an option first makes no venv it cannot activate" "VE=[] OTHER=[False] VENV=[False]" "$actual"
@@ -2665,7 +2734,7 @@ VE=[] PATH=[True] PY=[] PROMPT=[PS> ] DEACTIVATE=[False]" "$actual"
         \$env:VIRTUAL_ENV = \$null
         foreach (\$f in '--help', '-h', '--version', '-V', '--allow-existing', '--clear') {
             Set-Content -LiteralPath .venv/bin/activate.ps1 -Value \"Add-Content -LiteralPath '$WORK/uv_vvahelp_pwsh/marks' -Value '\$f'\"
-            vva \$f *>\$null
+            try { vva \$f *>\$null } catch { }
             \"\$f VE=[\$(if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV })]\"
         }
         vva fresh *>\$null

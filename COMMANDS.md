@@ -449,7 +449,10 @@ keeps), except where uv would build or run code that came with a clone:
   `--clear`), `vva` activates nothing, says so, and fails; `va <path>`
   activates a venv that was there. Asked for help or a version (`-h`,
   `--help`, `-V`, `--version`), `vva` activates nothing whatever is at the
-  venv's path after uv ran.
+  venv's path after uv ran. On pwsh each of these failures, and a failed
+  `uv venv`, is a terminating error with `$LASTEXITCODE` 1 (uv's own code
+  where uv failed): `$?` is false, and the rest of the line does not run, a
+  part after `||` neither; a script catches it with `try`.
 - Your uv.toml is the one uv reads besides a project's: the one
   `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
   (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows
