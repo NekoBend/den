@@ -1526,6 +1526,7 @@ def _remap_walk(
     nested: tuple[str, ...] = (),
     others: tuple[str, ...] = (),
     files: tuple[str, ...] = (),
+    listed: tuple[str, ...] = (),
     sibling: bool = False,
     table: bool = True,
     fail: bool = False,
@@ -1535,7 +1536,8 @@ def _remap_walk(
     The walked directory has a file, a directory with a file for each of
     ``nested`` (each a mount point in the table) and ``others`` (plain
     directories), and a file for each of ``files`` (each a mount point in the
-    table). ``sibling`` adds a mount point next to it whose name starts with
+    table); the table also lists ``listed`` below it, which this does not
+    make. ``sibling`` adds a mount point next to it whose name starts with
     its own. Return the result, the walked directory, the paths in tmp_path
     that gnuchown was given, and the IDs it re-owns from, as the warnings
     write them.
@@ -1552,7 +1554,7 @@ def _remap_walk(
         (root / name / "file").touch()
     for name in files:
         (root / name).touch()
-    below = tuple(str(root / name) for name in (*nested, *files))
+    below = tuple(str(root / name) for name in (*nested, *files, *listed))
     if sibling:
         twin = root.with_name(f"{root.name}2")
         twin.mkdir()
@@ -1695,6 +1697,47 @@ def test_entrypoint_walks_the_home_with_reown_alone(tmp_path):
         f"find {root} -xdev ( -path {root}/.gitconfig ) -prune -o ("
     )
     assert str(root / ".gitconfig") not in reowned
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_re_owns_nothing_in_a_walk_with_too_many_mount_points(
+    tmp_path, walk
+):
+    # A2 (GPT's review): the operands that leave out 8000 mount points of
+    # over 240 bytes each pass the 2 MiB that exec takes with an 8 MiB stack,
+    # and find could not start, which stopped the start. There is no walk of
+    # that directory now, and a warning says how many there are.
+    names = tuple(f"m{i:04}_{'x' * 240}" for i in range(8000))
+    result, root, reowned, ids = _remap_walk(tmp_path, walk, listed=names)
+    assert result.returncode == 0, result.stderr
+    assert not reowned & _paths(root)
+    calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
+    assert [line for line in _calls(calls, "find") if f" {root} " in line] == []
+    assert (
+        f"container-entrypoint: re-owning {root} from {ids} would have to leave"
+        " out 8000 mount points below it, too many for one find command, so"
+        f" nothing in {root} is re-owned"
+    ) in result.stderr.splitlines()
+    assert "HOME=" + str(tmp_path / "home" / "dev") in result.stdout.splitlines()
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_leaves_out_a_hundred_long_mount_points(tmp_path, walk):
+    # Under the limit, which 100 of them stay well below, the walk goes on
+    # around each one.
+    names = tuple(f"m{i:03}_{'x' * 240}" for i in range(100))
+    result, root, reowned, _ = _remap_walk(tmp_path, walk, nested=names)
+    assert result.returncode == 0, result.stderr
+    left_out = {str(root / name) for name in names}
+    expected = {
+        path
+        for path in _paths(root)
+        if not any(path == m or path.startswith(f"{m}/") for m in left_out)
+    }
+    assert {path for path in reowned if path in _paths(root)} == expected
+    assert "would have to leave out" not in result.stderr
 
 
 @_needs("sh", "env", "find")

@@ -491,16 +491,22 @@ mount_below() {
 # below DIR, with all it holds, and a warning names them. When the table
 # cannot be read, a warning says so and the walk goes on with -xdev alone.
 # When cd cannot enter DIR, find cannot walk below it either, and there is
-# nothing to leave out. Return find's status.
+# nothing to leave out. When the operands that leave them out would pass
+# 64 KiB, a warning says how many mount points there are, and nothing in DIR
+# is re-owned: Linux can give exec as little as 128 KiB for a command's
+# arguments and environment together, and find could not start. Return
+# find's status, or 0 when there is no walk.
 reown() {
     ro_dir=$1
     ro_code=
     if ro_phys=$(cd -P -- "$ro_dir" 2>/dev/null && pwd -P); then
         # The awk program prints the shell commands that set the find
         # operands which leave each mount point out, and ro_left to their
-        # names. -path takes a pattern: a backslash goes before each
+        # names, or ro_many to how many there are when the operands would
+        # pass the limit. -path takes a pattern: a backslash goes before each
         # backslash, *, ? and [ in a path, so that it matches the path alone.
-        if ! { [ -r "$mountinfo" ] && ro_code=$(ro_dir=$ro_dir ro_phys=$ro_phys awk "$unescape_awk"'
+        # LC_ALL=C makes length count bytes.
+        if ! { [ -r "$mountinfo" ] && ro_code=$(LC_ALL=C ro_dir=$ro_dir ro_phys=$ro_phys awk "$unescape_awk"'
             function quote(s,    out, i) {
                 out = ""
                 while ((i = index(s, "\047")) > 0) {
@@ -525,19 +531,30 @@ reown() {
                 dir = ENVIRON["ro_dir"]
                 under = (dir ~ /\/$/) ? dir : dir "/"
                 n = 0
+                size = 0
+                limit = 65536
             }
             {
                 m = unescape($5)
                 if (m != phys && index(m, below) == 1 && !(m in seen)) {
                     seen[m] = 1
-                    path = under substr(m, length(below) + 1)
-                    prune = prune (n ? " -o" : "") " -path " quote(literal(path))
-                    left = left (n ? ", " : "") path
                     n++
+                    # Past the limit, only the count goes on.
+                    if (size <= limit) {
+                        path = under substr(m, length(below) + 1)
+                        pattern = literal(path)
+                        # -o, -path and the pattern, each with its NUL and
+                        # its 8-byte pointer.
+                        size += length(pattern) + 34
+                        prune = prune (n > 1 ? " -o" : "") " -path " quote(pattern)
+                        left = left (n > 1 ? ", " : "") path
+                    }
                 }
             }
             END {
-                if (n > 0) {
+                if (size > limit)
+                    print "ro_many=" n
+                else if (n > 0) {
                     print "set -- \\(" prune " \\) -prune -o"
                     print "ro_left=" quote(left)
                 }
@@ -548,8 +565,13 @@ reown() {
         fi
     fi
     ro_left=
+    ro_many=
     set --
     eval "$ro_code"
+    if [ -n "$ro_many" ]; then
+        warn "re-owning $ro_dir from $old_uid:$old_gid would have to leave out $ro_many mount points below it, too many for one find command, so nothing in $ro_dir is re-owned"
+        return 0
+    fi
     [ -z "$ro_left" ] \
         || warn "re-owning $ro_dir from $old_uid:$old_gid leaves out each mount point below it and all it holds: $ro_left"
     find "$ro_dir" -xdev "$@" \( -uid "$old_uid" -o -gid "$old_gid" \) \
