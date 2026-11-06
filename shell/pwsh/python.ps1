@@ -719,15 +719,15 @@ function global:vv {
 # --help`. It now activates nothing then, and says so in an error; va <path>
 # activates a venv that was there, with va's own checks. Parity with posix
 # python.sh.
-# Each time vva activates nothing, its error is terminating, with
-# $LASTEXITCODE 1 (uv's own code where uv failed), as den's other refusals
-# are (pcp, extract, dg): a plain Write-Error and return left $? true, so
-# `vva x --help && next` ran next with no venv active. As any terminating
-# error does, it stops the rest of the line, a || after it too; a script
-# that is to go on catches it. An advanced function's $PSCmdlet.WriteError
-# would make $? false and let a || run, but vva cannot be one: it hands uv
-# its options (-p, -v) as they are typed, which an advanced function would
-# bind to parameters of its own.
+# Each time vva activates nothing, va's refusal of the venv uv made too, its
+# error is terminating, with $LASTEXITCODE 1 (uv's own code where uv
+# failed), as den's other refusals are (pcp, extract, dg): a plain
+# Write-Error and return left $? true, so `vva x --help && next` ran next
+# with no venv active. As any terminating error does, it stops the rest of
+# the line, a || after it too; a script that is to go on catches it. An
+# advanced function's $PSCmdlet.WriteError would make $? false and let a ||
+# run, but vva cannot be one: it hands uv its options (-p, -v) as they are
+# typed, which an advanced function would bind to parameters of its own.
 function global:vva {
   if (-not (_ResolveCmd 'uv' 'App')) {
     $global:LASTEXITCODE = 1
@@ -793,7 +793,42 @@ function global:vva {
     $global:LASTEXITCODE = 1
     Write-Error "uv venv made no activate script under '$target' (Scripts/ or bin/), so vva activates nothing" -ErrorAction Stop
   }
-  va $target
+  # va refuses some venvs uv makes, such as one at a path git still tracks (a
+  # committed venv removed from the work tree), with a Write-Error and a
+  # return, which leave $? true: vva then ended as if it had activated the
+  # venv, and `vva x && next` ran next. va stays as it is; vva checks after it
+  # that VIRTUAL_ENV names the venv, as the activate scripts set it: from
+  # their own path, which PowerShell makes from the name va got, by name
+  # (links kept, . and .. taken out, ~ expanded). Where va's error stops it
+  # ($ErrorActionPreference Stop), $LASTEXITCODE is 1 as well. A session whose
+  # VIRTUAL_ENV named that path before (a venv removed while it was active)
+  # passes the check whatever va did.
+  try { va $target }
+  catch {
+    $global:LASTEXITCODE = 1
+    throw
+  }
+  $active = $false
+  if ($env:VIRTUAL_ENV) {
+    try {
+      $want = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath("$target")
+      $pair = foreach ($p in $want, $env:VIRTUAL_ENV) {
+        $full = [System.IO.Path]::GetFullPath($p)
+        $root = [System.IO.Path]::GetPathRoot($full)
+        if ($full.Length -gt $root.Length) {
+          $full = $full.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        }
+        $full
+      }
+      $cmp = if (_OnWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+      $active = [string]::Equals($pair[0], $pair[1], $cmp)
+    }
+    catch { $null = $_ }
+  }
+  if (-not $active) {
+    $global:LASTEXITCODE = 1
+    Write-Error "va refused '$target', which uv venv made, so it is not active" -ErrorAction Stop
+  }
 }
 
 # ===== Toggles =====

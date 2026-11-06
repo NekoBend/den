@@ -1453,6 +1453,20 @@ done
 # fails.
 mkdir -p "$R/vvarace" "$R/vvastat/there"
 : > "$R/vvastat/notadir"
+# vvatracked/ is a checkout that committed a myenv/ and then lost it from its
+# work tree: git still tracks myenv/'s files, so va refuses the myenv/ the
+# mock uv makes there anew (ROUTE_MAKE_VENV).
+mkdir -p "$R/vvatracked/myenv/bin"
+(
+    cd "$R/vvatracked" || exit 1
+    printf 'echo COMMITTED\n' > myenv/bin/activate
+    printf "'COMMITTED'\n" > myenv/bin/Activate.ps1
+    printf 'version_info = 3.13.1\n' > myenv/pyvenv.cfg
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add myenv
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+    rm -rf myenv
+) >/dev/null 2>&1
 # Your own uv settings, which pip, vv and vva have uv read in place of a
 # uv.toml or pyproject.toml here or above (--config-file): a user uv.toml in
 # an XDG_CONFIG_HOME (uvuser/), one in a HOME's .config (uvhome/), which uv
@@ -1886,6 +1900,29 @@ mock-uv venv .venv -p/usr/bin/python3
 python rc=0 VE=[vvarace/.venv]
 rc=0" "$actual"
     assert_eq "$sh/vva asked for help or a version says so" "${expected_err}vva: --help asks uv venv for help or its version, not a venv, so vva activates nothing" "$(cat "$R/err")"
+
+    # va refuses the myenv/ uv makes anew where git still tracks one
+    # (vvatracked/). vva returns va's status, so it fails: the part after
+    # && does not run, and the part after || does.
+    echo "[$sh] vva where va refuses the venv uv made: fails, and the part after && does not run"
+    actual=$(route_posix "$sh" "$R/vvatracked" "
+        export ROUTE_MAKE_VENV=1
+        vva myenv; echo \"alone rc=\$? VE=[\${VIRTUAL_ENV-}]\"; rm -rf myenv
+        vva myenv && echo THEN-RAN; echo \"and rc=\$?\"; rm -rf myenv
+        vva myenv || echo ELSE-RAN; rm -rf myenv")
+    assert_eq "$sh/vva where va refuses the venv uv made fails, and only the part after || runs" "mock-uv venv myenv
+alone rc=1 VE=[]
+mock-uv venv myenv
+and rc=1
+mock-uv venv myenv
+ELSE-RAN
+rc=0" "$actual"
+    expected_err=''
+    for _ in 1 2 3; do
+        expected_err="${expected_err}va: myenv: venv content is tracked by git (bin/Activate.ps1 bin/activate pyvenv.cfg) - a venv committed to the repo; source it yourself if you trust it: source myenv/bin/activate
+"
+    done
+    assert_eq "$sh/vva where va refuses the venv uv made says what va says" "${expected_err%"$NL"}" "$(cat "$R/err")"
 
     # link/ is proj/sub/ under another name: from the directory uv runs in,
     # .. is proj/, and by name link/.. is the route directory, which holds
@@ -2508,6 +2545,30 @@ if [ -d /proc/self ]; then
     assert_contains "pwsh/vva where it cannot tell says so" "uv venv made 'v' where vva cannot tell" "$(cat "$R/err")"
 fi
 
+# vva ends with va, whose refusals are a Write-Error and a return, which leave
+# $? true: where va refused the myenv/ uv made anew where git still tracks
+# one (vvatracked/), vva ended as if it had activated it, and `vva myenv &&
+# next` ran next. Now vva fails then as for its own refusals, also where
+# va's own error stops it ($ErrorActionPreference Stop), and says so after
+# va's error.
+echo "[pwsh] vva where va refuses the venv uv made: fails, \$? false, \$LASTEXITCODE 1, the rest of the line does not run"
+actual=$(route_pwsh_lines "$R/vvatracked" "\$env:ROUTE_MAKE_VENV = '1'
+$(vva_status_lines tracked 'Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore; ' myenv)
+\$ErrorActionPreference = 'Stop'
+$(vva_status_lines stop 'Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore; ' myenv)
+Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore") || true
+assert_eq "pwsh/vva where va refuses the venv uv made fails, and no part after && or || runs" "$(vva_status tracked 1)
+$(vva_status stop 1)" "$actual"
+actual=$(route_pwsh "$R/vvatracked" "
+    \$env:ROUTE_MAKE_VENV = '1'
+    vva myenv
+    \"VE=[\$env:VIRTUAL_ENV]\"
+    Remove-Item -LiteralPath myenv -Recurse -Force")
+assert_eq "pwsh/vva where va refuses the venv uv made says what va says, then that it is not active" "mock-uv venv myenv
+ERROR: 'myenv': venv content is tracked by git (bin/Activate.ps1, bin/activate, pyvenv.cfg) - a venv committed to the repo; dot-source it yourself if you trust it: . myenv/bin/Activate.ps1
+ERROR: va refused 'myenv', which uv venv made, so it is not active
+VE=[]" "$actual"
+
 # PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
 # PowerShell's location, and so its LocationChangedAction, and the process's
 # current directory stay as they were.
@@ -2749,6 +2810,37 @@ VE=[] PATH=[True] PY=[] PROMPT=[PS> ] DEACTIVATE=[False]" "$actual"
 --clear VE=[]
 fresh VE=[fresh]
 marks=[]" "$actual"
+
+    # After va, vva checks that VIRTUAL_ENV names the venv uv made, as uv's
+    # activate.ps1 sets it: from its own path, which PowerShell makes from
+    # the name va got, by name. A name with .. in it, an absolute one that
+    # ends in a /, one taken in a location reached through a link, and one
+    # under a --directory through a link, which vva takes link by link, are
+    # each activated, and vva succeeds. lnk/ links to real/, and real/via/
+    # to real/deep/, so via/.. is real/ to the system and to uv.
+    echo "[pwsh] vva succeeds for the uv venv it activates, named with .., with a / at its end, through a link (the real uv)"
+    rm -rf "$WORK/uv_vvaname_pwsh"
+    mkdir -p "$WORK/uv_vvaname_pwsh/real/sub" "$WORK/uv_vvaname_pwsh/real/deep"
+    ln -s real "$WORK/uv_vvaname_pwsh/lnk"
+    ln -s deep "$WORK/uv_vvaname_pwsh/real/via"
+    actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+        trap { \"ERROR: \$(\$_.Exception.Message)\"; continue }
+        Set-Location -LiteralPath '$WORK/uv_vvaname_pwsh/lnk'
+        \$env:VIRTUAL_ENV = \$null
+        function seen(\$tag, \$ok) {
+            \$ve = if (\$env:VIRTUAL_ENV) { (Split-Path -Leaf (Split-Path -Parent \$env:VIRTUAL_ENV)) + '/' + (Split-Path -Leaf \$env:VIRTUAL_ENV) }
+            \"\$tag q=\$ok VE=[\$ve]\"
+            if (\$env:VIRTUAL_ENV) { vd }
+        }
+        vva sub/../a *>\$null; seen dotdot \$?
+        vva '$WORK/uv_vvaname_pwsh/real/sub/../b/' *>\$null; seen absolute \$?
+        vva c *>\$null; seen link \$?
+        vva d --directory via/.. *>\$null; seen directory \$?
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/vva succeeds for the uv venv it activates, whatever the name's spelling" "dotdot q=True VE=[lnk/a]
+absolute q=True VE=[real/b]
+link q=True VE=[lnk/c]
+directory q=True VE=[real/d]" "$actual"
 
     # python -m venv from the interpreter uv found: the other kind of activate.ps1.
     if "$WORK/uv_probe/bin/python" -m venv --without-pip "$WORK/uv_mixed/std" >/dev/null 2>&1 &&
