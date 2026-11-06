@@ -338,6 +338,59 @@ PowerShell additionally provides `df`, `env`, `head`, `tail`, `wc`, `which`,
 `touch`, `split` as functions (these are native on Unix). Media helpers live in
 `posix/ffmpeg.sh` / `pwsh/ffmpeg.ps1` (e.g. `strip-audio`); see those files.
 
+### History files are not scripts
+A shell history file is a list of commands, and every shell runs it as a
+script: `bash ~/.bash_history`, typed for `cat`, replays every command in it,
+`rm` included, and so does `bash < ~/.bash_history`. zsh's extended format
+(`: <epoch>:0;<command>`) runs too, since `:` is the null command, and the
+file's mode does not matter. So den's `bash`, `zsh`, `sh` and `dash` (bash/zsh,
+`posix/functions.sh`) and pwsh's `bash`, `zsh` and `sh` (Linux and macOS,
+`pwsh/functions.ps1`) run nothing for a history file, and say so:
+
+```
+bash: /home/me/.bash_history is a shell history file; running it would replay every command in it. Did you mean cat?
+bash: to run it anyway: command bash /home/me/.bash_history
+```
+
+- **What is refused**: the shell's script (its first argument that is not an
+  option or an option's value: `-o`/`+o`, bash's `-O`/`+O`, `--rcfile`,
+  `--init-file` and zsh's `--emulate` take one), or, when it has none or is
+  given `-s`, its standard input (`bash < ~/.bash_history`), when that is a
+  file that is:
+  - the same file, also through a symlink or a hard link, as `$HISTFILE`,
+    `~/.bash_history`, `~/.zsh_history`, `~/.zhistory`, `~/.histfile` or
+    PSReadLine's `ConsoleHost_history.txt` (in `powershell/PSReadLine` under
+    `$XDG_DATA_HOME`, else `~/.local/share`; on pwsh also its
+    `HistorySavePath`);
+  - or named `.<something>_history` (`.python_history`, `.node_repl_history`,
+    `.psql_history`, ...), or `<host>_history.txt` in a `PSReadLine`
+    directory.
+- **What runs as before**: any other script (one named `history.sh` too),
+  `bash -c '...'` (the commands come from the string, even
+  `bash -c 'cat ~/.bash_history'`), and a script whose own standard input is
+  a history file (`bash dedupe.sh < ~/.bash_history`). The wrapper runs the
+  real program (`command bash`) with the same arguments. On bash/zsh the
+  check uses shell builtins only (`[ -ef ]`), no subshell and no other
+  program; pwsh asks `/bin/sh`'s `[ -ef ]` once when the script is a file.
+- **The refusal**: the message above on stderr (the path as the shell
+  passed it, `~` expanded), status 2, nothing run. On pwsh it is a
+  terminating error, with `$LASTEXITCODE` 2, and the line to run it anyway
+  names the program's full path, which pwsh runs without den's function:
+  `/usr/bin/bash ~/.bash_history`.
+- **To run it anyway**: the line den prints, `command bash <file>` (with your
+  other arguments, and `< <file>` for standard input); on pwsh the program's
+  full path.
+- **Not covered**: a pipe (`cat ~/.bash_history | sh`: a pipe is any input,
+  and pwsh has no `<`, so there only the script is checked); a shell named by
+  its path (`/bin/bash`), or started by `exec`, `sudo`, `env`, `xargs` or any
+  other program; a shell where den is not loaded (a script, `bash --norc`); on
+  pwsh, a call from a script or a function (den's version is the one typed at
+  the prompt, as for its other commands there); and Windows, whose `bash` is
+  WSL's or Git's, reading paths of its own. cmd has no such command.
+- **No toggle**: the check changes nothing for any other file, and
+  `command bash` is the way past it for one call. To drop it for good, put
+  `unset -f bash zsh sh dash` after den's line in `~/.bashrc` / `~/.zshrc`.
+
 ### Proxy profiles
 | Command | What it does |
 |---------|--------------|

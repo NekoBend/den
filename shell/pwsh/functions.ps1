@@ -1199,6 +1199,154 @@ function sagain {
   again -Sudo -N $N
 }
 
+# ===== History files are not scripts =====
+# functions.sh's guard (see there), on Linux and macOS: den's bash, zsh and sh
+# run nothing when their script is a shell history file (_DenHistWhy), and say
+# what the file is and how to run it anyway: by the program's full path, which
+# PowerShell runs without den's function. Only a command typed at the prompt
+# gets it: a script calls the program itself (see _DenScopeOverrides).
+# PowerShell has no < redirection, and what is piped in is a pipe, which this
+# cannot tell from any other input (functions.sh leaves pipes alone too).
+# Windows is left alone: its bash is WSL's or Git's, which reads paths of its
+# own, and den has no cmd counterpart either.
+if (-not (_OnWindows) -and (_DenInteractive)) {
+  # _DenHistFile <path> - whether <path> (a full path) is a file, a symlink
+  # counting as what it points at, that is a shell history file, as
+  # functions.sh's _den_hg_hist decides it: named .<something>_history or
+  # PSReadLine's <host>_history.txt, or the same file, by device and inode,
+  # as $env:HISTFILE, ~/.bash_history, ~/.zsh_history, ~/.zhistory,
+  # ~/.histfile or PSReadLine's history file (its HistorySavePath, and the
+  # default one under XDG_DATA_HOME, else ~/.local/share). /bin/sh's [ -ef ]
+  # answers that, as for _ArSameFile; its script holds no double quotes, which
+  # pwsh before 7.3 strips from a native command's arguments (IFS= and set -f
+  # keep each unquoted $x one word), and it answers on stdout and exits 0, so
+  # that $PSNativeCommandUseErrorActionPreference never makes the answer an
+  # error. $LASTEXITCODE is put back as it was.
+  function _DenHistFile([string]$Path) {
+    if (-not [System.IO.File]::Exists($Path)) { return $false }
+    $named = ([System.IO.Path]::GetFileName($Path) -clike '.*_history') -or ("/$Path" -clike '*/PSReadLine/*_history.txt')
+    $data = if ($env:XDG_DATA_HOME) { $env:XDG_DATA_HOME } else { "$HOME/.local/share" }
+    $files = @($env:HISTFILE, "$HOME/.bash_history", "$HOME/.zsh_history", "$HOME/.zhistory", "$HOME/.histfile",
+      "$data/powershell/PSReadLine/ConsoleHost_history.txt")
+    if (Get-Module -Name PSReadLine) {
+      try { $files += (Get-PSReadLineOption).HistorySavePath } catch { $null = $_ }
+    }
+    $files = @($files | Where-Object { $_ })
+    if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { return $named }
+    $script = 'IFS=; set -f; [ -f $1 ] || { echo n; exit 0; }; [ $2 = 1 ] && { echo y; exit 0; }; ' +
+      'f=$1; shift 2; for c do [ $f -ef $c ] && { echo y; exit 0; }; done; echo n'
+    $code = $global:LASTEXITCODE
+    $answer = & /bin/sh -c $script _ $Path ([int]$named) @files
+    $global:LASTEXITCODE = $code
+    return "$answer" -ceq 'y'
+  }
+
+  # _DenHistPaths <word> - the files a program reads for <word>, one of the
+  # words _DenArgs gives it, each as a full path: pwsh hands on a word typed
+  # without quotes with ~ or ~/ at its start as the home folder, and one that
+  # holds * ? [ or ] as the names it matches, if any (see _DenArgs); a relative
+  # path is the program's, which starts in the session's file-system location.
+  function _DenHistPaths($Word) {
+    $s = "$Word"
+    $hits = @()
+    if (_DenBare $Word) {
+      if ($s -ceq '~') { $s = $HOME } elseif ($s.StartsWith('~/')) { $s = $HOME + $s.Substring(1) }
+      if ($s.IndexOfAny([char[]]'*?[]') -ge 0) {
+        $hits = @(Resolve-Path -Path $s -ErrorAction SilentlyContinue | ForEach-Object { $_.ProviderPath })
+      }
+    }
+    if ($hits.Count) { return $hits }
+    if (-not [System.IO.Path]::IsPathRooted($s)) {
+      $s = [System.IO.Path]::Combine($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath, $s)
+    }
+    return , $s
+  }
+
+  # _DenHistShow <word> - <word> as the line that runs it anyway shows it: as
+  # it was typed when typed without quotes, else as it is when it holds only
+  # characters that mean nothing to PowerShell, else in single quotes.
+  function _DenHistShow($Word) {
+    $s = "$Word"
+    if ($s -eq '') { return "''" }
+    if (((_DenBare $Word) -and $s -notmatch '[\s''"`$;&|(){}<>@,#]') -or $s -cmatch '^[A-Za-z0-9_./=:+%-]+$') { return $s }
+    return "'" + $s.Replace("'", "''") + "'"
+  }
+
+  # _DenHistWhy <name> <program> <words> - for den's bash, zsh and sh: why
+  # <program> (<name>'s full path) must not run with <words>, the words it
+  # gets (_DenArgs), else $null. As functions.sh's _den_hg_ok, only the script
+  # is checked: the first word that is not an option or an option's value, or
+  # the one after - (pwsh drops a -- typed to a function). With -c or -s
+  # there is none, and the program reads the console or what is piped in.
+  function _DenHistWhy([string]$Name, [string]$Program, $Words) {
+    if ($null -eq $Words) { return $null }
+    $skip = 0
+    $end = $false
+    for ($i = 0; $i -lt $Words.Count; $i++) {
+      $w = "$($Words[$i])"
+      if ($skip -gt 0) { $skip--; continue }
+      if (-not $end) {
+        if ($w -ceq '-' -or $w -ceq '--') { $end = $true; continue }
+        if ($w -cin '--rcfile', '--init-file', '-rcfile', '-init-file', '--emulate') { $skip = 1; continue }
+        if ($w.StartsWith('--')) { continue }
+        if ($Name -ne 'zsh' -and $w -cin '-login', '-norc', '-noprofile', '-noediting', '-posix', '-restricted',
+          '-verbose', '-version', '-help', '-debugger', '-dump-strings', '-dump-po-strings', '-pretty-print') { continue }
+        if ($w.Length -gt 1 -and ($w[0] -eq [char]'-' -or $w[0] -eq [char]'+')) {
+          for ($j = 1; $j -lt $w.Length; $j++) {
+            $c = [string]$w[$j]
+            if ($w[0] -eq [char]'-' -and ($c -ceq 'c' -or $c -ceq 's')) { return $null }
+            if ($c -cne 'o' -and $c -cne 'O') { continue }
+            if ($Name -eq 'zsh') {
+              if ($c -ceq 'O') { continue }
+              if ($j -lt $w.Length - 1) { break }
+            }
+            $skip++
+          }
+          continue
+        }
+      }
+      foreach ($p in @(_DenHistPaths $Words[$i])) {
+        if (_DenHistFile $p) {
+          $run = if ($Program -cmatch '^[A-Za-z0-9_./+-]+$') { $Program } else { "& '" + $Program.Replace("'", "''") + "'" }
+          $line = @(foreach ($x in $Words) { _DenHistShow $x }) -join ' '
+          return "$w is a shell history file; running it would replay every command in it. Did you mean cat?`n" +
+            "To run it anyway: $run $line"
+        }
+      }
+      return $null
+    }
+    return $null
+  }
+
+  # bash, zsh and sh: _DenHistWhy's refusal, a terminating error with
+  # $LASTEXITCODE 2, else the program with the call's words (_DenArgs) and what
+  # is piped in, as New-WrapperSuffix runs its tool.
+  foreach ($_dn in 'bash', 'zsh', 'sh') {
+    Set-Item -Path "function:global:$_dn" -Value ([scriptblock]::Create(@"
+begin {
+    `$__sp = `$null
+    `$__w = @(_DenArgs `$MyInvocation `$args)
+    `$__p = _ResolveCmd '$_dn' 'App'
+    if (-not `$__p) { Write-Error "${_dn} is not installed (not found on PATH)." -Category ObjectNotFound -ErrorAction Stop }
+    `$__o = _DenHistWhy '$_dn' `$__p `$__w
+    if (`$__o) { `$global:LASTEXITCODE = 2; Write-Error `$__o -ErrorAction Stop }
+    `$__run = _DenNativeBlock '& `$__p' `$__w
+    if (`$MyInvocation.ExpectingInput) {
+        `$__sp = `$__run.GetSteppablePipeline()
+        `$__sp.Begin(`$true, `$ExecutionContext)
+    }
+}
+process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
+end {
+    if (`$null -ne `$__sp) { `$__s = `$__sp; `$__sp = `$null; `$__s.End() }
+    else { & `$__run }
+}
+$(_DenSpClean)
+"@))
+  }
+  Remove-Variable _dn
+}
+
 # ===== Directory History (back / fwd) =====
 # Browser-style history for this session, never written to disk.
 # $global:_DenDirBack / _DenDirFwd hold locations nearest first, and _DenDirLast

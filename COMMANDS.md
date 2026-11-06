@@ -621,6 +621,22 @@ prompt shows no CPU or GPU until then.
 On cmd, `code` maps unconditionally to `code-insiders` (no fallback to stable
 `code`); posix/pwsh fall back.
 
+den's `bash`, `zsh`, `sh` and `dash` (bash/zsh), and pwsh's `bash`, `zsh` and
+`sh` (Linux and macOS, typed at the prompt), run the real shell, but run
+nothing when its script is a shell history file (`bash ~/.bash_history`, typed
+for `cat`, would replay every command in it), or when the shell would read its
+commands from standard input and that is one (`bash < ~/.bash_history`). They
+print what the file is and the line that runs it anyway, and return 2:
+`command bash ~/.bash_history` (on pwsh, the program's full path:
+`/usr/bin/bash ~/.bash_history`). A history file is `$HISTFILE`,
+`~/.bash_history`, `~/.zsh_history`, `~/.zhistory`, `~/.histfile` or
+PSReadLine's history, also through a symlink or a hard link, or any file named
+`.<something>_history` (`.python_history`, ...). `bash -c '...'`, any other
+script (one named `history.sh` too) and a script reading a history file on its
+standard input run as before. A pipe (`cat file | sh`), a shell named by its
+path (`/bin/bash`) or started by `exec`, `sudo` or another program, and cmd are
+not covered. See shell/README.md, History files are not scripts.
+
 On cmd, `again` reads Clink's history (cmd's own `doskey /history` stays empty
 under Clink) and needs Clink 1.3.18 or newer. Type it on a line of its own:
 after the confirm, the command becomes the next input line, so it runs as if

@@ -64,7 +64,7 @@ venv) cp -R '$STUBS/venv-template/.' \"\${2:-.venv}\"; exit 0 ;;
 python) if [ \"\$2\" = find ]; then [ -z \"\$STRICT_NO_PYTHON\" ] || exit 2; echo '$STUBS/bin/python3'; exit 0; fi ;;
 esac
 echo \"uv \$*\""
-for t in gitui code 7z unrar sudo ss xdg-open ffmpeg ffprobe pip pip3 python python3 coreutils clear; do
+for t in gitui code 7z unrar sudo ss xdg-open ffmpeg ffprobe pip pip3 python python3 coreutils clear bash zsh sh; do
     stub "$STUBS/bin" "$t"
 done
 stub "$STUBS/bin" docker 'case "$1" in completion) exit 0 ;; esac; echo "docker $*"'
@@ -790,6 +790,14 @@ Case 'again -N 0' { again -N 0 }
 Case 'again, past the history' { again -N 99 }
 Case 'sagain' { $global:_StrictAnswer = 'y'; sagain }
 $global:_StrictAnswer = 'n'
+Case 'bash, a script' { bash a.txt one }
+Case 'bash, a history file' { Set-Content -LiteralPath (Join-Path $HOME '.bash_history') 'echo x'; bash ~/.bash_history }
+Case 'zsh -o, a file named like a history' { Set-Content -LiteralPath .python_history 'x'; zsh -o noglob .python_history }
+Case 'bash, a wildcard' { bash *.txt }
+Case 'bash, a quoted name' { bash 'it''s here' }
+Case 'sh -c' { sh -c 'echo ok' }
+Case 'sh -s, piped' { 'echo piped' | sh -s }
+Case 'bash, not on PATH' { Use-StrictPath 'sys'; try { bash a.txt } finally { Use-StrictPath } }
 Case '_DenDirRecord' {
     Set-Location -LiteralPath sub; _DenDirRecord
     Set-Location -LiteralPath ../emptydir; _DenDirRecord
