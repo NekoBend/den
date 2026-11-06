@@ -451,6 +451,15 @@ link to the same path under `/state/home`, for example
   directory bound into the home (`-v ~/.ssh:/home/dev/.ssh`) into the volume
   would delete it on the host. Such an entry warns at each start. With the
   whole home on a volume of its own, set `DEN_STATE=0`.
+- The same holds in the volume: an entry whose path under `/state/home` is a
+  mount point, is inside one below `/state/home`, or holds one is skipped
+  with a warning that names it. A move renames its copy into place, and on
+  another file system that rename is a copy again, which a stop would leave
+  half done in the live path. For the same reason, with a mount point at or
+  inside `/state/home/.den-staging`, nothing moves into the volume, and with
+  one at or inside `/state/home/.den-set-aside`, nothing is set aside and no
+  directory both have is merged: each entry that needs one of them is
+  skipped with a warning, and what is in those directories stays.
 
 Each problem is a warning in the container's log (`docker logs den-dev`)
 that starts with `state-link:`, after the failing tool's own message when

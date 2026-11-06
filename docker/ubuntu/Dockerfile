@@ -695,9 +695,14 @@ cat > /usr/local/lib/den/state-link <<'STATE_LINK'
 # Nothing is done through a symbolic link or on a mount point: an entry with a
 # link on its way, in the home or in the volume, is skipped, and so is one
 # whose path in the home is a mount point, is below one other than /, or has
-# one below it (a host directory bound into the home). A bad line and an entry
-# that fails are warnings, and the next line goes on; the exit status is 1
-# when there was one. A set-aside is a note, which leaves the status alone.
+# one below it (a host directory bound into the home), and one whose path in
+# the volume is a mount point, is below one or has one below it, counting the
+# mount points below the volume alone. A move renames its copy into place,
+# and a rename to another file system is a copy again: with a mount point at,
+# above or inside .den-staging or .den-set-aside, nothing moves through it.
+# A bad line and an entry that fails are warnings, and the next line goes on;
+# the exit status is 1 when there was one. A set-aside is a note, which leaves
+# the status alone.
 # HOME, DEN_STATE_ROOT (default /state), DEN_STATE_LISTS (default
 # /etc/den/state-paths.d) and DEN_STATE_MOUNTINFO (default
 # /proc/self/mountinfo) name what it reads, and DEN_STATE_LOCK_WAIT (default
@@ -836,12 +841,13 @@ kind_name() {
     esac
 }
 
-# Print the first mount point of the mount table, other than /, that PATH is,
-# is below or has below it, and succeed; fail with 1 when there is none. The
+# Print the first mount point of the mount table that PATH is, is below or has
+# below it, and succeed; fail with 1 when there is none. A mount point at or
+# above BASE (default /), the one PATH is meant to be on, does not count. The
 # table writes a space, tab, newline or backslash in a mount point as a
 # backslash and three octal digits.
 mount_on() {
-    mo_path=$1 awk '
+    mo_path=$1 mo_base=${2:-/} awk '
         function unescape(s,    out, i, d) {
             out = ""
             while ((i = index(s, "\\")) > 0) {
@@ -857,10 +863,12 @@ mount_on() {
             }
             return out s
         }
-        BEGIN { path = ENVIRON["mo_path"]; found = 0 }
+        BEGIN { path = ENVIRON["mo_path"]; base = ENVIRON["mo_base"]; found = 0 }
         {
             m = unescape($5)
-            if (m != "/" && (m == path || index(path, m "/") == 1 || index(m, path "/") == 1)) {
+            if (m == "/" || m == base || index(base, m "/") == 1)
+                next
+            if (m == path || index(path, m "/") == 1 || index(m, path "/") == 1) {
                 print m
                 found = 1
                 exit
@@ -870,8 +878,24 @@ mount_on() {
     ' "$mountinfo"
 }
 
+# Succeed when DIR, a path in the volume, is on the volume's own file system:
+# no mount point below the volume is at, above or inside it. Otherwise say
+# which and fail. A move renames its copy from the staging directory to a
+# path in the volume or the set-aside directory, and a rename to another file
+# system is a copy, which a stop leaves part done.
+on_volume() {
+    ov_mount=$(mount_on "$1" "$volume")
+    case $? in
+        1) return 0 ;;
+        0) printf 'state-link: mount point %s is at, above or inside %s\n' "$ov_mount" "$1" >&2 ;;
+        *) printf 'state-link: %s: could not read the mount table %s\n' "$1" "$mountinfo" >&2 ;;
+    esac
+    return 1
+}
+
 # The directory moves copy into, /state/home/.den-staging, made on first use.
 make_staging() {
+    on_volume "$staging" || return 1
     if [ ! -e "$staging" ] && [ ! -L "$staging" ]; then
         mkdir -m 0700 -- "$staging" || return 1
     fi
@@ -959,6 +983,7 @@ transfer() {
 make_aside() {
     [ -n "$aside" ] && return 0
     ma_root=$volume/.den-set-aside
+    on_volume "$ma_root" || return 1
     if [ ! -e "$ma_root" ] && [ ! -L "$ma_root" ]; then
         mkdir -m 0700 -- "$ma_root" || return 1
     fi
@@ -1073,6 +1098,20 @@ link_entry() {
         warn "$where: skipped $le_rel: $le_vol is not a $(kind_name "$le_kind")"
         return
     fi
+    # The volume's path must be on the volume's own file system, as the
+    # staging directory is: a move renames into it.
+    le_mount=$(mount_on "$le_vol" "$volume")
+    case $? in
+        0)
+            warn "$where: skipped $le_rel: mount point $le_mount is at, above or inside $le_vol"
+            return
+            ;;
+        1) ;;
+        *)
+            warn "$where: skipped $le_rel: could not read the mount table $mountinfo"
+            return
+            ;;
+    esac
     if covered; then
         # ~/REL is the volume's REL already, through the link above it.
         make_entry
@@ -1118,8 +1157,13 @@ link_entry() {
                 return
             fi
         elif [ "$le_kind" = d ]; then
-            # All or nothing: a name this user cannot move stops the merge
-            # before anything moves or any link in it goes.
+            # All or nothing: a name this user cannot move, or a staging or
+            # set-aside directory it may not use, stops the merge before
+            # anything moves or any link in it goes.
+            if ! on_volume "$staging" || ! on_volume "$volume/.den-set-aside"; then
+                warn "$where: skipped $le_rel: could not move all of $le_home into $le_vol or aside"
+                return
+            fi
             if ! removable "$le_home"; then
                 printf 'state-link: %s: this user cannot read and remove all of it\n' "$le_home" >&2
                 warn "$where: skipped $le_rel: could not move all of $le_home into $le_vol or aside"
@@ -1216,8 +1260,14 @@ fi
 # Copies that an earlier run left in the staging directory, stopped part way
 # by KILL or a crash: that container's home, and the only whole copy, may be
 # gone, so they are set aside, never deleted and never taken for the volume's.
+# A staging directory with a mount point at, above or inside it is left as it
+# is, and nothing moves through it.
+staging_ok=1
 if [ -L "$staging" ] || { [ -e "$staging" ] && [ ! -d "$staging" ]; }; then
     warn "$staging is not a directory"
+elif ! on_volume "$staging"; then
+    staging_ok=0
+    warn "left $staging as it is; nothing moves into $volume"
 elif [ -d "$staging" ] && ! rmdir -- "$staging" 2>/dev/null; then
     if make_aside && mv -T -n -- "$staging" "$aside/.den-staging" \
         && [ ! -e "$staging" ] && [ ! -L "$staging" ]; then
@@ -1247,7 +1297,7 @@ if [ -e "$env_list" ] || [ -L "$env_list" ]; then
 fi
 # Each move empties the staging directory again; it stays only when a copy
 # could not be removed, for the next run to set aside.
-if [ -d "$staging" ] && [ ! -L "$staging" ]; then
+if [ "$staging_ok" = 1 ] && [ -d "$staging" ] && [ ! -L "$staging" ]; then
     rmdir -- "$staging" 2>/dev/null
 fi
 exit "$status"

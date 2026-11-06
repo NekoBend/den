@@ -1660,6 +1660,160 @@ def test_state_link_reads_an_escaped_mount_point(tmp_path):
 
 
 @_needs_linux()
+@pytest.mark.parametrize(
+    ("rel", "mounted"),
+    [
+        (".ssh", ".ssh"),
+        (".config/gh", ".config"),
+        (".ssh", ".ssh/keys"),
+        (".config", ".config/gh"),  # an environment entry above an image one
+    ],
+    ids=["at", "above", "inside", "parent-entry"],
+)
+def test_state_link_moves_and_makes_nothing_on_a_mount_point_in_the_volume(
+    tmp_path, rel, mounted
+):
+    # A mount below /state/home is another file system: a move renames its
+    # copy from the staging directory into place, and mv across file systems
+    # copies again, straight into the live path, which a stop leaves part
+    # done. The entry is skipped with a warning that names the mount point.
+    roots = _Roots(tmp_path)
+    roots.image_list(f"d {rel}\nF .after\n")
+    (roots.home / rel).mkdir(parents=True)
+    (roots.home / rel / "id_ed25519").write_text("key\n", encoding="utf-8")
+    mount = roots.volume / mounted
+    mount.mkdir(parents=True)
+    roots.mount(mount)
+    result = roots.run()
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        f"state-link: {roots.lists}/den.list:1: skipped {rel}: mount point"
+        f" {mount} is at, above or inside {roots.volume}/{rel}"
+    ]
+    assert (roots.home / rel / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert not (roots.home / rel).is_symlink()
+    assert not (roots.volume / rel / "id_ed25519").exists()
+    assert not (roots.volume / ".den-staging").exists()
+    assert not (roots.volume / ".den-set-aside").exists()
+    # Only that entry: the next line goes on.
+    assert roots.linked(".after")
+
+
+@_needs_linux()
+def test_state_link_takes_the_volumes_own_mount_points_for_its_own(tmp_path):
+    # /state is a mount point, and /state/home may be one too: neither is
+    # below the volume, and the entries in it go on.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\nF .zsh_history\n")
+    (roots.home / ".ssh").mkdir()
+    (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
+    (roots.volume / ".zsh_history").write_text("volume\n", encoding="utf-8")
+    (roots.home / ".zsh_history").write_text("home\n", encoding="utf-8")
+    roots.mount(roots.state)
+    roots.mount(roots.volume)
+    result = roots.run()
+    assert result.returncode == 0, result.stderr
+    assert roots.linked(".ssh")
+    assert roots.linked(".zsh_history")
+    assert (roots.volume / ".ssh/id_ed25519").read_text(encoding="utf-8") == "key\n"
+    [aside] = _aside_dirs(roots)
+    assert (aside / ".zsh_history").read_text(encoding="utf-8") == "home\n"
+
+
+@_needs_linux()
+@pytest.mark.parametrize("mounted", [".den-staging", ".den-staging/old"])
+def test_state_link_moves_nothing_through_a_staging_directory_on_a_mount_point(
+    tmp_path, mounted
+):
+    # Each move renames its copy from the staging directory: on another file
+    # system, that rename is a copy too. What is in it stays where it is,
+    # and an entry that needs no move goes on.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .ssh\nd .config/gh\nF .new\n")
+    (roots.home / ".ssh").mkdir()
+    (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
+    (roots.home / ".config" / "gh").mkdir(parents=True)
+    (roots.home / ".config" / "gh" / "hosts.yml").write_text("h\n", encoding="utf-8")
+    (roots.volume / ".config" / "gh").mkdir(parents=True)
+    staging = roots.volume / ".den-staging"
+    mount = roots.volume / mounted
+    mount.mkdir(parents=True)
+    (mount / "left").write_text("k", encoding="utf-8")
+    roots.mount(mount)
+    result = roots.run()
+    assert result.returncode == 1
+    why = f"state-link: mount point {mount} is at, above or inside {staging}"
+    assert result.stderr.splitlines() == [
+        why,
+        f"state-link: left {staging} as it is; nothing moves into {roots.volume}",
+        why,
+        f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
+        f" {roots.home}/.ssh into {roots.volume}",
+        why,
+        f"state-link: {roots.lists}/den.list:2: skipped .config/gh: could not move"
+        f" all of {roots.home}/.config/gh into {roots.volume}/.config/gh or aside",
+    ]
+    assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
+    assert (roots.home / ".config/gh/hosts.yml").read_text(encoding="utf-8") == "h\n"
+    assert list((roots.volume / ".config" / "gh").iterdir()) == []
+    assert (mount / "left").read_text(encoding="utf-8") == "k"
+    assert sorted(p.name for p in staging.iterdir()) == [
+        "left" if mounted == ".den-staging" else "old"
+    ]
+    assert not (roots.volume / ".den-set-aside").exists()
+    assert roots.linked(".new")
+
+
+@_needs_linux()
+@pytest.mark.parametrize("mounted", [".den-set-aside", ".den-set-aside/old"])
+def test_state_link_sets_nothing_aside_into_a_mount_point(tmp_path, mounted):
+    # A set-aside renames its copy from the staging directory as a move does.
+    # A merge that may need one moves nothing; a leftover staging copy stays.
+    roots = _Roots(tmp_path)
+    roots.image_list("F .zsh_history\nd .config/gh\nF .new\n")
+    (roots.volume / ".zsh_history").write_text("volume\n", encoding="utf-8")
+    (roots.home / ".zsh_history").write_text("home\n", encoding="utf-8")
+    (roots.volume / ".config" / "gh").mkdir(parents=True)
+    (roots.volume / ".config" / "gh" / "hosts.yml").write_text("v\n", encoding="utf-8")
+    (roots.home / ".config" / "gh").mkdir(parents=True)
+    (roots.home / ".config" / "gh" / "hosts.yml").write_text("h\n", encoding="utf-8")
+    (roots.home / ".config" / "gh" / "extra.yml").write_text("e\n", encoding="utf-8")
+    staging = roots.volume / ".den-staging"
+    (staging / ".gone").mkdir(parents=True)
+    aside_root = roots.volume / ".den-set-aside"
+    mount = roots.volume / mounted
+    mount.mkdir(parents=True)
+    roots.mount(mount)
+    result = roots.run()
+    assert result.returncode == 1
+    why = f"state-link: mount point {mount} is at, above or inside {aside_root}"
+    assert result.stderr.splitlines() == [
+        why,
+        f"state-link: could not set {staging} aside",
+        why,
+        f"state-link: {roots.lists}/den.list:1: skipped .zsh_history: could not"
+        f" set {roots.home}/.zsh_history aside",
+        why,
+        f"state-link: {roots.lists}/den.list:2: skipped .config/gh: could not move"
+        f" all of {roots.home}/.config/gh into {roots.volume}/.config/gh or aside",
+    ]
+    assert (roots.home / ".zsh_history").read_text(encoding="utf-8") == "home\n"
+    assert not (roots.home / ".zsh_history").is_symlink()
+    assert (roots.volume / ".zsh_history").read_text(encoding="utf-8") == "volume\n"
+    # Nothing of the merge moved, not even the name only the home has.
+    assert sorted(p.name for p in (roots.home / ".config/gh").iterdir()) == [
+        "extra.yml",
+        "hosts.yml",
+    ]
+    assert [p.name for p in (roots.volume / ".config/gh").iterdir()] == ["hosts.yml"]
+    assert [p.name for p in staging.iterdir()] == [".gone"]
+    assert [p.name for p in aside_root.iterdir()] == (
+        [] if mounted == ".den-set-aside" else ["old"]
+    )
+    assert roots.linked(".new")
+
+
+@_needs_linux()
 @pytest.mark.parametrize("spelling", ["slash", "dot", "double-slash", "linked-parent"])
 def test_state_link_finds_a_mount_point_whatever_the_spelling_of_home(
     tmp_path, spelling
