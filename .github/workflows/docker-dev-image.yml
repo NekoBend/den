@@ -28,7 +28,7 @@ jobs:
     # The sum of the step budgets below plus a few minutes for the rest.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # A cold build keeps every layer, the Rust tools' cargo target cache and
       # the image that load hands to the Docker daemon on the runner's disk,
       # much of which preinstalled SDKs this job does not use take up.
