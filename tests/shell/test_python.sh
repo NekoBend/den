@@ -458,6 +458,27 @@ for sh in bash zsh; do
     assert_contains "$sh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
     assert_contains "$sh/va activates nothing when git fails" "rc=1 PY=[]" "$actual"
 
+    # git's variables that pick a repository, an index or where the search
+    # for one stops are the shell's, not the checkout's: a ceiling at the
+    # checkout's top, a GIT_DIR that is empty, relative or not there, a
+    # GIT_OBJECT_DIRECTORY that is not there, another repository's index
+    # (git sets an absolute GIT_INDEX_FILE in the shell `git commit -a`
+    # starts for its editor), or a yadm or vcsh "enter" shell's GIT_DIR and
+    # GIT_WORK_TREE made git answer "not a git repository" or nothing
+    # tracked, and va sourced the committed activate script. The shell keeps
+    # them.
+    echo "[$sh] va refuses a committed venv whatever git's variables in the shell point at, and leaves them as they were"
+    for genv in "GIT_CEILING_DIRECTORIES='$WORK/venv_tracked'" "GIT_DIR=" "GIT_DIR=.git" "GIT_DIR='$WORK/nope'" \
+        "GIT_OBJECT_DIRECTORY='$WORK/nope'" "GIT_INDEX_FILE='$WORK/venv_untracked/.git/index'" \
+        "GIT_DIR='$WORK/venv_untracked/.git' GIT_WORK_TREE='$WORK'"; do
+        actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_tracked' && export $genv && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"; env | grep '^GIT_' | sort" 2>&1 | tr -d '\r')
+        assert_contains "$sh/va refuses a committed venv under $genv" "venv content is tracked by git (bin/activate pyvenv.cfg)" "$actual"
+        assert_contains "$sh/va activates nothing under $genv" "rc=1 PY=[]" "$actual"
+        assert_eq "$sh/va keeps $genv" "$(eval "export $genv"; env | grep '^GIT_' | sort)" "$(printf '%s\n' "$actual" | grep '^GIT_')"
+    done
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && export GIT_CEILING_DIRECTORIES='$WORK/venv_uv' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON] CEIL=[\$GIT_CEILING_DIRECTORIES]\"" 2>&1 | tr -d '\r')
+    assert_eq "$sh/va with a ceiling still activates a venv outside any repo, and keeps the ceiling" "rc=0 PY=[3.13.13] CEIL=[$WORK/venv_uv]" "$actual"
+
     echo "[$sh] va still activates a venv outside any repo, and with no git at all"
     actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
     assert_eq "$sh/va outside a repo" "rc=0 PY=[3.13.13]" "$actual"
@@ -1122,6 +1143,35 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
 " | tr -d '\r')
 assert_contains "pwsh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
 assert_contains "pwsh/va activates nothing when git fails" "VE=[] PY=[] LC_ALL_KEPT=[True]" "$actual"
+
+# git's variables in the session, as on bash and zsh: va removes them for its
+# git calls alone (Remove-Item: an empty GIT_DIR, which
+# [Environment]::SetEnvironmentVariable($n, $null) hands a child on Linux, is
+# itself one git cannot open) and puts them back.
+echo "[pwsh] va refuses a committed venv whatever git's variables in the session point at, and leaves them as they were"
+for genv in "\$env:GIT_CEILING_DIRECTORIES = '$WORK/ps_venv_tracked'" "\$env:GIT_DIR = '.git'" "\$env:GIT_DIR = '$WORK/nope'" \
+    "\$env:GIT_OBJECT_DIRECTORY = '$WORK/nope'" "\$env:GIT_INDEX_FILE = '$WORK/ps_venv_untracked/.git/index'" \
+    "\$env:GIT_DIR = '$WORK/ps_venv_untracked/.git'; \$env:GIT_WORK_TREE = '$WORK'"; do
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        Set-Location '$WORK/ps_venv_tracked'
+        \$env:VIRTUAL_ENV = \$null
+        $genv
+        \$before = @(Get-ChildItem Env:GIT_* | Sort-Object Name | ForEach-Object { \"\$(\$_.Name)=\$(\$_.Value)\" }) -join ' '
+        va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+        \$after = @(Get-ChildItem Env:GIT_* | Sort-Object Name | ForEach-Object { \"\$(\$_.Name)=\$(\$_.Value)\" }) -join ' '
+        \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] KEPT=[\$(\$before -ceq \$after -and \$before -ne '')]\"
+    " | tr -d '\r')
+    assert_contains "pwsh/va refuses a committed venv under $genv" "venv content is tracked by git (bin/Activate.ps1, pyvenv.cfg)" "$actual"
+    assert_contains "pwsh/va activates nothing under $genv, and keeps it" "VE=[] PY=[] KEPT=[True]" "$actual"
+done
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv5'
+    \$env:VIRTUAL_ENV = \$null
+    \$env:GIT_CEILING_DIRECTORIES = '$WORK/ps_venv5'
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] CEIL=[\$env:GIT_CEILING_DIRECTORIES]\"
+" | tr -d '\r')
+assert_eq "pwsh/va with a ceiling still activates a venv outside any repo, and keeps the ceiling" "VE=[fakevenv] PY=[3.11.4] CEIL=[$WORK/ps_venv5]" "$actual"
 
 echo "[pwsh] va takes only git's own fatal line as 'not a git repository'"
 mk_venv_ps "$NAGR/ps" "3.12.0"

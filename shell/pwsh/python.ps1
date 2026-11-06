@@ -547,27 +547,53 @@ function va {
     # such a config can name (hooks, filters, diff.external, core.sshCommand)
     # do not run for ls-files, and its pager runs on a terminal only, which
     # these calls' output never is.
+    # Without git's variables that pick a repository, an index or where the
+    # search for one stops: the question is whether the venv's own directory
+    # sits in a checkout, which git finds by searching up from there. A
+    # GIT_CEILING_DIRECTORIES at the checkout's top, a GIT_DIR that is empty,
+    # relative or not there, a GIT_OBJECT_DIRECTORY that is not there, an
+    # absolute GIT_INDEX_FILE (git sets one in the shell `git commit -a` starts
+    # for its editor) or the GIT_DIR and GIT_WORK_TREE of a yadm or vcsh
+    # "enter" shell made git answer "not a git repository" or nothing tracked,
+    # and va dot-sourced a committed activate script. Removed for the two calls
+    # and put back after them: Remove-Item, as an empty value (what
+    # [Environment]::SetEnvironmentVariable($n, $null) leaves a child on Linux)
+    # is a GIT_DIR that git cannot open, and the session keeps its own.
     $activateDir = Split-Path -Parent $activatePath
     $pathspecs = @('.') + ('Scripts', 'bin', 'pyvenv.cfg' | ForEach-Object { "../$_"; ":(icase)../$_" })
-    $tracked = & $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
-    if ($LASTEXITCODE -ne 0) {
-      # Fail closed: only "not a git repository" means nothing to check. Any other
-      # failure, such as a checkout git will not open for dubious ownership, leaves
-      # a committed venv possible. LC_ALL=C keeps git's message in English. Any
-      # line of git's, as trace lines may come first, and only from its start, as
-      # other messages quote a path that may hold the same words.
-      $lcAll = $env:LC_ALL
-      $env:LC_ALL = 'C'
-      try { $why = @(& $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- . 2>&1 | ForEach-Object { "$_" }) }
-      catch { $why = @("$_") }
-      finally { $env:LC_ALL = $lcAll }
-      if (-not ($why -match '^fatal: not a git repository')) {
-        # Show git's fatal line, else its first.
-        $reason = @(@($why -match '^fatal:') + $why) | Select-Object -First 1
-        Write-Error "'$Name': git could not tell whether the venv is committed ($reason); dot-source it yourself if you trust it: . $activatePath"
-        return
+    $gitVars = [ordered]@{}
+    foreach ($n in 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_CEILING_DIRECTORIES', 'GIT_IMPLICIT_WORK_TREE',
+      'GIT_OBJECT_DIRECTORY', 'GIT_NAMESPACE', 'GIT_DISCOVERY_ACROSS_FILESYSTEM') {
+      $gitVars[$n] = [Environment]::GetEnvironmentVariable($n)
+      Remove-Item -LiteralPath "Env:$n" -ErrorAction SilentlyContinue
+    }
+    try {
+      $tracked = & $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        # Fail closed: only "not a git repository" means nothing to check. Any
+        # other failure, such as a checkout git will not open for dubious
+        # ownership, leaves a committed venv possible. LC_ALL=C keeps git's
+        # message in English. Any line of git's, as trace lines may come first,
+        # and only from its start, as other messages quote a path that may hold
+        # the same words.
+        $lcAll = $env:LC_ALL
+        $env:LC_ALL = 'C'
+        try { $why = @(& $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- . 2>&1 | ForEach-Object { "$_" }) }
+        catch { $why = @("$_") }
+        finally { $env:LC_ALL = $lcAll }
+        if (-not ($why -match '^fatal: not a git repository')) {
+          # Show git's fatal line, else its first.
+          $reason = @(@($why -match '^fatal:') + $why) | Select-Object -First 1
+          Write-Error "'$Name': git could not tell whether the venv is committed ($reason); dot-source it yourself if you trust it: . $activatePath"
+          return
+        }
+        $tracked = $null
       }
-      $tracked = $null
+    }
+    finally {
+      foreach ($n in $gitVars.Keys) {
+        if ($null -ne $gitVars[$n]) { Set-Item -LiteralPath "Env:$n" -Value $gitVars[$n] }
+      }
     }
     if ($tracked) {
       # Name what git actually reports: the match may be pyvenv.cfg alone, so a

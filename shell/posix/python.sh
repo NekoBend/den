@@ -200,7 +200,19 @@ va() {
         # The other programs such a config can name (hooks, filters,
         # diff.external, core.sshCommand) do not run for ls-files, and its pager
         # runs on a terminal only, which these calls' output never is.
-        if ! tracked="$(command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . ../bin ':(icase)../bin' ../pyvenv.cfg ':(icase)../pyvenv.cfg' 2>/dev/null)"; then
+        # Without git's variables that pick a repository, an index or where
+        # the search for one stops: the question is whether the venv's own
+        # directory sits in a checkout, which git finds by searching up from
+        # there. A GIT_CEILING_DIRECTORIES at the checkout's top, a GIT_DIR
+        # that is empty, relative or not there, a GIT_OBJECT_DIRECTORY that is
+        # not there, an absolute GIT_INDEX_FILE (git sets one in the shell
+        # `git commit -a` starts for its editor) or the GIT_DIR and
+        # GIT_WORK_TREE of a yadm or vcsh "enter" shell made git answer "not a
+        # git repository" or nothing tracked, and va sourced a committed
+        # activate script. Unset in the $( ) only, a subshell: the session
+        # keeps them.
+        if ! tracked="$(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_CEILING_DIRECTORIES GIT_IMPLICIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_NAMESPACE GIT_DISCOVERY_ACROSS_FILESYSTEM
+            command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . ../bin ':(icase)../bin' ../pyvenv.cfg ':(icase)../pyvenv.cfg' 2>/dev/null)"; then
             # Fail closed: only "not a git repository" means nothing to check. Any
             # other failure, such as a checkout git will not open for dubious
             # ownership, leaves a committed venv possible. Any line of git's, as
@@ -208,7 +220,8 @@ va() {
             # messages quote a path that may hold the same words. git fails
             # here, and a plain assignment takes its status: || keeps a shell
             # under set -e (errexit) going, as for vva outside a checkout.
-            why="$nl$(LC_ALL=C command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . 2>&1 >/dev/null)" || :
+            why="$nl$(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_CEILING_DIRECTORIES GIT_IMPLICIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_NAMESPACE GIT_DISCOVERY_ACROSS_FILESYSTEM
+                LC_ALL=C command git -c core.fsmonitor= -c safe.bareRepository=explicit -C "$name/bin" ls-files -- . 2>&1 >/dev/null)" || :
             case "$why" in
                 *"${nl}fatal: "[Nn]"ot a git repository"*) tracked="" ;;
                 *)

@@ -494,7 +494,10 @@ What git tracks is how `va` tells a venv that came with the tree, so it can tell
 only in a git checkout: outside one, a venv that came in an archive or a shared
 folder is sourced as it is, as `source` would source it. Activate only a venv you
 made there. `va` runs git with `core.fsmonitor` off, so a `.git/config` that came
-with such a tree starts no program.
+with such a tree starts no program, and without git's variables that pick a
+repository or an index or stop its search for one (`GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_CEILING_DIRECTORIES` and the like) that the shell holds:
+whether the venv sits in a checkout is git's search up from the venv itself.
 
 ## Media (ffmpeg)
 
