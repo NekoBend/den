@@ -44,11 +44,11 @@ and test adequacy to the tests pass.
 ## How to verify
 
 When the code is on disk and the toolchain exists,
-run the checks and scripts SKILL.md Step 3 names:
+run the checks and scripts reference/tool-checks.md lists:
 
 - the typechecker and linter catch a whole class of correctness
   defects, and the typecheck confirms imported APIs actually resolve.
-- check-broken-refs.py (path in SKILL.md Step 3)
+- check-broken-refs.py (path in reference/tool-checks.md)
   confirms a renamed or removed symbol left no dangling reference.
   For committed changes, run it with
   `--base "$(git merge-base <base-branch> HEAD)"`:

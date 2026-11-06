@@ -43,7 +43,7 @@ agents/
                             # coding's python-*, typescript-*, rust-* and
                             # shell-* hold examples split from python,
                             # typescript, rust and shell)
-      reference/            # skill-only reference files (code-audit's dimensions + rubric)
+      reference/            # skill-only reference files (code-audit's dimensions, rubric and tool checks)
     shared/
       reference/*.md        # per-language + architecture / testing / schema-design
                             # (python-*, typescript-*, rust-*, shell-*,

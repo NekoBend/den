@@ -94,31 +94,15 @@ State which dimensions you are running before you start.
 ### Step 3: Ground the review in tool output (when a toolchain exists)
 
 When the code is on disk and the language toolchain is available,
-run the checks and scripts below against the files under review
-and fold the results into the relevant dimension.
+read reference/tool-checks.md
+and run the checks and scripts it lists before Step 4.
+With den installed, `den verify <file>` runs the Python checks
+with the project's own config and venv.
 Code from outside your trust boundary (a fork, a downloaded repo)
 runs its own code in a check (cargo clippy runs build.rs,
 eslint and prettier run its JS config):
 name what will run and get the user's yes before the first run.
-
-- the language's standard checks on each file under review
-  (Python: ruff format --check, ruff check, ty check; TypeScript:
-  prettier --check, eslint, tsc --noEmit -p <file's tsconfig>;
-  Rust: cargo fmt --check, cargo clippy; Shell: shellcheck;
-  PowerShell: Invoke-ScriptAnalyzer -Settings @{Severity='Error'};
-  with den installed, `den verify <file>` runs the Python three with
-  the project's own config and venv)
-- ../../shared/scripts/find-references.py --uses <symbol>
-  (blast radius of a changed symbol: correctness)
-- ../../shared/scripts/check-broken-refs.py
-  (after a rename or removal, confirms no dangling reference remains:
-  correctness). Its default base, HEAD, covers uncommitted edits only.
-  For changes already committed (a branch, a pull request), pass
-  `--base "$(git merge-base <base-branch> HEAD)"`,
-  and name the base you used under **Ran:**
-  (the output format in code-audit-output.md).
-
-If a check or script cannot run (no toolchain, code only pasted in chat),
+If nothing can run (no toolchain, code only pasted in chat),
 say so and review by reading.
 Do not claim a check passed when it did not run.
 
