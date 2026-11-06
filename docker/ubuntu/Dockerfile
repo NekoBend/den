@@ -413,17 +413,67 @@ printf '%s\n' "$USERNAME" > /etc/container-user
 chmod 0644 /etc/container-user
 cat > /usr/local/bin/container-entrypoint <<'ENTRYPOINT'
 #!/bin/sh
-# Initialize user IDs and optional workspace ownership, then drop root.
+# Initialize user IDs, optional workspace ownership, /tmp and the state
+# volume, then drop root.
 set -eu
 
 inherited_path=$PATH
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+# The state volume's mount point (docker/README.md, "What survives where").
+state_dir=/state
+tmp_dir=/tmp
+# The mount table, which names each mount point by its physical path.
+mountinfo=/proc/self/mountinfo
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
+warn() { printf 'container-entrypoint: %s\n' "$*" >&2; }
 valid_id() {
     case "$1" in ''|0|0*|*[!0-9]*) return 1 ;; esac
     [ "${#1}" -le 10 ] && [ "$1" -le 2147483647 ]
+}
+# Succeed when DIR is a mount point of its own, not a symbolic link to one.
+own_mount() { [ ! -L "$1" ] && mountpoint -q "$1"; }
+# Print the first mount point the mount table lists below DIR, and succeed;
+# fail with 1 when there is none, and with 2 when the table cannot be read.
+# find -xdev compares device numbers alone, and a mount of the same file
+# system below DIR (a second named volume, or a bind mount) has the same one,
+# so a walk of DIR as root asks this first. The table writes a space, tab,
+# newline or backslash in a mount point as a backslash and three octal digits.
+mount_below() {
+    mb_dir=$(cd -P -- "$1" && pwd -P) || return 2
+    [ -r "$mountinfo" ] || return 2
+    mb_dir=$mb_dir awk '
+        function unescape(s,    out, i, d) {
+            out = ""
+            while ((i = index(s, "\\")) > 0) {
+                d = substr(s, i + 1, 3)
+                if (d ~ /^[0-7][0-7][0-7]$/) {
+                    out = out substr(s, 1, i - 1) sprintf("%c", \
+                        substr(d, 1, 1) * 64 + substr(d, 2, 1) * 8 + substr(d, 3, 1))
+                    s = substr(s, i + 4)
+                } else {
+                    out = out substr(s, 1, i)
+                    s = substr(s, i + 1)
+                }
+            }
+            return out s
+        }
+        BEGIN {
+            dir = ENVIRON["mb_dir"]
+            below = (dir == "/") ? "/" : dir "/"
+            found = 0
+        }
+        {
+            m = unescape($5)
+            if (m != dir && index(m, below) == 1) {
+                print m
+                found = 1
+                exit
+            }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$mountinfo"
 }
 
 IFS= read -r username < /etc/container-user
@@ -449,6 +499,22 @@ case "$fix_workspace" in
     0|1) ;;
     *) fail 'FIX_WORKSPACE_OWNERSHIP must be 0 or 1' ;;
 esac
+den_state=${DEN_STATE:-1}
+case "$den_state" in
+    0|1) ;;
+    *) fail 'DEN_STATE must be 0 or 1' ;;
+esac
+clean_tmp=${DEN_CLEAN_TMP:-0}
+case "$clean_tmp" in
+    0|1) ;;
+    *) fail 'DEN_CLEAN_TMP must be 0 or 1' ;;
+esac
+# The state step runs unless DEN_STATE=0, and only for a mount point at
+# /state: the image's own /state directory is in the container's layer.
+use_state=0
+if [ "$den_state" = 1 ] && own_mount "$state_dir"; then
+    use_state=1
+fi
 
 if [ "$(id -u)" -eq 0 ]; then
     if [ "$target_uid:$target_gid" != "$old_uid:$old_gid" ]; then
@@ -477,10 +543,87 @@ if [ "$(id -u)" -eq 0 ]; then
         find "$user_home" -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) \
             -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
             -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
+        # The state volume holds the user's files with the old IDs too; the
+        # same walk, which a failure does not stop the start for. With a mount
+        # point below the volume, which -xdev would not keep the walk out of
+        # when it is of the same file system, there is no walk at all.
+        if [ "$use_state" = 1 ]; then
+            nested_status=0
+            nested=$(mount_below "$state_dir") || nested_status=$?
+            case "$nested_status" in
+                1)
+                    find "$state_dir" -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) \
+                        -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
+                        -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} + \
+                        || warn "re-owning $state_dir from $old_uid:$old_gid failed part way"
+                    ;;
+                0) warn "mount point $nested is below $state_dir, so nothing in $state_dir is re-owned from $old_uid:$old_gid; docker/README.md shows how to re-own a volume once" ;;
+                *) warn "could not read the mount table $mountinfo, so nothing in $state_dir is re-owned from $old_uid:$old_gid; docker/README.md shows how to re-own a volume once" ;;
+            esac
+        fi
     fi
     # A bare workspace needs an owner even when recursive adjustment is disabled.
     if ! mountpoint -q /workspace; then
         /usr/bin/gnuchown -h "$target_uid:$target_gid" /workspace
+    fi
+    # /tmp is emptied only on request, and only when it is a mount point of
+    # its own: a tmpfs or a volume, or a host directory bound there, which this
+    # empties too (docker/README.md says never to bind one). The image's own
+    # /tmp is left alone. A docker exec session started while this runs may
+    # lose its files there. find does not follow symbolic links, so a link
+    # cannot send a deletion elsewhere. -xdev keeps it out of other file
+    # systems mounted below /tmp, but not out of a mount of the same one (a
+    # second named volume, or a bind mount): with any mount point below /tmp,
+    # nothing is deleted.
+    if [ "$clean_tmp" = 1 ]; then
+        if own_mount "$tmp_dir"; then
+            nested_status=0
+            nested=$(mount_below "$tmp_dir") || nested_status=$?
+            case "$nested_status" in
+                1)
+                    find "$tmp_dir" -xdev -mindepth 1 -delete \
+                        || warn 'some entries under /tmp were left in place'
+                    ;;
+                0) warn "DEN_CLEAN_TMP=1 empties /tmp only when no mount point is below it, and $nested is one; it is left as it is" ;;
+                *) warn "DEN_CLEAN_TMP=1 empties /tmp only when no mount point is below it, and the mount table $mountinfo could not be read; it is left as it is" ;;
+            esac
+        else
+            warn 'DEN_CLEAN_TMP=1 empties /tmp only when it is a mount point of its own; it is left as it is'
+        fi
+    fi
+    # The state volume. Root only makes /state/home and gives /state and
+    # /state/home, not what they hold, to the user, after checking that
+    # neither is a symbolic link (chown -h would not follow one either).
+    # state-link then links the home's paths into it as the user, so it never
+    # reaches a file the user could not reach already. Its failures are
+    # warnings: the start goes on. The user can make it wait (a FIFO swapped
+    # in for the list it opens), so root waits for it 300 seconds at most;
+    # GNU timeout, as for chown, also stops the commands state-link runs.
+    # state-link itself waits 60 seconds at most for another run on the same
+    # volume (a second container's start, or a run by hand) to end.
+    if [ "$use_state" = 1 ]; then
+        if [ -L "$state_dir/home" ]; then
+            warn "$state_dir/home is a symbolic link; the home is not linked into $state_dir"
+        elif { [ -d "$state_dir/home" ] || (umask 077 && /usr/bin/gnumkdir "$state_dir/home"); } \
+            && [ ! -L "$state_dir/home" ] \
+            && /usr/bin/gnuchown -h "$target_uid:$target_gid" "$state_dir" "$state_dir/home"; then
+            link_status=0
+            /usr/bin/gnutimeout -k 10 300 \
+                /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
+                /usr/bin/env -i HOME="$user_home" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                /usr/local/lib/den/state-link \
+                || link_status=$?
+            case "$link_status" in
+                0) ;;
+                124) warn "state-link was stopped after 300 seconds, so the run was cut short; run /usr/local/lib/den/state-link as $username to finish it" ;;
+                # GNU timeout's KILL, 10 seconds after its TERM, gives 137, and
+                # so does any other KILL (the OOM killer, or kill -9).
+                137) warn "state-link was killed, by the time limit or by a signal, so the run was cut short; run /usr/local/lib/den/state-link as $username to finish it" ;;
+                *) warn 'state-link reported problems (see above)' ;;
+            esac
+        else
+            warn "could not prepare $state_dir/home; the home is not linked into $state_dir"
+        fi
     fi
     export HOME="$user_home" USER="$username" LOGNAME="$username" SHELL="$login_shell"
     exec /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
@@ -491,10 +634,675 @@ fi
     || fail 'FIX_WORKSPACE_OWNERSHIP requires root initialization; omit --user or use --user 0'
 [ "$(id -u):$(id -g)" = "$target_uid:$target_gid" ] \
     || fail 'UID/GID adjustment requires root initialization; omit --user or rebuild with matching USER_UID/USER_GID'
+if [ "$use_state" = 1 ]; then
+    warn "$state_dir is mounted, but only a root start links the home into it; omit --user, or set DEN_STATE=0"
+fi
+if [ "$clean_tmp" = 1 ]; then
+    warn 'DEN_CLEAN_TMP=1 needs a root start; /tmp is left as it is'
+fi
 export PATH="$runtime_path" HOME="$user_home" USER="$username" LOGNAME="$username" SHELL="$login_shell"
 exec "$@"
 ENTRYPOINT
 chmod 0755 /usr/local/bin/container-entrypoint
+
+# The state volume (docker/README.md, "What survives where"). /state is a
+# mount point the user owns. There is no VOLUME instruction: an image built
+# FROM this one could never take one away.
+install -d -o "$USER_UID" -g "$USER_GID" -m 0700 /state
+install -d -m 0755 /etc/den /etc/den/state-paths.d /usr/local/lib/den
+cat > /etc/den/state-paths.d/den.list <<'STATE_PATHS'
+# The image's paths of the user's home kept in the state volume at
+# /state/home, one "<kind> <path>" per line, the path relative to the home:
+#   d  a directory, created in the volume when missing
+#   F  a file, created empty in the volume when missing
+#   f  a file, linked only once the volume or the home has one
+# An image built FROM this one adds its own in a <name>.list file here; one
+# environment adds its own in ~/.config/den/state-paths, in the volume.
+d .ssh
+F .gitconfig
+F .zsh_history
+F .bash_history
+d .config/gh
+d .config/rclone
+d .local/share/zoxide
+d .local/share/powershell/PSReadLine
+d .config/den
+STATE_PATHS
+chmod 0644 /etc/den/state-paths.d/den.list
+cat > /usr/local/lib/den/state-link <<'STATE_LINK'
+#!/bin/sh
+# Ubuntu's /bin/sh is dash, which has test -O and -ef, and local.
+# shellcheck shell=dash
+# state-link - keep paths of the user's home in the state volume.
+# container-entrypoint runs it as the user at each root start, once /state/home
+# is the user's; run by hand, it applies the lists again. For each
+# "<kind> <path>" line of the lists it links ~/<path> to /state/home/<path>
+# (kinds: /etc/den/state-paths.d/den.list). The lists are every
+# /etc/den/state-paths.d/*.list, then the environment's own
+# /state/home/.config/den/state-paths.
+# A path the home has and the volume does not moves into the volume. When both
+# have a file, the volume's stays and the home's moves to
+# /state/home/.den-set-aside/<UTC time>/<path>. When both have a directory,
+# each name in the home's moves into the volume's, a directory both have is
+# merged the same way, and any other name both have goes aside; a directory
+# with anything in it this user cannot move is left whole. A move copies into
+# /state/home/.den-staging, renames the whole copy into place, and only then
+# removes the home's, so the home's goes only once the volume holds all of it.
+# A run stopped by a signal removes the copy it was making; a copy that an
+# earlier run left there (one that KILL or a crash stopped) is set aside,
+# never deleted and never taken for the volume's. Runs on one volume take
+# turns: each holds a lock on /state/home/.den-lock.
+# Nothing is done through a symbolic link or on a mount point: an entry with a
+# link on its way, in the home or in the volume, is skipped, and so is one
+# whose path in the home is a mount point, is below one other than /, or has
+# one below it (a host directory bound into the home), and one whose path in
+# the volume is a mount point, is below one or has one below it, counting the
+# mount points below the volume alone. A move renames its copy into place,
+# and a rename to another file system is a copy again: with a mount point at,
+# above or inside .den-staging or .den-set-aside, nothing moves through it.
+# A bad line and an entry that fails are warnings, and the next line goes on;
+# the exit status is 1 when there was one. A set-aside is a note, which leaves
+# the status alone.
+# HOME, DEN_STATE_ROOT (default /state), DEN_STATE_LISTS (default
+# /etc/den/state-paths.d) and DEN_STATE_MOUNTINFO (default
+# /proc/self/mountinfo) name what it reads, and DEN_STATE_LOCK_WAIT (default
+# 60) how many seconds it waits for another run, so tests can run it
+# elsewhere.
+set -u
+export LC_ALL=C
+umask 077
+
+state_root=${DEN_STATE_ROOT:-/state}
+lists_dir=${DEN_STATE_LISTS:-/etc/den/state-paths.d}
+mountinfo=${DEN_STATE_MOUNTINFO:-/proc/self/mountinfo}
+lock_wait=${DEN_STATE_LOCK_WAIT:-60}
+case "$lock_wait" in '' | *[!0-9]*) lock_wait=60 ;; esac
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+aside=
+where=
+status=0
+# The staging copy a move is making, while it makes it.
+copying=
+
+warn() { printf 'state-link: %s\n' "$*" >&2; status=1; }
+# Something this run did that the user should know of, and no failure.
+note() { printf 'state-link: %s\n' "$*" >&2; }
+
+# A signal (the entrypoint's time limit sends TERM) stops the run, and the
+# copy it was making goes: the home still has all of that path. The traps
+# below call it.
+# shellcheck disable=SC2329
+stopped() {
+    if [ -n "$copying" ]; then
+        rm -rf -- "$copying"
+        printf 'state-link: stopped by a signal; removed %s, the unfinished copy it was making\n' \
+            "$copying" >&2
+    else
+        printf 'state-link: stopped by a signal\n' >&2
+    fi
+    exit "$1"
+}
+trap 'stopped 129' HUP
+trap 'stopped 130' INT
+trap 'stopped 143' TERM
+
+# Succeed when DIR is an absolute path to a directory this user owns, not a
+# symbolic link.
+own_dir() {
+    case "$1" in /*) ;; *) return 1 ;; esac
+    # test -O is not POSIX; dash, the image's /bin/sh, has it.
+    # shellcheck disable=SC3067
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]
+}
+
+# Print the physical path of DIR, which own_dir must accept with its trailing
+# slashes taken off, and succeed. The mount table names mount points by their
+# physical paths, so HOME=/home/dev/ or /home/./dev must not hide one.
+canon_dir() {
+    cd_dir=$1
+    while :; do
+        case "$cd_dir" in
+            ?*/) cd_dir=${cd_dir%/} ;;
+            *) break ;;
+        esac
+    done
+    own_dir "$cd_dir" && cd_dir=$(cd -P -- "$cd_dir" && pwd -P) && own_dir "$cd_dir" \
+        && printf '%s\n' "$cd_dir"
+}
+
+# Succeed when REL is a relative path of names made of letters, digits, '.',
+# '_' and '-', none of them '.' or '..': no empty name, no leading or trailing
+# slash.
+valid_rel() {
+    case "$1" in '' | /* | */ | *//*) return 1 ;; esac
+    vr_rest=$1
+    while :; do
+        case "${vr_rest%%/*}" in . | .. | *[!A-Za-z0-9._-]*) return 1 ;; esac
+        case "$vr_rest" in
+            */*) vr_rest=${vr_rest#*/} ;;
+            *) return 0 ;;
+        esac
+    done
+}
+
+# Succeed when no part of ROOT/SUB that exists is a symbolic link or anything
+# but a directory. SUB may be empty.
+clear_path() {
+    cp_path=$1
+    cp_rest=$2
+    while [ -n "$cp_rest" ]; do
+        cp_path=$cp_path/${cp_rest%%/*}
+        case "$cp_rest" in
+            */*) cp_rest=${cp_rest#*/} ;;
+            *) cp_rest= ;;
+        esac
+        [ -L "$cp_path" ] && return 1
+        if [ -e "$cp_path" ] && [ ! -d "$cp_path" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Make the missing directories of ROOT/SUB, 0700; fail on a symbolic link
+# or anything but a directory on the way.
+make_dirs() {
+    md_path=$1
+    md_rest=$2
+    while [ -n "$md_rest" ]; do
+        md_path=$md_path/${md_rest%%/*}
+        case "$md_rest" in
+            */*) md_rest=${md_rest#*/} ;;
+            *) md_rest= ;;
+        esac
+        if [ ! -e "$md_path" ] && [ ! -L "$md_path" ]; then
+            mkdir -m 0700 -- "$md_path" || return 1
+        fi
+        if [ -L "$md_path" ] || [ ! -d "$md_path" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Succeed when PATH, not a link, is what KIND names: a directory for d, a
+# regular file for F and f.
+is_kind() {
+    case "$1" in
+        d) [ -d "$2" ] && [ ! -L "$2" ] ;;
+        *) [ -f "$2" ] && [ ! -L "$2" ] ;;
+    esac
+}
+
+kind_name() {
+    case "$1" in
+        d) printf 'directory' ;;
+        *) printf 'regular file' ;;
+    esac
+}
+
+# Print the first mount point of the mount table that PATH is, is below or has
+# below it, and succeed; fail with 1 when there is none. A mount point at or
+# above BASE (default /), the one PATH is meant to be on, does not count. The
+# table writes a space, tab, newline or backslash in a mount point as a
+# backslash and three octal digits.
+mount_on() {
+    mo_path=$1 mo_base=${2:-/} awk '
+        function unescape(s,    out, i, d) {
+            out = ""
+            while ((i = index(s, "\\")) > 0) {
+                d = substr(s, i + 1, 3)
+                if (d ~ /^[0-7][0-7][0-7]$/) {
+                    out = out substr(s, 1, i - 1) sprintf("%c", \
+                        substr(d, 1, 1) * 64 + substr(d, 2, 1) * 8 + substr(d, 3, 1))
+                    s = substr(s, i + 4)
+                } else {
+                    out = out substr(s, 1, i)
+                    s = substr(s, i + 1)
+                }
+            }
+            return out s
+        }
+        BEGIN { path = ENVIRON["mo_path"]; base = ENVIRON["mo_base"]; found = 0 }
+        {
+            m = unescape($5)
+            if (m == "/" || m == base || index(base, m "/") == 1)
+                next
+            if (m == path || index(path, m "/") == 1 || index(m, path "/") == 1) {
+                print m
+                found = 1
+                exit
+            }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$mountinfo"
+}
+
+# Succeed when DIR, a path in the volume, is on the volume's own file system:
+# no mount point below the volume is at, above or inside it. Otherwise say
+# which and fail. A move renames its copy from the staging directory to a
+# path in the volume or the set-aside directory, and a rename to another file
+# system is a copy, which a stop leaves part done.
+on_volume() {
+    ov_mount=$(mount_on "$1" "$volume")
+    case $? in
+        1) return 0 ;;
+        0) printf 'state-link: mount point %s is at, above or inside %s\n' "$ov_mount" "$1" >&2 ;;
+        *) printf 'state-link: %s: could not read the mount table %s\n' "$1" "$mountinfo" >&2 ;;
+    esac
+    return 1
+}
+
+# The directory moves copy into, /state/home/.den-staging, made on first use.
+make_staging() {
+    on_volume "$staging" || return 1
+    if [ ! -e "$staging" ] && [ ! -L "$staging" ]; then
+        mkdir -m 0700 -- "$staging" || return 1
+    fi
+    if [ -L "$staging" ] || [ ! -d "$staging" ]; then
+        printf 'state-link: %s is not a directory\n' "$staging" >&2
+        return 1
+    fi
+}
+
+# Set slot to the staging name of REL: its path with ':' for '/'.
+set_slot() {
+    slot=
+    ss_rest=$1
+    while :; do
+        slot=$slot${slot:+:}${ss_rest%%/*}
+        case "$ss_rest" in
+            */*) ss_rest=${ss_rest#*/} ;;
+            *) break ;;
+        esac
+    done
+    slot=$staging/$slot
+}
+
+# Succeed when this user can copy PATH and then remove it: its directory is
+# writable, every directory in it readable, writable and searchable, and every
+# file in it readable. find decides as access(2) does, so a read-only file
+# system fails too. access(2) knows nothing of the sticky bit: in a sticky
+# directory (mode 1000) another user owns, only the owner of a name may
+# remove it, so such a directory in PATH fails, and so does PATH in one when
+# this user does not own PATH.
+removable() {
+    rv_dir=${1%/*}
+    [ -w "$rv_dir" ] || return 1
+    rv_uid=$(id -u) || return 1
+    rv_bad=$(find "$rv_dir" -maxdepth 0 -perm -1000 ! -uid "$rv_uid" -print 2>&1) || return 1
+    if [ -n "$rv_bad" ]; then
+        rv_bad=$(find "$1" -maxdepth 0 ! -uid "$rv_uid" -print 2>&1) || return 1
+        [ -z "$rv_bad" ] || return 1
+    fi
+    rv_bad=$(find "$1" \( -type d \( ! -readable -o ! -writable -o ! -executable \
+        -o -perm -1000 ! -uid "$rv_uid" \) -o -type f ! -readable \) -print -quit 2>&1) \
+        || return 1
+    [ -z "$rv_bad" ]
+}
+
+# Move SRC, a path of the home, to DST in the volume, which must not exist;
+# REL, the path below the home, names the staging copy. Copy SRC there, rename
+# the whole copy to DST, and only then remove SRC. A copy that fails is
+# removed again, and SRC stays as it was.
+transfer() {
+    if ! removable "$1"; then
+        printf 'state-link: %s: this user cannot read and remove all of it\n' "$1" >&2
+        return 1
+    fi
+    make_staging || return 1
+    set_slot "$3"
+    if [ -e "$slot" ] || [ -L "$slot" ]; then
+        printf 'state-link: %s is in the way\n' "$slot" >&2
+        return 1
+    fi
+    copying=$slot
+    if ! cp -a -T -- "$1" "$slot"; then
+        rm -rf -- "$slot"
+        copying=
+        return 1
+    fi
+    # -T never moves the copy into a directory at DST, and -n never replaces
+    # anything there; mv -n skips an existing DST and may still succeed.
+    if ! mv -T -n -- "$slot" "$2" || [ -e "$slot" ] || [ -L "$slot" ]; then
+        printf 'state-link: %s: could not rename it to %s\n' "$slot" "$2" >&2
+        rm -rf -- "$slot"
+        copying=
+        return 1
+    fi
+    copying=
+    if ! rm -rf -- "$1"; then
+        printf 'state-link: %s: copied to %s, but not all of it could be removed\n' "$1" "$2" >&2
+        return 1
+    fi
+}
+
+# The directory this run sets the home's copies aside in, made on first use:
+# /state/home/.den-set-aside/<UTC time>, with .<n> added to the time when that
+# name is taken. mkdir makes a new directory or fails, also on a link.
+make_aside() {
+    [ -n "$aside" ] && return 0
+    ma_root=$volume/.den-set-aside
+    on_volume "$ma_root" || return 1
+    if [ ! -e "$ma_root" ] && [ ! -L "$ma_root" ]; then
+        mkdir -m 0700 -- "$ma_root" || return 1
+    fi
+    if [ -L "$ma_root" ] || [ ! -d "$ma_root" ]; then
+        printf 'state-link: %s is not a directory\n' "$ma_root" >&2
+        return 1
+    fi
+    ma_try=$ma_root/$stamp
+    ma_n=0
+    while ! ma_err=$(mkdir -m 0700 -- "$ma_try" 2>&1); do
+        # Only a name that is taken gets another try.
+        if [ ! -e "$ma_try" ] && [ ! -L "$ma_try" ]; then
+            printf '%s\n' "$ma_err" >&2
+            return 1
+        fi
+        ma_n=$((ma_n + 1))
+        [ "$ma_n" -le 99 ] || return 1
+        ma_try=$ma_root/$stamp.$ma_n
+    done
+    aside=$ma_try
+    return 0
+}
+
+# Succeed when a directory above ~/REL is a link to the same directory in the
+# volume, as an entry for that directory makes it.
+covered() {
+    cv_home=$home
+    cv_vol=$volume
+    cv_rest=$le_sub
+    while [ -n "$cv_rest" ]; do
+        cv_home=$cv_home/${cv_rest%%/*}
+        cv_vol=$cv_vol/${cv_rest%%/*}
+        case "$cv_rest" in
+            */*) cv_rest=${cv_rest#*/} ;;
+            *) cv_rest= ;;
+        esac
+        if [ -L "$cv_home" ]; then
+            [ "$(readlink -- "$cv_home")" = "$cv_vol" ]
+            return
+        fi
+    done
+    return 1
+}
+
+# Make the volume's REL when it is missing: an empty directory for d, an empty
+# file for F. Return 2 for an f entry that the volume does not have.
+make_entry() {
+    [ -e "$le_vol" ] && return 0
+    case "$le_kind" in
+        f) return 2 ;;
+        d) make_dirs "$volume" "$le_sub" && mkdir -m 0700 -- "$le_vol" ;;
+        *) make_dirs "$volume" "$le_sub" && (set -C && : > "$le_vol") ;;
+    esac || return 1
+}
+
+# Both have directory REL: each name in the home's moves into the volume's, a
+# directory both have is merged the same way, any other name both have goes
+# aside, and a link to the same name in the volume's goes last, so that the
+# entry it serves works until the rest has moved. Then the emptied directory
+# goes. The caller checked that this user can move all of it.
+merge_dir() {
+    # local is not POSIX; dash, the image's /bin/sh, has it.
+    # shellcheck disable=SC3043
+    local mg_rel mg_home mg_name mg_vol mg_failed
+    mg_rel=$1
+    mg_failed=0
+    for mg_home in "$home/$mg_rel"/* "$home/$mg_rel"/.[!.]* "$home/$mg_rel"/..?*; do
+        [ -e "$mg_home" ] || [ -L "$mg_home" ] || continue
+        mg_name=${mg_home##*/}
+        mg_vol=$volume/$mg_rel/$mg_name
+        if [ -L "$mg_home" ] && [ "$(readlink -- "$mg_home")" = "$mg_vol" ]; then
+            continue
+        elif [ ! -e "$mg_vol" ] && [ ! -L "$mg_vol" ]; then
+            transfer "$mg_home" "$mg_vol" "$mg_rel/$mg_name" || mg_failed=1
+        elif [ -d "$mg_home" ] && [ ! -L "$mg_home" ] && [ -d "$mg_vol" ] && [ ! -L "$mg_vol" ]; then
+            merge_dir "$mg_rel/$mg_name" || mg_failed=1
+        elif make_aside && make_dirs "$aside" "$mg_rel" \
+            && transfer "$mg_home" "$aside/$mg_rel/$mg_name" "$mg_rel/$mg_name"; then
+            note "$where: $mg_vol and $mg_home both existed: kept $mg_vol, moved $mg_home to $aside/$mg_rel/$mg_name"
+        else
+            mg_failed=1
+        fi
+    done
+    [ "$mg_failed" = 0 ] || return 1
+    for mg_home in "$home/$mg_rel"/* "$home/$mg_rel"/.[!.]* "$home/$mg_rel"/..?*; do
+        if [ -L "$mg_home" ] && [ "$(readlink -- "$mg_home")" = "$volume/$mg_rel/${mg_home##*/}" ]; then
+            rm -f -- "$mg_home" || return 1
+        fi
+    done
+    rmdir -- "$home/$mg_rel"
+}
+
+# Link ~/REL to the volume's REL for one entry of KIND, or warn and skip it.
+link_entry() {
+    le_kind=$1
+    le_rel=$2
+    le_home=$home/$le_rel
+    le_vol=$volume/$le_rel
+    case "$le_rel" in
+        */*) le_sub=${le_rel%/*} ;;
+        *) le_sub= ;;
+    esac
+    if ! clear_path "$volume" "$le_sub"; then
+        warn "$where: skipped $le_rel: a symbolic link or a file is on its way in $home or $volume"
+        return
+    fi
+    if [ -L "$le_vol" ]; then
+        warn "$where: skipped $le_rel: $le_vol is a symbolic link"
+        return
+    fi
+    if [ -e "$le_vol" ] && ! is_kind "$le_kind" "$le_vol"; then
+        warn "$where: skipped $le_rel: $le_vol is not a $(kind_name "$le_kind")"
+        return
+    fi
+    # The volume's path must be on the volume's own file system, as the
+    # staging directory is: a move renames into it.
+    le_mount=$(mount_on "$le_vol" "$volume")
+    case $? in
+        0)
+            warn "$where: skipped $le_rel: mount point $le_mount is at, above or inside $le_vol"
+            return
+            ;;
+        1) ;;
+        *)
+            warn "$where: skipped $le_rel: could not read the mount table $mountinfo"
+            return
+            ;;
+    esac
+    if covered; then
+        # ~/REL is the volume's REL already, through the link above it.
+        make_entry
+        if [ $? -eq 1 ]; then
+            warn "$where: skipped $le_rel: could not make $le_vol"
+        fi
+        return
+    fi
+    if ! clear_path "$home" "$le_sub"; then
+        warn "$where: skipped $le_rel: a symbolic link or a file is on its way in $home or $volume"
+        return
+    fi
+    le_mount=$(mount_on "$le_home")
+    case $? in
+        0)
+            warn "$where: skipped $le_rel: mount point $le_mount is at, above or inside $le_home"
+            return
+            ;;
+        1) ;;
+        *)
+            warn "$where: skipped $le_rel: could not read the mount table $mountinfo"
+            return
+            ;;
+    esac
+    if [ -L "$le_home" ]; then
+        # A link to something that exists is the user's own: it stays. A
+        # dangling one, or one to the volume's path spelled otherwise, is
+        # made right below.
+        le_target=$(readlink -- "$le_home")
+        if [ "$le_target" != "$le_vol" ] && [ -e "$le_home" ] && [ ! "$le_home" -ef "$le_vol" ]; then
+            warn "$where: left $le_rel alone: $le_home is a link to $le_target, not to $le_vol"
+            return
+        fi
+    elif [ -e "$le_home" ]; then
+        if ! is_kind "$le_kind" "$le_home"; then
+            warn "$where: skipped $le_rel: $le_home is not a $(kind_name "$le_kind")"
+            return
+        fi
+        if [ ! -e "$le_vol" ]; then
+            # The volume has none yet: the home's moves into it.
+            if ! make_dirs "$volume" "$le_sub" || ! transfer "$le_home" "$le_vol" "$le_rel"; then
+                warn "$where: skipped $le_rel: could not move $le_home into $volume"
+                return
+            fi
+        elif [ "$le_kind" = d ]; then
+            # All or nothing: a name this user cannot move, or a staging or
+            # set-aside directory it may not use, stops the merge before
+            # anything moves or any link in it goes.
+            if ! on_volume "$staging" || ! on_volume "$volume/.den-set-aside"; then
+                warn "$where: skipped $le_rel: could not move all of $le_home into $le_vol or aside"
+                return
+            fi
+            if ! removable "$le_home"; then
+                printf 'state-link: %s: this user cannot read and remove all of it\n' "$le_home" >&2
+                warn "$where: skipped $le_rel: could not move all of $le_home into $le_vol or aside"
+                return
+            fi
+            if ! merge_dir "$le_rel"; then
+                warn "$where: skipped $le_rel: could not move all of $le_home into $le_vol or aside"
+                return
+            fi
+        elif make_aside && make_dirs "$aside" "$le_sub" \
+            && transfer "$le_home" "$aside/$le_rel" "$le_rel"; then
+            # Both have one: the volume's stays, and the home's goes aside in
+            # the volume, which outlives the container's layer.
+            note "$where: $le_vol and $le_home both existed: kept $le_vol, moved $le_home to $aside/$le_rel"
+        else
+            warn "$where: skipped $le_rel: could not set $le_home aside"
+            return
+        fi
+    fi
+    make_entry
+    case $? in
+        1)
+            warn "$where: skipped $le_rel: could not make $le_vol"
+            return
+            ;;
+        2) return ;;
+    esac
+    if [ -L "$le_home" ]; then
+        [ "$(readlink -- "$le_home")" = "$le_vol" ] && return
+        # -n replaces a link to a directory instead of linking inside it.
+        ln -sfnT -- "$le_vol" "$le_home" \
+            || warn "$where: skipped $le_rel: could not replace the link $le_home"
+        return
+    fi
+    if ! make_dirs "$home" "$le_sub" || ! ln -snT -- "$le_vol" "$le_home"; then
+        warn "$where: skipped $le_rel: could not link $le_home to $le_vol"
+    fi
+}
+
+# Apply LIST a line at a time, its last line too when it has no newline.
+apply_list() {
+    al_n=0
+    while IFS= read -r al_line <&3 || [ -n "$al_line" ]; do
+        al_n=$((al_n + 1))
+        where=$1:$al_n
+        case "$al_line" in
+            '' | '#'*) continue ;;
+            [dFf]' '*) al_why= ;;
+            *) al_why="not '<kind> <path>' with a kind of d, F or f" ;;
+        esac
+        if [ -z "$al_why" ] && ! valid_rel "${al_line#? }"; then
+            al_why="the path must be relative, with names of letters, digits, '.', '_' and '-' that are not '.' or '..'"
+        fi
+        if [ -n "$al_why" ]; then
+            # The line as the log shows it: a control character becomes '?'.
+            warn "$where: skipped '$(printf '%s' "$al_line" | tr -c '[:print:]' '?')': $al_why"
+            continue
+        fi
+        link_entry "${al_line%% *}" "${al_line#? }"
+    done 3< "$1"
+}
+
+if ! home=$(canon_dir "${HOME:-}"); then
+    warn "HOME (${HOME:-}) is not a directory of this user's; nothing is linked"
+    exit 1
+fi
+if ! volume=$(canon_dir "$state_root/home"); then
+    warn "$state_root/home is not a directory of this user's; nothing is linked"
+    exit 1
+fi
+env_list=$volume/.config/den/state-paths
+staging=$volume/.den-staging
+lock=$volume/.den-lock
+if [ ! -r "$mountinfo" ]; then
+    warn "cannot read the mount table $mountinfo; nothing is linked"
+    exit 1
+fi
+# Runs on one volume take turns: a second container's start, or a run by
+# hand, waits for the one under way, whose staging copies it would take for
+# leftovers. The lock file is a regular file of the user's, made here; <>
+# opens it without waiting, as opening a FIFO would.
+if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -f "$lock" ]; }; then
+    warn "$lock is not a regular file; nothing is linked"
+    exit 1
+fi
+if ! command exec 9<>"$lock"; then
+    warn "cannot open $lock; nothing is linked"
+    exit 1
+fi
+if ! flock -w "$lock_wait" 9; then
+    warn "another run of state-link holds $lock; nothing is linked"
+    exit 1
+fi
+# Copies that an earlier run left in the staging directory, stopped part way
+# by KILL or a crash: that container's home, and the only whole copy, may be
+# gone, so they are set aside, never deleted and never taken for the volume's.
+# A staging directory with a mount point at, above or inside it is left as it
+# is, and nothing moves through it.
+staging_ok=1
+if [ -L "$staging" ] || { [ -e "$staging" ] && [ ! -d "$staging" ]; }; then
+    warn "$staging is not a directory"
+elif ! on_volume "$staging"; then
+    staging_ok=0
+    warn "left $staging as it is; nothing moves into $volume"
+elif [ -d "$staging" ] && ! rmdir -- "$staging" 2>/dev/null; then
+    if make_aside && mv -T -n -- "$staging" "$aside/.den-staging" \
+        && [ ! -e "$staging" ] && [ ! -L "$staging" ]; then
+        note "moved $staging, unfinished copies that an earlier run left, to $aside/.den-staging"
+    else
+        warn "could not set $staging aside"
+    fi
+fi
+for list in "$lists_dir"/*.list; do
+    if [ -f "$list" ] && [ -r "$list" ]; then
+        apply_list "$list"
+    elif [ -e "$list" ] || [ -L "$list" ]; then
+        warn "skipped $list: not a readable regular file"
+    fi
+done
+# The environment's own list is read from the volume, where the user keeps
+# it: only a regular file of the user's, with no symbolic link on its way.
+if [ -e "$env_list" ] || [ -L "$env_list" ]; then
+    # test -O is not POSIX; dash, the image's /bin/sh, has it.
+    # shellcheck disable=SC3067
+    if clear_path "$volume" .config/den && [ ! -L "$env_list" ] && [ -f "$env_list" ] \
+        && [ -O "$env_list" ] && [ -r "$env_list" ]; then
+        apply_list "$env_list"
+    else
+        warn "skipped $env_list: not a readable regular file of this user's, or a symbolic link is on its way"
+    fi
+fi
+# Each move empties the staging directory again; it stays only when a copy
+# could not be removed, for the next run to set aside.
+if [ "$staging_ok" = 1 ] && [ -d "$staging" ] && [ ! -L "$staging" ]; then
+    rmdir -- "$staging" 2>/dev/null
+fi
+exit "$status"
+STATE_LINK
+chmod 0755 /usr/local/lib/den/state-link
 cat >> /etc/zsh/zshenv <<'CONTAINER_ZSH_ENV'
 
 # docker exec --user changes identity but retains the image's HOME (/root)
@@ -517,6 +1325,15 @@ else
         # den's init.zsh runs a quick compinit when none ran before it; skip
         # the full one /etc/zsh/zshrc would run instead.
         skip_global_compinit=1
+        # A ~/.zsh_history that is a link into the state volume is rewritten
+        # in place. By default, when zsh rewrites the history file (to trim
+        # it, or on fc -W) it writes a new file beside the link and renames
+        # it over the link, which leaves the history in the container's
+        # layer. Without the link, zsh keeps its default, under which an
+        # interrupted rewrite loses no history.
+        if [[ -L $HOME/.zsh_history ]]; then
+            setopt no_hist_save_by_copy
+        fi
     fi
     () {
         local dir
