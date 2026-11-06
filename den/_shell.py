@@ -35,6 +35,8 @@ import subprocess
 import sys
 import tempfile
 from contextlib import suppress
+from itertools import groupby
+from operator import itemgetter
 from pathlib import Path
 
 from ._content import shell_dir
@@ -311,33 +313,221 @@ def _decode_rc(raw: bytes) -> tuple[str, str]:
     return raw[len(bom) :].decode(codec, errors), codec
 
 
-def _line_state(text: str, line: str) -> str:
-    """How the rc file `text` holds den's source `line`, read line by line
-    (splitlines() ends a line at LF, CRLF or a bare CR alike):
+# Where '#' starts a comment: where a word starts, that is at the start of a
+# line or right after a blank or one of these characters. bash and zsh: their
+# metacharacters ('(' only where a word starts itself, or as `$(`: zsh reads
+# `*(#q)` as a glob), so `a#b`, `$#` and `${#x}` hold no comment.
+_POSIX_BREAKS = " \t;&|()<>"
+# PowerShell, as pwsh 7's parser reads it: `a#b`, `a=#b`, `a>#b` and (as an
+# argument) `$x#b` hold no comment, while `"x"#b` does. '<#' opens a block
+# comment at the same places.
+_PWSH_BREAKS = " \t;&|(){},"
+# The quotes pwsh reads, the typographic ones as their plain twins.
+_PWSH_QUOTES = dict.fromkeys("'\u2018\u2019\u201a\u201b", "'") | dict.fromkeys(
+    '"\u201c\u201d\u201e', '"'
+)
+# How firmly an rc file holds den's line, weakest first (see _line_state).
+_LINE_STATES = ("absent", "commented", "inside", "active")
+
+
+def _posix_kinds(line: str) -> str:
+    """What each character of the bash or zsh `line` is to the shell: "b" a
+    blank, "o" an operator character, "w" part of a word (quotes and escapes
+    included), "x" part of a comment, and "\\" a backslash that ends the line
+    outside single quotes and comments, which joins the next line on.
+
+    A backslash escapes the next character outside quotes, in "..." and in
+    $'...', but not in '...'. A '#' starts a comment only outside quotes,
+    unescaped, and where a word starts (see _POSIX_BREAKS)."""
+    kinds: list[str] = []
+    quote = ""  # the open quote: "'", '"' or "$'"
+    start = True  # a '#' here starts a comment
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\" and quote != "'":
+            kinds.append("\\" if i + 1 == len(line) else "ww")
+            i += 2
+            start = False
+            continue
+        if quote:
+            quote = "" if c == quote[-1] else quote
+            kinds.append("w")
+        elif c == "#" and start:
+            kinds.append("x" * (len(line) - i))
+            break
+        elif c in _POSIX_BREAKS:
+            kinds.append("b" if c in " \t" else "o")
+            start = c != "(" or start or line[i - 1 : i] == "$"
+            i += 1
+            continue
+        else:
+            if c in "'\"":  # `$'` opens $'...' unless the '$' was escaped
+                dollar = kinds[-1:] == ["w"] and line[i - 1] == "$"
+                quote = "$'" if c == "'" and dollar else c
+            kinds.append("w")
+        start = False
+        i += 1
+    return "".join(kinds)
+
+
+def _posix_lines(text: str) -> list[tuple[str, str]]:
+    """Each logical line of the bash or zsh rc file `text`, with its kinds
+    (_posix_kinds). A line ends at LF only: a bare CR is an ordinary
+    character to bash and zsh, and only a CR right before the LF (a file
+    saved with CRLF) is dropped. A backslash that ends a line outside single
+    quotes and comments joins the next line on, both characters gone, as in
+    the shell. Quotes do not carry over from one logical line to the next."""
+    lines: list[tuple[str, str]] = []
+    joined = ""
+    for physical in text.split("\n"):
+        joined += physical.removesuffix("\r")
+        kinds = _posix_kinds(joined)
+        if kinds.endswith("\\"):
+            joined = joined[:-1]
+            continue
+        lines.append((joined, kinds))
+        joined = ""
+    if joined:
+        lines.append((joined, _posix_kinds(joined)))
+    return lines
+
+
+def _posix_words(line: str, kinds: str) -> list[str]:
+    """The words and operators of a bash or zsh line before its comment, as
+    written: `a  &&b` and `a && b` both give ["a", "&&", "b"], so den's line
+    is found however a user spaced it or split it over lines."""
+    return [
+        "".join(c for c, _ in run)
+        for kind, run in groupby(zip(line, kinds, strict=True), key=itemgetter(1))
+        if kind in "wo"
+    ]
+
+
+def _pwsh_lines(  # ruff: ignore[too-many-branches, too-many-statements]  # one per pwsh rule
+    text: str,
+) -> list[tuple[str, str]]:
+    """Each line of the PowerShell profile `text`, as splitlines() ends them
+    (pwsh, unlike bash, also ends a line at a bare CR), with what each of its
+    characters is to pwsh: "c" code, "q" part of a string, "x" part of a
+    comment. What spans lines carries over, as in pwsh: a block comment
+    `<# ... #>` (they do not nest), a string, a here-string (`@"` or `@'`
+    ending a line, closed by `"@` or `'@` at the start of one), and a
+    `$( )` subexpression in a "string".
+
+    A backtick escapes the next character outside '...'; in a string a quote
+    can be written twice. `${...}` is a variable name, whatever it holds. A
+    '#' starts a line comment, and '<#' a block comment, only in code and
+    where a token starts (see _PWSH_BREAKS): right after a string too, but
+    only one that began where a token starts (`"x"#c`, not `a'x'#c`)."""
+    lines: list[tuple[str, str]] = []
+    mode = ""  # "" code, "'" or '"' a string, "<#" a block comment, "@'" or '@"'
+    opened = True  # the open string began where a token starts
+    subs: list[int] = []  # each $( open in a "string": the ( open inside it
+    outer: list[bool] = []  # and that string's `opened`
+    for ln in text.splitlines():
+        kinds: list[str] = []
+        start = True  # a '#' or '<#' here starts a comment
+        i = 0
+        if mode[:1] == "@":  # a here-string's line, or its end
+            if not (_PWSH_QUOTES.get(ln[:1]) == mode[1:] and ln[1:2] == "@"):
+                lines.append((ln, "q" * len(ln)))
+                continue
+            kinds.append("qq")
+            mode, i = "", 2
+        while i < len(ln):
+            c = ln[i]
+            q = _PWSH_QUOTES.get(c, "")
+            step, kind = 1, "c"
+            if mode == "<#":
+                kind = "x"
+                if ln.startswith("#>", i):
+                    mode, start, step = "", True, 2
+            elif mode:  # in a string
+                kind = "q"
+                if (q and _PWSH_QUOTES.get(ln[i + 1 : i + 2]) == q) or (
+                    c == "`" and mode == '"'
+                ):
+                    step = 2  # a quote written twice, or an escape
+                elif mode == '"' and ln.startswith("$(", i):
+                    subs.append(0)
+                    outer.append(opened)
+                    mode, start, step = "", True, 2
+                elif q == mode:
+                    mode, start = "", opened
+            elif c == "`":
+                step, start = 2, False
+            elif start and c == "#":
+                kind, step = "x", len(ln) - i
+            elif start and ln.startswith("<#", i):
+                kind, step, mode = "x", 2, "<#"
+            elif (
+                c == "@"
+                and ln[i + 1 : i + 2] in _PWSH_QUOTES
+                and not ln[i + 2 :].strip()
+            ):
+                kind, step, mode = "q", len(ln) - i, "@" + _PWSH_QUOTES[ln[i + 1]]
+            elif q:
+                kind, mode, opened, start = "q", q, start, False
+            elif c == "$" and ln[i + 1 : i + 2] == "{":
+                step, start = (ln.find("}", i) + 1 or len(ln)) - i, False
+            elif c == ")" and subs and not subs[-1]:  # back in its "string"
+                subs.pop()
+                kind, mode, opened = "q", '"', outer.pop()
+            else:
+                if subs and c in "()":
+                    subs[-1] += 1 if c == "(" else -1
+                start = c in _PWSH_BREAKS
+            kinds.append(kind * len(ln[i : i + step]))
+            i += step
+        lines.append((ln, "".join(kinds)))
+    return lines
+
+
+def _line_state(text: str, line: str, *, pwsh: bool = False) -> str:
+    """How the rc file `text` holds den's source `line`, read as its shell
+    reads it (a PowerShell profile with `pwsh`, a bash or zsh rc file
+    without; see _pwsh_lines and _posix_lines):
 
     - "active": on a line of its own, whitespace around it aside, as _wire
-      writes it or as a user indented it into a block of their own;
-    - "inside": only within a longer line that does not comment it out
-      (`<line>  # note`, `[[ $- == *i* ]] && <line>`): the shell may well
-      run it, and den's init has no load-once guard, so den takes it as set
-      up rather than load twice;
-    - "commented": only after a '#' on its line (den switched off by hand,
-      or a note that quotes the line), which bash, zsh and PowerShell skip;
+      writes it or as a user indented it into a block of their own (or, in a
+      bash or zsh file, split over lines with a backslash);
+    - "inside": as part of a longer line that does not comment it out
+      (`<line>  # note`, `[[ $- == *i* ]] && <line>`, `eval '<line>'`): the
+      shell may well run it, and den's init has no load-once guard, so den
+      takes it as set up rather than load twice;
+    - "commented": only in a comment (den switched off by hand, or a note
+      that quotes the line), which the shell skips;
     - "absent": nowhere in the file.
 
-    The first of these that some line of the file matches wins."""
-    state = "absent"
-    for ln in text.splitlines():
-        at = ln.find(line)
-        if at < 0:
-            continue
-        if ln.strip() == line:
-            return "active"
-        if "#" not in ln[:at]:
+    The firmest of these that some line of the file holds wins."""
+    best = "absent"
+    if pwsh:
+        for ln, kinds in _pwsh_lines(text):
+            at = ln.find(line)
+            while at >= 0:
+                if kinds[at] == "x":
+                    state = "commented"
+                elif kinds[at] == "c" and ln.strip() == line:
+                    state = "active"
+                else:
+                    state = "inside"
+                best = max(best, state, key=_LINE_STATES.index)
+                at = ln.find(line, at + 1)
+        return best
+    want = " ".join(_posix_words(line, _posix_kinds(line)))
+    for ln, kinds in _posix_lines(text):
+        at, code = ln.find(line), kinds.find("x")
+        code = len(ln) if code < 0 else code  # where its comment starts
+        words = " ".join(_posix_words(ln, kinds))
+        if words == want and code == len(ln):
+            state = "active"
+        elif 0 <= at < code or want in words:
             state = "inside"
-        elif state == "absent":
-            state = "commented"
-    return state
+        else:
+            state = "commented" if at >= 0 else "absent"
+        best = max(best, state, key=_LINE_STATES.index)
+    return best
 
 
 # What _wire says about a file that holds den's line only commented out: why
@@ -382,7 +572,7 @@ def _wire(rc: Path, line: str, *, dry_run: bool, refresh: bool = False) -> None:
                 file=sys.stderr,
             )
             return
-        state = _line_state(text, line)
+        state = _line_state(text, line, pwsh=rc.suffix.lower() == ".ps1")
         if state == "active":
             print(f"  [skip] {rc} already configured")
             return
