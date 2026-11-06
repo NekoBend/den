@@ -427,8 +427,9 @@ tmp_dir=/tmp
 workspace_dir=/workspace
 # The mount table, which names each mount point by its physical path.
 mountinfo=/proc/self/mountinfo
-# The account file, where a remap gives the user its new IDs.
-passwd_file=/etc/passwd
+# A home that cannot exist, as nothing can be below the character device
+# /dev/null: the account has it while usermod gives it its new IDs.
+no_home=/dev/null/no-home
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 warn() { printf 'container-entrypoint: %s\n' "$*" >&2; }
@@ -578,35 +579,6 @@ reown() {
         -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
         -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
 }
-# Give the user the target UID and primary GID, which valid_id has checked,
-# in the account file, and change nothing else there: the file's lines, the
-# user's with its third and fourth fields replaced, go to a new file next to
-# it (mode 0644, as /etc/passwd has), which a rename puts in its place.
-# usermod --uid and --gid would also re-own what the old IDs own in the home,
-# mount points below it and all they hold included; reown does that, and
-# leaves them out. Fail, with the file left as it was, unless it has exactly
-# one line for the user, of seven fields, with the IDs getent gave.
-set_account_ids() {
-    sa_new=$(mktemp "$passwd_file.XXXXXX") || return 1
-    if LC_ALL=C sa_name=$username sa_ids=$old_uid:$old_gid \
-        sa_uid=$target_uid sa_gid=$target_gid awk '
-            BEGIN { FS = OFS = ":"; n = 0; bad = 0 }
-            $1 == ENVIRON["sa_name"] {
-                n++
-                if (NF != 7 || ($3 ":" $4) != ENVIRON["sa_ids"])
-                    bad = 1
-                $3 = ENVIRON["sa_uid"]
-                $4 = ENVIRON["sa_gid"]
-            }
-            { print }
-            END { exit (bad || n != 1) }
-        ' "$passwd_file" > "$sa_new" \
-        && chmod 0644 "$sa_new" && mv -f "$sa_new" "$passwd_file"; then
-        return 0
-    fi
-    rm -f "$sa_new"
-    return 1
-}
 
 IFS= read -r username < /etc/container-user
 record=$(getent passwd "$username")
@@ -666,8 +638,20 @@ if [ "$(id -u)" -eq 0 ]; then
         if ! getent group "$target_gid" >/dev/null; then
             groupadd --gid "$target_gid" "$username-$target_gid"
         fi
-        set_account_ids \
-            || fail "Could not give $username the IDs $target_uid:$target_gid in $passwd_file"
+        # usermod --uid and --gid also re-own, in a walk of their own, what the
+        # old IDs own in the home the account has, mount points below it and
+        # all they hold included; reown does that, and leaves them out. So
+        # the account has the home $no_home, which does not exist, while
+        # usermod gives it its new IDs, and gets its home back from a usermod
+        # with no --uid or --gid, which walks nothing. Neither moves anything
+        # (no --move-home), and each holds the locks on the account files
+        # that the other account tools take. After a failed second call the
+        # account keeps $no_home, and each later start stops at the check of
+        # the home above, so the message says to recreate the container.
+        usermod --home "$no_home" --uid "$target_uid" --gid "$target_gid" "$username" \
+            || fail "Could not give $username the IDs $target_uid:$target_gid"
+        usermod --home "$user_home" "$username" \
+            || fail "Could not give $username its home $user_home back after its new IDs; recreate the container"
         reown "$user_home"
         # The state volume holds the user's files with the old IDs too; the
         # same walk, which a failure does not stop the start for. With a mount
