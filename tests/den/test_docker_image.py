@@ -769,7 +769,7 @@ def _run_entrypoint(
     with ``real_find`` runs the system's find when that argument is in
     tmp_path; gnuchown logs its call and adds its arguments, each followed by
     a NUL, to tmp_path/chowned; the other commands that change accounts or
-    files only log theirs.
+    files only log theirs. The entrypoint runs in tmp_path.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -857,6 +857,7 @@ def _run_entrypoint(
     result = subprocess.run(
         [sh, str(script), _tool("env")],
         env={"PATH": SYSTEM_PATH, "FAKE_MOUNTS": ":".join(mounts), **env},
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         check=False,
@@ -1491,6 +1492,8 @@ def test_entrypoint_re_owns_no_mount_point_below_a_walk(tmp_path, walk, nested, 
         tmp_path, walk, nested=nested, others=others
     )
     assert result.returncode == 0, result.stderr
+    # No part of a mount point ran as shell code.
+    assert not list(tmp_path.rglob("pwned"))
     left_out = {str(root / name) for name in nested}
     expected = {
         path
@@ -1501,7 +1504,6 @@ def test_entrypoint_re_owns_no_mount_point_below_a_walk(tmp_path, walk, nested, 
     # mount point keep the old IDs, and so does the mount point itself.
     assert {path for path in reowned if path in _paths(root)} == expected
     assert left_out.isdisjoint(reowned)
-    assert not list(tmp_path.rglob("pwned"))
     names = ", ".join(str(root / name) for name in nested)
     assert (
         f"container-entrypoint: re-owning {root} from {ids} leaves out each mount"
