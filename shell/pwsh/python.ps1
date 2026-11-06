@@ -708,9 +708,9 @@ function global:vv {
 # UV_WORKING_DIRECTORY had uv make it elsewhere. A second name after an option
 # is uv's to refuse, as is a venv already there unless you have uv replace it:
 # uv venv then fails, and vva activates nothing. A relative name is taken from
-# the directory uv runs
-# in as _DenUvMarker reads it, link by link: PowerShell would take a .. after
-# a link by name, elsewhere than uv. Parity with posix python.sh.
+# the directory uv runs in as _DenUvMarker reads it, link by link: PowerShell
+# would take a .. after a link by name, elsewhere than uv. Parity with posix
+# python.sh.
 function global:vva {
   if (-not (_ResolveCmd 'uv' 'App')) {
     Write-Error 'uv is not installed'
