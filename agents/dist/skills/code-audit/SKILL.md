@@ -104,7 +104,7 @@ eslint and prettier run its JS config):
 name what will run and get the user's yes before the first run.
 If nothing can run (no toolchain, code only pasted in chat),
 say so and review by reading.
-Never claim a check passed that did not run.
+Do not claim a check passed when it did not run.
 
 ### Step 4: Run the focused passes
 

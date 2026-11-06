@@ -5,7 +5,8 @@ when the code is on disk and the language toolchain is available.
 Run the checks and scripts below against the files under review
 and fold the results into the relevant dimension.
 On code from outside your trust boundary,
-get the user's yes before the first run (SKILL.md Step 3).
+name what will run and get the user's yes before the first run
+(SKILL.md Step 3).
 
 - the language's standard checks on each file under review
   (Python: ruff format --check, ruff check, ty check; TypeScript:
