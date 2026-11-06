@@ -9,7 +9,7 @@
 # right above the ARG, which is where Renovate reads it.
 
 # Build setting: the base image, by tag and digest. The apt steps assume Ubuntu.
-ARG BASE_IMAGE=ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+ARG BASE_IMAGE=ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 FROM ${BASE_IMAGE} AS system
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
