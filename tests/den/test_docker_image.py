@@ -1412,16 +1412,18 @@ def _remap_walk(
     *,
     nested: tuple[str, ...] = (),
     others: tuple[str, ...] = (),
+    files: tuple[str, ...] = (),
     sibling: bool = False,
     table: bool = True,
     fail: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path, set[str], str]:
     """Start with other IDs, so that the WALK ("workspace" or "home") runs.
 
-    The walked directory has a file, and a directory with a file for each of
+    The walked directory has a file, a directory with a file for each of
     ``nested`` (each a mount point in the table) and ``others`` (plain
-    directories). ``sibling`` adds a mount point next to it whose name starts
-    with its own. Return the result, the walked directory, the paths in it
+    directories), and a file for each of ``files`` (each a mount point in the
+    table). ``sibling`` adds a mount point next to it whose name starts with
+    its own. Return the result, the walked directory, the paths in tmp_path
     that gnuchown was given, and the IDs it re-owns from, as the warnings
     write them.
     """
@@ -1435,7 +1437,9 @@ def _remap_walk(
     for name in (*others, *nested):
         (root / name).mkdir(parents=True, exist_ok=True)
         (root / name / "file").touch()
-    below = tuple(str(root / name) for name in nested)
+    for name in files:
+        (root / name).touch()
+    below = tuple(str(root / name) for name in (*nested, *files))
     if sibling:
         twin = root.with_name(f"{root.name}2")
         twin.mkdir()
@@ -1510,6 +1514,22 @@ def test_entrypoint_re_owns_no_mount_point_below_a_walk(tmp_path, walk, nested, 
         f" point below it and all it holds: {names}"
     ) in result.stderr.splitlines()
     assert "HOME=" + str(tmp_path / "home" / "dev") in result.stdout.splitlines()
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_re_owns_no_file_mounted_below_a_walk(tmp_path, walk):
+    # docker run -v ~/.gitconfig:/home/dev/.gitconfig binds a host file there.
+    # find -xdev tests a mount point itself even on another file system, and
+    # only keeps out of what is below it.
+    result, root, reowned, ids = _remap_walk(tmp_path, walk, files=(".gitconfig",))
+    assert result.returncode == 0, result.stderr
+    bound = str(root / ".gitconfig")
+    assert {path for path in reowned if path in _paths(root)} == _paths(root) - {bound}
+    assert (
+        f"container-entrypoint: re-owning {root} from {ids} leaves out each mount"
+        f" point below it and all it holds: {bound}"
+    ) in result.stderr.splitlines()
 
 
 @_needs("sh", "env", "find")
