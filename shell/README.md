@@ -23,6 +23,12 @@ So is a file that has it inside a longer line (`[[ $- == *i* ]] && <line>`):
 den takes that as its setup and adds no second line, so it is not loaded twice.
 If you comment the line out, `den upgrade --refresh` leaves it that way,
 and `den install shell` adds den's line again below it.
+den reads the rc file as its shell would to tell these apart (quotes, `$#`,
+`\#`, backslash continuations, PowerShell's `<# ... #>`), but not every
+construct: den's line right after a string that spans lines, inside a
+heredoc, after a zsh glob qualifier such as `(#i)` on the same line, or
+split with a PowerShell backtick may be read wrongly. Keep den's line on a
+line of its own (commented out or not) and den reads it right.
 
 ### zsh plugins
 
