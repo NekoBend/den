@@ -161,6 +161,14 @@ A request that changes your own setup:
 ASSUMED: "notify me when a run waits for input" means this agent's
 own session, so the change is a hook in its settings; say so if you
 meant the jobs in your project.
+
+A request whose wording matches no skill description word for word
+(the user writes 「画像をまとめて縮小するスクリプトを書いて」):
+
+Match the request to the skill descriptions by meaning, in any
+language. When a skill's description covers the task (here, writing
+new code), load that skill before starting the work. A question that
+only asks what something does or means loads no skill.
 </moves_demo>
 
 <language_policy>
