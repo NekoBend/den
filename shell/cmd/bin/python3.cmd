@@ -49,6 +49,15 @@ set "_abs=%_abs:~1,-1%"
 set "_uv="
 if not "%_DEN_UV_OVERRIDE%"=="0" for /f "delims=" %%p in ('%SystemRoot%\System32\where.exe $_abs:uv.exe 2^>nul') do if not defined _uv set "_uv=%%p"
 if not defined _uv goto plain
+rem UV_WORKING_DIR and UV_WORKING_DIRECTORY move the directory uv run
+rem starts in, and UV_PROJECT the project it reads, where the walk below
+rem does not look, and cmd cannot work out where uv would read then (bash,
+rem zsh and pwsh follow them there): with any of them set, a python runs
+rem directly, after a line that names the variable, never its value.
+if defined UV_WORKING_DIR set "_m=wherever UV_WORKING_DIR moves it, which cmd cannot check"
+if not defined _m if defined UV_WORKING_DIRECTORY set "_m=wherever UV_WORKING_DIRECTORY moves it, which cmd cannot check"
+if not defined _m if defined UV_PROJECT set "_m=wherever UV_PROJECT moves it, which cmd cannot check"
+if defined _m goto direct
 rem The file uv run would read: here, then each directory up. A
 rem .python-version, or a .python-versions, which uv reads the same way,
 rem counts when it names a path, comment (#) lines aside: a line with / or

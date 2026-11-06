@@ -842,6 +842,21 @@ finds=$(cmd_code python | grep -o 'python find [-a-z ]*-python' || true)
 assert_eq "cmd/python: uv python find --system --no-config" "python find --system --no-config --no-managed-python
 python find --system --no-config --managed-python" "$finds"
 
+echo "[cmd] python runs a python directly when UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT moves uv run"
+# Those variables move uv run to another directory or project, where it would
+# read a pyproject.toml or another file of the walk, and cmd cannot work out
+# where: the shim ran uv run at a clone they named. With any of them set it
+# goes to :direct before the walk, and names the variable, never its value.
+before_walk=$(cmd_code python | sed -n '/^if not defined _uv goto plain$/,/^:walk$/p')
+assert_eq "cmd/python: UV_WORKING_DIR, UV_WORKING_DIRECTORY and UV_PROJECT go to :direct before the walk" \
+    'if not defined _uv goto plain
+if defined UV_WORKING_DIR set "_m=wherever UV_WORKING_DIR moves it, which cmd cannot check"
+if not defined _m if defined UV_WORKING_DIRECTORY set "_m=wherever UV_WORKING_DIRECTORY moves it, which cmd cannot check"
+if not defined _m if defined UV_PROJECT set "_m=wherever UV_PROJECT moves it, which cmd cannot check"
+if defined _m goto direct
+set "_d=%CD%"
+:walk' "$before_walk"
+
 echo "[cmd] pip runs uv pip with your own uv.toml, or with --no-config without one"
 # pip reads no uv.toml or pyproject.toml, and uv pip reads a clone's from the
 # current directory and above, whose settings can have uv run a python the

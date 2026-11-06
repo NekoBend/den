@@ -305,12 +305,12 @@ native PowerShell cmdlets, when you need object-accurate results.
 ### Python / uv
 | Command | What it does |
 |---------|--------------|
-| `py` `python` `python3` | `uv run python` (uses the active venv's version), `--version` / `-V` too; in a project (a `pyproject.toml`, `.venv`, `pyvenv.cfg`, `uv.toml`, or `.python-version` / `.python-versions` that names a path or something in the current directory, here or above, which uv run would build or run code from), a python directly |
+| `py` `python` `python3` | `uv run python` (uses the active venv's version), `--version` / `-V` too; in a project (a `pyproject.toml`, `.venv`, `pyvenv.cfg`, `uv.toml`, or `.python-version` / `.python-versions` that names a path or something in the current directory, here or above, or where `UV_WORKING_DIR`, `UV_WORKING_DIRECTORY` or `UV_PROJECT` points uv run, which uv run would build or run code from), a python directly |
 | `pip` `pip3` | an active venv's own pip, else `uv pip` into it, reading your own uv.toml alone (`uv --config-file <it> pip`, or `uv --no-config pip` without one), not a clone's, which pip never reads; nothing with no venv active (`va` one, or type `uv pip`) |
 | `uv` | injects `--python` for `uv run` when a venv is active; `uv run` itself is not guarded (it builds and runs the project, as uv does) |
 | `va [DIR]` | activate a venv (default `.venv`) |
 | `vd` | deactivate |
-| `vv` / `vva` | `uv venv` (create / create + activate); in a project (here, or where `--directory` or `--project` points uv), as for `python`, `uv --no-config venv`, with `--config-file <your uv.toml>` when you have one |
+| `vv` / `vva` | `uv venv` (create / create + activate); in a project (here, or where `--directory`, `--project` or their variables point uv), as for `python`, `uv --no-config venv`, with `--config-file <your uv.toml>` when you have one |
 | `toggle-uv` / `tgl-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
 
 ### Parallel file ops

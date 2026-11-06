@@ -408,7 +408,11 @@ keeps), except where uv would build or run code that came with a clone:
   installed (`uv python install`). Type `uv run python` to use the project.
   `--version` and `-V` take the same way as any other call: through `uv run`
   outside a project, so they name the python that `python x.py` runs, and the
-  python run directly inside one.
+  python run directly inside one. `UV_WORKING_DIR`, `UV_WORKING_DIRECTORY` and
+  `UV_PROJECT` move where `uv run` reads: bash, zsh and pwsh look for those
+  files there instead, as uv takes them (as for `vv`, below), and cmd, which
+  cannot follow them, runs a python directly whenever one of them is set,
+  after a line that names it.
 - `pip` / `pip3` run only inside an active venv: the venv's own pip when it has
   one, else `uv pip`, which installs into that venv (a venv made by uv, `vv` /
   `vva`, has no pip). pip reads no `uv.toml` or `pyproject.toml`, and uv reads
@@ -424,7 +428,8 @@ keeps), except where uv would build or run code that came with a clone:
   you made), or type `uv pip` yourself.
 - `vv` / `vva` run `uv venv`, but where `python` runs a python directly (the
   same files, here or above, or, as uv takes them, in or above the directory
-  `--directory` or `--project` names, or `UV_WORKING_DIR` or `UV_PROJECT`)
+  `--directory` or `--project` names, or `UV_WORKING_DIR`,
+  `UV_WORKING_DIRECTORY` or `UV_PROJECT`)
   `uv --no-config venv`, with `--config-file <your uv.toml>` when you have
   one, after a line that says so: `uv venv` runs the
   program a `.python-version` names, and a `uv.toml`'s or `pyproject.toml`'s

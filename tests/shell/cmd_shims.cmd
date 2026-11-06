@@ -16,7 +16,8 @@ rem unchanged; python3 runs a venv's python.exe; python and python3 run a
 rem python directly, not uv run, under a pyproject.toml, beside a .venv,
 rem below a pyvenv.cfg, a uv.toml or a .python-version(s) that names a path
 rem or something in the current directory, or holds a character version
-rem requests do not use, for --version / -V too, and
+rem requests do not use, and with UV_WORKING_DIR, UV_WORKING_DIRECTORY or
+rem UV_PROJECT set, for --version / -V too, and
 rem elsewhere uv run for those as well; pip runs nothing outside a venv,
 rem and in a venv without pip.exe runs uv pip with --config-file and your
 rem own uv.toml, or with --no-config without one; wc fails, with no
@@ -48,6 +49,9 @@ set "_DEN_WRAPPERS="
 set "_DEN_UV_OVERRIDE="
 set "VIRTUAL_ENV="
 set "_DEN_VENV_PYTHON="
+set "UV_WORKING_DIR="
+set "UV_WORKING_DIRECTORY="
+set "UV_PROJECT="
 set "_DEN_AGAIN="
 set "_DEN_AGAIN_ERR="
 set "_DEN_AGAIN_RUN="
@@ -584,6 +588,34 @@ call :expect %errorlevel% 0 "python3 -V: outside a project, uv run as any other 
 >>"%W%" echo [x]
 call "%BIN%\python.cmd" -c x >"%O%" 2>nul
 call :expect %errorlevel% 0 "python: outside a project, uv run as before"
+rem UV_WORKING_DIR, UV_WORKING_DIRECTORY and UV_PROJECT move uv run to
+rem another directory or project, which cmd cannot follow: there the
+rem system python runs, after a line that names the variable, never its
+rem value, which here holds a & that would end an echo of it early.
+set "UV_PROJECT=%T%\proj"
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from wherever UV_PROJECT moves it, which cmd cannot check
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: UV_PROJECT set, the system python and a line that names it, not uv run"
+set "UV_PROJECT="
+set "UV_WORKING_DIRECTORY=%T%\proj"
+>"%W%" echo python3: running %T%\sys\python.exe, not uv run: uv run would build or run code from wherever UV_WORKING_DIRECTORY moves it, which cmd cannot check
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python3.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python3: UV_WORKING_DIRECTORY set, the system python and a line that names it, not uv run"
+set "UV_WORKING_DIR=%T%\proj & echo leaked"
+>"%W%" echo python: running %T%\sys\python.exe, not uv run: uv run would build or run code from wherever UV_WORKING_DIR moves it, which cmd cannot check
+>>"%W%" echo [@sys]
+>>"%W%" echo [-c]
+>>"%W%" echo [x]
+call "%BIN%\python.cmd" -c x >"%O%" 2>&1
+call :expect %errorlevel% 0 "python: UV_WORKING_DIR set, ahead of UV_WORKING_DIRECTORY as uv ranks them, the system python and a line that names it, not uv run"
+set "UV_WORKING_DIR="
+set "UV_WORKING_DIRECTORY="
 cd /d "%T%\proj" || exit /b 1
 set "FAKE_FIND_SYSTEM="
 >"%W%" echo python: running %T%\managed\python.exe, not uv run: uv run would build or run code from %T%\proj\pyproject.toml

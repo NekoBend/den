@@ -105,17 +105,20 @@ _den_py_exe() {
 # _den_py <name> [args...] → python, python3 and py: uv run python, with the
 # version of the venv va activated, and outside a venv a line on stderr that
 # says so. Not where uv run would build or run code that came with a clone:
-# with one of _den_py_marker's files in this directory or one above it, uv run
-# builds that project (its build backend is the repository's own code) or runs
-# a python it names, even for `python --version`. There a python runs directly,
-# for --version and -V too: the active venv's own, with no line, as on cmd,
-# else, after a line on stderr, the one _den_py_exe names. Elsewhere --version
-# and -V go through uv run as well, so they name the python that `python x.py`
-# runs.
+# with one of _den_py_marker's files where uv run reads, this directory or one
+# above it, or where UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT moves
+# it (_den_uv_marker), uv run builds that project (its build backend is the
+# repository's own code) or runs a python it names, even for `python
+# --version`. There a python runs directly, for --version and -V too: the
+# active venv's own, with no line, as on cmd, else, after a line on stderr,
+# the one _den_py_exe names. Elsewhere --version and -V go through uv run as
+# well, so they name the python that `python x.py` runs. python's own
+# arguments follow a --, so no uv option among them moves uv run.
 _den_py() {
-    local name=$1 marker exe
+    local name=$1 marker at exe
     shift
-    if marker=$(_den_py_marker); then
+    _den_uv_marker
+    if [ -n "$marker" ]; then
         if [ -n "$VIRTUAL_ENV" ]; then
             for exe in "$VIRTUAL_ENV/bin/python" "$VIRTUAL_ENV/Scripts/python.exe"; do
                 if [ -x "$exe" ]; then
@@ -287,8 +290,8 @@ if command -v uv >/dev/null 2>&1; then
 # holds something of the same name. Fails when there is none. uv starts from
 # the directory the system reports, with its symbolic links resolved (pwd -P,
 # the builtin, past a pwd function of yours).
-# _den_py_marker <dir> <cwd> → the same for uv started elsewhere (vv and vva,
-# see _den_uv_venv): the walk starts from <dir>, and a bare name is looked up
+# _den_py_marker <dir> <cwd> → the same for uv started elsewhere (see
+# _den_uv_marker): the walk starts from <dir>, and a bare name is looked up
 # in <cwd>, the directory uv runs in.
 # Defined here, with vv and vva, not with the overrides that toggle-uv removes:
 # vv and vva ask it with the overrides off as well.
@@ -412,28 +415,18 @@ _den_uv_config() {
     return 1
 }
 
-# _den_uv_venv <name> [args...] → vv and vva: uv venv, but where
-# _den_py_marker finds a file, as python runs no uv run there, uv --no-config
-# venv after a line on stderr: uv venv runs the program a .python-version
-# names to ask its version, and a uv.toml's or pyproject.toml's settings can
-# have it run a python the clone ships, or install one from the clone's own
-# files and run it, --python 3.13 given or not. --no-config skips those files,
-# and with them a .python-version that only pins a version, yours in uv's
-# config directory too: the line says to pick a python with --python, or to
-# type uv venv. With a uv.toml of your own (_den_uv_config), --config-file
-# reads it, as --no-config alone would not, and still no .python-version.
-# The walk starts where uv's does. uv first enters the directory --directory
-# names (else UV_WORKING_DIR, else UV_WORKING_DIRECTORY) and reads from there
-# as it would from here. --project (else UV_PROJECT) names the directory its
-# walk starts from instead, or a pyproject.toml in it, taken from the one uv
-# runs in, where a .python-version's bare name is still looked up. The options
-# count as uv 0.13.6 parses them: before a --, as --directory DIR or
-# --directory=DIR; uv refuses a second one, and a value that starts with -, so
-# no other option's value is one.
-_den_uv_venv() {
-    local name=$1 marker='' cfg a next='' dir project here start at='here or above' there='here or above' nl='
-'
-    shift
+# _den_uv_where [uv-args...] → set the caller's own local dir and project to
+# where uv runs and the project it reads, as given: uv first enters the
+# directory --directory names (else UV_WORKING_DIR, else
+# UV_WORKING_DIRECTORY) and reads from there as it would from here, and
+# --project (else UV_PROJECT) names the directory its walk starts from
+# instead, or a pyproject.toml in it, taken from the one uv runs in. Each is
+# empty when nothing names it. The options count as uv 0.13.6 parses them:
+# before a --, as --directory DIR or --directory=DIR; uv refuses a second one,
+# and a value that starts with -, so no other option's value is one. Set, not
+# printed: a directory's name may end in a newline, which $( ) would drop.
+_den_uv_where() {
+    local a next=''
     dir=${UV_WORKING_DIR-${UV_WORKING_DIRECTORY-}}
     project=${UV_PROJECT-}
     for a in "$@"; do
@@ -449,8 +442,23 @@ _den_uv_venv() {
             --project=*) project=${a#--project=} ;;
         esac
     done
+    return 0
+}
+
+# _den_uv_marker [uv-args...] → set the caller's own local marker to the file
+# _den_py_marker finds where uv reads, given those of uv's options (vv's and
+# vva's; python's none) and UV_WORKING_DIR, UV_WORKING_DIRECTORY and
+# UV_PROJECT (_den_uv_where), empty when there is none, and its local at to
+# where the walk started: 'here or above', or 'in or above <dir>'. Set, not
+# printed, as two values: the names may hold a newline. Not one of the
+# overrides that toggle-uv removes: vv and vva ask it with them off as well.
+_den_uv_marker() {
+    local a dir project here start nl='
+'
+    _den_uv_where "$@"
+    marker='' at='here or above'
     # _den_py_marker fails where it finds none, and a plain assignment takes its
-    # status: under set -e (errexit) the shell would end there, before uv venv.
+    # status: under set -e (errexit) the shell would end there.
     if [ -z "$dir" ] && [ -z "$project" ]; then
         marker=$(_den_py_marker) || marker=''
     # The directory uv runs in, with its symbolic links resolved, as uv reads
@@ -486,9 +494,31 @@ _den_uv_venv() {
             case $start in */pyproject.toml) [ -f "$start" ] && start=${start%/*} ;; esac
             start=${start:-/}
         fi
-        at="in or above $start" there='there or above'
+        at="in or above $start"
         marker=$(_den_py_marker "$start" "$here") || marker=''
     fi
+    return 0
+}
+
+# _den_uv_venv <name> [args...] → vv and vva: uv venv, but where
+# _den_uv_marker finds a file, as python runs no uv run there, uv --no-config
+# venv after a line on stderr: uv venv runs the program a .python-version
+# names to ask its version, and a uv.toml's or pyproject.toml's settings can
+# have it run a python the clone ships, or install one from the clone's own
+# files and run it, --python 3.13 given or not. --no-config skips those files,
+# and with them a .python-version that only pins a version, yours in uv's
+# config directory too: the line says to pick a python with --python, or to
+# type uv venv. With a uv.toml of your own (_den_uv_config), --config-file
+# reads it, as --no-config alone would not, and still no .python-version.
+# The walk starts where uv's does: here, or where --directory, --project or
+# their variables move it (_den_uv_where), where a .python-version's bare name
+# is still looked up in the directory uv runs in.
+_den_uv_venv() {
+    local name=$1 marker at cfg there='here or above' nl='
+'
+    shift
+    _den_uv_marker "$@"
+    [ "$at" = 'here or above' ] || there='there or above'
     if [ -z "$marker" ]; then
         command uv venv "$@"
     elif cfg=$(_den_uv_config && printf x); then

@@ -521,7 +521,7 @@ venv-pip3 install rich" "$actual"
             case \$(type \$f 2>/dev/null) in *function*) left=\"\$left \$f\" ;; esac
         done
         kept=''
-        for f in va vd vv vva toggle-uv tgl-uv _den_py_marker _den_uv_venv _den_uv_config; do
+        for f in va vd vv vva toggle-uv tgl-uv _den_py_marker _den_uv_where _den_uv_marker _den_uv_venv _den_uv_config; do
             case \$(type \$f 2>/dev/null) in *function*) kept=\"\$kept \$f\" ;; esac
         done
         echo \"LOAD: LEFT=[\$left] KEPT=[\$kept]\"
@@ -530,7 +530,7 @@ venv-pip3 install rich" "$actual"
         export VIRTUAL_ENV='$WORK/venv_nopip'
         pip install rich
     " 2>/dev/null | tr -d '\r')
-    assert_eq "$sh/_DEN_UV_OVERRIDE=0 at load" "LOAD: LEFT=[] KEPT=[ va vd vv vva toggle-uv tgl-uv _den_py_marker _den_uv_venv _den_uv_config]
+    assert_eq "$sh/_DEN_UV_OVERRIDE=0 at load" "LOAD: LEFT=[] KEPT=[ va vd vv vva toggle-uv tgl-uv _den_py_marker _den_uv_where _den_uv_marker _den_uv_venv _den_uv_config]
 uv override: ON (python/pip → uv)
 ENV=1
 mock-uv --no-config pip install rich" "$actual"
@@ -613,7 +613,7 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     $PS_SET_PROFILE
     toggle-uv *>\$null
     toggle-uv *>\$null
-    \$missing = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun' |
+    \$missing = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenUvMarker', '_DenPyExe', '_DenPyRun' |
         Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
     \"ENV=[\$env:_DEN_UV_OVERRIDE] MISSING=[\$(\$missing -join ',')]\"
 " | tr -d '\r')
@@ -642,7 +642,7 @@ for helpers in older missing; do
     actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
         $PS_SET_PROFILE
         Set-Location -LiteralPath '$NOPROJ'
-        foreach (\$n in '_DenPyMarker', '_DenPyExe', '_DenPyRun') { $setup }
+        foreach (\$n in '_DenPyMarker', '_DenUvMarker', '_DenPyExe', '_DenPyRun') { $setup }
         toggle-uv *>\$null
         toggle-uv *>\$null
         python -c 1 6>\$null
@@ -699,7 +699,7 @@ echo "[pwsh] toggle-uv OFF removes every override, also after an ON, and keeps w
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     $PS_SET_PROFILE
     \$names = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun'
-    \$keep = 'vv', 'vva', '_DenPyMarker', '_DenUvVenvOptions', '_DenUvConfig'
+    \$keep = 'vv', 'vva', '_DenPyMarker', '_DenUvMarker', '_DenUvVenvOptions', '_DenUvConfig'
     toggle-uv *>\$null
     \$left1 = \$names | Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
     \$gone1 = \$keep | Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
@@ -741,7 +741,7 @@ actual=$(_DEN_UV_OVERRIDE=0 pwsh -NoProfile -NonInteractive -Command "
     $PS_SET_PROFILE
     \$left = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun' |
         Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
-    \$missing = 'va', 'vd', 'vv', 'vva', 'toggle-uv', 'tgl-uv', '_DenPyMarker', '_DenUvVenvOptions', '_DenUvConfig' |
+    \$missing = 'va', 'vd', 'vv', 'vva', 'toggle-uv', 'tgl-uv', '_DenPyMarker', '_DenUvMarker', '_DenUvVenvOptions', '_DenUvConfig' |
         Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
     \"LOAD: ENV=[\$env:_DEN_UV_OVERRIDE] LEFT=[\$(\$left -join ',')] MISSING=[\$(\$missing -join ',')]\"
     \$msg = @(toggle-uv 6>&1) -join ''
@@ -1639,6 +1639,35 @@ vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver (
 vv: uv --no-config venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_NONE_THERE)
 vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_KEEPS_THERE)" "$(cat "$R/err")"
 
+    # uv run, too, reads from where UV_WORKING_DIR, UV_WORKING_DIRECTORY or
+    # UV_PROJECT moves it. python, python3 and py walked from here alone, so
+    # from a directory with no marker they ran uv run at a clone (the real-uv
+    # checks show it build one). Where uv cannot enter the directory, it stops
+    # before it reads anything.
+    echo "[$sh] python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project, from a directory with no marker: the system python, not uv run"
+    actual=$(route_posix "$sh" "$NOPROJ" "
+        export UV_WORKING_DIR='$R/pyver'; python -c 1
+        unset UV_WORKING_DIR; export UV_WORKING_DIRECTORY='$R/uvtoml/sub'; python3 -c 2
+        unset UV_WORKING_DIRECTORY; export UV_PROJECT='$R/proj/sub'; py -c 3
+        export UV_PROJECT=../route/proj; python -c 4
+        export UV_PROJECT='$NOPROJ'; python -c 5
+        unset UV_PROJECT; export UV_WORKING_DIR='$R/nope'; python -c 6
+        export VIRTUAL_ENV='$R/venv' _DEN_VENV_PYTHON=3.12 UV_WORKING_DIR='$R/proj'; python -c 7")
+    assert_eq "$sh/python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project run the system python" "system-python -c 1
+system-python -c 2
+system-python -c 3
+system-python -c 4
+mock-uv run -- python -c 5
+mock-uv run -- python -c 6
+venv-python -c 7
+rc=0" "$actual"
+    assert_eq "$sh/python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project name what they found there" "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyver/.python-version
+python3: running $R/sys/python3, not uv run: uv run would build or run code from $RP/uvtoml/uv.toml
+py: running $R/sys/python3, not uv run: uv run would build or run code from $R/proj/pyproject.toml
+python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/proj/pyproject.toml
+python -c 5 → uv run -- python -c 5
+python -c 6 → uv run -- python -c 6" "$(cat "$R/err")"
+
     # link/ is proj/sub/ under another name: from the directory uv runs in,
     # .. is proj/, and by name link/.. is the route directory, which holds
     # no marker. pyverdir/.python-version names tools, which its sub2/ holds
@@ -1973,6 +2002,30 @@ WARNING: vv: uv --no-config venv, as $R/proj/pyproject.toml is in or above $R/pr
 mock-uv --no-config venv
 WARNING: vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_KEEPS_THERE)
 mock-uv --no-config --config-file $UVU/uv/uv.toml venv" "$actual"
+
+# python, python3 and py read from where uv run reads, as on bash and zsh.
+echo "[pwsh] python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project, from a directory with no marker: the system python, not uv run"
+actual=$(route_pwsh "$NOPROJ" "
+    \$env:UV_WORKING_DIR = '$R/pyver'; python -c 1
+    Remove-Item Env:\\UV_WORKING_DIR; \$env:UV_WORKING_DIRECTORY = '$R/uvtoml/sub'; python3 -c 2
+    Remove-Item Env:\\UV_WORKING_DIRECTORY; \$env:UV_PROJECT = '$R/proj/sub'; py -c 3
+    \$env:UV_PROJECT = '../route/proj'; python -c 4
+    \$env:UV_PROJECT = '$NOPROJ'; python -c 5
+    Remove-Item Env:\\UV_PROJECT; \$env:UV_WORKING_DIR = '$R/nope'; python -c 6
+    \$env:VIRTUAL_ENV = '$R/venv'; \$env:_DEN_VENV_PYTHON = '3.12'; \$env:UV_WORKING_DIR = '$R/proj'; python -c 7")
+assert_eq "pwsh/python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project run the system python after a warning" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyver/.python-version
+system-python -c 1
+WARNING: python3: running $R/sys/python3, not uv run: uv run would build or run code from $RP/uvtoml/uv.toml
+system-python -c 2
+WARNING: py: running $R/sys/python3, not uv run: uv run would build or run code from $R/proj/pyproject.toml
+system-python -c 3
+WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/proj/pyproject.toml
+system-python -c 4
+HOST: python -c 5 → uv run -- python -c 5
+mock-uv run -- python -c 5
+HOST: python -c 6 → uv run -- python -c 6
+mock-uv run -- python -c 6
+venv-python -c 7" "$actual"
 
 echo "[pwsh] vv with --project: the walk starts there, as uv takes it, and a bare name is looked up where uv runs"
 actual=$(route_pwsh "$NOPROJ" "
@@ -2527,6 +2580,33 @@ pip=1" "$(printf '%s\n' "$actual" | tail -n +2)"
 5" "$actual"
         assert_not_exists "$sh/the clone's bin/python did not run" "$C/marks/cfg-python"
 
+        # uv run reads where UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY
+        # moves it: from a directory with no marker it built the clone there,
+        # through a relative UV_PROJECT and in a venv va activated as well.
+        echo "[$sh] from a directory with no marker, python, python3 and py with UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY at a clone run none of its code (the real uv)"
+        E="$WORK/envclones-$sh"
+        mk_clones "$E"
+        "$REAL_UV" venv -q "$E/myvenv" >/dev/null 2>&1
+        actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$E/config" "$sh" -c "
+            . '$PYTHON_SH_SOURCE'
+            unset VIRTUAL_ENV _DEN_VENV_PYTHON
+            cd '$NOPROJ' || exit 1
+            export UV_PROJECT='$E/build'; python --version >/dev/null 2>&1; echo \"python=\$?\"; unset UV_PROJECT
+            export UV_WORKING_DIR='$E/build'; python3 -c 'print(1)'; unset UV_WORKING_DIR
+            export UV_WORKING_DIRECTORY='$E/build/src'; py -c 'print(2)'; unset UV_WORKING_DIRECTORY
+            export UV_PROJECT='../envclones-$sh/build'; python -c 'print(3)'; unset UV_PROJECT
+            va '$E/myvenv' >/dev/null 2>&1 || exit 1
+            export UV_PROJECT='$E/build'; python -c 'print(4)'; unset UV_PROJECT
+        " 2>/dev/null | tr -d '\r') || true
+        assert_eq "$sh/python, python3 and py with UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY at a clone" "python=0
+1
+2
+3
+4" "$actual"
+        assert_eq "$sh/no code of the clone UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY names ran" "" "$(ls "$E/marks")"
+        assert_not_exists "$sh/no .venv appears in the clone UV_PROJECT names" "$E/build/.venv"
+        assert_not_exists "$sh/no uv.lock appears in the clone UV_PROJECT names" "$E/build/uv.lock"
+
         if [ "$PYVER_THREAT" = 1 ]; then
             echo "[$sh] beside a clone's .python-version that names its program, python, python3 and py run none of its code (the real uv)"
             actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$C/config" "$sh" -c "
@@ -2785,6 +2865,30 @@ pip done" "$(printf '%s\n' "$actual" | tail -n +2)"
 4
 5" "$actual"
     assert_not_exists "pwsh/the clone's bin/python did not run" "$C/marks/cfg-python"
+
+    echo "[pwsh] from a directory with no marker, python, python3 and py with UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY at a clone run none of its code (the real uv)"
+    E="$WORK/envclones-pwsh"
+    mk_clones "$E"
+    "$REAL_UV" venv -q "$E/myvenv" >/dev/null 2>&1
+    actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$E/config" pwsh -NoProfile -NonInteractive -Command "
+        . '$PYTHON_PS1_REAL_UV'
+        Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
+        Set-Location -LiteralPath '$NOPROJ'
+        \$env:UV_PROJECT = '$E/build'; python --version *>\$null; \"python=\$LASTEXITCODE\"; Remove-Item Env:\\UV_PROJECT
+        \$env:UV_WORKING_DIR = '$E/build'; python3 -c 'print(1)' 3>\$null; Remove-Item Env:\\UV_WORKING_DIR
+        \$env:UV_WORKING_DIRECTORY = '$E/build/src'; py -c 'print(2)' 3>\$null; Remove-Item Env:\\UV_WORKING_DIRECTORY
+        \$env:UV_PROJECT = '../envclones-pwsh/build'; python -c 'print(3)' 3>\$null; Remove-Item Env:\\UV_PROJECT
+        va '$E/myvenv' *>\$null
+        \$env:UV_PROJECT = '$E/build'; python -c 'print(4)' 3>\$null; Remove-Item Env:\\UV_PROJECT
+    " 2>/dev/null | tr -d '\r') || true
+    assert_eq "pwsh/python, python3 and py with UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY at a clone" "python=0
+1
+2
+3
+4" "$actual"
+    assert_eq "pwsh/no code of the clone UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY names ran" "" "$(ls "$E/marks")"
+    assert_not_exists "pwsh/no .venv appears in the clone UV_PROJECT names" "$E/build/.venv"
+    assert_not_exists "pwsh/no uv.lock appears in the clone UV_PROJECT names" "$E/build/uv.lock"
 
     if [ "$PYVER_THREAT" = 1 ]; then
         echo "[pwsh] beside a clone's .python-version that names its program, python, python3 and py run none of its code (the real uv)"
