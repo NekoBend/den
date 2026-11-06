@@ -612,6 +612,204 @@ def test_wire_appends_to_a_non_utf8_rc_file_unchanged(tmp_path):
     )
 
 
+# ---- _wire counts den's line as set up only where the shell runs it ----
+
+_BASH_BLOCK = f"\n{_shell._COMMENT}\n{_shell._BASH_LINE}\n".encode()
+_COMMENTED_OUT = "the commented-out copy of den's line there stays as it is"
+
+
+@pytest.mark.parametrize(
+    "mine",
+    [
+        f"# {_shell._BASH_LINE}\n",
+        f"#{_shell._BASH_LINE}\n",
+        f"export A=1\n  # {_shell._BASH_LINE}\n",
+        f"{_shell._COMMENT}\n# {_shell._BASH_LINE}\n",  # den's block, switched off
+        f"# den adds '{_shell._BASH_LINE}' to this file\n",
+        f"export A=1  # den adds: {_shell._BASH_LINE}\n",
+    ],
+)
+def test_wire_appends_below_a_commented_out_line(tmp_path, capsys, mine):
+    """A copy of den's line behind '#' (den switched off by hand, or a note
+    that quotes it) loads nothing. A substring test called such a file
+    'already configured' and left the shell without den."""
+    rc = tmp_path / ".bashrc"
+    rc.write_bytes(mine.encode())
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=False)
+    assert rc.read_bytes() == mine.encode() + _BASH_BLOCK
+    out = capsys.readouterr().out
+    assert "already configured" not in out
+    assert f"[ok] appended to {rc}; {_COMMENTED_OUT}" in out
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=False)  # really configured now
+    assert rc.read_bytes() == mine.encode() + _BASH_BLOCK
+    assert "already configured" in capsys.readouterr().out
+
+
+def test_wire_appends_below_a_commented_out_line_in_a_crlf_file(tmp_path):
+    rc = tmp_path / ".bashrc"
+    mine = f"export A=1\r\n# {_shell._BASH_LINE}\r\n".encode()
+    rc.write_bytes(mine)
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=False)
+    block = f"\r\n{_shell._COMMENT}\r\n{_shell._BASH_LINE}\r\n".encode()
+    assert rc.read_bytes() == mine + block
+
+
+@pytest.mark.parametrize(
+    "mine",
+    [f"# {_shell._PWSH_LINE}\r\n", f"<# {_shell._PWSH_LINE} #>\r\n"],
+)
+def test_wire_appends_below_a_commented_out_line_in_a_utf16_profile(tmp_path, mine):
+    prof = tmp_path / _shell._PWSH_PROFILE
+    prof.write_bytes(f"﻿{mine}".encode("utf-16-le"))
+    _shell._wire(prof, _shell._PWSH_LINE, dry_run=False)
+    raw = prof.read_bytes()
+    assert raw[:2] == b"\xff\xfe"
+    assert raw[2:].decode("utf-16-le") == mine + _den_block("\r\n")
+
+
+@pytest.mark.parametrize(
+    "mine",
+    [
+        f"{_shell._BASH_LINE}  # den\n",
+        f"[[ $- == *i* ]] && {_shell._BASH_LINE}\n",
+    ],
+)
+def test_wire_appends_below_den_line_inside_a_longer_one(tmp_path, capsys, mine):
+    """The shell may run such a line, but den cannot tell, so it does not say
+    the line is commented out: it appends its own block and names the other."""
+    rc = tmp_path / ".bashrc"
+    rc.write_bytes(mine.encode())
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=False)
+    assert rc.read_bytes() == mine.encode() + _BASH_BLOCK
+    out = capsys.readouterr().out
+    assert "the longer line that holds den's line there stays as it is" in out
+    assert "already configured" not in out and "commented" not in out
+
+
+@pytest.mark.parametrize(
+    "mine",
+    [
+        f'if [ -n "$PS1" ]; then\n    {_shell._BASH_LINE}\nfi\n',
+        f"\t{_shell._BASH_LINE}  \n",
+        f"# {_shell._BASH_LINE}\n{_shell._BASH_LINE}\n",  # an active copy as well
+        f"export A=1\r\n{_shell._BASH_LINE}\r\n",
+        f"export A=1\r{_shell._BASH_LINE}\r",  # bare CR line ends
+    ],
+)
+def test_wire_counts_an_active_line_as_configured(tmp_path, capsys, mine):
+    """den's line on a line of its own, whitespace around it aside, loads den:
+    the file is left as it is."""
+    rc = tmp_path / ".bashrc"
+    rc.write_bytes(mine.encode())
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=False)
+    assert rc.read_bytes() == mine.encode()
+    assert f"[skip] {rc} already configured" in capsys.readouterr().out
+
+
+def test_wire_counts_an_indented_utf16_profile_line_as_configured(tmp_path):
+    prof = tmp_path / _shell._PWSH_PROFILE
+    raw = f"﻿Set-Alias g git\r\n  {_shell._PWSH_LINE} \r\n".encode("utf-16-le")
+    prof.write_bytes(raw)
+    _shell._wire(prof, _shell._PWSH_LINE, dry_run=False)
+    assert prof.read_bytes() == raw
+
+
+@pytest.mark.parametrize(
+    ("mine", "why"),
+    [
+        (
+            f"export A=1\n# {_shell._BASH_LINE}\n",
+            "den's line is commented out there, so den is not loaded from it;"
+            " run den install shell to add it again",
+        ),
+        (
+            f"{_shell._BASH_LINE}  # den\n",
+            "den's line is there only inside a longer line, so den cannot tell"
+            " whether it is loaded from it",
+        ),
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_wire_refresh_leaves_a_line_that_is_not_active_as_it_is(
+    tmp_path, capsys, mine, why, dry_run
+):
+    """`den upgrade --refresh` must not switch on a den the user switched off
+    by commenting its line out; it says why it added nothing."""
+    rc = tmp_path / ".bashrc"
+    rc.write_bytes(mine.encode())
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=dry_run, refresh=True)
+    assert rc.read_bytes() == mine.encode()
+    out = capsys.readouterr().out
+    assert f"[skip] {rc}: {why}" in out
+    assert "already configured" not in out
+
+
+def test_wire_refresh_still_adds_a_line_that_is_not_there(tmp_path):
+    rc = tmp_path / ".bashrc"
+    rc.write_bytes(b"export A=1\n")
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=False, refresh=True)
+    assert rc.read_bytes() == b"export A=1\n" + _BASH_BLOCK
+
+
+def test_wire_dry_run_names_the_commented_out_line_it_would_leave(tmp_path, capsys):
+    rc = tmp_path / ".bashrc"
+    mine = f"# {_shell._BASH_LINE}\n".encode()
+    rc.write_bytes(mine)
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=True)
+    assert rc.read_bytes() == mine
+    assert f"[dry] append to {rc}; {_COMMENTED_OUT}" in capsys.readouterr().out
+
+
+def _shell_only_plan(tmp_path):
+    """A refresh plan as `den upgrade --refresh` hands it to the new den:
+    den's shell files were found, nothing else."""
+    import json
+
+    plan = {
+        "den_refresh_plan": 1,
+        "known_skills": [],
+        "skills": [],
+        "parents": [],
+        "shell": True,
+        "shell_extras": False,
+        "shell_bin": False,
+        "owned": {},
+        "absent": [],
+    }
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan))
+    return str(path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="deploys the POSIX shell files")
+def test_install_shell_adds_den_line_back_only_when_asked(
+    tmp_path, monkeypatch, capsys
+):
+    """The refresh `den upgrade` runs keeps a commented-out den line as it is
+    (and still adds a line that is missing); `den install shell` adds den's
+    block below it."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(_shell, "_windows", lambda: False)
+    monkeypatch.setattr(_shell.shutil, "which", _stub_which({"bash", "zsh"}))
+    bashrc, zshrc = tmp_path / ".bashrc", tmp_path / ".zshrc"
+    off = f"export A=1\n# {_shell._BASH_LINE}\n".encode()
+    bashrc.write_bytes(off)
+    zshrc.write_bytes(b"export B=2\n")
+
+    assert install_main(["shell", "--refresh-plan", _shell_only_plan(tmp_path)]) == 0
+    assert bashrc.read_bytes() == off
+    assert zshrc.read_bytes() == b"export B=2\n" + (
+        f"\n{_shell._COMMENT}\n{_shell._ZSH_LINE}\n".encode()
+    )
+    out = capsys.readouterr().out
+    assert f"[skip] {bashrc}: den's line is commented out there" in out
+    assert "already configured" not in out
+
+    assert install_main(["shell", "--no-extras", "--no-bin"]) == 0
+    assert bashrc.read_bytes() == off + _BASH_BLOCK
+    assert f"[ok] appended to {bashrc}; {_COMMENTED_OUT}" in capsys.readouterr().out
+
+
 def test_install_shell_no_extras_skips_optional(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     install_main(["shell", "--no-extras"])

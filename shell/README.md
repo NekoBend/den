@@ -18,6 +18,9 @@ den install shell --no-extras # skip the optional helper modules
 
 It copies the config into `~/.config/shell/` (POSIX) or the `$PROFILE` dir
 (PowerShell) and adds a source line to your `~/.bashrc` / `~/.zshrc`.
+A file that already has that line on a line of its own is left as it is.
+If you comment the line out, `den upgrade --refresh` leaves it that way,
+and `den install shell` adds den's line again below it.
 
 ### zsh plugins
 

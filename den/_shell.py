@@ -311,12 +311,67 @@ def _decode_rc(raw: bytes) -> tuple[str, str]:
     return raw[len(bom) :].decode(codec, errors), codec
 
 
-def _wire(rc: Path, line: str, *, dry_run: bool) -> None:
+def _line_state(text: str, line: str) -> str:
+    """How the rc file `text` holds den's source `line`, read line by line
+    (splitlines() ends a line at LF, CRLF or a bare CR alike):
+
+    - "active": on a line of its own, whitespace around it aside, as _wire
+      writes it or as a user indented it into a block of their own;
+    - "inside": only within a longer line that does not comment it out
+      (`<line>  # note`, `[[ $- == *i* ]] && <line>`): the shell may well
+      run it, but den cannot tell;
+    - "commented": only after a '#' on its line (den switched off by hand,
+      or a note that quotes the line), which bash, zsh and PowerShell skip;
+    - "absent": nowhere in the file.
+
+    The first of these that some line of the file matches wins."""
+    state = "absent"
+    for ln in text.splitlines():
+        at = ln.find(line)
+        if at < 0:
+            continue
+        if ln.strip() == line:
+            return "active"
+        if "#" not in ln[:at]:
+            state = "inside"
+        elif state == "absent":
+            state = "commented"
+    return state
+
+
+# What _wire says about a file that holds den's line only in a form the shell
+# does not run, or not as a line den can read: (why a refresh leaves the file
+# alone, what an explicit install leaves in place when it appends den's block).
+_NOT_ACTIVE = {
+    "commented": (
+        "den's line is commented out there, so den is not loaded from it;"
+        " run den install shell to add it again",
+        "the commented-out copy of den's line",
+    ),
+    "inside": (
+        "den's line is there only inside a longer line, so den cannot tell"
+        " whether it is loaded from it; run den install shell to add it on a"
+        " line of its own",
+        "the longer line that holds den's line",
+    ),
+}
+
+
+def _wire(rc: Path, line: str, *, dry_run: bool, refresh: bool = False) -> None:
     """Add den's block to `rc`, creating it when absent. An existing file
     gets the block in its own encoding, and with CRLF only when every line
     of it already ends that way (a stray CRLF in a bash rc file must not put
-    a CR on den's line)."""
+    a CR on den's line).
+
+    A file that holds den's line on a line of its own is already set up and
+    is left alone. One that holds it only commented out, or only inside a
+    longer line (see _line_state), gets den's block appended, and that other
+    copy stays as it is. With `refresh` (the redeploy `den upgrade
+    --refresh` runs) such a file is left alone instead, and the run says
+    why: a den the user switched off by commenting its line out stays off
+    across upgrades."""
     text = codec = None
+    note = ""
     if rc.is_file():
         try:
             text, codec = _decode_rc(rc.read_bytes())
@@ -327,11 +382,18 @@ def _wire(rc: Path, line: str, *, dry_run: bool) -> None:
                 file=sys.stderr,
             )
             return
-        if line in text:
+        state = _line_state(text, line)
+        if state == "active":
             print(f"  [skip] {rc} already configured")
             return
+        if state in _NOT_ACTIVE:
+            why, other_copy = _NOT_ACTIVE[state]
+            if refresh:
+                print(f"  [skip] {rc}: {why}")
+                return
+            note = f"; {other_copy} there stays as it is"
     if dry_run:
-        print(f"  [dry] {'append to' if text is not None else 'create'} {rc}")
+        print(f"  [dry] {'append to' if text is not None else 'create'} {rc}{note}")
         return
     rc.parent.mkdir(parents=True, exist_ok=True)
     if text is not None and codec is not None:
@@ -339,7 +401,7 @@ def _wire(rc: Path, line: str, *, dry_run: bool) -> None:
         eol = "\r\n" if crlf else "\n"
         with rc.open("ab") as fh:
             fh.write(f"{eol}{_COMMENT}{eol}{line}{eol}".encode(codec))
-        print(f"  [ok] appended to {rc}")
+        print(f"  [ok] appended to {rc}{note}")
     else:
         rc.write_text(f"{_COMMENT}\n{line}\n", encoding="utf-8")
         print(f"  [ok] created {rc}")
@@ -603,12 +665,13 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
                     _chmod_no_follow(dst, 0o755)
 
     print("wiring shell rc files")
+    refresh = plan is not None  # keeps a den line the user commented out
     if shutil.which("bash") or (home / ".bashrc").is_file():
-        _wire(home / ".bashrc", _BASH_LINE, dry_run=dry_run)
+        _wire(home / ".bashrc", _BASH_LINE, dry_run=dry_run, refresh=refresh)
     if shutil.which("zsh") or (home / ".zshrc").is_file():
-        _wire(home / ".zshrc", _ZSH_LINE, dry_run=dry_run)
+        _wire(home / ".zshrc", _ZSH_LINE, dry_run=dry_run, refresh=refresh)
     if _windows() or shutil.which("pwsh"):
-        _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run=dry_run)
+        _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run=dry_run, refresh=refresh)
 
     _maybe_clone_zsh_plugins(want=want_zsh_plugins, dry_run=dry_run)
 

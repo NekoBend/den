@@ -144,7 +144,8 @@ old package imported) redeploys:
 - the shell files, when den's were found, as they were installed: the extras
   only when some were on disk (a `--no-extras` install stays without), and
   den's `~/.local/bin` helpers only when some were there (`--bin`); a shell
-  file you deleted stays deleted.
+  file you deleted stays deleted, and an rc file where you commented den's
+  line out keeps it commented out (`den install shell` adds it again).
 
 A file still exactly as the old den deployed it is replaced; that is checked
 again right before the write, so an edit made while uv runs counts as yours.

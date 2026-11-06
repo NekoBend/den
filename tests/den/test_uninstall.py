@@ -1071,6 +1071,21 @@ def test_has_block_requires_marker_followed_by_den_line(tmp_path):
     assert not _has_block(rc, line)
 
 
+def test_uninstall_leaves_a_den_block_the_user_commented_out(tmp_path):
+    """install appends its own block below a den block the user commented out
+    (_shell._wire); uninstall takes out that one and leaves the user's."""
+    from den._shell import _BASH_LINE, _wire
+
+    rc = tmp_path / ".bashrc"
+    mine = f"# ===== den =====\n# {_BASH_LINE}\n".encode()
+    rc.write_bytes(mine)
+    assert not _has_block(rc, _BASH_LINE)
+    _wire(rc, _BASH_LINE, dry_run=False)
+    assert _has_block(rc, _BASH_LINE)
+    assert _strip_block(rc, _BASH_LINE)
+    assert rc.read_bytes() == mine
+
+
 def test_strip_block_leaves_stray_marker_untouched(tmp_path):
     line = '[ -f "$HOME/.config/shell/init.bash" ] && . "$HOME/.config/shell/init.bash"'
     rc = tmp_path / ".bashrc"
