@@ -987,10 +987,14 @@ def test_entrypoint_gives_the_user_its_new_ids_while_it_has_no_home(tmp_path):
     # back; neither call moves anything. The workspace walk comes first, so a
     # failed one leaves the old IDs for a retry, and the home's walk, reown's,
     # comes last.
+    # A workspace of the test's own: a CI runner has no /workspace.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     result, calls = _run_entrypoint(
         tmp_path,
         uid=0,
         env={"HOST_UID": "501", "HOST_GID": "20", "FIX_WORKSPACE_OWNERSHIP": "1"},
+        workspace=workspace,
     )
     assert result.returncode == 0, result.stderr
     assert _calls(calls, "usermod") == _usermod_calls(501, 20)
@@ -1000,7 +1004,7 @@ def test_entrypoint_gives_the_user_its_new_ids_while_it_has_no_home(tmp_path):
         for line in calls.splitlines()
         if line.split(" ", 1)[0] in {"find", "usermod"}
     ]
-    assert order == ["/workspace", "--home", "--home", "/home/dev"], calls
+    assert order == [str(workspace), "--home", "--home", "/home/dev"], calls
     assert "HOME=/home/dev" in result.stdout.splitlines()
 
 
