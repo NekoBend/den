@@ -319,7 +319,8 @@ def _line_state(text: str, line: str) -> str:
       writes it or as a user indented it into a block of their own;
     - "inside": only within a longer line that does not comment it out
       (`<line>  # note`, `[[ $- == *i* ]] && <line>`): the shell may well
-      run it, but den cannot tell;
+      run it, and den's init has no load-once guard, so den takes it as set
+      up rather than load twice;
     - "commented": only after a '#' on its line (den switched off by hand,
       or a note that quotes the line), which bash, zsh and PowerShell skip;
     - "absent": nowhere in the file.
@@ -339,22 +340,20 @@ def _line_state(text: str, line: str) -> str:
     return state
 
 
-# What _wire says about a file that holds den's line only in a form the shell
-# does not run, or not as a line den can read: (why a refresh leaves the file
-# alone, what an explicit install leaves in place when it appends den's block).
-_NOT_ACTIVE = {
-    "commented": (
-        "den's line is commented out there, so den is not loaded from it;"
-        " run den install shell to add it again",
-        "the commented-out copy of den's line",
-    ),
-    "inside": (
-        "den's line is there only inside a longer line, so den cannot tell"
-        " whether it is loaded from it; run den install shell to add it on a"
-        " line of its own",
-        "the longer line that holds den's line",
-    ),
-}
+# What _wire says about a file that holds den's line only commented out: why
+# a refresh leaves the file alone, and what an explicit install leaves in place
+# when it appends den's block.
+_COMMENTED_WHY = (
+    "den's line is commented out there, so den is not loaded from it;"
+    " run den install shell to add it again"
+)
+_COMMENTED_COPY = "the commented-out copy of den's line"
+# A line that holds den's line inside a longer one may well run it, and den's
+# init would run twice if den appended its own line too.
+_INSIDE_WHY = (
+    "den's line is there inside a longer line, which den takes as its setup;"
+    " den adds no line of its own, so that it is not loaded twice"
+)
 
 
 def _wire(rc: Path, line: str, *, dry_run: bool, refresh: bool = False) -> None:
@@ -364,12 +363,13 @@ def _wire(rc: Path, line: str, *, dry_run: bool, refresh: bool = False) -> None:
     a CR on den's line).
 
     A file that holds den's line on a line of its own is already set up and
-    is left alone. One that holds it only commented out, or only inside a
-    longer line (see _line_state), gets den's block appended, and that other
+    is left alone; so is one that holds it inside a longer line (see
+    _line_state), with a note, since den must not load twice. One that holds
+    it only commented out gets den's block appended, and the commented-out
     copy stays as it is. With `refresh` (the redeploy `den upgrade
-    --refresh` runs) such a file is left alone instead, and the run says
-    why: a den the user switched off by commenting its line out stays off
-    across upgrades."""
+    --refresh` runs) that file is left alone instead, and the run says why:
+    a den the user switched off by commenting its line out stays off across
+    upgrades."""
     text = codec = None
     note = ""
     if rc.is_file():
@@ -386,12 +386,14 @@ def _wire(rc: Path, line: str, *, dry_run: bool, refresh: bool = False) -> None:
         if state == "active":
             print(f"  [skip] {rc} already configured")
             return
-        if state in _NOT_ACTIVE:
-            why, other_copy = _NOT_ACTIVE[state]
+        if state == "inside":
+            print(f"  [skip] {rc}: {_INSIDE_WHY}")
+            return
+        if state == "commented":
             if refresh:
-                print(f"  [skip] {rc}: {why}")
+                print(f"  [skip] {rc}: {_COMMENTED_WHY}")
                 return
-            note = f"; {other_copy} there stays as it is"
+            note = f"; {_COMMENTED_COPY} there stays as it is"
     if dry_run:
         print(f"  [dry] {'append to' if text is not None else 'create'} {rc}{note}")
         return

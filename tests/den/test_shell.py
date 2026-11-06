@@ -674,16 +674,20 @@ def test_wire_appends_below_a_commented_out_line_in_a_utf16_profile(tmp_path, mi
         f"[[ $- == *i* ]] && {_shell._BASH_LINE}\n",
     ],
 )
-def test_wire_appends_below_den_line_inside_a_longer_one(tmp_path, capsys, mine):
-    """The shell may run such a line, but den cannot tell, so it does not say
-    the line is commented out: it appends its own block and names the other."""
+@pytest.mark.parametrize("refresh", [False, True])
+def test_wire_leaves_den_line_inside_a_longer_one_alone(
+    tmp_path, capsys, mine, refresh
+):
+    """The shell may well run such a line, and den's init has no load-once
+    guard: appending den's own line could load den twice. So neither an
+    install nor a refresh adds one, and the run says so."""
     rc = tmp_path / ".bashrc"
     rc.write_bytes(mine.encode())
-    _shell._wire(rc, _shell._BASH_LINE, dry_run=False)
-    assert rc.read_bytes() == mine.encode() + _BASH_BLOCK
+    _shell._wire(rc, _shell._BASH_LINE, dry_run=False, refresh=refresh)
+    assert rc.read_bytes() == mine.encode()
     out = capsys.readouterr().out
-    assert "the longer line that holds den's line there stays as it is" in out
-    assert "already configured" not in out and "commented" not in out
+    assert f"[skip] {rc}: {_shell._INSIDE_WHY}" in out
+    assert "commented" not in out
 
 
 @pytest.mark.parametrize(
@@ -721,11 +725,6 @@ def test_wire_counts_an_indented_utf16_profile_line_as_configured(tmp_path):
             f"export A=1\n# {_shell._BASH_LINE}\n",
             "den's line is commented out there, so den is not loaded from it;"
             " run den install shell to add it again",
-        ),
-        (
-            f"{_shell._BASH_LINE}  # den\n",
-            "den's line is there only inside a longer line, so den cannot tell"
-            " whether it is loaded from it",
         ),
     ],
 )
