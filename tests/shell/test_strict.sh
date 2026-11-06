@@ -1144,7 +1144,9 @@ foreach ($StrictFn in $global:_StrictFunctions + $global:_StrictAliases) {
     if ($StrictNoArgSkip -contains $StrictFn -or $global:_StrictSkip.ContainsKey($StrictFn)) { continue }
     Case "$StrictFn, no argument" ([scriptblock]::Create("& '$StrictFn'"))
 }
-Case 'vd, the .venv that vva made' { vd }
+# vv made a .venv just before vva, which activates only a venv it made: none
+# is active here, unless vva activated one after all.
+Case 'vd, after vv and vva with no argument' { vd }
 
 # ===== init.ps1 (last: it loads den again) =====
 Case 'reload' { reload }

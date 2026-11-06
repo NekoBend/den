@@ -408,7 +408,11 @@ keeps), except where uv would build or run code that came with a clone:
   installed (`uv python install`). Type `uv run python` to use the project.
   `--version` and `-V` take the same way as any other call: through `uv run`
   outside a project, so they name the python that `python x.py` runs, and the
-  python run directly inside one.
+  python run directly inside one. `UV_WORKING_DIR`, `UV_WORKING_DIRECTORY` and
+  `UV_PROJECT` move where `uv run` reads: bash, zsh and pwsh look for those
+  files there instead, as uv takes them (as for `vv`, below), and cmd, which
+  cannot follow them, runs a python directly whenever one of them is set,
+  after a line that names it.
 - `pip` / `pip3` run only inside an active venv: the venv's own pip when it has
   one, else `uv pip`, which installs into that venv (a venv made by uv, `vv` /
   `vva`, has no pip). pip reads no `uv.toml` or `pyproject.toml`, and uv reads
@@ -424,7 +428,8 @@ keeps), except where uv would build or run code that came with a clone:
   you made), or type `uv pip` yourself.
 - `vv` / `vva` run `uv venv`, but where `python` runs a python directly (the
   same files, here or above, or, as uv takes them, in or above the directory
-  `--directory` or `--project` names, or `UV_WORKING_DIR` or `UV_PROJECT`)
+  `--directory` or `--project` names, or `UV_WORKING_DIR`,
+  `UV_WORKING_DIRECTORY` or `UV_PROJECT`)
   `uv --no-config venv`, with `--config-file <your uv.toml>` when you have
   one, after a line that says so: `uv venv` runs the
   program a `.python-version` names, and a `uv.toml`'s or `pyproject.toml`'s
@@ -433,6 +438,23 @@ keeps), except where uv would build or run code that came with a clone:
   and also a `.python-version` that only pins a version, your global one
   (`uv python pin --global`) too: pick a python with `--python`, or type
   `uv venv`.
+- `vva` names the venv to `uv venv` itself, its first argument when that is
+  not an option, else `.venv`, so the name goes first (`vva myenv --python
+  3.13`; `vva --python 3.13` makes `.venv`), and activates the one uv made,
+  in the directory `--directory`, `UV_WORKING_DIR` or `UV_WORKING_DIRECTORY`
+  names. Where uv refuses, as it does a second name after an option or a venv
+  that is already there, nothing is activated. `vva` activates only a venv
+  that was not there before `uv venv` ran: where uv succeeds but makes none
+  (`vva --help`), or keeps or remakes the one there (`--allow-existing`,
+  `--clear`), `vva` activates nothing, says so, and fails; `va <path>`
+  activates a venv that was there. Asked for help or a version (`-h`,
+  `--help`, `-V`, `--version`), `vva` activates nothing whatever is at the
+  venv's path after uv ran. Where `va` refuses the venv uv made (git still
+  tracks its path, for one), `vva` fails too. On pwsh each of these
+  failures, and a failed `uv venv`, is a terminating error with
+  `$LASTEXITCODE` 1 (uv's own code where uv failed): `$?` is false, and the
+  rest of the line does not run, a part after `||` neither; a script catches
+  it with `try`.
 - Your uv.toml is the one uv reads besides a project's: the one
   `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
   (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows
@@ -462,7 +484,7 @@ and macOS do not have, stays den's in scripts there.
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
-| `vva [name]` | `uv venv` then activate | ✓ | ✓ | — |
+| `vva [name] [uv venv options]` | `uv venv <name>` (default `.venv`; the name first) then activate the venv it made, a new one only | ✓ | ✓ | — |
 | `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.
@@ -483,7 +505,10 @@ What git tracks is how `va` tells a venv that came with the tree, so it can tell
 only in a git checkout: outside one, a venv that came in an archive or a shared
 folder is sourced as it is, as `source` would source it. Activate only a venv you
 made there. `va` runs git with `core.fsmonitor` off, so a `.git/config` that came
-with such a tree starts no program.
+with such a tree starts no program, and without git's variables that pick a
+repository or an index or stop its search for one (`GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_CEILING_DIRECTORIES` and the like) that the shell holds:
+whether the venv sits in a checkout is git's search up from the venv itself.
 
 ## Media (ffmpeg)
 

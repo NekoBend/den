@@ -458,6 +458,27 @@ for sh in bash zsh; do
     assert_contains "$sh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
     assert_contains "$sh/va activates nothing when git fails" "rc=1 PY=[]" "$actual"
 
+    # git's variables that pick a repository, an index or where the search
+    # for one stops are the shell's, not the checkout's: a ceiling at the
+    # checkout's top, a GIT_DIR that is empty, relative or not there, a
+    # GIT_OBJECT_DIRECTORY that is not there, another repository's index
+    # (git sets an absolute GIT_INDEX_FILE in the shell `git commit -a`
+    # starts for its editor), or a yadm or vcsh "enter" shell's GIT_DIR and
+    # GIT_WORK_TREE made git answer "not a git repository" or nothing
+    # tracked, and va sourced the committed activate script. The shell keeps
+    # them.
+    echo "[$sh] va refuses a committed venv whatever git's variables in the shell point at, and leaves them as they were"
+    for genv in "GIT_CEILING_DIRECTORIES='$WORK/venv_tracked'" "GIT_DIR=" "GIT_DIR=.git" "GIT_DIR='$WORK/nope'" \
+        "GIT_OBJECT_DIRECTORY='$WORK/nope'" "GIT_INDEX_FILE='$WORK/venv_untracked/.git/index'" \
+        "GIT_DIR='$WORK/venv_untracked/.git' GIT_WORK_TREE='$WORK'"; do
+        actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_tracked' && export $genv && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"; env | grep '^GIT_' | sort" 2>&1 | tr -d '\r')
+        assert_contains "$sh/va refuses a committed venv under $genv" "venv content is tracked by git (bin/activate pyvenv.cfg)" "$actual"
+        assert_contains "$sh/va activates nothing under $genv" "rc=1 PY=[]" "$actual"
+        assert_eq "$sh/va keeps $genv" "$(eval "export $genv"; env | grep '^GIT_' | sort)" "$(printf '%s\n' "$actual" | grep '^GIT_')"
+    done
+    actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && export GIT_CEILING_DIRECTORIES='$WORK/venv_uv' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON] CEIL=[\$GIT_CEILING_DIRECTORIES]\"" 2>&1 | tr -d '\r')
+    assert_eq "$sh/va with a ceiling still activates a venv outside any repo, and keeps the ceiling" "rc=0 PY=[3.13.13] CEIL=[$WORK/venv_uv]" "$actual"
+
     echo "[$sh] va still activates a venv outside any repo, and with no git at all"
     actual=$("$sh" -c "source '$PYTHON_SH_TEST'; cd '$WORK/venv_uv' && va; echo \"rc=\$? PY=[\$_DEN_VENV_PYTHON]\"" 2>&1 | tr -d '\r')
     assert_eq "$sh/va outside a repo" "rc=0 PY=[3.13.13]" "$actual"
@@ -521,7 +542,7 @@ venv-pip3 install rich" "$actual"
             case \$(type \$f 2>/dev/null) in *function*) left=\"\$left \$f\" ;; esac
         done
         kept=''
-        for f in va vd vv vva toggle-uv tgl-uv _den_py_marker _den_uv_venv _den_uv_config; do
+        for f in va vd vv vva toggle-uv tgl-uv _den_py_marker _den_uv_where _den_uv_marker _den_uv_venv _den_uv_config; do
             case \$(type \$f 2>/dev/null) in *function*) kept=\"\$kept \$f\" ;; esac
         done
         echo \"LOAD: LEFT=[\$left] KEPT=[\$kept]\"
@@ -530,7 +551,7 @@ venv-pip3 install rich" "$actual"
         export VIRTUAL_ENV='$WORK/venv_nopip'
         pip install rich
     " 2>/dev/null | tr -d '\r')
-    assert_eq "$sh/_DEN_UV_OVERRIDE=0 at load" "LOAD: LEFT=[] KEPT=[ va vd vv vva toggle-uv tgl-uv _den_py_marker _den_uv_venv _den_uv_config]
+    assert_eq "$sh/_DEN_UV_OVERRIDE=0 at load" "LOAD: LEFT=[] KEPT=[ va vd vv vva toggle-uv tgl-uv _den_py_marker _den_uv_where _den_uv_marker _den_uv_venv _den_uv_config]
 uv override: ON (python/pip → uv)
 ENV=1
 mock-uv --no-config pip install rich" "$actual"
@@ -613,7 +634,7 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     $PS_SET_PROFILE
     toggle-uv *>\$null
     toggle-uv *>\$null
-    \$missing = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenPyExe', '_DenPyRun' |
+    \$missing = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyMarker', '_DenUvMarker', '_DenPyExe', '_DenPyRun' |
         Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
     \"ENV=[\$env:_DEN_UV_OVERRIDE] MISSING=[\$(\$missing -join ',')]\"
 " | tr -d '\r')
@@ -642,7 +663,7 @@ for helpers in older missing; do
     actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
         $PS_SET_PROFILE
         Set-Location -LiteralPath '$NOPROJ'
-        foreach (\$n in '_DenPyMarker', '_DenPyExe', '_DenPyRun') { $setup }
+        foreach (\$n in '_DenPyMarker', '_DenUvMarker', '_DenPyExe', '_DenPyRun') { $setup }
         toggle-uv *>\$null
         toggle-uv *>\$null
         python -c 1 6>\$null
@@ -699,7 +720,7 @@ echo "[pwsh] toggle-uv OFF removes every override, also after an ON, and keeps w
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     $PS_SET_PROFILE
     \$names = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun'
-    \$keep = 'vv', 'vva', '_DenPyMarker', '_DenUvVenvOptions', '_DenUvConfig'
+    \$keep = 'vv', 'vva', '_DenPyMarker', '_DenUvMarker', '_DenUvVenvOptions', '_DenUvConfig'
     toggle-uv *>\$null
     \$left1 = \$names | Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
     \$gone1 = \$keep | Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
@@ -741,7 +762,7 @@ actual=$(_DEN_UV_OVERRIDE=0 pwsh -NoProfile -NonInteractive -Command "
     $PS_SET_PROFILE
     \$left = 'uv', 'python', 'python3', 'pip', 'pip3', 'py', 'Show-UvOnlyMessage', '_DenPyExe', '_DenPyRun' |
         Where-Object { Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue }
-    \$missing = 'va', 'vd', 'vv', 'vva', 'toggle-uv', 'tgl-uv', '_DenPyMarker', '_DenUvVenvOptions', '_DenUvConfig' |
+    \$missing = 'va', 'vd', 'vv', 'vva', 'toggle-uv', 'tgl-uv', '_DenPyMarker', '_DenUvMarker', '_DenUvVenvOptions', '_DenUvConfig' |
         Where-Object { -not (Get-Command \$_ -CommandType Function -ErrorAction SilentlyContinue) }
     \"LOAD: ENV=[\$env:_DEN_UV_OVERRIDE] LEFT=[\$(\$left -join ',')] MISSING=[\$(\$missing -join ',')]\"
     \$msg = @(toggle-uv 6>&1) -join ''
@@ -1123,6 +1144,35 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
 assert_contains "pwsh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
 assert_contains "pwsh/va activates nothing when git fails" "VE=[] PY=[] LC_ALL_KEPT=[True]" "$actual"
 
+# git's variables in the session, as on bash and zsh: va removes them for its
+# git calls alone (Remove-Item: an empty GIT_DIR, which
+# [Environment]::SetEnvironmentVariable($n, $null) hands a child on Linux, is
+# itself one git cannot open) and puts them back.
+echo "[pwsh] va refuses a committed venv whatever git's variables in the session point at, and leaves them as they were"
+for genv in "\$env:GIT_CEILING_DIRECTORIES = '$WORK/ps_venv_tracked'" "\$env:GIT_DIR = '.git'" "\$env:GIT_DIR = '$WORK/nope'" \
+    "\$env:GIT_OBJECT_DIRECTORY = '$WORK/nope'" "\$env:GIT_INDEX_FILE = '$WORK/ps_venv_untracked/.git/index'" \
+    "\$env:GIT_DIR = '$WORK/ps_venv_untracked/.git'; \$env:GIT_WORK_TREE = '$WORK'"; do
+    actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+        Set-Location '$WORK/ps_venv_tracked'
+        \$env:VIRTUAL_ENV = \$null
+        $genv
+        \$before = @(Get-ChildItem Env:GIT_* | Sort-Object Name | ForEach-Object { \"\$(\$_.Name)=\$(\$_.Value)\" }) -join ' '
+        va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+        \$after = @(Get-ChildItem Env:GIT_* | Sort-Object Name | ForEach-Object { \"\$(\$_.Name)=\$(\$_.Value)\" }) -join ' '
+        \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] KEPT=[\$(\$before -ceq \$after -and \$before -ne '')]\"
+    " | tr -d '\r')
+    assert_contains "pwsh/va refuses a committed venv under $genv" "venv content is tracked by git (bin/Activate.ps1, pyvenv.cfg)" "$actual"
+    assert_contains "pwsh/va activates nothing under $genv, and keeps it" "VE=[] PY=[] KEPT=[True]" "$actual"
+done
+actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
+    Set-Location '$WORK/ps_venv5'
+    \$env:VIRTUAL_ENV = \$null
+    \$env:GIT_CEILING_DIRECTORIES = '$WORK/ps_venv5'
+    va *>\$null
+    \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] CEIL=[\$env:GIT_CEILING_DIRECTORIES]\"
+" | tr -d '\r')
+assert_eq "pwsh/va with a ceiling still activates a venv outside any repo, and keeps the ceiling" "VE=[fakevenv] PY=[3.11.4] CEIL=[$WORK/ps_venv5]" "$actual"
+
 echo "[pwsh] va takes only git's own fatal line as 'not a git repository'"
 mk_venv_ps "$NAGR/ps" "3.12.0"
 (
@@ -1259,7 +1309,13 @@ done
 # a stand-in system python (--no-managed-python) or a stand-in uv-managed one
 # (--managed-python); ROUTE_NO_SYSTEM and ROUTE_NO_MANAGED make it find none.
 # Any other command prints "mock-uv <args>". Each stand-in python prints its
-# kind and its arguments.
+# kind and its arguments. With ROUTE_MAKE_VENV set, uv venv <name> [options],
+# as vva calls it, first makes <name> where uv would, in the directory
+# --directory, else UV_WORKING_DIR, else UV_WORKING_DIRECTORY names, entered
+# with its links resolved: a bin/ with an activate script for bash and zsh and
+# an Activate.ps1, each of which sets VIRTUAL_ENV to the venv's path with its
+# links resolved, and a pyvenv.cfg. Without it, uv venv makes nothing, as
+# uv venv --help does.
 R="$WORK/route"
 ROUTE_BIN="$R/bin"
 ROUTE_LOG="$R/uvcalls"
@@ -1278,6 +1334,26 @@ case "\$1 \$2" in
     esac
     exit 0 ;;
 esac
+if [ -n "\${ROUTE_MAKE_VENV-}" ]; then
+    d=\${UV_WORKING_DIR-\${UV_WORKING_DIRECTORY-}} n='' next=''
+    for a in "\$@"; do
+        case \$next in
+            d) d=\$a; next=''; continue ;;
+            n) n=\$a; next=''; continue ;;
+        esac
+        case \$a in
+            venv) [ -n "\$n" ] || next=n ;;
+            --directory) next=d ;;
+            --directory=*) d=\${a#--directory=} ;;
+        esac
+    done
+    if [ -n "\$n" ]; then
+        (cd -P -- "\${d:-.}" && mkdir -p -- "\$n/bin" && v=\$(cd -P -- "\$n" && pwd -P) &&
+            printf 'VIRTUAL_ENV=%s; export VIRTUAL_ENV\n' "\$v" > "\$n/bin/activate" &&
+            printf '\$env:VIRTUAL_ENV = "%s"\n' "\$v" > "\$n/bin/Activate.ps1" &&
+            printf 'version_info = 3.13.1\n' > "\$n/pyvenv.cfg") || exit 2
+    fi
+fi
 echo "mock-uv \$*"
 EOF
 printf '#!/bin/sh\necho "system-python $*"\n' > "$R/sys/python3"
@@ -1336,11 +1412,61 @@ ln -s loop "$R/loop"
 # uv starts from the current directory with its symbolic links resolved, and so
 # does python.sh: it names a project found that way under this spelling of $R.
 RP=$(cd "$R" && pwd -P)
-# A venv that vva's mock uv leaves in a directory with no marker (sete/myenv/),
-# outside a git checkout, for vva under set -e.
-mkdir -p "$R/sete/myenv/bin"
-printf 'VIRTUAL_ENV=%s/sete/myenv; export VIRTUAL_ENV\n' "$R" > "$R/sete/myenv/bin/activate"
-printf 'version_info = 3.13.1\n' > "$R/sete/myenv/pyvenv.cfg"
+# vva's fixtures, outside a git checkout, where the mock uv makes each venv
+# that vva is to activate (ROUTE_MAKE_VENV): vva activates only a venv that
+# was not there before uv venv ran. sete/, with no marker, is for vva under
+# set -e. vvadir/, with no marker, holds a myenv/, whose name vva took from
+# here: a decoy that vva must not take for the one uv makes in
+# vvadir/elsewhere/myenv/; its activate scripts set VIRTUAL_ENV to it. via/
+# links to elsewhere/deep/, so that via/.. is elsewhere/ to the system and to
+# uv, and vvadir/ by name. vvadot/ is where vva -p 3.13 has uv make a .venv.
+mkdir -p "$R/sete" "$R/vvadot" "$R/vvadir/myenv/bin" "$R/vvadir/elsewhere/deep"
+printf 'VIRTUAL_ENV=%s/vvadir/myenv; export VIRTUAL_ENV\n' "$R" > "$R/vvadir/myenv/bin/activate"
+printf '$env:VIRTUAL_ENV = "%s/vvadir/myenv"\n' "$R" > "$R/vvadir/myenv/bin/Activate.ps1"
+printf 'version_info = 3.13.1\n' > "$R/vvadir/myenv/pyvenv.cfg"
+ln -s elsewhere/deep "$R/vvadir/via"
+# vvahelp/ is a tree that came in an archive, with a .venv/ and a myenv/ whose
+# activate scripts write a mark, and a gone/ that links to nowhere: uv venv
+# ends well and makes no venv for --help and -h, and keeps or remakes the one
+# there for --allow-existing and --clear, and vva then activated the one
+# there. This mock uv ends well for each of them, and for --version and -V,
+# and makes nothing.
+mkdir -p "$R/vvahelp/.venv/bin" "$R/vvahelp/myenv/bin"
+for v in .venv myenv; do
+    printf 'echo SOURCED-%s\n' "$v" > "$R/vvahelp/$v/bin/activate"
+    printf "'SOURCED-%s'\n" "$v" > "$R/vvahelp/$v/bin/Activate.ps1"
+done
+ln -s nowhere "$R/vvahelp/gone"
+# vvaplant/ is a tree that came in an archive: a pyproject.toml, beside which
+# vva says to pick a python with --python, and a directory named after that
+# option, and one after -p, each with activate scripts vva must never run.
+mkdir -p "$R/vvaplant/--python/bin" "$R/vvaplant/-p/bin"
+: > "$R/vvaplant/pyproject.toml"
+for d in --python -p; do
+    printf 'echo PLANTED%s\n' "$d" > "$R/vvaplant/$d/bin/activate"
+    printf "'PLANTED%s'\n" "$d" > "$R/vvaplant/$d/bin/Activate.ps1"
+done
+# vvarace/ starts empty: there the mock uv makes the venv it is named also for
+# a request for help or a version (ROUTE_MAKE_VENV), as another process could
+# make it while uv runs. vvastat/ holds a there/, which vva finds before uv
+# venv runs, and a file, notadir, below which the mock uv makes no venv and
+# fails.
+mkdir -p "$R/vvarace" "$R/vvastat/there"
+: > "$R/vvastat/notadir"
+# vvatracked/ is a checkout that committed a myenv/ and then lost it from its
+# work tree: git still tracks myenv/'s files, so va refuses the myenv/ the
+# mock uv makes there anew (ROUTE_MAKE_VENV).
+mkdir -p "$R/vvatracked/myenv/bin"
+(
+    cd "$R/vvatracked" || exit 1
+    printf 'echo COMMITTED\n' > myenv/bin/activate
+    printf "'COMMITTED'\n" > myenv/bin/Activate.ps1
+    printf 'version_info = 3.13.1\n' > myenv/pyvenv.cfg
+    git init -q .
+    git -c user.email=t@example.com -c user.name=t add myenv
+    git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
+    rm -rf myenv
+) >/dev/null 2>&1
 # Your own uv settings, which pip, vv and vva have uv read in place of a
 # uv.toml or pyproject.toml here or above (--config-file): a user uv.toml in
 # an XDG_CONFIG_HOME (uvuser/), one in a HOME's .config (uvhome/), which uv
@@ -1560,11 +1686,11 @@ vv: uv --no-config venv, as $RP/proj/pyproject.toml is here or above ($VV_NONE)"
 rc=0" "$actual"
     assert_eq "$sh/vv -p below a uv.toml says so" "vv: uv --no-config venv, as $RP/uvtoml/uv.toml is here or above ($VV_NONE)" "$(cat "$R/err")"
 
-    echo "[$sh] vva below a .python-version that names a path: uv --no-config venv, then va"
+    echo "[$sh] vva below a .python-version that names a path: uv --no-config venv, and no activation where uv made no venv"
     route_posix "$sh" "$R/pyver/sub" "vva" >/dev/null
-    assert_eq "$sh/vva below a .python-version that names a path runs uv --no-config venv" "--no-config venv" "$(cat "$ROUTE_LOG")"
-    assert_eq "$sh/vva below a .python-version that names a path says so, then va runs" "vva: uv --no-config venv, as $RP/pyver/.python-version is here or above ($VV_NONE)
-activate script not found: .venv/bin/activate" "$(cat "$R/err")"
+    assert_eq "$sh/vva below a .python-version that names a path runs uv --no-config venv" "--no-config venv .venv" "$(cat "$ROUTE_LOG")"
+    assert_eq "$sh/vva below a .python-version that names a path says so, then that uv made no venv" "vva: uv --no-config venv, as $RP/pyver/.python-version is here or above ($VV_NONE)
+vva: uv venv made no .venv/bin/activate, so vva activates nothing" "$(cat "$R/err")"
 
     echo "[$sh] vv with the overrides off: still uv --no-config venv in a project"
     actual=$(route_posix "$sh" "$R/proj" "toggle-uv >/dev/null; vv")
@@ -1577,7 +1703,7 @@ rc=0" "$actual"
     assert_eq "$sh/vv and vva outside a project run uv venv" "mock-uv venv
 mock-uv venv myenv
 rc=1" "$actual"
-    assert_eq "$sh/vv and vva outside a project print no line but va's" "activate script not found: myenv/bin/activate" "$(cat "$R/err")"
+    assert_eq "$sh/vv and vva outside a project print no line but that uv made no venv" "vva: uv venv made no myenv/bin/activate, so vva activates nothing" "$(cat "$R/err")"
     actual=$(route_posix "$sh" "$R/pyveronly" "vv")
     assert_eq "$sh/vv beside a version-only .python-version runs uv venv" "mock-uv venv
 rc=0" "$actual"
@@ -1595,7 +1721,7 @@ rc=0" "$actual"
     # vva runs va, whose git fails outside a checkout, and va assigned git's
     # message plainly to name a failure it then found none of.
     echo "[$sh] vva under set -e, outside a git checkout: uv venv, then va activates, and the shell goes on"
-    actual=$(route_posix "$sh" "$R/sete" "set -e; vva myenv; echo \"after VE=[\${VIRTUAL_ENV#'$R/'}] PY=[\$_DEN_VENV_PYTHON]\"") || true
+    actual=$(route_posix "$sh" "$R/sete" "rm -rf myenv; export ROUTE_MAKE_VENV=1; set -e; vva myenv; echo \"after VE=[\${VIRTUAL_ENV#'$RP/'}] PY=[\$_DEN_VENV_PYTHON]\"") || true
     assert_eq "$sh/vva under set -e outside a checkout activates the venv" "mock-uv venv myenv
 after VE=[sete/myenv] PY=[3.13.1]
 rc=0" "$actual"
@@ -1617,7 +1743,7 @@ rc=1" "$actual"
     assert_eq "$sh/vv and vva with --directory name what they found there" "vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
 vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above $RP/pyverdir ($VV_NONE_THERE)
 vva: uv --no-config venv, as $RP/uvtoml/uv.toml is in or above $RP/uvtoml/sub ($VV_NONE_THERE)
-activate script not found: myenv/bin/activate" "$(cat "$R/err")"
+vva: uv venv made no $R/uvtoml/sub/myenv/bin/activate, so vva activates nothing" "$(cat "$R/err")"
 
     echo "[$sh] vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT, as uv ranks them and --directory: the same"
     actual=$(route_posix "$sh" "$NOPROJ" "
@@ -1638,6 +1764,165 @@ vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver (
 vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
 vv: uv --no-config venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_NONE_THERE)
 vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_KEEPS_THERE)" "$(cat "$R/err")"
+
+    # uv run, too, reads from where UV_WORKING_DIR, UV_WORKING_DIRECTORY or
+    # UV_PROJECT moves it. python, python3 and py walked from here alone, so
+    # from a directory with no marker they ran uv run at a clone (the real-uv
+    # checks show it build one). Where uv cannot enter the directory, it stops
+    # before it reads anything.
+    echo "[$sh] python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project, from a directory with no marker: the system python, not uv run"
+    actual=$(route_posix "$sh" "$NOPROJ" "
+        export UV_WORKING_DIR='$R/pyver'; python -c 1
+        unset UV_WORKING_DIR; export UV_WORKING_DIRECTORY='$R/uvtoml/sub'; python3 -c 2
+        unset UV_WORKING_DIRECTORY; export UV_PROJECT='$R/proj/sub'; py -c 3
+        export UV_PROJECT=../route/proj; python -c 4
+        export UV_PROJECT='$NOPROJ'; python -c 5
+        unset UV_PROJECT; export UV_WORKING_DIR='$R/nope'; python -c 6
+        export VIRTUAL_ENV='$R/venv' _DEN_VENV_PYTHON=3.12 UV_WORKING_DIR='$R/proj'; python -c 7")
+    assert_eq "$sh/python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project run the system python" "system-python -c 1
+system-python -c 2
+system-python -c 3
+system-python -c 4
+mock-uv run -- python -c 5
+mock-uv run -- python -c 6
+venv-python -c 7
+rc=0" "$actual"
+    assert_eq "$sh/python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project name what they found there" "python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyver/.python-version
+python3: running $R/sys/python3, not uv run: uv run would build or run code from $RP/uvtoml/uv.toml
+py: running $R/sys/python3, not uv run: uv run would build or run code from $R/proj/pyproject.toml
+python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/proj/pyproject.toml
+python -c 5 → uv run -- python -c 5
+python -c 6 → uv run -- python -c 6" "$(cat "$R/err")"
+
+    # vva took its first argument for the venv's name, an option too, and
+    # the name from here where uv made the venv elsewhere: it activated
+    # another venv than the one uv made, or ran a --python/bin/activate. The
+    # mock uv makes each venv (ROUTE_MAKE_VENV); seen prints the venv active,
+    # then forgets it and removes the one made, so that the next vva makes it
+    # anew.
+    echo "[$sh] vva hands uv venv the name it activates, and activates it where uv made it"
+    actual=$(route_posix "$sh" "$R/vvadir" "
+        export ROUTE_MAKE_VENV=1
+        seen() { echo \"VE=[\${VIRTUAL_ENV#'$RP/'}]\"; unset VIRTUAL_ENV; rm -rf \"\$1\"; }
+        vva myenv --directory elsewhere; seen elsewhere/myenv
+        export UV_WORKING_DIR=elsewhere; vva myenv; seen elsewhere/myenv
+        unset UV_WORKING_DIR; export UV_WORKING_DIRECTORY='$R/vvadir/elsewhere'; vva myenv --python 3.13; seen elsewhere/myenv
+        unset UV_WORKING_DIRECTORY; vva myenv --directory=via/..; seen elsewhere/myenv
+        vva '$R/vvadir/absenv' --directory elsewhere; seen absenv")
+    assert_eq "$sh/vva activates the venv uv made, not one of the same name here" "mock-uv venv myenv --directory elsewhere
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv --python 3.13
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv --directory=via/..
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv $R/vvadir/absenv --directory elsewhere
+VE=[vvadir/absenv]
+rc=0" "$actual"
+    assert_eq "$sh/vva activates the venv uv made, and prints no line" "" "$(cat "$R/err")"
+    actual=$(route_posix "$sh" "$R/vvadot" "
+        export ROUTE_MAKE_VENV=1
+        seen() { echo \"VE=[\${VIRTUAL_ENV#'$RP/'}]\"; unset VIRTUAL_ENV; rm -rf \"\$1\"; }
+        vva -p 3.13; seen .venv
+        vva --clear; seen .venv
+        vva --allow-existing; seen .venv")
+    assert_eq "$sh/vva with an option first activates the .venv it names to uv, also with --clear or --allow-existing where none was" "mock-uv venv .venv -p 3.13
+VE=[vvadot/.venv]
+mock-uv venv .venv --clear
+VE=[vvadot/.venv]
+mock-uv venv .venv --allow-existing
+VE=[vvadot/.venv]
+rc=0" "$actual"
+    assert_eq "$sh/vva with an option first activates the .venv it made, and prints no line" "" "$(cat "$R/err")"
+
+    echo "[$sh] vva with an option first, in a tree with a --python/ and a -p/: runs no activate script there"
+    actual=$(route_posix "$sh" "$R/vvaplant" "vva --python 3.13; vva -p 3.13")
+    assert_eq "$sh/vva with an option first names .venv to uv" "mock-uv --no-config venv .venv --python 3.13
+mock-uv --no-config venv .venv -p 3.13
+rc=1" "$actual"
+    assert_not_contains "$sh/vva with an option first runs no --python/bin/activate or -p/bin/activate" "PLANTED" "$actual$(cat "$R/err")"
+
+    # uv venv ends well for --help and -h and makes no venv, and for
+    # --allow-existing and --clear keeps or remakes the one there: vva took
+    # any success for a venv made, and ran the activate script that was there.
+    echo "[$sh] vva where uv venv ends well and the venv was there before: runs no activate script there, and says how to"
+    actual=$(route_posix "$sh" "$R/vvahelp" "
+        for f in --help -h --version -V --allow-existing --clear; do vva \$f; echo \"\$f rc=\$? VE=[\${VIRTUAL_ENV-}]\"; done
+        vva myenv --help; echo \"myenv rc=\$? VE=[\${VIRTUAL_ENV-}]\"
+        vva gone; echo \"gone rc=\$? VE=[\${VIRTUAL_ENV-}]\"")
+    assert_not_contains "$sh/vva where the venv was there runs no activate script of it" "SOURCED" "$actual$(cat "$R/err")"
+    expected='' expected_err=''
+    for f in --help -h --version -V --allow-existing --clear; do
+        expected="${expected}mock-uv --no-config venv .venv $f
+$f rc=1 VE=[]
+"
+        case $f in
+            --allow-existing|--clear) why="vva: .venv was there before uv venv ran, so vva activates nothing; activate it with va .venv" ;;
+            *) why="vva: $f asks uv venv for help or its version, not a venv, so vva activates nothing" ;;
+        esac
+        expected_err="${expected_err}vva: uv --no-config venv, as $RP/vvahelp/.venv is here or above ($VV_NONE)
+$why
+"
+    done
+    assert_eq "$sh/vva where the venv was there activates nothing, and fails" "${expected}mock-uv --no-config venv myenv --help
+myenv rc=1 VE=[]
+mock-uv --no-config venv gone
+gone rc=1 VE=[]
+rc=0" "$actual"
+    assert_eq "$sh/vva where the venv was there says why it activates nothing, and how to activate one that was there" "${expected_err}vva: uv --no-config venv, as $RP/vvahelp/.venv is here or above ($VV_NONE)
+vva: --help asks uv venv for help or its version, not a venv, so vva activates nothing
+vva: uv --no-config venv, as $RP/vvahelp/.venv is here or above ($VV_NONE)
+vva: gone was there before uv venv ran, so vva activates nothing; activate it with va gone" "$(cat "$R/err")"
+
+    # A request for help or a version makes no venv, but another process can
+    # make the venv's path while uv runs, as the mock uv does here
+    # (ROUTE_MAKE_VENV): vva took the venv that appeared for one uv made, and
+    # activated it. -h in a cluster of short options (-qh) asks for help too;
+    # -p/usr/bin/python3 names a python, and that venv vva activates.
+    echo "[$sh] vva asked for help or a version: activates nothing, whatever appears at the venv's path while uv runs"
+    actual=$(route_posix "$sh" "$R/vvarace" "
+        export ROUTE_MAKE_VENV=1
+        for f in --help -h --version -V -qh; do vva \$f; echo \"\$f rc=\$? VE=[\${VIRTUAL_ENV-}]\"; rm -rf .venv; done
+        vva myenv --help; echo \"myenv rc=\$? VE=[\${VIRTUAL_ENV-}]\"; rm -rf myenv
+        vva -p/usr/bin/python3; echo \"python rc=\$? VE=[\${VIRTUAL_ENV#'$RP/'}]\"; rm -rf .venv")
+    expected='' expected_err=''
+    for f in --help -h --version -V -qh; do
+        expected="${expected}mock-uv venv .venv $f
+$f rc=1 VE=[]
+"
+        expected_err="${expected_err}vva: $f asks uv venv for help or its version, not a venv, so vva activates nothing
+"
+    done
+    assert_eq "$sh/vva asked for help or a version activates nothing, and fails" "${expected}mock-uv venv myenv --help
+myenv rc=1 VE=[]
+mock-uv venv .venv -p/usr/bin/python3
+python rc=0 VE=[vvarace/.venv]
+rc=0" "$actual"
+    assert_eq "$sh/vva asked for help or a version says so" "${expected_err}vva: --help asks uv venv for help or its version, not a venv, so vva activates nothing" "$(cat "$R/err")"
+
+    # va refuses the myenv/ uv makes anew where git still tracks one
+    # (vvatracked/). vva returns va's status, so it fails: the part after
+    # && does not run, and the part after || does.
+    echo "[$sh] vva where va refuses the venv uv made: fails, and the part after && does not run"
+    actual=$(route_posix "$sh" "$R/vvatracked" "
+        export ROUTE_MAKE_VENV=1
+        vva myenv; echo \"alone rc=\$? VE=[\${VIRTUAL_ENV-}]\"; rm -rf myenv
+        vva myenv && echo THEN-RAN; echo \"and rc=\$?\"; rm -rf myenv
+        vva myenv || echo ELSE-RAN; rm -rf myenv")
+    assert_eq "$sh/vva where va refuses the venv uv made fails, and only the part after || runs" "mock-uv venv myenv
+alone rc=1 VE=[]
+mock-uv venv myenv
+and rc=1
+mock-uv venv myenv
+ELSE-RAN
+rc=0" "$actual"
+    expected_err=''
+    for _ in 1 2 3; do
+        expected_err="${expected_err}va: myenv: venv content is tracked by git (bin/Activate.ps1 bin/activate pyvenv.cfg) - a venv committed to the repo; source it yourself if you trust it: source myenv/bin/activate
+"
+    done
+    assert_eq "$sh/vva where va refuses the venv uv made says what va says" "${expected_err%"$NL"}" "$(cat "$R/err")"
 
     # link/ is proj/sub/ under another name: from the directory uv runs in,
     # .. is proj/, and by name link/.. is the route directory, which holds
@@ -1721,11 +2006,11 @@ pip3 list → uv --config-file $UVU/uv/uv.toml pip list ($PIP_KEEPS)" "$(cat "$R
     echo "[$sh] vv and vva in a project, with a uv.toml of yours: uv --no-config --config-file it, also with the overrides off"
     actual=$(route_posix "$sh" "$R/proj/sub" "export XDG_CONFIG_HOME='$UVU'; vv -p 3.13; toggle-uv >/dev/null; vva")
     assert_eq "$sh/vv and vva in a project with a uv.toml of yours run uv --no-config --config-file it" "mock-uv --no-config --config-file $UVU/uv/uv.toml venv -p 3.13
-mock-uv --no-config --config-file $UVU/uv/uv.toml venv
+mock-uv --no-config --config-file $UVU/uv/uv.toml venv .venv
 rc=1" "$actual"
     assert_eq "$sh/vv and vva in a project with a uv.toml of yours say so" "vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $RP/proj/pyproject.toml is here or above ($VV_KEEPS)
 vva: uv --no-config --config-file $UVU/uv/uv.toml venv, as $RP/proj/pyproject.toml is here or above ($VV_KEEPS)
-activate script not found: .venv/bin/activate" "$(cat "$R/err")"
+vva: uv venv made no .venv/bin/activate, so vva activates nothing" "$(cat "$R/err")"
 
     echo "[$sh] the uv.toml they read is the one uv reads besides a project's"
     actual=$(route_posix "$sh" "$R/uvrel" "
@@ -1775,13 +2060,20 @@ PYTHON_PS1_ROUTE="$TESTTMP/python_route.ps1"
     echo ". '$DOTFILES/shell/pwsh/_helpers.ps1'"
     cat "$PYTHON_PS1"
 } > "$PYTHON_PS1_ROUTE"
+# vva's refusals are terminating errors: the trap prints one as any other
+# error and goes on with the next statement of <commands>, as PowerShell goes
+# on with the next line typed at its prompt. Only a statement of <commands>
+# itself: in a loop, a refusal ends the loop, so the checks catch it there.
 route_pwsh() {
     : > "$ROUTE_LOG"
     $ROUTE_TIMEOUT pwsh -NoProfile -NonInteractive -Command "
         . '$PYTHON_PS1_ROUTE'
         Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
         Set-Location -LiteralPath '$1'
-        & { $2 } *>&1 | ForEach-Object {
+        & {
+            trap { \"ERROR: \$(\$_.Exception.Message)\"; continue }
+            $2
+        } *>&1 | ForEach-Object {
             if (\$_ -is [System.Management.Automation.WarningRecord]) { \"WARNING: \$(\$_.Message)\" }
             elseif (\$_ -is [System.Management.Automation.ErrorRecord]) { \"ERROR: \$(\$_.Exception.Message)\" }
             elseif (\$_ -is [System.Management.Automation.InformationRecord]) { \"HOST: \$_\" }
@@ -1925,11 +2217,11 @@ actual=$(route_pwsh "$R/uvtoml/sub" "vv -p 3.13")
 assert_eq "pwsh/vv -p below a uv.toml runs uv --no-config venv after a warning" "WARNING: vv: uv --no-config venv, as $R/uvtoml/uv.toml is here or above ($VV_NONE)
 mock-uv --no-config venv -p 3.13" "$actual"
 
-echo "[pwsh] vva below a .python-version that names a path: uv --no-config venv, then va"
+echo "[pwsh] vva below a .python-version that names a path: uv --no-config venv, and no activation where uv made no venv"
 actual=$(route_pwsh "$R/pyver/sub" "vva")
-assert_eq "pwsh/vva below a .python-version that names a path runs uv --no-config venv after a warning, then va" "WARNING: vva: uv --no-config venv, as $R/pyver/.python-version is here or above ($VV_NONE)
-mock-uv --no-config venv
-ERROR: activate script not found under '.venv' (Scripts/ or bin/)" "$actual"
+assert_eq "pwsh/vva below a .python-version that names a path runs uv --no-config venv after a warning, then says uv made no venv" "WARNING: vva: uv --no-config venv, as $R/pyver/.python-version is here or above ($VV_NONE)
+mock-uv --no-config venv .venv
+ERROR: uv venv made no activate script under '.venv' (Scripts/ or bin/), so vva activates nothing" "$actual"
 
 echo "[pwsh] vv with the overrides off: still uv --no-config venv in a project"
 actual=$(route_pwsh "$R/proj" "toggle-uv *>\$null; vv")
@@ -1953,7 +2245,7 @@ WARNING: vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above
 mock-uv --no-config venv --directory=../route/pyverdir v
 WARNING: vva: uv --no-config venv, as $RP/uvtoml/uv.toml is in or above $RP/uvtoml/sub ($VV_NONE_THERE)
 mock-uv --no-config venv myenv --directory $R/uvtoml/sub
-ERROR: activate script not found under 'myenv' (Scripts/ or bin/)" "$actual"
+ERROR: uv venv made no activate script under '$RP/uvtoml/sub/myenv' (Scripts/ or bin/), so vva activates nothing" "$actual"
 
 echo "[pwsh] vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT, as uv ranks them and --directory: the same"
 actual=$(route_pwsh "$NOPROJ" "
@@ -1973,6 +2265,130 @@ WARNING: vv: uv --no-config venv, as $R/proj/pyproject.toml is in or above $R/pr
 mock-uv --no-config venv
 WARNING: vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is in or above $R/proj/sub ($VV_KEEPS_THERE)
 mock-uv --no-config --config-file $UVU/uv/uv.toml venv" "$actual"
+
+# python, python3 and py read from where uv run reads, as on bash and zsh.
+echo "[pwsh] python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project, from a directory with no marker: the system python, not uv run"
+actual=$(route_pwsh "$NOPROJ" "
+    \$env:UV_WORKING_DIR = '$R/pyver'; python -c 1
+    Remove-Item Env:\\UV_WORKING_DIR; \$env:UV_WORKING_DIRECTORY = '$R/uvtoml/sub'; python3 -c 2
+    Remove-Item Env:\\UV_WORKING_DIRECTORY; \$env:UV_PROJECT = '$R/proj/sub'; py -c 3
+    \$env:UV_PROJECT = '../route/proj'; python -c 4
+    \$env:UV_PROJECT = '$NOPROJ'; python -c 5
+    Remove-Item Env:\\UV_PROJECT; \$env:UV_WORKING_DIR = '$R/nope'; python -c 6
+    \$env:VIRTUAL_ENV = '$R/venv'; \$env:_DEN_VENV_PYTHON = '3.12'; \$env:UV_WORKING_DIR = '$R/proj'; python -c 7")
+assert_eq "pwsh/python, python3 and py with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT at a project run the system python after a warning" "WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/pyver/.python-version
+system-python -c 1
+WARNING: python3: running $R/sys/python3, not uv run: uv run would build or run code from $RP/uvtoml/uv.toml
+system-python -c 2
+WARNING: py: running $R/sys/python3, not uv run: uv run would build or run code from $R/proj/pyproject.toml
+system-python -c 3
+WARNING: python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/proj/pyproject.toml
+system-python -c 4
+HOST: python -c 5 → uv run -- python -c 5
+mock-uv run -- python -c 5
+HOST: python -c 6 → uv run -- python -c 6
+mock-uv run -- python -c 6
+venv-python -c 7" "$actual"
+
+# vva hands uv venv the name it activates, as on bash and zsh, and takes a
+# relative one from where uv runs as _DenUvMarker reads it: PowerShell takes
+# a .. after a link by name (via/.. would be vvadir/). The mock uv makes each
+# venv, and seen prints the venv active, then forgets it and removes the one
+# made, as on bash and zsh.
+echo "[pwsh] vva hands uv venv the name it activates, and activates it where uv made it"
+actual=$(route_pwsh "$R/vvadir" "
+    \$env:ROUTE_MAKE_VENV = '1'
+    function seen(\$made) { \"VE=[\$(\$env:VIRTUAL_ENV -replace '^$RP/')]\"; Remove-Item Env:\\VIRTUAL_ENV -ErrorAction Ignore; Remove-Item -LiteralPath \$made -Recurse -Force }
+    vva myenv --directory elsewhere; seen elsewhere/myenv
+    \$env:UV_WORKING_DIR = 'elsewhere'; vva myenv; seen elsewhere/myenv
+    Remove-Item Env:\\UV_WORKING_DIR; \$env:UV_WORKING_DIRECTORY = '$R/vvadir/elsewhere'; vva myenv --python 3.13; seen elsewhere/myenv
+    Remove-Item Env:\\UV_WORKING_DIRECTORY; vva myenv --directory=via/..; seen elsewhere/myenv
+    vva '$R/vvadir/absenv' --directory elsewhere; seen absenv")
+assert_eq "pwsh/vva activates the venv uv made, not one of the same name here" "mock-uv venv myenv --directory elsewhere
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv --python 3.13
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv --directory=via/..
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv $R/vvadir/absenv --directory elsewhere
+VE=[vvadir/absenv]" "$actual"
+actual=$(route_pwsh "$R/vvadot" "
+    \$env:ROUTE_MAKE_VENV = '1'
+    function seen(\$made) { \"VE=[\$(\$env:VIRTUAL_ENV -replace '^$RP/')]\"; Remove-Item Env:\\VIRTUAL_ENV -ErrorAction Ignore; Remove-Item -LiteralPath \$made -Recurse -Force }
+    vva -p 3.13; seen .venv
+    vva --clear; seen .venv
+    vva --allow-existing; seen .venv")
+assert_eq "pwsh/vva with an option first activates the .venv it names to uv, also with --clear or --allow-existing where none was" "mock-uv venv .venv -p 3.13
+VE=[vvadot/.venv]
+mock-uv venv .venv --clear
+VE=[vvadot/.venv]
+mock-uv venv .venv --allow-existing
+VE=[vvadot/.venv]" "$actual"
+
+echo "[pwsh] vva with an option first, in a tree with a --python/ and a -p/: dot-sources no activate script there"
+actual=$(route_pwsh "$R/vvaplant" "vva --python 3.13; vva -p 3.13")
+assert_not_contains "pwsh/vva with an option first dot-sources no --python/bin/Activate.ps1 or -p/bin/Activate.ps1" "PLANTED" "$actual"
+assert_contains "pwsh/vva with an option first names .venv to uv" "mock-uv --no-config venv .venv -p 3.13" "$actual"
+
+# uv venv ends well for --help and -h and makes no venv, and for
+# --allow-existing and --clear keeps or remakes the one there: vva took any
+# success for a venv made, as on bash and zsh, and dot-sourced the activate
+# script that was there.
+echo "[pwsh] vva where uv venv ends well and the venv was there before: dot-sources no activate script there, and says how to"
+actual=$(route_pwsh "$R/vvahelp" "
+    foreach (\$f in '--help', '-h', '--version', '-V', '--allow-existing', '--clear') {
+        try { vva \$f 3>\$null } catch { \"ERROR: \$(\$_.Exception.Message)\" }
+        \"\$f VE=[\$env:VIRTUAL_ENV]\"
+    }
+    vva myenv --help 3>\$null; \"myenv VE=[\$env:VIRTUAL_ENV]\"
+    vva gone 3>\$null; \"gone VE=[\$env:VIRTUAL_ENV]\"")
+assert_not_contains "pwsh/vva where the venv was there dot-sources no activate script of it" "SOURCED" "$actual"
+expected=''
+for f in --help -h --version -V --allow-existing --clear; do
+    case $f in
+        --allow-existing|--clear) why="'.venv' was there before uv venv ran, so vva activates nothing; activate it with va '.venv'" ;;
+        *) why="'$f' asks uv venv for help or its version, not a venv, so vva activates nothing" ;;
+    esac
+    expected="${expected}mock-uv --no-config venv .venv $f
+ERROR: $why
+$f VE=[]
+"
+done
+assert_eq "pwsh/vva where the venv was there activates nothing, and says why, and how to activate one that was there" "${expected}mock-uv --no-config venv myenv --help
+ERROR: '--help' asks uv venv for help or its version, not a venv, so vva activates nothing
+myenv VE=[]
+mock-uv --no-config venv gone
+ERROR: 'gone' was there before uv venv ran, so vva activates nothing; activate it with va 'gone'
+gone VE=[]" "$actual"
+
+# A request for help or a version makes no venv, but another process can make
+# the venv's path while uv runs, as the mock uv does here (ROUTE_MAKE_VENV), as
+# on bash and zsh: vva took the venv that appeared for one uv made, and
+# dot-sourced its activate script.
+echo "[pwsh] vva asked for help or a version: activates nothing, whatever appears at the venv's path while uv runs"
+actual=$(route_pwsh "$R/vvarace" "
+    \$env:ROUTE_MAKE_VENV = '1'
+    foreach (\$f in '--help', '-h', '--version', '-V', '-qh') {
+        try { vva \$f } catch { \"ERROR: \$(\$_.Exception.Message)\" }
+        \"\$f VE=[\$env:VIRTUAL_ENV]\"
+        Remove-Item -LiteralPath .venv -Recurse -Force
+    }
+    vva myenv --help; \"myenv VE=[\$env:VIRTUAL_ENV]\"; Remove-Item -LiteralPath myenv -Recurse -Force
+    vva -p/usr/bin/python3; \"python VE=[\$(\$env:VIRTUAL_ENV -replace '^$RP/')]\"; Remove-Item -LiteralPath .venv -Recurse -Force")
+expected=''
+for f in --help -h --version -V -qh; do
+    expected="${expected}mock-uv venv .venv $f
+ERROR: '$f' asks uv venv for help or its version, not a venv, so vva activates nothing
+$f VE=[]
+"
+done
+assert_eq "pwsh/vva asked for help or a version activates nothing, and says so" "${expected}mock-uv venv myenv --help
+ERROR: '--help' asks uv venv for help or its version, not a venv, so vva activates nothing
+myenv VE=[]
+mock-uv venv .venv -p/usr/bin/python3
+python VE=[vvarace/.venv]" "$actual"
 
 echo "[pwsh] vv with --project: the walk starts there, as uv takes it, and a bare name is looked up where uv runs"
 actual=$(route_pwsh "$NOPROJ" "
@@ -2059,7 +2475,99 @@ if [ -d /proc/self ]; then
         vv --directory work")
     assert_eq "pwsh/vv --directory through a link to /proc/self/cwd runs uv --no-config venv" "WARNING: vv: uv --no-config venv, as /proc/self is on the way there, which uv reads for its own process ($VV_NONE_THERE)
 mock-uv --no-config venv --directory work" "$actual"
+    # Nor can vva tell where uv made the venv there: it activates none.
+    actual=$(route_pwsh "$R/procrel" "
+        [System.IO.Directory]::SetCurrentDirectory('$NOPROJ')
+        vva v --directory work 3>\$null")
+    assert_eq "pwsh/vva --directory through a link to /proc/self/cwd activates nothing" "mock-uv --no-config venv v --directory work
+ERROR: uv venv made 'v' where vva cannot tell; activate it with va <its path>" "$actual"
 fi
+
+# route_pwsh_lines <directory> <lines>: python.ps1 as route_pwsh loads it,
+# then each of <lines> on its own, as PowerShell runs a line typed at its
+# prompt (pwsh -Command - reads them one at a time): a line sees the $? and
+# $LASTEXITCODE the one before it left. Standard error goes to $R/err.
+route_pwsh_lines() {
+    : > "$ROUTE_LOG"
+    printf '%s\n' ". '$PYTHON_PS1_ROUTE'" 'Remove-Item Env:\VIRTUAL_ENV, Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue' \
+        "Set-Location -LiteralPath '$1'" "$2" |
+        TERM=dumb $ROUTE_TIMEOUT pwsh -NoProfile -NonInteractive -Command - 2>"$R/err" | tr -d '\r'
+}
+# vva_status_lines <tag> <before> <vva arguments>: vva on a line of its own,
+# then before && and before ||, and in a script's try, each time after
+# <before> on the same line and with its output dropped, and a line after
+# each that shows $? and $LASTEXITCODE.
+vva_status_lines() {
+    printf '%s\n' \
+        "${2}vva $3 *>\$null" \
+        "\"$1 q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV]\"" \
+        "\$global:LASTEXITCODE = 0; ${2}vva $3 *>\$null && '$1 THEN-RAN'" \
+        "\"$1 and q=\$? code=\$LASTEXITCODE\"" \
+        "\$global:LASTEXITCODE = 0; ${2}vva $3 *>\$null || '$1 ELSE-RAN'" \
+        "\"$1 or q=\$? code=\$LASTEXITCODE\"" \
+        "\$global:LASTEXITCODE = 0; try { ${2}vva $3 *>\$null; '$1 NOT-CAUGHT' } catch { \"$1 caught code=\$LASTEXITCODE\" }"
+}
+# vva_status <tag> <code>: what vva_status_lines shows where vva fails with
+# <code>: no part after && or || ran.
+vva_status() {
+    printf '%s q=False code=%s VE=[]\n%s and q=False code=%s\n%s or q=False code=%s\n%s caught code=%s' "$1" "$2" "$1" "$2" "$1" "$2" "$1" "$2"
+}
+
+# Each time vva activates nothing it fails, as on bash and zsh, where it
+# returns 1 (uv's own status where uv failed). A Write-Error and return left
+# $? true and $LASTEXITCODE 0, so `vva x --help && next` ran next with no venv
+# active. Now each is a terminating error, as den's other refusals on
+# PowerShell are: $? false, $LASTEXITCODE 1 (uv's code where uv failed), the
+# rest of the line does not run, a part after || neither, and a script
+# catches it.
+echo "[pwsh] vva that activates nothing fails: \$? false, \$LASTEXITCODE 1 or uv's, the rest of the line does not run"
+actual=$(route_pwsh_lines "$R/vvastat" "$(vva_status_lines help '' 'x --help')
+$(vva_status_lines there '' there)
+$(vva_status_lines noscript '' y)
+\$env:ROUTE_MAKE_VENV = '1'
+$(vva_status_lines uvfail '' notadir/v)") || true
+assert_eq "pwsh/vva that activates nothing fails, and no part after && or || runs" "$(vva_status help 1)
+$(vva_status there 1)
+$(vva_status noscript 1)
+$(vva_status uvfail 2)" "$actual"
+err=$(cat "$R/err")
+assert_contains "pwsh/vva asked for help fails with its error" "'--help' asks uv venv for help or its version, not a venv, so vva activates nothing" "$err"
+assert_contains "pwsh/vva where the venv was there fails with its error" "'there' was there before uv venv ran, so vva activates nothing" "$err"
+assert_contains "pwsh/vva where uv made no activate script fails with its error" "uv venv made no activate script under 'y' (Scripts/ or bin/), so vva activates nothing" "$err"
+assert_contains "pwsh/vva where uv venv failed fails with its error" "uv venv failed (exit code 2), so vva activates nothing" "$err"
+actual=$(route_pwsh_lines "$R/vvastat" "\$env:PATH = '$R/sys'; \$global:_DenCmdCache = @{}
+$(vva_status_lines noinstall '' z)") || true
+assert_eq "pwsh/vva without uv fails, and no part after && or || runs" "$(vva_status noinstall 1)" "$actual"
+assert_contains "pwsh/vva without uv says so" "uv is not installed" "$(cat "$R/err")"
+if [ -d /proc/self ]; then
+    actual=$(route_pwsh_lines "$R/procrel" "$(vva_status_lines cannot "[System.IO.Directory]::SetCurrentDirectory('$NOPROJ'); " 'v --directory work')") || true
+    assert_eq "pwsh/vva where it cannot tell where uv made the venv fails, and no part after && or || runs" "$(vva_status cannot 1)" "$actual"
+    assert_contains "pwsh/vva where it cannot tell says so" "uv venv made 'v' where vva cannot tell" "$(cat "$R/err")"
+fi
+
+# vva ends with va, whose refusals are a Write-Error and a return, which leave
+# $? true: where va refused the myenv/ uv made anew where git still tracks
+# one (vvatracked/), vva ended as if it had activated it, and `vva myenv &&
+# next` ran next. Now vva fails then as for its own refusals, also where
+# va's own error stops it ($ErrorActionPreference Stop), and says so after
+# va's error.
+echo "[pwsh] vva where va refuses the venv uv made: fails, \$? false, \$LASTEXITCODE 1, the rest of the line does not run"
+actual=$(route_pwsh_lines "$R/vvatracked" "\$env:ROUTE_MAKE_VENV = '1'
+$(vva_status_lines tracked 'Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore; ' myenv)
+\$ErrorActionPreference = 'Stop'
+$(vva_status_lines stop 'Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore; ' myenv)
+Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore") || true
+assert_eq "pwsh/vva where va refuses the venv uv made fails, and no part after && or || runs" "$(vva_status tracked 1)
+$(vva_status stop 1)" "$actual"
+actual=$(route_pwsh "$R/vvatracked" "
+    \$env:ROUTE_MAKE_VENV = '1'
+    vva myenv
+    \"VE=[\$env:VIRTUAL_ENV]\"
+    Remove-Item -LiteralPath myenv -Recurse -Force")
+assert_eq "pwsh/vva where va refuses the venv uv made says what va says, then that it is not active" "mock-uv venv myenv
+ERROR: 'myenv': venv content is tracked by git (bin/Activate.ps1, bin/activate, pyvenv.cfg) - a venv committed to the repo; dot-source it yourself if you trust it: . myenv/bin/Activate.ps1
+ERROR: va refused 'myenv', which uv venv made, so it is not active
+VE=[]" "$actual"
 
 # PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
 # PowerShell's location, and so its LocationChangedAction, and the process's
@@ -2097,7 +2605,7 @@ if git -C "$DOTFILES" show "$OLD_PY_PS1_COMMIT:shell/pwsh/python.ps1" > "$OLD_VV
         toggle-uv *>\$null
         toggle-uv *>\$null
         vv 3>\$null
-        vva v 3>\$null 2>\$null
+        try { vva v 3>\$null 2>\$null } catch { }
     " 2>&1 | tr -d '\r') || true
     assert_eq "pwsh/vv and vva after an update from 8e5eeba's python.ps1 run uv --no-config venv in a project" "mock-uv --no-config venv
 mock-uv --no-config venv v" "$actual"
@@ -2120,8 +2628,8 @@ actual=$(route_pwsh "$R/proj/sub" "\$env:XDG_CONFIG_HOME = '$UVU'; vv -p 3.13; t
 assert_eq "pwsh/vv and vva in a project with a uv.toml of yours run uv --no-config --config-file it after a warning" "WARNING: vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is here or above ($VV_KEEPS)
 mock-uv --no-config --config-file $UVU/uv/uv.toml venv -p 3.13
 WARNING: vva: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is here or above ($VV_KEEPS)
-mock-uv --no-config --config-file $UVU/uv/uv.toml venv
-ERROR: activate script not found under '.venv' (Scripts/ or bin/)" "$actual"
+mock-uv --no-config --config-file $UVU/uv/uv.toml venv .venv
+ERROR: uv venv made no activate script under '.venv' (Scripts/ or bin/), so vva activates nothing" "$actual"
 
 echo "[pwsh] the uv.toml they read is the one uv reads besides a project's, on Windows too"
 # On Windows, uv\uv.toml in APPDATA, else in SYSTEMDRIVE's ProgramData:
@@ -2192,6 +2700,56 @@ if [ -n "$REAL_UV" ] && "$REAL_UV" venv -q "$WORK/uv_probe" >/dev/null 2>&1; the
         " 2>&1 | tr -d '\r')
         assert_eq "$sh/va and vd round-trip a uv venv" "VE=[.venv] HEAD=[venv] PY=[set]
 VE=[] PATH=[yes] PY=[]" "$actual"
+
+        # uv venv refuses a second name, so with an option first vva names
+        # .venv to it and a name after the option fails there: nothing is made
+        # and nothing activated. uv made `other`, and vva looked for an
+        # --relocatable/bin/activate.
+        echo "[$sh] vva with an option first: uv refuses a second name, and nothing is made or activated (the real uv)"
+        rm -rf "$WORK/uv_vva_$sh"
+        mkdir -p "$WORK/uv_vva_$sh"
+        actual=$("$sh" -c "
+            source '$PYTHON_SH_SOURCE'
+            cd '$WORK/uv_vva_$sh' || exit 1
+            vva --relocatable other >/dev/null 2>&1 && echo ok || echo failed
+            echo \"VE=[\${VIRTUAL_ENV:-}] OTHER=[\$([ -d other ] && echo made)] VENV=[\$([ -d .venv ] && echo made)]\"
+            mkdir elsewhere
+            vva v --directory elsewhere >/dev/null 2>&1 || echo failed
+            [ \"\$VIRTUAL_ENV\" -ef elsewhere/v ] && echo 'VE=[elsewhere/v]' || echo \"VE=[\${VIRTUAL_ENV:-}]\"
+        " 2>&1 | tr -d '\r')
+        assert_eq "$sh/vva with an option first makes no venv it cannot activate; with the name first it activates the one uv made" "failed
+VE=[] OTHER=[] VENV=[]
+VE=[elsewhere/v]" "$actual"
+
+        # uv venv ends well for --help and -h and makes nothing, and for
+        # --allow-existing and --clear keeps or remakes the venv there, and
+        # writes its activate scripts anew; uv 0.13.6 refuses --version and -V
+        # after venv. vva activated the venv that was there: the activate
+        # script that writes a mark, or uv's own.
+        echo "[$sh] vva where the venv was there before: activates nothing, whatever uv venv does with it (the real uv)"
+        rm -rf "$WORK/uv_vvahelp_$sh"
+        mkdir -p "$WORK/uv_vvahelp_$sh"
+        "$REAL_UV" venv -q "$WORK/uv_vvahelp_$sh/.venv" >/dev/null 2>&1
+        actual=$("$sh" -c "
+            source '$PYTHON_SH_SOURCE'
+            cd '$WORK/uv_vvahelp_$sh' || exit 1
+            for f in --help -h --version -V --allow-existing --clear; do
+                printf 'echo %s >> %s\n' \"\$f\" '$WORK/uv_vvahelp_$sh/marks' > .venv/bin/activate
+                vva \$f >/dev/null 2>&1
+                echo \"\$f VE=[\${VIRTUAL_ENV##*/}]\"
+            done
+            vva fresh >/dev/null 2>&1
+            echo \"fresh VE=[\${VIRTUAL_ENV##*/}]\"
+            echo \"marks=[\$(cat marks 2>/dev/null)]\"
+        " 2>&1 | tr -d '\r')
+        assert_eq "$sh/vva where the venv was there activates nothing; a new one it activates" "--help VE=[]
+-h VE=[]
+--version VE=[]
+-V VE=[]
+--allow-existing VE=[]
+--clear VE=[]
+fresh VE=[fresh]
+marks=[]" "$actual"
     done
 
     echo "[pwsh] vva creates and activates a uv venv; vd undoes it"
@@ -2216,6 +2774,73 @@ VE=[] PATH=[yes] PY=[]" "$actual"
     " 2>&1 | tr -d '\r')
     assert_eq "pwsh/vva and vd round-trip a uv venv" "VE=[.venv] HEAD=[True] PY=[True] PROMPT=[(.venv) PS> ]
 VE=[] PATH=[True] PY=[] PROMPT=[PS> ] DEACTIVATE=[False]" "$actual"
+
+    echo "[pwsh] vva with an option first: uv refuses a second name, and nothing is made or activated (the real uv)"
+    rm -rf "$WORK/uv_vva_pwsh"
+    mkdir -p "$WORK/uv_vva_pwsh"
+    actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+        Set-Location '$WORK/uv_vva_pwsh'
+        \$env:VIRTUAL_ENV = \$null
+        try { vva --relocatable other *>\$null } catch { }
+        \"VE=[\$env:VIRTUAL_ENV] OTHER=[\$(Test-Path other)] VENV=[\$(Test-Path .venv)]\"
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/vva with an option first makes no venv it cannot activate" "VE=[] OTHER=[False] VENV=[False]" "$actual"
+
+    echo "[pwsh] vva where the venv was there before: activates nothing, whatever uv venv does with it (the real uv)"
+    rm -rf "$WORK/uv_vvahelp_pwsh"
+    mkdir -p "$WORK/uv_vvahelp_pwsh"
+    "$REAL_UV" venv -q "$WORK/uv_vvahelp_pwsh/.venv" >/dev/null 2>&1
+    actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+        Set-Location '$WORK/uv_vvahelp_pwsh'
+        \$env:VIRTUAL_ENV = \$null
+        foreach (\$f in '--help', '-h', '--version', '-V', '--allow-existing', '--clear') {
+            Set-Content -LiteralPath .venv/bin/activate.ps1 -Value \"Add-Content -LiteralPath '$WORK/uv_vvahelp_pwsh/marks' -Value '\$f'\"
+            try { vva \$f *>\$null } catch { }
+            \"\$f VE=[\$(if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV })]\"
+        }
+        vva fresh *>\$null
+        \"fresh VE=[\$(if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV })]\"
+        \"marks=[\$(if (Test-Path -LiteralPath marks) { (Get-Content -LiteralPath marks) -join ' ' })]\"
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/vva where the venv was there activates nothing; a new one it activates" "--help VE=[]
+-h VE=[]
+--version VE=[]
+-V VE=[]
+--allow-existing VE=[]
+--clear VE=[]
+fresh VE=[fresh]
+marks=[]" "$actual"
+
+    # After va, vva checks that VIRTUAL_ENV names the venv uv made, as uv's
+    # activate.ps1 sets it: from its own path, which PowerShell makes from
+    # the name va got, by name. A name with .. in it, an absolute one that
+    # ends in a /, one taken in a location reached through a link, and one
+    # under a --directory through a link, which vva takes link by link, are
+    # each activated, and vva succeeds. lnk/ links to real/, and real/via/
+    # to real/deep/, so via/.. is real/ to the system and to uv.
+    echo "[pwsh] vva succeeds for the uv venv it activates, named with .., with a / at its end, through a link (the real uv)"
+    rm -rf "$WORK/uv_vvaname_pwsh"
+    mkdir -p "$WORK/uv_vvaname_pwsh/real/sub" "$WORK/uv_vvaname_pwsh/real/deep"
+    ln -s real "$WORK/uv_vvaname_pwsh/lnk"
+    ln -s deep "$WORK/uv_vvaname_pwsh/real/via"
+    actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+        trap { \"ERROR: \$(\$_.Exception.Message)\"; continue }
+        Set-Location -LiteralPath '$WORK/uv_vvaname_pwsh/lnk'
+        \$env:VIRTUAL_ENV = \$null
+        function seen(\$tag, \$ok) {
+            \$ve = if (\$env:VIRTUAL_ENV) { (Split-Path -Leaf (Split-Path -Parent \$env:VIRTUAL_ENV)) + '/' + (Split-Path -Leaf \$env:VIRTUAL_ENV) }
+            \"\$tag q=\$ok VE=[\$ve]\"
+            if (\$env:VIRTUAL_ENV) { vd }
+        }
+        vva sub/../a *>\$null; seen dotdot \$?
+        vva '$WORK/uv_vvaname_pwsh/real/sub/../b/' *>\$null; seen absolute \$?
+        vva c *>\$null; seen link \$?
+        vva d --directory via/.. *>\$null; seen directory \$?
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/vva succeeds for the uv venv it activates, whatever the name's spelling" "dotdot q=True VE=[lnk/a]
+absolute q=True VE=[real/b]
+link q=True VE=[lnk/c]
+directory q=True VE=[real/d]" "$actual"
 
     # python -m venv from the interpreter uv found: the other kind of activate.ps1.
     if "$WORK/uv_probe/bin/python" -m venv --without-pip "$WORK/uv_mixed/std" >/dev/null 2>&1 &&
@@ -2527,6 +3152,33 @@ pip=1" "$(printf '%s\n' "$actual" | tail -n +2)"
 5" "$actual"
         assert_not_exists "$sh/the clone's bin/python did not run" "$C/marks/cfg-python"
 
+        # uv run reads where UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY
+        # moves it: from a directory with no marker it built the clone there,
+        # through a relative UV_PROJECT and in a venv va activated as well.
+        echo "[$sh] from a directory with no marker, python, python3 and py with UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY at a clone run none of its code (the real uv)"
+        E="$WORK/envclones-$sh"
+        mk_clones "$E"
+        "$REAL_UV" venv -q "$E/myvenv" >/dev/null 2>&1
+        actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$E/config" "$sh" -c "
+            . '$PYTHON_SH_SOURCE'
+            unset VIRTUAL_ENV _DEN_VENV_PYTHON
+            cd '$NOPROJ' || exit 1
+            export UV_PROJECT='$E/build'; python --version >/dev/null 2>&1; echo \"python=\$?\"; unset UV_PROJECT
+            export UV_WORKING_DIR='$E/build'; python3 -c 'print(1)'; unset UV_WORKING_DIR
+            export UV_WORKING_DIRECTORY='$E/build/src'; py -c 'print(2)'; unset UV_WORKING_DIRECTORY
+            export UV_PROJECT='../envclones-$sh/build'; python -c 'print(3)'; unset UV_PROJECT
+            va '$E/myvenv' >/dev/null 2>&1 || exit 1
+            export UV_PROJECT='$E/build'; python -c 'print(4)'; unset UV_PROJECT
+        " 2>/dev/null | tr -d '\r') || true
+        assert_eq "$sh/python, python3 and py with UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY at a clone" "python=0
+1
+2
+3
+4" "$actual"
+        assert_eq "$sh/no code of the clone UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY names ran" "" "$(ls "$E/marks")"
+        assert_not_exists "$sh/no .venv appears in the clone UV_PROJECT names" "$E/build/.venv"
+        assert_not_exists "$sh/no uv.lock appears in the clone UV_PROJECT names" "$E/build/uv.lock"
+
         if [ "$PYVER_THREAT" = 1 ]; then
             echo "[$sh] beside a clone's .python-version that names its program, python, python3 and py run none of its code (the real uv)"
             actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$C/config" "$sh" -c "
@@ -2785,6 +3437,30 @@ pip done" "$(printf '%s\n' "$actual" | tail -n +2)"
 4
 5" "$actual"
     assert_not_exists "pwsh/the clone's bin/python did not run" "$C/marks/cfg-python"
+
+    echo "[pwsh] from a directory with no marker, python, python3 and py with UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY at a clone run none of its code (the real uv)"
+    E="$WORK/envclones-pwsh"
+    mk_clones "$E"
+    "$REAL_UV" venv -q "$E/myvenv" >/dev/null 2>&1
+    actual=$(env -u UV_NO_CONFIG XDG_CONFIG_HOME="$E/config" pwsh -NoProfile -NonInteractive -Command "
+        . '$PYTHON_PS1_REAL_UV'
+        Remove-Item Env:\\VIRTUAL_ENV, Env:\\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
+        Set-Location -LiteralPath '$NOPROJ'
+        \$env:UV_PROJECT = '$E/build'; python --version *>\$null; \"python=\$LASTEXITCODE\"; Remove-Item Env:\\UV_PROJECT
+        \$env:UV_WORKING_DIR = '$E/build'; python3 -c 'print(1)' 3>\$null; Remove-Item Env:\\UV_WORKING_DIR
+        \$env:UV_WORKING_DIRECTORY = '$E/build/src'; py -c 'print(2)' 3>\$null; Remove-Item Env:\\UV_WORKING_DIRECTORY
+        \$env:UV_PROJECT = '../envclones-pwsh/build'; python -c 'print(3)' 3>\$null; Remove-Item Env:\\UV_PROJECT
+        va '$E/myvenv' *>\$null
+        \$env:UV_PROJECT = '$E/build'; python -c 'print(4)' 3>\$null; Remove-Item Env:\\UV_PROJECT
+    " 2>/dev/null | tr -d '\r') || true
+    assert_eq "pwsh/python, python3 and py with UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY at a clone" "python=0
+1
+2
+3
+4" "$actual"
+    assert_eq "pwsh/no code of the clone UV_PROJECT, UV_WORKING_DIR or UV_WORKING_DIRECTORY names ran" "" "$(ls "$E/marks")"
+    assert_not_exists "pwsh/no .venv appears in the clone UV_PROJECT names" "$E/build/.venv"
+    assert_not_exists "pwsh/no uv.lock appears in the clone UV_PROJECT names" "$E/build/uv.lock"
 
     if [ "$PYVER_THREAT" = 1 ]; then
         echo "[pwsh] beside a clone's .python-version that names its program, python, python3 and py run none of its code (the real uv)"
