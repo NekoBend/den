@@ -329,6 +329,12 @@ if ($env:STRICT_AT_LOAD -eq '1') {
 
 $StrictSha256 = '6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72'
 
+# Before any program has run, $LASTEXITCODE does not exist, and reading it is
+# an error under strict mode: bash's history check (_DenHistFile) read it to
+# put it back.
+Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+Case 'bash, before any program has run' { bash a.txt one }
+
 # ===== _helpers.ps1 =====
 Case '_WrapLog' { _WrapLog 'ls' 'lsd' }
 Case '_WrapLog, silenced' { $env:_DEN_WRAPPER_LOG = '0'; try { _WrapLog 'ls' 'lsd' } finally { Remove-Item Env:\_DEN_WRAPPER_LOG } }

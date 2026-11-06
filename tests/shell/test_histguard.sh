@@ -347,6 +347,87 @@ code: 3" "$actual"
     actual=$(run_pwsh_den "" "$BASH_BIN ~/.bash_history; 'code: ' + \$LASTEXITCODE" 2>&1 | tr -d '\r')
     assert_eq "pwsh/the full path runs it" "code: 0" "$actual"
     assert_eq "pwsh/the full path ran it" "ps_bash_history" "$(cat "$MARK" 2>/dev/null)"
+
+    echo "[pwsh] runs a syntax check, and refuses it when no-exec is turned off again"
+    rm -f "$MARK"
+    actual=$(run_pwsh_den "Set-Location -LiteralPath '$WORK'" "
+        bash -n ~/.bash_history; 'N1 code: ' + \$LASTEXITCODE
+        zsh +o exec ~/.zsh_history; 'N2 code: ' + \$LASTEXITCODE
+        sh -o noexec ~/.bash_history; 'N3 code: ' + \$LASTEXITCODE
+        try { bash -n +n ~/.bash_history; 'NOT-REFUSED' } catch { 'N4: ' + \$_.Exception.Message }
+        try { zsh -n -o exec ~/.zsh_history; 'NOT-REFUSED' } catch { 'N5: ' + \$_.Exception.Message }
+        try { zsh +-bsd-echo ~/.zsh_history; 'NOT-REFUSED' } catch { 'N6: ' + \$_.Exception.Message }
+    " 2>&1 | tr -d '\r')
+    assert_contains "pwsh/bash -n runs" "N1 code: 0" "$actual"
+    assert_contains "pwsh/zsh +o exec runs" "N2 code: 0" "$actual"
+    assert_contains "pwsh/sh -o noexec runs" "N3 code: 0" "$actual"
+    assert_contains "pwsh/bash -n +n refused" "To run it anyway: $BASH_BIN -n +n ~/.bash_history" "$actual"
+    assert_contains "pwsh/zsh -n -o exec refused" "To run it anyway: $ZSH_BIN -n -o exec ~/.zsh_history" "$actual"
+    assert_contains "pwsh/zsh +-bsd-echo refused" "To run it anyway: $ZSH_BIN +-bsd-echo ~/.zsh_history" "$actual"
+    assert_not_contains "pwsh/no-exec turned off again: refused" "NOT-REFUSED" "$actual"
+    assert_not_exists "pwsh/syntax checks ran nothing" "$MARK"
+
+    # A wildcard stands for several names: the first is the script, and the
+    # others are its arguments, a history file among them too.
+    echo "[pwsh] of a wildcard, only the first name is the script"
+    mkdir -p "$WORK/glob" "$WORK/glob2"
+    printf 'echo "run-1 $*"\n' > "$WORK/glob/run-1.sh"
+    write_hist "$WORK/glob/run-2.log" glob_later
+    write_hist "$WORK/glob2/a.log" glob_first
+    printf 'echo "b $*"\n' > "$WORK/glob2/b.sh"
+    rm -f "$MARK"
+    actual=$(run_pwsh_den "Set-Location -LiteralPath '$WORK'" "
+        \$env:HISTFILE = '$WORK/glob/run-2.log'
+        bash glob/run-*; 'G1 code: ' + \$LASTEXITCODE
+        \$env:HISTFILE = '$WORK/glob2/a.log'
+        try { bash glob2/*; 'NOT-REFUSED' } catch { 'G2: ' + \$_.Exception.Message }
+    " 2>&1 | tr -d '\r')
+    assert_contains "pwsh/a history file after the first name is an argument" "run-1 glob/run-2.log
+G1 code: 0" "$actual"
+    assert_contains "pwsh/the first name a history file: refused, named" \
+        "G2: glob2/a.log is a shell history file; running it would replay every command in it." "$actual"
+    assert_contains "pwsh/the first name a history file: the line as typed" "To run it anyway: $BASH_BIN glob2/*" "$actual"
+    assert_not_contains "pwsh/the first name a history file: not run" "NOT-REFUSED" "$actual"
+    assert_not_exists "pwsh/wildcards ran no history file" "$MARK"
+
+    # A program's exit status reaches the line it is called in, as when it is
+    # typed by its path: $? false after a non-zero exit, so && and || go by it.
+    echo "[pwsh] a non-zero exit leaves \$? false, and \$LASTEXITCODE its code"
+    actual=$(run_pwsh_den "" "
+        bash -c 'exit 3'; 'S1: ' + \$? + ' ' + \$LASTEXITCODE
+        bash -c 'exit 3' && 'S2: && went on'
+        bash -c 'exit 3' || 'S3: || went on'
+        'x' | bash -c 'cat >/dev/null; exit 4'; 'S4: ' + \$? + ' ' + \$LASTEXITCODE
+        'x' | sh -c 'cat >/dev/null; exit 5' || 'S5: piped || went on'
+        zsh -c 'exit 0'; 'S6: ' + \$? + ' ' + \$LASTEXITCODE
+        bash -c 'exit 0' && 'S7: && went on'
+        'x' | bash -c 'cat >/dev/null' && 'S8: piped && went on'
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/\$? and \$LASTEXITCODE after the call" "S1: False 3
+S3: || went on
+S4: False 4
+S5: piped || went on
+S6: True 0
+S7: && went on
+S8: piped && went on" "$actual"
+
+    # Set-StrictMode makes reading a variable that was never set an error, and
+    # \$LASTEXITCODE does not exist before the first program a session runs.
+    echo "[pwsh] under Set-StrictMode, before any program has run"
+    rm -f "$MARK"
+    actual=$(run_pwsh_den "" "
+        Set-StrictMode -Version Latest
+        Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+        \$null = _DenHistFile '$WORK/ok.sh'
+        'T1 exists: ' + (Test-Path -LiteralPath Variable:global:LASTEXITCODE)
+        bash '$WORK/ok.sh' a; 'T2: ' + \$? + ' ' + \$LASTEXITCODE
+        try { bash ~/.bash_history; 'NOT-REFUSED' } catch { 'T3 code: ' + \$LASTEXITCODE }
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/strict mode: no error, and \$LASTEXITCODE put back as it was" "T1 exists: False
+ok a
+T2: True 0
+T3 code: 2" "$actual"
+    assert_not_exists "pwsh/strict mode: ran no history file" "$MARK"
 else
     echo "pwsh not found; skipping pwsh history-file guard tests"
 fi
