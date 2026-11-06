@@ -173,7 +173,7 @@ prints a warning that shows this command.
 | `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. |
 | `DEN_STATE` | `1` | `0` turns the state step off, even with a volume mounted at `/state`: the home keeps its own files. See [What survives where](#what-survives-where). |
-| `DEN_CLEAN_TMP` | `0` | `1` empties `/tmp` at each start, but only when `/tmp` is a mount point of its own (a tmpfs or a volume, or a host directory, which you should never bind there). See [What survives where](#what-survives-where). |
+| `DEN_CLEAN_TMP` | `0` | `1` empties `/tmp` at each start, but only when `/tmp` is a mount point of its own (a tmpfs or a volume, or a host directory, which you should never bind there) with no mount point below it. See [What survives where](#what-survives-where). |
 
 On a root start, the entrypoint also makes `dev` the owner of `/workspace`
 when nothing is mounted there, and links `dev`'s logins and history into
@@ -315,7 +315,10 @@ project and `/state` are the only things to back up. Mount a named volume at
 `/state`, not a host directory: the entrypoint gives its top directory and
 `/state/home` to `dev`. Never bind a host directory to `/tmp`: programs in
 the container take what is there as theirs to delete, and `DEN_CLEAN_TMP=1`
-empties it.
+empties it. With a mount point below `/tmp` (a second volume at
+`/tmp/cache`, or a bound `/tmp/.X11-unix`), `DEN_CLEAN_TMP=1` leaves `/tmp`
+as it is, with a warning: its walk keeps out of other file systems, but not
+out of another mount of the same one, and named volumes usually share one.
 
 ```sh
 docker run -d --init --name den-dev \
@@ -471,8 +474,11 @@ and the home keeps its own files. When `HOST_UID` or `HOST_GID` gives `dev`
 other IDs than the image's, the entrypoint re-owns what under `/state` has
 the image's IDs, as it does for `/home/dev`. It does not re-own what another
 `HOST_UID` left there: start the containers of one volume with the same
-`HOST_UID` and `HOST_GID` each time. To give a volume to other IDs once, as
-root, with the IDs `dev` will run as:
+`HOST_UID` and `HOST_GID` each time. With a mount point below `/state`
+(another volume mounted inside it), it re-owns nothing there, with a
+warning, for the same reason as for `/tmp` above: its walk would go into a
+mount of the same file system. To give a volume to other IDs once, as root,
+with the IDs `dev` will run as:
 `docker run --rm -v den-state:/state --entrypoint /usr/bin/gnuchown den-dev -hR <uid>:<gid> /state`
 (GNU `chown`: with `-h` and no `-L` it changes links, not what they point
 to). With compose, name `<project>_den-state` there instead of `den-state`,

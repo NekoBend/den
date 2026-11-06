@@ -717,25 +717,50 @@ def test_profile_leaves_a_non_root_login_shell_alone(tmp_path):
 # --- the entrypoint ------------------------------------------------------------
 
 
+def _mount_table(*paths: str) -> str:
+    """A mount table with / and PATHS, escaped as /proc/self/mountinfo does.
+
+    It names each mount point by its physical path, as the kernel does.
+    """
+    lines = ["22 1 0:21 / / rw,relatime - overlay overlay rw\n"]
+    for n, path in enumerate(paths, start=40):
+        escaped = _escaped_mount_point(Path(path).resolve())
+        lines.append(f"{n} 22 0:{n} / {escaped} rw,relatime - ext4 /dev/sdb1 rw\n")
+    return "".join(lines)
+
+
+def _escaped_mount_point(path: Path) -> str:
+    """PATH as the mount table writes it.
+
+    A space, tab, newline or backslash becomes a backslash and three octal
+    digits.
+    """
+    return "".join(f"\\{ord(c):03o}" if c in " \t\n\\" else c for c in str(path))
+
+
 def _run_entrypoint(
     tmp_path: Path,
     *,
     uid: int,
     env: dict[str, str],
     mounts: tuple[str, ...] = ("/workspace",),
+    nested: tuple[str, ...] = (),
+    table: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
 
     The account is dev, 1000:1000, home /home/dev. The state volume's mount
     point is tmp_path/state and /tmp is tmp_path/tmp, neither of which this
     makes; mountpoint finds a mount point at each path ``mounts`` names and
-    nowhere else. setpriv logs its call and runs nothing: for state-link it
-    exits with FAKE_STATE_LINK_STATUS (default 0), and otherwise prints its
-    arguments, the HOME it got and the PWSH_ENV variables. gnutimeout logs its
-    call and runs the command after its three options; gnumkdir logs its call
-    and makes the directory; find logs its call and fails when its first
-    argument is FAKE_FIND_FAIL; the other commands that change accounts or
-    files only log theirs.
+    nowhere else. The mount table the entrypoint reads lists /, ``mounts``
+    and ``nested`` (mount points below those, which mountpoint is not asked
+    about), or is missing when ``table`` is false. setpriv logs its call and
+    runs nothing: for state-link it exits with FAKE_STATE_LINK_STATUS
+    (default 0), and otherwise prints its arguments, the HOME it got and the
+    PWSH_ENV variables. gnutimeout logs its call and runs the command after
+    its three options; gnumkdir logs its call and makes the directory; find
+    logs its call and fails when its first argument is FAKE_FIND_FAIL; the
+    other commands that change accounts or files only log theirs.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -780,6 +805,9 @@ def _run_entrypoint(
     )
     user_file = tmp_path / "container-user"
     user_file.write_text("dev\n", encoding="utf-8")
+    mountinfo = tmp_path / "mountinfo"
+    if table:
+        mountinfo.write_text(_mount_table(*mounts, *nested), encoding="utf-8")
     system = "/usr/sbin:/usr/bin:/sbin:/bin"  # the entrypoint's own PATH
     script = tmp_path / "container-entrypoint"
     script.write_text(
@@ -787,8 +815,8 @@ def _run_entrypoint(
             _entrypoint_script(),
             {
                 "state_dir=/state": f"state_dir={tmp_path / 'state'}",
-                "own_mount /tmp": f"own_mount {tmp_path / 'tmp'}",
-                "find /tmp ": f"find {tmp_path / 'tmp'} ",
+                "tmp_dir=/tmp": f"tmp_dir={tmp_path / 'tmp'}",
+                "mountinfo=/proc/self/mountinfo": f"mountinfo={mountinfo}",
                 "/etc/container-user": str(user_file),
                 # The PATH the entrypoint sets for itself, not the one it
                 # gives state-link.
@@ -1137,6 +1165,61 @@ def test_entrypoint_re_owns_the_state_volume_when_it_remaps_the_ids(tmp_path):
 
 
 @_needs("sh", "env")
+@pytest.mark.parametrize(
+    ("nested", "table", "walked"),
+    [
+        # Another named volume, or a bind mount, can share the volume's
+        # device number, which is all find -xdev compares.
+        ("state/home/.cache", True, False),
+        ("state/my dir", True, False),
+        # A mount point only spelled like one below it.
+        ("state2", True, True),
+        ("", False, False),
+    ],
+    ids=["below", "escaped", "sibling", "no-table"],
+)
+def test_entrypoint_re_owns_no_state_volume_with_a_mount_point_below_it(
+    tmp_path, nested, table, walked
+):
+    state = tmp_path / "state"
+    state.mkdir()
+    below = (str(tmp_path / nested),) if nested else ()
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"HOST_UID": "501", "HOST_GID": "20"},
+        mounts=("/workspace", str(state)),
+        nested=below,
+        table=table,
+    )
+    assert result.returncode == 0, result.stderr
+    walks = [line for line in _calls(calls, "find") if f" {state} " in f"{line} "]
+    assert len(walks) == (1 if walked else 0), calls
+    warnings = [
+        line for line in result.stderr.splitlines() if "is re-owned from" in line
+    ]
+    if walked:
+        assert warnings == []
+    elif table:
+        assert warnings == [
+            f"container-entrypoint: mount point {tmp_path / nested} is below"
+            f" {state}, so nothing in {state} is re-owned from 1000:1000;"
+            " docker/README.md shows how to re-own a volume once"
+        ]
+    else:
+        assert warnings == [
+            f"container-entrypoint: could not read the mount table"
+            f" {tmp_path / 'mountinfo'}, so nothing in {state} is re-owned from"
+            " 1000:1000; docker/README.md shows how to re-own a volume once"
+        ]
+    # The rest of the start goes on: the home is re-owned, and state-link runs.
+    assert [line for line in _calls(calls, "find") if "/home/dev " in line]
+    assert _calls(calls, "gnuchown")[-1] == f"gnuchown -h 501:20 {state} {state}/home"
+    assert _state_link_call(501, 20) in calls
+    assert "HOME=/home/dev" in result.stdout.splitlines()
+
+
+@_needs("sh", "env")
 def test_entrypoint_leaves_an_unmounted_state_out_of_the_remap(tmp_path):
     result, calls = _run_entrypoint(
         tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}
@@ -1203,6 +1286,57 @@ def test_entrypoint_empties_tmp_only_on_request_and_on_its_own_mount_point(
             "container-entrypoint: DEN_CLEAN_TMP=1 empties /tmp only when it is"
             " a mount point of its own; it is left as it is\n"
         )
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize(
+    ("nested", "table", "emptied"),
+    [
+        # docker run -v scratch:/tmp -v cache:/tmp/cache: two named volumes
+        # share the device number, and find -xdev would empty both.
+        ("tmp/cache", True, False),
+        ("tmp/.X11-unix", True, False),
+        ("tmp/my dir", True, False),
+        # A mount point only spelled like one below it.
+        ("tmp2", True, True),
+        ("", False, False),
+    ],
+    ids=["volume", "x11", "escaped", "sibling", "no-table"],
+)
+def test_entrypoint_empties_no_tmp_with_a_mount_point_below_it(
+    tmp_path, nested, table, emptied
+):
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    below = (str(tmp_path / nested),) if nested else ()
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"DEN_CLEAN_TMP": "1"},
+        mounts=("/workspace", str(tmp)),
+        nested=below,
+        table=table,
+    )
+    assert result.returncode == 0, result.stderr
+    deletes = [line for line in _calls(calls, "find") if "-delete" in line]
+    if emptied:
+        assert deletes == [f"find {tmp} -xdev -mindepth 1 -delete"]
+        assert result.stderr == ""
+    elif table:
+        assert deletes == []
+        assert result.stderr == (
+            "container-entrypoint: DEN_CLEAN_TMP=1 empties /tmp only when no mount"
+            f" point is below it, and {tmp_path / nested} is one; it is left as"
+            " it is\n"
+        )
+    else:
+        assert deletes == []
+        assert result.stderr == (
+            "container-entrypoint: DEN_CLEAN_TMP=1 empties /tmp only when no mount"
+            f" point is below it, and the mount table {tmp_path / 'mountinfo'}"
+            " could not be read; it is left as it is\n"
+        )
+    assert "HOME=/home/dev" in result.stdout.splitlines()
 
 
 @_needs("sh", "env")
@@ -1283,7 +1417,7 @@ class _Roots:
 
     def mount(self, path: Path) -> None:
         """Add a mount point at PATH, escaped as /proc/self/mountinfo does."""
-        escaped = "".join(f"\\{ord(c):03o}" if c in " \t\n\\" else c for c in str(path))
+        escaped = _escaped_mount_point(path)
         with self.mountinfo.open("a", encoding="utf-8") as table:
             table.write(f"40 22 0:40 / {escaped} rw,relatime - ext4 /dev/sdb1 rw\n")
 

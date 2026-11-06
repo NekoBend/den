@@ -422,6 +422,9 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 # The state volume's mount point (docker/README.md, "What survives where").
 state_dir=/state
+tmp_dir=/tmp
+# The mount table, which names each mount point by its physical path.
+mountinfo=/proc/self/mountinfo
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 warn() { printf 'container-entrypoint: %s\n' "$*" >&2; }
@@ -431,6 +434,47 @@ valid_id() {
 }
 # Succeed when DIR is a mount point of its own, not a symbolic link to one.
 own_mount() { [ ! -L "$1" ] && mountpoint -q "$1"; }
+# Print the first mount point the mount table lists below DIR, and succeed;
+# fail with 1 when there is none, and with 2 when the table cannot be read.
+# find -xdev compares device numbers alone, and a mount of the same file
+# system below DIR (a second named volume, or a bind mount) has the same one,
+# so a walk of DIR as root asks this first. The table writes a space, tab,
+# newline or backslash in a mount point as a backslash and three octal digits.
+mount_below() {
+    mb_dir=$(cd -P -- "$1" && pwd -P) || return 2
+    [ -r "$mountinfo" ] || return 2
+    mb_dir=$mb_dir awk '
+        function unescape(s,    out, i, d) {
+            out = ""
+            while ((i = index(s, "\\")) > 0) {
+                d = substr(s, i + 1, 3)
+                if (d ~ /^[0-7][0-7][0-7]$/) {
+                    out = out substr(s, 1, i - 1) sprintf("%c", \
+                        substr(d, 1, 1) * 64 + substr(d, 2, 1) * 8 + substr(d, 3, 1))
+                    s = substr(s, i + 4)
+                } else {
+                    out = out substr(s, 1, i)
+                    s = substr(s, i + 1)
+                }
+            }
+            return out s
+        }
+        BEGIN {
+            dir = ENVIRON["mb_dir"]
+            below = (dir == "/") ? "/" : dir "/"
+            found = 0
+        }
+        {
+            m = unescape($5)
+            if (m != dir && index(m, below) == 1) {
+                print m
+                found = 1
+                exit
+            }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$mountinfo"
+}
 
 IFS= read -r username < /etc/container-user
 record=$(getent passwd "$username")
@@ -500,12 +544,22 @@ if [ "$(id -u)" -eq 0 ]; then
             -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
             -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
         # The state volume holds the user's files with the old IDs too; the
-        # same walk, which a failure does not stop the start for.
+        # same walk, which a failure does not stop the start for. With a mount
+        # point below the volume, which -xdev would not keep the walk out of
+        # when it is of the same file system, there is no walk at all.
         if [ "$use_state" = 1 ]; then
-            find "$state_dir" -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) \
-                -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
-                -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} + \
-                || warn "re-owning $state_dir from $old_uid:$old_gid failed part way"
+            nested_status=0
+            nested=$(mount_below "$state_dir") || nested_status=$?
+            case "$nested_status" in
+                1)
+                    find "$state_dir" -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) \
+                        -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
+                        -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} + \
+                        || warn "re-owning $state_dir from $old_uid:$old_gid failed part way"
+                    ;;
+                0) warn "mount point $nested is below $state_dir, so nothing in $state_dir is re-owned from $old_uid:$old_gid; docker/README.md shows how to re-own a volume once" ;;
+                *) warn "could not read the mount table $mountinfo, so nothing in $state_dir is re-owned from $old_uid:$old_gid; docker/README.md shows how to re-own a volume once" ;;
+            esac
         fi
     fi
     # A bare workspace needs an owner even when recursive adjustment is disabled.
@@ -517,12 +571,22 @@ if [ "$(id -u)" -eq 0 ]; then
     # empties too (docker/README.md says never to bind one). The image's own
     # /tmp is left alone. A docker exec session started while this runs may
     # lose its files there. find does not follow symbolic links, so a link
-    # cannot send a deletion elsewhere, and -xdev keeps it out of file systems
-    # mounted below /tmp.
+    # cannot send a deletion elsewhere. -xdev keeps it out of other file
+    # systems mounted below /tmp, but not out of a mount of the same one (a
+    # second named volume, or a bind mount): with any mount point below /tmp,
+    # nothing is deleted.
     if [ "$clean_tmp" = 1 ]; then
-        if own_mount /tmp; then
-            find /tmp -xdev -mindepth 1 -delete \
-                || warn 'some entries under /tmp were left in place'
+        if own_mount "$tmp_dir"; then
+            nested_status=0
+            nested=$(mount_below "$tmp_dir") || nested_status=$?
+            case "$nested_status" in
+                1)
+                    find "$tmp_dir" -xdev -mindepth 1 -delete \
+                        || warn 'some entries under /tmp were left in place'
+                    ;;
+                0) warn "DEN_CLEAN_TMP=1 empties /tmp only when no mount point is below it, and $nested is one; it is left as it is" ;;
+                *) warn "DEN_CLEAN_TMP=1 empties /tmp only when no mount point is below it, and the mount table $mountinfo could not be read; it is left as it is" ;;
+            esac
         else
             warn 'DEN_CLEAN_TMP=1 empties /tmp only when it is a mount point of its own; it is left as it is'
         fi
