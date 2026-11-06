@@ -738,6 +738,10 @@ def _escaped_mount_point(path: Path) -> str:
     return "".join(f"\\{ord(c):03o}" if c in " \t\n\\" else c for c in str(path))
 
 
+_ROOT_ACCOUNT = "root:x:0:0:root:/root:/bin/bash"
+_NOBODY_ACCOUNT = "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin"
+
+
 def _run_entrypoint(
     tmp_path: Path,
     *,
@@ -750,12 +754,15 @@ def _run_entrypoint(
     home: Path | None = None,
     workspace: Path | None = None,
     real_find: bool = False,
+    passwd: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
 
     The account is dev, with ``ids`` (1000:1000 unless given) and the home
     ``home`` (/home/dev unless given), which this does not make; ``workspace``
-    takes the place of /workspace. The state volume's mount point is
+    takes the place of /workspace. tmp_path/passwd takes the place of
+    /etc/passwd, with ``passwd`` in it, or else root's line, dev's and
+    nobody's. The state volume's mount point is
     tmp_path/state and /tmp is tmp_path/tmp, neither of which this makes;
     mountpoint finds a mount point at each path ``mounts`` names and nowhere
     else. The mount table the entrypoint reads lists /, ``mounts`` and
@@ -785,6 +792,9 @@ def _run_entrypoint(
 
     stub("id", f'case "$1" in -u|-g) echo {uid} ;; *) exit 1 ;; esac')
     account = f"dev:x:{ids[0]}:{ids[1]}::{home or '/home/dev'}:/bin/zsh"
+    if passwd is None:
+        passwd = f"{_ROOT_ACCOUNT}\n{account}\n{_NOBODY_ACCOUNT}\n"
+    (tmp_path / "passwd").write_text(passwd, encoding="utf-8")
     stub(
         "getent",
         'case "$1 $2" in\n'
@@ -842,6 +852,7 @@ def _run_entrypoint(
                 "state_dir=/state": f"state_dir={tmp_path / 'state'}",
                 "tmp_dir=/tmp": f"tmp_dir={tmp_path / 'tmp'}",
                 "mountinfo=/proc/self/mountinfo": f"mountinfo={mountinfo}",
+                "passwd_file=/etc/passwd": f"passwd_file={tmp_path / 'passwd'}",
                 "/etc/container-user": str(user_file),
                 # The PATH the entrypoint sets for itself, not the one it
                 # gives state-link.
@@ -914,7 +925,7 @@ def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
         tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}
     )
     assert result.returncode == 0, result.stderr
-    assert "usermod --uid 501 --gid 20 dev" in calls
+    assert "dev:x:501:20::/home/dev:/bin/zsh" in _accounts(tmp_path)
     lines = result.stderr.splitlines()
     assert len(lines) == 1, result.stderr
     # The copy is an overlayfs cost; other storage drivers re-own in place.
@@ -924,12 +935,114 @@ def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
 
 @_needs("sh", "env")
 def test_entrypoint_is_quiet_when_the_ids_already_match(tmp_path):
-    result, calls = _run_entrypoint(
+    result, _ = _run_entrypoint(
         tmp_path, uid=0, env={"HOST_UID": "1000", "HOST_GID": "1000"}
     )
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
-    assert "usermod" not in calls
+    assert _accounts(tmp_path) == [
+        _ROOT_ACCOUNT,
+        "dev:x:1000:1000::/home/dev:/bin/zsh",
+        _NOBODY_ACCOUNT,
+    ]
+
+
+# --- the entrypoint's account change -------------------------------------------
+
+
+def _accounts(tmp_path: Path) -> list[str]:
+    """The lines of the account file _run_entrypoint gave the entrypoint."""
+    return (tmp_path / "passwd").read_text(encoding="utf-8").splitlines()
+
+
+def _account_files(tmp_path: Path) -> list[str]:
+    """The names in tmp_path that start with passwd: the file, and any copy."""
+    return sorted(path.name for path in tmp_path.glob("passwd*"))
+
+
+@_needs("sh", "env")
+def test_entrypoint_gives_the_user_its_new_ids_and_changes_nothing_else(tmp_path):
+    # A1 (GPT's review): usermod --uid/--gid also re-owns what the old IDs own
+    # in the home, mount points below it included, so the entrypoint changes
+    # the account file itself, and reown alone walks the home. Only the
+    # third and fourth fields of dev's line change: no other line, though
+    # dev2 and devops start with dev and devops has dev's IDs, and nothing
+    # else in dev's line, its spaces and quote included. A rename puts the
+    # new file in place, and no copy is left beside it.
+    before = (
+        f"{_ROOT_ACCOUNT}\n"
+        "dev2:x:1001:1001::/home/dev2:/bin/sh\n"
+        "dev:x:1000:1000: Dev,  dev's  :/home/dev:/bin/zsh\n"
+        "devops:x:1002:1000::/home/devops:/bin/sh\n"
+        "+::::::\n"
+    )
+    passwd = tmp_path / "passwd"
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"HOST_UID": "501", "HOST_GID": "20"},
+        passwd=before,
+    )
+    assert result.returncode == 0, result.stderr
+    after = before.replace("\ndev:x:1000:1000:", "\ndev:x:501:20:")
+    assert passwd.read_bytes() == after.encode()
+    assert stat.S_IMODE(passwd.stat().st_mode) == 0o644
+    assert _account_files(tmp_path) == ["passwd"]
+    assert not _calls(calls, "usermod")
+    assert "HOME=/home/dev" in result.stdout.splitlines()
+
+
+@_needs("sh", "env")
+def test_entrypoint_puts_a_new_account_file_in_place_by_a_rename(tmp_path):
+    # A reader of /etc/passwd sees the old file or the new one, never part of
+    # one: the new file is another inode, and the old one keeps its lines.
+    passwd = tmp_path / "passwd"
+    passwd.touch()
+    held = tmp_path / "held"
+    held.hardlink_to(passwd)
+    result, _ = _run_entrypoint(
+        tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}
+    )
+    assert result.returncode == 0, result.stderr
+    assert held.read_text(encoding="utf-8").splitlines() == [
+        _ROOT_ACCOUNT,
+        "dev:x:1000:1000::/home/dev:/bin/zsh",
+        _NOBODY_ACCOUNT,
+    ]
+    assert not passwd.samefile(held)
+    assert "dev:x:501:20::/home/dev:/bin/zsh" in _accounts(tmp_path)
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize(
+    "lines",
+    [
+        f"{_ROOT_ACCOUNT}\n",
+        "dev:x:1000:1000::/home/dev:/bin/zsh\ndev:x:1000:1000::/home/dev:/bin/zsh\n",
+        # getent gave 1000:1000.
+        "dev:x:1000:1001::/home/dev:/bin/zsh\n",
+        "dev:x:1000:1000::/home/dev\n",
+        "dev:x:1000:1000::/home/dev:/bin/zsh:\n",
+    ],
+    ids=["missing", "twice", "other-ids", "six-fields", "eight-fields"],
+)
+def test_entrypoint_stops_and_leaves_the_account_file_alone_unless_it_is_as_read(
+    tmp_path, lines
+):
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"HOST_UID": "501", "HOST_GID": "20"},
+        passwd=lines,
+    )
+    assert result.returncode == 2
+    assert result.stderr.splitlines()[-1] == (
+        f"Could not give dev the IDs 501:20 in {tmp_path / 'passwd'}"
+    )
+    assert (tmp_path / "passwd").read_text(encoding="utf-8") == lines
+    assert _account_files(tmp_path) == ["passwd"]
+    assert [line for line in _calls(calls, "find") if "/home/dev" in line] == []
+    assert "HOME=" not in result.stdout
 
 
 # --- the entrypoint's state volume and /tmp steps ------------------------------
@@ -1268,7 +1381,7 @@ def test_entrypoint_leaves_a_mounted_state_out_of_the_remap_when_den_state_is_0(
         mounts=("/workspace", str(state)),
     )
     assert result.returncode == 0, result.stderr
-    assert "usermod --uid 501 --gid 20 dev" in calls
+    assert "dev:x:501:20::/home/dev:/bin/zsh" in _accounts(tmp_path)
     assert [line for line in _calls(calls, "find") if str(state) in line] == []
     assert _STATE_LINK not in calls
     assert not _calls(calls, "gnuchown")
@@ -1558,6 +1671,30 @@ def test_entrypoint_walks_as_before_without_a_mount_table(tmp_path, walk):
         f" {tmp_path / 'mountinfo'}, so re-owning {root} from {ids} may go into a"
         " mount point below it of the same file system"
     ) in result.stderr.splitlines()
+
+
+@_needs("sh", "env", "find")
+def test_entrypoint_walks_the_home_with_reown_alone(tmp_path):
+    # A1 (GPT's review): docker run -v ~/.gitconfig:/home/dev/.gitconfig.
+    # usermod --uid/--gid would re-own it in its own walk of the home, before
+    # reown left it out; no usermod runs, and the one walk of the home is
+    # reown's, which leaves it out.
+    result, root, reowned, _ = _remap_walk(tmp_path, "home", files=(".gitconfig",))
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
+    assert not _calls(calls, "usermod")
+    # gnuchown runs from find's -exec, and setpriv starts the command with
+    # the home's tool directories in PATH.
+    walks = [
+        line
+        for line in calls.splitlines()
+        if str(root) in line and line.split(" ", 1)[0] not in {"gnuchown", "setpriv"}
+    ]
+    assert len(walks) == 1, walks
+    assert walks[0].startswith(
+        f"find {root} -xdev ( -path {root}/.gitconfig ) -prune -o ("
+    )
+    assert str(root / ".gitconfig") not in reowned
 
 
 @_needs("sh", "env", "find")
