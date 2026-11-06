@@ -354,9 +354,9 @@ bash: to run it anyway: command bash /home/me/.bash_history
 
 - **What is refused**: the shell's script (its first argument that is not an
   option or an option's value: `-o`/`+o`, bash's `-O`/`+O`, `--rcfile`,
-  `--init-file` and zsh's `--emulate` take one), or, when it has none or is
-  given `-s`, its standard input (`bash < ~/.bash_history`), when that is a
-  file that is:
+  `--init-file` and zsh's `--emulate` take one; on pwsh, read after pwsh has
+  expanded the wildcards, so that of `bash run-*` only the first match is the
+  script, and the others are its arguments), when it is a file that is:
   - the same file, also through a symlink or a hard link, as `$HISTFILE`,
     `~/.bash_history`, `~/.zsh_history`, `~/.zhistory`, `~/.histfile` or
     PSReadLine's `ConsoleHost_history.txt` (in `powershell/PSReadLine` under
@@ -365,13 +365,24 @@ bash: to run it anyway: command bash /home/me/.bash_history
   - or named `.<something>_history` (`.python_history`, `.node_repl_history`,
     `.psql_history`, ...), or `<host>_history.txt` in a `PSReadLine`
     directory.
+
+  And on bash/zsh, when the shell has no script or is given `-s`, its standard
+  input (`bash < ~/.bash_history`), when that is the same file as one in the
+  first list. Standard input is recognized only that way, not by its name,
+  which no shell builtin can read: `bash < project/.python_history` runs.
 - **What runs as before**: any other script (one named `history.sh` too),
   `bash -c '...'` (the commands come from the string, even
-  `bash -c 'cat ~/.bash_history'`), and a script whose own standard input is
-  a history file (`bash dedupe.sh < ~/.bash_history`). The wrapper runs the
-  real program (`command bash`) with the same arguments. On bash/zsh the
-  check uses shell builtins only (`[ -ef ]`), no subshell and no other
-  program; pwsh asks `/bin/sh`'s `[ -ef ]` once when the script is a file.
+  `bash -c 'cat ~/.bash_history'`), a script whose own standard input is a
+  history file (`bash dedupe.sh < ~/.bash_history`), and a syntax check:
+  `bash -n ~/.bash_history`, or no-exec turned on another way (`-o noexec`,
+  zsh's `+o exec` or `--no-exec`) and not off again before the script
+  (`+n`, `+o noexec`, zsh's `-o exec`), reads the commands and runs none. The
+  wrapper runs the real program (`command bash`) with the same arguments. On
+  bash/zsh the check uses shell builtins only (`[ -ef ]`), no subshell and no
+  other program; pwsh asks `/bin/sh`'s `[ -ef ]` once when the script is a
+  file. On pwsh, a program that exits non-zero leaves `$?` false, as when it
+  is typed by its path (`bash -c 'exit 3' || ...` runs the right side), and
+  `$LASTEXITCODE` its exit code.
 - **The refusal**: the message above on stderr (the path as the shell
   passed it, `~` expanded), status 2, nothing run. On pwsh it is a
   terminating error, with `$LASTEXITCODE` 2, and the line to run it anyway
@@ -380,13 +391,20 @@ bash: to run it anyway: command bash /home/me/.bash_history
 - **To run it anyway**: the line den prints, `command bash <file>` (with your
   other arguments, and `< <file>` for standard input); on pwsh the program's
   full path.
+- **Your aliases**: an alias named `bash`, `zsh`, `sh` or `dash`, set before
+  den loads or after, stays, and the shell expands it before it runs the
+  function. One that calls the name again (`alias bash='bash --norc'`) still
+  ends in den's function, which then checks the alias's options too; one that
+  names the program's path or `command` (`alias sh='command sh'`,
+  `alias dash=/usr/bin/dash`) goes around the check for that name.
 - **Not covered**: a pipe (`cat ~/.bash_history | sh`: a pipe is any input,
-  and pwsh has no `<`, so there only the script is checked); a shell named by
-  its path (`/bin/bash`), or started by `exec`, `sudo`, `env`, `xargs` or any
-  other program; a shell where den is not loaded (a script, `bash --norc`); on
-  pwsh, a call from a script or a function (den's version is the one typed at
-  the prompt, as for its other commands there); and Windows, whose `bash` is
-  WSL's or Git's, reading paths of its own. cmd has no such command.
+  and pwsh has no `<`, so there only the script is checked); standard input
+  known only by its name (above); a shell named by its path (`/bin/bash`), or
+  started by `exec`, `sudo`, `env`, `xargs` or any other program; a shell
+  where den is not loaded (a script, `bash --norc`); on pwsh, a call from a
+  script or a function (den's version is the one typed at the prompt, as for
+  its other commands there); and Windows, whose `bash` is WSL's or Git's,
+  reading paths of its own. cmd has no such command.
 - **No toggle**: the check changes nothing for any other file, and
   `command bash` is the way past it for one call. To drop it for good, put
   `unset -f bash zsh sh dash` after den's line in `~/.bashrc` / `~/.zshrc`.

@@ -631,11 +631,17 @@ print what the file is and the line that runs it anyway, and return 2:
 `/usr/bin/bash ~/.bash_history`). A history file is `$HISTFILE`,
 `~/.bash_history`, `~/.zsh_history`, `~/.zhistory`, `~/.histfile` or
 PSReadLine's history, also through a symlink or a hard link, or any file named
-`.<something>_history` (`.python_history`, ...). `bash -c '...'`, any other
-script (one named `history.sh` too) and a script reading a history file on its
-standard input run as before. A pipe (`cat file | sh`), a shell named by its
-path (`/bin/bash`) or started by `exec`, `sudo` or another program, and cmd are
-not covered. See shell/README.md, History files are not scripts.
+`.<something>_history` (`.python_history`, ...); standard input counts only as
+one of the first kind, since no builtin can read its name. `bash -c '...'`,
+any other script (one named `history.sh` too), a script reading a history file
+on its standard input, and a syntax check (`bash -n ~/.bash_history`) run as
+before; on pwsh a non-zero exit leaves `$?` false, and of a wildcard only the
+first match is the script. An alias of the same name stays and is expanded
+first: `alias bash='bash --norc'` still reaches den's function,
+`alias sh='command sh'` goes around it. A pipe (`cat file | sh`), a shell
+named by its path (`/bin/bash`) or started by `exec`, `sudo` or another
+program, and cmd are not covered. See shell/README.md, History files are not
+scripts.
 
 On cmd, `again` reads Clink's history (cmd's own `doskey /history` stays empty
 under Clink) and needs Clink 1.3.18 or newer. Type it on a line of its own:
