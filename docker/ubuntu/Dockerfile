@@ -495,10 +495,29 @@ mount_below() {
 # nothing to leave out. When the operands that leave them out would pass
 # 64 KiB, a warning says how many mount points there are, and nothing in DIR
 # is re-owned: Linux can give exec as little as 128 KiB for a command's
-# arguments and environment together, and find could not start. Return
-# find's status, or 0 when there is no walk.
-reown() {
-    ro_dir=$1
+# arguments and environment together, and find could not start. The
+# environment the start inherited takes none of that: the function runs in
+# a subshell, which keeps what it needs in its positional parameters and
+# then unsets each variable of the environment, as awk names them, so that
+# awk and find, and the gnuchown that find starts, get PATH (the
+# entrypoint's own) and LC_ALL=C alone; and OPTIND=1 when the environment
+# had OPTIND, which dash sets to 1 and cannot unset. (env -i in front of
+# find would not do: its own exec would take the operands and the whole
+# environment.) Return find's status, or 0 when there is no walk, or 1 when
+# awk cannot name the variables.
+reown() (
+    set -- "$1" "$old_uid" "$old_gid" "$target_uid" "$target_gid" \
+        "$mountinfo" "$unescape_awk"
+    ro_unset=$(LC_ALL=C awk 'BEGIN {
+        for (name in ENVIRON)
+            if (name != "PATH" && name != "OPTIND" &&
+                name ~ /^[A-Za-z_][A-Za-z0-9_]*$/)
+                print "unset -v " name
+    }') || exit 1
+    eval "$ro_unset"
+    ro_dir=$1 old_uid=$2 old_gid=$3 target_uid=$4 target_gid=$5
+    ro_table=$6 ro_awk=$7 LC_ALL=C
+    export LC_ALL
     ro_code=
     if ro_phys=$(cd -P -- "$ro_dir" 2>/dev/null && pwd -P); then
         # The awk program prints the shell commands that set the find
@@ -506,8 +525,8 @@ reown() {
         # names, or ro_many to how many there are when the operands would
         # pass the limit. -path takes a pattern: a backslash goes before each
         # backslash, *, ? and [ in a path, so that it matches the path alone.
-        # LC_ALL=C makes length count bytes.
-        if ! { [ -r "$mountinfo" ] && ro_code=$(LC_ALL=C ro_dir=$ro_dir ro_phys=$ro_phys awk "$unescape_awk"'
+        # LC_ALL=C, as set above, makes length count bytes.
+        if ! { [ -r "$ro_table" ] && ro_code=$(ro_dir=$ro_dir ro_phys=$ro_phys awk "$ro_awk"'
             function quote(s,    out, i) {
                 out = ""
                 while ((i = index(s, "\047")) > 0) {
@@ -560,9 +579,9 @@ reown() {
                     print "ro_left=" quote(left)
                 }
             }
-        ' "$mountinfo"); }; then
+        ' "$ro_table"); }; then
             ro_code=
-            warn "could not read the mount table $mountinfo, so re-owning $ro_dir from $old_uid:$old_gid may go into a mount point below it of the same file system"
+            warn "could not read the mount table $ro_table, so re-owning $ro_dir from $old_uid:$old_gid may go into a mount point below it of the same file system"
         fi
     fi
     ro_left=
@@ -571,14 +590,14 @@ reown() {
     eval "$ro_code"
     if [ -n "$ro_many" ]; then
         warn "re-owning $ro_dir from $old_uid:$old_gid would have to leave out $ro_many mount points below it, too many for one find command, so nothing in $ro_dir is re-owned"
-        return 0
+        exit 0
     fi
     [ -z "$ro_left" ] \
         || warn "re-owning $ro_dir from $old_uid:$old_gid leaves out each mount point below it and all it holds: $ro_left"
     find "$ro_dir" -xdev "$@" \( -uid "$old_uid" -o -gid "$old_gid" \) \
         -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
         -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
-}
+)
 
 IFS= read -r username < /etc/container-user
 record=$(getent passwd "$username")

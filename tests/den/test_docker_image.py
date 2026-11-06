@@ -750,6 +750,7 @@ def _run_entrypoint(
     home: Path | None = None,
     workspace: Path | None = None,
     real_find: bool = False,
+    stack_kib: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
 
@@ -765,13 +766,15 @@ def _run_entrypoint(
     (default 0), and otherwise prints its arguments, the HOME it got and the
     PWSH_ENV variables. gnutimeout logs its call and runs the command after
     its three options; gnumkdir logs its call and makes the directory; find
-    logs its call and fails when its first argument is FAKE_FIND_FAIL, and
-    with ``real_find`` runs the system's find when that argument is in
-    tmp_path; gnuchown logs its call and adds its arguments, each followed by
-    a NUL, to tmp_path/chowned; usermod logs its call and fails when
-    FAKE_USERMOD_FAIL is "ids" and it has --uid, or "home" and it has not;
-    the other commands that change accounts or files only log theirs. The
-    entrypoint runs in tmp_path.
+    logs its call and fails when its first argument is FAKE_FIND_FAIL (as
+    ``env`` gives it), and with ``real_find`` runs the system's find when
+    that argument is in tmp_path, after it writes the environment it got to
+    tmp_path/find-env-<its PID>; gnuchown logs its call and adds its
+    arguments, each followed by a NUL, to tmp_path/chowned; usermod logs its
+    call and fails when FAKE_USERMOD_FAIL is "ids" and it has --uid, or
+    "home" and it has not; the other commands that change accounts or files
+    only log theirs. The entrypoint runs in tmp_path, with a stack limit of
+    ``stack_kib`` KiB when that is given.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -806,11 +809,17 @@ def _run_entrypoint(
     stub("gnuchown", f"{logged}\nprintf '%s\\0' \"$@\" >> {chowned}")
     real = (
         f'case "$1" in {shlex.quote(str(tmp_path))}/*)'
-        f' exec {shlex.quote(_tool("find"))} "$@" ;; esac\n'
+        f" {shlex.quote(_tool('env'))} > {shlex.quote(str(tmp_path / 'find-env-'))}$$"
+        f' && exec {shlex.quote(_tool("find"))} "$@" ;; esac\n'
         if real_find
         else ""
     )
-    stub("find", f'{logged}\n[ "$1" != "${{FAKE_FIND_FAIL-}}" ] || exit 1\n{real}')
+    # find may get none of env, so the path it fails for is part of the stub.
+    stub(
+        "find",
+        f"{logged}\n"
+        f'[ "$1" != {shlex.quote(env.get("FAKE_FIND_FAIL", ""))} ] || exit 1\n{real}',
+    )
     stub(
         "mountpoint",
         f"{logged}\n"
@@ -861,8 +870,18 @@ def _run_entrypoint(
         ),
         encoding="utf-8",
     )
+    command = [sh, str(script), _tool("env")]
+    if stack_kib is not None:
+        command = [
+            sh,
+            "-c",
+            'ulimit -s "$1" && shift && exec "$@"',
+            "sh",
+            str(stack_kib),
+            *command,
+        ]
     result = subprocess.run(
-        [sh, str(script), _tool("env")],
+        command,
         env={"PATH": SYSTEM_PATH, "FAKE_MOUNTS": ":".join(mounts), **env},
         cwd=tmp_path,
         capture_output=True,
@@ -1497,6 +1516,8 @@ def _remap_walk(
     sibling: bool = False,
     table: bool = True,
     fail: bool = False,
+    env: dict[str, str] | None = None,
+    stack_kib: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, set[str], str]:
     """Start with other IDs, so that the WALK ("workspace" or "home") runs.
 
@@ -1505,9 +1526,10 @@ def _remap_walk(
     directories), and a file for each of ``files`` (each a mount point in the
     table); the table also lists ``listed`` below it, which this does not
     make. ``sibling`` adds a mount point next to it whose name starts with
-    its own. Return the result, the walked directory, the paths in tmp_path
-    that gnuchown was given, and the IDs it re-owns from, as the warnings
-    write them.
+    its own. ``env`` adds to the start's environment, and ``stack_kib`` is
+    its stack limit in KiB. Return the result, the walked directory, the
+    paths in tmp_path that gnuchown was given, and the IDs it re-owns from,
+    as the warnings write them.
     """
     uid, gid = os.getuid(), os.getgid()
     home = tmp_path / "home" / "dev"
@@ -1527,15 +1549,19 @@ def _remap_walk(
         twin.mkdir()
         (twin / "file").touch()
         below = (*below, str(twin))
-    env = {"HOST_UID": str(_other_id(uid)), "HOST_GID": str(_other_id(gid))}
+    start_env = {
+        **(env or {}),
+        "HOST_UID": str(_other_id(uid)),
+        "HOST_GID": str(_other_id(gid)),
+    }
     if walk == "workspace":
-        env["FIX_WORKSPACE_OWNERSHIP"] = "1"
+        start_env["FIX_WORKSPACE_OWNERSHIP"] = "1"
     if fail:
-        env["FAKE_FIND_FAIL"] = str(root)
+        start_env["FAKE_FIND_FAIL"] = str(root)
     result, _ = _run_entrypoint(
         tmp_path,
         uid=0,
-        env=env,
+        env=start_env,
         mounts=(str(workspace),),
         nested=below,
         table=table,
@@ -1543,6 +1569,7 @@ def _remap_walk(
         home=home,
         workspace=workspace,
         real_find=True,
+        stack_kib=stack_kib,
     )
     chowned = tmp_path / "chowned"
     words = chowned.read_bytes().split(b"\0") if chowned.exists() else []
@@ -1701,6 +1728,78 @@ def test_entrypoint_leaves_out_a_hundred_long_mount_points(tmp_path, walk):
     # around each one.
     names = tuple(f"m{i:03}_{'x' * 240}" for i in range(100))
     result, root, reowned, _ = _remap_walk(tmp_path, walk, nested=names)
+    assert result.returncode == 0, result.stderr
+    left_out = {str(root / name) for name in names}
+    expected = {
+        path
+        for path in _paths(root)
+        if not any(path == m or path.startswith(f"{m}/") for m in left_out)
+    }
+    assert {path for path in reowned if path in _paths(root)} == expected
+    assert "would have to leave out" not in result.stderr
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_gives_the_walk_none_of_the_environment(tmp_path, walk):
+    # A2 (GPT's second review): an exec takes its arguments and its
+    # environment from one limit. find, and the gnuchown it starts, get the
+    # entrypoint's PATH and LC_ALL=C (with which -path matches bytes) alone,
+    # whatever docker run -e or the image's ENV gave the start, and the walk
+    # is the same when the environment has names the entrypoint uses for
+    # itself. dash sets OPTIND to 1, and cannot unset it.
+    own = ("mountinfo", "unescape_awk", "old_uid", "old_gid", "target_uid")
+    result, root, reowned, ids = _remap_walk(
+        tmp_path,
+        walk,
+        nested=(".cache",),
+        env={
+            "LC_ALL": "C.UTF-8",
+            "LANG": "C.UTF-8",
+            "DEN_PROBE": "1",
+            "OPTIND": "7",
+            **dict.fromkeys(own, "/nonexistent"),
+            "target_gid": "",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    found = sorted(tmp_path.glob("find-env-*"))
+    # With FIX_WORKSPACE_OWNERSHIP=1, the home's walk runs too.
+    assert len(found) == (2 if walk == "workspace" else 1)
+    for path in found:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        # The find stub's own sh adds PWD.
+        kept = {line for line in lines if not line.startswith("PWD=")}
+        assert sorted(kept - {"OPTIND=1"}) == [
+            "LC_ALL=C",
+            f"PATH={tmp_path / 'stubs'}:/usr/sbin:/usr/bin:/sbin:/bin",
+        ]
+    cache = str(root / ".cache")
+    assert {path for path in reowned if path in _paths(root)} == {
+        path for path in _paths(root) if not path.startswith(cache)
+    }
+    assert (
+        f"container-entrypoint: re-owning {root} from {ids} leaves out each mount"
+        f" point below it and all it holds: {cache}"
+    ) in result.stderr.splitlines()
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_walks_around_mount_points_with_a_large_environment(tmp_path, walk):
+    # A2 (GPT's second review): with a stack limit of 512 KiB, exec gets the
+    # 128 KiB it gets at the least. 100000 bytes of environment and the
+    # operands for 150 mount points of over 200 bytes, under the 64 KiB they
+    # may take, were more than that, and find could not start. With none of
+    # the environment, the walk goes around each one.
+    names = tuple(f"m{i:03}_{'x' * 200}" for i in range(150))
+    result, root, reowned, _ = _remap_walk(
+        tmp_path,
+        walk,
+        nested=names,
+        env={"DEN_PADDING": "x" * 100000},
+        stack_kib=512,
+    )
     assert result.returncode == 0, result.stderr
     left_out = {str(root / name) for name in names}
     expected = {
