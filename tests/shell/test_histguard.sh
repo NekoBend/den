@@ -136,6 +136,50 @@ hist_suite() {
     refused "$sh/zsh's --emulate and its value" "$sh" "zsh --emulate sh ~/.zsh_history" \
         "command zsh --emulate sh $HG_HOME/.zsh_history"
 
+    # zsh names an option in a word of its own, off with +-: no value follows,
+    # also when the name ends in o (bsd_echo), which -o's letter loop read as
+    # an -o taking the next word, the script.
+    refused "$sh/zsh's +-name, ending in o" "$sh" "zsh +-bsd-echo ~/.zsh_history" \
+        "command zsh +-bsd-echo $HG_HOME/.zsh_history"
+    # zsh ends its options after a word of them with b in it: the word after
+    # it is the script, even one that starts with -.
+    rm -f "$WORK/-n"
+    ln -s "$HG_HOME/.zsh_history" "$WORK/-n"
+    refused "$sh/zsh -b, then a script named like an option" "$sh" "zsh -b -n" "command zsh -b -n"
+    rm -f "$WORK/-n"
+
+    echo "[$sh] runs a syntax check: no-exec reads the commands and runs none"
+    allowed "$sh/bash -n" "$sh" "bash -n ~/.bash_history" "rc=0"
+    allowed "$sh/bash -xn, -n in a word of options" "$sh" "bash -O extglob -xn ~/.bash_history" "rc=0"
+    allowed "$sh/sh -o noexec" "$sh" "sh -o noexec ~/.zhistory" "rc=0"
+    allowed "$sh/bash -n, standard input" "$sh" "bash -n < ~/.bash_history" "rc=0"
+    allowed "$sh/sh -s -n, standard input" "$sh" "sh -s -n one < ~/.bash_history" "rc=0"
+    allowed "$sh/zsh -n" "$sh" "zsh -n ~/.zsh_history" "rc=0"
+    allowed "$sh/zsh -o NO_EXEC, any case and _" "$sh" "zsh -o NO_EXEC ~/.zsh_history" "rc=0"
+    allowed "$sh/zsh +o exec" "$sh" "zsh +o exec ~/.zsh_history" "rc=0"
+    allowed "$sh/zsh -onoexec, the name in the same word" "$sh" "zsh -onoexec ~/.zsh_history" "rc=0"
+    allowed "$sh/zsh --no-exec" "$sh" "zsh --no-exec ~/.zsh_history" "rc=0"
+    allowed "$sh/zsh +-exec" "$sh" "zsh +-exec ~/.zsh_history" "rc=0"
+    if command -v dash >/dev/null 2>&1; then
+        allowed "$sh/dash -n" "$sh" "dash -n ~/.histfile" "rc=0"
+    fi
+
+    echo "[$sh] refuses it when no-exec is turned off again before the script"
+    refused "$sh/bash -n +n" "$sh" "bash -n +n ~/.bash_history" "command bash -n +n $HG_HOME/.bash_history"
+    refused "$sh/bash -n +o noexec" "$sh" "bash -n +o noexec ~/.bash_history" \
+        "command bash -n +o noexec $HG_HOME/.bash_history"
+    # Only zsh reads an option's name in any case.
+    refused "$sh/bash -o NOEXEC, no noexec to bash" "$sh" "bash -o NOEXEC ~/.bash_history" \
+        "command bash -o NOEXEC $HG_HOME/.bash_history"
+    refused "$sh/sh -s -n +n, standard input" "$sh" "sh -s -n +n < ~/.bash_history" \
+        "command sh -s -n +n < $HG_HOME/.bash_history"
+    refused "$sh/zsh -n -o exec" "$sh" "zsh -n -o exec ~/.zsh_history" "command zsh -n -o exec $HG_HOME/.zsh_history"
+    refused "$sh/zsh -no exec, -o's value the next word" "$sh" "zsh -no exec ~/.zsh_history" \
+        "command zsh -no exec $HG_HOME/.zsh_history"
+    refused "$sh/zsh -n +onoexec" "$sh" "zsh -n +onoexec ~/.zsh_history" "command zsh -n +onoexec $HG_HOME/.zsh_history"
+    refused "$sh/zsh -n --EXEC" "$sh" "zsh -n --EXEC ~/.zsh_history" "command zsh -n --EXEC $HG_HOME/.zsh_history"
+    refused "$sh/zsh -n +-no_exec" "$sh" "zsh -n +-no_exec ~/.zsh_history" "command zsh -n +-no_exec $HG_HOME/.zsh_history"
+
     echo "[$sh] the line it names runs the file as it is"
     rm -f "$MARK"
     out=$(hg_run "$sh" "bash '$WORK/odd dir/.it'\\''s_history'")
@@ -190,8 +234,53 @@ rc=0"
         "PATH='$WORK/stub':\$PATH; bash ~/.bash_history" "command bash $HG_HOME/.bash_history"
 }
 
+# alias_suite <sh> - functions.sh loads in an interactive <sh> (aliases on)
+# where the user's alias of each wrapped name was defined first, and the
+# alias stays. Each alias calls its name again, so the call goes on to den's
+# function; one that names `command` goes around it. A name() definition was a
+# syntax error under such an alias (bash: status 2, zsh: 126), and nothing
+# after it in functions.sh loaded.
+alias_suite() {
+    local sh="$1" name out
+    local -a run
+    case $sh in
+        bash) run=(bash --noprofile --norc -i -c) ;;
+        zsh) run=(zsh -f -i -c) ;;
+    esac
+    echo "[$sh] an alias of each wrapped name, defined before functions.sh"
+    setup_hist
+    for name in bash zsh sh dash; do
+        rm -f "$MARK"
+        # eval: zsh reads all of -c's string before it runs any, so a call
+        # written there would not see the alias.
+        out=$(cd "$WORK" && HOME="$HG_HOME" "${run[@]}" "alias $name='$name -x'
+. '$FUNCTIONS_SH_GUARDED'; echo \"load=\$?\"
+typeset -f fwd zdi >/dev/null && echo later=loaded
+typeset -f $name >/dev/null && echo guard=defined
+alias $name >/dev/null && echo alias=kept
+eval '$name ~/.bash_history'; echo \"rc=\$?\"" 2>&1 </dev/null | tr -d '\r')
+        assert_contains "$sh/alias $name: functions.sh loads" "load=0" "$out"
+        assert_contains "$sh/alias $name: what comes after the guard loads" "later=loaded" "$out"
+        assert_contains "$sh/alias $name: the guard is defined" "guard=defined" "$out"
+        assert_contains "$sh/alias $name: the alias stays" "alias=kept" "$out"
+        assert_contains "$sh/alias $name: through the alias, refused" \
+            "$name: to run it anyway: command $name -x $HG_HOME/.bash_history" "$out"
+        assert_contains "$sh/alias $name: through the alias, status 2" "rc=2" "$out"
+        assert_not_exists "$sh/alias $name: through the alias, nothing ran" "$MARK"
+    done
+    rm -f "$MARK"
+    out=$(cd "$WORK" && HOME="$HG_HOME" "${run[@]}" "alias bash='command bash'
+. '$FUNCTIONS_SH_GUARDED'; echo \"load=\$?\"
+eval 'bash ~/.bash_history'; echo \"rc=\$?\"" 2>&1 </dev/null | tr -d '\r')
+    assert_contains "$sh/alias bash='command bash': functions.sh loads" "load=0" "$out"
+    assert_contains "$sh/alias bash='command bash': goes around the guard" "rc=0" "$out"
+    assert_eq "$sh/alias bash='command bash': the file ran" "bash_history" "$(cat "$MARK" 2>/dev/null)"
+}
+
 hist_suite bash
 hist_suite zsh
+alias_suite bash
+alias_suite zsh
 
 # =============================================================================
 # pwsh

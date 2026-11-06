@@ -1207,29 +1207,74 @@ _den_hg_say() {
     unset _hg_sn _hg_sw _hg_line _hg_sf _hg_sa
 }
 
+# _den_hg_ne <sign> <name> → for _den_hg_ok: set _hg_ne to what the option
+# <name>, turned on (<sign> -) or off (+), leaves of no-exec, in which the
+# shell reads its commands and runs none (bash -n script: a syntax check).
+# bash, sh and dash name it noexec. zsh names it exec, turned off for
+# no-exec, and also takes noexec for exec turned off; it reads a name in any
+# case and with any _ in it (NO_EXEC), and its long form (--no-exec) with any
+# - too. Any other name leaves _hg_ne as it was.
+_den_hg_ne() {
+    _hg_v=$2
+    if [ "$_hg_n" = zsh ]; then
+        while :; do
+            case $_hg_v in
+                *[_-]*) _hg_v=${_hg_v%%[_-]*}${_hg_v#*[_-]} ;;
+                *) break ;;
+            esac
+        done
+        case $_hg_v in
+            [Nn][Oo][Ee][Xx][Ee][Cc]) _hg_v=$1 ;;
+            [Ee][Xx][Ee][Cc]) _hg_v=+; [ "$1" = + ] && _hg_v=- ;;
+            *) _hg_v= ;;
+        esac
+    elif [ "$_hg_v" = noexec ]; then
+        _hg_v=$1
+    else
+        _hg_v=
+    fi
+    case $_hg_v in
+        -) _hg_ne=1 ;;
+        +) _hg_ne=0 ;;
+    esac
+    unset _hg_v
+}
+
 # _den_hg_ok <name> <arg>... → status 0 when the shell <name> may run with
 # <args>, else the refusal (_den_hg_say) and status 1. Only the script is
 # checked: the first argument that is not an option or an option's value, or
-# the one after - or --. Values: one word for each o in a word of
-# single-letter options (-o, +o, -xo), and for each O but in zsh's (bash's -O,
-# +O), except that zsh's -o takes the rest of its word when there is one
-# (-oxtrace); the next word for --rcfile and --init-file (bash also reads them
-# with one -, as all its long options: -login, -norc) and zsh's --emulate.
-# With -c the commands come from its string, and nothing is checked. With -s,
-# or with no script, the shell reads its commands from standard input, which
-# is then checked, when it is a regular file, against the history files
-# _den_hg_same knows ([ /dev/stdin -ef ... ]): a HISTFILE of /dev/null does not
-# make /dev/null one. A script's own standard input is the script's to read,
-# and is not checked. _hg_in is 1 after -s and 2 once the script is
-# found. A word of options without o or O is read by its pattern alone,
+# the one after - or -- (and, in zsh, after a word of options with b in it).
+# Values: one word for each o in a word of single-letter options (-o, +o,
+# -xo), and for each O but in zsh's (bash's -O, +O), except that zsh's -o
+# takes the rest of its word when there is one (-oxtrace); the next word for
+# --rcfile and --init-file (bash also reads them with one -, as all its long
+# options: -login, -norc) and zsh's --emulate. zsh's options by name, on with
+# -- and off with +- (--no-exec, +-bsd-echo), take none.
+# With -c the commands come from its string, and nothing is checked. Nor is
+# anything when the options before the script leave no-exec on (_hg_ne: -n,
+# -o noexec; +n and +o noexec turn it off again, and so does zsh's -o exec;
+# _den_hg_ne reads the names): the shell then only checks the syntax of what
+# it reads (bash -n ~/.bash_history), and runs none of it. With -s, or with
+# no script, the shell reads its commands from standard input, which is then
+# checked, when it is a regular file, against the history files _den_hg_same
+# knows ([ /dev/stdin -ef ... ]): a HISTFILE of /dev/null does not make
+# /dev/null one. A file there is known by what it is, not by its name, which
+# no builtin can read: `bash < project/.python_history` runs it. A script's
+# own standard input is the script's to read, and is not checked. _hg_in is 1
+# after -s, and 2 once the script is found or -c is: then standard input is
+# not checked. _hg_q holds what each value still to come is for, in order: -
+# or + for -o's or +o's (an option's name, for _den_hg_ne), x for any other.
+# A word of options without o, O, n or b is read by its pattern alone,
 # without the loop over its letters, which costs the most.
 _den_hg_ok() {
     _hg_n=$1
     shift
-    _hg_skip=0 _hg_end=0 _hg_in=0 _hg_rc=0
+    _hg_q='' _hg_end=0 _hg_in=0 _hg_ne=0 _hg_rc=0
     for _hg_a in "$@"; do
-        if [ "$_hg_skip" != 0 ]; then
-            _hg_skip=$((_hg_skip - 1))
+        if [ -n "$_hg_q" ]; then
+            _hg_k=${_hg_q%"${_hg_q#?}"}
+            _hg_q=${_hg_q#?}
+            [ "$_hg_k" = x ] || _den_hg_ne "$_hg_k" "$_hg_a"
             continue
         fi
         if [ "$_hg_end" = 0 ]; then
@@ -1239,29 +1284,33 @@ _den_hg_ok() {
             esac
             case $_hg_a in
                 -|--) _hg_end=1; continue ;;
-                --rcfile|--init-file|-rcfile|-init-file|--emulate) _hg_skip=1; continue ;;
-                --*) continue ;;
-                [-+]*[oO]*)
+                --rcfile|--init-file|-rcfile|-init-file|--emulate) _hg_q=x; continue ;;
+                --?*|+-?*)
+                    [ "$_hg_n" = zsh ] && _den_hg_ne "${_hg_a%"${_hg_a#?}"}" "${_hg_a#??}"
+                    continue ;;
+                [-+]*[oOnb]*)
                     _hg_l=${_hg_a#?}
                     _hg_sg=${_hg_a%"$_hg_l"}
                     while [ -n "$_hg_l" ]; do
                         _hg_c=${_hg_l%"${_hg_l#?}"}
                         _hg_l=${_hg_l#?}
                         case $_hg_sg$_hg_c in
-                            -c) unset _hg_n _hg_skip _hg_end _hg_in _hg_rc _hg_a _hg_l _hg_sg _hg_c
-                                return 0 ;;
+                            -c) _hg_in=2; break 2 ;;
                             -s) _hg_in=1 ;;
-                            ?o|?O)
-                                if [ "$_hg_n" = zsh ]; then
-                                    [ "$_hg_c" = O ] && continue
-                                    [ -n "$_hg_l" ] && break
+                            -n) _hg_ne=1 ;;
+                            +n) _hg_ne=0 ;;
+                            ?b) [ "$_hg_n" = zsh ] && _hg_end=1 ;;
+                            ?O) [ "$_hg_n" = zsh ] || _hg_q=${_hg_q}x ;;
+                            ?o)
+                                if [ "$_hg_n" = zsh ] && [ -n "$_hg_l" ]; then
+                                    _den_hg_ne "$_hg_sg" "$_hg_l"
+                                    break
                                 fi
-                                _hg_skip=$((_hg_skip + 1)) ;;
+                                _hg_q=$_hg_q$_hg_sg ;;
                         esac
                     done
                     continue ;;
-                -*c*) unset _hg_n _hg_skip _hg_end _hg_in _hg_rc _hg_a
-                    return 0 ;;
+                -*c*) _hg_in=2; break ;;
                 -*s*) _hg_in=1; continue ;;
                 [-+]?*) continue ;;
             esac
@@ -1269,26 +1318,37 @@ _den_hg_ok() {
         # With -s the arguments are only the positional parameters.
         [ "$_hg_in" = 1 ] && break
         _hg_in=2
-        if _den_hg_hist "$_hg_a"; then
+        if [ "$_hg_ne" = 0 ] && _den_hg_hist "$_hg_a"; then
             _den_hg_say "$_hg_n" "$_hg_a is a shell history file" "command $_hg_n" '' "$@"
             _hg_rc=1
         fi
         break
     done
-    if [ "$_hg_in" != 2 ] && [ -f /dev/stdin ] && _den_hg_same /dev/stdin; then
+    if [ "$_hg_in" != 2 ] && [ "$_hg_ne" = 0 ] && [ -f /dev/stdin ] && _den_hg_same /dev/stdin; then
         _den_hg_say "$_hg_n" "standard input ($_hg_hit) is a shell history file" "command $_hg_n" "$_hg_hit" "$@"
         _hg_rc=1
     fi
     set -- "$_hg_rc"
-    unset _hg_n _hg_skip _hg_end _hg_in _hg_rc _hg_a _hg_l _hg_sg _hg_c _hg_hit
+    unset _hg_n _hg_q _hg_k _hg_end _hg_in _hg_ne _hg_rc _hg_a _hg_l _hg_sg _hg_c _hg_hit
     return "$1"
 }
 
 # A shell run with a history file runs nothing and returns 2 (see above).
-bash() { _den_hg_ok bash "$@" || return 2; command bash "$@"; }
-zsh() { _den_hg_ok zsh "$@" || return 2; command zsh "$@"; }
-sh() { _den_hg_ok sh "$@" || return 2; command sh "$@"; }
-dash() { _den_hg_ok dash "$@" || return 2; command dash "$@"; }
+# Each is defined with the function keyword: a user's alias of the same name
+# (alias bash='bash --norc'), defined before this file loads, is expanded in
+# the name of a name() definition, which bash then fails to parse and zsh
+# refuses, and that stopped the rest of this file from loading. The alias
+# stays, and is expanded first at the prompt: one that calls the name again
+# still reaches the function, one that names a path or command (alias
+# sh='command sh') goes around it.
+# shellcheck disable=SC2113  # function: not in POSIX, but in bash and zsh
+function bash { _den_hg_ok bash "$@" || return 2; command bash "$@"; }
+# shellcheck disable=SC2113
+function zsh { _den_hg_ok zsh "$@" || return 2; command zsh "$@"; }
+# shellcheck disable=SC2113
+function sh { _den_hg_ok sh "$@" || return 2; command sh "$@"; }
+# shellcheck disable=SC2113
+function dash { _den_hg_ok dash "$@" || return 2; command dash "$@"; }
 
 # ===== Directory History (back / fwd) =====
 # Browser-style history for this shell session, never written to disk.
