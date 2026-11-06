@@ -423,6 +423,8 @@ export PATH
 # The state volume's mount point (docker/README.md, "What survives where").
 state_dir=/state
 tmp_dir=/tmp
+# The workspace, which FIX_WORKSPACE_OWNERSHIP=1 re-owns.
+workspace_dir=/workspace
 # The mount table, which names each mount point by its physical path.
 mountinfo=/proc/self/mountinfo
 
@@ -434,31 +436,35 @@ valid_id() {
 }
 # Succeed when DIR is a mount point of its own, not a symbolic link to one.
 own_mount() { [ ! -L "$1" ] && mountpoint -q "$1"; }
+# The awk function that decodes a mount point as the mount table writes it:
+# the table writes a space, tab, newline or backslash in one as a backslash
+# and three octal digits.
+unescape_awk='
+    function unescape(s,    out, i, d) {
+        out = ""
+        while ((i = index(s, "\\")) > 0) {
+            d = substr(s, i + 1, 3)
+            if (d ~ /^[0-7][0-7][0-7]$/) {
+                out = out substr(s, 1, i - 1) sprintf("%c", \
+                    substr(d, 1, 1) * 64 + substr(d, 2, 1) * 8 + substr(d, 3, 1))
+                s = substr(s, i + 4)
+            } else {
+                out = out substr(s, 1, i)
+                s = substr(s, i + 1)
+            }
+        }
+        return out s
+    }
+'
 # Print the first mount point the mount table lists below DIR, and succeed;
 # fail with 1 when there is none, and with 2 when the table cannot be read.
 # find -xdev compares device numbers alone, and a mount of the same file
 # system below DIR (a second named volume, or a bind mount) has the same one,
-# so a walk of DIR as root asks this first. The table writes a space, tab,
-# newline or backslash in a mount point as a backslash and three octal digits.
+# so a walk of DIR as root asks this first.
 mount_below() {
     mb_dir=$(cd -P -- "$1" && pwd -P) || return 2
     [ -r "$mountinfo" ] || return 2
-    mb_dir=$mb_dir awk '
-        function unescape(s,    out, i, d) {
-            out = ""
-            while ((i = index(s, "\\")) > 0) {
-                d = substr(s, i + 1, 3)
-                if (d ~ /^[0-7][0-7][0-7]$/) {
-                    out = out substr(s, 1, i - 1) sprintf("%c", \
-                        substr(d, 1, 1) * 64 + substr(d, 2, 1) * 8 + substr(d, 3, 1))
-                    s = substr(s, i + 4)
-                } else {
-                    out = out substr(s, 1, i)
-                    s = substr(s, i + 1)
-                }
-            }
-            return out s
-        }
+    mb_dir=$mb_dir awk "$unescape_awk"'
         BEGIN {
             dir = ENVIRON["mb_dir"]
             below = (dir == "/") ? "/" : dir "/"
@@ -474,6 +480,79 @@ mount_below() {
         }
         END { exit (found ? 0 : 1) }
     ' "$mountinfo"
+}
+# Give what in DIR has the old UID the new one, and what has the old GID the
+# new one, each on its own and leaving other owners alone, as chown -h does:
+# no symbolic link is followed (uutils 0.8.0 chown -h follows directory links,
+# so this is GNU chown), and -xdev keeps the walk on DIR's file system. For
+# the reason above, the walk also leaves out each mount point the table lists
+# below DIR, with all it holds, and a warning names them. When the table
+# cannot be read, a warning says so and the walk goes on with -xdev alone.
+# When cd cannot enter DIR, find cannot walk below it either, and there is
+# nothing to leave out. Return find's status.
+reown() {
+    ro_dir=$1
+    ro_code=
+    if ro_phys=$(cd -P -- "$ro_dir" 2>/dev/null && pwd -P); then
+        # The awk program prints the shell commands that set the find
+        # operands which leave each mount point out, and ro_left to their
+        # names. -path takes a pattern: a backslash goes before each
+        # backslash, *, ? and [ in a path, so that it matches the path alone.
+        if ! { [ -r "$mountinfo" ] && ro_code=$(ro_dir=$ro_dir ro_phys=$ro_phys awk "$unescape_awk"'
+            function quote(s,    out, i) {
+                out = ""
+                while ((i = index(s, "\047")) > 0) {
+                    out = out substr(s, 1, i - 1) "\047\\\047\047"
+                    s = substr(s, i + 1)
+                }
+                return "\047" out s "\047"
+            }
+            function literal(s,    out, c, i) {
+                out = ""
+                for (i = 1; i <= length(s); i++) {
+                    c = substr(s, i, 1)
+                    if (index("\\*?[", c) > 0)
+                        out = out "\\"
+                    out = out c
+                }
+                return out
+            }
+            BEGIN {
+                phys = ENVIRON["ro_phys"]
+                below = (phys == "/") ? "/" : phys "/"
+                dir = ENVIRON["ro_dir"]
+                under = (dir ~ /\/$/) ? dir : dir "/"
+                n = 0
+            }
+            {
+                m = unescape($5)
+                if (m != phys && index(m, below) == 1 && !(m in seen)) {
+                    seen[m] = 1
+                    path = under substr(m, length(below) + 1)
+                    prune = prune (n ? " -o" : "") " -path " quote(literal(path))
+                    left = left (n ? ", " : "") path
+                    n++
+                }
+            }
+            END {
+                if (n > 0) {
+                    print "set -- \\(" prune " \\) -prune -o"
+                    print "ro_left=" quote(left)
+                }
+            }
+        ' "$mountinfo"); }; then
+            ro_code=
+            warn "could not read the mount table $mountinfo, so re-owning $ro_dir from $old_uid:$old_gid may go into a mount point below it of the same file system"
+        fi
+    fi
+    ro_left=
+    set --
+    eval "$ro_code"
+    [ -z "$ro_left" ] \
+        || warn "re-owning $ro_dir from $old_uid:$old_gid leaves out each mount point below it and all it holds: $ro_left"
+    find "$ro_dir" -xdev "$@" \( -uid "$old_uid" -o -gid "$old_gid" \) \
+        -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
+        -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
 }
 
 IFS= read -r username < /etc/container-user
@@ -526,23 +605,15 @@ if [ "$(id -u)" -eq 0 ]; then
         # Change only matching IDs. Do this before usermod so a failed workspace
         # traversal leaves the original account IDs available for a retry.
         if [ "$fix_workspace" = 1 ]; then
-            [ -d /workspace ] && [ ! -L /workspace ] \
+            [ -d "$workspace_dir" ] && [ ! -L "$workspace_dir" ] \
                 || fail 'Workspace must be a directory, not a symlink'
-            # uutils 0.8.0 chown -h follows directory symlinks; use GNU chown.
-            find /workspace -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) \
-                -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
-                -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} + \
-                || fail 'Workspace ownership adjustment failed'
+            reown "$workspace_dir" || fail 'Workspace ownership adjustment failed'
         fi
         if ! getent group "$target_gid" >/dev/null; then
             groupadd --gid "$target_gid" "$username-$target_gid"
         fi
         usermod --uid "$target_uid" --gid "$target_gid" "$username"
-        # Do not follow symlinks or descend into other filesystems. Handle
-        # user/group ownership independently; preserve unrelated owners.
-        find "$user_home" -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) \
-            -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
-            -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
+        reown "$user_home"
         # The state volume holds the user's files with the old IDs too; the
         # same walk, which a failure does not stop the start for. With a mount
         # point below the volume, which -xdev would not keep the walk out of
@@ -563,8 +634,8 @@ if [ "$(id -u)" -eq 0 ]; then
         fi
     fi
     # A bare workspace needs an owner even when recursive adjustment is disabled.
-    if ! mountpoint -q /workspace; then
-        /usr/bin/gnuchown -h "$target_uid:$target_gid" /workspace
+    if ! mountpoint -q "$workspace_dir"; then
+        /usr/bin/gnuchown -h "$target_uid:$target_gid" "$workspace_dir"
     fi
     # /tmp is emptied only on request, and only when it is a mount point of
     # its own: a tmpfs or a volume, or a host directory bound there, which this
