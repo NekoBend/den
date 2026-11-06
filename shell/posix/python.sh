@@ -558,15 +558,32 @@ vv() {
 # from here where --directory, UV_WORKING_DIR or UV_WORKING_DIRECTORY had uv
 # make it elsewhere. A second name after an option is uv's to refuse, as is a
 # venv already there unless you have uv replace it: uv venv then fails, and
-# vva activates nothing.
+# vva activates nothing. Where uv succeeds, vva activates the venv only when
+# nothing was at its path before uv venv ran (a link that leads nowhere
+# counts as something) and its activate script is there after: uv also
+# succeeds when it makes no venv (--help, -h) or keeps or remakes the one
+# there (--allow-existing, --clear), and vva then activated a venv that was
+# already there, such as a .venv that came in an archive, for a typed `vva
+# --help`. It now activates nothing then, says so, and returns 1; va <path>
+# activates a venv that was there, with va's own checks.
 vva() {
-    local target=.venv dir project
+    local target=.venv dir project venv was=''
     case ${1-} in ''|-*) ;; *) target=$1; shift ;; esac
     _den_uv_where "$@"
-    _den_uv_venv vva "$target" "$@" || return
     # uv makes a relative name in the directory it runs in.
-    case $target in /*) ;; *) [ -z "$dir" ] || target=${dir%/}/$target ;; esac
-    va "$target"
+    venv=$target
+    case $venv in /*) ;; *) [ -z "$dir" ] || venv=${dir%/}/$venv ;; esac
+    if [ -e "$venv" ] || [ -L "$venv" ]; then was=1; fi
+    _den_uv_venv vva "$target" "$@" || return
+    if [ -n "$was" ]; then
+        printf 'vva: %s was there before uv venv ran, so vva activates nothing; activate it with va %s\n' "$venv" "$venv" >&2
+        return 1
+    fi
+    if [ ! -f "$venv/bin/activate" ]; then
+        printf 'vva: uv venv made no %s/bin/activate, so vva activates nothing\n' "$venv" >&2
+        return 1
+    fi
+    va "$venv"
 }
 
 # ===== Toggles =====

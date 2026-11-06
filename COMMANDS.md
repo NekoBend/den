@@ -443,7 +443,11 @@ keeps), except where uv would build or run code that came with a clone:
   3.13`; `vva --python 3.13` makes `.venv`), and activates the one uv made,
   in the directory `--directory`, `UV_WORKING_DIR` or `UV_WORKING_DIRECTORY`
   names. Where uv refuses, as it does a second name after an option or a venv
-  that is already there, nothing is activated.
+  that is already there, nothing is activated. `vva` activates only a venv
+  that was not there before `uv venv` ran: where uv succeeds but makes none
+  (`vva --help`), or keeps or remakes the one there (`--allow-existing`,
+  `--clear`), `vva` activates nothing, says so, and fails; `va <path>`
+  activates a venv that was there.
 - Your uv.toml is the one uv reads besides a project's: the one
   `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
   (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows
@@ -473,7 +477,7 @@ and macOS do not have, stays den's in scripts there.
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
-| `vva [name] [uv venv options]` | `uv venv <name>` (default `.venv`; the name first) then activate the venv it made | ✓ | ✓ | — |
+| `vva [name] [uv venv options]` | `uv venv <name>` (default `.venv`; the name first) then activate the venv it made, a new one only | ✓ | ✓ | — |
 | `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.

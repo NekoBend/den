@@ -709,7 +709,15 @@ function global:vv {
 # is uv's to refuse, as is a venv already there unless you have uv replace it:
 # uv venv then fails, and vva activates nothing. A relative name is taken from
 # the directory uv runs in as _DenUvMarker reads it, link by link: PowerShell
-# would take a .. after a link by name, elsewhere than uv. Parity with posix
+# would take a .. after a link by name, elsewhere than uv. Where uv succeeds,
+# vva activates the venv only when nothing was at its path before uv venv ran
+# (a link that leads nowhere counts as something; Get-Item finds one where
+# Test-Path may not) and one of va's activate scripts is there after: uv also
+# succeeds when it makes no venv (--help, -h) or keeps or remakes the one
+# there (--allow-existing, --clear), and vva then activated a venv that was
+# already there, such as a .venv that came in an archive, for a typed `vva
+# --help`. It now activates nothing then, and says so in an error; va <path>
+# activates a venv that was there, with va's own checks. Parity with posix
 # python.sh.
 function global:vva {
   if (-not (_ResolveCmd 'uv' 'App')) {
@@ -727,15 +735,30 @@ function global:vva {
   $words = @(, $name) + $words
   $found = _DenUvMarker $words
   $options = @(_DenUvVenvOptions 'vva' $words $found)
-  _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + $words)
-  if ($LASTEXITCODE -ne 0) { return }
+  # The path va gets: $null where vva cannot tell it.
   $target = "$name"
   if (-not ([System.IO.Path]::IsPathRooted($target) -or $target.StartsWith('~', [System.StringComparison]::Ordinal))) {
-    if ($null -eq $found['Here']) {
-      Write-Error "uv venv made '$target' where vva cannot tell; activate it with va <its path>"
-      return
-    }
-    if ($found['Here']) { $target = [System.IO.Path]::Combine($found['Here'], $target) }
+    if ($null -eq $found['Here']) { $target = $null }
+    elseif ($found['Here']) { $target = [System.IO.Path]::Combine($found['Here'], $target) }
+  }
+  $was = $null -ne $target -and ((Test-Path -LiteralPath $target) -or $null -ne (Get-Item -LiteralPath $target -Force -ErrorAction Ignore))
+  _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + $words)
+  if ($LASTEXITCODE -ne 0) { return }
+  if ($null -eq $target) {
+    Write-Error "uv venv made '$name' where vva cannot tell; activate it with va <its path>"
+    return
+  }
+  if ($was) {
+    Write-Error "'$target' was there before uv venv ran, so vva activates nothing; activate it with va '$target'"
+    return
+  }
+  $made = $false
+  foreach ($rel in 'Scripts/Activate.ps1', 'Scripts/activate.ps1', 'bin/Activate.ps1', 'bin/activate.ps1') {
+    if (Test-Path -LiteralPath (Join-Path $target $rel) -PathType Leaf) { $made = $true; break }
+  }
+  if (-not $made) {
+    Write-Error "uv venv made no activate script under '$target' (Scripts/ or bin/), so vva activates nothing"
+    return
   }
   va $target
 }
