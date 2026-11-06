@@ -921,7 +921,7 @@ def test_entrypoint_turns_powershell_telemetry_and_update_check_off(tmp_path, ui
 def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
     # A UID other than the build's re-owns all of /home/dev, which overlayfs
     # copies into each new container; the build args avoid it.
-    result, calls = _run_entrypoint(
+    result, _ = _run_entrypoint(
         tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}
     )
     assert result.returncode == 0, result.stderr
