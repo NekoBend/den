@@ -537,9 +537,23 @@ vv() {
     _den_uv_venv vv "$@"
 }
 
-# vva → uv venv + activate (default: .venv)
+# vva [name] [uv venv options] → uv venv + activate (default: .venv). The
+# venv's name is the first argument when it is not an option, else .venv,
+# and vva hands it to uv venv itself, so that it activates the venv uv just
+# made: it took the first argument for the name, an option too (`vva --python
+# 3.13 x` activated a --python/ that could be there, not x), and took the name
+# from here where --directory, UV_WORKING_DIR or UV_WORKING_DIRECTORY had uv
+# make it elsewhere. A second name after an option is uv's to refuse, as is a
+# venv already there unless you have uv replace it: uv venv then fails, and
+# vva activates nothing.
 vva() {
-    _den_uv_venv vva "$@" && va "${1:-.venv}"
+    local target=.venv dir project
+    case ${1-} in ''|-*) ;; *) target=$1; shift ;; esac
+    _den_uv_where "$@"
+    _den_uv_venv vva "$target" "$@" || return
+    # uv makes a relative name in the directory it runs in.
+    case $target in /*) ;; *) [ -z "$dir" ] || target=${dir%/}/$target ;; esac
+    va "$target"
 }
 
 # ===== Toggles =====

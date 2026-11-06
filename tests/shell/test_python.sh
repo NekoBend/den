@@ -1341,6 +1341,29 @@ RP=$(cd "$R" && pwd -P)
 mkdir -p "$R/sete/myenv/bin"
 printf 'VIRTUAL_ENV=%s/sete/myenv; export VIRTUAL_ENV\n' "$R" > "$R/sete/myenv/bin/activate"
 printf 'version_info = 3.13.1\n' > "$R/sete/myenv/pyvenv.cfg"
+# vva's fixtures, outside a git checkout. vvadir/, with no marker, holds a
+# myenv/, whose name vva took from here: a decoy that vva must not take for
+# the one uv made in vvadir/elsewhere/myenv/. via/ links to elsewhere/deep/,
+# so that via/.. is elsewhere/ to the system and to uv, and vvadir/ by name.
+# vvadot/.venv/ is where vva -p 3.13 has uv make one. Each activate script
+# sets VIRTUAL_ENV to its own venv.
+for v in vvadir/myenv vvadir/elsewhere/myenv vvadot/.venv; do
+    mkdir -p "$R/$v/bin"
+    printf 'VIRTUAL_ENV=%s/%s; export VIRTUAL_ENV\n' "$R" "$v" > "$R/$v/bin/activate"
+    printf '$env:VIRTUAL_ENV = "%s/%s"\n' "$R" "$v" > "$R/$v/bin/Activate.ps1"
+    printf 'version_info = 3.13.1\n' > "$R/$v/pyvenv.cfg"
+done
+mkdir -p "$R/vvadir/elsewhere/deep"
+ln -s elsewhere/deep "$R/vvadir/via"
+# vvaplant/ is a tree that came in an archive: a pyproject.toml, beside which
+# vva says to pick a python with --python, and a directory named after that
+# option, and one after -p, each with activate scripts vva must never run.
+mkdir -p "$R/vvaplant/--python/bin" "$R/vvaplant/-p/bin"
+: > "$R/vvaplant/pyproject.toml"
+for d in --python -p; do
+    printf 'echo PLANTED%s\n' "$d" > "$R/vvaplant/$d/bin/activate"
+    printf "'PLANTED%s'\n" "$d" > "$R/vvaplant/$d/bin/Activate.ps1"
+done
 # Your own uv settings, which pip, vv and vva have uv read in place of a
 # uv.toml or pyproject.toml here or above (--config-file): a user uv.toml in
 # an XDG_CONFIG_HOME (uvuser/), one in a HOME's .config (uvhome/), which uv
@@ -1562,7 +1585,7 @@ rc=0" "$actual"
 
     echo "[$sh] vva below a .python-version that names a path: uv --no-config venv, then va"
     route_posix "$sh" "$R/pyver/sub" "vva" >/dev/null
-    assert_eq "$sh/vva below a .python-version that names a path runs uv --no-config venv" "--no-config venv" "$(cat "$ROUTE_LOG")"
+    assert_eq "$sh/vva below a .python-version that names a path runs uv --no-config venv" "--no-config venv .venv" "$(cat "$ROUTE_LOG")"
     assert_eq "$sh/vva below a .python-version that names a path says so, then va runs" "vva: uv --no-config venv, as $RP/pyver/.python-version is here or above ($VV_NONE)
 activate script not found: .venv/bin/activate" "$(cat "$R/err")"
 
@@ -1617,7 +1640,7 @@ rc=1" "$actual"
     assert_eq "$sh/vv and vva with --directory name what they found there" "vv: uv --no-config venv, as $RP/pyver/.python-version is in or above $RP/pyver ($VV_NONE_THERE)
 vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above $RP/pyverdir ($VV_NONE_THERE)
 vva: uv --no-config venv, as $RP/uvtoml/uv.toml is in or above $RP/uvtoml/sub ($VV_NONE_THERE)
-activate script not found: myenv/bin/activate" "$(cat "$R/err")"
+activate script not found: $R/uvtoml/sub/myenv/bin/activate" "$(cat "$R/err")"
 
     echo "[$sh] vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT, as uv ranks them and --directory: the same"
     actual=$(route_posix "$sh" "$NOPROJ" "
@@ -1667,6 +1690,40 @@ py: running $R/sys/python3, not uv run: uv run would build or run code from $R/p
 python: running $R/sys/python3, not uv run: uv run would build or run code from $RP/proj/pyproject.toml
 python -c 5 → uv run -- python -c 5
 python -c 6 → uv run -- python -c 6" "$(cat "$R/err")"
+
+    # vva took its first argument for the venv's name, an option too, and
+    # the name from here where uv made the venv elsewhere: it activated
+    # another venv than the one uv made, or ran a --python/bin/activate.
+    echo "[$sh] vva hands uv venv the name it activates, and activates it where uv made it"
+    actual=$(route_posix "$sh" "$R/vvadir" "
+        vva myenv --directory elsewhere; echo \"VE=[\${VIRTUAL_ENV#'$R/'}]\"
+        export UV_WORKING_DIR=elsewhere; vva myenv; echo \"VE=[\${VIRTUAL_ENV#'$R/'}]\"
+        unset UV_WORKING_DIR; export UV_WORKING_DIRECTORY='$R/vvadir/elsewhere'; vva myenv --python 3.13; echo \"VE=[\${VIRTUAL_ENV#'$R/'}]\"
+        unset UV_WORKING_DIRECTORY; vva myenv --directory=via/..; echo \"VE=[\${VIRTUAL_ENV#'$R/'}]\"
+        vva '$R/vvadir/myenv' --directory elsewhere; echo \"VE=[\${VIRTUAL_ENV#'$R/'}]\"")
+    assert_eq "$sh/vva activates the venv uv made, not one of the same name here" "mock-uv venv myenv --directory elsewhere
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv --python 3.13
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv --directory=via/..
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv $R/vvadir/myenv --directory elsewhere
+VE=[vvadir/myenv]
+rc=0" "$actual"
+    assert_eq "$sh/vva activates the venv uv made, and prints no line" "" "$(cat "$R/err")"
+    actual=$(route_posix "$sh" "$R/vvadot" "vva -p 3.13; echo \"VE=[\${VIRTUAL_ENV#'$R/'}]\"")
+    assert_eq "$sh/vva with an option first activates the .venv it names to uv" "mock-uv --no-config venv .venv -p 3.13
+VE=[vvadot/.venv]
+rc=0" "$actual"
+
+    echo "[$sh] vva with an option first, in a tree with a --python/ and a -p/: runs no activate script there"
+    actual=$(route_posix "$sh" "$R/vvaplant" "vva --python 3.13; vva -p 3.13")
+    assert_eq "$sh/vva with an option first names .venv to uv" "mock-uv --no-config venv .venv --python 3.13
+mock-uv --no-config venv .venv -p 3.13
+rc=1" "$actual"
+    assert_not_contains "$sh/vva with an option first runs no --python/bin/activate or -p/bin/activate" "PLANTED" "$actual$(cat "$R/err")"
 
     # link/ is proj/sub/ under another name: from the directory uv runs in,
     # .. is proj/, and by name link/.. is the route directory, which holds
@@ -1750,7 +1807,7 @@ pip3 list → uv --config-file $UVU/uv/uv.toml pip list ($PIP_KEEPS)" "$(cat "$R
     echo "[$sh] vv and vva in a project, with a uv.toml of yours: uv --no-config --config-file it, also with the overrides off"
     actual=$(route_posix "$sh" "$R/proj/sub" "export XDG_CONFIG_HOME='$UVU'; vv -p 3.13; toggle-uv >/dev/null; vva")
     assert_eq "$sh/vv and vva in a project with a uv.toml of yours run uv --no-config --config-file it" "mock-uv --no-config --config-file $UVU/uv/uv.toml venv -p 3.13
-mock-uv --no-config --config-file $UVU/uv/uv.toml venv
+mock-uv --no-config --config-file $UVU/uv/uv.toml venv .venv
 rc=1" "$actual"
     assert_eq "$sh/vv and vva in a project with a uv.toml of yours say so" "vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $RP/proj/pyproject.toml is here or above ($VV_KEEPS)
 vva: uv --no-config --config-file $UVU/uv/uv.toml venv, as $RP/proj/pyproject.toml is here or above ($VV_KEEPS)
@@ -1957,7 +2014,7 @@ mock-uv --no-config venv -p 3.13" "$actual"
 echo "[pwsh] vva below a .python-version that names a path: uv --no-config venv, then va"
 actual=$(route_pwsh "$R/pyver/sub" "vva")
 assert_eq "pwsh/vva below a .python-version that names a path runs uv --no-config venv after a warning, then va" "WARNING: vva: uv --no-config venv, as $R/pyver/.python-version is here or above ($VV_NONE)
-mock-uv --no-config venv
+mock-uv --no-config venv .venv
 ERROR: activate script not found under '.venv' (Scripts/ or bin/)" "$actual"
 
 echo "[pwsh] vv with the overrides off: still uv --no-config venv in a project"
@@ -1982,7 +2039,7 @@ WARNING: vv: uv --no-config venv, as $RP/pyverdir/.python-version is in or above
 mock-uv --no-config venv --directory=../route/pyverdir v
 WARNING: vva: uv --no-config venv, as $RP/uvtoml/uv.toml is in or above $RP/uvtoml/sub ($VV_NONE_THERE)
 mock-uv --no-config venv myenv --directory $R/uvtoml/sub
-ERROR: activate script not found under 'myenv' (Scripts/ or bin/)" "$actual"
+ERROR: activate script not found under '$RP/uvtoml/sub/myenv' (Scripts/ or bin/)" "$actual"
 
 echo "[pwsh] vv with UV_WORKING_DIR, UV_WORKING_DIRECTORY or UV_PROJECT, as uv ranks them and --directory: the same"
 actual=$(route_pwsh "$NOPROJ" "
@@ -2026,6 +2083,35 @@ mock-uv run -- python -c 5
 HOST: python -c 6 → uv run -- python -c 6
 mock-uv run -- python -c 6
 venv-python -c 7" "$actual"
+
+# vva hands uv venv the name it activates, as on bash and zsh, and takes a
+# relative one from where uv runs as _DenUvMarker reads it: PowerShell takes
+# a .. after a link by name (via/.. would be vvadir/).
+echo "[pwsh] vva hands uv venv the name it activates, and activates it where uv made it"
+actual=$(route_pwsh "$R/vvadir" "
+    vva myenv --directory elsewhere; \"VE=[\$(\$env:VIRTUAL_ENV -replace '^$R/')]\"
+    \$env:UV_WORKING_DIR = 'elsewhere'; vva myenv; \"VE=[\$(\$env:VIRTUAL_ENV -replace '^$R/')]\"
+    Remove-Item Env:\\UV_WORKING_DIR; \$env:UV_WORKING_DIRECTORY = '$R/vvadir/elsewhere'; vva myenv --python 3.13; \"VE=[\$(\$env:VIRTUAL_ENV -replace '^$R/')]\"
+    Remove-Item Env:\\UV_WORKING_DIRECTORY; vva myenv --directory=via/..; \"VE=[\$(\$env:VIRTUAL_ENV -replace '^$R/')]\"
+    vva '$R/vvadir/myenv' --directory elsewhere; \"VE=[\$(\$env:VIRTUAL_ENV -replace '^$R/')]\"")
+assert_eq "pwsh/vva activates the venv uv made, not one of the same name here" "mock-uv venv myenv --directory elsewhere
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv --python 3.13
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv myenv --directory=via/..
+VE=[vvadir/elsewhere/myenv]
+mock-uv venv $R/vvadir/myenv --directory elsewhere
+VE=[vvadir/myenv]" "$actual"
+actual=$(route_pwsh "$R/vvadot" "vva -p 3.13 3>\$null; \"VE=[\$(\$env:VIRTUAL_ENV -replace '^$R/')]\"")
+assert_eq "pwsh/vva with an option first activates the .venv it names to uv" "mock-uv --no-config venv .venv -p 3.13
+VE=[vvadot/.venv]" "$actual"
+
+echo "[pwsh] vva with an option first, in a tree with a --python/ and a -p/: dot-sources no activate script there"
+actual=$(route_pwsh "$R/vvaplant" "vva --python 3.13; vva -p 3.13")
+assert_not_contains "pwsh/vva with an option first dot-sources no --python/bin/Activate.ps1 or -p/bin/Activate.ps1" "PLANTED" "$actual"
+assert_contains "pwsh/vva with an option first names .venv to uv" "mock-uv --no-config venv .venv -p 3.13" "$actual"
 
 echo "[pwsh] vv with --project: the walk starts there, as uv takes it, and a bare name is looked up where uv runs"
 actual=$(route_pwsh "$NOPROJ" "
@@ -2112,6 +2198,12 @@ if [ -d /proc/self ]; then
         vv --directory work")
     assert_eq "pwsh/vv --directory through a link to /proc/self/cwd runs uv --no-config venv" "WARNING: vv: uv --no-config venv, as /proc/self is on the way there, which uv reads for its own process ($VV_NONE_THERE)
 mock-uv --no-config venv --directory work" "$actual"
+    # Nor can vva tell where uv made the venv there: it activates none.
+    actual=$(route_pwsh "$R/procrel" "
+        [System.IO.Directory]::SetCurrentDirectory('$NOPROJ')
+        vva v --directory work 3>\$null")
+    assert_eq "pwsh/vva --directory through a link to /proc/self/cwd activates nothing" "mock-uv --no-config venv v --directory work
+ERROR: uv venv made 'v' where vva cannot tell; activate it with va <its path>" "$actual"
 fi
 
 # PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
@@ -2173,7 +2265,7 @@ actual=$(route_pwsh "$R/proj/sub" "\$env:XDG_CONFIG_HOME = '$UVU'; vv -p 3.13; t
 assert_eq "pwsh/vv and vva in a project with a uv.toml of yours run uv --no-config --config-file it after a warning" "WARNING: vv: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is here or above ($VV_KEEPS)
 mock-uv --no-config --config-file $UVU/uv/uv.toml venv -p 3.13
 WARNING: vva: uv --no-config --config-file $UVU/uv/uv.toml venv, as $R/proj/pyproject.toml is here or above ($VV_KEEPS)
-mock-uv --no-config --config-file $UVU/uv/uv.toml venv
+mock-uv --no-config --config-file $UVU/uv/uv.toml venv .venv
 ERROR: activate script not found under '.venv' (Scripts/ or bin/)" "$actual"
 
 echo "[pwsh] the uv.toml they read is the one uv reads besides a project's, on Windows too"
@@ -2245,6 +2337,26 @@ if [ -n "$REAL_UV" ] && "$REAL_UV" venv -q "$WORK/uv_probe" >/dev/null 2>&1; the
         " 2>&1 | tr -d '\r')
         assert_eq "$sh/va and vd round-trip a uv venv" "VE=[.venv] HEAD=[venv] PY=[set]
 VE=[] PATH=[yes] PY=[]" "$actual"
+
+        # uv venv refuses a second name, so with an option first vva names
+        # .venv to it and a name after the option fails there: nothing is made
+        # and nothing activated. uv made `other`, and vva looked for an
+        # --relocatable/bin/activate.
+        echo "[$sh] vva with an option first: uv refuses a second name, and nothing is made or activated (the real uv)"
+        rm -rf "$WORK/uv_vva_$sh"
+        mkdir -p "$WORK/uv_vva_$sh"
+        actual=$("$sh" -c "
+            source '$PYTHON_SH_SOURCE'
+            cd '$WORK/uv_vva_$sh' || exit 1
+            vva --relocatable other >/dev/null 2>&1 && echo ok || echo failed
+            echo \"VE=[\${VIRTUAL_ENV:-}] OTHER=[\$([ -d other ] && echo made)] VENV=[\$([ -d .venv ] && echo made)]\"
+            mkdir elsewhere
+            vva v --directory elsewhere >/dev/null 2>&1 || echo failed
+            [ \"\$VIRTUAL_ENV\" -ef elsewhere/v ] && echo 'VE=[elsewhere/v]' || echo \"VE=[\${VIRTUAL_ENV:-}]\"
+        " 2>&1 | tr -d '\r')
+        assert_eq "$sh/vva with an option first makes no venv it cannot activate; with the name first it activates the one uv made" "failed
+VE=[] OTHER=[] VENV=[]
+VE=[elsewhere/v]" "$actual"
     done
 
     echo "[pwsh] vva creates and activates a uv venv; vd undoes it"
@@ -2269,6 +2381,17 @@ VE=[] PATH=[yes] PY=[]" "$actual"
     " 2>&1 | tr -d '\r')
     assert_eq "pwsh/vva and vd round-trip a uv venv" "VE=[.venv] HEAD=[True] PY=[True] PROMPT=[(.venv) PS> ]
 VE=[] PATH=[True] PY=[] PROMPT=[PS> ] DEACTIVATE=[False]" "$actual"
+
+    echo "[pwsh] vva with an option first: uv refuses a second name, and nothing is made or activated (the real uv)"
+    rm -rf "$WORK/uv_vva_pwsh"
+    mkdir -p "$WORK/uv_vva_pwsh"
+    actual=$(run_pwsh "$PYTHON_PS1_REAL_UV" "
+        Set-Location '$WORK/uv_vva_pwsh'
+        \$env:VIRTUAL_ENV = \$null
+        vva --relocatable other *>\$null
+        \"VE=[\$env:VIRTUAL_ENV] OTHER=[\$(Test-Path other)] VENV=[\$(Test-Path .venv)]\"
+    " 2>&1 | tr -d '\r')
+    assert_eq "pwsh/vva with an option first makes no venv it cannot activate" "VE=[] OTHER=[False] VENV=[False]" "$actual"
 
     # python -m venv from the interpreter uv found: the other kind of activate.ps1.
     if "$WORK/uv_probe/bin/python" -m venv --without-pip "$WORK/uv_mixed/std" >/dev/null 2>&1 &&

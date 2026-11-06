@@ -673,16 +673,45 @@ function global:vv {
   _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + (_DenPyArgs $MyInvocation $Args))
 }
 
-# vva → uv venv + activate (default: .venv)
+# vva [name] [uv venv options] → uv venv + activate (default: .venv). The
+# venv's name is the first argument when it is not an option, else .venv,
+# and vva hands it to uv venv itself, so that it activates the venv uv just
+# made: it took the first argument for the name, an option too (`vva --python
+# 3.13 x` dot-sourced a --python/bin/activate.ps1 that could be there, not
+# x's), and took the name from here where --directory, UV_WORKING_DIR or
+# UV_WORKING_DIRECTORY had uv make it elsewhere. A second name after an option
+# is uv's to refuse, as is a venv already there unless you have uv replace it:
+# uv venv then fails, and vva activates nothing. A relative name is taken from
+# the directory uv runs
+# in as _DenUvMarker reads it, link by link: PowerShell would take a .. after
+# a link by name, elsewhere than uv. Parity with posix python.sh.
 function global:vva {
   if (-not (_ResolveCmd 'uv' 'App')) {
     Write-Error 'uv is not installed'
     return
   }
-  $name = if ($Args.Count -ge 1) { $Args[0] } else { '.venv' }
-  $options = @(_DenUvVenvOptions 'vva' $Args)
-  _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + (_DenPyArgs $MyInvocation $Args))
-  if ($LASTEXITCODE -eq 0) { va $name }
+  # [object[]], not @(): _DenPyArgs returns its words as one array.
+  $words = [object[]](_DenPyArgs $MyInvocation $Args)
+  if ($null -eq $words) { $words = @() }
+  $name = '.venv'
+  if ($words.Count -ge 1 -and "$($words[0])" -and -not "$($words[0])".StartsWith('-', [System.StringComparison]::Ordinal)) {
+    $name = $words[0]
+    $words = @($words | Select-Object -Skip 1)
+  }
+  $words = @(, $name) + $words
+  $found = _DenUvMarker $words
+  $options = @(_DenUvVenvOptions 'vva' $words $found)
+  _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + $words)
+  if ($LASTEXITCODE -ne 0) { return }
+  $target = "$name"
+  if (-not ([System.IO.Path]::IsPathRooted($target) -or $target.StartsWith('~', [System.StringComparison]::Ordinal))) {
+    if ($null -eq $found['Here']) {
+      Write-Error "uv venv made '$target' where vva cannot tell; activate it with va <its path>"
+      return
+    }
+    if ($found['Here']) { $target = [System.IO.Path]::Combine($found['Here'], $target) }
+  }
+  va $target
 }
 
 # ===== Toggles =====

@@ -310,7 +310,7 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `uv` | injects `--python` for `uv run` when a venv is active; `uv run` itself is not guarded (it builds and runs the project, as uv does) |
 | `va [DIR]` | activate a venv (default `.venv`) |
 | `vd` | deactivate |
-| `vv` / `vva` | `uv venv` (create / create + activate); in a project (here, or where `--directory`, `--project` or their variables point uv), as for `python`, `uv --no-config venv`, with `--config-file <your uv.toml>` when you have one |
+| `vv` / `vva` | `uv venv` (create / create + activate: `vva [name] [uv venv options]`, the name first, default `.venv`, activates the venv uv made); in a project (here, or where `--directory`, `--project` or their variables point uv), as for `python`, `uv --no-config venv`, with `--config-file <your uv.toml>` when you have one |
 | `toggle-uv` / `tgl-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
 
 ### Parallel file ops

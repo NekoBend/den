@@ -438,6 +438,12 @@ keeps), except where uv would build or run code that came with a clone:
   and also a `.python-version` that only pins a version, your global one
   (`uv python pin --global`) too: pick a python with `--python`, or type
   `uv venv`.
+- `vva` names the venv to `uv venv` itself, its first argument when that is
+  not an option, else `.venv`, so the name goes first (`vva myenv --python
+  3.13`; `vva --python 3.13` makes `.venv`), and activates the one uv made,
+  in the directory `--directory`, `UV_WORKING_DIR` or `UV_WORKING_DIRECTORY`
+  names. Where uv refuses, as it does a second name after an option or a venv
+  that is already there, nothing is activated.
 - Your uv.toml is the one uv reads besides a project's: the one
   `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
   (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows
@@ -467,7 +473,7 @@ and macOS do not have, stays den's in scripts there.
 | `va [name]` | activate a venv (default `.venv`) | ✓ | ✓ | — |
 | `vd` | deactivate the active venv | ✓ | ✓ | — |
 | `vv [args]` | `uv venv` (create only) | ✓ | ✓ | — |
-| `vva [name]` | `uv venv` then activate | ✓ | ✓ | — |
+| `vva [name] [uv venv options]` | `uv venv <name>` (default `.venv`; the name first) then activate the venv it made | ✓ | ✓ | — |
 | `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.
