@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+# syntax=docker/dockerfile:1.28.0@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 # Development image. Save with LF line endings; usage: docker/README.md.
 # ARG settings: override with --build-arg NAME=value.
 # HOST_UID/HOST_GID and FIX_WORKSPACE_OWNERSHIP: runtime settings, passed with -e.
@@ -9,7 +9,7 @@
 # right above the ARG, which is where Renovate reads it.
 
 # Build setting: the base image, by tag and digest. The apt steps assume Ubuntu.
-ARG BASE_IMAGE=ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+ARG BASE_IMAGE=ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 FROM ${BASE_IMAGE} AS system
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -200,7 +200,7 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
 # renovate: datasource=github-releases depName=astral-sh/uv
 ARG UV_VERSION=0.13.6
 # renovate: datasource=github-releases depName=astral-sh/ty
-ARG TY_VERSION=0.0.94
+ARG TY_VERSION=0.0.95
 # renovate: datasource=github-releases depName=astral-sh/ruff
 ARG RUFF_VERSION=0.17.3
 RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://astral.sh/uv/${UV_VERSION}/install.sh" -o /tmp/uv.sh && \

@@ -16,10 +16,10 @@ from = """ruff check, ty check
 to = "ruff check, ty check"
 
 [[code-audit]]
-from = """;
-  with den installed, `den verify <file>` runs the Python three with
-  the project's own config and venv)"""
-to = ")"
+from = """With den installed, `den verify <file>` runs the Python checks
+with the project's own config and venv.
+"""
+to = ""
 
 [[troubleshoot]]
 from = """; `den verify <file>` for

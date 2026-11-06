@@ -1841,12 +1841,16 @@ def test_a_base_that_git_would_read_as_an_option_is_refused(
 
 def test_code_audit_tells_the_model_to_pass_a_base_for_committed_changes() -> None:
     skills = SCRIPT.parents[2] / "skills" / "code-audit"
+    # Step 3 sends the model to the file that lists the checks and scripts.
     step3 = (skills / "SKILL.md").read_text(encoding="utf-8")
     step3 = step3[step3.index("### Step 3") : step3.index("### Step 4")]
-    correctness = (skills / "reference" / "dimensions" / "correctness.md").read_text(
+    assert "reference/tool-checks.md" in step3, step3
+    reference = skills / "reference"
+    tool_checks = (reference / "tool-checks.md").read_text(encoding="utf-8")
+    correctness = (reference / "dimensions" / "correctness.md").read_text(
         encoding="utf-8"
     )
-    for text in (step3, correctness):
+    for text in (tool_checks, correctness):
         assert "--base" in text, text
         assert "git merge-base" in text, text
 
