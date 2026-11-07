@@ -443,27 +443,29 @@ if command -v pwsh >/dev/null 2>&1; then
 
     echo "[pwsh] tracks effective stdin mode through all options"
     rm -f "$MARK"
+    # Keep output and status on one line: grep -F treats multiline patterns
+    # as alternatives. Catch each refusal so later allowed cases still run.
     ps_cases=''
     for name in zsh sh; do
         for opts in '-s +s' '-s +fs' '-fs +s'; do
             ps_cases+="try { $name $opts '$PS_HOME/.bash_history'; 'NOT-REFUSED' } catch { 'R $name $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
-            ps_cases+="$name $opts -n '$PS_HOME/.bash_history'; 'N $name $opts code: ' + \$LASTEXITCODE"$'\n'
+            ps_cases+="try { $name $opts -n '$PS_HOME/.bash_history'; 'N $name $opts code: ' + \$LASTEXITCODE } catch { 'E noexec $name $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
         done
-        ps_cases+="'echo stdin' | $name -s +s -s '$PS_HOME/.bash_history'; 'A $name reenabled code: ' + \$LASTEXITCODE"$'\n'
+        ps_cases+="try { \$o = 'echo stdin' | $name -s +s -s '$PS_HOME/.bash_history'; \"A $name reenabled \$o code: \$LASTEXITCODE\" } catch { 'E $name reenabled code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
     done
     for opts in '+s' '+fs' '-s +s'; do
-        ps_cases+="'echo stdin' | bash $opts '$PS_HOME/.bash_history'; 'A bash $opts code: ' + \$LASTEXITCODE"$'\n'
+        ps_cases+="try { \$o = 'echo stdin' | bash $opts '$PS_HOME/.bash_history'; \"A bash $opts \$o code: \$LASTEXITCODE\" } catch { 'E bash $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
     done
     for opts in "${ZSH_STDIN_ON[@]}"; do
-        ps_cases+="'echo stdin' | zsh $opts '$PS_HOME/.zsh_history'; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+        ps_cases+="try { \$o = 'echo stdin' | zsh $opts '$PS_HOME/.zsh_history'; \"A $opts \$o code: \$LASTEXITCODE\" } catch { 'E $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
     done
     for opts in "${ZSH_STDIN_OFF[@]}"; do
         ps_cases+="try { zsh $opts '$PS_HOME/.zsh_history'; 'NOT-REFUSED' } catch { 'R zsh $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
-        ps_cases+="'echo stdin' | zsh $opts '$WORK/ok.sh' x; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+        ps_cases+="try { \$o = 'echo stdin' | zsh $opts '$WORK/ok.sh' x; \"A $opts \$o code: \$LASTEXITCODE\" } catch { 'E $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
     done
     actual=$(run_pwsh_den "Set-Location -LiteralPath '$WORK'" "$ps_cases
-        'echo stdin' | zsh -s one +s '$PS_HOME/.zsh_history'; 'A later operand code: ' + \$LASTEXITCODE
-        zsh --stdin -c 'echo dash-c-ran'; 'C code: ' + \$LASTEXITCODE
+        try { \$o = 'echo stdin' | zsh -s one +s '$PS_HOME/.zsh_history'; \"A later operand \$o code: \$LASTEXITCODE\" } catch { 'E later operand code: ' + \$LASTEXITCODE; \$_.Exception.Message }
+        try { \$o = zsh --stdin -c 'echo dash-c-ran'; \"C \$o code: \$LASTEXITCODE\" } catch { 'E -c code: ' + \$LASTEXITCODE; \$_.Exception.Message }
     " 2>&1 | tr -d '\r')
     for name in zsh sh; do
         bin=$ZSH_BIN
@@ -475,28 +477,22 @@ if command -v pwsh >/dev/null 2>&1; then
         done
     done
     for opts in "${ZSH_STDIN_ON[@]}"; do
-        assert_contains "pwsh/zsh $opts: stdin allowed" "stdin
-A $opts code: 0" "$actual"
+        assert_contains "pwsh/zsh $opts: stdin allowed" "A $opts stdin code: 0" "$actual"
     done
     for opts in "${ZSH_STDIN_OFF[@]}"; do
         assert_contains "pwsh/zsh $opts: refused" "R zsh $opts code: 2" "$actual"
         assert_contains "pwsh/zsh $opts: bypass" "To run it anyway: $ZSH_BIN $opts $PS_HOME/.zsh_history" "$actual"
-        assert_contains "pwsh/zsh $opts: normal script allowed" "ok x
-A $opts code: 0" "$actual"
+        assert_contains "pwsh/zsh $opts: normal script allowed" "A $opts ok x code: 0" "$actual"
     done
     assert_not_contains "pwsh/stdin cancelled: refused" "NOT-REFUSED" "$actual"
     for name in zsh sh; do
-        assert_contains "pwsh/$name: stdin reenabled" "stdin
-A $name reenabled code: 0" "$actual"
+        assert_contains "pwsh/$name: stdin reenabled" "A $name reenabled stdin code: 0" "$actual"
     done
     for opts in '+s' '+fs' '-s +s'; do
-        assert_contains "pwsh/bash $opts: enables stdin" "stdin
-A bash $opts code: 0" "$actual"
+        assert_contains "pwsh/bash $opts: enables stdin" "A bash $opts stdin code: 0" "$actual"
     done
-    assert_contains "pwsh/zsh: later +s is an argument" "stdin
-A later operand code: 0" "$actual"
-    assert_contains "pwsh/-c still runs" "dash-c-ran
-C code: 0" "$actual"
+    assert_contains "pwsh/zsh: later +s is an argument" "A later operand stdin code: 0" "$actual"
+    assert_contains "pwsh/-c still runs" "C dash-c-ran code: 0" "$actual"
     assert_not_exists "pwsh/stdin mode cases ran no history file" "$MARK"
 
     for name in bash dash; do
@@ -504,16 +500,14 @@ C code: 0" "$actual"
         ps_cases=''
         for opts in '+s' '-s +s' '-s +fs' '-fs +s'; do
             ps_cases+="try { 'echo safe' | sh $opts '$PS_HOME/.bash_history'; 'NOT-REFUSED' } catch { 'R $opts code: ' + \$LASTEXITCODE }"$'\n'
-            ps_cases+="'echo ok x' | sh $opts '$WORK/ok.sh' x; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
-            ps_cases+="'echo stdin' | sh $opts -s '$PS_HOME/.bash_history'; 'S $opts code: ' + \$LASTEXITCODE"$'\n'
+            ps_cases+="try { \$o = 'echo ok x' | sh $opts '$WORK/ok.sh' x; \"A $opts \$o code: \$LASTEXITCODE\" } catch { 'E $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
+            ps_cases+="try { \$o = 'echo stdin' | sh $opts -s '$PS_HOME/.bash_history'; \"S $opts \$o code: \$LASTEXITCODE\" } catch { 'E later -s $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
         done
         actual=$(run_pwsh_den "\$env:PATH = '$WORK/sh-$name' + [IO.Path]::PathSeparator + \$env:PATH; Set-Location -LiteralPath '$WORK'" "$ps_cases" 2>&1 | tr -d '\r')
         for opts in '+s' '-s +s' '-s +fs' '-fs +s'; do
             assert_contains "pwsh/sh=$name $opts: possible script refused" "R $opts code: 2" "$actual"
-            assert_contains "pwsh/sh=$name $opts: safe script and stdin" "ok x
-A $opts code: 0" "$actual"
-            assert_contains "pwsh/sh=$name $opts: later -s resolves mode" "stdin
-S $opts code: 0" "$actual"
+            assert_contains "pwsh/sh=$name $opts: safe script and stdin" "A $opts ok x code: 0" "$actual"
+            assert_contains "pwsh/sh=$name $opts: later -s resolves mode" "S $opts stdin code: 0" "$actual"
         done
         assert_not_contains "pwsh/sh=$name: refused calls stop" "NOT-REFUSED" "$actual"
         assert_not_exists "pwsh/sh=$name: ran no history file" "$MARK"
@@ -522,21 +516,19 @@ S $opts code: 0" "$actual"
     if command -v dash >/dev/null 2>&1; then
         ps_cases=''
         for opts in '-o stdin' '-eo stdin'; do
-            ps_cases+="'echo stdin' | sh $opts '$PS_HOME/.bash_history'; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+            ps_cases+="try { \$o = 'echo stdin' | sh $opts '$PS_HOME/.bash_history'; \"A $opts \$o code: \$LASTEXITCODE\" } catch { 'E $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
         done
         for opts in '-s +o stdin' '-o stdin +o stdin'; do
             ps_cases+="try { sh $opts '$PS_HOME/.bash_history'; 'NOT-REFUSED' } catch { 'R $opts code: ' + \$LASTEXITCODE }"$'\n'
-            ps_cases+="'echo safe' | sh $opts '$WORK/ok.sh' x; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+            ps_cases+="try { \$o = 'echo safe' | sh $opts '$WORK/ok.sh' x; \"A $opts \$o code: \$LASTEXITCODE\" } catch { 'E $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
         done
         actual=$(run_pwsh_den "\$env:PATH = '$WORK/sh-dash' + [IO.Path]::PathSeparator + \$env:PATH; Set-Location -LiteralPath '$WORK'" "$ps_cases" 2>&1 | tr -d '\r')
         for opts in '-o stdin' '-eo stdin'; do
-            assert_contains "pwsh/sh $opts: named stdin allowed" "stdin
-A $opts code: 0" "$actual"
+            assert_contains "pwsh/sh $opts: named stdin allowed" "A $opts stdin code: 0" "$actual"
         done
         for opts in '-s +o stdin' '-o stdin +o stdin'; do
             assert_contains "pwsh/sh $opts: named cancellation refused" "R $opts code: 2" "$actual"
-            assert_contains "pwsh/sh $opts: script owns stdin" "ok x
-A $opts code: 0" "$actual"
+            assert_contains "pwsh/sh $opts: script owns stdin" "A $opts ok x code: 0" "$actual"
         done
         assert_not_contains "pwsh/sh named stdin: refused calls stop" "NOT-REFUSED" "$actual"
         assert_not_exists "pwsh/sh named stdin: ran no history file" "$MARK"
