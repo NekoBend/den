@@ -622,20 +622,20 @@ case "$fix_workspace" in
     0|1) ;;
     *) fail 'FIX_WORKSPACE_OWNERSHIP must be 0 or 1' ;;
 esac
-den_state=${DEN_STATE:-1}
-case "$den_state" in
+denbox_state=${DENBOX_STATE:-1}
+case "$denbox_state" in
     0|1) ;;
-    *) fail 'DEN_STATE must be 0 or 1' ;;
+    *) fail 'DENBOX_STATE must be 0 or 1' ;;
 esac
-clean_tmp=${DEN_CLEAN_TMP:-0}
+clean_tmp=${DENBOX_CLEAN_TMP:-0}
 case "$clean_tmp" in
     0|1) ;;
-    *) fail 'DEN_CLEAN_TMP must be 0 or 1' ;;
+    *) fail 'DENBOX_CLEAN_TMP must be 0 or 1' ;;
 esac
-# The state step runs unless DEN_STATE=0, and only for a mount point at
+# The state step runs unless DENBOX_STATE=0, and only for a mount point at
 # /state: the image's own /state directory is in the container's layer.
 use_state=0
-if [ "$den_state" = 1 ] && own_mount "$state_dir"; then
+if [ "$denbox_state" = 1 ] && own_mount "$state_dir"; then
     use_state=1
 fi
 
@@ -713,11 +713,11 @@ if [ "$(id -u)" -eq 0 ]; then
                     find "$tmp_dir" -xdev -mindepth 1 -delete \
                         || warn 'some entries under /tmp were left in place'
                     ;;
-                0) warn "DEN_CLEAN_TMP=1 empties /tmp only when no mount point is below it, and $nested is one; it is left as it is" ;;
-                *) warn "DEN_CLEAN_TMP=1 empties /tmp only when no mount point is below it, and the mount table $mountinfo could not be read; it is left as it is" ;;
+                0) warn "DENBOX_CLEAN_TMP=1 empties /tmp only when no mount point is below it, and $nested is one; it is left as it is" ;;
+                *) warn "DENBOX_CLEAN_TMP=1 empties /tmp only when no mount point is below it, and the mount table $mountinfo could not be read; it is left as it is" ;;
             esac
         else
-            warn 'DEN_CLEAN_TMP=1 empties /tmp only when it is a mount point of its own; it is left as it is'
+            warn 'DENBOX_CLEAN_TMP=1 empties /tmp only when it is a mount point of its own; it is left as it is'
         fi
     fi
     # The state volume. Root only makes /state/home and gives /state and
@@ -740,14 +740,14 @@ if [ "$(id -u)" -eq 0 ]; then
             /usr/bin/gnutimeout -k 10 300 \
                 /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
                 /usr/bin/env -i HOME="$user_home" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-                /usr/local/lib/den/state-link \
+                /usr/local/lib/denbox/state-link \
                 || link_status=$?
             case "$link_status" in
                 0) ;;
-                124) warn "state-link was stopped after 300 seconds, so the run was cut short; run /usr/local/lib/den/state-link as $username to finish it" ;;
+                124) warn "state-link was stopped after 300 seconds, so the run was cut short; run /usr/local/lib/denbox/state-link as $username to finish it" ;;
                 # GNU timeout's KILL, 10 seconds after its TERM, gives 137, and
                 # so does any other KILL (the OOM killer, or kill -9).
-                137) warn "state-link was killed, by the time limit or by a signal, so the run was cut short; run /usr/local/lib/den/state-link as $username to finish it" ;;
+                137) warn "state-link was killed, by the time limit or by a signal, so the run was cut short; run /usr/local/lib/denbox/state-link as $username to finish it" ;;
                 *) warn 'state-link reported problems (see above)' ;;
             esac
         else
@@ -764,10 +764,10 @@ fi
 [ "$(id -u):$(id -g)" = "$target_uid:$target_gid" ] \
     || fail 'UID/GID adjustment requires root initialization; omit --user or rebuild with matching USER_UID/USER_GID'
 if [ "$use_state" = 1 ]; then
-    warn "$state_dir is mounted, but only a root start links the home into it; omit --user, or set DEN_STATE=0"
+    warn "$state_dir is mounted, but only a root start links the home into it; omit --user, or set DENBOX_STATE=0"
 fi
 if [ "$clean_tmp" = 1 ]; then
-    warn 'DEN_CLEAN_TMP=1 needs a root start; /tmp is left as it is'
+    warn 'DENBOX_CLEAN_TMP=1 needs a root start; /tmp is left as it is'
 fi
 export PATH="$runtime_path" HOME="$user_home" USER="$username" LOGNAME="$username" SHELL="$login_shell"
 exec "$@"
@@ -778,15 +778,15 @@ chmod 0755 /usr/local/bin/container-entrypoint
 # mount point the user owns. There is no VOLUME instruction: an image built
 # FROM this one could never take one away.
 install -d -o "$USER_UID" -g "$USER_GID" -m 0700 /state
-install -d -m 0755 /etc/den /etc/den/state-paths.d /usr/local/lib/den
-cat > /etc/den/state-paths.d/den.list <<'STATE_PATHS'
+install -d -m 0755 /etc/denbox /etc/denbox/state-paths.d /usr/local/lib/denbox
+cat > /etc/denbox/state-paths.d/denbox.list <<'STATE_PATHS'
 # The image's paths of the user's home kept in the state volume at
 # /state/home, one "<kind> <path>" per line, the path relative to the home:
 #   d  a directory, created in the volume when missing
 #   F  a file, created empty in the volume when missing
 #   f  a file, linked only once the volume or the home has one
 # An image built FROM this one adds its own in a <name>.list file here; one
-# environment adds its own in ~/.config/den/state-paths, in the volume.
+# environment adds its own in ~/.config/denbox/state-paths, in the volume.
 d .ssh
 F .gitconfig
 F .zsh_history
@@ -796,9 +796,10 @@ d .config/rclone
 d .local/share/zoxide
 d .local/share/powershell/PSReadLine
 d .config/den
+d .config/denbox
 STATE_PATHS
-chmod 0644 /etc/den/state-paths.d/den.list
-cat > /usr/local/lib/den/state-link <<'STATE_LINK'
+chmod 0644 /etc/denbox/state-paths.d/denbox.list
+cat > /usr/local/lib/denbox/state-link <<'STATE_LINK'
 #!/bin/sh
 # Ubuntu's /bin/sh is dash, which has test -O and -ef, and local.
 # shellcheck shell=dash
@@ -806,21 +807,21 @@ cat > /usr/local/lib/den/state-link <<'STATE_LINK'
 # container-entrypoint runs it as the user at each root start, once /state/home
 # is the user's; run by hand, it applies the lists again. For each
 # "<kind> <path>" line of the lists it links ~/<path> to /state/home/<path>
-# (kinds: /etc/den/state-paths.d/den.list). The lists are every
-# /etc/den/state-paths.d/*.list, then the environment's own
-# /state/home/.config/den/state-paths.
+# (kinds: /etc/denbox/state-paths.d/denbox.list). The lists are every
+# /etc/denbox/state-paths.d/*.list, then the environment's own
+# /state/home/.config/denbox/state-paths.
 # A path the home has and the volume does not moves into the volume. When both
 # have a file, the volume's stays and the home's moves to
-# /state/home/.den-set-aside/<UTC time>/<path>. When both have a directory,
+# /state/home/.denbox-set-aside/<UTC time>/<path>. When both have a directory,
 # each name in the home's moves into the volume's, a directory both have is
 # merged the same way, and any other name both have goes aside; a directory
 # with anything in it this user cannot move is left whole. A move copies into
-# /state/home/.den-staging, renames the whole copy into place, and only then
+# /state/home/.denbox-staging, renames the whole copy into place, and only then
 # removes the home's, so the home's goes only once the volume holds all of it.
 # A run stopped by a signal removes the copy it was making; a copy that an
 # earlier run left there (one that KILL or a crash stopped) is set aside,
 # never deleted and never taken for the volume's. Runs on one volume take
-# turns: each holds a lock on /state/home/.den-lock.
+# turns: each holds a lock on /state/home/.denbox-lock.
 # Nothing is done through a symbolic link or on a mount point: an entry with a
 # link on its way, in the home or in the volume, is skipped, and so is one
 # whose path in the home is a mount point, is below one other than /, or has
@@ -828,23 +829,23 @@ cat > /usr/local/lib/den/state-link <<'STATE_LINK'
 # the volume is a mount point, is below one or has one below it, counting the
 # mount points below the volume alone. A move renames its copy into place,
 # and a rename to another file system is a copy again: with a mount point at,
-# above or inside .den-staging or .den-set-aside, nothing moves through it.
+# above or inside .denbox-staging or .denbox-set-aside, nothing moves through it.
 # A bad line and an entry that fails are warnings, and the next line goes on;
 # the exit status is 1 when there was one. A set-aside is a note, which leaves
 # the status alone.
-# HOME, DEN_STATE_ROOT (default /state), DEN_STATE_LISTS (default
-# /etc/den/state-paths.d) and DEN_STATE_MOUNTINFO (default
-# /proc/self/mountinfo) name what it reads, and DEN_STATE_LOCK_WAIT (default
+# HOME, DENBOX_STATE_ROOT (default /state), DENBOX_STATE_LISTS (default
+# /etc/denbox/state-paths.d) and DENBOX_STATE_MOUNTINFO (default
+# /proc/self/mountinfo) name what it reads, and DENBOX_STATE_LOCK_WAIT (default
 # 60) how many seconds it waits for another run, so tests can run it
 # elsewhere.
 set -u
 export LC_ALL=C
 umask 077
 
-state_root=${DEN_STATE_ROOT:-/state}
-lists_dir=${DEN_STATE_LISTS:-/etc/den/state-paths.d}
-mountinfo=${DEN_STATE_MOUNTINFO:-/proc/self/mountinfo}
-lock_wait=${DEN_STATE_LOCK_WAIT:-60}
+state_root=${DENBOX_STATE_ROOT:-/state}
+lists_dir=${DENBOX_STATE_LISTS:-/etc/denbox/state-paths.d}
+mountinfo=${DENBOX_STATE_MOUNTINFO:-/proc/self/mountinfo}
+lock_wait=${DENBOX_STATE_LOCK_WAIT:-60}
 case "$lock_wait" in '' | *[!0-9]*) lock_wait=60 ;; esac
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 aside=
@@ -1022,7 +1023,7 @@ on_volume() {
     return 1
 }
 
-# The directory moves copy into, /state/home/.den-staging, made on first use.
+# The directory moves copy into, /state/home/.denbox-staging, made on first use.
 make_staging() {
     on_volume "$staging" || return 1
     if [ ! -e "$staging" ] && [ ! -L "$staging" ]; then
@@ -1107,11 +1108,11 @@ transfer() {
 }
 
 # The directory this run sets the home's copies aside in, made on first use:
-# /state/home/.den-set-aside/<UTC time>, with .<n> added to the time when that
+# /state/home/.denbox-set-aside/<UTC time>, with .<n> added to the time when that
 # name is taken. mkdir makes a new directory or fails, also on a link.
 make_aside() {
     [ -n "$aside" ] && return 0
-    ma_root=$volume/.den-set-aside
+    ma_root=$volume/.denbox-set-aside
     on_volume "$ma_root" || return 1
     if [ ! -e "$ma_root" ] && [ ! -L "$ma_root" ]; then
         mkdir -m 0700 -- "$ma_root" || return 1
@@ -1289,7 +1290,7 @@ link_entry() {
             # All or nothing: a name this user cannot move, or a staging or
             # set-aside directory it may not use, stops the merge before
             # anything moves or any link in it goes.
-            if ! on_volume "$staging" || ! on_volume "$volume/.den-set-aside"; then
+            if ! on_volume "$staging" || ! on_volume "$volume/.denbox-set-aside"; then
                 warn "$where: skipped $le_rel: could not move all of $le_home into $le_vol or aside"
                 return
             fi
@@ -1363,9 +1364,9 @@ if ! volume=$(canon_dir "$state_root/home"); then
     warn "$state_root/home is not a directory of this user's; nothing is linked"
     exit 1
 fi
-env_list=$volume/.config/den/state-paths
-staging=$volume/.den-staging
-lock=$volume/.den-lock
+env_list=$volume/.config/denbox/state-paths
+staging=$volume/.denbox-staging
+lock=$volume/.denbox-lock
 if [ ! -r "$mountinfo" ]; then
     warn "cannot read the mount table $mountinfo; nothing is linked"
     exit 1
@@ -1398,9 +1399,9 @@ elif ! on_volume "$staging"; then
     staging_ok=0
     warn "left $staging as it is; nothing moves into $volume"
 elif [ -d "$staging" ] && ! rmdir -- "$staging" 2>/dev/null; then
-    if make_aside && mv -T -n -- "$staging" "$aside/.den-staging" \
+    if make_aside && mv -T -n -- "$staging" "$aside/.denbox-staging" \
         && [ ! -e "$staging" ] && [ ! -L "$staging" ]; then
-        note "moved $staging, unfinished copies that an earlier run left, to $aside/.den-staging"
+        note "moved $staging, unfinished copies that an earlier run left, to $aside/.denbox-staging"
     else
         warn "could not set $staging aside"
     fi
@@ -1417,7 +1418,7 @@ done
 if [ -e "$env_list" ] || [ -L "$env_list" ]; then
     # test -O is not POSIX; dash, the image's /bin/sh, has it.
     # shellcheck disable=SC3067
-    if clear_path "$volume" .config/den && [ ! -L "$env_list" ] && [ -f "$env_list" ] \
+    if clear_path "$volume" .config/denbox && [ ! -L "$env_list" ] && [ -f "$env_list" ] \
         && [ -O "$env_list" ] && [ -r "$env_list" ]; then
         apply_list "$env_list"
     else
@@ -1431,7 +1432,7 @@ if [ "$staging_ok" = 1 ] && [ -d "$staging" ] && [ ! -L "$staging" ]; then
 fi
 exit "$status"
 STATE_LINK
-chmod 0755 /usr/local/lib/den/state-link
+chmod 0755 /usr/local/lib/denbox/state-link
 cat >> /etc/zsh/zshenv <<'CONTAINER_ZSH_ENV'
 
 # docker exec --user changes identity but retains the image's HOME (/root)

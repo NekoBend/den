@@ -172,8 +172,8 @@ prints a warning that shows this command.
 | `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs denbox`). A mount point below `/home/dev`, and all it holds, is left out of that, with a warning that names it; with more of them than one `find` command can list, nothing in `/home/dev` is re-owned, and a warning says so. On overlayfs the re-owning copies the whole home, the toolchains included, into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
 | `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. Each mount point below `/workspace` (`-v ~/cache:/workspace/.cache`), and all it holds, is left out too, even one of the same file system, with a warning that names it; with more of them than one `find` command can list, nothing in `/workspace` is re-owned, and a warning says so. |
-| `DEN_STATE` | `1` | `0` turns the state step off, even with a volume mounted at `/state`: the home keeps its own files. See [What survives where](#what-survives-where). |
-| `DEN_CLEAN_TMP` | `0` | `1` empties `/tmp` at each start, but only when `/tmp` is a mount point of its own (a tmpfs or a volume, or a host directory, which you should never bind there) with no mount point below it. See [What survives where](#what-survives-where). |
+| `DENBOX_STATE` | `1` | `0` turns the state step off, even with a volume mounted at `/state`: the home keeps its own files. See [What survives where](#what-survives-where). |
+| `DENBOX_CLEAN_TMP` | `0` | `1` empties `/tmp` at each start, but only when `/tmp` is a mount point of its own (a tmpfs or a volume, or a host directory, which you should never bind there) with no mount point below it. See [What survives where](#what-survives-where). |
 
 On a root start, the entrypoint also makes `dev` the owner of `/workspace`
 when nothing is mounted there, and links `dev`'s logins and history into
@@ -281,9 +281,9 @@ RUN apt-get update && \
 - If you built den's image with another `USERNAME`, use that name and its home
   in the `dev` steps.
 - To keep paths of your tools in the state volume, add a list of them in
-  `/etc/den/state-paths.d`, in the format of
+  `/etc/denbox/state-paths.d`, in the format of
   [The lists](#the-lists), as root:
-  `RUN printf '%s\n' 'd .config/mytool' > /etc/den/state-paths.d/mytool.list`.
+  `RUN printf '%s\n' 'd .config/mytool' > /etc/denbox/state-paths.d/mytool.list`.
 - Do not add a `VOLUME` instruction for `/state`: mount the volume at
   `docker run`, as [What survives where](#what-survives-where) shows.
 
@@ -305,8 +305,8 @@ again. What each starts with:
 | Path | What it is | After `docker restart` | In a new container | Holds |
 | --- | --- | --- | --- | --- |
 | `/workspace` | a bind mount of the project's host directory | kept | kept | the project |
-| `/state` | a named volume you mount (`-v den-state:/state`) | kept | kept | logins, history and settings: the paths of `/home/dev` the state lists name, under `/state/home` |
-| `/tmp` | the container's layer, or a tmpfs or a volume you mount | kept; a tmpfs is emptied, and with `DEN_CLEAN_TMP=1` a volume too | emptied; a volume is kept unless `DEN_CLEAN_TMP=1` | temporary files |
+| `/state` | a named volume you mount (`-v denbox-state:/state`) | kept | kept | logins, history and settings: the paths of `/home/dev` the state lists name, under `/state/home` |
+| `/tmp` | the container's layer, or a tmpfs or a volume you mount | kept; a tmpfs is emptied, and with `DENBOX_CLEAN_TMP=1` a volume too | emptied; a volume is kept unless `DENBOX_CLEAN_TMP=1` | temporary files |
 | `/home/dev` and the rest | the image, in the container's layer | kept | back to the image's | everything else |
 
 Without a volume at `/state`, logins and history live in the container's
@@ -314,16 +314,16 @@ layer with the rest of `/home/dev`: log in again in a new container. The
 project and `/state` are the only things to back up. Mount a named volume at
 `/state`, not a host directory: the entrypoint gives its top directory and
 `/state/home` to `dev`. Never bind a host directory to `/tmp`: programs in
-the container take what is there as theirs to delete, and `DEN_CLEAN_TMP=1`
+the container take what is there as theirs to delete, and `DENBOX_CLEAN_TMP=1`
 empties it. With a mount point below `/tmp` (a second volume at
-`/tmp/cache`, or a bound `/tmp/.X11-unix`), `DEN_CLEAN_TMP=1` leaves `/tmp`
+`/tmp/cache`, or a bound `/tmp/.X11-unix`), `DENBOX_CLEAN_TMP=1` leaves `/tmp`
 as it is, with a warning: its walk keeps out of other file systems, but not
 out of another mount of the same one, and named volumes usually share one.
 
 ```sh
 docker run -d --init --name denbox \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-  -v "$PWD:/workspace" -v den-state:/state \
+  -v "$PWD:/workspace" -v denbox-state:/state \
   denbox sleep infinity
 docker exec -it --user dev denbox zsh
 ```
@@ -358,15 +358,15 @@ services:
       HOST_GID: "${HOST_GID:?set HOST_GID to your group ID}"
     volumes:
       - .:/workspace
-      - den-state:/state
+      - denbox-state:/state
     # In memory, and empty at each start. exec lets programs run what they
     # put there (a tmpfs is noexec unless told). For a /tmp on disk, mount a
-    # named volume there instead, and set DEN_CLEAN_TMP: "1" under
+    # named volume there instead, and set DENBOX_CLEAN_TMP: "1" under
     # environment to have it emptied at each start.
     tmpfs:
       - /tmp:exec
 volumes:
-  den-state:
+  denbox-state:
 ```
 
 compose reads `HOST_UID` and `HOST_GID` again for every command (`exec`,
@@ -392,28 +392,28 @@ volume up, read it as your host user, read-only, into a directory of your
 own:
 
 ```sh
-mkdir -p -m 0700 ~/den-backups
+mkdir -p -m 0700 ~/denbox-backups
 docker run --rm --user "$(id -u):$(id -g)" \
-  -v den-state:/state:ro -v ~/den-backups:/backup \
-  --entrypoint sh denbox -c 'umask 077 && tar -czf /backup/den-state.tgz -C /state .'
+  -v denbox-state:/state:ro -v ~/denbox-backups:/backup \
+  --entrypoint sh denbox -c 'umask 077 && tar -czf /backup/denbox-state.tgz -C /state .'
 ```
 
-With compose, name `<project>_den-state` there instead of `den-state`:
+With compose, name `<project>_den-state` there instead of `denbox-state`:
 `docker run` makes a new, empty volume for a name it does not find, and the
 archive would hold nothing.
 
 ### How the home is linked into `/state`
 
 At each start as root (no non-root `--user`), when a volume is mounted at
-`/state` and `DEN_STATE` is not `0`, the entrypoint makes `/state/home` and
+`/state` and `DENBOX_STATE` is not `0`, the entrypoint makes `/state/home` and
 gives `/state` and `/state/home` (not what they hold) to `dev`. Then, as
-`dev`, `/usr/local/lib/den/state-link` makes each listed path of the home a
+`dev`, `/usr/local/lib/denbox/state-link` makes each listed path of the home a
 link to the same path under `/state/home`, for example
 `~/.zsh_history -> /state/home/.zsh_history`:
 
 - A path the home has and the volume does not moves into the volume, so the
   first start on a new volume keeps what the home had. It is copied into
-  `/state/home/.den-staging`, the whole copy is renamed into place, and only
+  `/state/home/.denbox-staging`, the whole copy is renamed into place, and only
   then is the home's removed. A path that `dev` cannot read and remove whole
   (a directory in it that root owns, a sticky directory another user owns,
   or a read-only home) is skipped before anything is copied.
@@ -422,7 +422,7 @@ link to the same path under `/state/home`, for example
   them has it.
 - A file both have, such as one a rebuilt image ships: the volume's copy
   stays, and the home's moves to
-  `/state/home/.den-set-aside/<UTC time>/<path>`, with a note in the log. A
+  `/state/home/.denbox-set-aside/<UTC time>/<path>`, with a note in the log. A
   directory both have is merged, at any depth: each name only the home's has
   moves into the volume's, a directory both have is merged the same way, any
   other name both have goes aside as a file does, and the emptied directory
@@ -431,13 +431,13 @@ link to the same path under `/state/home`, for example
   all of the home's directory, nothing of it moves.
 - A run that a signal stops, the time limit's included, removes the copy it
   was making: the home still has that path whole. A copy that an earlier run
-  left in `/state/home/.den-staging` (one stopped by `KILL` or a crash) is
-  moved whole to `/state/home/.den-set-aside/<UTC time>/.den-staging`, each
+  left in `/state/home/.denbox-staging` (one stopped by `KILL` or a crash) is
+  moved whole to `/state/home/.denbox-set-aside/<UTC time>/.denbox-staging`, each
   copy named after its path with `:` for `/`, with a note: in a new
   container, the home that held the whole path may be gone. It is never
   deleted, and never becomes the volume's copy.
 - Runs on one volume take turns: each holds a lock on
-  `/state/home/.den-lock`. A run that waits for it 60 seconds (another
+  `/state/home/.denbox-lock`. A run that waits for it 60 seconds (another
   container starting on the volume, or a run by hand) links nothing, with a
   warning.
 - A link that is already right is left as it is, so a restart changes
@@ -450,14 +450,14 @@ link to the same path under `/state/home`, for example
   one is skipped with a warning that names the mount point: moving a host
   directory bound into the home (`-v ~/.ssh:/home/dev/.ssh`) into the volume
   would delete it on the host. Such an entry warns at each start. With the
-  whole home on a volume of its own, set `DEN_STATE=0`.
+  whole home on a volume of its own, set `DENBOX_STATE=0`.
 - The same holds in the volume: an entry whose path under `/state/home` is a
   mount point, is inside one below `/state/home`, or holds one is skipped
   with a warning that names it. A move renames its copy into place, and on
   another file system that rename is a copy again, which a stop would leave
   half done in the live path. For the same reason, with a mount point at or
-  inside `/state/home/.den-staging`, nothing moves into the volume, and with
-  one at or inside `/state/home/.den-set-aside`, nothing is set aside and no
+  inside `/state/home/.denbox-staging`, nothing moves into the volume, and with
+  one at or inside `/state/home/.denbox-set-aside`, nothing is set aside and no
   directory both have is merged: each entry that needs one of them is
   skipped with a warning, and what is in those directories stays.
 
@@ -475,10 +475,10 @@ The entrypoint waits for state-link 300 seconds at most; past that it stops
 it and says the run was cut short. What was done stays done, the copy under
 way is removed, and the next start goes on from there. A path whose copy
 alone takes longer than that is never finished at a start: run
-`docker exec --user dev denbox zsh -lc /usr/local/lib/den/state-link` once,
+`docker exec --user dev denbox zsh -lc /usr/local/lib/denbox/state-link` once,
 which has no time limit.
 
-With `DEN_STATE=0`, or a non-root `--user` (which warns), nothing is linked
+With `DENBOX_STATE=0`, or a non-root `--user` (which warns), nothing is linked
 and the home keeps its own files. When `HOST_UID` or `HOST_GID` gives `dev`
 other IDs than the image's, the entrypoint re-owns what under `/state` has
 the image's IDs, as it does for `/home/dev`. It does not re-own what another
@@ -488,13 +488,13 @@ the image's IDs, as it does for `/home/dev`. It does not re-own what another
 warning, for the same reason as for `/tmp` above: its walk would go into a
 mount of the same file system. To give a volume to other IDs once, as root,
 with the IDs `dev` will run as:
-`docker run --rm -v den-state:/state --entrypoint /usr/bin/gnuchown denbox -hR <uid>:<gid> /state`
+`docker run --rm -v denbox-state:/state --entrypoint /usr/bin/gnuchown denbox -hR <uid>:<gid> /state`
 (GNU `chown`: with `-h` and no `-L` it changes links, not what they point
-to). With compose, name `<project>_den-state` there instead of `den-state`,
+to). With compose, name `<project>_den-state` there instead of `denbox-state`,
 as for the backup: for a name it does not find, `docker run` re-owns a new,
 empty volume and says nothing.
 
-The image's list, `/etc/den/state-paths.d/den.list`:
+The image's list, `/etc/denbox/state-paths.d/denbox.list`:
 
 | Entry | Holds |
 | --- | --- |
@@ -505,7 +505,8 @@ The image's list, `/etc/den/state-paths.d/den.list`:
 | `d .config/rclone` | rclone's remotes |
 | `d .local/share/zoxide` | zoxide's directory list |
 | `d .local/share/powershell/PSReadLine` | pwsh's history |
-| `d .config/den` | den's proxy profiles and snippets, and this environment's own list |
+| `d .config/den` | den's proxy profiles and snippets |
+| `d .config/denbox` | this environment's own list (below) |
 
 zsh, bash and pwsh keep their history files as links: `/etc/zsh/zshenv`
 turns zsh's `HIST_SAVE_BY_COPY` off for `dev` while `~/.zsh_history` is a link
@@ -528,14 +529,14 @@ the end. The kind is one of:
 
 The lists, in this order:
 
-- `/etc/den/state-paths.d/*.list`, in name order: the image's `den.list`, and
+- `/etc/denbox/state-paths.d/*.list`, in name order: the image's `denbox.list`, and
   one of its own from each image built `FROM` this one (see
   [Adding your own tools](#adding-your-own-tools)).
-- `~/.config/den/state-paths`, this environment's own. `~/.config/den` is a
+- `~/.config/denbox/state-paths`, this environment's own. `~/.config/denbox` is a
   link into the volume, so the file stays with the volume; it is read only
   when it is a regular file that `dev` owns. Add a line, then start the
   container again, or apply it at once:
-  `docker exec --user dev denbox zsh -lc /usr/local/lib/den/state-link`.
+  `docker exec --user dev denbox zsh -lc /usr/local/lib/denbox/state-link`.
 
 An entry inside a directory that another entry links into the volume needs
 nothing more: once `d .config` links `~/.config`, `d .config/gh` only makes
@@ -547,7 +548,7 @@ merged into it, and so is `~/.local` into the `.local` that
 
 ### `/tmp`
 
-`/tmp` is left as it is unless `DEN_CLEAN_TMP=1`. Then each start as root
+`/tmp` is left as it is unless `DENBOX_CLEAN_TMP=1`. Then each start as root
 empties it before the command starts, but only when `/tmp` is a mount point
 of its own: a tmpfs, a volume that keeps `/tmp` on disk, or a host directory
 bound there, which it empties too (never bind one). In the image's own

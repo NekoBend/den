@@ -158,7 +158,7 @@ jobs:
       # docker/README.md's "What survives where": a root start with a volume
       # at /state links dev's listed paths into it, zsh rewrites its history
       # through the link, a new container on the same volume finds it there,
-      # a bound host directory stays on the host, and DEN_STATE=0 links
+      # a bound host directory stays on the host, and DENBOX_STATE=0 links
       # nothing.
       - name: Check the state volume
         timeout-minutes: 10
@@ -181,8 +181,8 @@ jobs:
               failed=$((failed + 1))
             fi
           }
-          # The image's list, /etc/den/state-paths.d/den.list.
-          paths='.ssh .gitconfig .zsh_history .bash_history .config/gh .config/rclone .local/share/zoxide .local/share/powershell/PSReadLine .config/den'
+          # The image's list, /etc/denbox/state-paths.d/denbox.list.
+          paths='.ssh .gitconfig .zsh_history .bash_history .config/gh .config/rclone .local/share/zoxide .local/share/powershell/PSReadLine .config/den .config/denbox'
           linked='for p in '"$paths"'; do
             t=$(readlink "/home/dev/$p") && [ "$t" = "/state/home/$p" ] \
               || { echo "/home/dev/$p: ${t:-not a link}"; exit 1; }
@@ -190,28 +190,28 @@ jobs:
           unlinked='for p in '"$paths"'; do
             if [ -L "/home/dev/$p" ]; then echo "/home/dev/$p is a link"; exit 1; fi
           done'
-          docker volume create den-state
-          docker run -d --init --name den-state -v den-state:/state denbox sleep infinity
+          docker volume create denbox-state
+          docker run -d --init --name denbox-state -v denbox-state:/state denbox sleep infinity
           for _ in $(seq 30); do
-            docker exec den-state pgrep -x sleep >/dev/null && break
+            docker exec denbox-state pgrep -x sleep >/dev/null && break
             sleep 1
           done
-          check 'first start: the entrypoint printed no warning' docker logs den-state
+          check 'first start: the entrypoint printed no warning' docker logs denbox-state
           check 'first start: the listed paths link into /state/home' \
-            docker exec --user dev den-state sh -c "$linked"
+            docker exec --user dev denbox-state sh -c "$linked"
           # fc -W rewrites the history file, as zsh does when it trims it.
           # Without no_hist_save_by_copy for dev, the rewrite replaces the link
           # with a file of the container's layer; a save at exit only appends.
-          printf '%s\n' 'echo den-state-probe' 'fc -W' exit \
-            | docker exec -i --user dev den-state zsh -i >/dev/null 2>&1 || true
+          printf '%s\n' 'echo denbox-state-probe' 'fc -W' exit \
+            | docker exec -i --user dev denbox-state zsh -i >/dev/null 2>&1 || true
           check 'zsh -i, fc -W: ~/.zsh_history is still a link' \
-            docker exec --user dev den-state sh -c '[ -L /home/dev/.zsh_history ]'
+            docker exec --user dev denbox-state sh -c '[ -L /home/dev/.zsh_history ]'
           check 'zsh -i, fc -W: the history is in the volume' \
-            docker exec --user dev den-state grep -q den-state-probe /state/home/.zsh_history
-          docker rm -f den-state
+            docker exec --user dev denbox-state grep -q denbox-state-probe /state/home/.zsh_history
+          docker rm -f denbox-state
           check 'new container on the volume: linked again, with the history' \
-            docker run --rm -v den-state:/state denbox \
-              sh -c "$linked"' && grep -q den-state-probe /home/dev/.zsh_history'
+            docker run --rm -v denbox-state:/state denbox \
+              sh -c "$linked"' && grep -q denbox-state-probe /home/dev/.zsh_history'
           # A host directory bound over a listed path stays on the host: the
           # entry is skipped with a warning. The directory is dev's (1000), so
           # only that rule keeps state-link from moving its file into the
@@ -219,7 +219,7 @@ jobs:
           mkdir "$RUNNER_TEMP/ssh"
           docker run --rm -v "$RUNNER_TEMP/ssh:/x" --entrypoint sh denbox \
             -c 'echo key > /x/id_test && chown -R 1000:1000 /x'
-          docker run --rm -v den-state:/state -v "$RUNNER_TEMP/ssh:/home/dev/.ssh" \
+          docker run --rm -v denbox-state:/state -v "$RUNNER_TEMP/ssh:/home/dev/.ssh" \
             denbox true >"$RUNNER_TEMP/state.out" 2>&1 || true
           if grep -q '^state-link: .*: skipped \.ssh: mount point /home/dev/\.ssh is at' \
               "$RUNNER_TEMP/state.out" \
@@ -232,9 +232,9 @@ jobs:
             ls -la "$RUNNER_TEMP/ssh"
             failed=$((failed + 1))
           fi
-          check 'DEN_STATE=0: nothing linked' \
-            docker run --rm -e DEN_STATE=0 -v den-state:/state denbox sh -c "$unlinked"
-          docker volume rm den-state
+          check 'DENBOX_STATE=0: nothing linked' \
+            docker run --rm -e DENBOX_STATE=0 -v denbox-state:/state denbox sh -c "$unlinked"
+          docker volume rm denbox-state
           if [ "$failed" -ne 0 ]; then
             echo "::error::$failed check(s) failed"
             exit 1

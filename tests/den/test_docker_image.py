@@ -1037,7 +1037,7 @@ def test_entrypoint_stops_when_usermod_fails(tmp_path, fails, message, ran):
 
 # --- the entrypoint's state volume and /tmp steps ------------------------------
 
-_STATE_LINK = "/usr/local/lib/den/state-link"
+_STATE_LINK = "/usr/local/lib/denbox/state-link"
 
 
 def _state_link_call(uid: int = 1000, gid: int = 1000) -> str:
@@ -1147,7 +1147,7 @@ def test_entrypoint_starts_the_command_when_a_state_walk_or_the_tmp_delete_fails
         mounts = ("/workspace", str(state))
         warning = f"re-owning {state} from 1000:1000 failed part way"
     else:
-        env = {"DEN_CLEAN_TMP": "1"}
+        env = {"DENBOX_CLEAN_TMP": "1"}
         mounts = ("/workspace", str(tmp_path / "tmp"))
         warning = "some entries under /tmp were left in place"
     result, _ = _run_entrypoint(
@@ -1163,18 +1163,18 @@ def test_entrypoint_starts_the_command_when_a_state_walk_or_the_tmp_delete_fails
 
 @_needs("sh", "env")
 @pytest.mark.parametrize(
-    ("den_state", "mounted"), [("1", False), ("0", True), ("0", False)]
+    ("denbox_state", "mounted"), [("1", False), ("0", True), ("0", False)]
 )
 def test_entrypoint_leaves_state_alone_unless_mounted_and_on(
-    tmp_path, den_state, mounted
+    tmp_path, denbox_state, mounted
 ):
     # The image's own /state is in the container's layer, which a new
-    # container loses; DEN_STATE=0 turns the step off with a volume there too.
+    # container loses; DENBOX_STATE=0 turns the step off with a volume there too.
     state = tmp_path / "state"
     state.mkdir()
     mounts = ("/workspace", str(state)) if mounted else ("/workspace",)
     result, calls = _run_entrypoint(
-        tmp_path, uid=0, env={"DEN_STATE": den_state}, mounts=mounts
+        tmp_path, uid=0, env={"DENBOX_STATE": denbox_state}, mounts=mounts
     )
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -1185,7 +1185,7 @@ def test_entrypoint_leaves_state_alone_unless_mounted_and_on(
 
 
 @_needs("sh", "env")
-@pytest.mark.parametrize("name", ["DEN_STATE", "DEN_CLEAN_TMP"])
+@pytest.mark.parametrize("name", ["DENBOX_STATE", "DENBOX_CLEAN_TMP"])
 @pytest.mark.parametrize("value", ["2", "yes", " 1"])
 def test_entrypoint_rejects_a_switch_other_than_0_or_1(tmp_path, name, value):
     result, calls = _run_entrypoint(tmp_path, uid=0, env={name: value})
@@ -1263,7 +1263,7 @@ def test_entrypoint_started_as_the_user_only_warns_about_a_mounted_state(
     assert result.returncode == 0, result.stderr
     expected = (
         f"container-entrypoint: {state} is mounted, but only a root start links"
-        " the home into it; omit --user, or set DEN_STATE=0\n"
+        " the home into it; omit --user, or set DENBOX_STATE=0\n"
     )
     assert result.stderr == (expected if mounted else "")
     assert _STATE_LINK not in calls
@@ -1361,13 +1361,13 @@ def test_entrypoint_leaves_an_unmounted_state_out_of_the_remap(tmp_path):
 def test_entrypoint_leaves_a_mounted_state_out_of_the_remap_when_den_state_is_0(
     tmp_path,
 ):
-    # D7: DEN_STATE=0 turns the whole state step off, the /state walk too.
+    # D7: DENBOX_STATE=0 turns the whole state step off, the /state walk too.
     state = tmp_path / "state"
     state.mkdir()
     result, calls = _run_entrypoint(
         tmp_path,
         uid=0,
-        env={"DEN_STATE": "0", "HOST_UID": "501", "HOST_GID": "20"},
+        env={"DENBOX_STATE": "0", "HOST_UID": "501", "HOST_GID": "20"},
         mounts=("/workspace", str(state)),
     )
     assert result.returncode == 0, result.stderr
@@ -1400,7 +1400,7 @@ def test_entrypoint_empties_tmp_only_on_request_and_on_its_own_mount_point(
         tmp.symlink_to(tmp_path / "elsewhere")
     else:
         tmp.mkdir()
-    env = {"DEN_CLEAN_TMP": clean} if clean else {}
+    env = {"DENBOX_CLEAN_TMP": clean} if clean else {}
     mounts = ("/workspace", str(tmp)) if mounted else ("/workspace",)
     result, calls = _run_entrypoint(tmp_path, uid=0, env=env, mounts=mounts)
     assert result.returncode == 0, result.stderr
@@ -1412,7 +1412,7 @@ def test_entrypoint_empties_tmp_only_on_request_and_on_its_own_mount_point(
         assert deletes == []
     if clean == "1" and not emptied:
         assert result.stderr == (
-            "container-entrypoint: DEN_CLEAN_TMP=1 empties /tmp only when it is"
+            "container-entrypoint: DENBOX_CLEAN_TMP=1 empties /tmp only when it is"
             " a mount point of its own; it is left as it is\n"
         )
 
@@ -1441,7 +1441,7 @@ def test_entrypoint_empties_no_tmp_with_a_mount_point_below_it(
     result, calls = _run_entrypoint(
         tmp_path,
         uid=0,
-        env={"DEN_CLEAN_TMP": "1"},
+        env={"DENBOX_CLEAN_TMP": "1"},
         mounts=("/workspace", str(tmp)),
         nested=below,
         table=table,
@@ -1454,14 +1454,14 @@ def test_entrypoint_empties_no_tmp_with_a_mount_point_below_it(
     elif table:
         assert deletes == []
         assert result.stderr == (
-            "container-entrypoint: DEN_CLEAN_TMP=1 empties /tmp only when no mount"
+            "container-entrypoint: DENBOX_CLEAN_TMP=1 empties /tmp only when no mount"
             f" point is below it, and {tmp_path / nested} is one; it is left as"
             " it is\n"
         )
     else:
         assert deletes == []
         assert result.stderr == (
-            "container-entrypoint: DEN_CLEAN_TMP=1 empties /tmp only when no mount"
+            "container-entrypoint: DENBOX_CLEAN_TMP=1 empties /tmp only when no mount"
             f" point is below it, and the mount table {tmp_path / 'mountinfo'}"
             " could not be read; it is left as it is\n"
         )
@@ -1475,13 +1475,13 @@ def test_entrypoint_started_as_the_user_leaves_tmp_alone(tmp_path):
     result, calls = _run_entrypoint(
         tmp_path,
         uid=1000,
-        env={"DEN_CLEAN_TMP": "1"},
+        env={"DENBOX_CLEAN_TMP": "1"},
         mounts=("/workspace", str(tmp)),
     )
     assert result.returncode == 0, result.stderr
     assert not _calls(calls, "find")
     assert result.stderr == (
-        "container-entrypoint: DEN_CLEAN_TMP=1 needs a root start;"
+        "container-entrypoint: DENBOX_CLEAN_TMP=1 needs a root start;"
         " /tmp is left as it is\n"
     )
 
@@ -1837,9 +1837,9 @@ def test_the_image_has_no_volume_instruction():
 
 # --- state-link: the home's paths in the state volume --------------------------
 
-_IMAGE_LIST = "/etc/den/state-paths.d/den.list"
+_IMAGE_LIST = "/etc/denbox/state-paths.d/denbox.list"
 # The file in the volume each run holds a lock on, so that runs take turns.
-_LOCK = ".den-lock"
+_LOCK = ".denbox-lock"
 
 
 def _needs_linux() -> pytest.MarkDecorator:
@@ -1887,13 +1887,13 @@ class _Roots:
         with self.mountinfo.open("a", encoding="utf-8") as table:
             table.write(f"40 22 0:40 / {escaped} rw,relatime - ext4 /dev/sdb1 rw\n")
 
-    def image_list(self, text: str, name: str = "den.list") -> Path:
+    def image_list(self, text: str, name: str = "denbox.list") -> Path:
         path = self.lists / name
         path.write_text(text, encoding="utf-8")
         return path
 
     def env_list(self, text: str) -> Path:
-        path = self.volume / ".config" / "den" / "state-paths"
+        path = self.volume / ".config" / "denbox" / "state-paths"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         return path
@@ -1901,9 +1901,9 @@ class _Roots:
     def env(self, **changes: str) -> dict[str, str]:
         return {
             "HOME": str(self.home),
-            "DEN_STATE_ROOT": str(self.state),
-            "DEN_STATE_LISTS": str(self.lists),
-            "DEN_STATE_MOUNTINFO": str(self.mountinfo),
+            "DENBOX_STATE_ROOT": str(self.state),
+            "DENBOX_STATE_LISTS": str(self.lists),
+            "DENBOX_STATE_MOUNTINFO": str(self.mountinfo),
             "PATH": SYSTEM_PATH,
             **changes,
         }
@@ -1990,7 +1990,7 @@ def test_state_link_links_an_f_entry_the_volume_has(tmp_path):
 
 
 def _aside_dirs(roots: _Roots) -> list[Path]:
-    return sorted((roots.volume / ".den-set-aside").iterdir())
+    return sorted((roots.volume / ".denbox-set-aside").iterdir())
 
 
 @_needs_linux()
@@ -2022,10 +2022,10 @@ def test_state_link_sets_the_home_copy_aside_in_the_volume(tmp_path):
     assert (aside / ".zsh_history").read_text(encoding="utf-8") == "home\n"
     assert [p.name for p in (aside / ".config/gh").iterdir()] == ["hosts.yml"]
     assert (aside / ".config/gh/hosts.yml").read_text(encoding="utf-8") == "h\n"
-    assert not (roots.volume / ".den-staging").exists()
+    assert not (roots.volume / ".denbox-staging").exists()
     notes = result.stderr.splitlines()
     assert notes == [
-        f"state-link: {roots.lists}/den.list:{line}: {roots.volume}/{rel} and"
+        f"state-link: {roots.lists}/denbox.list:{line}: {roots.volume}/{rel} and"
         f" {roots.home}/{rel} both existed: kept {roots.volume}/{rel},"
         f" moved {roots.home}/{rel} to {aside}/{rel}"
         for line, rel in ((1, ".zsh_history"), (2, ".config/gh/hosts.yml"))
@@ -2041,7 +2041,7 @@ def test_state_link_deletes_an_empty_home_directory_the_volume_has(tmp_path):
     result = roots.run()
     assert (result.returncode, result.stderr) == (0, "")
     assert roots.linked(".config/gh")
-    assert not (roots.volume / ".den-set-aside").exists()
+    assert not (roots.volume / ".denbox-set-aside").exists()
 
 
 @_needs_linux()
@@ -2083,13 +2083,13 @@ def test_state_link_moves_and_links_nothing_on_a_mount_point(tmp_path, rel, moun
     assert result.returncode == 1
     lines = result.stderr.splitlines()
     assert lines[0] == (
-        f"state-link: {roots.lists}/den.list:1: skipped {rel}: mount point"
+        f"state-link: {roots.lists}/denbox.list:1: skipped {rel}: mount point"
         f" {mount} is at, above or inside {roots.home}/{rel}"
     )
     assert (roots.home / rel / "id_ed25519").read_text(encoding="utf-8") == "key\n"
     assert not (roots.home / rel).is_symlink()
     assert not (roots.volume / rel).exists()
-    assert not (roots.volume / ".den-staging").exists()
+    assert not (roots.volume / ".denbox-staging").exists()
     if mounted:
         # Only that entry: the next line goes on.
         assert lines[1:] == []
@@ -2153,14 +2153,14 @@ def test_state_link_moves_and_makes_nothing_on_a_mount_point_in_the_volume(
     result = roots.run()
     assert result.returncode == 1
     assert result.stderr.splitlines() == [
-        f"state-link: {roots.lists}/den.list:1: skipped {rel}: mount point"
+        f"state-link: {roots.lists}/denbox.list:1: skipped {rel}: mount point"
         f" {mount} is at, above or inside {roots.volume}/{rel}"
     ]
     assert (roots.home / rel / "id_ed25519").read_text(encoding="utf-8") == "key\n"
     assert not (roots.home / rel).is_symlink()
     assert not (roots.volume / rel / "id_ed25519").exists()
-    assert not (roots.volume / ".den-staging").exists()
-    assert not (roots.volume / ".den-set-aside").exists()
+    assert not (roots.volume / ".denbox-staging").exists()
+    assert not (roots.volume / ".denbox-set-aside").exists()
     # Only that entry: the next line goes on.
     assert roots.linked(".after")
 
@@ -2187,7 +2187,7 @@ def test_state_link_takes_the_volumes_own_mount_points_for_its_own(tmp_path):
 
 
 @_needs_linux()
-@pytest.mark.parametrize("mounted", [".den-staging", ".den-staging/old"])
+@pytest.mark.parametrize("mounted", [".denbox-staging", ".denbox-staging/old"])
 def test_state_link_moves_nothing_through_a_staging_directory_on_a_mount_point(
     tmp_path, mounted
 ):
@@ -2201,7 +2201,7 @@ def test_state_link_moves_nothing_through_a_staging_directory_on_a_mount_point(
     (roots.home / ".config" / "gh").mkdir(parents=True)
     (roots.home / ".config" / "gh" / "hosts.yml").write_text("h\n", encoding="utf-8")
     (roots.volume / ".config" / "gh").mkdir(parents=True)
-    staging = roots.volume / ".den-staging"
+    staging = roots.volume / ".denbox-staging"
     mount = roots.volume / mounted
     mount.mkdir(parents=True)
     (mount / "left").write_text("k", encoding="utf-8")
@@ -2213,10 +2213,10 @@ def test_state_link_moves_nothing_through_a_staging_directory_on_a_mount_point(
         why,
         f"state-link: left {staging} as it is; nothing moves into {roots.volume}",
         why,
-        f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .ssh: could not move"
         f" {roots.home}/.ssh into {roots.volume}",
         why,
-        f"state-link: {roots.lists}/den.list:2: skipped .config/gh: could not move"
+        f"state-link: {roots.lists}/denbox.list:2: skipped .config/gh: could not move"
         f" all of {roots.home}/.config/gh into {roots.volume}/.config/gh or aside",
     ]
     assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
@@ -2224,14 +2224,14 @@ def test_state_link_moves_nothing_through_a_staging_directory_on_a_mount_point(
     assert list((roots.volume / ".config" / "gh").iterdir()) == []
     assert (mount / "left").read_text(encoding="utf-8") == "k"
     assert sorted(p.name for p in staging.iterdir()) == [
-        "left" if mounted == ".den-staging" else "old"
+        "left" if mounted == ".denbox-staging" else "old"
     ]
-    assert not (roots.volume / ".den-set-aside").exists()
+    assert not (roots.volume / ".denbox-set-aside").exists()
     assert roots.linked(".new")
 
 
 @_needs_linux()
-@pytest.mark.parametrize("mounted", [".den-set-aside", ".den-set-aside/old"])
+@pytest.mark.parametrize("mounted", [".denbox-set-aside", ".denbox-set-aside/old"])
 def test_state_link_sets_nothing_aside_into_a_mount_point(tmp_path, mounted):
     # A set-aside renames its copy from the staging directory as a move does.
     # A merge that may need one moves nothing; a leftover staging copy stays.
@@ -2244,9 +2244,9 @@ def test_state_link_sets_nothing_aside_into_a_mount_point(tmp_path, mounted):
     (roots.home / ".config" / "gh").mkdir(parents=True)
     (roots.home / ".config" / "gh" / "hosts.yml").write_text("h\n", encoding="utf-8")
     (roots.home / ".config" / "gh" / "extra.yml").write_text("e\n", encoding="utf-8")
-    staging = roots.volume / ".den-staging"
+    staging = roots.volume / ".denbox-staging"
     (staging / ".gone").mkdir(parents=True)
-    aside_root = roots.volume / ".den-set-aside"
+    aside_root = roots.volume / ".denbox-set-aside"
     mount = roots.volume / mounted
     mount.mkdir(parents=True)
     roots.mount(mount)
@@ -2257,10 +2257,10 @@ def test_state_link_sets_nothing_aside_into_a_mount_point(tmp_path, mounted):
         why,
         f"state-link: could not set {staging} aside",
         why,
-        f"state-link: {roots.lists}/den.list:1: skipped .zsh_history: could not"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .zsh_history: could not"
         f" set {roots.home}/.zsh_history aside",
         why,
-        f"state-link: {roots.lists}/den.list:2: skipped .config/gh: could not move"
+        f"state-link: {roots.lists}/denbox.list:2: skipped .config/gh: could not move"
         f" all of {roots.home}/.config/gh into {roots.volume}/.config/gh or aside",
     ]
     assert (roots.home / ".zsh_history").read_text(encoding="utf-8") == "home\n"
@@ -2274,7 +2274,7 @@ def test_state_link_sets_nothing_aside_into_a_mount_point(tmp_path, mounted):
     assert [p.name for p in (roots.volume / ".config/gh").iterdir()] == ["hosts.yml"]
     assert [p.name for p in staging.iterdir()] == [".gone"]
     assert [p.name for p in aside_root.iterdir()] == (
-        [] if mounted == ".den-set-aside" else ["old"]
+        [] if mounted == ".denbox-set-aside" else ["old"]
     )
     assert roots.linked(".new")
 
@@ -2302,7 +2302,7 @@ def test_state_link_finds_a_mount_point_whatever_the_spelling_of_home(
     result = roots.run(HOME=home)
     assert result.returncode == 1
     assert result.stderr == (
-        f"state-link: {roots.lists}/den.list:1: skipped .ssh: mount point"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .ssh: mount point"
         f" {roots.home}/.ssh is at, above or inside {roots.home}/.ssh\n"
     )
     assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
@@ -2315,7 +2315,7 @@ def test_state_link_links_to_the_physical_path_of_the_volume(tmp_path):
     # So the next run, given the usual spelling, finds the link right.
     roots = _Roots(tmp_path)
     roots.image_list("d .ssh\n")
-    result = roots.run(DEN_STATE_ROOT=f"{roots.state}//")
+    result = roots.run(DENBOX_STATE_ROOT=f"{roots.state}//")
     assert (result.returncode, result.stderr) == (0, "")
     # The link's text as it is: Path.readlink would fold a '//' away.
     target = os.readlink(roots.home / ".ssh")  # ruff: ignore[os-readlink]
@@ -2338,7 +2338,7 @@ def test_state_link_sets_aside_the_unfinished_copies_an_earlier_run_left(
     if home_has_it:
         (roots.home / ".ssh").mkdir()
         (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
-    staging = roots.volume / ".den-staging"
+    staging = roots.volume / ".denbox-staging"
     (staging / ".ssh").mkdir(parents=True)
     (staging / ".ssh" / "id_ed25519").write_text("k", encoding="utf-8")
     (staging / ".gone").mkdir()
@@ -2347,9 +2347,9 @@ def test_state_link_sets_aside_the_unfinished_copies_an_earlier_run_left(
     [aside] = _aside_dirs(roots)
     assert result.stderr == (
         f"state-link: moved {staging}, unfinished copies that an earlier run left,"
-        f" to {aside}/.den-staging\n"
+        f" to {aside}/.denbox-staging\n"
     )
-    left = aside / ".den-staging"
+    left = aside / ".denbox-staging"
     assert (left / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "k"
     assert (left / ".gone").is_dir()
     assert roots.linked(".ssh")
@@ -2370,9 +2370,9 @@ def test_state_link_copies_nothing_over_a_leftover_it_could_not_set_aside(tmp_pa
     (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
     outside = tmp_path / "outside"
     outside.mkdir()
-    aside_root = roots.volume / ".den-set-aside"
+    aside_root = roots.volume / ".denbox-set-aside"
     aside_root.symlink_to(outside)
-    staging = roots.volume / ".den-staging"
+    staging = roots.volume / ".denbox-staging"
     slot = staging / ".ssh"
     slot.mkdir(parents=True)
     (slot / "id_ed25519").write_text("k", encoding="utf-8")
@@ -2382,7 +2382,7 @@ def test_state_link_copies_nothing_over_a_leftover_it_could_not_set_aside(tmp_pa
         f"state-link: {aside_root} is not a directory",
         f"state-link: could not set {staging} aside",
         f"state-link: {slot} is in the way",
-        f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .ssh: could not move"
         f" {roots.home}/.ssh into {roots.volume}",
     ]
     assert [p.name for p in slot.iterdir()] == ["id_ed25519"]
@@ -2400,7 +2400,7 @@ def test_state_link_removes_the_copy_it_was_making_when_a_signal_stops_it(tmp_pa
     roots.image_list("d .ssh\n")
     (roots.home / ".ssh").mkdir()
     (roots.home / ".ssh" / "id_ed25519").write_text("key\n", encoding="utf-8")
-    slot = roots.volume / ".den-staging" / ".ssh"
+    slot = roots.volume / ".denbox-staging" / ".ssh"
     stopping_cp = roots.fake(
         "cp",
         "for arg do last=$arg; done\n"
@@ -2439,7 +2439,7 @@ def test_state_link_takes_turns_with_another_run_on_the_volume(tmp_path):
     lock = roots.volume / _LOCK
     with lock.open("a", encoding="utf-8") as held:
         fcntl.flock(held, fcntl.LOCK_EX)
-        result = roots.run(DEN_STATE_LOCK_WAIT="1")
+        result = roots.run(DENBOX_STATE_LOCK_WAIT="1")
         assert result.returncode == 1
         assert result.stderr == (
             f"state-link: another run of state-link holds {lock}; nothing is linked\n"
@@ -2449,7 +2449,7 @@ def test_state_link_takes_turns_with_another_run_on_the_volume(tmp_path):
         # A run that waits goes on once the other run lets go.
         release = threading.Timer(1, fcntl.flock, (held, fcntl.LOCK_UN))
         release.start()
-        result = roots.run(DEN_STATE_LOCK_WAIT="30")
+        result = roots.run(DENBOX_STATE_LOCK_WAIT="30")
         release.join()
     assert (result.returncode, result.stderr) == (0, "")
     assert roots.linked(".ssh")
@@ -2495,7 +2495,7 @@ def test_state_link_removes_a_copy_that_failed_and_keeps_the_home_path(tmp_path)
     assert result.returncode == 1
     assert result.stderr.splitlines() == [
         "cp: write error: No space left on device",
-        f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .ssh: could not move"
         f" {roots.home}/.ssh into {roots.volume}",
     ]
     assert (roots.home / ".ssh" / "id_ed25519").read_text(encoding="utf-8") == "key\n"
@@ -2523,7 +2523,7 @@ def test_state_link_copies_nothing_that_it_could_not_remove_from_the_home(tmp_pa
             assert result.stderr.splitlines() == [
                 f"state-link: {roots.home}/.ssh: this user cannot read and remove"
                 " all of it",
-                f"state-link: {roots.lists}/den.list:1: skipped .ssh: could not move"
+                f"state-link: {roots.lists}/denbox.list:1: skipped .ssh: could not move"
                 f" {roots.home}/.ssh into {roots.volume}",
             ]
             assert roots.volume_names() == []
@@ -2560,7 +2560,7 @@ def test_state_link_copies_nothing_that_a_sticky_directory_keeps(tmp_path, where
     assert result.returncode == 1
     assert result.stderr.splitlines() == [
         f"state-link: {roots.home}/{rel}: this user cannot read and remove all of it",
-        f"state-link: {roots.lists}/den.list:1: skipped {rel}: could not move"
+        f"state-link: {roots.lists}/denbox.list:1: skipped {rel}: could not move"
         f" {roots.home}/{rel} into {roots.volume}",
     ]
     assert (roots.home / rel / "id_ed25519").read_text(encoding="utf-8") == "key\n"
@@ -2590,8 +2590,8 @@ def test_state_link_moves_a_parent_entry_into_the_volume_name_by_name(tmp_path):
         ) == "p\n"
         assert (roots.volume / ".config/gh").is_dir()
         assert not (roots.volume / ".config/gh").is_symlink()
-        assert not (roots.volume / ".den-set-aside").exists()
-        assert not (roots.volume / ".den-staging").exists()
+        assert not (roots.volume / ".denbox-set-aside").exists()
+        assert not (roots.volume / ".denbox-staging").exists()
 
 
 @_needs_linux()
@@ -2634,10 +2634,10 @@ def test_state_link_merges_nothing_unless_all_of_the_home_directory_can_move(
             ]
             assert (plugins / "init.zsh").read_text(encoding="utf-8") == "p\n"
             assert sorted(p.name for p in (roots.volume / ".config").iterdir()) == [
-                "den",
+                "denbox",
                 "gh",
             ]
-            assert not (roots.volume / ".den-set-aside").exists()
+            assert not (roots.volume / ".denbox-set-aside").exists()
     finally:
         locked.chmod(0o700)
 
@@ -2736,7 +2736,7 @@ def test_state_link_merges_a_directory_both_have_at_any_depth(tmp_path):
     ]
     again = roots.run()
     assert (again.returncode, again.stderr) == (0, "")
-    assert not (roots.volume / ".den-staging").exists()
+    assert not (roots.volume / ".denbox-staging").exists()
 
 
 @_needs_linux()
@@ -2783,7 +2783,7 @@ def test_state_link_leaves_a_home_link_to_an_existing_target_alone(
     result = roots.run()
     assert result.returncode == 1
     assert result.stderr == (
-        f"state-link: {roots.lists}/den.list:1: left .ssh alone: {roots.home}/.ssh"
+        f"state-link: {roots.lists}/denbox.list:1: left .ssh alone: {roots.home}/.ssh"
         f" is a link to {other}, not to {roots.volume}/.ssh\n"
     )
     assert (roots.home / ".ssh").readlink() == other
@@ -2795,18 +2795,18 @@ def test_state_link_leaves_a_home_link_to_an_existing_target_alone(
 @_needs_linux()
 def test_state_link_reads_every_image_list_and_the_environment_list(tmp_path):
     roots = _Roots(tmp_path)
-    roots.image_list("d .config/den\n")
+    roots.image_list("d .config/denbox\n")
     roots.image_list("F .b_history\n", name="zz-layer.list")
     roots.image_list("F .ignored\n", name="not-a-list.txt")
     roots.env_list("# this environment's own\nd .cache/tool\n")
     result = roots.run()
     assert (result.returncode, result.stderr) == (0, "")
-    assert roots.linked(".config/den")
+    assert roots.linked(".config/denbox")
     assert roots.linked(".b_history")
     assert roots.linked(".cache/tool")
     assert not (roots.home / ".ignored").exists()
     # The environment's list lives in the volume, reached from the home too.
-    assert (roots.home / ".config/den/state-paths").is_file()
+    assert (roots.home / ".config/denbox/state-paths").is_file()
 
 
 @_needs_linux()
@@ -2896,7 +2896,7 @@ def test_state_link_skips_an_entry_with_a_link_on_its_way(tmp_path, side):
     result = roots.run()
     assert result.returncode == 1
     assert result.stderr.splitlines() == [
-        f"state-link: {roots.lists}/den.list:1: skipped .config/gh: a symbolic link"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .config/gh: a symbolic link"
         f" or a file is on its way in {roots.home} or {roots.volume}"
     ]
     assert list(outside.iterdir()) == []
@@ -2914,7 +2914,7 @@ def test_state_link_skips_an_entry_whose_volume_path_is_a_link(tmp_path):
     result = roots.run()
     assert result.returncode == 1
     assert result.stderr == (
-        f"state-link: {roots.lists}/den.list:1: skipped .gitconfig:"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .gitconfig:"
         f" {roots.volume}/.gitconfig is a symbolic link\n"
     )
     assert (roots.home / ".gitconfig").read_text(encoding="utf-8") == "home\n"
@@ -2930,9 +2930,9 @@ def test_state_link_skips_an_entry_of_another_kind(tmp_path):
     result = roots.run()
     assert result.returncode == 1
     assert result.stderr.splitlines() == [
-        f"state-link: {roots.lists}/den.list:1: skipped .ssh:"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .ssh:"
         f" {roots.volume}/.ssh is not a directory",
-        f"state-link: {roots.lists}/den.list:2: skipped .zsh_history:"
+        f"state-link: {roots.lists}/denbox.list:2: skipped .zsh_history:"
         f" {roots.home}/.zsh_history is not a regular file",
     ]
     assert roots.linked(".after")
@@ -2947,7 +2947,7 @@ def test_state_link_never_sets_aside_through_a_link(tmp_path):
     roots.image_list("F .zsh_history\nF .bash_history\n")
     outside = tmp_path / "outside"
     outside.mkdir()
-    aside_root = roots.volume / ".den-set-aside"
+    aside_root = roots.volume / ".denbox-set-aside"
     aside_root.mkdir()
     # A link under every name this run could take for a minute.
     now = datetime.datetime.now(datetime.UTC)
@@ -2972,7 +2972,7 @@ def test_state_link_does_not_set_aside_into_a_linked_set_aside_root(tmp_path):
     roots.image_list("F .zsh_history\n")
     outside = tmp_path / "outside"
     outside.mkdir()
-    (roots.volume / ".den-set-aside").symlink_to(outside)
+    (roots.volume / ".denbox-set-aside").symlink_to(outside)
     (roots.volume / ".zsh_history").write_text("volume\n", encoding="utf-8")
     (roots.home / ".zsh_history").write_text("home\n", encoding="utf-8")
     result = roots.run()
@@ -2980,7 +2980,7 @@ def test_state_link_does_not_set_aside_into_a_linked_set_aside_root(tmp_path):
     assert list(outside.iterdir()) == []
     assert (roots.home / ".zsh_history").read_text(encoding="utf-8") == "home\n"
     assert result.stderr.splitlines()[-1] == (
-        f"state-link: {roots.lists}/den.list:1: skipped .zsh_history:"
+        f"state-link: {roots.lists}/denbox.list:1: skipped .zsh_history:"
         f" could not set {roots.home}/.zsh_history aside"
     )
 
@@ -3009,7 +3009,7 @@ def test_state_link_skips_an_environment_list_that_is_no_file_of_the_users(
     # file of root's.
     roots = _Roots(tmp_path)
     roots.image_list("F .first\n")
-    path = roots.volume / ".config" / "den" / "state-paths"
+    path = roots.volume / ".config" / "denbox" / "state-paths"
     path.parent.mkdir(parents=True)
     if kind == "fifo":
         os.mkfifo(path)
@@ -3074,8 +3074,8 @@ def test_state_link_skips_an_environment_list_another_user_owns(tmp_path):
 def test_state_link_skips_an_environment_list_behind_a_link(tmp_path):
     roots = _Roots(tmp_path)
     elsewhere = tmp_path / "elsewhere"
-    (elsewhere / "den").mkdir(parents=True)
-    (elsewhere / "den" / "state-paths").write_text("d .stolen\n", encoding="utf-8")
+    (elsewhere / "denbox").mkdir(parents=True)
+    (elsewhere / "denbox" / "state-paths").write_text("d .stolen\n", encoding="utf-8")
     (roots.volume / ".config").symlink_to(elsewhere)
     result = roots.run()
     assert result.returncode == 1
@@ -3129,9 +3129,9 @@ def test_state_link_does_nothing_without_a_home_and_a_volume_of_the_users(
     elif bad == "volume-missing":
         roots.volume.rmdir()
     elif bad == "volume-of-root":
-        changes["DEN_STATE_ROOT"] = "/"
+        changes["DENBOX_STATE_ROOT"] = "/"
     else:
-        changes["DEN_STATE_MOUNTINFO"] = str(tmp_path / "no-mountinfo")
+        changes["DENBOX_STATE_MOUNTINFO"] = str(tmp_path / "no-mountinfo")
     result = roots.run(home=home, **changes)
     assert result.returncode == 1
     assert len(result.stderr.splitlines()) == 1, result.stderr
@@ -3151,6 +3151,7 @@ def test_the_image_list_keeps_the_logins_and_histories():
         ("d", ".local/share/zoxide"),
         ("d", ".local/share/powershell/PSReadLine"),
         ("d", ".config/den"),
+        ("d", ".config/denbox"),
     ]
 
 
@@ -3225,21 +3226,25 @@ def test_the_image_workflow_runs_a_container_with_a_state_volume():
     match = re.search(r"^paths='([^']*)'$", run, flags=re.MULTILINE)
     assert match, "the step names no paths"
     assert match.group(1).split() == [rel for _, rel in _image_entries()]
-    assert re.search(r"docker run -d --init --name \S+ -v den-state:/state denbox", run)
+    assert re.search(
+        r"docker run -d --init --name \S+ -v denbox-state:/state denbox", run
+    )
     # zsh's history goes through a rewrite (fc -W), which a save at exit,
     # appending, never does: only the rewrite replaces the link without
     # no_hist_save_by_copy.
     assert (
-        "printf '%s\\n' 'echo den-state-probe' 'fc -W' exit \\\n"
-        "  | docker exec -i --user dev den-state zsh -i"
+        "printf '%s\\n' 'echo denbox-state-probe' 'fc -W' exit \\\n"
+        "  | docker exec -i --user dev denbox-state zsh -i"
     ) in run
-    assert "-v den-state:/state denbox" in run.split("docker rm -f den-state", 1)[1]
+    assert (
+        "-v denbox-state:/state denbox" in run.split("docker rm -f denbox-state", 1)[1]
+    )
     # A host directory bound over ~/.ssh keeps its file.
     assert (
-        'docker run --rm -v den-state:/state -v "$RUNNER_TEMP/ssh:/home/dev/.ssh"'
+        'docker run --rm -v denbox-state:/state -v "$RUNNER_TEMP/ssh:/home/dev/.ssh"'
     ) in run
     assert '[ -f "$RUNNER_TEMP/ssh/id_test" ]' in run
-    assert "docker run --rm -e DEN_STATE=0 -v den-state:/state denbox" in run
+    assert "docker run --rm -e DENBOX_STATE=0 -v denbox-state:/state denbox" in run
 
 
 def test_test_helpers_see_the_whole_dockerfile():
