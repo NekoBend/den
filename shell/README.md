@@ -366,10 +366,14 @@ bash: to run it anyway: command bash /home/me/.bash_history
     `.psql_history`, ...), or `<host>_history.txt` in a `PSReadLine`
     directory.
 
-  And on bash/zsh, when the shell has no script or is given `-s`, its standard
-  input (`bash < ~/.bash_history`), when that is the same file as one in the
-  first list. Standard input is recognized only that way, not by its name,
+  And on bash/zsh, when the shell has no script or its options leave stdin
+  mode on (`-s`, also zsh's `--shinstdin`, `--stdin` or `-o shinstdin`), its
+  standard input (`bash < ~/.bash_history`), when that is the same file as one
+  in the first list. Standard input is recognized only that way, not by its name,
   which no shell builtin can read: `bash < project/.python_history` runs.
+  `+s` cancels `-s` in zsh, sh and dash, so the next operand is the script;
+  bash keeps stdin mode on. Zsh's named disabling forms work too, and the
+  last setting before the first operand wins.
 - **What runs as before**: any other script (one named `history.sh` too),
   `bash -c '...'` (the commands come from the string, even
   `bash -c 'cat ~/.bash_history'`), a script whose own standard input is a

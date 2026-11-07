@@ -1240,6 +1240,27 @@ _den_hg_ne() {
     unset _hg_v
 }
 
+# _den_hg_si <sign> <name> - for _den_hg_ok: update stdin mode for zsh's
+# named -s option (shinstdin, also stdin), including its no-prefixed forms.
+# Like _den_hg_ne, read names in any case and ignore _ and -.
+_den_hg_si() {
+    [ "$_hg_n" = zsh ] || return 0
+    _hg_v=$2
+    while :; do
+        case $_hg_v in
+            *[_-]*) _hg_v=${_hg_v%%[_-]*}${_hg_v#*[_-]} ;;
+            *) break ;;
+        esac
+    done
+    case $_hg_v in
+        [Ss][Hh][Ii][Nn][Ss][Tt][Dd][Ii][Nn]|[Ss][Tt][Dd][Ii][Nn])
+            _hg_in=0; [ "$1" = - ] && _hg_in=1 ;;
+        [Nn][Oo][Ss][Hh][Ii][Nn][Ss][Tt][Dd][Ii][Nn]|[Nn][Oo][Ss][Tt][Dd][Ii][Nn])
+            _hg_in=0; [ "$1" = + ] && _hg_in=1 ;;
+    esac
+    unset _hg_v
+}
+
 # _den_hg_ok <name> <arg>... → status 0 when the shell <name> may run with
 # <args>, else the refusal (_den_hg_say) and status 1. Only the script is
 # checked: the first argument that is not an option or an option's value, or
@@ -1261,10 +1282,11 @@ _den_hg_ne() {
 # /dev/null one. A file there is known by what it is, not by its name, which
 # no builtin can read: `bash < project/.python_history` runs it. A script's
 # own standard input is the script's to read, and is not checked. _hg_in is 1
-# after -s, and 2 once the script is found or -c is: then standard input is
-# not checked. _hg_q holds what each value still to come is for, in order: -
-# or + for -o's or +o's (an option's name, for _den_hg_ne), x for any other.
-# A word of options without o, O, n or b is read by its pattern alone,
+# while -s is effective (+s cancels it except in bash; zsh also takes named
+# forms, read by _den_hg_si), and 2 once the script is found or -c is: then
+# standard input is not checked. _hg_q holds what each value still to come is for, in order: -
+# or + for -o's or +o's (a name, for _den_hg_ne and _den_hg_si), x for any other.
+# A word of options without o, O, n, b or s is read by its pattern alone,
 # without the loop over its letters, which costs the most.
 _den_hg_ok() {
     _hg_n=$1
@@ -1274,7 +1296,10 @@ _den_hg_ok() {
         if [ -n "$_hg_q" ]; then
             _hg_k=${_hg_q%"${_hg_q#?}"}
             _hg_q=${_hg_q#?}
-            [ "$_hg_k" = x ] || _den_hg_ne "$_hg_k" "$_hg_a"
+            if [ "$_hg_k" != x ]; then
+                _den_hg_ne "$_hg_k" "$_hg_a"
+                _den_hg_si "$_hg_k" "$_hg_a"
+            fi
             continue
         fi
         if [ "$_hg_end" = 0 ]; then
@@ -1286,9 +1311,12 @@ _den_hg_ok() {
                 -|--) _hg_end=1; continue ;;
                 --rcfile|--init-file|-rcfile|-init-file|--emulate) _hg_q=x; continue ;;
                 --?*|+-?*)
-                    [ "$_hg_n" = zsh ] && _den_hg_ne "${_hg_a%"${_hg_a#?}"}" "${_hg_a#??}"
+                    if [ "$_hg_n" = zsh ]; then
+                        _den_hg_ne "${_hg_a%"${_hg_a#?}"}" "${_hg_a#??}"
+                        _den_hg_si "${_hg_a%"${_hg_a#?}"}" "${_hg_a#??}"
+                    fi
                     continue ;;
-                [-+]*[oOnb]*)
+                [-+]*[oOnbs]*)
                     _hg_l=${_hg_a#?}
                     _hg_sg=${_hg_a%"$_hg_l"}
                     while [ -n "$_hg_l" ]; do
@@ -1297,6 +1325,7 @@ _den_hg_ok() {
                         case $_hg_sg$_hg_c in
                             -c) _hg_in=2; break 2 ;;
                             -s) _hg_in=1 ;;
+                            +s) [ "$_hg_n" = bash ] || _hg_in=0 ;;
                             -n) _hg_ne=1 ;;
                             +n) _hg_ne=0 ;;
                             ?b) [ "$_hg_n" = zsh ] && _hg_end=1 ;;
@@ -1304,6 +1333,7 @@ _den_hg_ok() {
                             ?o)
                                 if [ "$_hg_n" = zsh ] && [ -n "$_hg_l" ]; then
                                     _den_hg_ne "$_hg_sg" "$_hg_l"
+                                    _den_hg_si "$_hg_sg" "$_hg_l"
                                     break
                                 fi
                                 _hg_q=$_hg_q$_hg_sg ;;
@@ -1311,7 +1341,6 @@ _den_hg_ok() {
                     done
                     continue ;;
                 -*c*) _hg_in=2; break ;;
-                -*s*) _hg_in=1; continue ;;
                 [-+]?*) continue ;;
             esac
         fi

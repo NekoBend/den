@@ -1300,6 +1300,17 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
     return $NoExec
   }
 
+  # _DenHistStdin <name> <sign> <option> <stdin> - as functions.sh's
+  # _den_hg_si: whether stdin mode is on after a named zsh option.
+  function _DenHistStdin([string]$Name, [string]$Sign, [string]$Option, [bool]$StdinMode) {
+    if ($Name -ceq 'zsh') {
+      $o = $Option.Replace('_', '').Replace('-', '')
+      if ($o -in 'shinstdin', 'stdin') { return $Sign -ceq '-' }
+      if ($o -in 'noshinstdin', 'nostdin') { return $Sign -ceq '+' }
+    }
+    return $StdinMode
+  }
+
   # _DenHistWhy <name> <program> <words> - for den's bash, zsh and sh: why
   # <program> (<name>'s full path) must not run with <words>, the words it
   # gets (_DenArgs), else $null. Each word is expanded before it is read, as
@@ -1309,9 +1320,10 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
   # functions.sh's _den_hg_ok, only the script is checked: the first argument
   # that is not an option or an option's value, or the one after - (pwsh drops
   # a -- typed to a function), or in zsh after a word of options with b. With
-  # -c or -s there is none, and the program reads the console or what is piped
-  # in; and when the options before the script leave no-exec on (-n, -o
-  # noexec, zsh's +o exec; _DenHistNoExec) the program only checks its
+  # -c there is none; with -s still effective after all options (+s cancels it
+  # except in bash; zsh also takes named forms), the program reads the console
+  # or what is piped in. When the options before the script leave no-exec on
+  # (-n, -o noexec, zsh's +o exec; _DenHistNoExec) the program only checks its
   # syntax, so nothing is checked. $queue holds what each value still to come
   # is for, in order: - or + for -o's or +o's (an option's name), x for any
   # other.
@@ -1319,6 +1331,7 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
     if ($null -eq $Words) { return $null }
     $queue = ''
     $noexec = $false
+    $stdinMode = $false
     $end = $false
     foreach ($word in $Words) {
       # Each word is expanded as it comes, and only one that pwsh can change
@@ -1332,14 +1345,20 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
         if ($queue) {
           $k = $queue.Substring(0, 1)
           $queue = $queue.Substring(1)
-          if ($k -cne 'x') { $noexec = _DenHistNoExec $Name $k $w $noexec }
+          if ($k -cne 'x') {
+            $noexec = _DenHistNoExec $Name $k $w $noexec
+            $stdinMode = _DenHistStdin $Name $k $w $stdinMode
+          }
           continue
         }
         if (-not $end) {
           if ($w -ceq '-' -or $w -ceq '--') { $end = $true; continue }
           if ($w -cin '--rcfile', '--init-file', '-rcfile', '-init-file', '--emulate') { $queue = 'x'; continue }
           if ($w.Length -gt 2 -and ($w.StartsWith('--') -or $w.StartsWith('+-'))) {
-            if ($Name -ceq 'zsh') { $noexec = _DenHistNoExec $Name $w.Substring(0, 1) $w.Substring(2) $noexec }
+            if ($Name -ceq 'zsh') {
+              $noexec = _DenHistNoExec $Name $w.Substring(0, 1) $w.Substring(2) $noexec
+              $stdinMode = _DenHistStdin $Name $w.Substring(0, 1) $w.Substring(2) $stdinMode
+            }
             continue
           }
           if ($Name -ne 'zsh' -and $w -cin '-login', '-norc', '-noprofile', '-noediting', '-posix', '-restricted',
@@ -1348,13 +1367,19 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
             $sign = $w.Substring(0, 1)
             for ($j = 1; $j -lt $w.Length; $j++) {
               $c = [string]$w[$j]
-              if ($sign -ceq '-' -and ($c -ceq 'c' -or $c -ceq 's')) { return $null }
+              if ($sign -ceq '-' -and $c -ceq 'c') { return $null }
+              if ($c -ceq 's') {
+                if ($sign -ceq '-') { $stdinMode = $true }
+                elseif ($Name -cne 'bash') { $stdinMode = $false }
+                continue
+              }
               if ($c -ceq 'n') { $noexec = $sign -ceq '-'; continue }
               if ($c -ceq 'b') { if ($Name -ceq 'zsh') { $end = $true }; continue }
               if ($c -ceq 'O') { if ($Name -cne 'zsh') { $queue += 'x' }; continue }
               if ($c -cne 'o') { continue }
               if ($Name -ceq 'zsh' -and $j -lt $w.Length - 1) {
                 $noexec = _DenHistNoExec $Name $sign $w.Substring($j + 1) $noexec
+                $stdinMode = _DenHistStdin $Name $sign $w.Substring($j + 1) $stdinMode
                 break
               }
               $queue += $sign
@@ -1362,7 +1387,7 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
             continue
           }
         }
-        if ($noexec) { return $null }
+        if ($stdinMode -or $noexec) { return $null }
         $path = $w
         if (-not [System.IO.Path]::IsPathRooted($path)) {
           $path = [System.IO.Path]::Combine($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath, $path)

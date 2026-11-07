@@ -17,6 +17,27 @@ HG_HOME="$WORK/home"
 MARK="$WORK/marker"
 PS_HOME="$TESTTMP/den-home"
 
+# Each sequence leaves zsh reading stdin, or cancels an earlier -s. Keep
+# both parsers on the same matrix, including aliases, polarity and spelling.
+ZSH_STDIN_ON=(
+    '--shinstdin' '--stdin' '-o shinstdin' '-o stdin'
+    '-oshinstdin' '-ostdin' '--SHIN_STDIN' '-o SHIN_STDIN'
+    '+-noshinstdin' '+-nostdin' '+o noshinstdin' '+o nostdin'
+    '+onoshinstdin' '+onostdin' '-s +s -s'
+)
+ZSH_STDIN_OFF=(
+    '-s +s' '-s +fs' '-fs +s'
+    '--shinstdin +s' '--stdin +s'
+    '-s +-shinstdin' '-s +-stdin'
+    '-s --noshinstdin' '-s --nostdin'
+    '-s --no-shinstdin' '-s --no-stdin'
+    '-s -o noshinstdin' '-s -o nostdin'
+    '-s -onoshinstdin' '-s -onostdin'
+    '-s +o shinstdin' '-s +o stdin'
+    '-s +oshinstdin' '-s +ostdin'
+    '-s --NO_SHIN_STDIN' '-s -o NO_SHIN_STDIN'
+)
+
 # write_hist <file> <word> - a history file in bash's format, a #<epoch> line
 # before each command.
 write_hist() {
@@ -83,7 +104,7 @@ allowed() {
 }
 
 hist_suite() {
-    local sh="$1"
+    local sh="$1" name opts
 
     echo "================================================"
     echo "  Testing the history-file guard with ${sh}"
@@ -122,6 +143,50 @@ hist_suite() {
     refused "$sh/bash < history" "$sh" "bash < ~/.bash_history" "command bash < $HG_HOME/.bash_history"
     refused "$sh/sh -s one < history" "$sh" "sh -s one < ~/.bash_history" "command sh -s one < $HG_HOME/.bash_history"
     refused "$sh/bash - < history" "$sh" "bash - < ~/.zsh_history" "command bash - < $HG_HOME/.zsh_history"
+
+    echo "[$sh] tracks effective stdin mode through all options"
+    for name in zsh sh dash; do
+        command -v "$name" >/dev/null 2>&1 || continue
+        for opts in '-s +s' '-s +fs' '-fs +s'; do
+            refused "$sh/$name $opts: script" "$sh" "$name $opts ~/.bash_history" \
+                "command $name $opts $HG_HOME/.bash_history"
+            allowed "$sh/$name $opts: script owns stdin" "$sh" \
+                "$name $opts '$WORK/ok.sh' x < ~/.bash_history" "ok x
+rc=0"
+            allowed "$sh/$name $opts: noexec" "$sh" "$name $opts -n ~/.bash_history" "rc=0"
+        done
+        refused "$sh/$name -s +s -s: stdin again" "$sh" \
+            "$name -s +s -s one < ~/.bash_history" "command $name -s +s -s one < $HG_HOME/.bash_history"
+    done
+    # bash's invocation-only -s stays on even after +s.
+    allowed "$sh/bash -s +s: history is an argument" "$sh" \
+        "printf 'echo stdin\\n' | bash -s +s ~/.bash_history" "stdin
+rc=0"
+    refused "$sh/bash -s +s: still reads stdin" "$sh" \
+        "bash -s +s one < ~/.bash_history" "command bash -s +s one < $HG_HOME/.bash_history"
+
+    for opts in "${ZSH_STDIN_ON[@]}"; do
+        refused "$sh/zsh $opts: stdin" "$sh" "zsh $opts one < ~/.bash_history" \
+            "command zsh $opts one < $HG_HOME/.bash_history"
+        allowed "$sh/zsh $opts: history is an argument" "$sh" \
+            "printf 'echo stdin\\n' | zsh $opts ~/.zsh_history" "stdin
+rc=0"
+        allowed "$sh/zsh $opts: noexec" "$sh" "zsh $opts -n one < ~/.bash_history" "rc=0"
+    done
+    for opts in "${ZSH_STDIN_OFF[@]}"; do
+        refused "$sh/zsh $opts: script" "$sh" "zsh $opts ~/.zsh_history" \
+            "command zsh $opts $HG_HOME/.zsh_history"
+        allowed "$sh/zsh $opts: script owns stdin" "$sh" \
+            "zsh $opts '$WORK/ok.sh' x < ~/.bash_history" "ok x
+rc=0"
+    done
+    # Values and words after the first operand are not shell options.
+    allowed "$sh/zsh -s: later +s is an argument" "$sh" \
+        "printf 'echo stdin\\n' | zsh -s one +s ~/.zsh_history" "stdin
+rc=0"
+    allowed "$sh/zsh named stdin with -c" "$sh" \
+        "zsh --stdin -c 'echo ok' < ~/.bash_history" "ok
+rc=0"
 
     echo "[$sh] finds the script past options and their values"
     refused "$sh/options before it" "$sh" "bash --norc -x -o pipefail -O extglob -- ~/.bash_history one" \
@@ -322,6 +387,59 @@ if command -v pwsh >/dev/null 2>&1; then
     assert_contains "pwsh/past bash's long option after one -" "To run it anyway: $BASH_BIN -norc ~/.bash_history" "$actual"
     assert_not_contains "pwsh/refused calls do not go on" "NOT-REFUSED" "$actual"
     assert_not_exists "pwsh/refused calls ran nothing" "$MARK"
+
+    echo "[pwsh] tracks effective stdin mode through all options"
+    rm -f "$MARK"
+    ps_cases=''
+    for name in zsh sh; do
+        for opts in '-s +s' '-s +fs' '-fs +s'; do
+            ps_cases+="try { $name $opts '$PS_HOME/.bash_history'; 'NOT-REFUSED' } catch { 'R $name $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
+            ps_cases+="$name $opts -n '$PS_HOME/.bash_history'; 'N $name $opts code: ' + \$LASTEXITCODE"$'\n'
+        done
+        ps_cases+="'echo stdin' | $name -s +s -s '$PS_HOME/.bash_history'; 'A $name reenabled code: ' + \$LASTEXITCODE"$'\n'
+    done
+    ps_cases+="'echo stdin' | bash -s +s '$PS_HOME/.bash_history'; 'A bash sticky code: ' + \$LASTEXITCODE"$'\n'
+    for opts in "${ZSH_STDIN_ON[@]}"; do
+        ps_cases+="'echo stdin' | zsh $opts '$PS_HOME/.zsh_history'; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+    done
+    for opts in "${ZSH_STDIN_OFF[@]}"; do
+        ps_cases+="try { zsh $opts '$PS_HOME/.zsh_history'; 'NOT-REFUSED' } catch { 'R zsh $opts code: ' + \$LASTEXITCODE; \$_.Exception.Message }"$'\n'
+        ps_cases+="'echo stdin' | zsh $opts '$WORK/ok.sh' x; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+    done
+    actual=$(run_pwsh_den "Set-Location -LiteralPath '$WORK'" "$ps_cases
+        'echo stdin' | zsh -s one +s '$PS_HOME/.zsh_history'; 'A later operand code: ' + \$LASTEXITCODE
+        zsh --stdin -c 'echo command'
+    " 2>&1 | tr -d '\r')
+    for name in zsh sh; do
+        bin=$ZSH_BIN
+        [ "$name" = sh ] && bin=$SH_BIN
+        for opts in '-s +s' '-s +fs' '-fs +s'; do
+            assert_contains "pwsh/$name $opts: refused" "R $name $opts code: 2" "$actual"
+            assert_contains "pwsh/$name $opts: bypass" "To run it anyway: $bin $opts $PS_HOME/.bash_history" "$actual"
+            assert_contains "pwsh/$name $opts: noexec" "N $name $opts code: 0" "$actual"
+        done
+    done
+    for opts in "${ZSH_STDIN_ON[@]}"; do
+        assert_contains "pwsh/zsh $opts: stdin allowed" "stdin
+A $opts code: 0" "$actual"
+    done
+    for opts in "${ZSH_STDIN_OFF[@]}"; do
+        assert_contains "pwsh/zsh $opts: refused" "R zsh $opts code: 2" "$actual"
+        assert_contains "pwsh/zsh $opts: bypass" "To run it anyway: $ZSH_BIN $opts $PS_HOME/.zsh_history" "$actual"
+        assert_contains "pwsh/zsh $opts: normal script allowed" "ok x
+A $opts code: 0" "$actual"
+    done
+    assert_not_contains "pwsh/stdin cancelled: refused" "NOT-REFUSED" "$actual"
+    for name in zsh sh; do
+        assert_contains "pwsh/$name: stdin reenabled" "stdin
+A $name reenabled code: 0" "$actual"
+    done
+    assert_contains "pwsh/bash: +s keeps stdin" "stdin
+A bash sticky code: 0" "$actual"
+    assert_contains "pwsh/zsh: later +s is an argument" "stdin
+A later operand code: 0" "$actual"
+    assert_contains "pwsh/-c still runs" "command" "$actual"
+    assert_not_exists "pwsh/stdin mode cases ran no history file" "$MARK"
 
     echo "[pwsh] runs everything else"
     rm -f "$MARK"
