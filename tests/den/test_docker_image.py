@@ -3225,9 +3225,7 @@ def test_the_image_workflow_runs_a_container_with_a_state_volume():
     match = re.search(r"^paths='([^']*)'$", run, flags=re.MULTILINE)
     assert match, "the step names no paths"
     assert match.group(1).split() == [rel for _, rel in _image_entries()]
-    assert re.search(
-        r"docker run -d --init --name \S+ -v den-state:/state denbox", run
-    )
+    assert re.search(r"docker run -d --init --name \S+ -v den-state:/state denbox", run)
     # zsh's history goes through a rewrite (fc -W), which a save at exit,
     # appending, never does: only the rewrite replaces the link without
     # no_hist_save_by_copy.
