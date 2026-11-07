@@ -642,7 +642,9 @@ function va {
   # there (posix va unsets it too), or when its activate script fails, the previous
   # venv's version must not stay behind.
   Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
-  . $activatePath
+  # A dot-source parse error otherwise stops only that statement at the prompt.
+  # Rethrow it to stop va too; try keeps the dot-source in va's scope.
+  try { . $activatePath } catch { throw }
   $cfg = Join-Path $Name 'pyvenv.cfg'
   if (Test-Path -LiteralPath $cfg) {
     $pyverRaw = (Get-Content -LiteralPath $cfg | Where-Object { $_ -match '^version_info\s*=' } | Select-Object -First 1) -replace '^version_info\s*=\s*' -replace '\s+$'

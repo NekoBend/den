@@ -2567,6 +2567,7 @@ echo "[pwsh] activation errors terminate with code 1, in and outside git"
 for repository in git nogit; do
     directory="$R/activation-$repository"
     mkdir -p "$directory/.venv/bin"
+    printf 'version_info = 3.13.1\n' > "$directory/.venv/pyvenv.cfg"
     if [ "$repository" = git ]; then
         git init -q "$directory"
     fi
@@ -2592,14 +2593,21 @@ for repository in git nogit; do
             fi
             setup="\$env:ROUTE_MAKE_VENV = '1'; \$env:ROUTE_ACTIVATE_PS1 = '$script'"
             if [ "$failure" = parse ]; then
-                # Parse errors from dot-sourcing are caught by an enclosing try.
-                actual=$(route_pwsh_lines "$directory" "$setup
-\$global:LASTEXITCODE = 73; try { $before$command $target *>\$null; '$tag NOT-CAUGHT' } catch { \"$tag caught q=\$? code=\$LASTEXITCODE\" }") || true
-                assert_eq "pwsh/$tag is caught with code 1" "$tag caught q=False code=1" "$actual"
-            else
-                actual=$(route_pwsh_lines "$directory" "$setup
+                # Each call starts with an active venv whose deactivation succeeds.
+                before="$before\$env:VIRTUAL_ENV = 'previous'; \$env:_DEN_VENV_PYTHON = '3.12.0'; function global:deactivate { Remove-Item Env:\\VIRTUAL_ENV }; "
+            fi
+            actual=$(route_pwsh_lines "$directory" "$setup
 $(refusal_status_lines "$tag" "$before" "$command $target")") || true
-                assert_eq "pwsh/$tag terminates, sets code 1 and is caught" "$(vva_status "$tag" 1 "$active")" "$actual"
+            assert_eq "pwsh/$tag terminates, sets code 1 and is caught" "$(vva_status "$tag" 1 "$active")" "$actual"
+            if [ "$failure" = parse ]; then
+                # Inspect a plain call too: vva's final active-venv check used to
+                # hide va's parse failure, after va had read the new version.
+                actual=$(route_pwsh_lines "$directory" "$setup
+\$global:LASTEXITCODE = 73; $before$command $target *>\$null
+\"$tag state q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"") || true
+                assert_eq "pwsh/$tag leaves the previous venv deactivated and clears its version" \
+                    "$tag state q=False code=1 VE=[] PY=[]" "$actual"
+            else
                 assert_contains "pwsh/$tag reports the original error" "$failure failed" "$(cat "$R/err")"
             fi
         done

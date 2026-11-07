@@ -491,12 +491,17 @@ The uv redirects load only when uv is installed.
 
 On pwsh every refusal by `va`, `vv`, `pip` / `pip3` and `python` / `python3` /
 `py` fails with a terminating error, as `vva` does: `$?` is false,
-`$LASTEXITCODE` is 1 (uv's own code when uv venv failed), and neither the
-part after `&&` nor the part after `||` runs. Use `try` / `catch` to continue.
+`$LASTEXITCODE` is 1 (uv's own code when `vva`'s `uv venv` failed), and neither
+the part after `&&` nor the part after `||` runs. Use `try` / `catch` to continue.
+`vv` returns uv's exit code like a native command: a failed `uv venv` leaves
+`$?` true and does not stop the line.
 A successful `va` restores the previous `$LASTEXITCODE`, or sets it to 0 if
 it was unset; a successful `vva` keeps uv's 0, including outside a git checkout.
 If deactivation or activation throws, `va` and `vva` leave `$LASTEXITCODE` 1.
 Failures of internal git checks or Python lookups also set 1.
+If the new activation script does not parse, the call terminates with code 1
+and `_DEN_VENV_PYTHON` cleared. The previous venv has already been deactivated
+if it supplied `deactivate`; it is not restored, and the new venv is not activated.
 
 On cmd, `uv` injects `--python` only when `_DEN_VENV_PYTHON` (the venv's version)
 comes from a bash/zsh or pwsh session where `va` ran and that started this cmd:
