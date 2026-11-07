@@ -49,7 +49,7 @@ its header asks: the heredoc scripts run in bash, which chokes on CR characters.
 From the repository root:
 
 ```sh
-docker buildx build --pull --load -t den-dev -f docker/ubuntu/Dockerfile docker/ubuntu
+docker buildx build --pull --load -t denbox -f docker/ubuntu/Dockerfile docker/ubuntu
 ```
 
 The context directory is never read, so any small directory works. To give
@@ -152,11 +152,11 @@ stages use `TARGETARCH`, `USER_UID` and `USER_GID` without declaring them again.
 ## Run
 
 ```sh
-docker run -dit --name den-dev \
+docker run -dit --name denbox \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -v "$PWD:/workspace" \
-  den-dev
-docker exec -it --user dev den-dev zsh
+  denbox
+docker exec -it --user dev denbox zsh
 ```
 
 The container starts as root, but only its entrypoint
@@ -169,7 +169,7 @@ prints a warning that shows this command.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs den-dev`). A mount point below `/home/dev`, and all it holds, is left out of that, with a warning that names it; with more of them than one `find` command can list, nothing in `/home/dev` is re-owned, and a warning says so. On overlayfs the re-owning copies the whole home, the toolchains included, into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
+| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs denbox`). A mount point below `/home/dev`, and all it holds, is left out of that, with a warning that names it; with more of them than one `find` command can list, nothing in `/home/dev` is re-owned, and a warning says so. On overlayfs the re-owning copies the whole home, the toolchains included, into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
 | `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
 | `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. Each mount point below `/workspace` (`-v ~/cache:/workspace/.cache`), and all it holds, is left out too, even one of the same file system, with a warning that names it; with more of them than one `find` command can list, nothing in `/workspace` is re-owned, and a warning says so. |
 | `DEN_STATE` | `1` | `0` turns the state step off, even with a volume mounted at `/state`: the home keeps its own files. See [What survives where](#what-survives-where). |
@@ -197,7 +197,7 @@ current directory first, so pass `-w /` when root runs Python there. The
 image keeps no package lists, so update them first:
 
 ```sh
-docker exec den-dev sh -c 'apt-get update && apt-get install -y <package>'
+docker exec denbox sh -c 'apt-get update && apt-get install -y <package>'
 ```
 
 `dev` gets its home and its tool directories (`~/.nvm/current/bin`,
@@ -205,15 +205,15 @@ docker exec den-dev sh -c 'apt-get update && apt-get install -y <package>'
 startup files: `/etc/zsh/zshenv`, which every zsh reads, and
 `/etc/bash.bashrc`, which only an interactive bash reads, set both, and
 `/etc/profile.d/00-container-home.sh`, which login shells (`bash -l`,
-`sh -l`) read, sets the home. So `docker exec -it --user dev den-dev zsh`
+`sh -l`) read, sets the home. So `docker exec -it --user dev denbox zsh`
 works as it is. A `dev` command run without a shell, or through `bash -c` or
 `sh -c`, keeps `HOME=/root`, which `dev` cannot read, and the system `PATH`.
 Run it through zsh (`zsh -c` or `zsh -lc`), or pass `dev`'s home and the
 command's full path:
 
 ```sh
-docker exec --user dev den-dev zsh -lc 'den --version'
-docker exec --user dev -e HOME=/home/dev den-dev /home/dev/.local/bin/den --version
+docker exec --user dev denbox zsh -lc 'den --version'
+docker exec --user dev -e HOME=/home/dev denbox /home/dev/.local/bin/den --version
 ```
 
 `.github/workflows/docker-dev-image.yml` builds the image when `docker/`
@@ -241,7 +241,7 @@ own built `FROM` this one:
 
 ```dockerfile
 # syntax=docker/dockerfile:1
-FROM den-dev
+FROM denbox
 
 # Tools for dev, installed as dev with its home and tool directories.
 USER dev
@@ -288,9 +288,9 @@ RUN apt-get update && \
   `docker run`, as [What survives where](#what-survives-where) shows.
 
 Build den's image first (see [Build](#build)), then yours with the default
-`docker` builder, which finds the local `den-dev` image. Leave out `--pull`
+`docker` builder, which finds the local `denbox` image. Leave out `--pull`
 there: it makes the build pull every base image from a registry, and
-`den-dev` exists only on your machine.
+`denbox` exists only on your machine.
 
 ```sh
 docker buildx build --load -t my-dev -f Dockerfile .
@@ -321,11 +321,11 @@ as it is, with a warning: its walk keeps out of other file systems, but not
 out of another mount of the same one, and named volumes usually share one.
 
 ```sh
-docker run -d --init --name den-dev \
+docker run -d --init --name denbox \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -v "$PWD:/workspace" -v den-state:/state \
-  den-dev sleep infinity
-docker exec -it --user dev den-dev zsh
+  denbox sleep infinity
+docker exec -it --user dev denbox zsh
 ```
 
 `sleep infinity` keeps the container running without a shell of its own, and
@@ -335,11 +335,11 @@ processes that `docker exec` sessions leave behind. The start is over once
 `sleep` runs: a `docker exec` session that starts before that can find the
 home not linked yet, and lose what it puts in `/tmp`. Wait for it first, for
 example with this loop, which also ends when the container has stopped
-(`docker logs den-dev` then says why):
+(`docker logs denbox` then says why):
 
 ```sh
-until docker exec den-dev pgrep -x sleep >/dev/null; do
-  [ "$(docker inspect -f '{{.State.Running}}' den-dev)" = true ] || break
+until docker exec denbox pgrep -x sleep >/dev/null; do
+  [ "$(docker inspect -f '{{.State.Running}}' denbox)" = true ] || break
   sleep 1
 done
 ```
@@ -348,8 +348,8 @@ The same with `docker compose`, with `/tmp` in memory:
 
 ```yaml
 services:
-  den-dev:
-    image: den-dev
+  denbox:
+    image: denbox
     init: true
     command: ["sleep", "infinity"]
     environment:
@@ -378,11 +378,11 @@ open a shell:
 HOST_UID=$(id -u) HOST_GID=$(id -g)
 export HOST_UID HOST_GID
 docker compose up -d
-until docker compose exec -T den-dev pgrep -x sleep >/dev/null; do
-  [ -n "$(docker compose ps -q --status running den-dev)" ] || break
+until docker compose exec -T denbox pgrep -x sleep >/dev/null; do
+  [ -n "$(docker compose ps -q --status running denbox)" ] || break
   sleep 1
 done
-docker compose exec --user dev den-dev zsh
+docker compose exec --user dev denbox zsh
 ```
 
 compose names the volume after the project: `<project>_den-state`, as
@@ -395,7 +395,7 @@ own:
 mkdir -p -m 0700 ~/den-backups
 docker run --rm --user "$(id -u):$(id -g)" \
   -v den-state:/state:ro -v ~/den-backups:/backup \
-  --entrypoint sh den-dev -c 'umask 077 && tar -czf /backup/den-state.tgz -C /state .'
+  --entrypoint sh denbox -c 'umask 077 && tar -czf /backup/den-state.tgz -C /state .'
 ```
 
 With compose, name `<project>_den-state` there instead of `den-state`:
@@ -461,7 +461,7 @@ link to the same path under `/state/home`, for example
   directory both have is merged: each entry that needs one of them is
   skipped with a warning, and what is in those directories stays.
 
-Each problem is a warning in the container's log (`docker logs den-dev`)
+Each problem is a warning in the container's log (`docker logs denbox`)
 that starts with `state-link:`, after the failing tool's own message when
 there is one. A problem with an entry or a line names the list file and
 line, and may come after a `state-link:` line of its own that names the path
@@ -475,7 +475,7 @@ The entrypoint waits for state-link 300 seconds at most; past that it stops
 it and says the run was cut short. What was done stays done, the copy under
 way is removed, and the next start goes on from there. A path whose copy
 alone takes longer than that is never finished at a start: run
-`docker exec --user dev den-dev zsh -lc /usr/local/lib/den/state-link` once,
+`docker exec --user dev denbox zsh -lc /usr/local/lib/den/state-link` once,
 which has no time limit.
 
 With `DEN_STATE=0`, or a non-root `--user` (which warns), nothing is linked
@@ -488,7 +488,7 @@ the image's IDs, as it does for `/home/dev`. It does not re-own what another
 warning, for the same reason as for `/tmp` above: its walk would go into a
 mount of the same file system. To give a volume to other IDs once, as root,
 with the IDs `dev` will run as:
-`docker run --rm -v den-state:/state --entrypoint /usr/bin/gnuchown den-dev -hR <uid>:<gid> /state`
+`docker run --rm -v den-state:/state --entrypoint /usr/bin/gnuchown denbox -hR <uid>:<gid> /state`
 (GNU `chown`: with `-h` and no `-L` it changes links, not what they point
 to). With compose, name `<project>_den-state` there instead of `den-state`,
 as for the backup: for a name it does not find, `docker run` re-owns a new,
@@ -535,7 +535,7 @@ The lists, in this order:
   link into the volume, so the file stays with the volume; it is read only
   when it is a regular file that `dev` owns. Add a line, then start the
   container again, or apply it at once:
-  `docker exec --user dev den-dev zsh -lc /usr/local/lib/den/state-link`.
+  `docker exec --user dev denbox zsh -lc /usr/local/lib/den/state-link`.
 
 An entry inside a directory that another entry links into the volume needs
 nothing more: once `d .config` links `~/.config`, `d .config/gh` only makes
