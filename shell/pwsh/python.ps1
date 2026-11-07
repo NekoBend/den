@@ -413,7 +413,7 @@ function global:_DenUvMarker([object[]]$UvArgs = @()) {
 # _DenPyExe names. Elsewhere --version and -V go through uv run as well, so
 # they name the python that `python x.py` runs. With uv gone since den loaded,
 # the python on PATH. Parity with posix python.sh.
-# Returns @{ Exe; Args }, or @{ Error; Code? } for the caller to write under its own
+# Returns @{ Exe; Args }, or @{ Error } for the caller to write under its own
 # name; the caller reads them as ['Error'], since reading a missing key as
 # .Error is an error under a caller's Set-StrictMode.
 function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
@@ -433,7 +433,7 @@ function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
       }
     }
     $exe = _DenPyExe
-    if (-not $exe) { return @{ Error = 'no Python found to run in place of uv run; uv python install installs one'; Code = $LASTEXITCODE } }
+    if (-not $exe) { return @{ Error = 'no Python found to run in place of uv run; uv python install installs one' } }
     Write-Warning "${Name}: running $exe, not uv run: uv run would build or run code from $marker"
     return @{ Exe = $exe; Args = $PyArgs }
   }
@@ -448,7 +448,7 @@ function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
 function python {
   $run = _DenPyRun 'python' (_DenPyArgs $MyInvocation $Args)
   if ($run['Error']) {
-    $global:LASTEXITCODE = if ($run['Code']) { $run['Code'] } else { 1 }
+    $global:LASTEXITCODE = 1
     Write-Error $run['Error'] -ErrorAction Stop
   }
   _DenPyCall $run['Exe'] $run['Args']
@@ -458,7 +458,7 @@ function python {
 function python3 {
   $run = _DenPyRun 'python3' (_DenPyArgs $MyInvocation $Args)
   if ($run['Error']) {
-    $global:LASTEXITCODE = if ($run['Code']) { $run['Code'] } else { 1 }
+    $global:LASTEXITCODE = 1
     Write-Error $run['Error'] -ErrorAction Stop
   }
   _DenPyCall $run['Exe'] $run['Args']
@@ -468,7 +468,7 @@ function python3 {
 function py {
   $run = _DenPyRun 'py' (_DenPyArgs $MyInvocation $Args)
   if ($run['Error']) {
-    $global:LASTEXITCODE = if ($run['Code']) { $run['Code'] } else { 1 }
+    $global:LASTEXITCODE = 1
     Write-Error $run['Error'] -ErrorAction Stop
   }
   _DenPyCall $run['Exe'] $run['Args']
@@ -598,7 +598,7 @@ function va {
         if (-not ($why -match '^fatal: not a git repository')) {
           # Show git's fatal line, else its first.
           $reason = @(@($why -match '^fatal:') + $why) | Select-Object -First 1
-          $global:LASTEXITCODE = $gitCode
+          $global:LASTEXITCODE = 1
           Write-Error "'$Name': git could not tell whether the venv is committed ($reason); dot-source it yourself if you trust it: . $activatePath" -ErrorAction Stop
         }
         $tracked = $null
@@ -628,6 +628,9 @@ function va {
     $global:LASTEXITCODE = 1
     Write-Error "'$activatePath' is world-writable - dot-source it yourself if you trust it: . $activatePath" -ErrorAction Stop
   }
+  # Activation can throw too. Until it succeeds, leave a failure code rather
+  # than the internal git probe's 0 or 128; restore $successCode below.
+  $global:LASTEXITCODE = 1
   # Each activate script undoes only its own kind of venv before it activates:
   # python's keeps the old PATH in $env:_OLD_VIRTUAL_PATH, uv's and virtualenv's in
   # a global variable, so switching between the two kinds without vd kept the
@@ -735,8 +738,8 @@ function global:vv {
 # activates a venv that was there, with va's own checks. Parity with posix
 # python.sh.
 # Each time vva activates nothing, va's refusal of the venv uv made too, its
-# error is terminating, with $LASTEXITCODE 1 (uv's own code where uv
-# failed), as den's other refusals are (pcp, extract, dg): a plain
+# error is terminating, with $LASTEXITCODE 1 (uv's own code only when
+# uv venv failed), as den's other refusals are (pcp, extract, dg): a plain
 # Write-Error and return left $? true, so `vva x --help && next` ran next
 # with no venv active. As any terminating error does, it stops the rest of
 # the line, a || after it too; a script that is to go on catches it. An
@@ -808,7 +811,7 @@ function global:vva {
     $global:LASTEXITCODE = 1
     Write-Error "uv venv made no activate script under '$target' (Scripts/ or bin/), so vva activates nothing" -ErrorAction Stop
   }
-  # Propagate va's terminating refusal, including git's own exit code.
+  # Propagate va's terminating error and its failure code of 1.
   va $target
   $active = $false
   if ($env:VIRTUAL_ENV) {

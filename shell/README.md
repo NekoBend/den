@@ -315,11 +315,12 @@ native PowerShell cmdlets, when you need object-accurate results.
 
 On pwsh every refusal by `va`, `vv`, `vva`, `pip` / `pip3` and `python` /
 `python3` / `py` fails with a terminating error: `$?` is false and
-`$LASTEXITCODE` is 1 (uv's or git's code when that program failed).
+`$LASTEXITCODE` is 1 (uv's own code when uv venv failed).
 Neither the part after `&&` nor the part after `||` runs; use `try` / `catch`
 to continue. Successful `va` restores the previous `$LASTEXITCODE`, or 0
 when it was unset; successful `vva` keeps uv's 0 rather than its internal
-git check's code.
+git check's code. If deactivation or activation throws, `va` and `vva` leave
+`$LASTEXITCODE` 1. Internal git check and Python lookup refusals also set 1.
 
 Redirecting an expected refusal's error output does not catch it. To inspect
 the session after a refused activation, catch the error around that call:

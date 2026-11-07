@@ -1316,7 +1316,8 @@ done
 # with its links resolved: a bin/ with an activate script for bash and zsh and
 # an Activate.ps1, each of which sets VIRTUAL_ENV to the venv's path with its
 # links resolved, and a pyvenv.cfg. Without it, uv venv makes nothing, as
-# uv venv --help does.
+# uv venv --help does. ROUTE_ACTIVATE_PS1 overrides the PowerShell activate
+# script to exercise errors after va has passed its own checks.
 R="$WORK/route"
 ROUTE_BIN="$R/bin"
 ROUTE_LOG="$R/uvcalls"
@@ -1352,7 +1353,10 @@ if [ -n "\${ROUTE_MAKE_VENV-}" ]; then
         (cd -P -- "\${d:-.}" && mkdir -p -- "\$n/bin" && v=\$(cd -P -- "\$n" && pwd -P) &&
             printf 'VIRTUAL_ENV=%s; export VIRTUAL_ENV\n' "\$v" > "\$n/bin/activate" &&
             printf '\$env:VIRTUAL_ENV = "%s"\n' "\$v" > "\$n/bin/Activate.ps1" &&
-            printf 'version_info = 3.13.1\n' > "\$n/pyvenv.cfg") || exit 2
+            printf 'version_info = 3.13.1\n' > "\$n/pyvenv.cfg" &&
+            if [ -n "\${ROUTE_ACTIVATE_PS1-}" ]; then
+                printf '%s\n' "\$ROUTE_ACTIVATE_PS1" > "\$n/bin/Activate.ps1"
+            fi) || exit 2
     fi
 fi
 echo "mock-uv \$*"
@@ -2526,7 +2530,7 @@ for spec in \
     "symbin|$SYMBIN|va|1" \
     "symact|$SYMACT|va|1" \
     "writable|$WORK/ps_venv_ww|va|1" \
-    "gitfail|$WORK/ps_venv_tracked|va|128"; do
+    "gitfail|$WORK/ps_venv_tracked|va|1"; do
     IFS='|' read -r tag directory command code <<< "$spec"
     before=''
     if [ "$tag" = gitfail ]; then
@@ -2551,11 +2555,56 @@ $(refusal_status_lines "$command" '' "$command --version")") || true
     assert_eq "pwsh/$command without python or uv terminates" "$(vva_status "$command" 1)" "$actual"
     actual=$(route_pwsh_lines "$R/proj" "\$env:ROUTE_NO_SYSTEM = '1'; \$env:ROUTE_NO_MANAGED = '1'
 $(refusal_status_lines "$command" '' "$command --version")") || true
-    assert_eq "pwsh/$command with no Python found preserves uv's code" "$(vva_status "$command" 2)" "$actual"
+    assert_eq "pwsh/$command with no Python found sets code 1" "$(vva_status "$command" 1)" "$actual"
 done
 actual=$(route_pwsh_lines "$NOPROJ" "\$env:PATH = '$NO_UV_BIN'; \$global:_DenCmdCache = @{}
 $(refusal_status_lines vv '' 'vv -p 3.13')") || true
 assert_eq "pwsh/vv without uv terminates" "$(vva_status vv 1)" "$actual"
+
+# Exercise the code after va's checks, with git's probe returning either 0
+# (an untracked venv in a checkout) or 128 (outside a checkout).
+echo "[pwsh] activation errors terminate with code 1, in and outside git"
+for repository in git nogit; do
+    directory="$R/activation-$repository"
+    mkdir -p "$directory/.venv/bin"
+    if [ "$repository" = git ]; then
+        git init -q "$directory"
+    fi
+    for failure in activate deactivate parse; do
+        case $failure in
+            activate) script='throw "activate failed"' ;;
+            deactivate) script="\$env:VIRTUAL_ENV = \"unexpected\"" ;;
+            parse) script='this is { not valid' ;;
+        esac
+        printf '%s\n' "$script" > "$directory/.venv/bin/Activate.ps1"
+        for command in va vva; do
+            tag="$command-$failure-$repository"
+            before=''
+            active=''
+            target='.venv'
+            if [ "$command" = vva ]; then
+                target='newenv'
+                before="Remove-Item -LiteralPath newenv -Recurse -Force -ErrorAction Ignore; "
+            fi
+            if [ "$failure" = deactivate ]; then
+                active='previous'
+                before="$before\$env:VIRTUAL_ENV = 'previous'; function global:deactivate { throw 'deactivate failed' }; "
+            fi
+            setup="\$env:ROUTE_MAKE_VENV = '1'; \$env:ROUTE_ACTIVATE_PS1 = '$script'"
+            if [ "$failure" = parse ]; then
+                # Parse errors from dot-sourcing are caught by an enclosing try.
+                actual=$(route_pwsh_lines "$directory" "$setup
+\$global:LASTEXITCODE = 73; try { $before$command $target *>\$null; '$tag NOT-CAUGHT' } catch { \"$tag caught q=\$? code=\$LASTEXITCODE\" }") || true
+                assert_eq "pwsh/$tag is caught with code 1" "$tag caught q=False code=1" "$actual"
+            else
+                actual=$(route_pwsh_lines "$directory" "$setup
+$(refusal_status_lines "$tag" "$before" "$command $target")") || true
+                assert_eq "pwsh/$tag terminates, sets code 1 and is caught" "$(vva_status "$tag" 1 "$active")" "$actual"
+                assert_contains "pwsh/$tag reports the original error" "$failure failed" "$(cat "$R/err")"
+            fi
+        done
+    done
+done
 
 echo "[pwsh] successful activation does not leak the internal git exit code"
 for directory in "$WORK/ps_venv5" "$WORK/ps_venv_untracked"; do
@@ -2632,7 +2681,7 @@ actual=$(route_pwsh_lines "$R/vvatracked" "\$env:ROUTE_MAKE_VENV = '1'
 \$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'
 $(vva_status_lines gitfail 'Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore; ' myenv)
 Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore") || true
-assert_eq "pwsh/vva propagates git's failure code from va" "$(vva_status gitfail 128)" "$actual"
+assert_eq "pwsh/vva propagates va's code 1 when its git check fails" "$(vva_status gitfail 1)" "$actual"
 
 # PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
 # PowerShell's location, and so its LocationChangedAction, and the process's
