@@ -1240,11 +1240,19 @@ _den_hg_ne() {
     unset _hg_v
 }
 
-# _den_hg_si <sign> <name> - for _den_hg_ok: update stdin mode for zsh's
-# named -s option (shinstdin, also stdin), including its no-prefixed forms.
-# Like _den_hg_ne, read names in any case and ignore _ and -.
+# _den_hg_si <sign> <name> - for _den_hg_ok: update stdin mode for named
+# options. sh and dash take exactly stdin. zsh takes shinstdin, also stdin,
+# and their no-prefixed forms; like _den_hg_ne, ignore case, _ and - there.
 _den_hg_si() {
-    [ "$_hg_n" = zsh ] || return 0
+    case $_hg_n in
+        sh|dash)
+            if [ "$2" = stdin ]; then
+                _hg_in=0; [ "$1" = - ] && _hg_in=1
+            fi
+            return 0 ;;
+        zsh) ;;
+        *) return 0 ;;
+    esac
     _hg_v=$2
     while :; do
         case $_hg_v in
@@ -1282,9 +1290,11 @@ _den_hg_si() {
 # /dev/null one. A file there is known by what it is, not by its name, which
 # no builtin can read: `bash < project/.python_history` runs it. A script's
 # own standard input is the script's to read, and is not checked. _hg_in is 1
-# while -s is effective (+s cancels it except in bash; zsh also takes named
-# forms, read by _den_hg_si), and 2 once the script is found or -c is: then
-# standard input is not checked. _hg_q holds what each value still to come is for, in order: -
+# while stdin mode is on (bash's -s and +s both enable it; +s cancels it in
+# zsh and dash; named forms are read by _den_hg_si), and 2 once the script is
+# found or -c is: then standard input is not checked. For sh, +s sets 3:
+# bash reads stdin but dash reads the script, so check both until a later
+# setting resolves the mode. _hg_q holds what each value still to come is for, in order: -
 # or + for -o's or +o's (a name, for _den_hg_ne and _den_hg_si), x for any other.
 # A word of options without o, O, n, b or s is read by its pattern alone,
 # without the loop over its letters, which costs the most.
@@ -1325,7 +1335,12 @@ _den_hg_ok() {
                         case $_hg_sg$_hg_c in
                             -c) _hg_in=2; break 2 ;;
                             -s) _hg_in=1 ;;
-                            +s) [ "$_hg_n" = bash ] || _hg_in=0 ;;
+                            +s)
+                                case $_hg_n in
+                                    bash) _hg_in=1 ;;
+                                    sh) _hg_in=3 ;;
+                                    *) _hg_in=0 ;;
+                                esac ;;
                             -n) _hg_ne=1 ;;
                             +n) _hg_ne=0 ;;
                             ?b) [ "$_hg_n" = zsh ] && _hg_end=1 ;;
@@ -1346,7 +1361,7 @@ _den_hg_ok() {
         fi
         # With -s the arguments are only the positional parameters.
         [ "$_hg_in" = 1 ] && break
-        _hg_in=2
+        [ "$_hg_in" = 3 ] || _hg_in=2
         if [ "$_hg_ne" = 0 ] && _den_hg_hist "$_hg_a"; then
             _den_hg_say "$_hg_n" "$_hg_a is a shell history file" "command $_hg_n" '' "$@"
             _hg_rc=1

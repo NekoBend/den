@@ -1301,12 +1301,14 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
   }
 
   # _DenHistStdin <name> <sign> <option> <stdin> - as functions.sh's
-  # _den_hg_si: whether stdin mode is on after a named zsh option.
+  # _den_hg_si: whether stdin mode is on after a named option.
   function _DenHistStdin([string]$Name, [string]$Sign, [string]$Option, [bool]$StdinMode) {
     if ($Name -ceq 'zsh') {
       $o = $Option.Replace('_', '').Replace('-', '')
       if ($o -in 'shinstdin', 'stdin') { return $Sign -ceq '-' }
       if ($o -in 'noshinstdin', 'nostdin') { return $Sign -ceq '+' }
+    } elseif (($Name -ceq 'sh' -or $Name -ceq 'dash') -and $Option -ceq 'stdin') {
+      return $Sign -ceq '-'
     }
     return $StdinMode
   }
@@ -1320,9 +1322,12 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
   # functions.sh's _den_hg_ok, only the script is checked: the first argument
   # that is not an option or an option's value, or the one after - (pwsh drops
   # a -- typed to a function), or in zsh after a word of options with b. With
-  # -c there is none; with -s still effective after all options (+s cancels it
-  # except in bash; zsh also takes named forms), the program reads the console
-  # or what is piped in. When the options before the script leave no-exec on
+  # -c there is none; with stdin mode still on after all options (bash's -s
+  # and +s both enable it; +s cancels it in zsh; named forms use _DenHistStdin),
+  # the program reads the console or what is piped in. sh may be bash or dash:
+  # after +s, check the operand as a possible script. This guard cannot inspect
+  # stdin, so the script check is the only half of functions.sh's dual check.
+  # When the options before the script leave no-exec on
   # (-n, -o noexec, zsh's +o exec; _DenHistNoExec) the program only checks its
   # syntax, so nothing is checked. $queue holds what each value still to come
   # is for, in order: - or + for -o's or +o's (an option's name), x for any
@@ -1369,8 +1374,7 @@ if (-not (_OnWindows) -and (_DenInteractive)) {
               $c = [string]$w[$j]
               if ($sign -ceq '-' -and $c -ceq 'c') { return $null }
               if ($c -ceq 's') {
-                if ($sign -ceq '-') { $stdinMode = $true }
-                elseif ($Name -cne 'bash') { $stdinMode = $false }
+                $stdinMode = $sign -ceq '-' -or $Name -ceq 'bash'
                 continue
               }
               if ($c -ceq 'n') { $noexec = $sign -ceq '-'; continue }

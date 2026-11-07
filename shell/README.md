@@ -367,13 +367,17 @@ bash: to run it anyway: command bash /home/me/.bash_history
     directory.
 
   And on bash/zsh, when the shell has no script or its options leave stdin
-  mode on (`-s`, also zsh's `--shinstdin`, `--stdin` or `-o shinstdin`), its
+  mode on (`-s`, bash's `+s`, zsh's `--shinstdin`, `--stdin` or
+  `-o shinstdin`, and sh/dash's `-o stdin`), its
   standard input (`bash < ~/.bash_history`), when that is the same file as one
   in the first list. Standard input is recognized only that way, not by its name,
   which no shell builtin can read: `bash < project/.python_history` runs.
-  `+s` cancels `-s` in zsh, sh and dash, so the next operand is the script;
-  bash keeps stdin mode on. Zsh's named disabling forms work too, and the
-  last setting before the first operand wins.
+  `+s` cancels `-s` in zsh and dash; in bash, `+s` enables stdin mode
+  just as `-s` does. For `sh`, which may be bash or dash, den checks both
+  the first operand as a script and standard input after `+s`, refusing if
+  either is a history file. PowerShell checks the operand because it cannot
+  inspect standard input. Zsh's named disabling forms and sh/dash's
+  `+o stdin` work too. The last setting before the first operand wins.
 - **What runs as before**: any other script (one named `history.sh` too),
   `bash -c '...'` (the commands come from the string, even
   `bash -c 'cat ~/.bash_history'`), a script whose own standard input is a

@@ -69,6 +69,13 @@ setup_hist() {
     # A stand-in bash, first on PATH in the shadow cases.
     printf '#!/bin/sh\necho "stub bash $*"\n' > "$WORK/stub/bash"
     chmod +x "$WORK/stub/bash"
+    # Exercise both implementations behind sh without relying on /bin/sh.
+    mkdir -p "$WORK/sh-bash"
+    ln -s "$(command -v bash)" "$WORK/sh-bash/sh"
+    if command -v dash >/dev/null 2>&1; then
+        mkdir -p "$WORK/sh-dash"
+        ln -s "$(command -v dash)" "$WORK/sh-dash/sh"
+    fi
 }
 
 # hg_run <sh> <cmd> - <cmd> in <sh> -c with functions.sh loaded, in WORK, with
@@ -145,7 +152,7 @@ hist_suite() {
     refused "$sh/bash - < history" "$sh" "bash - < ~/.zsh_history" "command bash - < $HG_HOME/.zsh_history"
 
     echo "[$sh] tracks effective stdin mode through all options"
-    for name in zsh sh dash; do
+    for name in zsh dash; do
         command -v "$name" >/dev/null 2>&1 || continue
         for opts in '-s +s' '-s +fs' '-fs +s'; do
             refused "$sh/$name $opts: script" "$sh" "$name $opts ~/.bash_history" \
@@ -158,12 +165,58 @@ rc=0"
         refused "$sh/$name -s +s -s: stdin again" "$sh" \
             "$name -s +s -s one < ~/.bash_history" "command $name -s +s -s one < $HG_HOME/.bash_history"
     done
-    # bash's invocation-only -s stays on even after +s.
-    allowed "$sh/bash -s +s: history is an argument" "$sh" \
-        "printf 'echo stdin\\n' | bash -s +s ~/.bash_history" "stdin
+    # bash's +s enables stdin mode even without an earlier -s.
+    for opts in '+s' '+fs' '-s +s'; do
+        allowed "$sh/bash $opts: history is an argument" "$sh" \
+            "printf 'echo stdin\\n' | bash $opts ~/.bash_history" "stdin
 rc=0"
-    refused "$sh/bash -s +s: still reads stdin" "$sh" \
-        "bash -s +s one < ~/.bash_history" "command bash -s +s one < $HG_HOME/.bash_history"
+        refused "$sh/bash $opts: reads stdin" "$sh" \
+            "bash $opts one < ~/.bash_history" "command bash $opts one < $HG_HOME/.bash_history"
+    done
+
+    for name in bash dash; do
+        [ -d "$WORK/sh-$name" ] || continue
+        for opts in '+s' '-s +s' '-s +fs' '-fs +s'; do
+            refused "$sh/sh=$name $opts: possible script" "$sh" \
+                "PATH='$WORK/sh-$name':\$PATH; sh $opts ~/.bash_history" \
+                "command sh $opts $HG_HOME/.bash_history"
+            refused "$sh/sh=$name $opts: possible stdin" "$sh" \
+                "PATH='$WORK/sh-$name':\$PATH; sh $opts '$WORK/ok.sh' x < ~/.bash_history" \
+                "command sh $opts $WORK/ok.sh x < $HG_HOME/.bash_history"
+            allowed "$sh/sh=$name $opts: safe script and stdin" "$sh" \
+                "PATH='$WORK/sh-$name':\$PATH; printf 'echo ok x\\n' | sh $opts '$WORK/ok.sh' x" "ok x
+rc=0"
+            allowed "$sh/sh=$name $opts: noexec" "$sh" \
+                "PATH='$WORK/sh-$name':\$PATH; sh $opts -n ~/.bash_history < ~/.bash_history" "rc=0"
+            allowed "$sh/sh=$name $opts: later -s resolves mode" "$sh" \
+                "PATH='$WORK/sh-$name':\$PATH; printf 'echo stdin\\n' | sh $opts -s ~/.bash_history" "stdin
+rc=0"
+            allowed "$sh/sh=$name $opts: -c owns commands" "$sh" \
+                "PATH='$WORK/sh-$name':\$PATH; sh $opts -c 'echo ok' < ~/.bash_history" "ok
+rc=0"
+        done
+    done
+
+    if command -v dash >/dev/null 2>&1; then
+        for name in dash sh; do
+            for opts in '-o stdin' '-eo stdin' '-s +o stdin -o stdin'; do
+                refused "$sh/$name $opts: named stdin" "$sh" \
+                    "PATH='$WORK/sh-dash':\$PATH; $name $opts one < ~/.bash_history" \
+                    "command $name $opts one < $HG_HOME/.bash_history"
+                allowed "$sh/$name $opts: history is an argument" "$sh" \
+                    "PATH='$WORK/sh-dash':\$PATH; printf 'echo stdin\\n' | $name $opts ~/.bash_history" "stdin
+rc=0"
+            done
+            for opts in '-s +o stdin' '-o stdin +o stdin' '+s +o stdin'; do
+                refused "$sh/$name $opts: named cancellation" "$sh" \
+                    "PATH='$WORK/sh-dash':\$PATH; $name $opts ~/.bash_history" \
+                    "command $name $opts $HG_HOME/.bash_history"
+                allowed "$sh/$name $opts: script owns stdin" "$sh" \
+                    "PATH='$WORK/sh-dash':\$PATH; $name $opts '$WORK/ok.sh' x < ~/.bash_history" "ok x
+rc=0"
+            done
+        done
+    fi
 
     for opts in "${ZSH_STDIN_ON[@]}"; do
         refused "$sh/zsh $opts: stdin" "$sh" "zsh $opts one < ~/.bash_history" \
@@ -398,7 +451,9 @@ if command -v pwsh >/dev/null 2>&1; then
         done
         ps_cases+="'echo stdin' | $name -s +s -s '$PS_HOME/.bash_history'; 'A $name reenabled code: ' + \$LASTEXITCODE"$'\n'
     done
-    ps_cases+="'echo stdin' | bash -s +s '$PS_HOME/.bash_history'; 'A bash sticky code: ' + \$LASTEXITCODE"$'\n'
+    for opts in '+s' '+fs' '-s +s'; do
+        ps_cases+="'echo stdin' | bash $opts '$PS_HOME/.bash_history'; 'A bash $opts code: ' + \$LASTEXITCODE"$'\n'
+    done
     for opts in "${ZSH_STDIN_ON[@]}"; do
         ps_cases+="'echo stdin' | zsh $opts '$PS_HOME/.zsh_history'; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
     done
@@ -408,7 +463,7 @@ if command -v pwsh >/dev/null 2>&1; then
     done
     actual=$(run_pwsh_den "Set-Location -LiteralPath '$WORK'" "$ps_cases
         'echo stdin' | zsh -s one +s '$PS_HOME/.zsh_history'; 'A later operand code: ' + \$LASTEXITCODE
-        zsh --stdin -c 'echo command'
+        zsh --stdin -c 'echo dash-c-ran'; 'C code: ' + \$LASTEXITCODE
     " 2>&1 | tr -d '\r')
     for name in zsh sh; do
         bin=$ZSH_BIN
@@ -434,12 +489,58 @@ A $opts code: 0" "$actual"
         assert_contains "pwsh/$name: stdin reenabled" "stdin
 A $name reenabled code: 0" "$actual"
     done
-    assert_contains "pwsh/bash: +s keeps stdin" "stdin
-A bash sticky code: 0" "$actual"
+    for opts in '+s' '+fs' '-s +s'; do
+        assert_contains "pwsh/bash $opts: enables stdin" "stdin
+A bash $opts code: 0" "$actual"
+    done
     assert_contains "pwsh/zsh: later +s is an argument" "stdin
 A later operand code: 0" "$actual"
-    assert_contains "pwsh/-c still runs" "command" "$actual"
+    assert_contains "pwsh/-c still runs" "dash-c-ran
+C code: 0" "$actual"
     assert_not_exists "pwsh/stdin mode cases ran no history file" "$MARK"
+
+    for name in bash dash; do
+        [ -d "$WORK/sh-$name" ] || continue
+        ps_cases=''
+        for opts in '+s' '-s +s' '-s +fs' '-fs +s'; do
+            ps_cases+="try { 'echo safe' | sh $opts '$PS_HOME/.bash_history'; 'NOT-REFUSED' } catch { 'R $opts code: ' + \$LASTEXITCODE }"$'\n'
+            ps_cases+="'echo ok x' | sh $opts '$WORK/ok.sh' x; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+            ps_cases+="'echo stdin' | sh $opts -s '$PS_HOME/.bash_history'; 'S $opts code: ' + \$LASTEXITCODE"$'\n'
+        done
+        actual=$(run_pwsh_den "\$env:PATH = '$WORK/sh-$name' + [IO.Path]::PathSeparator + \$env:PATH; Set-Location -LiteralPath '$WORK'" "$ps_cases" 2>&1 | tr -d '\r')
+        for opts in '+s' '-s +s' '-s +fs' '-fs +s'; do
+            assert_contains "pwsh/sh=$name $opts: possible script refused" "R $opts code: 2" "$actual"
+            assert_contains "pwsh/sh=$name $opts: safe script and stdin" "ok x
+A $opts code: 0" "$actual"
+            assert_contains "pwsh/sh=$name $opts: later -s resolves mode" "stdin
+S $opts code: 0" "$actual"
+        done
+        assert_not_contains "pwsh/sh=$name: refused calls stop" "NOT-REFUSED" "$actual"
+        assert_not_exists "pwsh/sh=$name: ran no history file" "$MARK"
+    done
+
+    if command -v dash >/dev/null 2>&1; then
+        ps_cases=''
+        for opts in '-o stdin' '-eo stdin'; do
+            ps_cases+="'echo stdin' | sh $opts '$PS_HOME/.bash_history'; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+        done
+        for opts in '-s +o stdin' '-o stdin +o stdin'; do
+            ps_cases+="try { sh $opts '$PS_HOME/.bash_history'; 'NOT-REFUSED' } catch { 'R $opts code: ' + \$LASTEXITCODE }"$'\n'
+            ps_cases+="'echo safe' | sh $opts '$WORK/ok.sh' x; 'A $opts code: ' + \$LASTEXITCODE"$'\n'
+        done
+        actual=$(run_pwsh_den "\$env:PATH = '$WORK/sh-dash' + [IO.Path]::PathSeparator + \$env:PATH; Set-Location -LiteralPath '$WORK'" "$ps_cases" 2>&1 | tr -d '\r')
+        for opts in '-o stdin' '-eo stdin'; do
+            assert_contains "pwsh/sh $opts: named stdin allowed" "stdin
+A $opts code: 0" "$actual"
+        done
+        for opts in '-s +o stdin' '-o stdin +o stdin'; do
+            assert_contains "pwsh/sh $opts: named cancellation refused" "R $opts code: 2" "$actual"
+            assert_contains "pwsh/sh $opts: script owns stdin" "ok x
+A $opts code: 0" "$actual"
+        done
+        assert_not_contains "pwsh/sh named stdin: refused calls stop" "NOT-REFUSED" "$actual"
+        assert_not_exists "pwsh/sh named stdin: ran no history file" "$MARK"
+    fi
 
     echo "[pwsh] runs everything else"
     rm -f "$MARK"
