@@ -746,21 +746,35 @@ def _run_entrypoint(
     mounts: tuple[str, ...] = ("/workspace",),
     nested: tuple[str, ...] = (),
     table: bool = True,
+    ids: tuple[int, int] = (1000, 1000),
+    home: Path | None = None,
+    workspace: Path | None = None,
+    real_find: bool = False,
+    stack_kib: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
 
-    The account is dev, 1000:1000, home /home/dev. The state volume's mount
-    point is tmp_path/state and /tmp is tmp_path/tmp, neither of which this
-    makes; mountpoint finds a mount point at each path ``mounts`` names and
-    nowhere else. The mount table the entrypoint reads lists /, ``mounts``
-    and ``nested`` (mount points below those, which mountpoint is not asked
+    The account is dev, with ``ids`` (1000:1000 unless given) and the home
+    ``home`` (/home/dev unless given), which this does not make; ``workspace``
+    takes the place of /workspace. The state volume's mount point is
+    tmp_path/state and /tmp is tmp_path/tmp, neither of which this makes;
+    mountpoint finds a mount point at each path ``mounts`` names and nowhere
+    else. The mount table the entrypoint reads lists /, ``mounts`` and
+    ``nested`` (mount points below those, which mountpoint is not asked
     about), or is missing when ``table`` is false. setpriv logs its call and
     runs nothing: for state-link it exits with FAKE_STATE_LINK_STATUS
     (default 0), and otherwise prints its arguments, the HOME it got and the
     PWSH_ENV variables. gnutimeout logs its call and runs the command after
     its three options; gnumkdir logs its call and makes the directory; find
-    logs its call and fails when its first argument is FAKE_FIND_FAIL; the
-    other commands that change accounts or files only log theirs.
+    logs its call and fails when its first argument is FAKE_FIND_FAIL (as
+    ``env`` gives it), and with ``real_find`` runs the system's find when
+    that argument is in tmp_path, after it writes the environment it got to
+    tmp_path/find-env-<its PID>; gnuchown logs its call and adds its
+    arguments, each followed by a NUL, to tmp_path/chowned; usermod logs its
+    call and fails when FAKE_USERMOD_FAIL is "ids" and it has --uid, or
+    "home" and it has not; the other commands that change accounts or files
+    only log theirs. The entrypoint runs in tmp_path, with a stack limit of
+    ``stack_kib`` KiB when that is given.
     """
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
@@ -775,17 +789,37 @@ def _run_entrypoint(
         path.chmod(0o755)
 
     stub("id", f'case "$1" in -u|-g) echo {uid} ;; *) exit 1 ;; esac')
+    account = f"dev:x:{ids[0]}:{ids[1]}::{home or '/home/dev'}:/bin/zsh"
     stub(
         "getent",
         'case "$1 $2" in\n'
-        '  "passwd dev") echo "dev:x:1000:1000::/home/dev:/bin/zsh" ;;\n'
+        f'  "passwd dev") echo {shlex.quote(account)} ;;\n'
         '  "group "*) exit 0 ;;\n'
         "  *) exit 2 ;;\n"
         "esac",
     )
-    for name in ("usermod", "groupadd", "gnuchown"):
-        stub(name, logged)
-    stub("find", f'{logged}\n[ "$1" != "${{FAKE_FIND_FAIL-}}" ]')
+    stub("groupadd", logged)
+    stub(
+        "usermod",
+        f"{logged}\n"
+        'case " $* " in *" --uid "*) fails=ids ;; *) fails=home ;; esac\n'
+        '[ "${FAKE_USERMOD_FAIL-}" != "$fails" ]',
+    )
+    chowned = shlex.quote(str(tmp_path / "chowned"))
+    stub("gnuchown", f"{logged}\nprintf '%s\\0' \"$@\" >> {chowned}")
+    real = (
+        f'case "$1" in {shlex.quote(str(tmp_path))}/*)'
+        f" {shlex.quote(_tool('env'))} > {shlex.quote(str(tmp_path / 'find-env-'))}$$"
+        f' && exec {shlex.quote(_tool("find"))} "$@" ;; esac\n'
+        if real_find
+        else ""
+    )
+    # find may get none of env, so the path it fails for is part of the stub.
+    stub(
+        "find",
+        f"{logged}\n"
+        f'[ "$1" != {shlex.quote(env.get("FAKE_FIND_FAIL", ""))} ] || exit 1\n{real}',
+    )
     stub(
         "mountpoint",
         f"{logged}\n"
@@ -809,11 +843,18 @@ def _run_entrypoint(
     if table:
         mountinfo.write_text(_mount_table(*mounts, *nested), encoding="utf-8")
     system = "/usr/sbin:/usr/bin:/sbin:/bin"  # the entrypoint's own PATH
+    places = {}
+    if home is not None:
+        assert home.name == "dev", "the account is dev"
+        places['"/home/$username"'] = f'"{home.parent}/$username"'
+    if workspace is not None:
+        places["/workspace"] = str(workspace)
     script = tmp_path / "container-entrypoint"
     script.write_text(
         _patched(
             _entrypoint_script(),
             {
+                **places,
                 "state_dir=/state": f"state_dir={tmp_path / 'state'}",
                 "tmp_dir=/tmp": f"tmp_dir={tmp_path / 'tmp'}",
                 "mountinfo=/proc/self/mountinfo": f"mountinfo={mountinfo}",
@@ -829,9 +870,20 @@ def _run_entrypoint(
         ),
         encoding="utf-8",
     )
+    command = [sh, str(script), _tool("env")]
+    if stack_kib is not None:
+        command = [
+            sh,
+            "-c",
+            'ulimit -s "$1" && shift && exec "$@"',
+            "sh",
+            str(stack_kib),
+            *command,
+        ]
     result = subprocess.run(
-        [sh, str(script), _tool("env")],
+        command,
         env={"PATH": SYSTEM_PATH, "FAKE_MOUNTS": ":".join(mounts), **env},
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         check=False,
@@ -888,7 +940,7 @@ def test_entrypoint_says_once_that_a_remap_copies_the_home(tmp_path):
         tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}
     )
     assert result.returncode == 0, result.stderr
-    assert "usermod --uid 501 --gid 20 dev" in calls
+    assert _calls(calls, "usermod") == _usermod_calls(501, 20)
     lines = result.stderr.splitlines()
     assert len(lines) == 1, result.stderr
     # The copy is an overlayfs cost; other storage drivers re-own in place.
@@ -904,6 +956,83 @@ def test_entrypoint_is_quiet_when_the_ids_already_match(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert "usermod" not in calls
+
+
+# --- the entrypoint's account change -------------------------------------------
+
+# The home the account has while usermod gives it its new IDs.
+_NO_HOME = "/dev/null/no-home"
+
+
+def _usermod_calls(uid: int, gid: int, home: str = "/home/dev") -> list[str]:
+    """The usermod calls of a remap to UID:GID, as the usermod stub logs them.
+
+    usermod --uid/--gid also re-owns what the old IDs own in the home the
+    account has, in a walk that goes into mount points below it. The first
+    call gives the account a home that does not exist, and so a walk of
+    nothing; the second, with no --uid or --gid, walks nothing either.
+    """
+    return [
+        f"usermod --home {_NO_HOME} --uid {uid} --gid {gid} dev",
+        f"usermod --home {home} dev",
+    ]
+
+
+@_needs("sh", "env")
+def test_entrypoint_gives_the_user_its_new_ids_while_it_has_no_home(tmp_path):
+    # A1 (GPT's reviews): usermod's own walk of the home re-owned what is
+    # mounted there, and rewriting /etc/passwd by hand took none of the locks
+    # the account tools take. usermod changes the IDs, with its locks, while
+    # the account's home is a path that cannot exist, and then gives the home
+    # back; neither call moves anything. The workspace walk comes first, so a
+    # failed one leaves the old IDs for a retry, and the home's walk, reown's,
+    # comes last.
+    # A workspace of the test's own: a CI runner has no /workspace.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"HOST_UID": "501", "HOST_GID": "20", "FIX_WORKSPACE_OWNERSHIP": "1"},
+        workspace=workspace,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _calls(calls, "usermod") == _usermod_calls(501, 20)
+    assert not os.path.lexists(_NO_HOME)
+    order = [
+        line.split(" ", 2)[1]
+        for line in calls.splitlines()
+        if line.split(" ", 1)[0] in {"find", "usermod"}
+    ]
+    assert order == [str(workspace), "--home", "--home", "/home/dev"], calls
+    assert "HOME=/home/dev" in result.stdout.splitlines()
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize(
+    ("fails", "message", "ran"),
+    [
+        ("ids", "Could not give dev the IDs 501:20", 1),
+        (
+            "home",
+            "Could not give dev its home /home/dev back after its new IDs;"
+            " recreate the container",
+            2,
+        ),
+    ],
+)
+def test_entrypoint_stops_when_usermod_fails(tmp_path, fails, message, ran):
+    # Either call failing stops the start before the home's walk.
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"HOST_UID": "501", "HOST_GID": "20", "FAKE_USERMOD_FAIL": fails},
+    )
+    assert result.returncode == 2
+    assert result.stderr.splitlines()[-1] == message
+    assert _calls(calls, "usermod") == _usermod_calls(501, 20)[:ran]
+    assert [line for line in _calls(calls, "find") if "/home/dev" in line] == []
+    assert "HOME=" not in result.stdout
 
 
 # --- the entrypoint's state volume and /tmp steps ------------------------------
@@ -1242,7 +1371,7 @@ def test_entrypoint_leaves_a_mounted_state_out_of_the_remap_when_den_state_is_0(
         mounts=("/workspace", str(state)),
     )
     assert result.returncode == 0, result.stderr
-    assert "usermod --uid 501 --gid 20 dev" in calls
+    assert _calls(calls, "usermod") == _usermod_calls(501, 20)
     assert [line for line in _calls(calls, "find") if str(state) in line] == []
     assert _STATE_LINK not in calls
     assert not _calls(calls, "gnuchown")
@@ -1355,6 +1484,343 @@ def test_entrypoint_started_as_the_user_leaves_tmp_alone(tmp_path):
         "container-entrypoint: DEN_CLEAN_TMP=1 needs a root start;"
         " /tmp is left as it is\n"
     )
+
+
+# --- the entrypoint's re-own walks ---------------------------------------------
+#
+# A remapping start re-owns, from dev's old IDs, what is in the home, and in
+# /workspace with FIX_WORKSPACE_OWNERSHIP=1. These run the system's find on a
+# tree in tmp_path whose files the test's own IDs own, so the account gets
+# those IDs; the gnuchown stub only records what it was given.
+
+_WALKS = ["workspace", "home"]
+
+
+def _other_id(n: int) -> int:
+    """An ID other than N, to remap to."""
+    return 4242 if n != 4242 else 4243
+
+
+def _paths(root: Path) -> set[str]:
+    """ROOT and everything below it, as find names them."""
+    found = {str(root)}
+    for parent, dirs, files in root.walk():
+        found.update(str(parent / name) for name in [*dirs, *files])
+    return found
+
+
+def _remap_walk(
+    tmp_path: Path,
+    walk: str,
+    *,
+    nested: tuple[str, ...] = (),
+    others: tuple[str, ...] = (),
+    files: tuple[str, ...] = (),
+    listed: tuple[str, ...] = (),
+    sibling: bool = False,
+    table: bool = True,
+    fail: bool = False,
+    env: dict[str, str] | None = None,
+    stack_kib: int | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path, set[str], str]:
+    """Start with other IDs, so that the WALK ("workspace" or "home") runs.
+
+    The walked directory has a file, a directory with a file for each of
+    ``nested`` (each a mount point in the table) and ``others`` (plain
+    directories), and a file for each of ``files`` (each a mount point in the
+    table); the table also lists ``listed`` below it, which this does not
+    make. ``sibling`` adds a mount point next to it whose name starts with
+    its own. ``env`` adds to the start's environment, and ``stack_kib`` is
+    its stack limit in KiB. Return the result, the walked directory, the
+    paths in tmp_path that gnuchown was given, and the IDs it re-owns from,
+    as the warnings write them.
+    """
+    uid, gid = os.getuid(), os.getgid()
+    home = tmp_path / "home" / "dev"
+    workspace = tmp_path / "workspace"
+    root = workspace if walk == "workspace" else home
+    for path in (home, workspace):
+        path.mkdir(parents=True)
+        (path / "file").touch()
+    for name in (*others, *nested):
+        (root / name).mkdir(parents=True, exist_ok=True)
+        (root / name / "file").touch()
+    for name in files:
+        (root / name).touch()
+    below = tuple(str(root / name) for name in (*nested, *files, *listed))
+    if sibling:
+        twin = root.with_name(f"{root.name}2")
+        twin.mkdir()
+        (twin / "file").touch()
+        below = (*below, str(twin))
+    start_env = {
+        **(env or {}),
+        "HOST_UID": str(_other_id(uid)),
+        "HOST_GID": str(_other_id(gid)),
+    }
+    if walk == "workspace":
+        start_env["FIX_WORKSPACE_OWNERSHIP"] = "1"
+    if fail:
+        start_env["FAKE_FIND_FAIL"] = str(root)
+    result, _ = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env=start_env,
+        mounts=(str(workspace),),
+        nested=below,
+        table=table,
+        ids=(uid, gid),
+        home=home,
+        workspace=workspace,
+        real_find=True,
+        stack_kib=stack_kib,
+    )
+    chowned = tmp_path / "chowned"
+    words = chowned.read_bytes().split(b"\0") if chowned.exists() else []
+    given = {os.fsdecode(word) for word in words}
+    return result, root, given & _paths(tmp_path), f"{uid}:{gid}"
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+@pytest.mark.parametrize(
+    ("nested", "others"),
+    [
+        # docker run -v ~/proj:/workspace -v ~/cache:/workspace/.cache: two
+        # host directories of one disk share the device number, which is all
+        # find -xdev compares.
+        ((".cache",), ()),
+        ((".cache", "src/build"), ("src",)),
+        # The mount table writes a space as \040.
+        (("my dir",), ("my",)),
+        # find -path takes a pattern: each of these matches only itself, and
+        # not the plain directory next to it that the bare pattern would.
+        (("a*b",), ("aXb",)),
+        (("a?b",), ("aYb",)),
+        (("[x]",), ("x",)),
+        (("a\\b",), ("ab",)),
+        # A quote or $( in a mount point is no shell code.
+        (("it's $(touch pwned)",), ()),
+    ],
+    ids=["below", "two", "space", "star", "question", "bracket", "backslash", "quote"],
+)
+def test_entrypoint_re_owns_no_mount_point_below_a_walk(tmp_path, walk, nested, others):
+    result, root, reowned, ids = _remap_walk(
+        tmp_path, walk, nested=nested, others=others
+    )
+    assert result.returncode == 0, result.stderr
+    # No part of a mount point ran as shell code.
+    assert not list(tmp_path.rglob("pwned"))
+    left_out = {str(root / name) for name in nested}
+    expected = {
+        path
+        for path in _paths(root)
+        if not any(path == m or path.startswith(f"{m}/") for m in left_out)
+    }
+    # The walk goes on around them: the rest is re-owned, the files below a
+    # mount point keep the old IDs, and so does the mount point itself.
+    assert {path for path in reowned if path in _paths(root)} == expected
+    assert left_out.isdisjoint(reowned)
+    names = ", ".join(str(root / name) for name in nested)
+    assert (
+        f"container-entrypoint: re-owning {root} from {ids} leaves out each mount"
+        f" point below it and all it holds: {names}"
+    ) in result.stderr.splitlines()
+    assert "HOME=" + str(tmp_path / "home" / "dev") in result.stdout.splitlines()
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_re_owns_no_file_mounted_below_a_walk(tmp_path, walk):
+    # docker run -v ~/.gitconfig:/home/dev/.gitconfig binds a host file there.
+    # find -xdev tests a mount point itself even on another file system, and
+    # only keeps out of what is below it.
+    result, root, reowned, ids = _remap_walk(tmp_path, walk, files=(".gitconfig",))
+    assert result.returncode == 0, result.stderr
+    bound = str(root / ".gitconfig")
+    assert {path for path in reowned if path in _paths(root)} == _paths(root) - {bound}
+    assert (
+        f"container-entrypoint: re-owning {root} from {ids} leaves out each mount"
+        f" point below it and all it holds: {bound}"
+    ) in result.stderr.splitlines()
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_takes_no_sibling_for_a_mount_point_below_a_walk(tmp_path, walk):
+    # /workspace2 is no mount point below /workspace.
+    result, root, reowned, _ = _remap_walk(tmp_path, walk, sibling=True)
+    assert result.returncode == 0, result.stderr
+    assert {path for path in reowned if path in _paths(root)} == _paths(root)
+    assert "leaves out" not in result.stderr
+    assert "mount table" not in result.stderr
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_walks_as_before_without_a_mount_table(tmp_path, walk):
+    # The start goes on, and so does the walk, as -xdev alone keeps it: into a
+    # mount point of the same file system, which the table would have named.
+    result, root, reowned, ids = _remap_walk(
+        tmp_path, walk, nested=(".cache",), table=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert {path for path in reowned if path in _paths(root)} == _paths(root)
+    assert (
+        f"container-entrypoint: could not read the mount table"
+        f" {tmp_path / 'mountinfo'}, so re-owning {root} from {ids} may go into a"
+        " mount point below it of the same file system"
+    ) in result.stderr.splitlines()
+
+
+@_needs("sh", "env", "find")
+def test_entrypoint_walks_the_home_with_reown_alone(tmp_path):
+    # A1 (GPT's reviews): docker run -v ~/.gitconfig:/home/dev/.gitconfig.
+    # usermod --uid/--gid would re-own it in its own walk of the home, before
+    # reown left it out. The usermod that changes the IDs finds a home that
+    # does not exist, the one that gives the home back has no --uid or
+    # --gid, and the one walk of the home is reown's, which leaves it out.
+    uid, gid = os.getuid(), os.getgid()
+    result, root, reowned, _ = _remap_walk(tmp_path, "home", files=(".gitconfig",))
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
+    usermod = _usermod_calls(_other_id(uid), _other_id(gid), str(root))
+    assert _calls(calls, "usermod") == usermod
+    # gnuchown runs from find's -exec, and setpriv starts the command with
+    # the home's tool directories in PATH.
+    walks = [
+        line
+        for line in calls.splitlines()
+        if str(root) in line
+        and line.split(" ", 1)[0] not in {"gnuchown", "setpriv"}
+        and line != usermod[1]
+    ]
+    assert len(walks) == 1, walks
+    assert walks[0].startswith(
+        f"find {root} -xdev ( -path {root}/.gitconfig ) -prune -o ("
+    )
+    assert str(root / ".gitconfig") not in reowned
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_re_owns_nothing_in_a_walk_with_too_many_mount_points(
+    tmp_path, walk
+):
+    # A2 (GPT's review): the operands that leave out 8000 mount points of
+    # over 240 bytes each pass the 2 MiB that exec takes with an 8 MiB stack,
+    # and find could not start, which stopped the start. There is no walk of
+    # that directory now, and a warning says how many there are.
+    names = tuple(f"m{i:04}_{'x' * 240}" for i in range(8000))
+    result, root, reowned, ids = _remap_walk(tmp_path, walk, listed=names)
+    assert result.returncode == 0, result.stderr
+    assert not reowned & _paths(root)
+    calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
+    assert [line for line in _calls(calls, "find") if f" {root} " in line] == []
+    assert (
+        f"container-entrypoint: re-owning {root} from {ids} would have to leave"
+        " out 8000 mount points below it, too many for one find command, so"
+        f" nothing in {root} is re-owned"
+    ) in result.stderr.splitlines()
+    assert "HOME=" + str(tmp_path / "home" / "dev") in result.stdout.splitlines()
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_leaves_out_a_hundred_long_mount_points(tmp_path, walk):
+    # Under the limit, which 100 of them stay well below, the walk goes on
+    # around each one.
+    names = tuple(f"m{i:03}_{'x' * 240}" for i in range(100))
+    result, root, reowned, _ = _remap_walk(tmp_path, walk, nested=names)
+    assert result.returncode == 0, result.stderr
+    left_out = {str(root / name) for name in names}
+    expected = {
+        path
+        for path in _paths(root)
+        if not any(path == m or path.startswith(f"{m}/") for m in left_out)
+    }
+    assert {path for path in reowned if path in _paths(root)} == expected
+    assert "would have to leave out" not in result.stderr
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_gives_the_walk_none_of_the_environment(tmp_path, walk):
+    # A2 (GPT's second review): an exec takes its arguments and its
+    # environment from one limit. find, and the gnuchown it starts, get the
+    # entrypoint's PATH and LC_ALL=C (with which -path matches bytes) alone,
+    # whatever docker run -e or the image's ENV gave the start, and the walk
+    # is the same when the environment has names the entrypoint uses for
+    # itself. dash sets OPTIND to 1, and cannot unset it.
+    own = ("mountinfo", "unescape_awk", "old_uid", "old_gid", "target_uid")
+    result, root, reowned, ids = _remap_walk(
+        tmp_path,
+        walk,
+        nested=(".cache",),
+        env={
+            "LC_ALL": "C.UTF-8",
+            "LANG": "C.UTF-8",
+            "DEN_PROBE": "1",
+            "OPTIND": "7",
+            **dict.fromkeys(own, "/nonexistent"),
+            "target_gid": "",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    found = sorted(tmp_path.glob("find-env-*"))
+    # With FIX_WORKSPACE_OWNERSHIP=1, the home's walk runs too.
+    assert len(found) == (2 if walk == "workspace" else 1)
+    for path in found:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        # The find stub's own sh adds PWD.
+        kept = {line for line in lines if not line.startswith("PWD=")}
+        assert sorted(kept - {"OPTIND=1"}) == [
+            "LC_ALL=C",
+            f"PATH={tmp_path / 'stubs'}:/usr/sbin:/usr/bin:/sbin:/bin",
+        ]
+    cache = str(root / ".cache")
+    assert {path for path in reowned if path in _paths(root)} == {
+        path for path in _paths(root) if not path.startswith(cache)
+    }
+    assert (
+        f"container-entrypoint: re-owning {root} from {ids} leaves out each mount"
+        f" point below it and all it holds: {cache}"
+    ) in result.stderr.splitlines()
+
+
+@_needs("sh", "env", "find")
+@pytest.mark.parametrize("walk", _WALKS)
+def test_entrypoint_walks_around_mount_points_with_a_large_environment(tmp_path, walk):
+    # A2 (GPT's second review): with a stack limit of 512 KiB, exec gets the
+    # 128 KiB it gets at the least. 100000 bytes of environment and the
+    # operands for 150 mount points of over 200 bytes, under the 64 KiB they
+    # may take, were more than that, and find could not start. With none of
+    # the environment, the walk goes around each one.
+    names = tuple(f"m{i:03}_{'x' * 200}" for i in range(150))
+    result, root, reowned, _ = _remap_walk(
+        tmp_path,
+        walk,
+        nested=names,
+        env={"DEN_PADDING": "x" * 100000},
+        stack_kib=512,
+    )
+    assert result.returncode == 0, result.stderr
+    left_out = {str(root / name) for name in names}
+    expected = {
+        path
+        for path in _paths(root)
+        if not any(path == m or path.startswith(f"{m}/") for m in left_out)
+    }
+    assert {path for path in reowned if path in _paths(root)} == expected
+    assert "would have to leave out" not in result.stderr
+
+
+@_needs("sh", "env", "find")
+def test_entrypoint_stops_when_the_workspace_walk_fails(tmp_path):
+    result, _, _, _ = _remap_walk(tmp_path, "workspace", nested=(".cache",), fail=True)
+    assert result.returncode == 2
+    assert result.stderr.splitlines()[-1] == "Workspace ownership adjustment failed"
+    assert "HOME=" not in result.stdout
 
 
 def test_the_image_has_no_volume_instruction():
