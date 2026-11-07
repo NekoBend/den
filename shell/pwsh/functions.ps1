@@ -1199,6 +1199,277 @@ function sagain {
   again -Sudo -N $N
 }
 
+# ===== History files are not scripts =====
+# functions.sh's guard (see there), on Linux and macOS: den's bash, zsh and sh
+# run nothing when their script is a shell history file (_DenHistWhy), and say
+# what the file is and how to run it anyway: by the program's full path, which
+# PowerShell runs without den's function. Only a command typed at the prompt
+# gets it: a script calls the program itself (see _DenScopeOverrides).
+# PowerShell has no < redirection, and what is piped in is a pipe, which this
+# cannot tell from any other input (functions.sh leaves pipes alone too).
+# Windows is left alone: its bash is WSL's or Git's, which reads paths of its
+# own, and den has no cmd counterpart either.
+if (-not (_OnWindows) -and (_DenInteractive)) {
+  # _DenHistFile <path> - whether <path> (a full path) is a file, a symlink
+  # counting as what it points at, that is a shell history file, as
+  # functions.sh's _den_hg_hist decides it: named .<something>_history or
+  # PSReadLine's <host>_history.txt, or the same file, by device and inode,
+  # as $env:HISTFILE, ~/.bash_history, ~/.zsh_history, ~/.zhistory,
+  # ~/.histfile or PSReadLine's history file (its HistorySavePath, and the
+  # default one under XDG_DATA_HOME, else ~/.local/share). /bin/sh's [ -ef ]
+  # answers that, as for _ArSameFile; its script holds no double quotes, which
+  # pwsh before 7.3 strips from a native command's arguments (IFS= and set -f
+  # keep each unquoted $x one word), and it answers on stdout and exits 0, so
+  # that $PSNativeCommandUseErrorActionPreference never makes the answer an
+  # error. $LASTEXITCODE is put back as it was, and when no program has run
+  # yet in the session, so that it does not exist, it is removed again: read
+  # before that, it was an error under Set-StrictMode.
+  function _DenHistFile([string]$Path) {
+    if (-not [System.IO.File]::Exists($Path)) { return $false }
+    $named = ([System.IO.Path]::GetFileName($Path) -clike '.*_history') -or ("/$Path" -clike '*/PSReadLine/*_history.txt')
+    $data = if ($env:XDG_DATA_HOME) { $env:XDG_DATA_HOME } else { "$HOME/.local/share" }
+    $files = @($env:HISTFILE, "$HOME/.bash_history", "$HOME/.zsh_history", "$HOME/.zhistory", "$HOME/.histfile",
+      "$data/powershell/PSReadLine/ConsoleHost_history.txt")
+    if (Get-Module -Name PSReadLine) {
+      try { $files += (Get-PSReadLineOption).HistorySavePath } catch { $null = $_ }
+    }
+    $files = @($files | Where-Object { $_ })
+    if (-not (Test-Path -LiteralPath '/bin/sh' -PathType Leaf)) { return $named }
+    $script = 'IFS=; set -f; [ -f $1 ] || { echo n; exit 0; }; [ $2 = 1 ] && { echo y; exit 0; }; ' +
+      'f=$1; shift 2; for c do [ $f -ef $c ] && { echo y; exit 0; }; done; echo n'
+    $had = Test-Path -LiteralPath Variable:global:LASTEXITCODE
+    $code = if ($had) { $global:LASTEXITCODE } else { $null }
+    try {
+      $answer = & /bin/sh -c $script _ $Path ([int]$named) @files
+    } finally {
+      if ($had) { $global:LASTEXITCODE = $code }
+      else { Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue }
+    }
+    return "$answer" -ceq 'y'
+  }
+
+  # _DenHistArgs <word> - the arguments a program gets for <word>, one of the
+  # words _DenArgs gives it, as pwsh hands them on: a word typed without
+  # quotes that holds a wildcard as the names it matches, if any, in pwsh's
+  # order, each relative to the current location unless the word starts with
+  # / or ~ (then as a full path); else ~ or ~/ at the start of such a word as
+  # the home folder; else the word as it is. A relative name is the program's,
+  # which starts in the session's file-system location.
+  function _DenHistArgs($Word) {
+    $s = "$Word"
+    if (-not (_DenBare $Word)) { return , $s }
+    $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    if ($loc.Provider.Name -eq 'FileSystem' -and [WildcardPattern]::ContainsWildcardCharacters($s)) {
+      $items = @()
+      try { $items = @($ExecutionContext.SessionState.InvokeProvider.ChildItem.Get($s, $false)) } catch { $null = $_ }
+      $rooted = $s.StartsWith('~') -or $s.StartsWith('/')
+      $names = @(foreach ($i in $items) {
+          if ($i -isnot [System.IO.FileSystemInfo]) { continue }
+          if ($rooted) { $i.FullName } else { $ExecutionContext.SessionState.Path.NormalizeRelativePath($i.FullName, $loc.ProviderPath) }
+        })
+      if ($names.Count) { return $names }
+    }
+    if ($s -ceq '~') { return , $HOME }
+    if ($s.StartsWith('~/')) { return , ($HOME + $s.Substring(1)) }
+    return , $s
+  }
+
+  # _DenHistShow <word> - <word> as the line that runs it anyway shows it: as
+  # it was typed when typed without quotes, else as it is when it holds only
+  # characters that mean nothing to PowerShell, else in single quotes.
+  function _DenHistShow($Word) {
+    $s = "$Word"
+    if ($s -eq '') { return "''" }
+    if (((_DenBare $Word) -and $s -notmatch '[\s''"`$;&|(){}<>@,#]') -or $s -cmatch '^[A-Za-z0-9_./=:+%-]+$') { return $s }
+    return "'" + $s.Replace("'", "''") + "'"
+  }
+
+  # _DenHistNoExec <name> <sign> <option> <noexec> - for _DenHistWhy, as
+  # functions.sh's _den_hg_ne: whether no-exec is on after <option> is turned
+  # on (<sign> -) or off (+) in den's <name>, when <noexec> says whether it
+  # was before. bash and sh name it noexec; zsh names it exec, turned off,
+  # takes noexec too, and reads a name in any case and with any _ or - in it.
+  function _DenHistNoExec([string]$Name, [string]$Sign, [string]$Option, [bool]$NoExec) {
+    if ($Name -ceq 'zsh') {
+      $o = $Option.Replace('_', '').Replace('-', '')
+      if ($o -eq 'noexec') { return $Sign -ceq '-' }
+      if ($o -eq 'exec') { return $Sign -ceq '+' }
+    } elseif ($Option -ceq 'noexec') {
+      return $Sign -ceq '-'
+    }
+    return $NoExec
+  }
+
+  # _DenHistStdin <name> <sign> <option> <stdin> - as functions.sh's
+  # _den_hg_si: whether stdin mode is on after a named option.
+  function _DenHistStdin([string]$Name, [string]$Sign, [string]$Option, [bool]$StdinMode) {
+    if ($Name -ceq 'zsh') {
+      $o = $Option.Replace('_', '').Replace('-', '')
+      if ($o -in 'shinstdin', 'stdin') { return $Sign -ceq '-' }
+      if ($o -in 'noshinstdin', 'nostdin') { return $Sign -ceq '+' }
+    } elseif (($Name -ceq 'sh' -or $Name -ceq 'dash') -and $Option -ceq 'stdin') {
+      return $Sign -ceq '-'
+    }
+    return $StdinMode
+  }
+
+  # _DenHistWhy <name> <program> <words> - for den's bash, zsh and sh: why
+  # <program> (<name>'s full path) must not run with <words>, the words it
+  # gets (_DenArgs), else $null. Each word is expanded before it is read, as
+  # pwsh will hand it on (_DenHistArgs): a wildcard can stand for several
+  # names, and the first of them can be the script, the others its arguments,
+  # or the value of an option before it. As
+  # functions.sh's _den_hg_ok, only the script is checked: the first argument
+  # that is not an option or an option's value, or the one after - (pwsh drops
+  # a -- typed to a function), or in zsh after a word of options with b. With
+  # -c there is none; with stdin mode still on after all options (bash's -s
+  # and +s both enable it; +s cancels it in zsh; named forms use _DenHistStdin),
+  # the program reads the console or what is piped in. sh may be bash or dash:
+  # after +s, check the operand as a possible script. This guard cannot inspect
+  # stdin, so the script check is the only half of functions.sh's dual check.
+  # When the options before the script leave no-exec on
+  # (-n, -o noexec, zsh's +o exec; _DenHistNoExec) the program only checks its
+  # syntax, so nothing is checked. $queue holds what each value still to come
+  # is for, in order: - or + for -o's or +o's (an option's name), x for any
+  # other.
+  function _DenHistWhy([string]$Name, [string]$Program, $Words) {
+    if ($null -eq $Words) { return $null }
+    $queue = ''
+    $noexec = $false
+    $stdinMode = $false
+    $end = $false
+    foreach ($word in $Words) {
+      # Each word is expanded as it comes, and only one that pwsh can change
+      # (_DenHistArgs), so that the usual words cost no lookup; the script
+      # is named as typed, or by the name a wildcard matched.
+      $got = , "$word"
+      $wild = [WildcardPattern]::ContainsWildcardCharacters($got[0])
+      if (($wild -or $got[0].StartsWith('~')) -and (_DenBare $word)) { $got = @(_DenHistArgs $word) }
+      else { $wild = $false }
+      foreach ($w in $got) {
+        if ($queue) {
+          $k = $queue.Substring(0, 1)
+          $queue = $queue.Substring(1)
+          if ($k -cne 'x') {
+            $noexec = _DenHistNoExec $Name $k $w $noexec
+            $stdinMode = _DenHistStdin $Name $k $w $stdinMode
+          }
+          continue
+        }
+        if (-not $end) {
+          if ($w -ceq '-' -or $w -ceq '--') { $end = $true; continue }
+          if ($w -cin '--rcfile', '--init-file', '-rcfile', '-init-file', '--emulate') { $queue = 'x'; continue }
+          if ($w.Length -gt 2 -and ($w.StartsWith('--') -or $w.StartsWith('+-'))) {
+            if ($Name -ceq 'zsh') {
+              $noexec = _DenHistNoExec $Name $w.Substring(0, 1) $w.Substring(2) $noexec
+              $stdinMode = _DenHistStdin $Name $w.Substring(0, 1) $w.Substring(2) $stdinMode
+            }
+            continue
+          }
+          if ($Name -ne 'zsh' -and $w -cin '-login', '-norc', '-noprofile', '-noediting', '-posix', '-restricted',
+            '-verbose', '-version', '-help', '-debugger', '-dump-strings', '-dump-po-strings', '-pretty-print') { continue }
+          if ($w.Length -gt 1 -and ($w[0] -eq [char]'-' -or $w[0] -eq [char]'+')) {
+            $sign = $w.Substring(0, 1)
+            for ($j = 1; $j -lt $w.Length; $j++) {
+              $c = [string]$w[$j]
+              if ($sign -ceq '-' -and $c -ceq 'c') { return $null }
+              if ($c -ceq 's') {
+                $stdinMode = $sign -ceq '-' -or $Name -ceq 'bash'
+                continue
+              }
+              if ($c -ceq 'n') { $noexec = $sign -ceq '-'; continue }
+              if ($c -ceq 'b') { if ($Name -ceq 'zsh') { $end = $true }; continue }
+              if ($c -ceq 'O') { if ($Name -cne 'zsh') { $queue += 'x' }; continue }
+              if ($c -cne 'o') { continue }
+              if ($Name -ceq 'zsh' -and $j -lt $w.Length - 1) {
+                $noexec = _DenHistNoExec $Name $sign $w.Substring($j + 1) $noexec
+                $stdinMode = _DenHistStdin $Name $sign $w.Substring($j + 1) $stdinMode
+                break
+              }
+              $queue += $sign
+            }
+            continue
+          }
+        }
+        if ($stdinMode -or $noexec) { return $null }
+        $path = $w
+        if (-not [System.IO.Path]::IsPathRooted($path)) {
+          $path = [System.IO.Path]::Combine($ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath, $path)
+        }
+        if (-not (_DenHistFile $path)) { return $null }
+        $run = if ($Program -cmatch '^[A-Za-z0-9_./+-]+$') { $Program } else { "& '" + $Program.Replace("'", "''") + "'" }
+        $line = @(foreach ($x in $Words) { _DenHistShow $x }) -join ' '
+        $shown = if ($wild) { $w } else { "$word" }
+        return "$shown is a shell history file; running it would replay every command in it. Did you mean cat?`n" +
+          "To run it anyway: $run $line"
+      }
+    }
+    return $null
+  }
+
+  # $? after a call: pwsh sets it false after a program that exits non-zero,
+  # but after a function only when the function wrote an error, and an exit
+  # code is none: `bash -c 'exit 3' || ...` went on as after a success, with
+  # $LASTEXITCODE 3. A function has no public way to fail the line it is
+  # called in without writing an error. A program fails it by setting
+  # ExecutionFailed on its pipeline, and these functions do the same, through
+  # reflection, as head (coreutils.ps1) reaches its own processor: while the
+  # function's own code runs, the engine's CurrentCommandProcessor is the
+  # function's, and its CommandRuntime's PipelineProcessor is the pipeline of
+  # the line it was called in. _DenHistFailed holds those members, found here
+  # once; where one is missing (another PowerShell), it is $null, and $? stays
+  # true after a failure, as before.
+  $global:_DenHistFailed = & {
+    try {
+      $bf = [System.Reflection.BindingFlags]'Instance, NonPublic'
+      $ctx = @([System.Management.Automation.EngineIntrinsics].GetFields($bf) |
+          Where-Object { $_.FieldType.FullName -eq 'System.Management.Automation.ExecutionContext' })[0]
+      $proc = $ctx.FieldType.GetProperty('CurrentCommandProcessor', $bf)
+      $rt = $proc.PropertyType.GetProperty('CommandRuntime', $bf)
+      $pp = $rt.PropertyType.GetProperty('PipelineProcessor', $bf)
+      $failed = $pp.PropertyType.GetProperty('ExecutionFailed', $bf)
+      if ($failed.CanWrite -and $failed.PropertyType -eq [bool]) { return , @($ctx, $proc, $rt, $pp, $failed) }
+    } catch { $null = $_ }
+    return $null
+  }
+
+  # bash, zsh and sh: _DenHistWhy's refusal, a terminating error with
+  # $LASTEXITCODE 2, else the program with the call's words (_DenArgs) and what
+  # is piped in, as New-WrapperSuffix runs its tool; then, when it exited
+  # non-zero, the line's $? false (_DenHistFailed), as for the program typed
+  # by its path. The members are read in expressions, not through a function,
+  # which would be the current processor while it runs.
+  foreach ($_dn in 'bash', 'zsh', 'sh') {
+    Set-Item -Path "function:global:$_dn" -Value ([scriptblock]::Create(@"
+begin {
+    `$__sp = `$null
+    `$__w = @(_DenArgs `$MyInvocation `$args)
+    `$__p = _ResolveCmd '$_dn' 'App'
+    if (-not `$__p) { Write-Error "${_dn} is not installed (not found on PATH)." -Category ObjectNotFound -ErrorAction Stop }
+    `$__o = _DenHistWhy '$_dn' `$__p `$__w
+    if (`$__o) { `$global:LASTEXITCODE = 2; Write-Error `$__o -ErrorAction Stop }
+    `$__run = _DenNativeBlock '& `$__p' `$__w
+    if (`$MyInvocation.ExpectingInput) {
+        `$__sp = `$__run.GetSteppablePipeline()
+        `$__sp.Begin(`$true, `$ExecutionContext)
+    }
+}
+process { if (`$null -ne `$__sp) { `$__sp.Process(`$_) } }
+end {
+    if (`$null -ne `$__sp) { `$__s = `$__sp; `$__sp = `$null; `$__s.End() }
+    else { & `$__run }
+    `$__f = `$global:_DenHistFailed
+    if (`$null -ne `$__f -and (Test-Path -LiteralPath Variable:global:LASTEXITCODE) -and `$global:LASTEXITCODE -ne 0) {
+        try { `$__f[4].SetValue(`$__f[3].GetValue(`$__f[2].GetValue(`$__f[1].GetValue(`$__f[0].GetValue(`$ExecutionContext)))), `$true) }
+        catch { `$null = `$_ }
+    }
+}
+$(_DenSpClean)
+"@))
+  }
+  Remove-Variable _dn
+}
+
 # ===== Directory History (back / fwd) =====
 # Browser-style history for this session, never written to disk.
 # $global:_DenDirBack / _DenDirFwd hold locations nearest first, and _DenDirLast
