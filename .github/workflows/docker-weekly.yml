@@ -61,7 +61,7 @@ jobs:
         with:
           context: docker/ubuntu
           file: docker/ubuntu/Dockerfile
-          tags: den-dev
+          tags: denbox
           load: true
           no-cache: true
       # Trivy comes from its GitHub release, not from an action: a moved
@@ -124,7 +124,7 @@ jobs:
             --timeout 25m \
             --disable-telemetry \
             --skip-version-check \
-            den-dev
+            denbox
 
   notify:
     name: open or update the failure issue

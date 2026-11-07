@@ -224,7 +224,7 @@ def _user_path(home: str) -> str:
 def test_a_root_exec_path_holds_only_system_directories():
     # docker exec, root's included, starts with the image's ENV. With dev's
     # ~/.local/bin, ~/.cargo/bin or ~/.nvm/current/bin on it, a file dev drops
-    # there (an apt-get, an ls) ran as root on the next `docker exec den-dev ...`.
+    # there (an apt-get, an ls) ran as root on the next `docker exec denbox ...`.
     _, env, _ = _stages()[-1]
     entries = env["PATH"].split(":")
     assert entries
@@ -544,7 +544,7 @@ def test_bashrc_gives_a_non_root_bash_the_user_tool_directories_once(tmp_path):
 
 @_needs("bash")
 def test_bashrc_gives_a_root_bash_its_own_home(tmp_path):
-    # A root `docker exec -it den-dev bash` kept HOME=/home/dev and so read
+    # A root `docker exec -it denbox bash` kept HOME=/home/dev and so read
     # dev's ~/.bashrc, which dev can rewrite.
     out = _source_block(
         tmp_path, "bash", "/etc/bash.bashrc", euid=0, home="/home/dev", user="dev"
@@ -673,7 +673,7 @@ def test_the_profile_script_has_a_name_etc_profile_runs():
 @_needs("sh", "bash")
 @pytest.mark.parametrize("shell", ["sh", "bash"])
 def test_profile_gives_a_root_login_shell_its_own_home(tmp_path, shell):
-    # A root `docker exec den-dev bash -lc ...` or `sh -lc ...` is not
+    # A root `docker exec denbox bash -lc ...` or `sh -lc ...` is not
     # interactive, so it skips /etc/bash.bashrc and ran dev's ~/.profile.
     out = _source_block(
         tmp_path, shell, _profile_script(), euid=0, home="/home/dev", user="dev"
@@ -3226,7 +3226,7 @@ def test_the_image_workflow_runs_a_container_with_a_state_volume():
     assert match, "the step names no paths"
     assert match.group(1).split() == [rel for _, rel in _image_entries()]
     assert re.search(
-        r"docker run -d --init --name \S+ -v den-state:/state den-dev", run
+        r"docker run -d --init --name \S+ -v den-state:/state denbox", run
     )
     # zsh's history goes through a rewrite (fc -W), which a save at exit,
     # appending, never does: only the rewrite replaces the link without
@@ -3235,13 +3235,13 @@ def test_the_image_workflow_runs_a_container_with_a_state_volume():
         "printf '%s\\n' 'echo den-state-probe' 'fc -W' exit \\\n"
         "  | docker exec -i --user dev den-state zsh -i"
     ) in run
-    assert "-v den-state:/state den-dev" in run.split("docker rm -f den-state", 1)[1]
+    assert "-v den-state:/state denbox" in run.split("docker rm -f den-state", 1)[1]
     # A host directory bound over ~/.ssh keeps its file.
     assert (
         'docker run --rm -v den-state:/state -v "$RUNNER_TEMP/ssh:/home/dev/.ssh"'
     ) in run
     assert '[ -f "$RUNNER_TEMP/ssh/id_test" ]' in run
-    assert "docker run --rm -e DEN_STATE=0 -v den-state:/state den-dev" in run
+    assert "docker run --rm -e DEN_STATE=0 -v den-state:/state denbox" in run
 
 
 def test_test_helpers_see_the_whole_dockerfile():
@@ -4279,7 +4279,7 @@ def test_the_image_workflow_runs_fzf_and_pwsh_in_the_image():
         if step.get("name") == "Check HOME and PATH for root and dev"
     )
     assert re.search(
-        r"docker exec --user dev den-dev zsh -lc '[^']*\bfzf --version", checks["run"]
+        r"docker exec --user dev denbox zsh -lc '[^']*\bfzf --version", checks["run"]
     )
-    assert re.search(r"docker exec den-dev pwsh --version\b", checks["run"])
-    assert "docker exec --user dev den-dev zsh -lc 'pwsh --version'" in checks["run"]
+    assert re.search(r"docker exec denbox pwsh --version\b", checks["run"])
+    assert "docker exec --user dev denbox zsh -lc 'pwsh --version'" in checks["run"]
