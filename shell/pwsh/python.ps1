@@ -65,14 +65,14 @@ function Show-UvOnlyMessage {
 # typed uv pip reads them all.
 function pip {
   if (-not $env:VIRTUAL_ENV) {
-    Write-Error "no venv is active; activate one with va, or type $((@('uv', 'pip') + $Args) -join ' ') directly"
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error "no venv is active; activate one with va, or type $((@('uv', 'pip') + $Args) -join ' ') directly" -ErrorAction Stop
   }
   $venvPip = @('Scripts/pip.exe', 'bin/pip') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
   if ($venvPip) { _DenPyCall $venvPip (_DenPyArgs $MyInvocation $Args); return }
   $uv = _ResolveCmd 'uv' 'App'
-  if (-not $uv) { Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV"; return }
+  if (-not $uv) { $global:LASTEXITCODE = 1; Write-Error "the active venv has no pip and uv is not on PATH: $env:VIRTUAL_ENV" -ErrorAction Stop }
   $cfg = _DenUvConfig
   if ($cfg) {
     $options = @('--config-file', $cfg)
@@ -89,14 +89,14 @@ function pip {
 # pip3 → the same, with an active venv's own pip3
 function pip3 {
   if (-not $env:VIRTUAL_ENV) {
-    Write-Error "no venv is active; activate one with va, or type $((@('uv', 'pip') + $Args) -join ' ') directly"
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error "no venv is active; activate one with va, or type $((@('uv', 'pip') + $Args) -join ' ') directly" -ErrorAction Stop
   }
   $venvPip = @('Scripts/pip3.exe', 'bin/pip3') | ForEach-Object { Join-Path $env:VIRTUAL_ENV $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
   if ($venvPip) { _DenPyCall $venvPip (_DenPyArgs $MyInvocation $Args); return }
   $uv = _ResolveCmd 'uv' 'App'
-  if (-not $uv) { Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV"; return }
+  if (-not $uv) { $global:LASTEXITCODE = 1; Write-Error "the active venv has no pip3 and uv is not on PATH: $env:VIRTUAL_ENV" -ErrorAction Stop }
   $cfg = _DenUvConfig
   if ($cfg) {
     $options = @('--config-file', $cfg)
@@ -413,7 +413,7 @@ function global:_DenUvMarker([object[]]$UvArgs = @()) {
 # _DenPyExe names. Elsewhere --version and -V go through uv run as well, so
 # they name the python that `python x.py` runs. With uv gone since den loaded,
 # the python on PATH. Parity with posix python.sh.
-# Returns @{ Exe; Args }, or @{ Error } for the caller to write under its own
+# Returns @{ Exe; Args }, or @{ Error; Code? } for the caller to write under its own
 # name; the caller reads them as ['Error'], since reading a missing key as
 # .Error is an error under a caller's Set-StrictMode.
 function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
@@ -433,7 +433,7 @@ function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
       }
     }
     $exe = _DenPyExe
-    if (-not $exe) { return @{ Error = 'no Python found to run in place of uv run; uv python install installs one' } }
+    if (-not $exe) { return @{ Error = 'no Python found to run in place of uv run; uv python install installs one'; Code = $LASTEXITCODE } }
     Write-Warning "${Name}: running $exe, not uv run: uv run would build or run code from $marker"
     return @{ Exe = $exe; Args = $PyArgs }
   }
@@ -447,21 +447,30 @@ function global:_DenPyRun([string]$Name, [object[]]$PyArgs = @()) {
 # python → _DenPyRun
 function python {
   $run = _DenPyRun 'python' (_DenPyArgs $MyInvocation $Args)
-  if ($run['Error']) { Write-Error $run['Error']; return }
+  if ($run['Error']) {
+    $global:LASTEXITCODE = if ($run['Code']) { $run['Code'] } else { 1 }
+    Write-Error $run['Error'] -ErrorAction Stop
+  }
   _DenPyCall $run['Exe'] $run['Args']
 }
 
 # python3 → _DenPyRun
 function python3 {
   $run = _DenPyRun 'python3' (_DenPyArgs $MyInvocation $Args)
-  if ($run['Error']) { Write-Error $run['Error']; return }
+  if ($run['Error']) {
+    $global:LASTEXITCODE = if ($run['Code']) { $run['Code'] } else { 1 }
+    Write-Error $run['Error'] -ErrorAction Stop
+  }
   _DenPyCall $run['Exe'] $run['Args']
 }
 
 # py → _DenPyRun
 function py {
   $run = _DenPyRun 'py' (_DenPyArgs $MyInvocation $Args)
-  if ($run['Error']) { Write-Error $run['Error']; return }
+  if ($run['Error']) {
+    $global:LASTEXITCODE = if ($run['Code']) { $run['Code'] } else { 1 }
+    Write-Error $run['Error'] -ErrorAction Stop
+  }
   _DenPyCall $run['Exe'] $run['Args']
 }
 
@@ -486,6 +495,10 @@ if ($env:_DEN_UV_OVERRIDE -eq '0') {
 # "va: va: ...".
 function va {
   param([string]$Name = '.venv')
+  # Git's probe must not leave 128 behind outside a checkout. Get-Variable
+  # also works when LASTEXITCODE is unset under strict mode.
+  $previousCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
+  $successCode = if ($previousCode) { $previousCode.Value } else { 0 }
   # Scripts/ on Windows, bin/ on Linux/macOS. python -m venv writes Activate.ps1,
   # uv and virtualenv write activate.ps1: a case-sensitive file system (Linux,
   # case-sensitive macOS) needs both spellings, and the standard one wins when
@@ -498,8 +511,8 @@ function va {
     if (Test-Path -LiteralPath $candidate -PathType Leaf) { $activatePath = $candidate; break }
   }
   if (-not $activatePath) {
-    Write-Error "activate script not found under '$Name' (Scripts/ or bin/)"
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error "activate script not found under '$Name' (Scripts/ or bin/)" -ErrorAction Stop
   }
   # The activate script is dot-sourced into THIS session, so the venv's own content
   # is checked the way pyvenv.cfg below already is. A venv you create is untracked;
@@ -517,8 +530,8 @@ function va {
   foreach ($p in (Split-Path -Parent $activatePath), $activatePath) {
     $linkItem = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
     if ($linkItem -and $linkItem.PSObject.Properties['LinkType'] -and $linkItem.LinkType -in 'SymbolicLink', 'Junction') {
-      Write-Error "'$Name': $p is a symlink or junction, which no venv tool makes; dot-source it yourself if you trust it: . $activatePath"
-      return
+      $global:LASTEXITCODE = 1
+      Write-Error "'$Name': $p is a symlink or junction, which no venv tool makes; dot-source it yourself if you trust it: . $activatePath" -ErrorAction Stop
     }
   }
   $gitExe = _ResolveCmd 'git' 'App'
@@ -569,7 +582,8 @@ function va {
     }
     try {
       $tracked = & $gitExe -c core.fsmonitor= -c safe.bareRepository=explicit -C $activateDir ls-files -- $pathspecs 2>$null
-      if ($LASTEXITCODE -ne 0) {
+      $gitCode = $LASTEXITCODE
+      if ($gitCode -ne 0) {
         # Fail closed: only "not a git repository" means nothing to check. Any
         # other failure, such as a checkout git will not open for dubious
         # ownership, leaves a committed venv possible. LC_ALL=C keeps git's
@@ -584,8 +598,8 @@ function va {
         if (-not ($why -match '^fatal: not a git repository')) {
           # Show git's fatal line, else its first.
           $reason = @(@($why -match '^fatal:') + $why) | Select-Object -First 1
-          Write-Error "'$Name': git could not tell whether the venv is committed ($reason); dot-source it yourself if you trust it: . $activatePath"
-          return
+          $global:LASTEXITCODE = $gitCode
+          Write-Error "'$Name': git could not tell whether the venv is committed ($reason); dot-source it yourself if you trust it: . $activatePath" -ErrorAction Stop
         }
         $tracked = $null
       }
@@ -601,8 +615,8 @@ function va {
       # activate script's directory; name them from the venv, as it always has.
       $activateDirName = Split-Path -Leaf $activateDir
       $trackedList = (@($tracked | ForEach-Object { if ($_.StartsWith('../')) { $_.Substring(3) } else { "$activateDirName/$_" } }) -join ', ')
-      Write-Error "'$Name': venv content is tracked by git ($trackedList) - a venv committed to the repo; dot-source it yourself if you trust it: . $activatePath"
-      return
+      $global:LASTEXITCODE = 1
+      Write-Error "'$Name': venv content is tracked by git ($trackedList) - a venv committed to the repo; dot-source it yourself if you trust it: . $activatePath" -ErrorAction Stop
     }
   }
   # Anyone-can-rewrite is the other way this file stops being ours. UnixMode is a
@@ -611,8 +625,8 @@ function va {
   $item = Get-Item -LiteralPath $activatePath -ErrorAction SilentlyContinue
   $unixMode = if ($item -and $item.PSObject.Properties['UnixMode']) { [string]$item.UnixMode } else { '' }
   if ($unixMode.Length -ge 9 -and $unixMode[8] -eq 'w') {
-    Write-Error "'$activatePath' is world-writable - dot-source it yourself if you trust it: . $activatePath"
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error "'$activatePath' is world-writable - dot-source it yourself if you trust it: . $activatePath" -ErrorAction Stop
   }
   # Each activate script undoes only its own kind of venv before it activates:
   # python's keeps the old PATH in $env:_OLD_VIRTUAL_PATH, uv's and virtualenv's in
@@ -642,6 +656,7 @@ function va {
       Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
     }
   }
+  $global:LASTEXITCODE = $successCode
 }
 
 # vd → deactivate Python venv
@@ -692,8 +707,8 @@ function global:_DenUvVenvOptions([string]$Name, [object[]]$UvArgs = @(), [hasht
 # vv → uv venv (create only)
 function global:vv {
   if (-not (_ResolveCmd 'uv' 'App')) {
-    Write-Error 'uv is not installed'
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error 'uv is not installed' -ErrorAction Stop
   }
   $options = @(_DenUvVenvOptions 'vv' $Args)
   _DenPyCall (_ResolveCmd 'uv' 'App') (@($options) + @('venv') + (_DenPyArgs $MyInvocation $Args))
@@ -793,21 +808,8 @@ function global:vva {
     $global:LASTEXITCODE = 1
     Write-Error "uv venv made no activate script under '$target' (Scripts/ or bin/), so vva activates nothing" -ErrorAction Stop
   }
-  # va refuses some venvs uv makes, such as one at a path git still tracks (a
-  # committed venv removed from the work tree), with a Write-Error and a
-  # return, which leave $? true: vva then ended as if it had activated the
-  # venv, and `vva x && next` ran next. va stays as it is; vva checks after it
-  # that VIRTUAL_ENV names the venv, as the activate scripts set it: from
-  # their own path, which PowerShell makes from the name va got, by name
-  # (links kept, . and .. taken out, ~ expanded). Where va's error stops it
-  # ($ErrorActionPreference Stop), $LASTEXITCODE is 1 as well. A session whose
-  # VIRTUAL_ENV named that path before (a venv removed while it was active)
-  # passes the check whatever va did.
-  try { va $target }
-  catch {
-    $global:LASTEXITCODE = 1
-    throw
-  }
+  # Propagate va's terminating refusal, including git's own exit code.
+  va $target
   $active = $false
   if ($env:VIRTUAL_ENV) {
     try {

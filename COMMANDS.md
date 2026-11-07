@@ -452,9 +452,9 @@ keeps), except where uv would build or run code that came with a clone:
   venv's path after uv ran. Where `va` refuses the venv uv made (git still
   tracks its path, for one), `vva` fails too. On pwsh each of these
   failures, and a failed `uv venv`, is a terminating error with
-  `$LASTEXITCODE` 1 (uv's own code where uv failed): `$?` is false, and the
-  rest of the line does not run, a part after `||` neither; a script catches
-  it with `try`.
+  `$LASTEXITCODE` 1 (uv's or git's code where that program failed):
+  `$?` is false, and the rest of the line does not run, a part after `||`
+  neither; a script catches it with `try`.
 - Your uv.toml is the one uv reads besides a project's: the one
   `UV_CONFIG_FILE` names, else, unless `UV_NO_CONFIG` is true, the user one
   (`~/.config/uv/uv.toml`, or `$XDG_CONFIG_HOME/uv/uv.toml`; on Windows
@@ -488,6 +488,13 @@ and macOS do not have, stays den's in scripts there.
 | `toggle-uv` / `tgl-uv` | flip the uv redirect (`_DEN_UV_OVERRIDE`) | ✓ | ✓ | ✓ |
 
 The uv redirects load only when uv is installed.
+
+On pwsh every refusal by `va`, `vv`, `pip` / `pip3` and `python` / `python3` /
+`py` fails with a terminating error, as `vva` does: `$?` is false,
+`$LASTEXITCODE` is 1 (the native code when uv or git failed), and neither the
+part after `&&` nor the part after `||` runs. Use `try` / `catch` to continue.
+A successful `va` restores the previous `$LASTEXITCODE`, or sets it to 0 if
+it was unset; a successful `vva` keeps uv's 0, including outside a git checkout.
 
 On cmd, `uv` injects `--python` only when `_DEN_VENV_PYTHON` (the venv's version)
 comes from a bash/zsh or pwsh session where `va` ran and that started this cmd:

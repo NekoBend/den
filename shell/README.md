@@ -313,6 +313,14 @@ native PowerShell cmdlets, when you need object-accurate results.
 | `vv` / `vva` | `uv venv` (create / create + activate: `vva [name] [uv venv options]`, the name first, default `.venv`, activates the venv uv made, a new one only and none for `--help` or `--version`, and fails where it activates none, on pwsh with a terminating error); in a project (here, or where `--directory`, `--project` or their variables point uv), as for `python`, `uv --no-config venv`, with `--config-file <your uv.toml>` when you have one |
 | `toggle-uv` / `tgl-uv` | flip the uv override (`_DEN_UV_OVERRIDE`) |
 
+On pwsh every refusal by `va`, `vv`, `vva`, `pip` / `pip3` and `python` /
+`python3` / `py` fails with a terminating error: `$?` is false and
+`$LASTEXITCODE` is 1 (uv's or git's code when that program failed).
+Neither the part after `&&` nor the part after `||` runs; use `try` / `catch`
+to continue. Successful `va` restores the previous `$LASTEXITCODE`, or 0
+when it was unset; successful `vva` keeps uv's 0 rather than its internal
+git check's code.
+
 ### Parallel file ops
 | Command | What it does |
 |---------|--------------|
