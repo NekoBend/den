@@ -1218,10 +1218,11 @@ chmod 666 "$WORK/ps_venv_second/.venv/bin/Activate.ps1"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     \$env:VIRTUAL_ENV = \$null
     va '$WORK/ps_venv_first/.venv' *>\$null
-    va '$WORK/ps_venv_second/.venv' *>\$null
+    try { va '$WORK/ps_venv_second/.venv' *>\$null } catch { \"REFUSED=[\$LASTEXITCODE]\" }
     \"VE=[\$env:VIRTUAL_ENV] BY=[\$global:DeactivatedBy] PY=[\$env:_DEN_VENV_PYTHON]\"
 " | tr -d '\r')
-assert_eq "pwsh/va refused keeps the active venv" "VE=[first] BY=[] PY=[3.12.0]" "$actual"
+assert_eq "pwsh/va refused keeps the active venv" "REFUSED=[1]
+VE=[first] BY=[] PY=[3.12.0]" "$actual"
 
 echo "[pwsh] va leaves no version of the previous venv behind"
 # The next venv has no pyvenv.cfg, or its activate script does not parse: either
@@ -3477,12 +3478,13 @@ vv=0" "$actual"
         python3 -c 'print(1)' 3>\$null
         Set-Location -LiteralPath '$C/venv'
         py -c 'print(2)' 3>\$null
-        pip list 2>\$null
+        try { pip list 2>\$null } catch { \"pip refused code=\$LASTEXITCODE\" }
         'pip done'
     " 2>/dev/null | tr -d '\r')
     assert_match "pwsh/python --version in a clone answers" "^Python 3\.[0-9]+" "$(printf '%s\n' "$actual" | head -n 1)"
     assert_eq "pwsh/python3, py and pip in clones" "1
 2
+pip refused code=1
 pip done" "$(printf '%s\n' "$actual" | tail -n +2)"
     assert_eq "pwsh/no code of the clones ran" "" "$(ls "$C/marks")"
     assert_not_exists "pwsh/no .venv appears in a clone" "$C/build/.venv"

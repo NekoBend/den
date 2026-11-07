@@ -321,6 +321,14 @@ to continue. Successful `va` restores the previous `$LASTEXITCODE`, or 0
 when it was unset; successful `vva` keeps uv's 0 rather than its internal
 git check's code.
 
+Redirecting an expected refusal's error output does not catch it. To inspect
+the session after a refused activation, catch the error around that call:
+
+```powershell
+try { va ./env } catch { Write-Warning $_.Exception.Message }
+$env:VIRTUAL_ENV
+```
+
 ### Parallel file ops
 | Command | What it does |
 |---------|--------------|
