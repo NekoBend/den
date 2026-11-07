@@ -785,7 +785,7 @@ echo "[pwsh] va treats \$Name literally (no wildcard glob-expansion)"
 # rejects the literal 'foo*' dir instead of globbing to foobar and sourcing it.
 mkdir -p "$WORK/wildtest/foobar/bin"
 printf '%s\n' '$env:VIRTUAL_ENV = "leaked"' > "$WORK/wildtest/foobar/bin/Activate.ps1"
-err=$(run_pwsh_stderr "$PYTHON_PS1_TEST" "Set-Location '$WORK/wildtest'; \$env:VIRTUAL_ENV = \$null; va 'foo*'")
+err=$(run_pwsh_stderr "$PYTHON_PS1_TEST" "Set-Location '$WORK/wildtest'; \$env:VIRTUAL_ENV = \$null; va 'foo*'" || true)
 assert_contains "pwsh/va rejects wildcard name" "activate script not found" "$err"
 
 echo "[pwsh] uv run keeps the user's own uv options"
@@ -911,7 +911,7 @@ venv-pip3 install rich" "$actual"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     \$env:PATH = '$MOCK_PIP_BIN'
     \$env:VIRTUAL_ENV = '$WORK/venv_nopip'
-    pip install requests 2>&1 | ForEach-Object { \"\$_\" }
+    try { pip install requests } catch { \"\$_\" }
 " | tr -d '\r')
 assert_contains "pwsh/pip in a venv without pip or uv fails" "the active venv has no pip and uv is not on PATH" "$actual"
 assert_not_contains "pwsh/pip in a venv without pip or uv runs no system pip" "system-pip" "$actual"
@@ -929,7 +929,7 @@ mk_venv_ps "$WORK/ps_venv_tracked" "3.12.0"
     git -c user.email=t@example.com -c user.name=t add -f .venv/bin/Activate.ps1 .venv/pyvenv.cfg
     git -c user.email=t@example.com -c user.name=t commit -q -m "committed venv"
 ) >/dev/null 2>&1
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked'; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked'; va" || true)
 assert_contains "pwsh/va refuses git-tracked activate" "tracked by git" "$err"
 assert_contains "pwsh/va names the tracked files" "pyvenv.cfg" "$err"
 # PowerShell adds its own "va: "; run_pwsh_stderr_oneline is the runner whose
@@ -944,7 +944,7 @@ mk_venv_ps "$WORK/ps_venv_cfg_only" "3.12.0"
     git -c user.email=t@example.com -c user.name=t add -f .venv/pyvenv.cfg
     git -c user.email=t@example.com -c user.name=t commit -q -m "committed pyvenv.cfg"
 ) >/dev/null 2>&1
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_cfg_only'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_cfg_only'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses on pyvenv.cfg alone" "tracked by git" "$err"
 assert_contains "pwsh/va reports pyvenv.cfg as the tracked file" "pyvenv.cfg" "$err"
 assert_not_contains "pwsh/va does not blame the untracked activate script" "Activate.ps1)" "$err"
@@ -966,13 +966,13 @@ echo "[pwsh] va refuses a world-writable activate script"
 # Windows has no world-writable bit and skips the check.
 mk_venv_ps "$WORK/ps_venv_ww" "3.12.0"
 chmod 666 "$WORK/ps_venv_ww/.venv/bin/Activate.ps1"
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_ww'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_ww'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses world-writable activate" "world-writable" "$err"
 assert_not_contains "pwsh/va world-writable no double prefix" "va: va:" "$(run_pwsh_stderr_oneline "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_ww'; \$env:VIRTUAL_ENV = \$null; va")"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     Set-Location '$WORK/ps_venv_ww'
     \$env:VIRTUAL_ENV = \$null
-    va *>\$null
+    try { va *>\$null } catch { }
     \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
 " | tr -d '\r')
 assert_eq "pwsh/va activates nothing when refusing" "VE=[] PY=[]" "$actual"
@@ -1018,7 +1018,7 @@ mv "$WORK/ps_venv_lc_tracked/.venv/bin/Activate.ps1" "$WORK/ps_venv_lc_tracked/.
     git -c user.email=t@example.com -c user.name=t add -f .venv/bin/activate.ps1
     git -c user.email=t@example.com -c user.name=t commit -q -m "committed activate.ps1"
 ) >/dev/null 2>&1
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses git-tracked bin/activate.ps1" "tracked by git (bin/activate.ps1)" "$err"
 
 echo "[pwsh] va activates, or refuses when committed, a Scripts/activate.ps1"
@@ -1034,7 +1034,7 @@ assert_eq "pwsh/va finds Scripts/activate.ps1" "fakevenv" "$actual"
     git -c user.email=t@example.com -c user.name=t add -f .venv/Scripts/activate.ps1
     git -c user.email=t@example.com -c user.name=t commit -q -m "committed activate.ps1"
 ) >/dev/null 2>&1
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_scripts_lc'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_scripts_lc'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses git-tracked Scripts/activate.ps1" "tracked by git (Scripts/activate.ps1)" "$err"
 
 echo "[pwsh] va refuses a committed activate script whose case differs"
@@ -1049,23 +1049,23 @@ printf '%s\n' '$env:VIRTUAL_ENV = "committed"' > "$WORK/ps_venv_tracked_case/.ve
     git -c user.email=t@example.com -c user.name=t add -f .venv/bin/ACTIVATE.PS1
     git -c user.email=t@example.com -c user.name=t commit -q -m "committed ACTIVATE.PS1"
 ) >/dev/null 2>&1
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked_case'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_tracked_case'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses a tracked bin/ACTIVATE.PS1" "tracked by git (bin/ACTIVATE.PS1)" "$err"
 
 echo "[pwsh] va still refuses a committed venv with GIT_LITERAL_PATHSPECS=1"
 # That setting turns :(icase) into a plain file name: the exact names must match.
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:GIT_LITERAL_PATHSPECS = '1'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_lc_tracked'; \$env:GIT_LITERAL_PATHSPECS = '1'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses under literal pathspecs" "tracked by git (bin/activate.ps1)" "$err"
 
 echo "[pwsh] va refuses a committed symlinked bin/ and runs nothing behind it"
 rm -f "$WORK/symbin_ran"
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMBIN'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMBIN'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses a symlinked bin/" "is a symlink or junction" "$err"
 assert_not_exists "pwsh/va dot-sources no script behind a symlinked bin/" "$WORK/symbin_ran"
 
 echo "[pwsh] va refuses a symlinked Activate.ps1 in a real bin/"
 rm -f "$WORK/symact_ran"
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMACT'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$SYMACT'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses a symlinked Activate.ps1" "Activate.ps1 is a symlink or junction" "$err"
 assert_not_exists "pwsh/va dot-sources no script behind a symlinked Activate.ps1" "$WORK/symact_ran"
 
@@ -1075,7 +1075,7 @@ if [ "$GIT_HAS_SAFE_BARE" -eq 1 ]; then
     actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
         Set-Location '$EMBED'
         \$env:VIRTUAL_ENV = \$null
-        va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+        try { va } catch { \"ERR=\$_\" }
         \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
     " | tr -d '\r')
     assert_contains "pwsh/va names git's refusal of the venv repository" "git could not tell whether the venv is committed (fatal: cannot use bare repository" "$actual"
@@ -1092,7 +1092,7 @@ if [ "$FSM_RUNS" -eq 1 ]; then
     actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
         Set-Location '$WORK/fsm_tracked'
         \$env:VIRTUAL_ENV = \$null
-        va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+        try { va } catch { \"ERR=\$_\" }
         \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
     " | tr -d '\r')
     assert_contains "pwsh/va still refuses a committed venv there" "venv content is tracked by git" "$actual"
@@ -1121,7 +1121,7 @@ printf '%s\n' '$env:VIRTUAL_ENV = "scripts"' > "$WORK/ps_venv_other_dir/.venv/Sc
     git -c user.email=t@example.com -c user.name=t add -f .venv/bin/Activate.ps1
     git -c user.email=t@example.com -c user.name=t commit -q -m "committed bin/"
 ) >/dev/null 2>&1
-err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_other_dir'; \$env:VIRTUAL_ENV = \$null; va")
+err=$(run_pwsh_stderr "$PYTHON_PS1_COMBINED" "Set-Location '$WORK/ps_venv_other_dir'; \$env:VIRTUAL_ENV = \$null; va" || true)
 assert_contains "pwsh/va refuses a tracked bin/ beside Scripts/" "tracked by git (bin/Activate.ps1)" "$err"
 
 echo "[pwsh] va accepts a symlinked venv"
@@ -1138,7 +1138,7 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     \$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'
     \$env:VIRTUAL_ENV = \$null
     \$lcAll = [string]\$env:LC_ALL
-    va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+    try { va } catch { \"ERR=\$_\" }
     \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] LC_ALL_KEPT=[\$([string]\$env:LC_ALL -eq \$lcAll)]\"
 " | tr -d '\r')
 assert_contains "pwsh/va names the git failure" "git could not tell whether the venv is committed (fatal: detected dubious ownership" "$actual"
@@ -1157,7 +1157,7 @@ for genv in "\$env:GIT_CEILING_DIRECTORIES = '$WORK/ps_venv_tracked'" "\$env:GIT
         \$env:VIRTUAL_ENV = \$null
         $genv
         \$before = @(Get-ChildItem Env:GIT_* | Sort-Object Name | ForEach-Object { \"\$(\$_.Name)=\$(\$_.Value)\" }) -join ' '
-        va 2>&1 | ForEach-Object { \"ERR=\$_\" }
+        try { va } catch { \"ERR=\$_\" }
         \$after = @(Get-ChildItem Env:GIT_* | Sort-Object Name | ForEach-Object { \"\$(\$_.Name)=\$(\$_.Value)\" }) -join ' '
         \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] KEPT=[\$(\$before -ceq \$after -and \$before -ne '')]\"
     " | tr -d '\r')
@@ -1185,7 +1185,7 @@ actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     Set-Location '$NAGR/ps'
     \$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'
     \$env:VIRTUAL_ENV = \$null
-    va *>\$null
+    try { va *>\$null } catch { }
     \"VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"
 " | tr -d '\r')
 assert_eq "pwsh/va refuses when only the quoted path says not a git repository" "VE=[] PY=[]" "$actual"
@@ -1218,10 +1218,11 @@ chmod 666 "$WORK/ps_venv_second/.venv/bin/Activate.ps1"
 actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
     \$env:VIRTUAL_ENV = \$null
     va '$WORK/ps_venv_first/.venv' *>\$null
-    va '$WORK/ps_venv_second/.venv' *>\$null
+    try { va '$WORK/ps_venv_second/.venv' *>\$null } catch { \"REFUSED=[\$LASTEXITCODE]\" }
     \"VE=[\$env:VIRTUAL_ENV] BY=[\$global:DeactivatedBy] PY=[\$env:_DEN_VENV_PYTHON]\"
 " | tr -d '\r')
-assert_eq "pwsh/va refused keeps the active venv" "VE=[first] BY=[] PY=[3.12.0]" "$actual"
+assert_eq "pwsh/va refused keeps the active venv" "REFUSED=[1]
+VE=[first] BY=[] PY=[3.12.0]" "$actual"
 
 echo "[pwsh] va leaves no version of the previous venv behind"
 # The next venv has no pyvenv.cfg, or its activate script does not parse: either
@@ -1315,7 +1316,8 @@ done
 # with its links resolved: a bin/ with an activate script for bash and zsh and
 # an Activate.ps1, each of which sets VIRTUAL_ENV to the venv's path with its
 # links resolved, and a pyvenv.cfg. Without it, uv venv makes nothing, as
-# uv venv --help does.
+# uv venv --help does. ROUTE_ACTIVATE_PS1 overrides the PowerShell activate
+# script to exercise errors after va has passed its own checks.
 R="$WORK/route"
 ROUTE_BIN="$R/bin"
 ROUTE_LOG="$R/uvcalls"
@@ -1351,7 +1353,10 @@ if [ -n "\${ROUTE_MAKE_VENV-}" ]; then
         (cd -P -- "\${d:-.}" && mkdir -p -- "\$n/bin" && v=\$(cd -P -- "\$n" && pwd -P) &&
             printf 'VIRTUAL_ENV=%s; export VIRTUAL_ENV\n' "\$v" > "\$n/bin/activate" &&
             printf '\$env:VIRTUAL_ENV = "%s"\n' "\$v" > "\$n/bin/Activate.ps1" &&
-            printf 'version_info = 3.13.1\n' > "\$n/pyvenv.cfg") || exit 2
+            printf 'version_info = 3.13.1\n' > "\$n/pyvenv.cfg" &&
+            if [ -n "\${ROUTE_ACTIVATE_PS1-}" ]; then
+                printf '%s\n' "\$ROUTE_ACTIVATE_PS1" > "\$n/bin/Activate.ps1"
+            fi) || exit 2
     fi
 fi
 echo "mock-uv \$*"
@@ -2181,7 +2186,7 @@ actual=$(route_pwsh "$R/proj" "\$env:ROUTE_NO_SYSTEM = '1'; \$env:ROUTE_NO_MANAG
 assert_eq "pwsh/python with no python to run fails" \
     "ERROR: no Python found to run in place of uv run; uv python install installs one" "$actual"
 # PowerShell names the function that wrote an error: python's own, not a helper's.
-err=$(run_pwsh_stderr_oneline "$PYTHON_PS1_ROUTE" "Remove-Item Env:\\VIRTUAL_ENV -ErrorAction SilentlyContinue; Set-Location -LiteralPath '$R/proj'; \$env:ROUTE_NO_SYSTEM = '1'; \$env:ROUTE_NO_MANAGED = '1'; python -c pass")
+err=$(run_pwsh_stderr_oneline "$PYTHON_PS1_ROUTE" "Remove-Item Env:\\VIRTUAL_ENV -ErrorAction SilentlyContinue; Set-Location -LiteralPath '$R/proj'; \$env:ROUTE_NO_SYSTEM = '1'; \$env:ROUTE_NO_MANAGED = '1'; python -c pass" || true)
 assert_contains "pwsh/python's error is python's" "python: no Python found" "$err"
 
 echo "[pwsh] in a venv va activated, in a project: the venv's python, not uv run --python, and no warning, as on cmd"
@@ -2493,25 +2498,142 @@ route_pwsh_lines() {
         "Set-Location -LiteralPath '$1'" "$2" |
         TERM=dumb $ROUTE_TIMEOUT pwsh -NoProfile -NonInteractive -Command - 2>"$R/err" | tr -d '\r'
 }
-# vva_status_lines <tag> <before> <vva arguments>: vva on a line of its own,
+# refusal_status_lines <tag> <before> <command>: command on a line of its own,
 # then before && and before ||, and in a script's try, each time after
 # <before> on the same line and with its output dropped, and a line after
 # each that shows $? and $LASTEXITCODE.
-vva_status_lines() {
+refusal_status_lines() {
     printf '%s\n' \
-        "${2}vva $3 *>\$null" \
+        "\$global:LASTEXITCODE = 73; $2$3 *>\$null" \
         "\"$1 q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV]\"" \
-        "\$global:LASTEXITCODE = 0; ${2}vva $3 *>\$null && '$1 THEN-RAN'" \
+        "\$global:LASTEXITCODE = 73; $2$3 *>\$null && '$1 THEN-RAN'" \
         "\"$1 and q=\$? code=\$LASTEXITCODE\"" \
-        "\$global:LASTEXITCODE = 0; ${2}vva $3 *>\$null || '$1 ELSE-RAN'" \
+        "\$global:LASTEXITCODE = 73; $2$3 *>\$null || '$1 ELSE-RAN'" \
         "\"$1 or q=\$? code=\$LASTEXITCODE\"" \
-        "\$global:LASTEXITCODE = 0; try { ${2}vva $3 *>\$null; '$1 NOT-CAUGHT' } catch { \"$1 caught code=\$LASTEXITCODE\" }"
+        "\$global:LASTEXITCODE = 73; try { $2$3 *>\$null; '$1 NOT-CAUGHT' } catch { \"$1 caught code=\$LASTEXITCODE\" }"
 }
-# vva_status <tag> <code>: what vva_status_lines shows where vva fails with
+# vva_status_lines <tag> <before> <vva arguments>
+vva_status_lines() {
+    refusal_status_lines "$1" "$2" "vva $3"
+}
+# vva_status <tag> <code> [active venv]: what refusal_status_lines shows with
 # <code>: no part after && or || ran.
 vva_status() {
-    printf '%s q=False code=%s VE=[]\n%s and q=False code=%s\n%s or q=False code=%s\n%s caught code=%s' "$1" "$2" "$1" "$2" "$1" "$2" "$1" "$2"
+    printf '%s q=False code=%s VE=[%s]\n%s and q=False code=%s\n%s or q=False code=%s\n%s caught code=%s' "$1" "$2" "${3-}" "$1" "$2" "$1" "$2" "$1" "$2"
 }
+
+echo "[pwsh] every va refusal terminates and sets its exit code"
+for spec in \
+    "missing|$NOPROJ|va missing|1" \
+    "tracked|$WORK/ps_venv_tracked|va|1" \
+    "cfg|$WORK/ps_venv_cfg_only|va|1" \
+    "symbin|$SYMBIN|va|1" \
+    "symact|$SYMACT|va|1" \
+    "writable|$WORK/ps_venv_ww|va|1" \
+    "gitfail|$WORK/ps_venv_tracked|va|1"; do
+    IFS='|' read -r tag directory command code <<< "$spec"
+    before=''
+    if [ "$tag" = gitfail ]; then
+        before="\$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'; "
+    fi
+    actual=$(route_pwsh_lines "$directory" "$(refusal_status_lines "$tag" "$before" "$command")") || true
+    assert_eq "pwsh/va $tag terminates, sets code and is caught" "$(vva_status "$tag" "$code")" "$actual"
+done
+
+echo "[pwsh] pip and python refusals terminate, including uv's failed lookup"
+for command in pip pip3; do
+    actual=$(route_pwsh_lines "$NOPROJ" "$(refusal_status_lines "$command" '' "$command install foo")") || true
+    assert_eq "pwsh/$command without a venv terminates" "$(vva_status "$command" 1)" "$actual"
+    actual=$(route_pwsh_lines "$NOPROJ" "\$env:PATH = '$NO_UV_BIN'; \$global:_DenCmdCache = @{}
+\$env:VIRTUAL_ENV = '$WORK/venv_nopip'
+$(refusal_status_lines "$command" '' "$command install foo")") || true
+    assert_eq "pwsh/$command without pip or uv terminates" "$(vva_status "$command" 1 "$WORK/venv_nopip")" "$actual"
+done
+for command in python python3 py; do
+    actual=$(route_pwsh_lines "$NOPROJ" "\$env:PATH = '$NO_UV_BIN'; \$global:_DenCmdCache = @{}
+$(refusal_status_lines "$command" '' "$command --version")") || true
+    assert_eq "pwsh/$command without python or uv terminates" "$(vva_status "$command" 1)" "$actual"
+    actual=$(route_pwsh_lines "$R/proj" "\$env:ROUTE_NO_SYSTEM = '1'; \$env:ROUTE_NO_MANAGED = '1'
+$(refusal_status_lines "$command" '' "$command --version")") || true
+    assert_eq "pwsh/$command with no Python found sets code 1" "$(vva_status "$command" 1)" "$actual"
+done
+actual=$(route_pwsh_lines "$NOPROJ" "\$env:PATH = '$NO_UV_BIN'; \$global:_DenCmdCache = @{}
+$(refusal_status_lines vv '' 'vv -p 3.13')") || true
+assert_eq "pwsh/vv without uv terminates" "$(vva_status vv 1)" "$actual"
+
+# Exercise the code after va's checks, with git's probe returning either 0
+# (an untracked venv in a checkout) or 128 (outside a checkout).
+echo "[pwsh] activation errors terminate with code 1, in and outside git"
+for repository in git nogit; do
+    directory="$R/activation-$repository"
+    mkdir -p "$directory/.venv/bin"
+    printf 'version_info = 3.13.1\n' > "$directory/.venv/pyvenv.cfg"
+    if [ "$repository" = git ]; then
+        git init -q "$directory"
+    fi
+    for failure in activate deactivate parse; do
+        case $failure in
+            activate) script='throw "activate failed"' ;;
+            deactivate) script="\$env:VIRTUAL_ENV = \"unexpected\"" ;;
+            parse) script='this is { not valid' ;;
+        esac
+        printf '%s\n' "$script" > "$directory/.venv/bin/Activate.ps1"
+        for command in va vva; do
+            tag="$command-$failure-$repository"
+            before=''
+            active=''
+            target='.venv'
+            if [ "$command" = vva ]; then
+                target='newenv'
+                before="Remove-Item -LiteralPath newenv -Recurse -Force -ErrorAction Ignore; "
+            fi
+            if [ "$failure" = deactivate ]; then
+                active='previous'
+                before="$before\$env:VIRTUAL_ENV = 'previous'; function global:deactivate { throw 'deactivate failed' }; "
+            fi
+            setup="\$env:ROUTE_MAKE_VENV = '1'; \$env:ROUTE_ACTIVATE_PS1 = '$script'"
+            if [ "$failure" = parse ]; then
+                # Each call starts with an active venv whose deactivation succeeds.
+                before="$before\$env:VIRTUAL_ENV = 'previous'; \$env:_DEN_VENV_PYTHON = '3.12.0'; function global:deactivate { Remove-Item Env:\\VIRTUAL_ENV }; "
+            fi
+            actual=$(route_pwsh_lines "$directory" "$setup
+$(refusal_status_lines "$tag" "$before" "$command $target")") || true
+            assert_eq "pwsh/$tag terminates, sets code 1 and is caught" "$(vva_status "$tag" 1 "$active")" "$actual"
+            if [ "$failure" = parse ]; then
+                # Inspect a plain call too: vva's final active-venv check used to
+                # hide va's parse failure, after va had read the new version.
+                actual=$(route_pwsh_lines "$directory" "$setup
+\$global:LASTEXITCODE = 73; $before$command $target *>\$null
+\"$tag state q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON]\"") || true
+                assert_eq "pwsh/$tag leaves the previous venv deactivated and clears its version" \
+                    "$tag state q=False code=1 VE=[] PY=[]" "$actual"
+            else
+                assert_contains "pwsh/$tag reports the original error" "$failure failed" "$(cat "$R/err")"
+            fi
+        done
+    done
+done
+
+echo "[pwsh] successful activation does not leak the internal git exit code"
+for directory in "$WORK/ps_venv5" "$WORK/ps_venv_untracked"; do
+    actual=$(route_pwsh_lines "$directory" "Set-StrictMode -Version Latest
+\$global:LASTEXITCODE = 73; va *>\$null
+\"saved q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV]\"
+Remove-Variable LASTEXITCODE -Scope Global; va *>\$null
+\"unset q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV]\"") || true
+    assert_eq "pwsh/va restores saved or unset exit code in $directory under strict mode" \
+        "saved q=True code=73 VE=[fakevenv]
+unset q=True code=0 VE=[fakevenv]" "$actual"
+done
+actual=$(route_pwsh_lines "$NOPROJ" "\$env:ROUTE_MAKE_VENV = '1'
+Set-StrictMode -Version Latest
+\$global:LASTEXITCODE = 73; vva '$R/status-saved' *>\$null
+\"saved q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV]\"
+Remove-Variable LASTEXITCODE -Scope Global; vva '$R/status-unset' *>\$null
+\"unset q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV]\"") || true
+assert_eq "pwsh/vva keeps uv's successful code under strict mode" \
+    "saved q=True code=0 VE=[$R/status-saved]
+unset q=True code=0 VE=[$R/status-unset]" "$actual"
 
 # Each time vva activates nothing it fails, as on bash and zsh, where it
 # returns 1 (uv's own status where uv failed). A Write-Error and return left
@@ -2545,12 +2667,7 @@ if [ -d /proc/self ]; then
     assert_contains "pwsh/vva where it cannot tell says so" "uv venv made 'v' where vva cannot tell" "$(cat "$R/err")"
 fi
 
-# vva ends with va, whose refusals are a Write-Error and a return, which leave
-# $? true: where va refused the myenv/ uv made anew where git still tracks
-# one (vvatracked/), vva ended as if it had activated it, and `vva myenv &&
-# next` ran next. Now vva fails then as for its own refusals, also where
-# va's own error stops it ($ErrorActionPreference Stop), and says so after
-# va's error.
+# vva propagates va's terminating refusal without replacing its exit code.
 echo "[pwsh] vva where va refuses the venv uv made: fails, \$? false, \$LASTEXITCODE 1, the rest of the line does not run"
 actual=$(route_pwsh_lines "$R/vvatracked" "\$env:ROUTE_MAKE_VENV = '1'
 $(vva_status_lines tracked 'Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore; ' myenv)
@@ -2564,10 +2681,15 @@ actual=$(route_pwsh "$R/vvatracked" "
     vva myenv
     \"VE=[\$env:VIRTUAL_ENV]\"
     Remove-Item -LiteralPath myenv -Recurse -Force")
-assert_eq "pwsh/vva where va refuses the venv uv made says what va says, then that it is not active" "mock-uv venv myenv
+assert_eq "pwsh/vva where va refuses the venv uv made propagates what va says" "mock-uv venv myenv
 ERROR: 'myenv': venv content is tracked by git (bin/Activate.ps1, bin/activate, pyvenv.cfg) - a venv committed to the repo; dot-source it yourself if you trust it: . myenv/bin/Activate.ps1
-ERROR: va refused 'myenv', which uv venv made, so it is not active
 VE=[]" "$actual"
+
+actual=$(route_pwsh_lines "$R/vvatracked" "\$env:ROUTE_MAKE_VENV = '1'
+\$env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'; \$env:GIT_CONFIG_GLOBAL = '/dev/null'; \$env:GIT_CONFIG_NOSYSTEM = '1'
+$(vva_status_lines gitfail 'Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore; ' myenv)
+Remove-Item -LiteralPath myenv -Recurse -Force -ErrorAction Ignore") || true
+assert_eq "pwsh/vva propagates va's code 1 when its git check fails" "$(vva_status gitfail 1)" "$actual"
 
 # PowerShell drops a typed -- from $Args, so uv gets --directory as an option.
 # PowerShell's location, and so its LocationChangedAction, and the process's
@@ -3413,12 +3535,13 @@ vv=0" "$actual"
         python3 -c 'print(1)' 3>\$null
         Set-Location -LiteralPath '$C/venv'
         py -c 'print(2)' 3>\$null
-        pip list 2>\$null
+        try { pip list 2>\$null } catch { \"pip refused code=\$LASTEXITCODE\" }
         'pip done'
     " 2>/dev/null | tr -d '\r')
     assert_match "pwsh/python --version in a clone answers" "^Python 3\.[0-9]+" "$(printf '%s\n' "$actual" | head -n 1)"
     assert_eq "pwsh/python3, py and pip in clones" "1
 2
+pip refused code=1
 pip done" "$(printf '%s\n' "$actual" | tail -n +2)"
     assert_eq "pwsh/no code of the clones ran" "" "$(ls "$C/marks")"
     assert_not_exists "pwsh/no .venv appears in a clone" "$C/build/.venv"
