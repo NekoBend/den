@@ -4363,20 +4363,31 @@ def test_image_hooks_run_in_order_with_arguments_and_minimal_env(tmp_path):
     for kind in ("init.d", "user-init.d"):
         for name in ("20-z", "10-a"):
             _hook(
-                tmp_path, kind, name,
+                tmp_path,
+                kind,
+                name,
                 f"printf '%s\\n' '{kind}/{name}' >> {shlex.quote(str(log))}\n"
-                + (f"printf '%s\\n' \"$@\" >> {shlex.quote(str(log))}"
-                   if kind == "init.d" else
-                   '[ "$HOME" = /home/dev ] && '
-                   '[ "$PATH" = /usr/sbin:/usr/bin:/sbin:/bin ] && '
-                   '[ "${SECRET-unset}" = unset ]'),
+                + (
+                    f"printf '%s\\n' \"$@\" >> {shlex.quote(str(log))}"
+                    if kind == "init.d"
+                    else '[ "$HOME" = /home/dev ] && '
+                    '[ "$PATH" = /usr/sbin:/usr/bin:/sbin:/bin ] && '
+                    '[ "${SECRET-unset}" = unset ]'
+                ),
             )
     result, calls = _run_entrypoint(tmp_path, uid=0, env={"SECRET": "probe"})
     assert result.returncode == 0, result.stderr
     assert log.read_text().splitlines() == [
-        "init.d/10-a", "/home/dev", "1000", "1000",
-        "init.d/20-z", "/home/dev", "1000", "1000",
-        "user-init.d/10-a", "user-init.d/20-z",
+        "init.d/10-a",
+        "/home/dev",
+        "1000",
+        "1000",
+        "init.d/20-z",
+        "/home/dev",
+        "1000",
+        "1000",
+        "user-init.d/10-a",
+        "user-init.d/20-z",
     ]
     assert calls.count("gnutimeout -k 10 300") == 2
     assert result.stderr == ""
@@ -4430,7 +4441,7 @@ def test_non_root_start_skips_all_hooks(tmp_path):
 @_needs("sh", "env")
 @pytest.mark.parametrize("uid", [0, 1000])
 def test_entrypoint_sources_env_as_user_after_setting_path(tmp_path, uid):
-    _hook(tmp_path, "user-env.d", "10-env.sh", 'export DROPIN=first')
+    _hook(tmp_path, "user-env.d", "10-env.sh", "export DROPIN=first")
     _hook(tmp_path, "user-env.d", "20-env.sh", 'export DROPIN="$DROPIN:second"')
     result, _ = _run_entrypoint(tmp_path, uid=uid, env={})
     # The root branch's setpriv stub records the user wrapper's argv.
@@ -4444,16 +4455,24 @@ def test_entrypoint_sources_env_as_user_after_setting_path(tmp_path, uid):
 @_needs("sh", "bash", "zsh", "id")
 @pytest.mark.parametrize(
     ("shell", "target"),
-    [("sh", "/etc/profile.d/00-container-home.sh"),
-     ("bash", "/etc/bash.bashrc"), ("zsh", "/etc/zsh/zshenv")],
+    [
+        ("sh", "/etc/profile.d/00-container-home.sh"),
+        ("bash", "/etc/bash.bashrc"),
+        ("zsh", "/etc/zsh/zshenv"),
+    ],
 )
 @pytest.mark.parametrize("root", [False, True])
 def test_each_shell_sources_env_only_for_container_user(tmp_path, shell, target, root):
     _hook(tmp_path, "user-env.d", "env.sh", "export DROPIN=yes")
     me = _zsh_username() if shell == "zsh" else _login_name()
     out = _source_block(
-        tmp_path, shell, target, euid=0 if root else 1000,
-        home="/home/" + me, user=me, extra=("DROPIN",),
+        tmp_path,
+        shell,
+        target,
+        euid=0 if root else 1000,
+        home="/home/" + me,
+        user=me,
+        extra=("DROPIN",),
     )
     assert out[-1] == ("unset" if root else "yes")
 
@@ -4488,15 +4507,24 @@ def test_env_and_path_lists_reject_untrusted_files_or_parents(tmp_path, bad):
             unsafe.mkdir(mode=0o777)
             unsafe.chmod(0o777)
             path.rename(unsafe / name)
-            library.write_text(library.read_text().replace(
-                str(directory) + "/*", str(unsafe) + "/*",
-            ))
+            library.write_text(
+                library.read_text().replace(
+                    str(directory) + "/*",
+                    str(unsafe) + "/*",
+                )
+            )
     result = subprocess.run(
-        [_tool("sh"), "-c",
-         f'. {shlex.quote(str(library))}; denbox_user_path; denbox_user_env; '
-         'printf "%s\\n" "$PATH" "${DROPIN-unset}"'],
+        [
+            _tool("sh"),
+            "-c",
+            f". {shlex.quote(str(library))}; denbox_user_path; denbox_user_env; "
+            'printf "%s\\n" "$PATH" "${DROPIN-unset}"',
+        ],
         env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
-        capture_output=True, text=True, check=False, timeout=30,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     assert "/unsafe" not in result.stdout
@@ -4511,11 +4539,17 @@ def test_path_lists_preserve_order_literals_and_last_line(tmp_path):
     (lists / "10-extra.list").write_text("# comment\n\nmy tools\n/opt/bin\n")
     (lists / "20-extra.list").write_text("/opt/bin\n/invalid:entry\n$(false)")
     result = subprocess.run(
-        [_tool("sh"), "-c",
-         f'. {shlex.quote(str(library))}; denbox_user_path; denbox_user_path; '
-         'printf "%s\\n" "$PATH"'],
+        [
+            _tool("sh"),
+            "-c",
+            f". {shlex.quote(str(library))}; denbox_user_path; denbox_user_path; "
+            'printf "%s\\n" "$PATH"',
+        ],
         env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
-        capture_output=True, text=True, check=False, timeout=30,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == (
@@ -4531,7 +4565,11 @@ def test_ci_exercises_a_derived_image_within_the_job_budget():
     assert "FROM denbox" in step["run"]
     assert "--pull" not in step["run"]
     for directory in (
-        "init.d", "user-init.d", "user-env.d", "user-path.d", "state-paths.d",
+        "init.d",
+        "user-init.d",
+        "user-env.d",
+        "user-path.d",
+        "state-paths.d",
     ):
         assert f"/etc/denbox/{directory}" in step["run"]
 
@@ -4544,7 +4582,10 @@ def test_hooks_surround_state_link_after_state_root_preparation(tmp_path):
     _hook(tmp_path, "init.d", "root", f"echo root-hook >> {log}")
     _hook(tmp_path, "user-init.d", "user", f"echo user-hook >> {log}")
     result, calls = _run_entrypoint(
-        tmp_path, uid=0, env={}, mounts=("/workspace", str(state)),
+        tmp_path,
+        uid=0,
+        env={},
+        mounts=("/workspace", str(state)),
     )
     assert result.returncode == 0, result.stderr
     prepared = calls.index(f"gnuchown -h 1000:1000 {state} {state}/home")
@@ -4558,7 +4599,9 @@ def test_hooks_surround_state_link_after_state_root_preparation(tmp_path):
 def test_root_hooks_receive_final_remapped_ids(tmp_path):
     hook = _hook(tmp_path, "init.d", "ids", '[ "$1:$2:$3" = /home/dev:501:20 ]')
     result, _ = _run_entrypoint(
-        tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"},
+        tmp_path,
+        uid=0,
+        env={"HOST_UID": "501", "HOST_GID": "20"},
     )
     assert result.returncode == 0, result.stderr
     assert str(hook) not in result.stderr
@@ -4576,21 +4619,30 @@ def test_trusted_non_executable_hooks_are_ignored(tmp_path):
 @_needs("sh", "bash", "zsh", "id")
 @pytest.mark.parametrize(
     ("shell", "target"),
-    [("sh", "/etc/profile.d/00-container-home.sh"),
-     ("bash", "/etc/bash.bashrc"), ("zsh", "/etc/zsh/zshenv")],
+    [
+        ("sh", "/etc/profile.d/00-container-home.sh"),
+        ("bash", "/etc/bash.bashrc"),
+        ("zsh", "/etc/zsh/zshenv"),
+    ],
 )
 def test_other_shell_users_do_not_source_container_env(tmp_path, shell, target):
     _hook(tmp_path, "user-env.d", "env.sh", "export DROPIN=unsafe")
     out = _source_block(
-        tmp_path, shell, target, euid=1000, home=str(tmp_path / "home"),
-        user="another-user", extra=("DROPIN",),
+        tmp_path,
+        shell,
+        target,
+        euid=1000,
+        home=str(tmp_path / "home"),
+        user="another-user",
+        extra=("DROPIN",),
     )
     assert out[-1] == "unset"
 
 
 @_needs("sh", "env")
 @pytest.mark.parametrize(
-    "body", ['false && export NEVER=yes', 'export OPTIONAL="$NOT_SET"'],
+    "body",
+    ["false && export NEVER=yes", 'export OPTIONAL="$NOT_SET"'],
 )
 def test_user_exec_env_files_do_not_enable_errexit_or_nounset(tmp_path, body):
     _, wrapper = _dropin_files(tmp_path)
@@ -4598,7 +4650,10 @@ def test_user_exec_env_files_do_not_enable_errexit_or_nounset(tmp_path, body):
     result = subprocess.run(
         [str(wrapper), _tool("sh"), "-c", "echo command-ran"],
         env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
-        capture_output=True, text=True, check=False, timeout=30,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "command-ran\n"
@@ -4611,15 +4666,23 @@ def test_user_exec_env_files_do_not_enable_errexit_or_nounset(tmp_path, body):
 @_needs("sh", "bash", "zsh", "id")
 @pytest.mark.parametrize(
     ("shell", "target"),
-    [("sh", "/etc/profile.d/00-container-home.sh"),
-     ("bash", "/etc/bash.bashrc"), ("zsh", "/etc/zsh/zshenv")],
+    [
+        ("sh", "/etc/profile.d/00-container-home.sh"),
+        ("bash", "/etc/bash.bashrc"),
+        ("zsh", "/etc/zsh/zshenv"),
+    ],
 )
 def test_nested_shell_preserves_activated_path(tmp_path, shell, target):
     me = _zsh_username() if shell == "zsh" else _login_name()
     home = "/home/" + me
     inherited = f"/venv/bin:{_user_path(home)}::/duplicate:/duplicate:"
     out = _source_block(
-        tmp_path, shell, target, euid=1000, home=home, user=me,
+        tmp_path,
+        shell,
+        target,
+        euid=1000,
+        home=home,
+        user=me,
         inherited_path=inherited,
     )
     assert out[1] == inherited
@@ -4628,11 +4691,15 @@ def test_nested_shell_preserves_activated_path(tmp_path, shell, target):
 @_needs("sh", "env")
 def test_root_hook_pins_home_and_cwd_but_keeps_operator_settings(tmp_path):
     _hook(
-        tmp_path, "init.d", "context",
+        tmp_path,
+        "init.d",
+        "context",
         '[ "$PWD:$HOME:$SETTING" = /:/root:operator ]',
     )
     result, _ = _run_entrypoint(
-        tmp_path, uid=0, env={"HOME": "/home/dev", "SETTING": "operator"},
+        tmp_path,
+        uid=0,
+        env={"HOME": "/home/dev", "SETTING": "operator"},
     )
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
@@ -4644,9 +4711,10 @@ def test_root_hook_pins_home_and_cwd_but_keeps_operator_settings(tmp_path):
 def test_hook_names_with_equals_run_and_stdin_is_eof(tmp_path, kind, name):
     marker = tmp_path / "ran"
     _hook(
-        tmp_path, kind, name,
-        f"if read -r line; then exit 9; fi\n"
-        f"echo ran > {shlex.quote(str(marker))}",
+        tmp_path,
+        kind,
+        name,
+        f"if read -r line; then exit 9; fi\necho ran > {shlex.quote(str(marker))}",
     )
     result, _ = _run_entrypoint(tmp_path, uid=0, env={})
     assert result.returncode == 0, result.stderr
@@ -4656,7 +4724,9 @@ def test_hook_names_with_equals_run_and_stdin_is_eof(tmp_path, kind, name):
 
 @_needs("sh", "env")
 @pytest.mark.parametrize("kind", ["init.d", "user-init.d", "user-env.d"])
-@pytest.mark.parametrize("bad", ["other-writable", "parent-link", "parent-owner", "hidden"])
+@pytest.mark.parametrize(
+    "bad", ["other-writable", "parent-link", "parent-owner", "hidden"]
+)
 def test_dropin_trust_boundaries(tmp_path, kind, bad):
     _, wrapper = _dropin_files(tmp_path)
     marker = tmp_path / "ran"
@@ -4664,7 +4734,10 @@ def test_dropin_trust_boundaries(tmp_path, kind, bad):
     if bad == "hidden":
         name = "." + name
     hook = _hook(
-        tmp_path, kind, name, f"echo ran > {shlex.quote(str(marker))}",
+        tmp_path,
+        kind,
+        name,
+        f"echo ran > {shlex.quote(str(marker))}",
     )
     if bad == "other-writable":
         hook.chmod(0o757)
@@ -4680,7 +4753,10 @@ def test_dropin_trust_boundaries(tmp_path, kind, bad):
         result = subprocess.run(
             [str(wrapper), _tool("env")],
             env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
-            capture_output=True, text=True, check=False, timeout=30,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
         )
     else:
         result, _ = _run_entrypoint(tmp_path, uid=0, env={})
@@ -4708,11 +4784,17 @@ def test_shell_trust_batches_candidates_in_one_process(tmp_path, shell):
         _hook(tmp_path, "user-env.d", name, "export DROPIN=yes")
     library.write_text(library.read_text().replace("/usr/bin/find", str(find)))
     result = subprocess.run(
-        [_tool(shell), "-c",
-         f". {shlex.quote(str(library))}; denbox_shell_trust; "
-         'denbox_user_path; denbox_user_env; printf "%s\\n" "$DROPIN"'],
+        [
+            _tool(shell),
+            "-c",
+            f". {shlex.quote(str(library))}; denbox_shell_trust; "
+            'denbox_user_path; denbox_user_env; printf "%s\\n" "$DROPIN"',
+        ],
         env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
-        capture_output=True, text=True, check=False, timeout=30,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "yes\n"
@@ -4723,7 +4805,8 @@ def test_shell_trust_batches_candidates_in_one_process(tmp_path, shell):
 def test_ci_pins_base_and_derived_paths_literally():
     steps = _workflow()["jobs"]["dev-image"]["steps"]
     base = next(
-        step["run"] for step in steps
+        step["run"]
+        for step in steps
         if step.get("name") == "Check HOME and PATH for root and dev"
     )
     derived = next(
@@ -4732,3 +4815,157 @@ def test_ci_pins_base_and_derived_paths_literally():
     expected = _user_path("/home/dev")
     assert f"expected_path={expected}\n" in base
     assert f'[ "$PATH" = /opt/hook-bin:{expected} ]' in derived
+
+
+@_needs("sh")
+@pytest.mark.parametrize("body", ["if then fi (", "export C=(1 2)"])
+def test_user_exec_skips_env_syntax_errors_and_runs_command(tmp_path, body):
+    _, wrapper = _dropin_files(tmp_path)
+    bad = _hook(tmp_path, "user-env.d", "10-bad.sh", body)
+    _hook(tmp_path, "user-env.d", "20-good.sh", "export DROPIN=good")
+    result = subprocess.run(
+        [str(wrapper), _tool("sh"), "-c", 'printf "command:%s\\n" "$DROPIN"'],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "command:good\n"
+    assert "denbox:" in result.stderr
+    assert str(bad) in result.stderr
+
+
+@_needs("dash", "bash", "zsh")
+@pytest.mark.parametrize(
+    ("shell", "flags"),
+    [
+        ("dash", ()),
+        ("bash", ("--norc",)),
+        ("bash", ("--norc", "-i")),
+        ("bash", ("--norc", "--posix")),
+        ("bash", ("--norc", "--posix", "-i")),
+        ("zsh", ("-f",)),
+        ("zsh", ("-f", "-i")),
+    ],
+)
+def test_shell_env_syntax_errors_warn_and_continue(tmp_path, shell, flags):
+    library, _ = _dropin_files(tmp_path)
+    bad = _hook(tmp_path, "user-env.d", "10-bad.sh", "if then fi (")
+    _hook(tmp_path, "user-env.d", "20-good.sh", "export DROPIN=good")
+    result = subprocess.run(
+        [
+            _tool(shell),
+            *flags,
+            "-c",
+            f". {shlex.quote(str(library))}; denbox_user_env; "
+            'printf "command:%s\\n" "$DROPIN"',
+        ],
+        env={"HOME": str(tmp_path), "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "command:good\n"
+    assert "denbox:" in result.stderr
+    assert str(bad) in result.stderr
+
+
+@_needs("dash", "bash", "id")
+@pytest.mark.parametrize("shell", ["dash", "bash"])
+@pytest.mark.parametrize("inherited", ["0", "1000", "99999"])
+@pytest.mark.parametrize("proc", [True, False])
+def test_shell_identity_ignores_inherited_euid(tmp_path, shell, inherited, proc):
+    library, _ = _dropin_files(tmp_path)
+    if not proc:
+        library.write_text(
+            library.read_text().replace(
+                "/proc/self/status", str(tmp_path / "missing-proc")
+            )
+        )
+    result = subprocess.run(
+        [
+            _tool(shell),
+            "-c",
+            f". {shlex.quote(str(library))}; "
+            f"_container_user={shlex.quote(_login_name())}; "
+            'denbox_shell_identity; printf "%s:%s\\n" '
+            '"$_denbox_uid" "$_denbox_is_user"',
+        ],
+        env={"EUID": inherited, "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout == f"{os.geteuid()}:1\n"
+
+
+@_needs("dash", "bash")
+@pytest.mark.parametrize(
+    ("shell", "target"),
+    [
+        ("dash", "/etc/profile.d/00-container-home.sh"),
+        ("bash", "/etc/profile.d/00-container-home.sh"),
+        ("bash", "/etc/bash.bashrc"),
+    ],
+)
+@pytest.mark.parametrize("uid", ["0", "1000", "unknown"])
+def test_startup_uses_kernel_uid_and_skips_unknown_identity(
+    tmp_path, shell, target, uid
+):
+    library, _ = _dropin_files(tmp_path)
+    # Model root and missing identity at the OS boundary without privileges.
+    status = tmp_path / "status"
+    status.write_text(f"Uid:\t1000\t{uid}\t1000\t1000\n")
+    accounts = tmp_path / "passwd"
+    accounts.write_text("dev:x:1000:1000::/home/dev:/bin/sh\n")
+    no_id = tmp_path / "id"
+    no_id.write_text("#!/bin/sh\nprintf not-a-uid\n")
+    no_id.chmod(0o755)
+    library.write_text(
+        library.read_text()
+        .replace("/proc/self/status", str(status))
+        .replace("/etc/passwd", str(accounts))
+        .replace("/usr/bin/id", str(no_id))
+    )
+    account = tmp_path / "container-user"
+    account.write_text("dev\n")
+    block = tmp_path / "startup"
+    block.write_text(
+        _appended_block(target)
+        .replace("/etc/container-user", str(account))
+        .replace("/usr/local/lib/denbox/dropins.sh", str(library))
+    )
+    _hook(tmp_path, "user-env.d", "env.sh", "export DROPIN=yes")
+    home = "/home/dev" if uid == "0" else "/root"
+    result = subprocess.run(
+        [
+            _tool(shell),
+            "-c",
+            f". {shlex.quote(str(block))}; "
+            'printf "%s\\n" "$HOME" "$PATH" "${DROPIN-unset}"',
+        ],
+        env={
+            "EUID": "0" if uid == "1000" else "1000",
+            "HOME": home,
+            "PATH": SYSTEM_PATH,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    expected = (
+        ["/home/dev", _user_path("/home/dev"), "yes"]
+        if uid == "1000"
+        else ["/root", SYSTEM_PATH, "unset"]
+    )
+    assert result.stdout.splitlines() == expected

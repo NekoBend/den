@@ -318,9 +318,28 @@ empty hook and env directories.
 | --- | --- |
 | `init.d/` | Executables run as root at each root start, after ID remapping, ownership walks and state-root preparation, before state-link. Working directory: `/`; `HOME=/root`; other inherited settings (including `docker run -e`) remain available. Stdin: `/dev/null`. Arguments: user home, final UID, final GID. A failure or untrusted entry stops the start and names the hook. There is no time limit: keep root hooks short. |
 | `user-init.d/` | Executables run after state-link, even when state is disabled or linking failed. Each runs through setpriv with the final IDs and the account's supplementary groups, and `env -i HOME=<home> PATH=/usr/sbin:/usr/bin:/sbin:/bin`, with no arguments and stdin from `/dev/null`. Hooks must be executable by that user, and scripts readable too (0755 works; 0700 and 0744 do not for a non-root user outside the owning group). A permission failure warns with the user and hook names. Each gets `gnutimeout -k 10 300`, as state-link does. Failure, timeout or untrusted entry warns by name and startup continues. |
-| `user-env.d/*.sh` | Sourced as the container user before its command at both root and non-root starts, and by that user's zshenv, interactive bash startup and login profile. Use shell syntax supported by dash, bash and zsh, and `export` variables. Files may be sourced repeatedly; keep them idempotent. They can override PATH and other variables. Sourcing does not enable errexit or nounset. A non-zero return warns by filename and startup continues. Untrusted files warn and are skipped. |
+| `user-env.d/*.sh` | dash/POSIX precheck; normal bash/zsh add no process. See below. |
 | `user-path.d/*.list` | One literal directory per line, absolute or relative to HOME. Blank lines and lines beginning with `#` are ignored. Colons are invalid; there is no variable, tilde or command expansion. Missing directories are prepended in list/line order, once each. Entries already in PATH stay where they are; the inherited PATH is otherwise unchanged, so activated venvs and `nvm use` keep precedence in nested shells. A final line without newline is read. Invalid lines and untrusted lists warn and are skipped. |
 | `state-paths.d/*.list` | Adds home paths to state-link, in the format of [The lists](#the-lists). These run before the environment's own `~/.config/denbox/state-paths` list. Linking problems warn and startup continues. |
+
+Environment files are sourced as the container user before its command at both
+root and non-root starts, and by that user's zshenv, interactive bash startup
+and login profile. Use shell syntax supported by dash, bash and zsh, and
+`export` variables. Files may be sourced repeatedly; keep them idempotent.
+They can override PATH and other variables. Sourcing does not enable errexit
+or nounset. A non-zero return warns by filename and startup continues.
+Syntax errors also warn by filename and startup continues with later files.
+dash (including user-exec) runs `/bin/sh -n` for each trusted env file and
+skips it on failure. Non-interactive POSIX bash uses `/bin/bash --posix -n`
+because a source syntax error would also terminate that shell. Normal bash,
+interactive POSIX bash and zsh catch source errors without an extra process.
+Untrusted files warn and are skipped.
+
+Shell identity in bash and profile.d comes from `/proc/self/status`, using
+builtins, with `/usr/bin/id -u` as a fallback if no numeric UID is read.
+Inherited `EUID` is ignored. If neither yields a number, HOME is unchanged
+and no tool paths or env files are added. zsh uses its own effective UID,
+which ignores inherited `EUID`.
 
 Hooks, env files and PATH lists must be regular, root-owned files, without
 group or other write permission or any symbolic link. Every parent directory

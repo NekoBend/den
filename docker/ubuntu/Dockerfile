@@ -862,18 +862,26 @@ denbox_shell_trust() {
     fi
 }
 # Linux supplies the effective UID without a process; read the account using
-# shell builtins too. Do not trust USER or LOGNAME supplied by the caller.
+# shell builtins too. Never trust inherited EUID, USER or LOGNAME.
 denbox_shell_identity() {
     local key real effective rest name password account_uid
-    _denbox_uid=${EUID-}
-    if [ -z "$_denbox_uid" ]; then
+    _denbox_uid=''
+    _denbox_is_user=0
+    {
         while read -r key real effective rest; do
             [ "$key" = Uid: ] || continue
             _denbox_uid=$effective
             break
         done < /proc/self/status
-    fi
-    _denbox_is_user=0
+    } 2>/dev/null || :
+    case "$_denbox_uid" in
+        ''|*[!0-9]*)
+            _denbox_uid=$(/usr/bin/id -u 2>/dev/null) || _denbox_uid=''
+            ;;
+    esac
+    case "$_denbox_uid" in
+        ''|*[!0-9]*) _denbox_uid=''; return 0 ;;
+    esac
     while IFS=: read -r name password account_uid rest; do
         [ "$name" = "$_container_user" ] || continue
         [ "$account_uid" != "$_denbox_uid" ] || _denbox_is_user=1
@@ -929,6 +937,19 @@ denbox_user_path() {
 denbox_user_env() {
     local file saved_options saved_locale=${LC_ALL-} had_locale=${LC_ALL+x}
     [ -z "${ZSH_VERSION-}" ] || setopt localoptions nonomatch
+    local syntax_shell='' syntax_status
+    # A source parse error kills dash and non-interactive POSIX bash.
+    # Normal bash and zsh catch it below without a preflight process.
+    if [ -z "${ZSH_VERSION-}" ]; then
+        if [ -n "${BASH_VERSION-}" ]; then
+            case $- in
+                *i*) ;;
+                *) if shopt -oq posix; then syntax_shell=bash; fi ;;
+            esac
+        else
+            syntax_shell=sh
+        fi
+    fi
     # Expand the ordered names before sourcing; env files may set LC_ALL.
     LC_ALL=C
     export LC_ALL
@@ -942,6 +963,16 @@ denbox_user_env() {
     for file do
         [ -e "$file" ] || [ -L "$file" ] || continue
         if denbox_trusted "$file"; then
+            syntax_status=0
+            case "$syntax_shell" in
+                sh) /bin/sh -n "$file" || syntax_status=$? ;;
+                bash) /bin/bash --posix -n "$file" || syntax_status=$? ;;
+            esac
+            if [ "$syntax_status" != 0 ]; then
+                printf 'denbox: skipped env file with syntax error: %s\n' \
+                    "$file" >&2
+                continue
+            fi
             saved_options=$-
             set +eu
             # shellcheck source=/dev/null
@@ -1674,14 +1705,14 @@ IFS= read -r _container_user < /etc/container-user
 # shellcheck source=/dev/null
 . /usr/local/lib/denbox/dropins.sh
 denbox_shell_identity
-if [ "$EUID" -eq 0 ]; then
+if [ "$_denbox_uid" = 0 ]; then
     if [ "$HOME" = "/home/$_container_user" ]; then
         export HOME=/root USER=root LOGNAME=root
         if [ "${HISTFILE-}" = "/home/$_container_user/.bash_history" ]; then
             HISTFILE=/root/.bash_history
         fi
     fi
-else
+elif [ -n "$_denbox_uid" ]; then
     if [ "$HOME" = /root ] && [ "$_denbox_is_user" = 1 ]; then
         export HOME="/home/$_container_user" USER="$_container_user" LOGNAME="$_container_user"
         if [ "${HISTFILE-}" = /root/.bash_history ]; then
@@ -1710,11 +1741,11 @@ IFS= read -r _container_user < /etc/container-user
 # shellcheck source=/dev/null
 . /usr/local/lib/denbox/dropins.sh
 denbox_shell_identity
-if [ "$_denbox_uid" -eq 0 ]; then
+if [ "$_denbox_uid" = 0 ]; then
     if [ "$HOME" = "/home/$_container_user" ]; then
         export HOME=/root USER=root LOGNAME=root
     fi
-else
+elif [ -n "$_denbox_uid" ]; then
     if [ "$HOME" = /root ] && [ "$_denbox_is_user" = 1 ]; then
         export HOME="/home/$_container_user" USER="$_container_user" LOGNAME="$_container_user"
     fi
