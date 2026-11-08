@@ -5276,6 +5276,89 @@ def test_zsh_startup_scopes_options_and_removes_helpers(tmp_path, flags):
     assert out[-3:] == ["yes", "from-function", "unset"]
 
 
+@_needs("zsh", "id")
+def test_zsh_startup_survives_cshnullglob_with_no_env_files(tmp_path):
+    out = _source_block(
+        tmp_path,
+        "zsh",
+        "/etc/zsh/zshenv",
+        euid=1000,
+        home="/home/" + _zsh_username(),
+        user=_zsh_username(),
+        shell_flags=("-o", "cshnullglob"),
+    )
+    assert out[1] == _user_path("/home/" + _zsh_username())
+
+
+@_needs("sh")
+def test_batched_trust_check_runs_from_root(tmp_path):
+    library, _ = _dropin_files(tmp_path)
+    log = tmp_path / "find-cwd"
+    find = tmp_path / "find"
+    find.write_text(f"#!{_tool('sh')}\npwd > {shlex.quote(str(log))}\n")
+    find.chmod(0o755)
+    library.write_text(library.read_text().replace("/usr/bin/find", str(find)))
+    result = subprocess.run(
+        [_tool("sh"), "-c", f". {shlex.quote(str(library))}; denbox_shell_trust"],
+        cwd=tmp_path,
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert (result.returncode, result.stderr) == (0, "")
+    assert log.read_text() == "/\n"
+
+
+@_needs("sh")
+def test_passed_batch_still_refuses_a_link(tmp_path):
+    library, _ = _dropin_files(tmp_path)
+    target = tmp_path / "target"
+    target.write_text("")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    result = subprocess.run(
+        [
+            _tool("sh"),
+            "-c",
+            f". {shlex.quote(str(library))}; _denbox_shell_trusted=1; "
+            'denbox_trusted "$1" && echo plain; '
+            'denbox_trusted "$2" && echo link; echo end',
+            "sh",
+            str(target),
+            str(link),
+        ],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.stdout.splitlines() == ["plain", "end"]
+
+
+@_needs("sh")
+def test_unreadable_env_file_warns_by_name_and_goes_on(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root reads every file")
+    _, wrapper = _dropin_files(tmp_path)
+    bad = _hook(tmp_path, "user-env.d", "10-bad.sh", "export BAD=yes")
+    bad.chmod(0o000)
+    _hook(tmp_path, "user-env.d", "20-good.sh", "export GOOD=yes")
+    result = subprocess.run(
+        [_tool("sh"), str(wrapper), _tool("sh"), "-c", 'echo "${BAD-unset} $GOOD"'],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "unset yes\n"
+    assert f"skipped unreadable env file {bad}" in result.stderr
+
+
 @_needs("sh", "bash", "id")
 @pytest.mark.parametrize("shell", ["sh", "bash"])
 def test_profile_ignores_inherited_zsh_version(tmp_path, shell):
