@@ -5413,6 +5413,56 @@ def test_login_startup_finds_drop_ins_under_the_callers_glob_options(
     assert out[-1] == ("yes" if with_env else "unset")
 
 
+@_needs("bash", "zsh", "id")
+@pytest.mark.parametrize(
+    ("shell", "target", "flags", "state"),
+    [
+        (
+            "bash",
+            "/etc/profile.d/00-container-home.sh",
+            ("-O", "dotglob"),
+            "shopt -q dotglob || exit 8; ",
+        ),
+        (
+            "zsh",
+            "/etc/zsh/zshenv",
+            ("-o", "globdots"),
+            "[[ -o globdots ]] || exit 8; ",
+        ),
+    ],
+    ids=["bash-dotglob", "zsh-globdots"],
+)
+def test_hidden_drop_ins_stay_hidden_under_the_callers_glob_options(
+    tmp_path, shell, target, flags, state
+):
+    # A snippet renamed to .disabled.sh is switched off whatever the caller set.
+    _hook(tmp_path, "user-env.d", ".disabled.sh", "export DROPIN=hidden")
+    _hook(tmp_path, "user-path.d", ".disabled.list", "/hidden/bin")
+    user = _zsh_username() if shell == "zsh" else _login_name()
+    out = _source_block(
+        tmp_path,
+        shell,
+        target,
+        euid=1000,
+        home="/home/" + user,
+        user=user,
+        shell_flags=flags,
+        after=state,
+        extra=("DROPIN",),
+    )
+    assert "/hidden/bin" not in out[1]
+    assert out[-1] == "unset"
+
+
+@_needs("sh", "env")
+def test_hidden_hook_does_not_run(tmp_path):
+    log = tmp_path / "hook-log"
+    _hook(tmp_path, "init.d", ".disabled", f"echo ran >> {shlex.quote(str(log))}")
+    result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    assert result.returncode == 0, result.stderr
+    assert not log.exists()
+
+
 @_needs("sh")
 @pytest.mark.parametrize("name", ["BASH_VERSION", "ZSH_VERSION"])
 @pytest.mark.parametrize(

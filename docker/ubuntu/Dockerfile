@@ -919,7 +919,9 @@ denbox_trusted_walk() (
     done
 )
 # Return newline-separated names in byte order. The subshell keeps the caller's
-# locale, -f and failglob as they are; a failglob error means no names.
+# locale, -f and failglob as they are; a failglob error means no names. Hidden
+# names are dropped by hand, as dotglob or globdots would expand them. No comment
+# with a quote inside the substitution: an interactive zsh parses it as code.
 # The caller reconstructs argv before sourcing, so env files keep their stdin.
 denbox_names() {
     local directory=$1 suffix=$2
@@ -930,6 +932,7 @@ denbox_names() {
         export LC_ALL
         for file in "$directory"/*"$suffix"; do
             [ -e "$file" ] || [ -L "$file" ] || continue
+            case "${file##*/}" in .*) continue ;; esac
             case "$file" in
                 *'
 '*) printf 'denbox: skipped drop-in name containing a newline: %s\n' \
