@@ -242,6 +242,7 @@ jobs:
       - name: Check image drop-ins
         timeout-minutes: 5
         run: |
+          trap 'status=$?; cat "$RUNNER_TEMP"/hooks-private.err "$RUNNER_TEMP"/hooks.out 2>/dev/null || :; exit "$status"' ERR
           # Use the Docker daemon's loaded image and default builder.
           # shellcheck disable=SC2016
           docker build -t denbox-hooks - <<'DOCKERFILE'
@@ -257,11 +258,14 @@ jobs:
                 'printf user-ok > "$HOME/.config/hook-probe/ran"' \
                 > /etc/denbox/user-init.d/10-probe && \
               printf '%s\n' 'export DENBOX_PROBE=env-ok' \
+                'export DENBOX_ENV_UIDS="${DENBOX_ENV_UIDS-}$(id -u) "' \
                 > /etc/denbox/user-env.d/10-probe.sh && \
               printf '%s\n' /opt/hook-bin > /etc/denbox/user-path.d/10-probe.list && \
               printf '%s\n' 'd .config/hook-probe' > /etc/denbox/state-paths.d/10-probe.list && \
               printf '%s\n' '#!/bin/sh' 'exit 9' > /etc/denbox/user-init.d/20-private && \
               chmod 0700 /etc/denbox/user-init.d/20-private && \
+              printf '%s\n' '#!/bin/sh' 'exit 9' > /etc/denbox/user-init.d/21-unreadable && \
+              chmod 0711 /etc/denbox/user-init.d/21-unreadable && \
               chmod 0755 /etc/denbox/init.d/10-probe /etc/denbox/user-init.d/10-probe
           DOCKERFILE
           docker volume create denbox-hooks-state
@@ -269,11 +273,14 @@ jobs:
             [ "$(cat /run/denbox-hook)" = root-ok ]
             [ "$(cat "$HOME/.config/hook-probe/ran")" = user-ok ]
             [ "$DENBOX_PROBE" = env-ok ]
+            [ "$DENBOX_ENV_UIDS" = "1000 " ]
             [ "$PATH" = /opt/hook-bin:/home/dev/.nvm/current/bin:/home/dev/.local/bin:/home/dev/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ]
           ' 2>"$RUNNER_TEMP/hooks-private.err"
           grep -F 'not executable by dev: /etc/denbox/user-init.d/20-private' \
             "$RUNNER_TEMP/hooks-private.err"
-          docker run --rm --user dev denbox-hooks sh -ec '[ "$DENBOX_PROBE" = env-ok ]'
+          grep -F 'user hook failed or timed out (2): /etc/denbox/user-init.d/21-unreadable' \
+            "$RUNNER_TEMP/hooks-private.err"
+          docker run --rm --user dev denbox-hooks sh -ec '[ "$DENBOX_PROBE" = env-ok ] && [ "$DENBOX_ENV_UIDS" = "1000 " ]'
           docker build -t denbox-hooks-user-fail - <<'DOCKERFILE'
           FROM denbox-hooks
           RUN printf '%s\n' '#!/bin/sh' 'exit 7' > /etc/denbox/user-init.d/20-fail && \
@@ -290,6 +297,7 @@ jobs:
           DOCKERFILE
           if docker run --rm denbox-hooks-root-fail true >"$RUNNER_TEMP/hooks.out" 2>&1; then
             echo '::error::a failing root hook did not stop the start'
+            cat "$RUNNER_TEMP/hooks.out"
             exit 1
           fi
           grep -F 'Root hook failed (8): /etc/denbox/init.d/20-fail' "$RUNNER_TEMP/hooks.out"

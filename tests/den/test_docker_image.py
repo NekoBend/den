@@ -441,6 +441,9 @@ def _source_block(
     histfile: str = "",
     extra: tuple[str, ...] = (),
     inherited_path: str = SYSTEM_PATH,
+    shell_flags: tuple[str, ...] = (),
+    after: str = "",
+    before: str = "",
 ) -> list[str]:
     """Source the block twice in ``shell``.
 
@@ -468,18 +471,19 @@ def _source_block(
     # Set everything inside the probe: zsh reads the real /etc/zsh/zshenv even
     # with -f, and in this image that file runs the very block under test.
     probe = (
-        f"export HOME={shlex.quote(home)} PATH={shlex.quote(inherited_path)}; "
+        before + f"export HOME={shlex.quote(home)} PATH={shlex.quote(inherited_path)}; "
         "unset skip_global_compinit HISTFILE USER LOGNAME"
         + "".join(f" {name}" for name in extra)
         + "; "
         + (f"HISTFILE={shlex.quote(histfile)}; " if histfile else "")
         + f". {shlex.quote(str(block))}; . {shlex.quote(str(block))}; "
-        'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}" '
+        + after
+        + 'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}" '
         '"${HISTFILE-unset}" "${USER-unset}"'
         + "".join(f' "${{{name}-unset}}"' for name in extra)
     )
     flags = {"zsh": ["-f"], "bash": ["--norc"], "sh": []}[shell]
-    argv = [_tool(shell), *flags, "-c", probe]
+    argv = [_tool(shell), *flags, *shell_flags, "-c", probe]
     result = subprocess.run(
         argv,
         env={"FAKE_EUID": str(euid), "PATH": SYSTEM_PATH},
@@ -840,6 +844,7 @@ def _run_entrypoint(
         "  *) exit 2 ;;\n"
         "esac",
     )
+    stub("setopt", 'echo unexpected-setopt >&2; exit 99')
     stub("groupadd", logged)
     stub(
         "usermod",
@@ -4786,6 +4791,7 @@ def test_shell_trust_batches_candidates_in_one_process(tmp_path, shell):
     result = subprocess.run(
         [
             _tool(shell),
+            *(["-o", "nonomatch"] if shell == "zsh" else []),
             "-c",
             f". {shlex.quote(str(library))}; denbox_shell_trust; "
             'denbox_user_path; denbox_user_env; printf "%s\\n" "$DROPIN"',
@@ -4846,8 +4852,8 @@ def test_user_exec_skips_env_syntax_errors_and_runs_command(tmp_path, body):
         ("bash", ("--norc", "-i")),
         ("bash", ("--norc", "--posix")),
         ("bash", ("--norc", "--posix", "-i")),
-        ("zsh", ("-f",)),
-        ("zsh", ("-f", "-i")),
+        ("zsh", ("-f", "-o", "nonomatch")),
+        ("zsh", ("-f", "-i", "-o", "nonomatch")),
     ],
 )
 def test_shell_env_syntax_errors_warn_and_continue(tmp_path, shell, flags):
@@ -4915,7 +4921,7 @@ def test_shell_identity_ignores_inherited_euid(tmp_path, shell, inherited, proc)
         ("bash", "/etc/bash.bashrc"),
     ],
 )
-@pytest.mark.parametrize("uid", ["0", "1000", "unknown"])
+@pytest.mark.parametrize("uid", ["0", "1000", "2000", "unknown"])
 def test_startup_uses_kernel_uid_and_skips_unknown_identity(
     tmp_path, shell, target, uid
 ):
@@ -4966,6 +4972,503 @@ def test_startup_uses_kernel_uid_and_skips_unknown_identity(
     expected = (
         ["/home/dev", _user_path("/home/dev"), "yes"]
         if uid == "1000"
-        else ["/root", SYSTEM_PATH, "unset"]
+        else [
+            "/root",
+            _user_path("/root") if uid == "2000" else SYSTEM_PATH,
+            "unset",
+        ]
     )
     assert result.stdout.splitlines() == expected
+
+
+def _dropin_probe(tmp_path, shell, command, *, flags=(), env=None):
+    library, _ = _dropin_files(tmp_path)
+    return subprocess.run(
+        [_tool(shell), *flags, "-c", f". {shlex.quote(str(library))}; {command}"],
+        env={"HOME": str(tmp_path), "PATH": SYSTEM_PATH, **(env or {})},
+        input="caller-input\ncaller-input\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+
+@_needs("dash", "bash")
+@pytest.mark.parametrize(
+    "body",
+    ['. "$HOME/missing/env"', "echo ${bad!}", "if then fi ("],
+)
+@pytest.mark.parametrize("shell", ["dash", "bash"])
+@pytest.mark.parametrize("route", ["wrapper", "login"])
+def test_fatal_env_errors_skip_file_and_continue(tmp_path, body, shell, route):
+    library, wrapper = _dropin_files(tmp_path)
+    bad = _hook(tmp_path, "user-env.d", "10-bad.sh", body)
+    _hook(tmp_path, "user-env.d", "20-good.sh", "export DROPIN=good")
+    flags = ["--posix"] if shell == "bash" else []
+    if route == "wrapper":
+        script = wrapper.read_text().split("\n", 1)[1]
+    else:
+        account = tmp_path / "container-user"
+        account.write_text("dev\n")
+        status = tmp_path / "status"
+        status.write_text("Uid:\t1000\t1000\t1000\t1000\n")
+        passwd = tmp_path / "passwd"
+        passwd.write_text("dev:x:1000:1000::/home/dev:/bin/sh\n")
+        library.write_text(
+            library.read_text()
+            .replace("/proc/self/status", str(status))
+            .replace("/etc/passwd", str(passwd))
+        )
+        script = (
+            _appended_block("/etc/profile.d/00-container-home.sh")
+            .replace("/etc/container-user", str(account))
+            .replace("/usr/local/lib/denbox/dropins.sh", str(library))
+        )
+        flags += ["-l"]
+    result = subprocess.run(
+        [
+            _tool(shell),
+            *flags,
+            "-c",
+            script + '\nprintf "command:%s\\n" "$DROPIN"',
+            "probe",
+            _tool("sh"),
+            "-c",
+            'printf "command:%s\\n" "$DROPIN"',
+        ],
+        env={"HOME": str(tmp_path), "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "command:good\n"
+    assert str(bad) in result.stderr
+    assert "source it in this shell" in result.stderr
+
+
+@_needs("dash", "bash", "zsh")
+@pytest.mark.parametrize("shell", ["dash", "bash", "zsh"])
+@pytest.mark.parametrize("locale", [None, "", "C.UTF-8"])
+def test_dropins_preserve_locale_and_env_stdin(tmp_path, shell, locale):
+    _hook(
+        tmp_path,
+        "user-env.d",
+        "env.sh",
+        'read -r INPUT; export INPUT SEEN="${LC_ALL-unset}"',
+    )
+    result = _dropin_probe(
+        tmp_path,
+        shell,
+        "denbox_user_path; denbox_user_env; "
+        'printf "%s\\n" "${LC_ALL-unset}" "$SEEN" "$INPUT"',
+        flags=("-o", "nonomatch") if shell == "zsh" else (),
+        env={} if locale is None else {"LC_ALL": locale},
+    )
+    assert result.returncode == 0, result.stderr
+    expected = "unset" if locale is None else locale
+    assert result.stdout.splitlines() == [expected, expected, "caller-input"]
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("locale", [None, "C.UTF-8"])
+def test_root_hooks_inherit_locale(tmp_path, locale):
+    marker = tmp_path / "locale"
+    _hook(
+        tmp_path,
+        "init.d",
+        "10-locale",
+        f'printf "%s" "${{LC_ALL-unset}}" > {shlex.quote(str(marker))}',
+    )
+    _hook(tmp_path, "init.d", "20-later", ":")
+    result, _ = _run_entrypoint(
+        tmp_path, uid=0, env={} if locale is None else {"LC_ALL": locale}
+    )
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text() == ("unset" if locale is None else locale)
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("uid", [0, 1000])
+def test_inherited_zsh_version_never_runs_setopt(tmp_path, uid):
+    result, _ = _run_entrypoint(tmp_path, uid=uid, env={"ZSH_VERSION": "fake"})
+    assert result.returncode == 0, result.stderr
+    assert "unexpected-setopt" not in result.stderr
+
+
+@_needs("sh")
+def test_user_exec_ignores_inherited_zsh_version(tmp_path):
+    _, wrapper = _dropin_files(tmp_path)
+    setopt = tmp_path / "setopt"
+    setopt.write_text("#!/bin/sh\necho unexpected-setopt >&2\n")
+    setopt.chmod(0o755)
+    result = subprocess.run(
+        [str(wrapper), _tool("sh"), "-c", "echo ran"],
+        env={"PATH": f"{tmp_path}:{SYSTEM_PATH}", "ZSH_VERSION": "fake"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ran\n"
+    assert result.stderr == ""
+
+
+@_needs("sh", "env")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read mode 000 files")
+def test_unreadable_path_list_does_not_abort_strict_entrypoint(tmp_path):
+    path = _hook(tmp_path, "user-path.d", "10-private.list", "/unsafe")
+    path.chmod(0o000)
+    result, _ = _run_entrypoint(tmp_path, uid=1000, env={})
+    assert result.returncode == 0, result.stderr
+    assert "unreadable path list" in result.stderr
+    assert str(path) in result.stderr
+    assert "/unsafe" not in result.stdout
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("failure", ["linking", "hook", "untrusted"])
+def test_user_hook_problems_do_not_skip_later_hooks(tmp_path, failure):
+    marker = tmp_path / "later"
+    first = _hook(tmp_path, "user-init.d", "10-first", "exit 7")
+    if failure == "untrusted":
+        first.chmod(0o777)
+    _hook(
+        tmp_path,
+        "user-init.d",
+        "20-later",
+        f"echo ran > {shlex.quote(str(marker))}",
+    )
+    state = tmp_path / "state"
+    state.mkdir()
+    result, _ = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"FAKE_STATE_LINK_STATUS": "1"} if failure == "linking" else {},
+        mounts=("/workspace", str(state)),
+    )
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text() == "ran\n"
+
+
+@_needs("sh", "env")
+def test_root_start_does_not_source_env_before_setpriv(tmp_path):
+    marker = tmp_path / "env-ran"
+    _hook(
+        tmp_path,
+        "user-env.d",
+        "env.sh",
+        f"echo unsafe > {shlex.quote(str(marker))}",
+    )
+    result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    # This setpriv stub does not execute user-exec. CI checks the real UID.
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("kind", ["init.d", "user-init.d", "user-env.d", "user-path.d"])
+def test_dangling_dropins_are_rejected(tmp_path, kind):
+    _dropin_files(tmp_path)
+    suffix = ".sh" if kind == "user-env.d" else ".list"
+    bad = tmp_path / "denbox" / kind / ("10-dangling" + suffix)
+    bad.symlink_to(tmp_path / "missing")
+    if kind in {"init.d", "user-init.d"}:
+        result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    else:
+        result = _dropin_probe(tmp_path, "sh", "denbox_user_path; denbox_user_env")
+    assert (result.returncode != 0) == (kind == "init.d")
+    assert str(bad) in result.stderr
+
+
+@_needs("sh")
+@pytest.mark.parametrize("stat_body", ["exit 1", "echo 0:", "echo nonsense"])
+def test_stat_failure_is_untrusted(tmp_path, stat_body):
+    library, _ = _dropin_files(tmp_path)
+    path = _hook(tmp_path, "user-env.d", "env.sh", "export DROPIN=unsafe")
+    metadata = tmp_path / "metadata"
+    metadata.write_text(f"#!/bin/sh\n{stat_body}\n")
+    result = subprocess.run(
+        [
+            _tool("sh"),
+            "-c",
+            f". {shlex.quote(str(library))}; "
+            f"if denbox_trusted {shlex.quote(str(path))}; then exit 9; fi",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@_needs("sh")
+def test_hidden_path_lists_are_ignored(tmp_path):
+    _hook(tmp_path, "user-path.d", ".hidden.list", "/unsafe")
+    result = _dropin_probe(tmp_path, "sh", 'denbox_user_path; echo "$PATH"')
+    assert result.returncode == 0, result.stderr
+    assert "/unsafe" not in result.stdout
+    assert result.stderr == ""
+
+
+@_needs("dash", "bash", "zsh")
+@pytest.mark.parametrize("shell", ["dash", "bash", "zsh"])
+def test_env_restores_strict_caller_options(tmp_path, shell):
+    _hook(
+        tmp_path,
+        "user-env.d",
+        "env.sh",
+        'export OPTIONAL="$UNSET_OPTIONAL"\nfalse\nexport AFTER=yes',
+    )
+    result = _dropin_probe(
+        tmp_path,
+        shell,
+        "set -eu; denbox_user_env; "
+        "case $- in *e*) ;; *) exit 8 ;; esac; "
+        'case $- in *u*) ;; *) exit 9 ;; esac; echo "$AFTER"',
+        flags=("-o", "nonomatch") if shell == "zsh" else (),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "yes\n"
+
+
+@_needs("sh", "env")
+def test_user_hook_exit_126_is_reported_as_failure(tmp_path):
+    hook = _hook(tmp_path, "user-init.d", "ran", "echo body-ran; exit 126")
+    result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    assert result.returncode == 0, result.stderr
+    assert "body-ran" in result.stdout
+    assert f"user hook failed or timed out (126): {hook}" in result.stderr
+    assert "not executable" not in result.stderr
+
+
+@_needs("zsh", "id")
+@pytest.mark.parametrize("flags", [("-F",), ("-o", "noglob"), ("-o", "cshnullglob")])
+def test_zsh_startup_scopes_options_and_removes_helpers(tmp_path, flags):
+    _hook(
+        tmp_path,
+        "user-env.d",
+        "env.sh",
+        "denbox_probe() { echo from-function; }\nexport DROPIN=yes",
+    )
+    out = _source_block(
+        tmp_path,
+        "zsh",
+        "/etc/zsh/zshenv",
+        euid=1000,
+        home="/home/" + _zsh_username(),
+        user=_zsh_username(),
+        shell_flags=flags,
+        after=(
+            "[[ -o cshnullglob ]] || exit 8; "
+            if "cshnullglob" in flags
+            else "[[ -o noglob ]] || exit 8; "
+        )
+        + "FROM_FUNCTION=$(denbox_probe); "
+        "if typeset -f denbox_user_env >/dev/null; then exit 9; fi; ",
+        extra=("DROPIN", "FROM_FUNCTION", "_denbox_shell_trusted"),
+    )
+    assert out[1] == _user_path("/home/" + _zsh_username())
+    assert out[-3:] == ["yes", "from-function", "unset"]
+
+
+@_needs("sh", "bash", "id")
+@pytest.mark.parametrize("shell", ["sh", "bash"])
+def test_profile_ignores_inherited_zsh_version(tmp_path, shell):
+    setopt = tmp_path / "setopt"
+    setopt.write_text("#!/bin/sh\necho unexpected-setopt >&2\n")
+    setopt.chmod(0o755)
+    out = _source_block(
+        tmp_path,
+        shell,
+        "/etc/profile.d/00-container-home.sh",
+        euid=1000,
+        home="/home/" + _login_name(),
+        user=_login_name(),
+        inherited_path=f"{tmp_path}:{SYSTEM_PATH}",
+        before="export ZSH_VERSION=fake; ",
+        after="if command -v denbox_user_env >/dev/null; then exit 9; fi; ",
+        extra=("_denbox_shell_trusted",),
+    )
+    assert out[-1] == "unset"
+
+
+@_needs("sh", "find")
+@pytest.mark.parametrize(
+    "bad", ["none", "file-mode", "parent-mode", "owner", "link", "find-failure"]
+)
+def test_batch_find_checks_real_predicates(tmp_path, bad):
+    library, _ = _dropin_files(tmp_path)
+    path = _hook(tmp_path, "user-env.d", "env.sh", ":")
+    config = tmp_path / "denbox"
+    if bad == "file-mode":
+        path.chmod(0o666)
+    elif bad == "parent-mode":
+        path.parent.chmod(0o777)
+    elif bad == "link":
+        path.unlink()
+        path.symlink_to(tmp_path / "missing")
+    text = library.read_text().replace(f"set -- / /etc {config}", f"set -- {config}")
+    # Model root ownership with our real UID; owner case deliberately differs.
+    expected_uid = os.geteuid() + (1 if bad == "owner" else 0)
+    text = text.replace("! -uid 0", f"! -uid {expected_uid}")
+    if bad == "find-failure":
+        find = tmp_path / "find"
+        find.write_text("#!/bin/sh\necho hidden-diagnostic >&2\nexit 1\n")
+        find.chmod(0o755)
+        text = text.replace("/usr/bin/find", str(find))
+    library.write_text(text)
+    result = subprocess.run(
+        [
+            _tool("sh"),
+            "-c",
+            f". {shlex.quote(str(library))}; denbox_shell_trust; "
+            'printf "%s\\n" "$_denbox_shell_trusted"',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ("1\n" if bad == "none" else "0\n")
+    assert result.stderr == ""
+
+
+@_needs("sh")
+def test_batch_find_runs_from_root_and_falls_back_quietly(tmp_path):
+    library, _ = _dropin_files(tmp_path)
+    find = tmp_path / "find"
+    find.write_text(
+        '#!/bin/sh\n[ "$PWD" = / ] || echo wrong-cwd\n'
+        "echo hidden-diagnostic >&2\nexit 1\n"
+    )
+    find.chmod(0o755)
+    library.write_text(library.read_text().replace("/usr/bin/find", str(find)))
+    result = subprocess.run(
+        [
+            _tool("sh"),
+            "-c",
+            f". {shlex.quote(str(library))}; denbox_shell_trust; "
+            'denbox_user_path; echo "$PATH"',
+        ],
+        cwd=tmp_path,
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _user_path("/home/dev") + "\n"
+    assert result.stderr == ""
+
+
+@_needs("sh")
+def test_fast_trust_path_does_not_enter_ancestor_subshell(tmp_path):
+    library, _ = _dropin_files(tmp_path)
+    path = _hook(tmp_path, "user-env.d", "env.sh", ":")
+    library.write_text(
+        library.read_text().replace(
+            "    # Check every ancestor too:",
+            "    echo unexpected-walk\n    # Check every ancestor too:",
+        )
+    )
+    result = subprocess.run(
+        [
+            _tool("sh"),
+            "-c",
+            f". {shlex.quote(str(library))}; _denbox_shell_trusted=1; "
+            f"denbox_trusted {shlex.quote(str(path))}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+@_needs("sh", "env")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read scripts")
+def test_unreadable_user_script_warns_with_status(tmp_path):
+    # Owner's 0311 read permission matches a non-owner's root-owned 0711.
+    hook = _hook(tmp_path, "user-init.d", "unreadable", "echo should-not-run")
+    hook.chmod(0o311)
+    result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    assert result.returncode == 0, result.stderr
+    assert f"user hook failed or timed out (2): {hook}" in result.stderr
+    assert "should-not-run" not in result.stdout
+
+
+@_needs("bash", "zsh", "locale")
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+def test_byte_order_in_collating_utf8_locale(tmp_path, shell):
+    available = subprocess.run(
+        [_tool("locale"), "-a"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout.splitlines()
+    locale = next(
+        (name for name in available if name.lower() in {"en_us.utf8", "en_us.utf-8"}),
+        None,
+    )
+    if locale is None:
+        pytest.skip("a collating UTF-8 locale is not installed")
+    for name, value in (("10-B", "B"), ("10-a", "a")):
+        _hook(
+            tmp_path,
+            "user-env.d",
+            name + ".sh",
+            f'export ORDER="${{ORDER-}}{value}"',
+        )
+        _hook(tmp_path, "user-path.d", name + ".list", f"/{value}")
+    result = _dropin_probe(
+        tmp_path,
+        shell,
+        'denbox_user_path; denbox_user_env; printf "%s\\n" "$ORDER" "$PATH"',
+        flags=("-o", "nonomatch") if shell == "zsh" else (),
+        env={"LC_ALL": locale},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[0] == "Ba"
+    assert result.stdout.splitlines()[1].startswith("/B:/a:")
+
+
+def test_ci_prints_captured_hook_errors():
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    script = next(s["run"] for s in steps if s.get("name") == "Check image drop-ins")
+    assert "trap " in script and " ERR" in script
+    assert 'cat "$RUNNER_TEMP"/hooks-private.err "$RUNNER_TEMP"/hooks.out' in script
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("kind", ["init.d", "user-init.d", "user-env.d", "user-path.d"])
+def test_newline_dropin_names_are_skipped(tmp_path, kind):
+    marker = tmp_path / "unsafe"
+    suffix = ".sh" if kind == "user-env.d" else ".list"
+    _hook(
+        tmp_path,
+        kind,
+        "10-new\nline" + suffix,
+        "/unsafe"
+        if kind == "user-path.d"
+        else f"echo unsafe > {shlex.quote(str(marker))}",
+    )
+    if kind in {"init.d", "user-init.d"}:
+        result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    else:
+        result = _dropin_probe(
+            tmp_path, "sh", 'denbox_user_path; denbox_user_env; echo "$PATH"'
+        )
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert "/unsafe" not in result.stdout
+    assert "name containing a newline" in result.stderr

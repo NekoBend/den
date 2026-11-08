@@ -312,13 +312,14 @@ All image drop-ins live under `/etc/denbox/`. Names are processed in byte
 order (`LC_ALL=C`); use numeric prefixes to make dependencies explicit.
 Hook names are non-hidden directory entries; non-executable regular files
 are ignored. Hidden hook, env and PATH-list names are ignored. denbox ships
-empty hook and env directories.
+empty hook and env directories. Names containing a newline are skipped with a
+warning; they are not supported.
 
 | Directory | Contract |
 | --- | --- |
-| `init.d/` | Executables run as root at each root start, after ID remapping, ownership walks and state-root preparation, before state-link. Working directory: `/`; `HOME=/root`; other inherited settings (including `docker run -e`) remain available. Stdin: `/dev/null`. Arguments: user home, final UID, final GID. A failure or untrusted entry stops the start and names the hook. There is no time limit: keep root hooks short. |
-| `user-init.d/` | Executables run after state-link, even when state is disabled or linking failed. Each runs through setpriv with the final IDs and the account's supplementary groups, and `env -i HOME=<home> PATH=/usr/sbin:/usr/bin:/sbin:/bin`, with no arguments and stdin from `/dev/null`. Hooks must be executable by that user, and scripts readable too (0755 works; 0700 and 0744 do not for a non-root user outside the owning group). A permission failure warns with the user and hook names. Each gets `gnutimeout -k 10 300`, as state-link does. Failure, timeout or untrusted entry warns by name and startup continues. |
-| `user-env.d/*.sh` | dash/POSIX precheck; normal bash/zsh add no process. See below. |
+| `init.d/` | Executables run as root at each root start, after ID remapping, ownership walks and state-root preparation, before state-link. Working directory: `/`; `HOME=/root`; `PATH=/usr/sbin:/usr/bin:/sbin:/bin`; other inherited settings (including `docker run -e`) remain available. Stdin: `/dev/null`. Arguments: user home, final UID, final GID. A failure or untrusted entry stops the start and names the hook. There is no time limit: keep root hooks short. |
+| `user-init.d/` | Executables run after state-link, even when state is disabled or linking failed. Each runs through setpriv with the final IDs and the account's supplementary groups, and `env -i HOME=<home> PATH=/usr/sbin:/usr/bin:/sbin:/bin`, with no arguments and stdin from `/dev/null`. Hooks must be executable by that user, and scripts readable too (0755 works; 0700 and 0744 do not for a non-root user outside the owning group). The inner execute-permission check warns with the user and hook names; other execution failures, including unreadable scripts, warn with their status. Each gets `gnutimeout -k 10 300`, as state-link does. Failure, timeout or untrusted entry warns by name and startup continues. |
+| `user-env.d/*.sh` | Sourced as the container user. Files rejected by the fatal-error dry run are skipped; source errors the shell catches warn and continue. See below. |
 | `user-path.d/*.list` | One literal directory per line, absolute or relative to HOME. Blank lines and lines beginning with `#` are ignored. Colons are invalid; there is no variable, tilde or command expansion. Missing directories are prepended in list/line order, once each. Entries already in PATH stay where they are; the inherited PATH is otherwise unchanged, so activated venvs and `nvm use` keep precedence in nested shells. A final line without newline is read. Invalid lines and untrusted lists warn and are skipped. |
 | `state-paths.d/*.list` | Adds home paths to state-link, in the format of [The lists](#the-lists). These run before the environment's own `~/.config/denbox/state-paths` list. Linking problems warn and startup continues. |
 
@@ -328,12 +329,17 @@ and login profile. Use shell syntax supported by dash, bash and zsh, and
 `export` variables. Files may be sourced repeatedly; keep them idempotent.
 They can override PATH and other variables. Sourcing does not enable errexit
 or nounset. A non-zero return warns by filename and startup continues.
-Syntax errors also warn by filename and startup continues with later files.
-dash (including user-exec) runs `/bin/sh -n` for each trusted env file and
-skips it on failure. Non-interactive POSIX bash uses `/bin/bash --posix -n`
-because a source syntax error would also terminate that shell. Normal bash,
-interactive POSIX bash and zsh catch source errors without an extra process.
-Untrusted files warn and are skipped.
+dash (including user-exec) and non-interactive POSIX bash first source each
+readable, trusted env file in a subshell with output suppressed. A non-zero
+dry-run status means the file aborted that shell, including on syntax errors,
+missing dot targets and fatal special-builtin errors. It warns by filename,
+explains how to see the error, and skips the file; later files and the command
+still run. This dry run runs files once more in these shells, so idempotence
+also matters within one start. Normal bash, interactive POSIX bash and zsh
+catch source errors without a dry-run process. A caught error can abandon
+the rest of that file, depending on the shell. Untrusted or unreadable files
+warn and are skipped. PATH lists and env files must be readable by the user.
+Env files receive the caller's stdin, never the internal name list.
 
 Shell identity in bash and profile.d comes from `/proc/self/status`, using
 builtins, with `/usr/bin/id -u` as a fallback if no numeric UID is read.
@@ -347,6 +353,8 @@ up to `/` must also be root-owned, not writable by group or others, and not a
 symbolic link. These are image interfaces: never place hooks or env files in
 the home or `/state`, or link the fixed directories there. State lists are
 data read by state-link as the user, under its existing validation rules.
+The trust rule reads owner and mode as the file system reports them, so do
+not bind-mount a host directory at or below `/etc/denbox`.
 
 Non-root starts skip both hook directories and state-link. Env files run only
 as the container user, never as root or an unrelated shell user. The PATH
@@ -355,6 +363,21 @@ PATH never gets their entries. denbox's own list is
 `/etc/denbox/user-path.d/denbox.list`; the image's root PATH stays system-only.
 A shell-less `docker exec` bypasses these startup files; use `zsh -lc`
 when you need the user's environment.
+
+For the trusted common case, each non-root zsh, non-login interactive bash,
+or login profile runs one batched find (one child process). Root shell blocks
+run no drop-in child processes. Interactive login bash delegates to profile.d
+once. Identity uses builtins unless /proc needs the one-process id fallback.
+A passed batch adds no per-file trust forks. Each directory with two or more
+candidates adds one subshell to expand names in byte order; zero or one adds
+none. dash and non-interactive POSIX bash add one dry-run subshell per readable
+trusted env file. Normal bash and zsh add none for sourcing. Thus the base
+image's non-root startup blocks use one child each, with no env files and only
+denbox.list. Helpers and their private flags are removed after shell startup.
+The entrypoint and user-exec retain per-file ancestor walks (one subshell and
+one stat process per ancestor); hook execution and privilege-drop processes
+are additional. These counts describe drop-in work, not other shell startup
+files or commands run by a drop-in.
 
 For example, extend the image without editing its entrypoint or shell files:
 
@@ -372,9 +395,9 @@ RUN printf '%s\n' '.local/mytool/bin' > /etc/denbox/user-path.d/10-mytool.list &
 
 Root hooks receive user-controlled paths as arguments. Validate those paths
 before touching them, avoid following links, and delegate work inside the
-home and state volume to user hooks. Env files are trusted image code; errors
-in their shell syntax or an explicit `exit` can stop the user's shell or
-command.
+home and state volume to user hooks. Env files are trusted image code, not
+sandboxed programs: for example, an explicit `exit` or `exec` can still stop
+the calling shell or command. The dry run does not undo external side effects.
 
 ## What survives where
 

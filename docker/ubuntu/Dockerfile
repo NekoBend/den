@@ -604,15 +604,20 @@ reown() (
         -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
 )
 
-# Hook traversal runs in a subshell so byte ordering does not change the
-# locale of the user's command. Every candidate is checked before execution.
+# Every candidate is checked before execution; hooks keep the caller's locale.
 run_hooks() (
-    LC_ALL=C
-    export LC_ALL
-    for hook in "$1"/*; do
+    hook_kind=$2
+    denbox_names "$1" ''
+    set --
+    while IFS= read -r hook; do
+        [ -z "$hook" ] || set -- "$@" "$hook"
+    done <<EOF
+$_denbox_names
+EOF
+    for hook do
         [ -e "$hook" ] || [ -L "$hook" ] || continue
         if ! denbox_trusted "$hook"; then
-            if [ "$2" = root ]; then
+            if [ "$hook_kind" = root ]; then
                 fail "Untrusted root hook: $hook"
             fi
             warn "skipped untrusted user hook: $hook"
@@ -620,7 +625,7 @@ run_hooks() (
         fi
         [ -x "$hook" ] || continue
         hook_status=0
-        if [ "$2" = root ]; then
+        if [ "$hook_kind" = root ]; then
             (
                 cd / || exit 1
                 HOME=/root
@@ -639,9 +644,7 @@ run_hooks() (
                     fi
                     exec "$@"
                 ' "$username" "$hook" < /dev/null || hook_status=$?
-            if [ "$hook_status" = 126 ]; then
-                warn "user hook not executable by $username: $hook"
-            elif [ "$hook_status" != 0 ]; then
+            if [ "$hook_status" != 0 ]; then
                 warn "user hook failed or timed out ($hook_status): $hook"
             fi
         fi
@@ -843,21 +846,20 @@ cat > /etc/denbox/user-path.d/denbox.list <<'USER_PATHS'
 USER_PATHS
 cat > /usr/local/lib/denbox/dropins.sh <<'DROPINS'
 # Shared by dash, bash and zsh. No caller-controlled search path or config.
-# local is supported by all three shells; zsh needs unmatched globs literal.
+# local is supported by all three shells; zsh options belong in zshenv.
 _denbox_shell_trusted=0
 # Shell startup can check all fixed parents and candidates in one process.
 # On any failure, fall back to the per-file ancestor checks and diagnostics.
 denbox_shell_trust() {
     local file bad
-    [ -z "${ZSH_VERSION-}" ] || setopt localoptions nonomatch
     _denbox_shell_trusted=0
     set -- / /etc /etc/denbox /etc/denbox/user-path.d /etc/denbox/user-env.d
     for file in /etc/denbox/user-path.d/*.list /etc/denbox/user-env.d/*.sh; do
         [ -e "$file" ] || [ -L "$file" ] || continue
         set -- "$@" "$file"
     done
-    if bad=$(/usr/bin/find "$@" -maxdepth 0 \
-        \( ! -uid 0 -o -perm /022 -o -type l \) -print -quit); then
+    if bad=$(cd / && exec /usr/bin/find "$@" -maxdepth 0 \
+        \( ! -uid 0 -o -perm /022 -o -type l \) -print -quit 2>/dev/null); then
         [ -n "$bad" ] || _denbox_shell_trusted=1
     fi
 }
@@ -888,11 +890,14 @@ denbox_shell_identity() {
         break
     done < /etc/passwd
 }
-denbox_trusted() (
+denbox_trusted() {
+    [ ! -L "$1" ] && [ -f "$1" ] || return 1
+    [ "${_denbox_shell_trusted:-0}" != 1 ] || return 0
+    denbox_trusted_walk "$1"
+}
+denbox_trusted_walk() (
     # Check every ancestor too: a writable parent can replace a trusted file.
     candidate=$1
-    [ ! -L "$candidate" ] && [ -f "$candidate" ] || exit 1
-    [ "$_denbox_shell_trusted" != 1 ] || exit 0
     while :; do
         [ ! -L "$candidate" ] || exit 1
         metadata=$(/usr/bin/gnustat -c '%u:%a' -- "$candidate") || exit 1
@@ -907,15 +912,52 @@ denbox_trusted() (
         [ -d "$candidate" ] || exit 1
     done
 )
+# Return newline-separated names without changing the caller's locale.
+# The caller reconstructs argv before sourcing, so env files keep their stdin.
+denbox_names() {
+    local directory=$1 suffix=$2 file count=0
+    _denbox_names=''
+    for file in "$directory"/*"$suffix"; do
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        case "$file" in
+            *'
+'*) printf 'denbox: skipped drop-in name containing a newline: %s\n' \
+                    "$directory" >&2; continue ;;
+        esac
+        _denbox_names="${_denbox_names}$file
+"
+        count=$((count + 1))
+    done
+    [ "$count" -ge 2 ] || return 0
+    _denbox_names=$(
+        LC_ALL=C
+        export LC_ALL
+        for file in "$directory"/*"$suffix"; do
+            [ -e "$file" ] || [ -L "$file" ] || continue
+            case "$file" in *'
+'*) continue ;; esac
+            printf '%s\n' "$file"
+        done
+    )
+}
 # Build a prefix in list/line order, preserving the inherited PATH suffix.
 denbox_user_path() {
-    local LC_ALL=C list line prefix='' dir
-    export LC_ALL
-    [ -z "${ZSH_VERSION-}" ] || setopt localoptions nonomatch
-    for list in /etc/denbox/user-path.d/*.list; do
+    local list line prefix='' dir _denbox_names
+    denbox_names /etc/denbox/user-path.d .list
+    set --
+    while IFS= read -r list; do
+        [ -z "$list" ] || set -- "$@" "$list"
+    done <<EOF
+$_denbox_names
+EOF
+    for list do
         [ -e "$list" ] || [ -L "$list" ] || continue
         if ! denbox_trusted "$list"; then
             printf 'denbox: skipped untrusted path list %s\n' "$list" >&2
+            continue
+        fi
+        if [ ! -r "$list" ]; then
+            printf 'denbox: skipped unreadable path list %s\n' "$list" >&2
             continue
         fi
         while IFS= read -r line || [ -n "$line" ]; do
@@ -935,41 +977,40 @@ denbox_user_path() {
 }
 # Only call this after identity has been checked or privileges dropped.
 denbox_user_env() {
-    local file saved_options saved_locale=${LC_ALL-} had_locale=${LC_ALL+x}
-    [ -z "${ZSH_VERSION-}" ] || setopt localoptions nonomatch
-    local syntax_shell='' syntax_status
-    # A source parse error kills dash and non-interactive POSIX bash.
-    # Normal bash and zsh catch it below without a preflight process.
-    if [ -z "${ZSH_VERSION-}" ]; then
-        if [ -n "${BASH_VERSION-}" ]; then
-            case $- in
-                *i*) ;;
-                *) if shopt -oq posix; then syntax_shell=bash; fi ;;
+    local file saved_options dry_run=1 _denbox_names
+    # Only normal bash, interactive POSIX bash and zsh catch source errors.
+    # Use no commands selected through inheritable shell-version variables.
+    case ${BASH_VERSION-}:${ZSH_VERSION-} in
+        :) ;;
+        *)
+            dry_run=0
+            case :${SHELLOPTS-}: in
+                *:posix:*) case $- in *i*) ;; *) dry_run=1 ;; esac ;;
             esac
-        else
-            syntax_shell=sh
-        fi
-    fi
-    # Expand the ordered names before sourcing; env files may set LC_ALL.
-    LC_ALL=C
-    export LC_ALL
-    set -- /etc/denbox/user-env.d/*.sh
-    if [ "$had_locale" = x ]; then
-        LC_ALL=$saved_locale
-        export LC_ALL
-    else
-        unset LC_ALL
-    fi
+            ;;
+    esac
+    denbox_names /etc/denbox/user-env.d .sh
+    set --
+    while IFS= read -r file; do
+        [ -z "$file" ] || set -- "$@" "$file"
+    done <<EOF
+$_denbox_names
+EOF
     for file do
         [ -e "$file" ] || [ -L "$file" ] || continue
         if denbox_trusted "$file"; then
-            syntax_status=0
-            case "$syntax_shell" in
-                sh) /bin/sh -n "$file" || syntax_status=$? ;;
-                bash) /bin/bash --posix -n "$file" || syntax_status=$? ;;
-            esac
-            if [ "$syntax_status" != 0 ]; then
-                printf 'denbox: skipped env file with syntax error: %s\n' \
+            if [ ! -r "$file" ]; then
+                printf 'denbox: skipped unreadable env file %s\n' "$file" >&2
+                continue
+            fi
+            # A missing dot target or a bad special builtin can kill dash
+            # even in an if condition. Parse-only checks cannot detect that.
+            if [ "$dry_run" = 1 ] && ! (
+                set +eu
+                . "$file"
+                exit 0
+            ) >/dev/null 2>&1; then
+                printf 'denbox: skipped env file that aborts the shell: %s; source it in this shell to see the error\n' \
                     "$file" >&2
                 continue
             fi
@@ -1686,14 +1727,21 @@ else
             setopt no_hist_save_by_copy
         fi
     fi
-    # shellcheck source=/dev/null
-    . /usr/local/lib/denbox/dropins.sh
-    denbox_shell_trust
-    denbox_user_path
-    if [[ "$USERNAME" == "$(</etc/container-user)" ]]; then
-        denbox_user_env
-    fi
+    () {
+        setopt localoptions glob nonomatch
+        unsetopt cshnullglob nullglob
+        # shellcheck source=/dev/null
+        . /usr/local/lib/denbox/dropins.sh
+        denbox_shell_trust
+        denbox_user_path
+        if [[ "$USERNAME" == "$(</etc/container-user)" ]]; then
+            denbox_user_env
+        fi
+    }
 fi
+unset _denbox_shell_trusted _denbox_uid _denbox_is_user _container_user
+unset -f denbox_shell_trust denbox_shell_identity denbox_trusted \
+    denbox_trusted_walk denbox_names denbox_user_path denbox_user_env
 CONTAINER_ZSH_ENV
 cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
 
@@ -1719,8 +1767,7 @@ elif [ -n "$_denbox_uid" ]; then
             HISTFILE=$HOME/.bash_history
         fi
     fi
-    # /etc/profile reads bash.bashrc before profile.d for an interactive
-    # login. Let profile.d do this once, after /etc/profile sets PATH.
+    # Let profile.d do this once; /etc/profile reads this file first.
     if ! shopt -q login_shell; then
         denbox_shell_trust
         denbox_user_path
@@ -1730,6 +1777,8 @@ elif [ -n "$_denbox_uid" ]; then
     fi
 fi
 unset _container_user _denbox_uid _denbox_is_user _denbox_shell_trusted
+unset -f denbox_shell_trust denbox_shell_identity denbox_trusted \
+    denbox_trusted_walk denbox_names denbox_user_path denbox_user_env
 CONTAINER_BASH_RC
 cat > /etc/profile.d/00-container-home.sh <<'CONTAINER_PROFILE'
 # A login shell (bash -l, sh -l) finds ~/.profile through HOME, and
@@ -1756,6 +1805,8 @@ elif [ -n "$_denbox_uid" ]; then
     fi
 fi
 unset _container_user _denbox_uid _denbox_is_user _denbox_shell_trusted
+unset -f denbox_shell_trust denbox_shell_identity denbox_trusted \
+    denbox_trusted_walk denbox_names denbox_user_path denbox_user_env
 CONTAINER_PROFILE
 chmod 0644 /etc/profile.d/00-container-home.sh
 cat >> /etc/zsh/zshrc <<'ROOT_ZSH_WARNING'
