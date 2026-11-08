@@ -4,7 +4,8 @@ name: dev image
 # so CI builds it only when the image or this workflow changes, or on demand.
 # The build checks that the Dockerfile still works; the step after it checks
 # the HOME and PATH root gets with and without a shell, and runs dev's forms
-# from docker/README.md; the last one runs the image with a state volume.
+# from docker/README.md. The remaining steps check a state volume and build
+# an image FROM denbox to check its drop-ins.
 on:
   push:
     branches: [main]
@@ -146,8 +147,7 @@ jobs:
           check 'docker run: default command (zsh)' 'dev /home/dev' \
             docker run --rm -i denbox <<<'print -r -- "$(id -un) $HOME"'
           check 'docker run: HOME' /home/dev docker run --rm denbox printenv HOME
-          expected_path=$(docker run --rm denbox sh -c \
-            '. /usr/local/lib/denbox/dropins.sh; denbox_user_path; printf "%s" "$PATH"')
+          expected_path=/home/dev/.nvm/current/bin:/home/dev/.local/bin:/home/dev/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           check 'docker run: PATH' "$expected_path" docker run --rm denbox printenv PATH
 
           if [ "$failed" -ne 0 ]; then
@@ -260,6 +260,8 @@ jobs:
                 > /etc/denbox/user-env.d/10-probe.sh && \
               printf '%s\n' /opt/hook-bin > /etc/denbox/user-path.d/10-probe.list && \
               printf '%s\n' 'd .config/hook-probe' > /etc/denbox/state-paths.d/10-probe.list && \
+              printf '%s\n' '#!/bin/sh' 'exit 9' > /etc/denbox/user-init.d/20-private && \
+              chmod 0700 /etc/denbox/user-init.d/20-private && \
               chmod 0755 /etc/denbox/init.d/10-probe /etc/denbox/user-init.d/10-probe
           DOCKERFILE
           docker volume create denbox-hooks-state
@@ -267,8 +269,10 @@ jobs:
             [ "$(cat /run/denbox-hook)" = root-ok ]
             [ "$(cat "$HOME/.config/hook-probe/ran")" = user-ok ]
             [ "$DENBOX_PROBE" = env-ok ]
-            case "$PATH" in /opt/hook-bin:*) ;; *) exit 1 ;; esac
-          '
+            [ "$PATH" = /opt/hook-bin:/home/dev/.nvm/current/bin:/home/dev/.local/bin:/home/dev/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ]
+          ' 2>"$RUNNER_TEMP/hooks-private.err"
+          grep -F 'not executable by dev: /etc/denbox/user-init.d/20-private' \
+            "$RUNNER_TEMP/hooks-private.err"
           docker run --rm --user dev denbox-hooks sh -ec '[ "$DENBOX_PROBE" = env-ok ]'
           docker build -t denbox-hooks-user-fail - <<'DOCKERFILE'
           FROM denbox-hooks

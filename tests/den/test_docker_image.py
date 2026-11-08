@@ -403,7 +403,8 @@ def _dropin_files(tmp_path: Path) -> tuple[Path, Path]:
         "import os, stat, sys\n"
         "path = sys.argv[-1]\n"
         "info = os.lstat(path)\n"
-        "owner = 123 if path.endswith('non-root') else 0\n"
+        "owner = 123 if (path.endswith('non-root') or\n"
+        "    os.path.exists(path + '/.non-root-owner')) else 0\n"
         "mode = stat.S_IMODE(info.st_mode)\n"
         "if stat.S_ISDIR(info.st_mode) and not path.endswith('unsafe-dir'):\n"
         "    mode = 0o755\n"
@@ -439,6 +440,7 @@ def _source_block(
     user: str,
     histfile: str = "",
     extra: tuple[str, ...] = (),
+    inherited_path: str = SYSTEM_PATH,
 ) -> list[str]:
     """Source the block twice in ``shell``.
 
@@ -453,8 +455,8 @@ def _source_block(
     text = _appended_block(target).replace(
         "/usr/local/lib/denbox/dropins.sh", str(library)
     )
-    # bash and zsh blocks read $EUID; the POSIX sh profile script runs id -u.
-    euid_ref = '"$(id -u)"' if '"$(id -u)"' in text else '"$EUID"'
+    # Patch only the branch condition; identity still uses the real account.
+    euid_ref = '"$_denbox_uid"' if '"$_denbox_uid"' in text else '"$EUID"'
     block = tmp_path / "block"
     block.write_text(
         _patched(
@@ -466,7 +468,7 @@ def _source_block(
     # Set everything inside the probe: zsh reads the real /etc/zsh/zshenv even
     # with -f, and in this image that file runs the very block under test.
     probe = (
-        f"export HOME={shlex.quote(home)} PATH={SYSTEM_PATH}; "
+        f"export HOME={shlex.quote(home)} PATH={shlex.quote(inherited_path)}; "
         "unset skip_global_compinit HISTFILE USER LOGNAME"
         + "".join(f" {name}" for name in extra)
         + "; "
@@ -815,7 +817,7 @@ def _run_entrypoint(
     only log theirs. The entrypoint runs in tmp_path, with a stack limit of
     ``stack_kib`` KiB when that is given.
     """
-    library, wrapper = _dropin_files(tmp_path)
+    dropins = _dropin_files(tmp_path)
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
     stubs.mkdir()
@@ -896,8 +898,8 @@ def _run_entrypoint(
             _entrypoint_script(),
             {
                 **places,
-                "/usr/local/lib/denbox/dropins.sh": str(library),
-                "/usr/local/lib/denbox/user-exec": str(wrapper),
+                "/usr/local/lib/denbox/dropins.sh": str(dropins[0]),
+                "/usr/local/lib/denbox/user-exec": str(dropins[1]),
                 "root_hooks=/etc/denbox/init.d": (
                     f"root_hooks={tmp_path / 'denbox/init.d'}"
                 ),
@@ -933,6 +935,7 @@ def _run_entrypoint(
         command,
         env={"PATH": SYSTEM_PATH, "FAKE_MOUNTS": ":".join(mounts), **env},
         cwd=tmp_path,
+        input="hook-input\n",
         capture_output=True,
         text=True,
         check=False,
@@ -3240,11 +3243,16 @@ def test_zshenv_writes_a_linked_zsh_history_in_place(
     me = _zsh_username()
     user_file = tmp_path / "container-user"
     user_file.write_text(f"{me if same_user else me + '-other'}\n", encoding="utf-8")
+    library, _ = _dropin_files(tmp_path)
     block = tmp_path / "block"
     block.write_text(
         _patched(
             _appended_block("/etc/zsh/zshenv"),
-            {"/etc/container-user": str(user_file), '"$EUID"': '"$FAKE_EUID"'},
+            {
+                "/etc/container-user": str(user_file),
+                '"$EUID"': '"$FAKE_EUID"',
+                "/usr/local/lib/denbox/dropins.sh": str(library),
+            },
         ),
         encoding="utf-8",
     )
@@ -4578,3 +4586,149 @@ def test_other_shell_users_do_not_source_container_env(tmp_path, shell, target):
         user="another-user", extra=("DROPIN",),
     )
     assert out[-1] == "unset"
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize(
+    "body", ['false && export NEVER=yes', 'export OPTIONAL="$NOT_SET"'],
+)
+def test_user_exec_env_files_do_not_enable_errexit_or_nounset(tmp_path, body):
+    _, wrapper = _dropin_files(tmp_path)
+    hook = _hook(tmp_path, "user-env.d", "10-env.sh", body)
+    result = subprocess.run(
+        [str(wrapper), _tool("sh"), "-c", "echo command-ran"],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "command-ran\n"
+    if body.startswith("false"):
+        assert str(hook) in result.stderr
+    else:
+        assert result.stderr == ""
+
+
+@_needs("sh", "bash", "zsh", "id")
+@pytest.mark.parametrize(
+    ("shell", "target"),
+    [("sh", "/etc/profile.d/00-container-home.sh"),
+     ("bash", "/etc/bash.bashrc"), ("zsh", "/etc/zsh/zshenv")],
+)
+def test_nested_shell_preserves_activated_path(tmp_path, shell, target):
+    me = _zsh_username() if shell == "zsh" else _login_name()
+    home = "/home/" + me
+    inherited = f"/venv/bin:{_user_path(home)}::/duplicate:/duplicate:"
+    out = _source_block(
+        tmp_path, shell, target, euid=1000, home=home, user=me,
+        inherited_path=inherited,
+    )
+    assert out[1] == inherited
+
+
+@_needs("sh", "env")
+def test_root_hook_pins_home_and_cwd_but_keeps_operator_settings(tmp_path):
+    _hook(
+        tmp_path, "init.d", "context",
+        '[ "$PWD:$HOME:$SETTING" = /:/root:operator ]',
+    )
+    result, _ = _run_entrypoint(
+        tmp_path, uid=0, env={"HOME": "/home/dev", "SETTING": "operator"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("kind", ["init.d", "user-init.d"])
+@pytest.mark.parametrize("name", ["10-probe", "10-name=value"])
+def test_hook_names_with_equals_run_and_stdin_is_eof(tmp_path, kind, name):
+    marker = tmp_path / "ran"
+    _hook(
+        tmp_path, kind, name,
+        f"if read -r line; then exit 9; fi\n"
+        f"echo ran > {shlex.quote(str(marker))}",
+    )
+    result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert marker.read_text() == "ran\n"
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("kind", ["init.d", "user-init.d", "user-env.d"])
+@pytest.mark.parametrize("bad", ["other-writable", "parent-link", "parent-owner", "hidden"])
+def test_dropin_trust_boundaries(tmp_path, kind, bad):
+    _, wrapper = _dropin_files(tmp_path)
+    marker = tmp_path / "ran"
+    name = "probe.sh" if kind == "user-env.d" else "probe"
+    if bad == "hidden":
+        name = "." + name
+    hook = _hook(
+        tmp_path, kind, name, f"echo ran > {shlex.quote(str(marker))}",
+    )
+    if bad == "other-writable":
+        hook.chmod(0o757)
+    elif bad == "parent-link":
+        directory = hook.parent
+        target = directory.with_name("real-" + kind)
+        directory.rename(target)
+        directory.symlink_to(target, target_is_directory=True)
+    elif bad == "parent-owner":
+        # The metadata stub models ownership without requiring chown/root.
+        (hook.parent / ".non-root-owner").touch()
+    if kind == "user-env.d":
+        result = subprocess.run(
+            [str(wrapper), _tool("env")],
+            env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    else:
+        result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    assert not marker.exists()
+    assert (result.returncode != 0) == (kind == "init.d" and bad != "hidden")
+    if bad == "hidden":
+        assert result.stderr == ""
+    else:
+        assert str(hook) in result.stderr
+
+
+@_needs("sh", "bash", "zsh")
+@pytest.mark.parametrize("shell", ["sh", "bash", "zsh"])
+def test_shell_trust_batches_candidates_in_one_process(tmp_path, shell):
+    library, _ = _dropin_files(tmp_path)
+    log = tmp_path / "trust-calls"
+    find = tmp_path / "find"
+    find.write_text(f"#!{_tool('sh')}\necho find >> {shlex.quote(str(log))}\n")
+    find.chmod(0o755)
+    metadata = tmp_path / "metadata"
+    metadata.write_text(
+        f"#!{_tool('sh')}\necho stat >> {shlex.quote(str(log))}\nexit 1\n",
+    )
+    for name in ("10-first.sh", "20-second.sh"):
+        _hook(tmp_path, "user-env.d", name, "export DROPIN=yes")
+    library.write_text(library.read_text().replace("/usr/bin/find", str(find)))
+    result = subprocess.run(
+        [_tool(shell), "-c",
+         f". {shlex.quote(str(library))}; denbox_shell_trust; "
+         'denbox_user_path; denbox_user_env; printf "%s\\n" "$DROPIN"'],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "yes\n"
+    assert result.stderr == ""
+    assert log.read_text().splitlines() == ["find"]
+
+
+def test_ci_pins_base_and_derived_paths_literally():
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    base = next(
+        step["run"] for step in steps
+        if step.get("name") == "Check HOME and PATH for root and dev"
+    )
+    derived = next(
+        step["run"] for step in steps if step.get("name") == "Check image drop-ins"
+    )
+    expected = _user_path("/home/dev")
+    assert f"expected_path={expected}\n" in base
+    assert f'[ "$PATH" = /opt/hook-bin:{expected} ]' in derived

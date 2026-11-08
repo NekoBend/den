@@ -205,7 +205,8 @@ docker exec denbox sh -c 'apt-get update && apt-get install -y <package>'
 startup files: `/etc/zsh/zshenv`, which every zsh reads, and
 `/etc/bash.bashrc`, which only an interactive bash reads, set both, and
 `/etc/profile.d/00-container-home.sh`, which login shells (`bash -l`,
-`sh -l`) read, sets the home. So `docker exec -it --user dev denbox zsh`
+`sh -l`, including `bash -lc` and `sh -lc`) read, sets both and sources
+`user-env.d` for the container user. So `docker exec -it --user dev denbox zsh`
 works as it is. A `dev` command run without a shell, or through `bash -c` or
 `sh -c`, keeps `HOME=/root`, which `dev` cannot read, and the system `PATH`.
 Run it through zsh (`zsh -c` or `zsh -lc`), or pass `dev`'s home and the
@@ -310,14 +311,15 @@ system-only PATH shown above. Keep the inherited ENTRYPOINT.
 All image drop-ins live under `/etc/denbox/`. Names are processed in byte
 order (`LC_ALL=C`); use numeric prefixes to make dependencies explicit.
 Hook names are non-hidden directory entries; non-executable regular files
-are ignored. denbox ships empty hook and env directories.
+are ignored. Hidden hook, env and PATH-list names are ignored. denbox ships
+empty hook and env directories.
 
 | Directory | Contract |
 | --- | --- |
-| `init.d/` | Executables run as root at each root start, after ID remapping, ownership walks and state-root preparation, before state-link. Arguments: user home, final UID, final GID. A failure or untrusted entry stops the start and names the hook. There is no time limit: keep root hooks short. |
-| `user-init.d/` | Executables run after state-link, even when state is disabled or linking failed. Each runs through setpriv with the final IDs and the account's supplementary groups, and `env -i HOME=<home> PATH=/usr/sbin:/usr/bin:/sbin:/bin`, with no arguments. Each gets `gnutimeout -k 10 300`, as state-link does. Failure, timeout or untrusted entry warns by name and startup continues. |
-| `user-env.d/*.sh` | Sourced as the container user before its command at both root and non-root starts, and by that user's zshenv, interactive bash startup and login profile. Use shell syntax supported by dash, bash and zsh, and `export` variables. Files may be sourced repeatedly; keep them idempotent. They can override PATH and other variables. Untrusted files warn and are skipped. |
-| `user-path.d/*.list` | One literal directory per line, absolute or relative to HOME. Blank lines and lines beginning with `#` are ignored. Colons are invalid; there is no variable, tilde or command expansion. List/line order sets PATH order, duplicates are removed, and the inherited PATH follows. A final line without newline is read. Invalid lines and untrusted lists warn and are skipped. |
+| `init.d/` | Executables run as root at each root start, after ID remapping, ownership walks and state-root preparation, before state-link. Working directory: `/`; `HOME=/root`; other inherited settings (including `docker run -e`) remain available. Stdin: `/dev/null`. Arguments: user home, final UID, final GID. A failure or untrusted entry stops the start and names the hook. There is no time limit: keep root hooks short. |
+| `user-init.d/` | Executables run after state-link, even when state is disabled or linking failed. Each runs through setpriv with the final IDs and the account's supplementary groups, and `env -i HOME=<home> PATH=/usr/sbin:/usr/bin:/sbin:/bin`, with no arguments and stdin from `/dev/null`. Hooks must be executable by that user, and scripts readable too (0755 works; 0700 and 0744 do not for a non-root user outside the owning group). A permission failure warns with the user and hook names. Each gets `gnutimeout -k 10 300`, as state-link does. Failure, timeout or untrusted entry warns by name and startup continues. |
+| `user-env.d/*.sh` | Sourced as the container user before its command at both root and non-root starts, and by that user's zshenv, interactive bash startup and login profile. Use shell syntax supported by dash, bash and zsh, and `export` variables. Files may be sourced repeatedly; keep them idempotent. They can override PATH and other variables. Sourcing does not enable errexit or nounset. A non-zero return warns by filename and startup continues. Untrusted files warn and are skipped. |
+| `user-path.d/*.list` | One literal directory per line, absolute or relative to HOME. Blank lines and lines beginning with `#` are ignored. Colons are invalid; there is no variable, tilde or command expansion. Missing directories are prepended in list/line order, once each. Entries already in PATH stay where they are; the inherited PATH is otherwise unchanged, so activated venvs and `nvm use` keep precedence in nested shells. A final line without newline is read. Invalid lines and untrusted lists warn and are skipped. |
 | `state-paths.d/*.list` | Adds home paths to state-link, in the format of [The lists](#the-lists). These run before the environment's own `~/.config/denbox/state-paths` list. Linking problems warn and startup continues. |
 
 Hooks, env files and PATH lists must be regular, root-owned files, without
