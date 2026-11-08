@@ -609,6 +609,15 @@ echo "[pwsh] vd no VIRTUAL_ENV"
 err=$(run_pwsh_stderr "$PYTHON_PS1_TEST" "\$env:VIRTUAL_ENV = \$null; vd" || true)
 assert_contains "pwsh/vd no venv" "No active venv" "$err"
 
+echo "[pwsh] vd with VIRTUAL_ENV but no deactivate"
+err=$(run_pwsh_stderr "$PYTHON_PS1_TEST" "
+    Remove-Item Function:\deactivate, Alias:\deactivate -ErrorAction SilentlyContinue
+    \$env:VIRTUAL_ENV = 'manual'
+    vd
+" || true)
+assert_contains "pwsh/vd without deactivate explains how to leave" \
+    "No deactivate command for the active venv; open a new shell to leave it" "$err"
+
 echo "[pwsh] toggle-uv OFF sets env"
 actual=$(run_pwsh "$PYTHON_PS1_TEST" "toggle-uv *>\$null; \$env:_DEN_UV_OVERRIDE" | tr -d '\r')
 assert_eq "pwsh/toggle-uv OFF env" "0" "$actual"
@@ -1281,16 +1290,17 @@ for pair in "std uv" "uv std"; do
     actual=$(run_pwsh "$PYTHON_PS1_COMBINED" "
         \$env:VIRTUAL_ENV = \$null
         \$p0 = \$env:PATH
+        \$global:LASTEXITCODE = 0
         va '$WORK/ps_kinds/$first' *>\$null
         va '$WORK/ps_kinds/$second' *>\$null
         \$leaf = if (\$env:VIRTUAL_ENV) { Split-Path -Leaf \$env:VIRTUAL_ENV } else { '' }
         \$venvDirs = @(\$env:PATH -split [IO.Path]::PathSeparator | Where-Object { \$_ -like '*ps_kinds*' }).Count
         \"VE=[\$leaf] VENV_DIRS_ON_PATH=[\$venvDirs]\"
         vd
-        \"PATH=[\$(\$env:PATH -eq \$p0)]\"
+        \"q=\$? code=\$LASTEXITCODE VE=[\$env:VIRTUAL_ENV] PY=[\$env:_DEN_VENV_PYTHON] PATH=[\$(\$env:PATH -eq \$p0)]\"
     " 2>&1 | tr -d '\r')
     assert_eq "pwsh/va $first-kind then $second-kind stand-in, then vd" "VE=[$second] VENV_DIRS_ON_PATH=[1]
-PATH=[True]" "$actual"
+q=True code=0 VE=[] PY=[] PATH=[True]" "$actual"
 done
 
 # =============================================================================
@@ -2521,6 +2531,21 @@ vva_status_lines() {
 vva_status() {
     printf '%s q=False code=%s VE=[%s]\n%s and q=False code=%s\n%s or q=False code=%s\n%s caught code=%s' "$1" "$2" "${3-}" "$1" "$2" "$1" "$2" "$1" "$2"
 }
+
+echo "[pwsh] every vd refusal terminates and sets its exit code"
+for state in inactive nodeactivate; do
+    before='Remove-Item Function:\deactivate, Alias:\deactivate -ErrorAction SilentlyContinue; '
+    active=''
+    if [ "$state" = nodeactivate ]; then
+        before+="\$env:VIRTUAL_ENV = 'manual'; "
+        active=manual
+    else
+        before+="\$env:VIRTUAL_ENV = \$null; "
+    fi
+    actual=$(route_pwsh_lines "$NOPROJ" "$(refusal_status_lines "$state" "$before" vd)") || true
+    assert_eq "pwsh/vd $state terminates, sets code 1 and is caught" \
+        "$(vva_status "$state" 1 "$active")" "$actual"
+done
 
 echo "[pwsh] every va refusal terminates and sets its exit code"
 for spec in \
