@@ -489,7 +489,7 @@ and macOS do not have, stays den's in scripts there.
 
 The uv redirects load only when uv is installed.
 
-On pwsh every refusal by `va`, `vv`, `pip` / `pip3` and `python` / `python3` /
+On pwsh every refusal by `va`, `vd`, `vv`, `pip` / `pip3` and `python` / `python3` /
 `py` fails with a terminating error, as `vva` does: `$?` is false,
 `$LASTEXITCODE` is 1 (uv's own code when `vva`'s `uv venv` failed), and neither
 the part after `&&` nor the part after `||` runs. Use `try` / `catch` to continue.

@@ -667,8 +667,12 @@ function va {
 # vd → deactivate Python venv
 function vd {
   if (-not $env:VIRTUAL_ENV) {
-    Write-Error 'No active venv'
-    return
+    $global:LASTEXITCODE = 1
+    Write-Error 'No active venv' -ErrorAction Stop
+  }
+  if (-not (Get-Command deactivate -CommandType Function -ErrorAction SilentlyContinue)) {
+    $global:LASTEXITCODE = 1
+    Write-Error "No deactivate function for active venv '$env:VIRTUAL_ENV'; it was likely activated outside this session (for example by a parent shell). Leave it in the shell that activated it, or manually clear VIRTUAL_ENV and remove the venv's Scripts or bin directory from PATH" -ErrorAction Stop
   }
   deactivate
   Remove-Item Env:\_DEN_VENV_PYTHON -ErrorAction SilentlyContinue
