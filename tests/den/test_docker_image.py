@@ -5313,6 +5313,34 @@ def test_batched_trust_check_runs_from_root(tmp_path):
 
 
 @_needs("sh")
+def test_batched_trust_check_sees_candidates_under_noglob(tmp_path):
+    # Without them a passed batch would vouch for files it never looked at.
+    library, _ = _dropin_files(tmp_path)
+    env_file = _hook(tmp_path, "user-env.d", "env.sh", ":")
+    log = tmp_path / "find-args"
+    find = tmp_path / "find"
+    find.write_text(f'#!{_tool("sh")}\nprintf "%s\\n" "$@" > {shlex.quote(str(log))}\n')
+    find.chmod(0o755)
+    library.write_text(library.read_text().replace("/usr/bin/find", str(find)))
+    result = subprocess.run(
+        [
+            _tool("sh"),
+            "-f",
+            "-c",
+            f". {shlex.quote(str(library))}; denbox_shell_trust; "
+            "case $- in *f*) ;; *) exit 8 ;; esac",
+        ],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert (result.returncode, result.stderr) == (0, "")
+    assert str(env_file) in log.read_text().splitlines()
+
+
+@_needs("sh")
 def test_passed_batch_still_refuses_a_link(tmp_path):
     library, _ = _dropin_files(tmp_path)
     target = tmp_path / "target"
@@ -5388,8 +5416,9 @@ def test_profile_ignores_inherited_zsh_version(tmp_path, shell):
         ("bash", ("-f",), "case $- in *f*) ;; *) exit 8 ;; esac; "),
         ("sh", ("-f",), "case $- in *f*) ;; *) exit 8 ;; esac; "),
         ("bash", ("-O", "failglob"), "shopt -q failglob || exit 8; "),
+        ("bash", ("-e", "-O", "failglob"), "shopt -q failglob || exit 8; "),
     ],
-    ids=["bash-noglob", "sh-noglob", "bash-failglob"],
+    ids=["bash-noglob", "sh-noglob", "bash-failglob", "bash-errexit-failglob"],
 )
 @pytest.mark.parametrize("with_env", [True, False], ids=["env-file", "empty"])
 def test_login_startup_finds_drop_ins_under_the_callers_glob_options(
