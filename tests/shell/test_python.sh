@@ -616,7 +616,7 @@ err=$(run_pwsh_stderr "$PYTHON_PS1_TEST" "
     vd
 " || true)
 assert_contains "pwsh/vd without deactivate explains how to leave" \
-    "No deactivate command for the active venv; open a new shell to leave it" "$err"
+    "No deactivate function for active venv 'manual'; it was likely activated outside this session (for example by a parent shell). Leave it in the shell that activated it, or manually clear VIRTUAL_ENV and remove the venv's Scripts or bin directory from PATH" "$err"
 
 echo "[pwsh] toggle-uv OFF sets env"
 actual=$(run_pwsh "$PYTHON_PS1_TEST" "toggle-uv *>\$null; \$env:_DEN_UV_OVERRIDE" | tr -d '\r')
@@ -2532,20 +2532,30 @@ vva_status() {
     printf '%s q=False code=%s VE=[%s]\n%s and q=False code=%s\n%s or q=False code=%s\n%s caught code=%s' "$1" "$2" "${3-}" "$1" "$2" "$1" "$2" "$1" "$2"
 }
 
+# An external deactivate cannot restore the calling shell's environment.
+VD_DEACTIVATE_BIN="$WORK/vd_deactivate_bin"
+mkdir -p "$VD_DEACTIVATE_BIN"
+printf '#!/bin/sh\nprintf ran > "%s"\n' "$WORK/vd_deactivate_ran" > "$VD_DEACTIVATE_BIN/deactivate"
+chmod +x "$VD_DEACTIVATE_BIN/deactivate"
+
 echo "[pwsh] every vd refusal terminates and sets its exit code"
-for state in inactive nodeactivate; do
+for state in inactive nodeactivate externaldeactivate; do
     before='Remove-Item Function:\deactivate, Alias:\deactivate -ErrorAction SilentlyContinue; '
     active=''
-    if [ "$state" = nodeactivate ]; then
+    if [ "$state" != inactive ]; then
         before+="\$env:VIRTUAL_ENV = 'manual'; "
         active=manual
     else
         before+="\$env:VIRTUAL_ENV = \$null; "
     fi
+    if [ "$state" = externaldeactivate ]; then
+        before+="\$env:PATH = '$VD_DEACTIVATE_BIN' + [IO.Path]::PathSeparator + \$env:PATH; "
+    fi
     actual=$(route_pwsh_lines "$NOPROJ" "$(refusal_status_lines "$state" "$before" vd)") || true
     assert_eq "pwsh/vd $state terminates, sets code 1 and is caught" \
         "$(vva_status "$state" 1 "$active")" "$actual"
 done
+assert_not_exists "pwsh/vd never runs an external deactivate" "$WORK/vd_deactivate_ran"
 
 echo "[pwsh] every va refusal terminates and sets its exit code"
 for spec in \
