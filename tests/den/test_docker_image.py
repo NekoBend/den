@@ -844,7 +844,7 @@ def _run_entrypoint(
         "  *) exit 2 ;;\n"
         "esac",
     )
-    stub("setopt", 'echo unexpected-setopt >&2; exit 99')
+    stub("setopt", "echo unexpected-setopt >&2; exit 99")
     stub("groupadd", logged)
     stub(
         "usermod",
@@ -4514,8 +4514,8 @@ def test_env_and_path_lists_reject_untrusted_files_or_parents(tmp_path, bad):
             path.rename(unsafe / name)
             library.write_text(
                 library.read_text().replace(
-                    str(directory) + "/*",
-                    str(unsafe) + "/*",
+                    f"denbox_names {directory} ",
+                    f"denbox_names {unsafe} ",
                 )
             )
     result = subprocess.run(

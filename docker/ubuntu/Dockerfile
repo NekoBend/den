@@ -1738,10 +1738,11 @@ else
             denbox_user_env
         fi
     }
+    # Only this branch reads dropins.sh; zsh's unset -f reports a name it lacks.
+    unset _denbox_shell_trusted
+    unset -f denbox_shell_trust denbox_shell_identity denbox_trusted \
+        denbox_trusted_walk denbox_names denbox_user_path denbox_user_env
 fi
-unset _denbox_shell_trusted _denbox_uid _denbox_is_user _container_user
-unset -f denbox_shell_trust denbox_shell_identity denbox_trusted \
-    denbox_trusted_walk denbox_names denbox_user_path denbox_user_env
 CONTAINER_ZSH_ENV
 cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
 
