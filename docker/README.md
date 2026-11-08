@@ -368,12 +368,15 @@ For the trusted common case, each non-root zsh, non-login interactive bash,
 or login profile runs one batched find (one child process). Root shell blocks
 run no drop-in child processes. Interactive login bash delegates to profile.d
 once. Identity uses builtins unless /proc needs the one-process id fallback.
-A passed batch adds no per-file trust forks. Each directory with two or more
-candidates adds one subshell to expand names in byte order; zero or one adds
-none. dash and non-interactive POSIX bash add one dry-run subshell per readable
-trusted env file. Normal bash and zsh add none for sourcing. Thus the base
-image's non-root startup blocks use one child each, with no env files and only
-denbox.list. Helpers and their private flags are removed after shell startup.
+A passed batch adds no per-file trust forks. Reading a directory adds one
+subshell, which expands its names in byte order and keeps the caller's locale,
+`-f` and `failglob` out of it, and leaves them as they were. With at least one
+env file, a shell adds one more subshell to find out whether it needs a dry
+run: the shell itself is asked, as the version variables can be inherited.
+dash and non-interactive POSIX bash add one dry-run subshell per readable
+trusted env file. Normal bash and zsh add none for sourcing. So with no env
+files and only denbox.list, a non-root startup block runs one program (`find`)
+and two subshells, about 2 ms per shell start. Helpers and their private flags are removed after shell startup.
 The entrypoint and user-exec retain per-file ancestor walks (one subshell and
 one stat process per ancestor); hook execution and privilege-drop processes
 are additional. These counts describe drop-in work, not other shell startup

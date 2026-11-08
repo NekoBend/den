@@ -851,15 +851,21 @@ _denbox_shell_trusted=0
 # Shell startup can check all fixed parents and candidates in one process.
 # On any failure, fall back to the per-file ancestor checks and diagnostics.
 denbox_shell_trust() {
-    local file bad
+    local bad
     _denbox_shell_trusted=0
-    set -- / /etc /etc/denbox /etc/denbox/user-path.d /etc/denbox/user-env.d
-    for file in /etc/denbox/user-path.d/*.list /etc/denbox/user-env.d/*.sh; do
-        [ -e "$file" ] || [ -L "$file" ] || continue
-        set -- "$@" "$file"
-    done
-    if bad=$(cd / && exec /usr/bin/find "$@" -maxdepth 0 \
-        \( ! -uid 0 -o -perm /022 -o -type l \) -print -quit 2>/dev/null); then
+    # A subshell, so the caller's -f and failglob do not reach the expansion. A
+    # failglob error ends only the subshell, and the per-file checks take over.
+    if bad=$(
+        exec 2>/dev/null
+        set +f
+        set -- / /etc /etc/denbox /etc/denbox/user-path.d /etc/denbox/user-env.d
+        for file in /etc/denbox/user-path.d/*.list /etc/denbox/user-env.d/*.sh; do
+            [ -e "$file" ] || [ -L "$file" ] || continue
+            set -- "$@" "$file"
+        done
+        cd / && exec /usr/bin/find "$@" -maxdepth 0 \
+            \( ! -uid 0 -o -perm /022 -o -type l \) -print -quit
+    ); then
         [ -n "$bad" ] || _denbox_shell_trusted=1
     fi
 }
@@ -912,33 +918,26 @@ denbox_trusted_walk() (
         [ -d "$candidate" ] || exit 1
     done
 )
-# Return newline-separated names without changing the caller's locale.
+# Return newline-separated names in byte order. The subshell keeps the caller's
+# locale, -f and failglob as they are; a failglob error means no names.
 # The caller reconstructs argv before sourcing, so env files keep their stdin.
 denbox_names() {
-    local directory=$1 suffix=$2 file count=0
-    _denbox_names=''
-    for file in "$directory"/*"$suffix"; do
-        [ -e "$file" ] || [ -L "$file" ] || continue
-        case "$file" in
-            *'
-'*) printf 'denbox: skipped drop-in name containing a newline: %s\n' \
-                    "$directory" >&2; continue ;;
-        esac
-        _denbox_names="${_denbox_names}$file
-"
-        count=$((count + 1))
-    done
-    [ "$count" -ge 2 ] || return 0
+    local directory=$1 suffix=$2
     _denbox_names=$(
+        exec 3>&2 2>/dev/null
+        set +f
         LC_ALL=C
         export LC_ALL
         for file in "$directory"/*"$suffix"; do
             [ -e "$file" ] || [ -L "$file" ] || continue
-            case "$file" in *'
-'*) continue ;; esac
+            case "$file" in
+                *'
+'*) printf 'denbox: skipped drop-in name containing a newline: %s\n' \
+                    "$directory" >&3; continue ;;
+            esac
             printf '%s\n' "$file"
         done
-    )
+    ) || _denbox_names=''
 }
 # Build a prefix in list/line order, preserving the inherited PATH suffix.
 denbox_user_path() {
@@ -978,18 +977,17 @@ EOF
 # Only call this after identity has been checked or privileges dropped.
 denbox_user_env() {
     local file saved_options dry_run=1 _denbox_names
-    # Only normal bash, interactive POSIX bash and zsh catch source errors.
-    # Use no commands selected through inheritable shell-version variables.
-    case ${BASH_VERSION-}:${ZSH_VERSION-} in
-        :) ;;
-        *)
-            dry_run=0
-            case :${SHELLOPTS-}: in
-                *:posix:*) case $- in *i*) ;; *) dry_run=1 ;; esac ;;
-            esac
-            ;;
-    esac
     denbox_names /etc/denbox/user-env.d .sh
+    [ -n "$_denbox_names" ] || return 0
+    # Only normal bash, interactive POSIX bash and zsh catch source errors. A
+    # subscript is a bad substitution in dash and fine in those; the version
+    # variables prove nothing, as dash takes them from the environment.
+    if ( set +u; eval ': "${_denbox_probe[0]}"' ) >/dev/null 2>&1; then
+        dry_run=0
+        case :${SHELLOPTS-}: in
+            *:posix:*) case $- in *i*) ;; *) dry_run=1 ;; esac ;;
+        esac
+    fi
     set --
     while IFS= read -r file; do
         [ -z "$file" ] || set -- "$@" "$file"

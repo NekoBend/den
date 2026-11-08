@@ -5380,6 +5380,64 @@ def test_profile_ignores_inherited_zsh_version(tmp_path, shell):
     assert out[-1] == "unset"
 
 
+@_needs("sh", "bash", "id")
+@pytest.mark.parametrize(
+    ("shell", "flags", "state"),
+    [
+        ("bash", ("-f",), "case $- in *f*) ;; *) exit 8 ;; esac; "),
+        ("sh", ("-f",), "case $- in *f*) ;; *) exit 8 ;; esac; "),
+        ("bash", ("-O", "failglob"), "shopt -q failglob || exit 8; "),
+    ],
+    ids=["bash-noglob", "sh-noglob", "bash-failglob"],
+)
+@pytest.mark.parametrize("with_env", [True, False], ids=["env-file", "empty"])
+def test_login_startup_finds_drop_ins_under_the_callers_glob_options(
+    tmp_path, shell, flags, state, with_env
+):
+    # The caller's -f hid every drop-in, and failglob on the empty user-env.d
+    # ended a bash -c before its command. The caller's setting is left as it was.
+    if with_env:
+        _hook(tmp_path, "user-env.d", "env.sh", "export DROPIN=yes")
+    out = _source_block(
+        tmp_path,
+        shell,
+        "/etc/profile.d/00-container-home.sh",
+        euid=1000,
+        home="/home/" + _login_name(),
+        user=_login_name(),
+        shell_flags=flags,
+        after=state,
+        extra=("DROPIN",),
+    )
+    assert out[1] == _user_path("/home/" + _login_name())
+    assert out[-1] == ("yes" if with_env else "unset")
+
+
+@_needs("sh")
+@pytest.mark.parametrize("name", ["BASH_VERSION", "ZSH_VERSION"])
+@pytest.mark.parametrize(
+    "body",
+    [". /no/such/env/file", "echo ${bad!}", "if then fi ("],
+    ids=["missing-dot-target", "bad-substitution", "syntax-error"],
+)
+def test_inherited_version_variable_keeps_dash_dry_run(tmp_path, name, body):
+    # dash takes these from the environment: they cannot show the shell survives.
+    _, wrapper = _dropin_files(tmp_path)
+    bad = _hook(tmp_path, "user-env.d", "10-bad.sh", body)
+    _hook(tmp_path, "user-env.d", "20-good.sh", "export GOOD=yes")
+    result = subprocess.run(
+        [_tool("sh"), str(wrapper), _tool("sh"), "-c", 'echo "ran $GOOD"'],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH, name: "5.9"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ran yes\n"
+    assert str(bad) in result.stderr
+
+
 @_needs("sh", "find")
 @pytest.mark.parametrize(
     "bad", ["none", "file-mode", "parent-mode", "owner", "link", "find-failure"]
