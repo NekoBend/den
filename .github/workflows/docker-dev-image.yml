@@ -146,9 +146,9 @@ jobs:
           check 'docker run: default command (zsh)' 'dev /home/dev' \
             docker run --rm -i denbox <<<'print -r -- "$(id -un) $HOME"'
           check 'docker run: HOME' /home/dev docker run --rm denbox printenv HOME
-          check 'docker run: PATH' \
-            "/home/dev/.nvm/current/bin:/home/dev/.local/bin:/home/dev/.cargo/bin:$system_path" \
-            docker run --rm denbox printenv PATH
+          expected_path=$(docker run --rm denbox sh -c \
+            '. /usr/local/lib/denbox/dropins.sh; denbox_user_path; printf "%s" "$PATH"')
+          check 'docker run: PATH' "$expected_path" docker run --rm denbox printenv PATH
 
           if [ "$failed" -ne 0 ]; then
             docker logs denbox
@@ -239,3 +239,54 @@ jobs:
             echo "::error::$failed check(s) failed"
             exit 1
           fi
+      - name: Check image drop-ins
+        timeout-minutes: 5
+        run: |
+          # Use the Docker daemon's loaded image and default builder.
+          # shellcheck disable=SC2016
+          docker build -t denbox-hooks - <<'DOCKERFILE'
+          FROM denbox
+          RUN printf '%s\n' '#!/bin/sh' 'set -eu' \
+                '[ "$(id -u)" = 0 ]' \
+                '[ "$1:$2:$3" = /home/dev:1000:1000 ]' \
+                'printf root-ok > /run/denbox-hook' \
+                > /etc/denbox/init.d/10-probe && \
+              printf '%s\n' '#!/bin/sh' 'set -eu' \
+                '[ "$(id -u)" = 1000 ]' \
+                '[ -L "$HOME/.config/hook-probe" ]' \
+                'printf user-ok > "$HOME/.config/hook-probe/ran"' \
+                > /etc/denbox/user-init.d/10-probe && \
+              printf '%s\n' 'export DENBOX_PROBE=env-ok' \
+                > /etc/denbox/user-env.d/10-probe.sh && \
+              printf '%s\n' /opt/hook-bin > /etc/denbox/user-path.d/10-probe.list && \
+              printf '%s\n' 'd .config/hook-probe' > /etc/denbox/state-paths.d/10-probe.list && \
+              chmod 0755 /etc/denbox/init.d/10-probe /etc/denbox/user-init.d/10-probe
+          DOCKERFILE
+          docker volume create denbox-hooks-state
+          docker run --rm -v denbox-hooks-state:/state denbox-hooks sh -ec '
+            [ "$(cat /run/denbox-hook)" = root-ok ]
+            [ "$(cat "$HOME/.config/hook-probe/ran")" = user-ok ]
+            [ "$DENBOX_PROBE" = env-ok ]
+            case "$PATH" in /opt/hook-bin:*) ;; *) exit 1 ;; esac
+          '
+          docker run --rm --user dev denbox-hooks sh -ec '[ "$DENBOX_PROBE" = env-ok ]'
+          docker build -t denbox-hooks-user-fail - <<'DOCKERFILE'
+          FROM denbox-hooks
+          RUN printf '%s\n' '#!/bin/sh' 'exit 7' > /etc/denbox/user-init.d/20-fail && \
+              chmod 0755 /etc/denbox/user-init.d/20-fail
+          DOCKERFILE
+          docker run --rm -v denbox-hooks-state:/state denbox-hooks-user-fail true \
+            >"$RUNNER_TEMP/hooks.out" 2>&1
+          grep -F 'user hook failed or timed out (7): /etc/denbox/user-init.d/20-fail' \
+            "$RUNNER_TEMP/hooks.out"
+          docker build -t denbox-hooks-root-fail - <<'DOCKERFILE'
+          FROM denbox-hooks
+          RUN printf '%s\n' '#!/bin/sh' 'exit 8' > /etc/denbox/init.d/20-fail && \
+              chmod 0755 /etc/denbox/init.d/20-fail
+          DOCKERFILE
+          if docker run --rm denbox-hooks-root-fail true >"$RUNNER_TEMP/hooks.out" 2>&1; then
+            echo '::error::a failing root hook did not stop the start'
+            exit 1
+          fi
+          grep -F 'Root hook failed (8): /etc/denbox/init.d/20-fail' "$RUNNER_TEMP/hooks.out"
+          docker volume rm denbox-hooks-state

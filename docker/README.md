@@ -296,6 +296,65 @@ there: it makes the build pull every base image from a registry, and
 docker buildx build --load -t my-dev -f Dockerfile .
 ```
 
+### Image extension contract
+
+The account name is built with `USERNAME` (default `dev`) and recorded in
+`/etc/container-user`; its home is `/home/<name>`. `USER_UID` and `USER_GID`
+default to 1000. Build args do not cross a `FROM` boundary: pass the same
+IDs when building denbox and your image, and assert them with `id -u` and
+`id -g` in your build. Runtime `HOST_UID/HOST_GID` can remap them. Install
+user tools as that account under its home; install system tools as root
+under system directories. Finish with `USER root`, `HOME=/root` and the
+system-only PATH shown above. Keep the inherited ENTRYPOINT.
+
+All image drop-ins live under `/etc/denbox/`. Names are processed in byte
+order (`LC_ALL=C`); use numeric prefixes to make dependencies explicit.
+Hook names are non-hidden directory entries; non-executable regular files
+are ignored. denbox ships empty hook and env directories.
+
+| Directory | Contract |
+| --- | --- |
+| `init.d/` | Executables run as root at each root start, after ID remapping, ownership walks and state-root preparation, before state-link. Arguments: user home, final UID, final GID. A failure or untrusted entry stops the start and names the hook. There is no time limit: keep root hooks short. |
+| `user-init.d/` | Executables run after state-link, even when state is disabled or linking failed. Each runs through setpriv with the final IDs and the account's supplementary groups, and `env -i HOME=<home> PATH=/usr/sbin:/usr/bin:/sbin:/bin`, with no arguments. Each gets `gnutimeout -k 10 300`, as state-link does. Failure, timeout or untrusted entry warns by name and startup continues. |
+| `user-env.d/*.sh` | Sourced as the container user before its command at both root and non-root starts, and by that user's zshenv, interactive bash startup and login profile. Use shell syntax supported by dash, bash and zsh, and `export` variables. Files may be sourced repeatedly; keep them idempotent. They can override PATH and other variables. Untrusted files warn and are skipped. |
+| `user-path.d/*.list` | One literal directory per line, absolute or relative to HOME. Blank lines and lines beginning with `#` are ignored. Colons are invalid; there is no variable, tilde or command expansion. List/line order sets PATH order, duplicates are removed, and the inherited PATH follows. A final line without newline is read. Invalid lines and untrusted lists warn and are skipped. |
+| `state-paths.d/*.list` | Adds home paths to state-link, in the format of [The lists](#the-lists). These run before the environment's own `~/.config/denbox/state-paths` list. Linking problems warn and startup continues. |
+
+Hooks, env files and PATH lists must be regular, root-owned files, without
+group or other write permission or any symbolic link. Every parent directory
+up to `/` must also be root-owned, not writable by group or others, and not a
+symbolic link. These are image interfaces: never place hooks or env files in
+the home or `/state`, or link the fixed directories there. State lists are
+data read by state-link as the user, under its existing validation rules.
+
+Non-root starts skip both hook directories and state-link. Env files run only
+as the container user, never as root or an unrelated shell user. The PATH
+lists are shared by the entrypoint and non-root shell startup; root's own
+PATH never gets their entries. denbox's own list is
+`/etc/denbox/user-path.d/denbox.list`; the image's root PATH stays system-only.
+A shell-less `docker exec` bypasses these startup files; use `zsh -lc`
+when you need the user's environment.
+
+For example, extend the image without editing its entrypoint or shell files:
+
+```dockerfile
+FROM denbox
+USER root
+ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN test "$(id -u dev)" = 1000 && test "$(id -g dev)" = 1000
+COPY --chown=0:0 --chmod=0755 root-init /etc/denbox/init.d/10-mytool
+COPY --chown=0:0 --chmod=0755 user-init /etc/denbox/user-init.d/10-mytool
+COPY --chown=0:0 --chmod=0644 mytool-env.sh /etc/denbox/user-env.d/10-mytool.sh
+RUN printf '%s\n' '.local/mytool/bin' > /etc/denbox/user-path.d/10-mytool.list && \
+    printf '%s\n' 'd .config/mytool' > /etc/denbox/state-paths.d/10-mytool.list
+```
+
+Root hooks receive user-controlled paths as arguments. Validate those paths
+before touching them, avoid following links, and delegate work inside the
+home and state volume to user hooks. Env files are trusted image code; errors
+in their shell syntax or an explicit `exit` can stop the user's shell or
+command.
+
 ## What survives where
 
 `docker restart` keeps the container. A new container, which moving to a

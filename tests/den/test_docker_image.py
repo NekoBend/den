@@ -390,6 +390,42 @@ def test_the_image_installs_no_agent_cli_eza_broot_or_den_skills(name):
     assert not found, f"{name} is back in the Dockerfile: {found}"
 
 
+def _dropin_files(tmp_path: Path) -> tuple[Path, Path]:
+    """Install extracted helpers; fake root ownership only at the stat boundary."""
+    config = tmp_path / "denbox"
+    for name in ("init.d", "user-init.d", "user-env.d", "user-path.d"):
+        (config / name).mkdir(parents=True, exist_ok=True)
+    default = config / "user-path.d" / "denbox.list"
+    default.write_text(_appended_block("/etc/denbox/user-path.d/denbox.list"))
+    metadata = tmp_path / "metadata"
+    metadata.write_text(
+        f"#!{sys.executable}\n"
+        "import os, stat, sys\n"
+        "path = sys.argv[-1]\n"
+        "info = os.lstat(path)\n"
+        "owner = 123 if path.endswith('non-root') else 0\n"
+        "mode = stat.S_IMODE(info.st_mode)\n"
+        "if stat.S_ISDIR(info.st_mode) and not path.endswith('unsafe-dir'):\n"
+        "    mode = 0o755\n"
+        "print(f'{owner}:{mode:o}')\n"
+    )
+    metadata.chmod(0o755)
+    library = tmp_path / "dropins.sh"
+    library.write_text(
+        _appended_block("/usr/local/lib/denbox/dropins.sh")
+        .replace("/etc/denbox", str(config))
+        .replace("/usr/bin/gnustat", str(metadata))
+    )
+    wrapper = tmp_path / "user-exec"
+    wrapper.write_text(
+        _appended_block("/usr/local/lib/denbox/user-exec").replace(
+            "/usr/local/lib/denbox/dropins.sh", str(library)
+        )
+    )
+    wrapper.chmod(0o755)
+    return library, wrapper
+
+
 # --- /etc/zsh/zshenv and /etc/bash.bashrc --------------------------------------
 
 
@@ -413,7 +449,10 @@ def _source_block(
     """
     user_file = tmp_path / "container-user"
     user_file.write_text(f"{user}\n", encoding="utf-8")
-    text = _appended_block(target)
+    library, _ = _dropin_files(tmp_path)
+    text = _appended_block(target).replace(
+        "/usr/local/lib/denbox/dropins.sh", str(library)
+    )
     # bash and zsh blocks read $EUID; the POSIX sh profile script runs id -u.
     euid_ref = '"$(id -u)"' if '"$(id -u)"' in text else '"$EUID"'
     block = tmp_path / "block"
@@ -691,7 +730,7 @@ def test_profile_gives_the_container_users_login_shell_its_home_back(tmp_path, s
     out = _source_block(
         tmp_path, shell, _profile_script(), euid=1000, home="/root", user=me
     )
-    assert out[:2] == [f"/home/{me}", SYSTEM_PATH]
+    assert out[:2] == [f"/home/{me}", _user_path(f"/home/{me}")]
     assert out[4] == me
 
 
@@ -711,7 +750,7 @@ def test_profile_leaves_a_non_root_login_shell_alone(tmp_path):
     out = _source_block(
         tmp_path, "sh", _profile_script(), euid=1000, home=home, user="dev"
     )
-    assert out[:2] == [home, SYSTEM_PATH]
+    assert out[:2] == [home, _user_path(home)]
 
 
 # --- the entrypoint ------------------------------------------------------------
@@ -776,6 +815,7 @@ def _run_entrypoint(
     only log theirs. The entrypoint runs in tmp_path, with a stack limit of
     ``stack_kib`` KiB when that is given.
     """
+    library, wrapper = _dropin_files(tmp_path)
     sh = _tool("sh")
     stubs = tmp_path / "stubs"
     stubs.mkdir()
@@ -834,6 +874,7 @@ def _run_entrypoint(
         f"{logged}\n"
         f'case " $* " in *" {_STATE_LINK} "*)'
         ' exit "${FAKE_STATE_LINK_STATUS:-0}" ;; esac\n'
+        'case " $* " in *"/user-init.d/"*) shift 5; exec "$@" ;; esac\n'
         'printf "%s\\n" "$@" "HOME=$HOME"'
         + "".join(f' "{name}=${{{name}-unset}}"' for name in PWSH_ENV),
     )
@@ -855,6 +896,14 @@ def _run_entrypoint(
             _entrypoint_script(),
             {
                 **places,
+                "/usr/local/lib/denbox/dropins.sh": str(library),
+                "/usr/local/lib/denbox/user-exec": str(wrapper),
+                "root_hooks=/etc/denbox/init.d": (
+                    f"root_hooks={tmp_path / 'denbox/init.d'}"
+                ),
+                "user_hooks=/etc/denbox/user-init.d": (
+                    f"user_hooks={tmp_path / 'denbox/user-init.d'}"
+                ),
                 "state_dir=/state": f"state_dir={tmp_path / 'state'}",
                 "tmp_dir=/tmp": f"tmp_dir={tmp_path / 'tmp'}",
                 "mountinfo=/proc/self/mountinfo": f"mountinfo={mountinfo}",
@@ -4286,3 +4335,246 @@ def test_the_image_workflow_runs_fzf_and_pwsh_in_the_image():
     )
     assert re.search(r"docker exec denbox pwsh --version\b", checks["run"])
     assert "docker exec --user dev denbox zsh -lc 'pwsh --version'" in checks["run"]
+
+
+# --- image drop-ins ------------------------------------------------------------
+
+
+def _hook(tmp_path: Path, kind: str, name: str, body: str) -> Path:
+    directory = tmp_path / "denbox" / kind
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text(f"#!{_tool('sh')}\n{body}\n")
+    path.chmod(0o755)
+    return path
+
+
+@_needs("sh", "env")
+def test_image_hooks_run_in_order_with_arguments_and_minimal_env(tmp_path):
+    log = tmp_path / "hook-log"
+    for kind in ("init.d", "user-init.d"):
+        for name in ("20-z", "10-a"):
+            _hook(
+                tmp_path, kind, name,
+                f"printf '%s\\n' '{kind}/{name}' >> {shlex.quote(str(log))}\n"
+                + (f"printf '%s\\n' \"$@\" >> {shlex.quote(str(log))}"
+                   if kind == "init.d" else
+                   '[ "$HOME" = /home/dev ] && '
+                   '[ "$PATH" = /usr/sbin:/usr/bin:/sbin:/bin ] && '
+                   '[ "${SECRET-unset}" = unset ]'),
+            )
+    result, calls = _run_entrypoint(tmp_path, uid=0, env={"SECRET": "probe"})
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "init.d/10-a", "/home/dev", "1000", "1000",
+        "init.d/20-z", "/home/dev", "1000", "1000",
+        "user-init.d/10-a", "user-init.d/20-z",
+    ]
+    assert calls.count("gnutimeout -k 10 300") == 2
+    assert result.stderr == ""
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("kind", ["init.d", "user-init.d"])
+@pytest.mark.parametrize("status", [1, 124, 137])
+def test_hook_failure_stops_only_root_hooks(tmp_path, kind, status):
+    hook = _hook(tmp_path, kind, "10-fail", f"exit {status}")
+    result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    assert (result.returncode != 0) == (kind == "init.d")
+    assert str(hook) in result.stderr
+    assert str(status) in result.stderr
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("kind", ["init.d", "user-init.d"])
+@pytest.mark.parametrize("bad", ["writable", "link", "non-root", "directory", "fifo"])
+def test_untrusted_hooks_are_never_executed(tmp_path, kind, bad):
+    hook = _hook(tmp_path, kind, bad, "echo unsafe")
+    if bad == "writable":
+        hook.chmod(0o775)
+    elif bad == "link":
+        target = hook.with_name("target")
+        hook.rename(target)
+        target.chmod(0o644)
+        hook.symlink_to(target)
+    elif bad in {"directory", "fifo"}:
+        hook.unlink()
+        if bad == "directory":
+            hook.mkdir()
+        else:
+            os.mkfifo(hook)
+    result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    assert (result.returncode != 0) == (kind == "init.d")
+    assert str(hook) in result.stderr
+    assert "unsafe" not in result.stdout
+
+
+@_needs("sh", "env")
+def test_non_root_start_skips_all_hooks(tmp_path):
+    for kind in ("init.d", "user-init.d"):
+        _hook(tmp_path, kind, "fail", "exit 1")
+    result, calls = _run_entrypoint(tmp_path, uid=1000, env={})
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert "gnutimeout" not in calls
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("uid", [0, 1000])
+def test_entrypoint_sources_env_as_user_after_setting_path(tmp_path, uid):
+    _hook(tmp_path, "user-env.d", "10-env.sh", 'export DROPIN=first')
+    _hook(tmp_path, "user-env.d", "20-env.sh", 'export DROPIN="$DROPIN:second"')
+    result, _ = _run_entrypoint(tmp_path, uid=uid, env={})
+    # The root branch's setpriv stub records the user wrapper's argv.
+    # The non-root branch executes it; CI checks the real privilege drop.
+    if uid == 0:
+        assert str(tmp_path / "user-exec") in result.stdout
+    else:
+        assert "DROPIN=first:second" in result.stdout.splitlines()
+
+
+@_needs("sh", "bash", "zsh", "id")
+@pytest.mark.parametrize(
+    ("shell", "target"),
+    [("sh", "/etc/profile.d/00-container-home.sh"),
+     ("bash", "/etc/bash.bashrc"), ("zsh", "/etc/zsh/zshenv")],
+)
+@pytest.mark.parametrize("root", [False, True])
+def test_each_shell_sources_env_only_for_container_user(tmp_path, shell, target, root):
+    _hook(tmp_path, "user-env.d", "env.sh", "export DROPIN=yes")
+    me = _zsh_username() if shell == "zsh" else _login_name()
+    out = _source_block(
+        tmp_path, shell, target, euid=0 if root else 1000,
+        home="/home/" + me, user=me, extra=("DROPIN",),
+    )
+    assert out[-1] == ("unset" if root else "yes")
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize("bad", ["writable", "link", "non-root", "unsafe-dir"])
+def test_env_and_path_lists_reject_untrusted_files_or_parents(tmp_path, bad):
+    library, _ = _dropin_files(tmp_path)
+    for kind, name, body in (
+        ("user-env.d", "bad.sh", "export DROPIN=unsafe"),
+        ("user-path.d", "bad.list", "/unsafe"),
+    ):
+        path = tmp_path / "denbox" / kind / name
+        path.write_text(body)
+        if bad == "writable":
+            path.chmod(0o666)
+        elif bad == "link":
+            target = tmp_path / name
+            path.rename(target)
+            path.symlink_to(target)
+        elif bad == "non-root":
+            metadata = tmp_path / "metadata"
+            metadata.write_text(
+                metadata.read_text().replace(
+                    "path.endswith('non-root')",
+                    "os.path.basename(path) in ('bad.sh', 'bad.list')",
+                )
+            )
+        else:
+            directory = path.parent
+            unsafe = directory / "unsafe-dir"
+            unsafe.mkdir(mode=0o777)
+            unsafe.chmod(0o777)
+            path.rename(unsafe / name)
+            library.write_text(library.read_text().replace(
+                str(directory) + "/*", str(unsafe) + "/*",
+            ))
+    result = subprocess.run(
+        [_tool("sh"), "-c",
+         f'. {shlex.quote(str(library))}; denbox_user_path; denbox_user_env; '
+         'printf "%s\\n" "$PATH" "${DROPIN-unset}"'],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "/unsafe" not in result.stdout
+    assert result.stdout.splitlines()[-1] == "unset"
+    assert result.stderr.count("untrusted") == 2
+
+
+@_needs("sh", "env")
+def test_path_lists_preserve_order_literals_and_last_line(tmp_path):
+    library, _ = _dropin_files(tmp_path)
+    lists = tmp_path / "denbox/user-path.d"
+    (lists / "10-extra.list").write_text("# comment\n\nmy tools\n/opt/bin\n")
+    (lists / "20-extra.list").write_text("/opt/bin\n/invalid:entry\n$(false)")
+    result = subprocess.run(
+        [_tool("sh"), "-c",
+         f'. {shlex.quote(str(library))}; denbox_user_path; denbox_user_path; '
+         'printf "%s\\n" "$PATH"'],
+        env={"HOME": "/home/dev", "PATH": SYSTEM_PATH},
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == (
+        "/home/dev/my tools:/opt/bin:/home/dev/$(false):" + _user_path("/home/dev")
+    )
+    assert "invalid PATH entry" in result.stderr
+
+
+def test_ci_exercises_a_derived_image_within_the_job_budget():
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    step = next(step for step in steps if step.get("name") == "Check image drop-ins")
+    assert step["timeout-minutes"] > 0
+    assert "FROM denbox" in step["run"]
+    assert "--pull" not in step["run"]
+    for directory in (
+        "init.d", "user-init.d", "user-env.d", "user-path.d", "state-paths.d",
+    ):
+        assert f"/etc/denbox/{directory}" in step["run"]
+
+
+@_needs("sh", "env")
+def test_hooks_surround_state_link_after_state_root_preparation(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    log = shlex.quote(str(tmp_path / "calls.log"))
+    _hook(tmp_path, "init.d", "root", f"echo root-hook >> {log}")
+    _hook(tmp_path, "user-init.d", "user", f"echo user-hook >> {log}")
+    result, calls = _run_entrypoint(
+        tmp_path, uid=0, env={}, mounts=("/workspace", str(state)),
+    )
+    assert result.returncode == 0, result.stderr
+    prepared = calls.index(f"gnuchown -h 1000:1000 {state} {state}/home")
+    root = calls.index("root-hook")
+    linked = calls.index(_STATE_LINK)
+    user = calls.index("user-hook")
+    assert prepared < root < linked < user
+
+
+@_needs("sh", "env")
+def test_root_hooks_receive_final_remapped_ids(tmp_path):
+    hook = _hook(tmp_path, "init.d", "ids", '[ "$1:$2:$3" = /home/dev:501:20 ]')
+    result, _ = _run_entrypoint(
+        tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert str(hook) not in result.stderr
+
+
+@_needs("sh", "env")
+def test_trusted_non_executable_hooks_are_ignored(tmp_path):
+    for kind in ("init.d", "user-init.d"):
+        _hook(tmp_path, kind, "disabled", "exit 1").chmod(0o644)
+    result, _ = _run_entrypoint(tmp_path, uid=0, env={})
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+
+
+@_needs("sh", "bash", "zsh", "id")
+@pytest.mark.parametrize(
+    ("shell", "target"),
+    [("sh", "/etc/profile.d/00-container-home.sh"),
+     ("bash", "/etc/bash.bashrc"), ("zsh", "/etc/zsh/zshenv")],
+)
+def test_other_shell_users_do_not_source_container_env(tmp_path, shell, target):
+    _hook(tmp_path, "user-env.d", "env.sh", "export DROPIN=unsafe")
+    out = _source_block(
+        tmp_path, shell, target, euid=1000, home=str(tmp_path / "home"),
+        user="another-user", extra=("DROPIN",),
+    )
+    assert out[-1] == "unset"

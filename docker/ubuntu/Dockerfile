@@ -430,6 +430,11 @@ mountinfo=/proc/self/mountinfo
 # A home that cannot exist, as nothing can be below the character device
 # /dev/null: the account has it while usermod gives it its new IDs.
 no_home=/dev/null/no-home
+# Fixed image paths, patched as literals by the script tests.
+root_hooks=/etc/denbox/init.d
+user_hooks=/etc/denbox/user-init.d
+# shellcheck source=/dev/null
+. /usr/local/lib/denbox/dropins.sh
 
 fail() { printf '%s\n' "$*" >&2; exit 2; }
 warn() { printf 'container-entrypoint: %s\n' "$*" >&2; }
@@ -599,6 +604,35 @@ reown() (
         -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
 )
 
+# Hook traversal runs in a subshell so byte ordering does not change the
+# locale of the user's command. Every candidate is checked before execution.
+run_hooks() (
+    LC_ALL=C
+    export LC_ALL
+    for hook in "$1"/*; do
+        [ -e "$hook" ] || [ -L "$hook" ] || continue
+        if ! denbox_trusted "$hook"; then
+            if [ "$2" = root ]; then
+                fail "Untrusted root hook: $hook"
+            fi
+            warn "skipped untrusted user hook: $hook"
+            continue
+        fi
+        [ -x "$hook" ] || continue
+        hook_status=0
+        if [ "$2" = root ]; then
+            "$hook" "$user_home" "$target_uid" "$target_gid" || hook_status=$?
+            [ "$hook_status" = 0 ] || fail "Root hook failed ($hook_status): $hook"
+        else
+            /usr/bin/gnutimeout -k 10 300 \
+                /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
+                /usr/bin/env -i HOME="$user_home" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                "$hook" || hook_status=$?
+            [ "$hook_status" = 0 ] || warn "user hook failed or timed out ($hook_status): $hook"
+        fi
+    done
+)
+
 IFS= read -r username < /etc/container-user
 record=$(getent passwd "$username")
 IFS=: read -r name password old_uid old_gid gecos user_home login_shell <<EOF
@@ -606,9 +640,8 @@ $record
 EOF
 [ "$user_home" = "/home/$username" ] && [ ! -L "$user_home" ] \
     || fail 'Unexpected or symlinked user home'
-# The image PATH holds system directories only; the command runs as the user
-# with the user's tool directories first (the same list as /etc/zsh/zshenv).
-runtime_path="$user_home/.nvm/current/bin:$user_home/.local/bin:$user_home/.cargo/bin:$inherited_path"
+# Only trusted image lists are read here; env code runs after dropping root.
+runtime_path=$(HOME="$user_home"; PATH="$inherited_path"; denbox_user_path; printf '%s' "$PATH")
 # pwsh sends no telemetry and skips its update check, as in the image ENV,
 # whatever docker run -e passed.
 export POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
@@ -730,33 +763,39 @@ if [ "$(id -u)" -eq 0 ]; then
     # GNU timeout, as for chown, also stops the commands state-link runs.
     # state-link itself waits 60 seconds at most for another run on the same
     # volume (a second container's start, or a run by hand) to end.
+    state_ready=0
     if [ "$use_state" = 1 ]; then
         if [ -L "$state_dir/home" ]; then
             warn "$state_dir/home is a symbolic link; the home is not linked into $state_dir"
         elif { [ -d "$state_dir/home" ] || (umask 077 && /usr/bin/gnumkdir "$state_dir/home"); } \
             && [ ! -L "$state_dir/home" ] \
             && /usr/bin/gnuchown -h "$target_uid:$target_gid" "$state_dir" "$state_dir/home"; then
-            link_status=0
-            /usr/bin/gnutimeout -k 10 300 \
-                /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
-                /usr/bin/env -i HOME="$user_home" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-                /usr/local/lib/denbox/state-link \
-                || link_status=$?
-            case "$link_status" in
-                0) ;;
-                124) warn "state-link was stopped after 300 seconds, so the run was cut short; run /usr/local/lib/denbox/state-link as $username to finish it" ;;
-                # GNU timeout's KILL, 10 seconds after its TERM, gives 137, and
-                # so does any other KILL (the OOM killer, or kill -9).
-                137) warn "state-link was killed, by the time limit or by a signal, so the run was cut short; run /usr/local/lib/denbox/state-link as $username to finish it" ;;
-                *) warn 'state-link reported problems (see above)' ;;
-            esac
+            state_ready=1
         else
             warn "could not prepare $state_dir/home; the home is not linked into $state_dir"
         fi
     fi
+    run_hooks "$root_hooks" root || exit $?
+    if [ "$state_ready" = 1 ]; then
+        link_status=0
+        /usr/bin/gnutimeout -k 10 300 \
+            /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
+            /usr/bin/env -i HOME="$user_home" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/local/lib/denbox/state-link \
+            || link_status=$?
+        case "$link_status" in
+            0) ;;
+            124) warn "state-link was stopped after 300 seconds, so the run was cut short; run /usr/local/lib/denbox/state-link as $username to finish it" ;;
+            # GNU timeout's KILL, 10 seconds after its TERM, gives 137, and
+            # so does any other KILL (the OOM killer, or kill -9).
+            137) warn "state-link was killed, by the time limit or by a signal, so the run was cut short; run /usr/local/lib/denbox/state-link as $username to finish it" ;;
+            *) warn 'state-link reported problems (see above)' ;;
+        esac
+    fi
+    run_hooks "$user_hooks" user
     export HOME="$user_home" USER="$username" LOGNAME="$username" SHELL="$login_shell"
     exec /usr/bin/setpriv --reuid "$target_uid" --regid "$target_gid" --init-groups \
-        /usr/bin/env PATH="$runtime_path" "$@"
+        /usr/bin/env PATH="$runtime_path" /usr/local/lib/denbox/user-exec "$@"
 fi
 
 [ "$fix_workspace" = 0 ] \
@@ -770,7 +809,7 @@ if [ "$clean_tmp" = 1 ]; then
     warn 'DENBOX_CLEAN_TMP=1 needs a root start; /tmp is left as it is'
 fi
 export PATH="$runtime_path" HOME="$user_home" USER="$username" LOGNAME="$username" SHELL="$login_shell"
-exec "$@"
+exec /usr/local/lib/denbox/user-exec "$@"
 ENTRYPOINT
 chmod 0755 /usr/local/bin/container-entrypoint
 
@@ -779,6 +818,106 @@ chmod 0755 /usr/local/bin/container-entrypoint
 # FROM this one could never take one away.
 install -d -o "$USER_UID" -g "$USER_GID" -m 0700 /state
 install -d -m 0755 /etc/denbox /etc/denbox/state-paths.d /usr/local/lib/denbox
+install -d -m 0755 /etc/denbox/init.d /etc/denbox/user-init.d \
+    /etc/denbox/user-env.d /etc/denbox/user-path.d
+cat > /etc/denbox/user-path.d/denbox.list <<'USER_PATHS'
+# One directory per line, relative to HOME or absolute, in PATH order.
+.nvm/current/bin
+.local/bin
+.cargo/bin
+USER_PATHS
+cat > /usr/local/lib/denbox/dropins.sh <<'DROPINS'
+# Shared by dash, bash and zsh. No caller-controlled search path or config.
+# local is supported by all three shells; zsh needs unmatched globs literal.
+denbox_trusted() (
+    # Check every ancestor too: a writable parent can replace a trusted file.
+    candidate=$1
+    [ ! -L "$candidate" ] && [ -f "$candidate" ] || exit 1
+    while :; do
+        [ ! -L "$candidate" ] || exit 1
+        metadata=$(/usr/bin/gnustat -c '%u:%a' -- "$candidate") || exit 1
+        owner=${metadata%%:*} mode=${metadata#*:}
+        case "$mode" in ''|*[!0-7]*) exit 1 ;; esac
+        [ "$owner" = 0 ] || exit 1
+        # Test the permission digits without shell-dependent octal arithmetic.
+        case "$mode" in *[2367][0-7]|*[2367]) exit 1 ;; esac
+        [ "$candidate" != / ] || exit 0
+        candidate=${candidate%/*}
+        [ -n "$candidate" ] || candidate=/
+        [ -d "$candidate" ] || exit 1
+    done
+)
+# Build a prefix in list/line order, preserving the inherited PATH suffix.
+denbox_user_path() {
+    local LC_ALL=C list line prefix='' dir
+    export LC_ALL
+    [ -z "${ZSH_VERSION-}" ] || setopt localoptions nonomatch
+    for list in /etc/denbox/user-path.d/*.list; do
+        [ -e "$list" ] || [ -L "$list" ] || continue
+        if ! denbox_trusted "$list"; then
+            printf 'denbox: skipped untrusted path list %s\n' "$list" >&2
+            continue
+        fi
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|\#*) continue ;; esac
+            case "$line" in
+                *:*) printf 'denbox: skipped invalid PATH entry in %s\n' "$list" >&2; continue ;;
+                /*) dir=$line ;;
+                *) dir=$HOME/$line ;;
+            esac
+            case ":${prefix}:" in *":$dir:"*) continue ;; esac
+            prefix=${prefix:+$prefix:}$dir
+        done < "$list"
+    done
+    # Remove entries already in the prefix from the suffix without splitting
+    # on whitespace or expanding globs. Empty entries are never introduced.
+    local rest=$PATH suffix='' entry
+    while [ -n "$rest" ]; do
+        entry=${rest%%:*}
+        case "$rest" in *:*) rest=${rest#*:} ;; *) rest= ;; esac
+        [ -n "$entry" ] || continue
+        case ":${prefix}:${suffix}:" in *":$entry:"*) continue ;; esac
+        suffix=${suffix:+$suffix:}$entry
+    done
+    PATH=${prefix:+$prefix${suffix:+:}}$suffix
+    export PATH
+}
+# Only call this after identity has been checked or privileges dropped.
+denbox_user_env() {
+    local file saved_locale=${LC_ALL-} had_locale=${LC_ALL+x}
+    [ -z "${ZSH_VERSION-}" ] || setopt localoptions nonomatch
+    # Expand the ordered names before sourcing; env files may set LC_ALL.
+    LC_ALL=C
+    export LC_ALL
+    set -- /etc/denbox/user-env.d/*.sh
+    if [ "$had_locale" = x ]; then
+        LC_ALL=$saved_locale
+        export LC_ALL
+    else
+        unset LC_ALL
+    fi
+    for file do
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        if denbox_trusted "$file"; then
+            # shellcheck source=/dev/null
+            . "$file"
+        else
+            printf 'denbox: skipped untrusted env file %s\n' "$file" >&2
+        fi
+    done
+}
+DROPINS
+cat > /usr/local/lib/denbox/user-exec <<'USER_EXEC'
+#!/bin/sh
+# This wrapper is entered only as the container user, never as root.
+set -eu
+# shellcheck source=/dev/null
+. /usr/local/lib/denbox/dropins.sh
+denbox_user_env
+exec "$@"
+USER_EXEC
+chmod 0644 /etc/denbox/user-path.d/denbox.list /usr/local/lib/denbox/dropins.sh
+chmod 0755 /usr/local/lib/denbox/user-exec
 cat > /etc/denbox/state-paths.d/denbox.list <<'STATE_PATHS'
 # The image's paths of the user's home kept in the state volume at
 # /state/home, one "<kind> <path>" per line, the path relative to the home:
@@ -1465,13 +1604,12 @@ else
             setopt no_hist_save_by_copy
         fi
     fi
-    () {
-        local dir
-        for dir in "$HOME/.cargo/bin" "$HOME/.local/bin" "$HOME/.nvm/current/bin"; do
-            [[ ":$PATH:" == *":$dir:"* ]] || PATH="$dir:$PATH"
-        done
-    }
-    export PATH
+    # shellcheck source=/dev/null
+    . /usr/local/lib/denbox/dropins.sh
+    denbox_user_path
+    if [[ "$USERNAME" == "$(</etc/container-user)" ]]; then
+        denbox_user_env
+    fi
 fi
 CONTAINER_ZSH_ENV
 cat >> /etc/bash.bashrc <<'CONTAINER_BASH_RC'
@@ -1495,14 +1633,12 @@ else
             HISTFILE=$HOME/.bash_history
         fi
     fi
-    for _container_dir in "$HOME/.cargo/bin" "$HOME/.local/bin" "$HOME/.nvm/current/bin"; do
-        case ":$PATH:" in
-            *":$_container_dir:"*) ;;
-            *) PATH="$_container_dir:$PATH" ;;
-        esac
-    done
-    unset _container_dir
-    export PATH
+    # shellcheck source=/dev/null
+    . /usr/local/lib/denbox/dropins.sh
+    denbox_user_path
+    if [ "$(id -un 2>/dev/null)" = "$_container_user" ]; then
+        denbox_user_env
+    fi
 fi
 unset _container_user
 CONTAINER_BASH_RC
@@ -1515,8 +1651,16 @@ if [ "$(id -u)" -eq 0 ]; then
     if [ "$HOME" = "/home/$_container_user" ]; then
         export HOME=/root USER=root LOGNAME=root
     fi
-elif [ "$HOME" = /root ] && [ "$(id -un 2>/dev/null)" = "$_container_user" ]; then
-    export HOME="/home/$_container_user" USER="$_container_user" LOGNAME="$_container_user"
+else
+    if [ "$HOME" = /root ] && [ "$(id -un 2>/dev/null)" = "$_container_user" ]; then
+        export HOME="/home/$_container_user" USER="$_container_user" LOGNAME="$_container_user"
+    fi
+    # shellcheck source=/dev/null
+    . /usr/local/lib/denbox/dropins.sh
+    denbox_user_path
+    if [ "$(id -un 2>/dev/null)" = "$_container_user" ]; then
+        denbox_user_env
+    fi
 fi
 unset _container_user
 CONTAINER_PROFILE
