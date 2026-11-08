@@ -124,7 +124,7 @@ ARG BUILD_JOBS=
 # renovate: datasource=crate depName=bat versioning=semver
 ARG BAT_VERSION=0.26.1
 # renovate: datasource=crate depName=bottom versioning=semver
-ARG BOTTOM_VERSION=0.14.9
+ARG BOTTOM_VERSION=0.15.0
 # renovate: datasource=crate depName=du-dust versioning=semver
 ARG DU_DUST_VERSION=1.2.6
 # renovate: datasource=crate depName=fd-find versioning=semver
