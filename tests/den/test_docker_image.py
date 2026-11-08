@@ -5118,8 +5118,9 @@ def test_user_exec_ignores_inherited_zsh_version(tmp_path):
 
 
 @_needs("sh", "env")
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can read mode 000 files")
 def test_unreadable_path_list_does_not_abort_strict_entrypoint(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root can read mode 000 files")
     path = _hook(tmp_path, "user-path.d", "10-private.list", "/unsafe")
     path.chmod(0o000)
     result, _ = _run_entrypoint(tmp_path, uid=1000, env={})
@@ -5586,8 +5587,9 @@ def test_fast_trust_path_does_not_enter_ancestor_subshell(tmp_path):
 
 
 @_needs("sh", "env")
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can read scripts")
 def test_unreadable_user_script_warns_with_status(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root can read scripts")
     # Owner's 0311 read permission matches a non-owner's root-owned 0711.
     hook = _hook(tmp_path, "user-init.d", "unreadable", "echo should-not-run")
     hook.chmod(0o311)
