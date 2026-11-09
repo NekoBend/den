@@ -146,6 +146,10 @@ old package imported) redeploys:
   den's `~/.local/bin` helpers only when some were there (`--bin`); a shell
   file you deleted stays deleted, and an rc file where you commented den's
   line out keeps it commented out (`den install shell` adds it again).
+- the zsh plugin clones that are there, to the new version's pins: it shows the
+  move with a link to the upstream changes and moves a clone only if you say
+  yes. Without a terminal it moves none and says how. A plugin that is not there
+  stays absent, and a clone that is not one den made stays as it is.
 
 A file still exactly as the old den deployed it is replaced; that is checked
 again right before the write, so an edit made while uv runs counts as yours.

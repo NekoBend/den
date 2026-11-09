@@ -1,6 +1,7 @@
 """Tests for den install shell (den/_shell.py)."""
 
 import errno
+import json
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ import pytest
 
 from den import _shell
 from den._install import main as install_main
+from den._upgrade import _refresh_plan
 
 _POSIX_DIR = Path(__file__).resolve().parents[2] / "shell" / "posix"
 _PWSH_DIR = Path(__file__).resolve().parents[2] / "shell" / "pwsh"
@@ -2299,6 +2301,155 @@ def test_zsh_plugin_move_ignores_a_repository_the_environment_names(
     monkeypatch.delenv("GIT_DIR")
     assert plugin_repo.head() == plugin_repo.second
     assert not (other / ".git" / "FETCH_HEAD").exists()
+
+
+class _Terminal:
+    """A stdin that says whether it is one."""
+
+    def __init__(self, *, tty):
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+def _answering(monkeypatch, answer, *, tty=True):
+    """Stub den's question; return the list of questions asked."""
+    asked = []
+
+    def confirm(prompt, *, default):
+        asked.append((prompt, default))
+        return answer
+
+    monkeypatch.setattr("den._ui.confirm", confirm)
+    monkeypatch.setattr("sys.stdin", _Terminal(tty=tty))
+    return asked
+
+
+def test_zsh_plugin_offer_moves_a_clone_on_yes(plugin_repo, monkeypatch, capsys):
+    asked = _answering(monkeypatch, answer=True)
+    plugin_repo.pin("v2", plugin_repo.second)
+    _shell._offer_zsh_plugin_moves(dry_run=False)
+    assert plugin_repo.head() == plugin_repo.second
+    assert len(asked) == 1
+    assert asked[0][1] is False  # code that runs at every shell start: default no
+    compare = f"{plugin_repo.url}/compare/{plugin_repo.first}...{plugin_repo.second}"
+    assert compare in capsys.readouterr().out
+
+
+def test_zsh_plugin_offer_leaves_a_clone_on_no(plugin_repo, monkeypatch, capsys):
+    _answering(monkeypatch, answer=False)
+    plugin_repo.pin("v2", plugin_repo.second)
+    _shell._offer_zsh_plugin_moves(dry_run=False)
+    assert plugin_repo.head() == plugin_repo.first
+    assert "den install shell --zsh-plugins" in capsys.readouterr().out
+
+
+def test_zsh_plugin_offer_moves_nothing_without_a_terminal(
+    plugin_repo, monkeypatch, capsys
+):
+    asked = _answering(monkeypatch, answer=True, tty=False)
+    plugin_repo.pin("v2", plugin_repo.second)
+    _shell._offer_zsh_plugin_moves(dry_run=False)
+    assert asked == []
+    assert plugin_repo.head() == plugin_repo.first
+    assert "den install shell --zsh-plugins" in capsys.readouterr().out
+
+
+def test_zsh_plugin_offer_asks_nothing_at_the_pin_or_in_a_dry_run(
+    plugin_repo, monkeypatch
+):
+    asked = _answering(monkeypatch, answer=True)
+    _shell._offer_zsh_plugin_moves(dry_run=False)
+    plugin_repo.pin("v2", plugin_repo.second)
+    _shell._offer_zsh_plugin_moves(dry_run=True)
+    assert asked == []
+    assert plugin_repo.head() == plugin_repo.first
+
+
+def test_zsh_plugin_offer_asks_nothing_for_a_clone_that_is_not_dens(
+    plugin_repo, monkeypatch, capsys
+):
+    asked = _answering(monkeypatch, answer=True)
+    (plugin_repo.target / "plugin.zsh").write_text("mine\n", encoding="utf-8")
+    plugin_repo.pin("v2", plugin_repo.second)
+    _shell._offer_zsh_plugin_moves(dry_run=False)
+    assert asked == []
+    assert "left as it is" in capsys.readouterr().out
+
+
+def test_zsh_plugin_offer_does_not_bring_back_a_plugin_that_is_gone(
+    plugin_repo, monkeypatch, capsys
+):
+    asked = _answering(monkeypatch, answer=True)
+    target = plugin_repo.target
+    target.rename(target.with_name("elsewhere"))
+    plugin_repo.pin("v2", plugin_repo.second)
+    capsys.readouterr()
+    _shell._offer_zsh_plugin_moves(dry_run=False)
+    assert asked == []
+    assert not target.exists()
+    assert capsys.readouterr().out == ""
+
+
+def test_zsh_plugin_offer_goes_on_after_a_failed_move(plugin_repo, monkeypatch, capsys):
+    _answering(monkeypatch, answer=True)
+    target = plugin_repo.target
+    second = target.with_name("zsh-other")
+    plugin_repo.git(
+        target.parent,
+        "clone",
+        "-q",
+        "--depth",
+        "1",
+        "--branch",
+        "v1",
+        plugin_repo.url,
+        str(second),
+    )
+    monkeypatch.setattr(
+        "den._shell._ZSH_PLUGINS",
+        (
+            ("zsh-demo", plugin_repo.url, "no-such-tag", plugin_repo.second),
+            ("zsh-other", plugin_repo.url, "v2", plugin_repo.second),
+        ),
+    )
+    _shell._offer_zsh_plugin_moves(dry_run=False)
+    assert plugin_repo.head() == plugin_repo.first
+    assert plugin_repo.git(second, "rev-parse", "HEAD") == plugin_repo.second
+    assert "could not move zsh-demo" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("failing", [False, True], ids=["refused", "failed-move"])
+def test_a_plugin_that_does_not_move_leaves_the_refresh_a_success(
+    plugin_repo, monkeypatch, tmp_path, failing
+):
+    _answering(monkeypatch, answer=failing)
+    assert install_main(["shell", "--no-bin", "--no-coreutils"]) == 0
+    plan, _ = _refresh_plan()
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan), encoding="utf-8")
+    plugin_repo.pin("no-such-tag" if failing else "v2", plugin_repo.second)
+    assert install_main(["shell", "--refresh-plan", str(path)]) == 0
+    assert plugin_repo.head() == plugin_repo.first
+
+
+def test_only_the_refresh_offers_to_move_plugin_clones(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    offers = []
+    monkeypatch.setattr(
+        "den._shell._offer_zsh_plugin_moves",
+        lambda *, dry_run: offers.append(dry_run),
+    )
+    assert install_main(["shell", "--no-bin", "--no-coreutils"]) == 0
+    assert offers == []
+    plan, _ = _refresh_plan()
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan), encoding="utf-8")
+    assert install_main(["shell", "--refresh-plan", str(path)]) == 0
+    assert offers == [False]
 
 
 def test_install_shell_bin_does_not_chmod_through_a_symlink(
