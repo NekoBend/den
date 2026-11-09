@@ -205,7 +205,8 @@ docker exec denbox sh -c 'apt-get update && apt-get install -y <package>'
 startup files: `/etc/zsh/zshenv`, which every zsh reads, and
 `/etc/bash.bashrc`, which only an interactive bash reads, set both, and
 `/etc/profile.d/00-container-home.sh`, which login shells (`bash -l`,
-`sh -l`) read, sets the home. So `docker exec -it --user dev denbox zsh`
+`sh -l`, including `bash -lc` and `sh -lc`) read, sets both and sources
+`user-env.d` for the container user. So `docker exec -it --user dev denbox zsh`
 works as it is. A `dev` command run without a shell, or through `bash -c` or
 `sh -c`, keeps `HOME=/root`, which `dev` cannot read, and the system `PATH`.
 Run it through zsh (`zsh -c` or `zsh -lc`), or pass `dev`'s home and the
@@ -295,6 +296,111 @@ there: it makes the build pull every base image from a registry, and
 ```sh
 docker buildx build --load -t my-dev -f Dockerfile .
 ```
+
+### Image extension contract
+
+The account name is built with `USERNAME` (default `dev`) and recorded in
+`/etc/container-user`; its home is `/home/<name>`. `USER_UID` and `USER_GID`
+default to 1000. Build args do not cross a `FROM` boundary: pass the same
+IDs when building denbox and your image, and assert them with `id -u` and
+`id -g` in your build. Runtime `HOST_UID/HOST_GID` can remap them. Install
+user tools as that account under its home; install system tools as root
+under system directories. Finish with `USER root`, `HOME=/root` and the
+system-only PATH shown above. Keep the inherited ENTRYPOINT.
+
+All image drop-ins live under `/etc/denbox/`. Names are processed in byte
+order (`LC_ALL=C`); use numeric prefixes to make dependencies explicit.
+Hook names are non-hidden directory entries; non-executable regular files
+are ignored. Hidden hook, env and PATH-list names are ignored. denbox ships
+empty hook and env directories. Names containing a newline are skipped with a
+warning; they are not supported.
+
+| Directory | Contract |
+| --- | --- |
+| `init.d/` | Executables run as root at each root start, after ID remapping, ownership walks and state-root preparation, before state-link. Working directory: `/`; `HOME=/root`; `PATH=/usr/sbin:/usr/bin:/sbin:/bin`; other inherited settings (including `docker run -e`) remain available. Stdin: `/dev/null`. Arguments: user home, final UID, final GID. A failure or untrusted entry stops the start and names the hook. There is no time limit: keep root hooks short. |
+| `user-init.d/` | Executables run after state-link, even when state is disabled or linking failed. Each runs through setpriv with the final IDs and the account's supplementary groups, and `env -i HOME=<home> PATH=/usr/sbin:/usr/bin:/sbin:/bin`, with no arguments and stdin from `/dev/null`. Hooks must be executable by that user, and scripts readable too (0755 works; 0700 and 0744 do not for a non-root user outside the owning group). The inner execute-permission check warns with the user and hook names; other execution failures, including unreadable scripts, warn with their status. Each gets `gnutimeout -k 10 300`, as state-link does. Failure, timeout or untrusted entry warns by name and startup continues. |
+| `user-env.d/*.sh` | Sourced as the container user. Files rejected by the fatal-error dry run are skipped; source errors the shell catches warn and continue. See below. |
+| `user-path.d/*.list` | One literal directory per line, absolute or relative to HOME. Blank lines and lines beginning with `#` are ignored. Colons are invalid; there is no variable, tilde or command expansion. Missing directories are prepended in list/line order, once each. Entries already in PATH stay where they are; the inherited PATH is otherwise unchanged, so activated venvs and `nvm use` keep precedence in nested shells. A final line without newline is read. Invalid lines and untrusted lists warn and are skipped. |
+| `state-paths.d/*.list` | Adds home paths to state-link, in the format of [The lists](#the-lists). These run before the environment's own `~/.config/denbox/state-paths` list. Linking problems warn and startup continues. |
+
+Environment files are sourced as the container user before its command at both
+root and non-root starts, and by that user's zshenv, interactive bash startup
+and login profile. Use shell syntax supported by dash, bash and zsh, and
+`export` variables. Files may be sourced repeatedly; keep them idempotent.
+They can override PATH and other variables. Sourcing does not enable errexit
+or nounset. A non-zero return warns by filename and startup continues.
+dash (including user-exec) and non-interactive POSIX bash first source each
+readable, trusted env file in a subshell with output suppressed. A non-zero
+dry-run status means the file aborted that shell, including on syntax errors,
+missing dot targets and fatal special-builtin errors. It warns by filename,
+explains how to see the error, and skips the file; later files and the command
+still run. This dry run runs files once more in these shells, so idempotence
+also matters within one start. Normal bash, interactive POSIX bash and zsh
+catch source errors without a dry-run process. A caught error can abandon
+the rest of that file, depending on the shell. Untrusted or unreadable files
+warn and are skipped. PATH lists and env files must be readable by the user.
+Env files receive the caller's stdin, never the internal name list.
+
+Shell identity in bash and profile.d comes from `/proc/self/status`, using
+builtins, with `/usr/bin/id -u` as a fallback if no numeric UID is read.
+Inherited `EUID` is ignored. If neither yields a number, HOME is unchanged
+and no tool paths or env files are added. zsh uses its own effective UID,
+which ignores inherited `EUID`.
+
+Hooks, env files and PATH lists must be regular, root-owned files, without
+group or other write permission or any symbolic link. Every parent directory
+up to `/` must also be root-owned, not writable by group or others, and not a
+symbolic link. These are image interfaces: never place hooks or env files in
+the home or `/state`, or link the fixed directories there. State lists are
+data read by state-link as the user, under its existing validation rules.
+The trust rule reads owner and mode as the file system reports them, so do
+not bind-mount a host directory at or below `/etc/denbox`.
+
+Non-root starts skip both hook directories and state-link. Env files run only
+as the container user, never as root or an unrelated shell user. The PATH
+lists are shared by the entrypoint and non-root shell startup; root's own
+PATH never gets their entries. denbox's own list is
+`/etc/denbox/user-path.d/denbox.list`; the image's root PATH stays system-only.
+A shell-less `docker exec` bypasses these startup files; use `zsh -lc`
+when you need the user's environment.
+
+For the trusted common case, each non-root zsh, non-login interactive bash,
+or login profile runs one batched find (one child process). Root shell blocks
+run no drop-in child processes. Interactive login bash delegates to profile.d
+once. Identity uses builtins unless /proc needs the one-process id fallback.
+A passed batch adds no per-file trust forks. Reading a directory adds one
+subshell, which expands its names in byte order and keeps the caller's locale,
+`-f` and `failglob` out of it, and leaves them as they were. With at least one
+env file, a shell adds one more subshell to find out whether it needs a dry
+run: the shell itself is asked, as the version variables can be inherited.
+dash and non-interactive POSIX bash add one dry-run subshell per readable
+trusted env file. Normal bash and zsh add none for sourcing. So with no env
+files and only denbox.list, a non-root startup block runs one program (`find`)
+and two subshells, about 2 ms per shell start. Helpers and their private flags are removed after shell startup.
+The entrypoint and user-exec retain per-file ancestor walks (one subshell and
+one stat process per ancestor); hook execution and privilege-drop processes
+are additional. These counts describe drop-in work, not other shell startup
+files or commands run by a drop-in.
+
+For example, extend the image without editing its entrypoint or shell files:
+
+```dockerfile
+FROM denbox
+USER root
+ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN test "$(id -u dev)" = 1000 && test "$(id -g dev)" = 1000
+COPY --chown=0:0 --chmod=0755 root-init /etc/denbox/init.d/10-mytool
+COPY --chown=0:0 --chmod=0755 user-init /etc/denbox/user-init.d/10-mytool
+COPY --chown=0:0 --chmod=0644 mytool-env.sh /etc/denbox/user-env.d/10-mytool.sh
+RUN printf '%s\n' '.local/mytool/bin' > /etc/denbox/user-path.d/10-mytool.list && \
+    printf '%s\n' 'd .config/mytool' > /etc/denbox/state-paths.d/10-mytool.list
+```
+
+Root hooks receive user-controlled paths as arguments. Validate those paths
+before touching them, avoid following links, and delegate work inside the
+home and state volume to user hooks. Env files are trusted image code, not
+sandboxed programs: for example, an explicit `exit` or `exec` can still stop
+the calling shell or command. The dry run does not undo external side effects.
 
 ## What survives where
 
