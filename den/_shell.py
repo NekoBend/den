@@ -933,6 +933,22 @@ _GIT_LOCATION_VARS = frozenset(
     }
 )
 _PLUGIN_GIT_TIMEOUT = 300
+# All that `git clone` writes to a clone's own config. Anything else (a filter,
+# a credential helper, core.sshCommand, an include) was put there later, and
+# could run a command when git reads the clone, so den does not touch that clone.
+_PLUGIN_CLONE_CONFIG = frozenset(
+    {
+        "core.bare",
+        "core.filemode",
+        "core.ignorecase",
+        "core.logallrefupdates",
+        "core.precomposeunicode",
+        "core.repositoryformatversion",
+        "core.symlinks",
+        "remote.origin.fetch",
+        "remote.origin.url",
+    }
+)
 
 
 def _zsh_plugins_dir() -> Path:
@@ -944,7 +960,7 @@ def _zsh_plugins_dir() -> Path:
 def _plugin_git(
     git: str, target: Path, *args: str, check: bool = False
 ) -> subprocess.CompletedProcess[str]:
-    """Run git in a plugin clone, running nothing the clone's own config names.
+    """Run git in a plugin clone: no hooks or fsmonitor, whatever the config says.
 
     A status takes no optional locks, so a dry run changes nothing in the clone.
     """
@@ -971,11 +987,16 @@ def _plugin_git(
 def _plugin_clone_problem(git: str, target: Path, url: str) -> str | None:
     """Say why den must not move `target`, or return None if it may.
 
-    den makes a detached, clean clone of `url`. Anything else may be the user's
-    own, on purpose, so it stays as it is.
+    den makes a detached, clean clone of `url`, with the config clone writes.
+    Anything else may be the user's own, on purpose, so it stays as it is. The
+    config comes first: a filter it names would run in the status below.
     """
     if target.is_symlink() or not (target / ".git").is_dir():
         return "not a git clone"
+    config = _plugin_git(git, target, "config", "--local", "--name-only", "--list")
+    names = {name.lower() for name in config.stdout.split()}
+    if config.returncode or names - _PLUGIN_CLONE_CONFIG:
+        return "its git config has settings a clone does not write"
     origin = _plugin_git(git, target, "config", "--get", "remote.origin.url")
     if origin.returncode or origin.stdout.strip().removesuffix(".git") != url:
         return f"its origin is not {url}"
@@ -1012,6 +1033,7 @@ def _sync_zsh_plugin(
         "fetch",
         "--quiet",
         "--no-tags",
+        "--no-recurse-submodules",
         *depth,
         "origin",
         f"refs/tags/{tag}",
@@ -1028,7 +1050,18 @@ def _sync_zsh_plugin(
             file=sys.stderr,
         )
         return
-    _plugin_git(git, target, "checkout", "--quiet", "--detach", sha, check=True)
+    # A file git ignores can be the user's, and a release may start to track it.
+    _plugin_git(
+        git,
+        target,
+        "checkout",
+        "--quiet",
+        "--no-overwrite-ignore",
+        "--no-recurse-submodules",
+        "--detach",
+        sha,
+        check=True,
+    )
     print(f"  [ok] moved {name} {head[:12]} -> {tag} ({sha[:12]})")
 
 

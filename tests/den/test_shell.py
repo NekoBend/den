@@ -2182,6 +2182,59 @@ def test_zsh_plugin_clone_that_is_not_dens_stays(plugin_repo, capsys, change, re
         assert (target / "plugin.zsh").read_text(encoding="utf-8") == "mine\n"
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("filter.mine.clean", "touch {marker}; cat"),
+        ("core.sshCommand", "touch {marker}"),
+        ("credential.helper", "!touch {marker}"),
+        ("url.file:///elsewhere.insteadOf", "{url}"),
+        ("include.path", "{marker}"),
+    ],
+)
+def test_zsh_plugin_clone_with_added_git_config_stays(
+    plugin_repo, capsys, tmp_path, name, value
+):
+    # Set up so that a status would run the filter: every path selects it, and
+    # the file's stat no longer matches the index.
+    marker = tmp_path / "config-command-ran"
+    target = plugin_repo.target
+    plugin_repo.git(
+        target, "config", name, value.format(marker=marker, url=plugin_repo.url)
+    )
+    (target / ".git" / "info").mkdir(exist_ok=True)
+    (target / ".git" / "info" / "attributes").write_text(
+        "* filter=mine\n", encoding="utf-8"
+    )
+    os.utime(target / "plugin.zsh", (1, 1))
+    capsys.readouterr()
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert not marker.exists()
+    assert plugin_repo.head() == plugin_repo.first
+    assert "settings a clone does not write" in capsys.readouterr().out
+
+
+def test_zsh_plugin_move_keeps_an_ignored_file_a_release_starts_to_track(
+    plugin_repo, capsys
+):
+    target = plugin_repo.target
+    upstream = plugin_repo.upstream
+    (upstream / "notes.md").write_text("upstream\n", encoding="utf-8")
+    plugin_repo.git(upstream, "add", "notes.md")
+    plugin_repo.git(upstream, "commit", "-q", "-m", "notes")
+    plugin_repo.git(upstream, "tag", "v3")
+    third = plugin_repo.git(upstream, "rev-parse", "HEAD")
+    (target / ".git" / "info").mkdir(exist_ok=True)
+    (target / ".git" / "info" / "exclude").write_text("notes.md\n", encoding="utf-8")
+    (target / "notes.md").write_text("mine\n", encoding="utf-8")
+    plugin_repo.pin("v3", third)
+    plugin_repo.install()
+    assert (target / "notes.md").read_text(encoding="utf-8") == "mine\n"
+    assert plugin_repo.head() == plugin_repo.first
+    assert "could not move zsh-demo" in capsys.readouterr().err
+
+
 def test_zsh_plugin_link_to_a_clone_stays(plugin_repo, capsys, symlink):
     real = plugin_repo.target.with_name("real-clone")
     plugin_repo.target.rename(real)
@@ -2213,8 +2266,9 @@ def test_zsh_plugin_full_clone_keeps_its_history(plugin_repo):
     # --depth on a full clone would throw its history away.
     target = plugin_repo.target
     target.rename(target.with_name("den-made"))
-    plugin_repo.git(target.parent, "clone", "-q", plugin_repo.url, str(target))
-    plugin_repo.git(target, "checkout", "-q", "--detach", plugin_repo.first)
+    plugin_repo.git(
+        target.parent, "clone", "-q", "--branch", "v1", plugin_repo.url, str(target)
+    )
     plugin_repo.pin("v2", plugin_repo.second)
     plugin_repo.install()
     assert plugin_repo.head() == plugin_repo.second

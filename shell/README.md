@@ -49,9 +49,9 @@ nothing is fetched -- code sourced at shell startup is opt-in.
 
 Run it again after a pin changes: a clone den made moves to the new commit,
 which is checked against the pin before it is checked out, so a moved tag leaves
-the clone where it was. A clone that is on a branch, has local changes or has
-another origin, a link and any other directory are yours and stay as they are,
-with a line that says so.
+the clone where it was. A clone that is on a branch, has local changes, another
+origin or git settings of its own, a link and any other directory are yours and
+stay as they are, with a line that says so.
 `init.zsh` guards each source, so a missing plugin just turns that feature off.
 
 ### zsh completion
