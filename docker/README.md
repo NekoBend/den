@@ -93,9 +93,10 @@ when the step runs.
 settings in `renovate.json` at the repository root:
 
 - It opens a pull request for each update: the base image, the syntax image,
-  each `*_VERSION` build arg and each GitHub Action the workflows use (those
-  are pinned to commit SHAs, with the version in a comment). A new major
-  version gets a pull request of its own.
+  each `*_VERSION` build arg, each GitHub Action the workflows use (those
+  are pinned to commit SHAs, with the version in a comment), and the zsh plugins
+  den installs (`_ZSH_PLUGINS` in `den/_shell.py`). A new major version gets a
+  pull request of its own.
 - It proposes a release only once it has been out for 7 days
   (`minimumReleaseAge`), so a release that is withdrawn or found broken in its
   first week never reaches the image. Its Dependency Dashboard issue lists the

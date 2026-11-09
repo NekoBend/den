@@ -42,10 +42,16 @@ its git aliases duplicate `aliases.sh`, so it was dead weight):
   -- colors the command line as you type (sourced last, as it requires).
 
 `den install shell --zsh-plugins` clones them into `~/.config/zsh/plugins/`,
-pinned to reviewed release commits (v0.7.1 / 0.8.0): the clone checks out the
-release tag and is deleted if HEAD does not match the pinned commit. Without
-the flag nothing is fetched -- code sourced at shell startup is opt-in.
-Pre-existing clones are left untouched (the pin applies to new clones only).
+pinned to reviewed release commits (`_ZSH_PLUGINS` in `den/_shell.py`, which
+Renovate keeps current by pull request): the clone checks out the release tag
+and is deleted if HEAD does not match the pinned commit. Without the flag
+nothing is fetched -- code sourced at shell startup is opt-in.
+
+Run it again after a pin changes: a clone den made moves to the new commit,
+which is checked against the pin before it is checked out, so a moved tag leaves
+the clone where it was. A clone that is on a branch, has local changes or has
+another origin, a link and any other directory are yours and stay as they are,
+with a line that says so.
 `init.zsh` guards each source, so a missing plugin just turns that feature off.
 
 ### zsh completion

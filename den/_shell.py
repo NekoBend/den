@@ -20,9 +20,10 @@ are never installed on Windows.
 
 `--zsh-plugins` clones the zsh plugins init.zsh sources (zsh-autosuggestions,
 zsh-syntax-highlighting) into ~/.config/zsh/plugins, PINNED to reviewed release
-commits; without the flag nothing is fetched (shell-startup code is opt-in, and
-an interactive run asks, default no). init.zsh guards each source, so a missing
-plugin just turns the feature off.
+commits, and moves a clone it made earlier to a changed pin; without the flag
+nothing is fetched (shell-startup code is opt-in, and an interactive run asks,
+default no). init.zsh guards each source, so a missing plugin just turns the
+feature off.
 """
 
 from __future__ import annotations
@@ -897,8 +898,9 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
 
 # zsh plugins den sources from ~/.config/zsh/plugins (see shell/zsh/init.zsh).
 # Cloned from upstream but PINNED to a release commit: this code runs at every
-# shell startup, so it must not track a moving HEAD (supply-chain surface). To
-# update a pin, review the upstream diff, then bump the tag and commit sha here.
+# shell startup, so it must not track a moving HEAD (supply-chain surface).
+# Renovate proposes each new release as a pull request (renovate.json reads the
+# url, tag and sha below, in that order): review the upstream diff before merging.
 _ZSH_PLUGINS = (
     (
         "zsh-autosuggestions",
@@ -915,10 +917,119 @@ _ZSH_PLUGINS = (
 )
 
 
+# The variables that point git at another repository than the one -C names.
+_GIT_LOCATION_VARS = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    }
+)
+_PLUGIN_GIT_TIMEOUT = 300
+
+
 def _zsh_plugins_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME")
     root = Path(base) if base else Path.home() / ".config"
     return root / "zsh" / "plugins"
+
+
+def _plugin_git(
+    git: str, target: Path, *args: str, check: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Run git in a plugin clone, running nothing the clone's own config names.
+
+    A status takes no optional locks, so a dry run changes nothing in the clone.
+    """
+    return subprocess.run(
+        [
+            git,
+            "--no-optional-locks",
+            "-C",
+            str(target),
+            "-c",
+            "core.fsmonitor=",
+            "-c",
+            "core.hooksPath=/dev/null",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        check=check,
+        timeout=_PLUGIN_GIT_TIMEOUT,
+        env={k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS},
+    )
+
+
+def _plugin_clone_problem(git: str, target: Path, url: str) -> str | None:
+    """Say why den must not move `target`, or return None if it may.
+
+    den makes a detached, clean clone of `url`. Anything else may be the user's
+    own, on purpose, so it stays as it is.
+    """
+    if target.is_symlink() or not (target / ".git").is_dir():
+        return "not a git clone"
+    origin = _plugin_git(git, target, "config", "--get", "remote.origin.url")
+    if origin.returncode or origin.stdout.strip().removesuffix(".git") != url:
+        return f"its origin is not {url}"
+    if _plugin_git(git, target, "symbolic-ref", "-q", "HEAD").returncode == 0:
+        return "it is on a branch"
+    status = _plugin_git(git, target, "status", "--porcelain")
+    if status.returncode or status.stdout.strip():
+        return "it has local changes"
+    return None
+
+
+def _sync_zsh_plugin(
+    git: str, plugin: tuple[str, str, str, str], target: Path, *, dry_run: bool
+) -> None:
+    """Move an existing clone of `plugin` to its pinned commit, if den may."""
+    name, url, tag, sha = plugin
+    problem = _plugin_clone_problem(git, target, url)
+    if problem:
+        print(f"  [skip] {name} left as it is: {problem}; pin not applied")
+        return
+    head = _plugin_git(git, target, "rev-parse", "HEAD", check=True).stdout.strip()
+    if head == sha:
+        print(f"  [ok] {name} already at {tag} ({sha[:12]})")
+        return
+    if dry_run:
+        print(f"  [dry] move {name} {head[:12]} -> {tag} ({sha[:12]})")
+        return
+    shallow = _plugin_git(git, target, "rev-parse", "--is-shallow-repository")
+    # A full clone stays full: --depth would drop its history.
+    depth = ["--depth", "1"] if shallow.stdout.strip() == "true" else []
+    _plugin_git(
+        git,
+        target,
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        *depth,
+        "origin",
+        f"refs/tags/{tag}",
+        check=True,
+    )
+    fetched = _plugin_git(
+        git, target, "rev-parse", "FETCH_HEAD^{commit}", check=True
+    ).stdout.strip()
+    if fetched != sha:
+        print(
+            f"  warning: {name} {tag} is not the pinned commit (got {fetched[:12]}, "
+            f"want {sha[:12]}); {name} left at {head[:12]} - the tag may have moved "
+            "upstream.",
+            file=sys.stderr,
+        )
+        return
+    _plugin_git(git, target, "checkout", "--quiet", "--detach", sha, check=True)
+    print(f"  [ok] moved {name} {head[:12]} -> {tag} ({sha[:12]})")
 
 
 def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
@@ -927,6 +1038,8 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
     whatever sits here, so nothing is fetched unless --zsh-plugins was given.
     Each clone checks out the release tag and is verified against the pinned
     commit; a mismatch (a moved tag is an attack signal) deletes the clone.
+    A clone den made earlier moves to the pinned commit, checked before it is
+    checked out; any other directory there is the user's and stays as it is.
     init.zsh guards each source with a file test, so a skipped, failed, or
     rejected clone just means the feature is off, never a broken shell. These
     replace the oh-my-zsh framework den used to depend on."""
@@ -944,10 +1057,18 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
         return
     dest = _zsh_plugins_dir()
     print(f"zsh plugins -> {dest}")
-    for name, url, tag, sha in _ZSH_PLUGINS:
+    for plugin in _ZSH_PLUGINS:
+        name, url, tag, sha = plugin
         target = dest / name
-        if target.exists():
-            print(f"  [skip] {name} already present (pre-existing; pin not verified)")
+        if target.exists() or target.is_symlink():
+            try:
+                _sync_zsh_plugin(git, plugin, target, dry_run=dry_run)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(
+                    f"  warning: could not move {name} to its pin ({exc}); "
+                    "it stays as it was",
+                    file=sys.stderr,
+                )
             continue
         if dry_run:
             print(
