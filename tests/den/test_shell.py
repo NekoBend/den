@@ -2027,6 +2027,280 @@ def test_clone_zsh_plugins_skips_existing(tmp_path, monkeypatch):
     assert any("zsh-syntax-highlighting" in t for t in clones)  # still cloned
 
 
+_REAL_GIT = shutil.which("git") or "git-not-found"
+
+
+class _PluginRepo:
+    """A real upstream with two release tags, and den's plugin dir beside it."""
+
+    def __init__(self, root, monkeypatch):
+        self.monkeypatch = monkeypatch
+        self.upstream = root / "upstream"
+        self.url = self.upstream.as_uri()
+        self.target = root / ".config" / "zsh" / "plugins" / "zsh-demo"
+        self.upstream.mkdir()
+        self._upstream_git("init", "-q", "-b", "main")
+        self.first = self._commit("one\n")
+        self._upstream_git("tag", "v1")
+        self.second = self._commit("two\n")
+        # An annotated tag: FETCH_HEAD names the tag object, not the commit.
+        self._upstream_git("tag", "-a", "v2", "-m", "second release")
+
+    def _upstream_git(self, *args):
+        return self.git(self.upstream, *args)
+
+    @staticmethod
+    def git(cwd, *args):
+        return subprocess.run(
+            [
+                _REAL_GIT,
+                "-C",
+                str(cwd),
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                *args,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def _commit(self, text):
+        (self.upstream / "plugin.zsh").write_text(text, encoding="utf-8")
+        self._upstream_git("add", "plugin.zsh")
+        self._upstream_git("commit", "-q", "-m", text.strip())
+        return self._upstream_git("rev-parse", "HEAD")
+
+    def pin(self, tag, sha):
+        self.monkeypatch.setattr(
+            "den._shell._ZSH_PLUGINS", (("zsh-demo", self.url, tag, sha),)
+        )
+
+    @staticmethod
+    def install(*, dry_run=False):
+        _shell._maybe_clone_zsh_plugins(want=True, dry_run=dry_run)
+
+    def head(self):
+        return self.git(self.target, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def plugin_repo(tmp_path, monkeypatch):
+    if sys.platform == "win32":
+        pytest.skip("den clones no zsh plugins on Windows")
+    if shutil.which("git") is None:
+        pytest.skip("needs git")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setattr("den._shell._windows", lambda: False)
+    which = shutil.which
+    monkeypatch.setattr(
+        "den._shell.shutil.which",
+        lambda name, path=None: (
+            _on_path(name) if name == "zsh" else which(name, path=path)
+        ),
+    )
+    repo = _PluginRepo(tmp_path, monkeypatch)
+    repo.pin("v1", repo.first)
+    repo.install()
+    assert repo.head() == repo.first
+    return repo
+
+
+def test_zsh_plugin_clone_moves_to_a_new_pin(plugin_repo, capsys):
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert plugin_repo.head() == plugin_repo.second
+    assert (plugin_repo.target / "plugin.zsh").read_text(encoding="utf-8") == "two\n"
+    assert f"moved zsh-demo {plugin_repo.first[:12]} -> v2" in capsys.readouterr().out
+
+
+def test_zsh_plugin_clone_at_its_pin_fetches_nothing(plugin_repo, capsys):
+    plugin_repo.install()
+    assert "already at v1" in capsys.readouterr().out
+    assert not (plugin_repo.target / ".git" / "FETCH_HEAD").exists()
+
+
+def test_zsh_plugin_dry_run_moves_nothing(plugin_repo, capsys):
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install(dry_run=True)
+    assert plugin_repo.head() == plugin_repo.first
+    assert "[dry] move zsh-demo" in capsys.readouterr().out
+    assert not (plugin_repo.target / ".git" / "FETCH_HEAD").exists()
+
+
+def test_zsh_plugin_moved_tag_leaves_the_clone_in_place(plugin_repo, capsys):
+    # The pin is checked before the checkout, and the clone is not deleted: it
+    # may be all the user has.
+    plugin_repo.pin("v2", "0" * 40)
+    plugin_repo.install()
+    assert plugin_repo.head() == plugin_repo.first
+    err = capsys.readouterr().err
+    assert "not the pinned commit" in err and "tag may have moved" in err
+
+
+def test_zsh_plugin_failed_fetch_leaves_the_clone_in_place(plugin_repo, capsys):
+    plugin_repo.upstream.rename(plugin_repo.upstream.with_name("gone"))
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert plugin_repo.head() == plugin_repo.first
+    assert "could not move zsh-demo" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("tracked-edit", "local changes"),
+        ("untracked-file", "local changes"),
+        ("branch", "on a branch"),
+        ("other-origin", "origin is not"),
+    ],
+)
+def test_zsh_plugin_clone_that_is_not_dens_stays(plugin_repo, capsys, change, reason):
+    target = plugin_repo.target
+    if change == "tracked-edit":
+        (target / "plugin.zsh").write_text("mine\n", encoding="utf-8")
+    elif change == "untracked-file":
+        (target / "notes.txt").write_text("mine\n", encoding="utf-8")
+    elif change == "branch":
+        plugin_repo.git(target, "checkout", "-q", "-b", "mine")
+    else:
+        plugin_repo.git(target, "remote", "set-url", "origin", "file:///elsewhere")
+    capsys.readouterr()
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert plugin_repo.head() == plugin_repo.first
+    out = capsys.readouterr().out
+    assert "[skip] zsh-demo left as it is" in out and reason in out
+    if change == "tracked-edit":
+        assert (target / "plugin.zsh").read_text(encoding="utf-8") == "mine\n"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("filter.mine.clean", "touch {marker}; cat"),
+        ("core.sshCommand", "touch {marker}"),
+        ("credential.helper", "!touch {marker}"),
+        ("url.file:///elsewhere.insteadOf", "{url}"),
+        ("include.path", "{marker}"),
+    ],
+)
+def test_zsh_plugin_clone_with_added_git_config_stays(
+    plugin_repo, capsys, tmp_path, name, value
+):
+    # Set up so that a status would run the filter: every path selects it, and
+    # the file's stat no longer matches the index.
+    marker = tmp_path / "config-command-ran"
+    target = plugin_repo.target
+    plugin_repo.git(
+        target, "config", name, value.format(marker=marker, url=plugin_repo.url)
+    )
+    (target / ".git" / "info").mkdir(exist_ok=True)
+    (target / ".git" / "info" / "attributes").write_text(
+        "* filter=mine\n", encoding="utf-8"
+    )
+    os.utime(target / "plugin.zsh", (1, 1))
+    capsys.readouterr()
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert not marker.exists()
+    assert plugin_repo.head() == plugin_repo.first
+    assert "settings a clone does not write" in capsys.readouterr().out
+
+
+def test_zsh_plugin_move_keeps_an_ignored_file_a_release_starts_to_track(
+    plugin_repo, capsys
+):
+    target = plugin_repo.target
+    upstream = plugin_repo.upstream
+    (upstream / "notes.md").write_text("upstream\n", encoding="utf-8")
+    plugin_repo.git(upstream, "add", "notes.md")
+    plugin_repo.git(upstream, "commit", "-q", "-m", "notes")
+    plugin_repo.git(upstream, "tag", "v3")
+    third = plugin_repo.git(upstream, "rev-parse", "HEAD")
+    (target / ".git" / "info").mkdir(exist_ok=True)
+    (target / ".git" / "info" / "exclude").write_text("notes.md\n", encoding="utf-8")
+    (target / "notes.md").write_text("mine\n", encoding="utf-8")
+    plugin_repo.pin("v3", third)
+    plugin_repo.install()
+    assert (target / "notes.md").read_text(encoding="utf-8") == "mine\n"
+    assert plugin_repo.head() == plugin_repo.first
+    assert "could not move zsh-demo" in capsys.readouterr().err
+
+
+def test_zsh_plugin_link_to_a_clone_stays(plugin_repo, capsys, symlink):
+    real = plugin_repo.target.with_name("real-clone")
+    plugin_repo.target.rename(real)
+    plugin_repo.target.symlink_to(real)
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert plugin_repo.git(real, "rev-parse", "HEAD") == plugin_repo.first
+    assert "not a git clone" in capsys.readouterr().out
+
+
+def test_zsh_plugin_inside_another_repository_is_not_taken_for_a_clone(
+    plugin_repo, capsys
+):
+    # ~/.config may be a dotfiles repository: git -C would find that one.
+    plugins = plugin_repo.target.parent
+    plain = plugins / "zsh-plain"
+    plain.mkdir()
+    plugin_repo.git(plugins.parent.parent, "init", "-q")
+    plugin_repo.monkeypatch.setattr(
+        "den._shell._ZSH_PLUGINS",
+        (("zsh-plain", plugin_repo.url, "v2", plugin_repo.second),),
+    )
+    plugin_repo.install()
+    assert list(plain.iterdir()) == []
+    assert "zsh-plain left as it is: not a git clone" in capsys.readouterr().out
+
+
+def test_zsh_plugin_full_clone_keeps_its_history(plugin_repo):
+    # --depth on a full clone would throw its history away.
+    target = plugin_repo.target
+    target.rename(target.with_name("den-made"))
+    plugin_repo.git(
+        target.parent, "clone", "-q", "--branch", "v1", plugin_repo.url, str(target)
+    )
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert plugin_repo.head() == plugin_repo.second
+    assert plugin_repo.git(target, "rev-parse", "--is-shallow-repository") == "false"
+
+
+def test_zsh_plugin_move_runs_no_hook_of_the_clone(plugin_repo, tmp_path):
+    marker = tmp_path / "hook-ran"
+    hook = plugin_repo.target / ".git" / "hooks" / "post-checkout"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+    hook.chmod(0o755)
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert plugin_repo.head() == plugin_repo.second
+    assert not marker.exists()
+
+
+def test_zsh_plugin_move_ignores_a_repository_the_environment_names(
+    plugin_repo, tmp_path, monkeypatch
+):
+    other = tmp_path / "other"
+    other.mkdir()
+    plugin_repo.git(other, "init", "-q")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    monkeypatch.delenv("GIT_DIR")
+    assert plugin_repo.head() == plugin_repo.second
+    assert not (other / ".git" / "FETCH_HEAD").exists()
+
+
 def test_install_shell_bin_does_not_chmod_through_a_symlink(
     tmp_path, monkeypatch, symlink
 ):

@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from den._shell import _ZSH_PLUGINS
+
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "renovate.json"
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -56,6 +58,26 @@ def test_renovate_uses_the_presets_for_the_dockerfile_and_the_workflows():
         "docker:pinDigests",
         "helpers:pinGitHubActionDigestsToSemver",
     } <= extends
+
+
+def test_renovate_reads_each_zsh_plugin_pin_den_clones():
+    # The tag and the commit move together, so a release updates both in one
+    # pull request. A reformatted tuple would stop the regex matching.
+    managers = _config()["customManagers"]
+    manager = next(m for m in managers if m["datasourceTemplate"] == "github-tags")
+    assert manager["customType"] == "regex"
+    assert manager["managerFilePatterns"] == ["/^den/_shell\\.py$/"]
+    pattern = manager["matchStrings"][0].replace("(?<", "(?P<")
+    source = (ROOT / "den" / "_shell.py").read_text(encoding="utf-8")
+    found = [
+        (m["depName"], m["currentValue"], m["currentDigest"])
+        for m in re.finditer(pattern, source)
+    ]
+    assert found == [
+        (url.removeprefix("https://github.com/"), tag, sha)
+        for _name, url, tag, sha in _ZSH_PLUGINS
+    ]
+    assert found
 
 
 def test_renovate_leaves_the_python_dependencies_alone():

@@ -3,6 +3,7 @@
   "description": [
     "Renovate proposes every version update as a pull request and merges none of them.",
     "It covers docker/ubuntu/Dockerfile (its base image and syntax image, pinned by tag and digest, and each *_VERSION build arg under a '# renovate:' comment) and the GitHub Actions in .github/workflows (pinned to commit SHAs with the version in a comment).",
+    "It also covers the zsh plugins den clones at install: each one's url, release tag and commit in den/_shell.py.",
     "A release becomes an update 7 days after it is published. docker/README.md has the rules."
   ],
   "extends": [
@@ -16,6 +17,16 @@
   "minimumReleaseAge": "7 days",
   "minimumReleaseAgeBehaviour": "timestamp-required",
   "automerge": false,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^den/_shell\\.py$/"],
+      "matchStrings": [
+        "\"https://github\\.com/(?<depName>[^\"/]+/[^\"/]+)\",\\s*\"(?<currentValue>[^\"]+)\",\\s*\"(?<currentDigest>[0-9a-f]{40})\""
+      ],
+      "datasourceTemplate": "github-tags"
+    }
+  ],
   "packageRules": [
     {
       "description": "The Python versions CI runs (setup-python's python-version) are chosen by hand, as den's Python dependencies are.",
