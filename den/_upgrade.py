@@ -292,6 +292,7 @@ def _describe(plan: dict, left_alone: list[Path]) -> None:
             f"[dry-run] would refresh the shell files ({extras} the extras,"
             f" {helpers} the ~/.local/bin helpers)"
         )
+        print("[dry-run] would offer to move zsh plugin clones to the new pins")
     if not plan["skills"] and not plan["parents"] and not plan["shell"]:
         print("[dry-run] nothing to refresh: no deployed den files found")
     for parent in left_alone:
@@ -315,6 +316,8 @@ def _usage() -> None:
         "             replaced; edited ones are kept and listed, deleted ones\n"
         "             stay deleted, and a parent prompt not exactly as den\n"
         "             deployed it (edited or hand-written) is never touched.\n"
+        "             Then it offers to move each zsh plugin clone to the new\n"
+        "             version's pin, asking first.\n"
         "  --force    also replace the kept skill and shell files, copying\n"
         "             each to <file>.den.bak first, and create the deleted\n"
         "             ones (never a parent prompt)\n"

@@ -51,7 +51,9 @@ Run it again after a pin changes: a clone den made moves to the new commit,
 which is checked against the pin before it is checked out, so a moved tag leaves
 the clone where it was. A clone that is on a branch, has local changes, another
 origin or git settings of its own, a link and any other directory are yours and
-stay as they are, with a line that says so.
+stay as they are, with a line that says so. `den upgrade --refresh` offers the
+same move for the clones that are there, with a link to the upstream changes,
+and moves one only if you say yes; without a terminal it moves none.
 `init.zsh` guards each source, so a missing plugin just turns that feature off.
 
 ### zsh completion

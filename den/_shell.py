@@ -867,6 +867,8 @@ def install_shell(  # ruff: ignore[too-many-locals, too-many-branches]  # one pe
         _wire(pwsh_dir / _PWSH_PROFILE, _PWSH_LINE, dry_run=dry_run, refresh=refresh)
 
     _maybe_clone_zsh_plugins(want=want_zsh_plugins, dry_run=dry_run)
+    if plan is not None:
+        _offer_zsh_plugin_moves(dry_run=dry_run)
 
     rc = _maybe_install_coreutils(
         want=want_coreutils, skip=skip_coreutils, dry_run=dry_run
@@ -1008,10 +1010,36 @@ def _plugin_clone_problem(git: str, target: Path, url: str) -> str | None:
     return None
 
 
+def _confirm_plugin_move(plugin: tuple[str, str, str, str], head: str) -> bool:
+    """Ask whether to move a clone from `head` to its pin; no terminal means no."""
+    name, url, tag, sha = plugin
+    if sys.stdin.isatty():
+        from . import _ui
+
+        print(f"  {name}: {head[:12]} -> {tag} ({sha[:12]})")
+        print(f"  changes: {url}/compare/{head}...{sha}")
+        question = f"Move {name} to {tag}? It runs at every zsh start."
+        if _ui.confirm(question, default=False):
+            return True
+    print(
+        f"  [skip] {name} stays at {head[:12]}; "
+        f"`den install shell --zsh-plugins` moves it to {tag}"
+    )
+    return False
+
+
 def _sync_zsh_plugin(
-    git: str, plugin: tuple[str, str, str, str], target: Path, *, dry_run: bool
+    git: str,
+    plugin: tuple[str, str, str, str],
+    target: Path,
+    *,
+    dry_run: bool,
+    ask: bool = False,
 ) -> None:
-    """Move an existing clone of `plugin` to its pinned commit, if den may."""
+    """Move an existing clone of `plugin` to its pinned commit, if den may.
+
+    With `ask`, the user decides first.
+    """
     name, url, tag, sha = plugin
     problem = _plugin_clone_problem(git, target, url)
     if problem:
@@ -1023,6 +1051,8 @@ def _sync_zsh_plugin(
         return
     if dry_run:
         print(f"  [dry] move {name} {head[:12]} -> {tag} ({sha[:12]})")
+        return
+    if ask and not _confirm_plugin_move(plugin, head):
         return
     shallow = _plugin_git(git, target, "rev-parse", "--is-shallow-repository")
     # A full clone stays full: --depth would drop its history.
@@ -1063,6 +1093,34 @@ def _sync_zsh_plugin(
         check=True,
     )
     print(f"  [ok] moved {name} {head[:12]} -> {tag} ({sha[:12]})")
+
+
+def _offer_zsh_plugin_moves(*, dry_run: bool) -> None:
+    """Offer to move the plugin clones that are there to this den's pins.
+
+    For `den upgrade --refresh`, which runs the new den, so these are the new
+    pins. A plugin that is not there stays absent, as a deleted file does.
+    """
+    if _windows() or not shutil.which("zsh"):
+        return
+    dest = _zsh_plugins_dir()
+    present = [p for p in _ZSH_PLUGINS if (dest / p[0]).exists()]
+    if not present:
+        return
+    git, refusal = resolve_tool("git")
+    if refusal or git is None:
+        print(f"zsh plugins: {refusal or 'git not found'}; skipping", file=sys.stderr)
+        return
+    print(f"zsh plugins -> {dest}")
+    for plugin in present:
+        try:
+            _sync_zsh_plugin(git, plugin, dest / plugin[0], dry_run=dry_run, ask=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(
+                f"  warning: could not move {plugin[0]} to its pin ({exc}); "
+                "it stays as it was",
+                file=sys.stderr,
+            )
 
 
 def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
