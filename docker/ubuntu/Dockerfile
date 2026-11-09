@@ -367,11 +367,13 @@ install -m 0755 "$archive_dir/rclone" "$HOME/.local/bin/rclone"
 env -u RCLONE_VERSION "$HOME/.local/bin/rclone" version
 INSTALL_RCLONE
 
-# den's main branch as a BuildKit git source. Every build resolves main to a
-# commit, so the den step below reruns exactly when main moves; a RUN that
-# cloned den itself would stay cached on the first build's den.
+# den as a BuildKit git source, at DEN_REF: a branch, a tag or a commit. Every
+# build resolves a branch to a commit, so the den step below reruns exactly when
+# it moves; a RUN that cloned den itself would stay cached on the first build's
+# den. A commit stays put, so a build can hold den at one it has reviewed.
 FROM scratch AS den-src
-ADD https://github.com/NekoBend/den.git#main /
+ARG DEN_REF=main
+ADD https://github.com/NekoBend/den.git#${DEN_REF} /
 
 # 5. Workspace configuration. Updating den does not rebuild the utilities.
 FROM utilities AS workspace

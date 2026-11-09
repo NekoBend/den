@@ -335,14 +335,16 @@ def test_den_comes_from_a_git_source_of_main_mounted_into_the_install():
         if keyword == "FROM":
             stage = rest.split()[-1]
         elif keyword == "ADD" and re.search(
-            r"https://github\.com/NekoBend/den\.git#main(\s|$)", rest
+            r"https://github\.com/NekoBend/den\.git#\$\{DEN_REF\}(\s|$)", rest
         ):
             source_stage = stage
         elif keyword == "RUN":
             assert "github.com/NekoBend/den" not in rest, "a RUN fetches den itself"
             if "uv tool install" in rest:
                 install = rest
-    assert source_stage, "no stage ADDs den's main branch"
+    assert source_stage, "no stage ADDs den at DEN_REF"
+    # main stays the default, so a plain build follows den as it did.
+    assert ("ARG", "DEN_REF=main") in list(_instructions())
     mounts = [
         dict(option.split("=", 1) for option in mount.split(","))
         for mount in re.findall(r"--mount=(\S+)", install)
@@ -3307,6 +3309,24 @@ def test_the_image_workflow_runs_a_container_with_a_state_volume():
     ) in run
     assert '[ -f "$RUNNER_TEMP/ssh/id_test" ]' in run
     assert "docker run --rm -e DENBOX_STATE=0 -v denbox-state:/state denbox" in run
+    # The README's backup and restore, into a new volume, come back linked.
+    assert "tar -czf /backup/denbox-state.tgz -C /state ." in run
+    assert "--entrypoint tar denbox -xzpf /backup/denbox-state.tgz -C /state" in run
+    assert "-v denbox-state-restored:/state denbox" in run
+
+
+def test_the_readme_gives_the_restore_the_workflow_checks():
+    readme = Path(__file__).parents[2] / "docker" / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    assert "tar -czf /backup/denbox-state.tgz -C /state ." in text
+    assert "--entrypoint tar denbox -xzpf /backup/denbox-state.tgz -C /state" in text
+
+
+def test_the_image_workflow_builds_with_a_commit_of_den():
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    step = next(s for s in steps if s.get("name") == "Check a build at a commit of den")
+    assert step.get("timeout-minutes", 0) > 0
+    assert 'DEN_REF="$ref"' in step["run"]
 
 
 def test_test_helpers_see_the_whole_dockerfile():
