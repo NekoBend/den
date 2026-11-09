@@ -2392,6 +2392,48 @@ def test_zsh_plugin_offer_does_not_bring_back_a_plugin_that_is_gone(
     assert capsys.readouterr().out == ""
 
 
+def test_zsh_plugin_offer_goes_on_after_a_failed_move(plugin_repo, monkeypatch, capsys):
+    _answering(monkeypatch, answer=True)
+    target = plugin_repo.target
+    second = target.with_name("zsh-other")
+    plugin_repo.git(
+        target.parent,
+        "clone",
+        "-q",
+        "--depth",
+        "1",
+        "--branch",
+        "v1",
+        plugin_repo.url,
+        str(second),
+    )
+    monkeypatch.setattr(
+        "den._shell._ZSH_PLUGINS",
+        (
+            ("zsh-demo", plugin_repo.url, "no-such-tag", plugin_repo.second),
+            ("zsh-other", plugin_repo.url, "v2", plugin_repo.second),
+        ),
+    )
+    _shell._offer_zsh_plugin_moves(dry_run=False)
+    assert plugin_repo.head() == plugin_repo.first
+    assert plugin_repo.git(second, "rev-parse", "HEAD") == plugin_repo.second
+    assert "could not move zsh-demo" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("failing", [False, True], ids=["refused", "failed-move"])
+def test_a_plugin_that_does_not_move_leaves_the_refresh_a_success(
+    plugin_repo, monkeypatch, tmp_path, failing
+):
+    _answering(monkeypatch, answer=failing)
+    assert install_main(["shell", "--no-bin", "--no-coreutils"]) == 0
+    plan, _ = _refresh_plan()
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(plan), encoding="utf-8")
+    plugin_repo.pin("no-such-tag" if failing else "v2", plugin_repo.second)
+    assert install_main(["shell", "--refresh-plan", str(path)]) == 0
+    assert plugin_repo.head() == plugin_repo.first
+
+
 def test_only_the_refresh_offers_to_move_plugin_clones(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
