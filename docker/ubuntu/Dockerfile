@@ -126,7 +126,7 @@ ARG BAT_VERSION=0.26.1
 # renovate: datasource=crate depName=bottom versioning=semver
 ARG BOTTOM_VERSION=0.15.0
 # renovate: datasource=crate depName=du-dust versioning=semver
-ARG DU_DUST_VERSION=1.2.6
+ARG DU_DUST_VERSION=1.2.7
 # renovate: datasource=crate depName=fd-find versioning=semver
 ARG FD_FIND_VERSION=10.5.0
 # renovate: datasource=crate depName=git-delta versioning=semver
