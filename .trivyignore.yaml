@@ -59,3 +59,11 @@ vulnerabilities:
       (no apt step installs it), built with Go 1.27.1. Waits for a ubuntu:26.04
       image whose pebble is rebuilt with Go 1.26.9+ or 1.27.2+, which
       Renovate's digest update of BASE_IMAGE brings.
+  - id: CVE-2026-78661
+    paths:
+      - usr/bin/gh
+    expired_at: 2026-12-24
+    statement: >-
+      golang.org/x/net in the gh release GH_VERSION pins, which depends on
+      v0.60.0. Waits for a cli/cli release on v0.62.0 or later, which Renovate's
+      update of GH_VERSION brings.
