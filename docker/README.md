@@ -78,6 +78,42 @@ runs `apt-get upgrade`, so this also brings the updates for the apt packages
 that the earlier stages installed. The zsh plugins den installs are pinned to
 commits in den itself, so they change only when `main` does.
 
+To hold den at a commit you have reviewed instead of following `main`, add
+`--build-arg DEN_REF=<commit>`; a tag or another branch works too. A full
+commit hash stays put, so the `workspace` stage does not rebuild when `main`
+moves. To see what you would take by moving it, read
+`https://github.com/NekoBend/den/compare/<commit>...main`.
+
+### Keep builds and go back
+
+`-t denbox` replaces the name, so the previous build has no name left to go
+back to. Give each build a dated tag, and move `latest` only after it succeeds:
+
+```sh
+stamp=$(date +%Y%m%d-%H%M)
+docker buildx build --pull --load -t "denbox:$stamp" \
+  -f docker/ubuntu/Dockerfile docker/ubuntu \
+  && docker tag "denbox:$stamp" denbox:latest
+```
+
+```powershell
+$stamp = Get-Date -Format yyyyMMdd-HHmm
+docker buildx build --pull --load -t "denbox:$stamp" `
+  -f docker/ubuntu/Dockerfile docker/ubuntu
+if ($LASTEXITCODE -eq 0) { docker tag "denbox:$stamp" denbox:latest }
+```
+
+Moving `latest` changes no running container: each keeps the image it started
+from until you replace it. To go back, point `latest` at an earlier tag, then
+start a new container:
+
+```sh
+docker image ls denbox
+docker tag denbox:<earlier-stamp> denbox:latest
+```
+
+Remove the tags you no longer want with `docker image rm denbox:<stamp>`.
+
 ### Versions
 
 `docker/ubuntu/Dockerfile` pins every version the image installs: the base
@@ -143,6 +179,7 @@ default is the release pinned in the Dockerfile (see [Versions](#versions)).
 | `GH_VERSION` | pinned | Exact gh release without the `v` prefix. |
 | `PWSH_VERSION` | pinned | Exact PowerShell release without the `v` prefix. |
 | `RCLONE_VERSION` | pinned | Exact rclone release including the `v` prefix. |
+| `DEN_REF` | `main` | den's branch, tag or commit to install. |
 | `TZ` | `Asia/Tokyo` | IANA time zone name. The container also exports it as `TZ`. |
 
 `TARGETARCH` comes from BuildKit (`--platform`); do not set it. A stage built
@@ -491,7 +528,21 @@ done
 docker compose exec --user dev denbox zsh
 ```
 
-compose names the volume after the project: `<project>_den-state`, as
+When the image has changed, `docker compose up -d` stops the running container
+and makes a new one, and the shells in it end. To start what is stopped without
+that, use `docker compose up -d --no-recreate`, and move to the new image with a
+plain `docker compose up -d` when you are ready. The volumes stay either way.
+
+A compose file decides how much the container can reach. These settings give
+up its isolation, and a process in the container can then take over the host,
+so keep them out unless you mean it: `privileged: true`, a mount of
+`/var/run/docker.sock`, a bind of the host's root or of a whole drive,
+`network_mode: host`, `pid: host`, `ipc: host`, `cap_add` of `ALL` or
+`SYS_ADMIN`, and `security_opt` with `seccomp=unconfined` or
+`apparmor=unconfined`. Read a compose file you did not write before you start
+it: `docker compose config` shows what it comes to.
+
+compose names the volume after the project: `<project>_denbox-state`, as
 `docker volume ls` lists it. `/state` holds your logins and keys, and so does
 an archive of it: keep it private, and outside any project. To back the
 volume up, read it as your host user, read-only, into a directory of your
@@ -504,9 +555,37 @@ docker run --rm --user "$(id -u):$(id -g)" \
   --entrypoint sh denbox -c 'umask 077 && tar -czf /backup/denbox-state.tgz -C /state .'
 ```
 
-With compose, name `<project>_den-state` there instead of `denbox-state`:
+With compose, name `<project>_denbox-state` there instead of `denbox-state`:
 `docker run` makes a new, empty volume for a name it does not find, and the
 archive would hold nothing.
+
+To restore, unpack the archive into a new volume, so the old one stays until
+you have checked the new one. Unpack as root, the image's default user, which
+keeps the files' owners and modes. Restore only an archive you made: the links
+and files in it become your home.
+
+```sh
+docker volume create denbox-state-restored
+docker run --rm -v denbox-state-restored:/state -v ~/denbox-backups:/backup:ro \
+  --entrypoint tar denbox -xzpf /backup/denbox-state.tgz -C /state --numeric-owner
+docker run -dit --name denbox-restored \
+  -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -v "$PWD:/workspace" -v denbox-state-restored:/state denbox
+```
+
+A new container on that volume links the home into it again. When `dev` will
+run with other IDs than the ones in the archive, give the volume those IDs
+first, as [How the home is linked into `/state`](#how-the-home-is-linked-into-state)
+shows. With compose, point the volume at the restored one:
+
+```yaml
+volumes:
+  denbox-state:
+    external: true
+    name: denbox-state-restored
+```
+
+Remove the old volume with `docker volume rm` once you are sure of the new one.
 
 ### How the home is linked into `/state`
 
@@ -596,7 +675,7 @@ mount of the same file system. To give a volume to other IDs once, as root,
 with the IDs `dev` will run as:
 `docker run --rm -v denbox-state:/state --entrypoint /usr/bin/gnuchown denbox -hR <uid>:<gid> /state`
 (GNU `chown`: with `-h` and no `-L` it changes links, not what they point
-to). With compose, name `<project>_den-state` there instead of `denbox-state`,
+to). With compose, name `<project>_denbox-state` there instead of `denbox-state`,
 as for the backup: for a name it does not find, `docker run` re-owns a new,
 empty volume and says nothing.
 

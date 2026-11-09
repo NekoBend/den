@@ -4,8 +4,9 @@ name: dev image
 # so CI builds it only when the image or this workflow changes, or on demand.
 # The build checks that the Dockerfile still works; the step after it checks
 # the HOME and PATH root gets with and without a shell, and runs dev's forms
-# from docker/README.md. The remaining steps check a state volume and build
-# an image FROM denbox to check its drop-ins.
+# from docker/README.md. The remaining steps check a state volume with its
+# backup and restore, a build at a commit of den, and an image FROM denbox with
+# its drop-ins.
 on:
   push:
     branches: [main]
@@ -27,7 +28,7 @@ jobs:
     name: dev image (build + HOME/PATH checks)
     runs-on: ubuntu-latest
     # The sum of the step budgets below plus a few minutes for the rest.
-    timeout-minutes: 190
+    timeout-minutes: 200
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # A cold build keeps every layer, the Rust tools' cargo target cache and
@@ -234,11 +235,32 @@ jobs:
           fi
           check 'DENBOX_STATE=0: nothing linked' \
             docker run --rm -e DENBOX_STATE=0 -v denbox-state:/state denbox sh -c "$unlinked"
-          docker volume rm denbox-state
+          # The README's backup and restore. dev is 1000 here, and the runner's
+          # user is not, so the backup reads as dev and writes to an open folder.
+          mkdir -m 0777 "$RUNNER_TEMP/backups"
+          docker run --rm --user 1000:1000 \
+            -v denbox-state:/state:ro -v "$RUNNER_TEMP/backups:/backup" \
+            --entrypoint sh denbox -c 'umask 077 && tar -czf /backup/denbox-state.tgz -C /state .'
+          docker volume create denbox-state-restored
+          docker run --rm -v denbox-state-restored:/state -v "$RUNNER_TEMP/backups:/backup:ro" \
+            --entrypoint tar denbox -xzpf /backup/denbox-state.tgz -C /state --numeric-owner
+          check 'restored volume: linked again, with the history' \
+            docker run --rm -v denbox-state-restored:/state denbox \
+              sh -c "$linked"' && grep -q denbox-state-probe /home/dev/.zsh_history'
+          docker volume rm denbox-state denbox-state-restored
           if [ "$failed" -ne 0 ]; then
             echo "::error::$failed check(s) failed"
             exit 1
           fi
+      - name: Check a build at a commit of den
+        timeout-minutes: 10
+        run: |
+          ref=$(git ls-remote https://github.com/NekoBend/den.git refs/heads/main | cut -f1)
+          # The builder still holds the layers of the build above; only the
+          # workspace stage can differ, when main has just moved.
+          docker buildx build --load -t denbox-at-commit \
+            --build-arg DEN_REF="$ref" -f docker/ubuntu/Dockerfile docker/ubuntu
+          docker run --rm denbox-at-commit zsh -lc 'den --version'
       - name: Check image drop-ins
         timeout-minutes: 5
         run: |
