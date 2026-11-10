@@ -183,7 +183,7 @@ jobs:
             fi
           }
           # The image's list, /etc/denbox/state-paths.d/denbox.list.
-          paths='.ssh .gitconfig .zsh_history .bash_history .config/gh .config/rclone .local/share/zoxide .local/share/powershell/PSReadLine .config/den .config/denbox'
+          paths='.ssh .gitconfig .zsh_history .bash_history .config/gh .config/rclone .local/share/zoxide .local/share/powershell/PSReadLine .config/den .config/denbox .vscode-server'
           linked='for p in '"$paths"'; do
             t=$(readlink "/home/dev/$p") && [ "$t" = "/state/home/$p" ] \
               || { echo "/home/dev/$p: ${t:-not a link}"; exit 1; }

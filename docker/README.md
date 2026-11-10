@@ -259,6 +259,25 @@ docker exec --user dev -e HOME=/home/dev denbox /home/dev/.local/bin/den --versi
 changes, checks the `HOME` and `PATH` that root gets with and without a
 shell, and runs `dev`'s two forms above against it.
 
+### VS Code
+
+Dev Containers' **Attach to Running Container** connects as the image's user,
+root, unless told otherwise, and then puts the VS Code Server in root's home,
+which a new container gets back from the image. Set the user once, while
+attached, in **Dev Containers: Open Container Configuration File**:
+
+```json
+{
+  "remoteUser": "dev"
+}
+```
+
+VS Code then keeps its server and the extensions it installs in
+`/home/dev/.vscode-server`, which the image's list keeps in the state volume.
+A new container finds them there, and VS Code downloads a server again only
+after VS Code itself updates: the server has to match its version exactly, so
+the image does not ship one.
+
 ### zsh completion
 
 For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`, so den's quick
@@ -693,6 +712,7 @@ The image's list, `/etc/denbox/state-paths.d/denbox.list`:
 | `d .local/share/powershell/PSReadLine` | pwsh's history |
 | `d .config/den` | den's proxy profiles and snippets |
 | `d .config/denbox` | this environment's own list (below) |
+| `d .vscode-server` | the VS Code Server and the extensions VS Code installs, when it attaches as `dev` (see [VS Code](#vs-code)) |
 
 zsh, bash and pwsh keep their history files as links: `/etc/zsh/zshenv`
 turns zsh's `HIST_SAVE_BY_COPY` off for `dev` while `~/.zsh_history` is a link

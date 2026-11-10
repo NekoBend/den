@@ -3211,6 +3211,7 @@ def test_the_image_list_keeps_the_logins_and_histories():
         ("d", ".local/share/powershell/PSReadLine"),
         ("d", ".config/den"),
         ("d", ".config/denbox"),
+        ("d", ".vscode-server"),
     ]
 
 
