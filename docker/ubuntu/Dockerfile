@@ -89,7 +89,7 @@ ARG RUSTUP_USE_CURL=0
 # this build arg names.
 # Build setting: an exact rustup release.
 # renovate: datasource=github-tags depName=rust-lang/rustup
-ARG RUSTUP_VERSION=1.29.2
+ARG RUSTUP_VERSION=1.29.3
 # Build setting: an exact Rust release.
 # renovate: datasource=rust-version depName=rust
 ARG RUST_VERSION=1.99.1
