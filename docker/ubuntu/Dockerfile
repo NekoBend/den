@@ -1062,6 +1062,7 @@ d .local/share/zoxide
 d .local/share/powershell/PSReadLine
 d .config/den
 d .config/denbox
+d .vscode-server
 STATE_PATHS
 chmod 0644 /etc/denbox/state-paths.d/denbox.list
 cat > /usr/local/lib/denbox/state-link <<'STATE_LINK'
