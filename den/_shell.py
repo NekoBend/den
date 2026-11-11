@@ -1127,8 +1127,9 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
     """Clone the PINNED zsh plugins init.zsh sources (autosuggestions + syntax
     highlighting) into ~/.config/zsh/plugins. Opt-in: shell startup sources
     whatever sits here, so nothing is fetched unless --zsh-plugins was given.
-    Each clone checks out the release tag and is verified against the pinned
-    commit; a mismatch (a moved tag is an attack signal) deletes the clone.
+    Each clone fetches the release tag and checks out the pinned commit only
+    after comparing the two; a mismatch (a moved tag is an attack signal)
+    removes the directory before anything is checked out.
     A clone den made earlier moves to the pinned commit, checked before it is
     checked out; any other directory there is the user's and stays as it is.
     init.zsh guards each source with a file test, so a skipped, failed, or
@@ -1162,41 +1163,51 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
                 )
             continue
         if dry_run:
-            print(
-                f"  [dry] git clone --branch {tag} {url} -> {target} (pin {sha[:12]})"
-            )
+            print(f"  [dry] fetch {tag} from {url} -> {target} (pin {sha[:12]})")
             continue
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target.mkdir(parents=True)
         try:
-            subprocess.run(
-                [
-                    git,
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    tag,
-                    "--quiet",
-                    url,
-                    str(target),
-                ],
+            # init, fetch and checkout rather than clone --branch: the pin is
+            # compared before the checkout, and git prints neither the detached
+            # HEAD advice (checkout --quiet keeps it quiet, clone --quiet did
+            # not) nor "is not a commit" for an annotated tag.
+            _plugin_git(git, target, "init", "--quiet", check=True)
+            _plugin_git(git, target, "remote", "add", "origin", url, check=True)
+            _plugin_git(
+                git,
+                target,
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "--depth",
+                "1",
+                "origin",
+                f"refs/tags/{tag}",
                 check=True,
             )
-            head = subprocess.run(
-                [git, "-C", str(target), "rev-parse", "HEAD"],
-                check=True,
-                capture_output=True,
-                text=True,
+            fetched = _plugin_git(
+                git, target, "rev-parse", "FETCH_HEAD^{commit}", check=True
             ).stdout.strip()
-            if head != sha:
+            if fetched != sha:
                 shutil.rmtree(target, ignore_errors=True)
                 print(
                     f"  warning: {name} {tag} is not the pinned commit "
-                    f"(got {head[:12]}, want {sha[:12]}); clone removed - the "
-                    "tag may have moved upstream. Feature stays off.",
+                    f"(got {fetched[:12]}, want {sha[:12]}); nothing checked out - "
+                    "the tag may have moved upstream. Feature stays off.",
                     file=sys.stderr,
                 )
                 continue
+            _plugin_git(
+                git,
+                target,
+                "checkout",
+                "--quiet",
+                "--no-recurse-submodules",
+                "--detach",
+                sha,
+                check=True,
+            )
             print(f"  [ok] cloned {name} {tag} ({sha[:12]})")
         except (OSError, subprocess.SubprocessError) as exc:
             shutil.rmtree(target, ignore_errors=True)
