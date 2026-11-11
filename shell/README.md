@@ -43,9 +43,10 @@ its git aliases duplicate `aliases.sh`, so it was dead weight):
 
 `den install shell --zsh-plugins` clones them into `~/.config/zsh/plugins/`,
 pinned to reviewed release commits (`_ZSH_PLUGINS` in `den/_shell.py`, which
-Renovate keeps current by pull request): the clone checks out the release tag
-and is deleted if HEAD does not match the pinned commit. Without the flag
-nothing is fetched -- code sourced at shell startup is opt-in.
+Renovate keeps current by pull request): each clone fetches the release tag and
+checks out the pinned commit only after comparing the two, so a moved tag leaves
+nothing behind. Without the flag nothing is fetched -- code sourced at shell
+startup is opt-in.
 
 Run it again after a pin changes: a clone den made moves to the new commit,
 which is checked against the pin before it is checked out, so a moved tag leaves

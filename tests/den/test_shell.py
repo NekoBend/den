@@ -1937,14 +1937,19 @@ def test_clone_zsh_plugins_clones_both_pinned(tmp_path, monkeypatch):
     monkeypatch.setattr("den._shell.subprocess.run", _fake_git(calls))
     _shell._maybe_clone_zsh_plugins(want=True, dry_run=False)
     # git runs by its resolved absolute path, never by bare name
-    clones = [c for c in calls if c[:2] == [_on_path("git"), "clone"]]
-    assert len(clones) == 2
-    for (name, _url, tag, _sha), cmd in zip(_shell._ZSH_PLUGINS, clones, strict=True):
-        assert "--branch" in cmd and tag in cmd  # pinned tag, not HEAD
-        assert name in cmd[-1]
-    # every clone is followed by a rev-parse verification
-    assert sum(1 for c in calls if "rev-parse" in c) == 2
     assert all(c[0] == _on_path("git") for c in calls)
+    fetches = [c for c in calls if "fetch" in c]
+    checkouts = [c for c in calls if "checkout" in c]
+    assert len(fetches) == len(checkouts) == 2
+    for (name, _url, tag, sha), fetch, checkout in zip(
+        _shell._ZSH_PLUGINS, fetches, checkouts, strict=True
+    ):
+        assert f"refs/tags/{tag}" in fetch  # the pinned tag, not HEAD
+        assert name in fetch[fetch.index("-C") + 1]
+        assert checkout[-1] == sha  # the pinned commit, checked out by hash
+    # each fetched commit is compared with the pin before its checkout
+    order = [c for c in calls if "rev-parse" in c or "checkout" in c]
+    assert ["rev-parse" in c for c in order] == [True, False, True, False]
 
 
 def test_clone_zsh_plugins_refuses_git_in_the_working_directory(
@@ -1993,6 +1998,7 @@ def test_clone_zsh_plugins_sha_mismatch_removes_clone(tmp_path, monkeypatch, cap
     err = capsys.readouterr().err
     assert "not the pinned commit" in err and "tag may have moved" in err
     assert len(removed) == 2  # both rejected clones deleted
+    assert not any("checkout" in c for c in calls)  # nothing reached a work tree
 
 
 def test_clone_zsh_plugins_no_zsh_skips(tmp_path, monkeypatch):
@@ -2024,9 +2030,9 @@ def test_clone_zsh_plugins_skips_existing(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr("den._shell.subprocess.run", _fake_git(calls))
     _shell._maybe_clone_zsh_plugins(want=True, dry_run=False)
-    clones = [c[-1] for c in calls if c[:2] == [_on_path("git"), "clone"]]
-    assert not any("zsh-autosuggestions" in t for t in clones)  # already present
-    assert any("zsh-syntax-highlighting" in t for t in clones)  # still cloned
+    fetched = [c[c.index("-C") + 1] for c in calls if "fetch" in c]
+    assert not any("zsh-autosuggestions" in t for t in fetched)  # already present
+    assert any("zsh-syntax-highlighting" in t for t in fetched)  # still cloned
 
 
 _REAL_GIT = shutil.which("git") or "git-not-found"
@@ -2115,6 +2121,87 @@ def plugin_repo(tmp_path, monkeypatch):
     return repo
 
 
+@pytest.mark.parametrize("tag", ["v1", "v2"], ids=["lightweight-tag", "annotated-tag"])
+def test_zsh_plugin_clone_prints_none_of_gits_advice(plugin_repo, capfd, tag):
+    # git clone --quiet --branch <tag> still printed the detached HEAD advice
+    # (with its "git switch -c" lines), and for an annotated tag a warning that
+    # the tag "is not a commit". The clone was fine; the output read as errors.
+    # capfd, not capsys: git writes to the file descriptors it inherits.
+    _shutil_rmtree_clone(plugin_repo)
+    capfd.readouterr()
+    plugin_repo.pin(tag, plugin_repo.first if tag == "v1" else plugin_repo.second)
+    plugin_repo.install()
+    out, err = capfd.readouterr()
+    assert f"[ok] cloned zsh-demo {tag}" in out
+    assert err == ""
+
+
+def test_zsh_plugin_moved_tag_is_never_checked_out(plugin_repo, capsys):
+    # The fetched commit is compared with the pin before anything reaches the
+    # work tree, and the directory den made is removed.
+    _shutil_rmtree_clone(plugin_repo)
+    plugin_repo.pin("v2", "0" * 40)
+    plugin_repo.install()
+    assert not plugin_repo.target.exists()
+    err = capsys.readouterr().err
+    assert "not the pinned commit" in err and "tag may have moved" in err
+
+
+def test_zsh_plugin_dir_that_cannot_be_made_warns_and_goes_on(
+    plugin_repo, capsys, monkeypatch
+):
+    # The other plugins are still installed, and nothing is deleted.
+    blocked = plugin_repo.target.with_name("zsh-blocked")
+    monkeypatch.setattr(
+        "den._shell._ZSH_PLUGINS",
+        (
+            ("zsh-blocked", plugin_repo.url, "v1", plugin_repo.first),
+            ("zsh-next", plugin_repo.url, "v1", plugin_repo.first),
+        ),
+    )
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *args, **kwargs):
+        if self == blocked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    plugin_repo.install()
+    out, err = capsys.readouterr()
+    assert f"cannot create {blocked}" in err
+    assert "[ok] cloned zsh-next v1" in out
+    assert plugin_repo.target.exists()  # the fixture's clone is untouched
+
+
+def test_zsh_plugin_clone_made_by_git_clone_moves_too(plugin_repo):
+    # Clones den made before it cloned with init and fetch came from
+    # git clone --depth 1 --branch <tag>; they are den's too.
+    target = plugin_repo.target
+    target.rename(target.with_name("new-style"))
+    plugin_repo.git(
+        target.parent,
+        "clone",
+        "-q",
+        "--depth",
+        "1",
+        "--branch",
+        "v1",
+        plugin_repo.url,
+        str(target),
+    )
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert plugin_repo.head() == plugin_repo.second
+    assert plugin_repo.git(target, "rev-parse", "--is-shallow-repository") == "true"
+    assert plugin_repo.git(target, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+
+def _shutil_rmtree_clone(plugin_repo):
+    """Take away the clone the fixture made, so the next install clones again."""
+    shutil.rmtree(plugin_repo.target)
+
+
 def test_zsh_plugin_clone_moves_to_a_new_pin(plugin_repo, capsys):
     plugin_repo.pin("v2", plugin_repo.second)
     plugin_repo.install()
@@ -2124,12 +2211,14 @@ def test_zsh_plugin_clone_moves_to_a_new_pin(plugin_repo, capsys):
 
 
 def test_zsh_plugin_clone_at_its_pin_fetches_nothing(plugin_repo, capsys):
+    (plugin_repo.target / ".git" / "FETCH_HEAD").unlink()  # the clone's own
     plugin_repo.install()
     assert "already at v1" in capsys.readouterr().out
     assert not (plugin_repo.target / ".git" / "FETCH_HEAD").exists()
 
 
 def test_zsh_plugin_dry_run_moves_nothing(plugin_repo, capsys):
+    (plugin_repo.target / ".git" / "FETCH_HEAD").unlink()  # the clone's own
     plugin_repo.pin("v2", plugin_repo.second)
     plugin_repo.install(dry_run=True)
     assert plugin_repo.head() == plugin_repo.first
