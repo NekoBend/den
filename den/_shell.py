@@ -1165,7 +1165,16 @@ def _maybe_clone_zsh_plugins(*, want: bool, dry_run: bool) -> None:
         if dry_run:
             print(f"  [dry] fetch {tag} from {url} -> {target} (pin {sha[:12]})")
             continue
-        target.mkdir(parents=True)
+        try:
+            target.mkdir(parents=True)
+        except OSError as exc:
+            # Nothing was made, so nothing is removed: a directory that
+            # appeared meanwhile is not den's.
+            print(
+                f"  warning: cannot create {target} ({exc}); feature stays off",
+                file=sys.stderr,
+            )
+            continue
         try:
             # init, fetch and checkout rather than clone --branch: the pin is
             # compared before the checkout, and git prints neither the detached

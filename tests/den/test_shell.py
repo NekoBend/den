@@ -1998,6 +1998,7 @@ def test_clone_zsh_plugins_sha_mismatch_removes_clone(tmp_path, monkeypatch, cap
     err = capsys.readouterr().err
     assert "not the pinned commit" in err and "tag may have moved" in err
     assert len(removed) == 2  # both rejected clones deleted
+    assert not any("checkout" in c for c in calls)  # nothing reached a work tree
 
 
 def test_clone_zsh_plugins_no_zsh_skips(tmp_path, monkeypatch):
@@ -2144,6 +2145,56 @@ def test_zsh_plugin_moved_tag_is_never_checked_out(plugin_repo, capsys):
     assert not plugin_repo.target.exists()
     err = capsys.readouterr().err
     assert "not the pinned commit" in err and "tag may have moved" in err
+
+
+def test_zsh_plugin_dir_that_cannot_be_made_warns_and_goes_on(
+    plugin_repo, capsys, monkeypatch
+):
+    # The other plugins are still installed, and nothing is deleted.
+    blocked = plugin_repo.target.with_name("zsh-blocked")
+    monkeypatch.setattr(
+        "den._shell._ZSH_PLUGINS",
+        (
+            ("zsh-blocked", plugin_repo.url, "v1", plugin_repo.first),
+            ("zsh-next", plugin_repo.url, "v1", plugin_repo.first),
+        ),
+    )
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *args, **kwargs):
+        if self == blocked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    plugin_repo.install()
+    out, err = capsys.readouterr()
+    assert f"cannot create {blocked}" in err
+    assert "[ok] cloned zsh-next v1" in out
+    assert plugin_repo.target.exists()  # the fixture's clone is untouched
+
+
+def test_zsh_plugin_clone_made_by_git_clone_moves_too(plugin_repo):
+    # Clones den made before it cloned with init and fetch came from
+    # git clone --depth 1 --branch <tag>; they are den's too.
+    target = plugin_repo.target
+    target.rename(target.with_name("new-style"))
+    plugin_repo.git(
+        target.parent,
+        "clone",
+        "-q",
+        "--depth",
+        "1",
+        "--branch",
+        "v1",
+        plugin_repo.url,
+        str(target),
+    )
+    plugin_repo.pin("v2", plugin_repo.second)
+    plugin_repo.install()
+    assert plugin_repo.head() == plugin_repo.second
+    assert plugin_repo.git(target, "rev-parse", "--is-shallow-repository") == "true"
+    assert plugin_repo.git(target, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
 
 
 def _shutil_rmtree_clone(plugin_repo):
