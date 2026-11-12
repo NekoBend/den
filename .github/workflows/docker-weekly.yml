@@ -72,7 +72,7 @@ jobs:
         timeout-minutes: 5
         env:
           # renovate: datasource=github-releases depName=aquasecurity/trivy
-          TRIVY_VERSION: v0.76.1
+          TRIVY_VERSION: v0.76.2
         run: |
           version=${TRIVY_VERSION#v}
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
