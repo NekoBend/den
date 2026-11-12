@@ -200,7 +200,7 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
 # renovate: datasource=github-releases depName=astral-sh/uv
 ARG UV_VERSION=0.13.7
 # renovate: datasource=github-releases depName=astral-sh/ty
-ARG TY_VERSION=0.0.97
+ARG TY_VERSION=0.0.98
 # renovate: datasource=github-releases depName=astral-sh/ruff
 ARG RUFF_VERSION=0.17.3
 RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://astral.sh/uv/${UV_VERSION}/install.sh" -o /tmp/uv.sh && \
