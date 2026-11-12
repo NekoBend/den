@@ -198,7 +198,7 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
 # archive it downloads against the checksum it carries.
 # Build settings: exact uv, ty and ruff releases.
 # renovate: datasource=github-releases depName=astral-sh/uv
-ARG UV_VERSION=0.13.6
+ARG UV_VERSION=0.13.7
 # renovate: datasource=github-releases depName=astral-sh/ty
 ARG TY_VERSION=0.0.97
 # renovate: datasource=github-releases depName=astral-sh/ruff
