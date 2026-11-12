@@ -263,14 +263,21 @@ shell, and runs `dev`'s two forms above against it.
 
 Dev Containers' **Attach to Running Container** connects as the image's user,
 root, unless told otherwise, and then puts the VS Code Server in root's home,
-which a new container gets back from the image. Set the user once, while
-attached, in **Dev Containers: Open Container Configuration File**:
+which a new container gets back from the image. Set the user and its home once,
+while attached, in **Dev Containers: Open Container Configuration File**:
 
 ```json
 {
-  "remoteUser": "dev"
+  "remoteUser": "dev",
+  "remoteEnv": { "HOME": "/home/dev", "ZDOTDIR": "/home/dev" }
 }
 ```
+
+`remoteUser` alone is not enough for zsh: the server starts with the image's
+`HOME=/root`, and the terminal's shell integration then leaves `ZDOTDIR` at
+`/root`, so zsh looks for its startup files there and den is not loaded. The
+`remoteEnv` line gives the server and its terminals `dev`'s home for both.
+Reload the window after changing it.
 
 VS Code then keeps its server and the extensions it installs in
 `/home/dev/.vscode-server`, which the image's list keeps in the state volume.
