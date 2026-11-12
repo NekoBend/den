@@ -234,7 +234,7 @@ INSTALL_FZF
 ENV NVM_DIR="${HOME}/.nvm"
 # Build setting: exact nvm release, including the v prefix.
 # renovate: datasource=github-releases depName=nvm-sh/nvm
-ARG NVM_VERSION=v0.40.8
+ARG NVM_VERSION=v0.41.0
 RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o /tmp/nvm.sh && \
     bash /tmp/nvm.sh && rm /tmp/nvm.sh
 # Build setting: an exact Node.js release, which nvm installs and makes the
