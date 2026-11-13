@@ -347,7 +347,7 @@ ENV PATH="${NVM_DIR}/current/bin:${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/loca
 # rclone from its release's own folder, the one with a SHA256SUMS file.
 # Build setting: an exact rclone release including the v prefix.
 # renovate: datasource=github-releases depName=rclone/rclone
-ARG RCLONE_VERSION=v1.75.2
+ARG RCLONE_VERSION=v1.76.0
 RUN <<'INSTALL_RCLONE'
 archive_dir=$(mktemp -d)
 trap 'rm -rf "$archive_dir"' EXIT
