@@ -214,9 +214,9 @@ prints a warning that shows this command.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs denbox`). A mount point below `/home/dev`, and all it holds, is left out of that, with a warning that names it; with more of them than one `find` command can list, nothing in `/home/dev` is re-owned, and a warning says so. On overlayfs the re-owning copies the whole home, the toolchains included, into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
+| `HOST_UID` | the build's `USER_UID` | UID `dev` runs as. Must be nonzero and not used by another account. If it differs from the build's UID, the entrypoint changes it, re-owns the files in `/home/dev` that had the old IDs, and prints one line to stderr saying so (with `-d`, see it with `docker logs denbox`). A mount point below `/home/dev`, and all it holds, is left out of that, with a warning that names it; with more of them than one `find` command can list, nothing in `/home/dev` is re-owned, and a warning says so. A start stopped while it re-owns the home (a `docker stop`, a walk that failed) leaves a record in `/var/lib/denbox/remap-pending`, and the next start finishes that walk first, with a line saying so; a walk that fails stops the start each time until its cause is fixed or the record is removed. On overlayfs the re-owning copies the whole home, the toolchains included, into each new container; build with `--build-arg USER_UID/USER_GID` instead (see [Build](#build)). |
 | `HOST_GID` | the build's `USER_GID` | GID `dev` runs as. The group is created if it does not exist. A GID other than the build's re-owns `/home/dev` the same way. |
-| `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. Each mount point below `/workspace` (`-v ~/cache:/workspace/.cache`), and all it holds, is left out too, even one of the same file system, with a warning that names it; with more of them than one `find` command can list, nothing in `/workspace` is re-owned, and a warning says so. |
+| `FIX_WORKSPACE_OWNERSHIP` | `0` | Set to `1` to also re-own files under `/workspace` that had `dev`'s old UID or GID when the IDs change. Files with other owners are left alone, symlinks are not followed, and the walk does not cross into other file systems. Each file is re-owned from its own directory (`find -execdir`), so a directory of the walk that another process (one of the host's, on the bound directory) swaps for a symbolic link while the walk runs cannot send the change elsewhere. Each mount point below `/workspace` (`-v ~/cache:/workspace/.cache`), and all it holds, is left out too, even one of the same file system, with a warning that names it; with more of them than one `find` command can list, nothing in `/workspace` is re-owned, and a warning says so. |
 | `DENBOX_STATE` | `1` | `0` turns the state step off, even with a volume mounted at `/state`: the home keeps its own files. See [What survives where](#what-survives-where). |
 | `DENBOX_CLEAN_TMP` | `0` | `1` empties `/tmp` at each start, but only when `/tmp` is a mount point of its own (a tmpfs or a volume, or a host directory, which you should never bind there) with no mount point below it. See [What survives where](#what-survives-where). |
 
@@ -648,6 +648,12 @@ link to the same path under `/state/home`, for example
   in the home is deleted. A link in it to the same name in the volume is
   removed last, once all else has moved. When `dev` cannot read and remove
   all of the home's directory, nothing of it moves.
+- A path that something writes to while it is being copied (a program running
+  in the container during a run by hand) is noticed before the copy reaches
+  the volume: the copy is removed again, the home keeps the path whole, a
+  warning says so, and the next run copies it again. The check has a narrow
+  gap of its own (a write between it and the removal from the home), so it is
+  a safeguard, not a substitute for stopping the writers first.
 - A run that a signal stops, the time limit's included, removes the copy it
   was making: the home still has that path whole. A copy that an earlier run
   left in `/state/home/.denbox-staging` (one stopped by `KILL` or a crash) is
@@ -695,7 +701,11 @@ it and says the run was cut short. What was done stays done, the copy under
 way is removed, and the next start goes on from there. A path whose copy
 alone takes longer than that is never finished at a start: run
 `docker exec --user dev denbox zsh -lc /usr/local/lib/denbox/state-link` once,
-which has no time limit.
+which has no time limit. Stop the programs that write to the listed paths
+first (VS Code's server for `.vscode-server`, a shell for its history file).
+A path that changes while it is being copied is noticed in all but a narrow
+window and stays in the home whole, with a warning, for the next run; that
+check is a safeguard, not a substitute.
 
 With `DENBOX_STATE=0`, or a non-root `--user` (which warns), nothing is linked
 and the home keeps its own files. When `HOST_UID` or `HOST_GID` gives `dev`
@@ -755,7 +765,8 @@ The lists, in this order:
 - `~/.config/denbox/state-paths`, this environment's own. `~/.config/denbox` is a
   link into the volume, so the file stays with the volume; it is read only
   when it is a regular file that `dev` owns. Add a line, then start the
-  container again, or apply it at once:
+  container again, or apply it at once, with nothing writing to the new path
+  meanwhile:
   `docker exec --user dev denbox zsh -lc /usr/local/lib/denbox/state-link`.
 
 An entry inside a directory that another entry links into the volume needs

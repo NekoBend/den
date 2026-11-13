@@ -798,8 +798,12 @@ def _run_entrypoint(
     workspace: Path | None = None,
     real_find: bool = False,
     stack_kib: int | None = None,
+    record: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     """Run the entrypoint as ``uid`` with stubs; return the result and the call log.
+
+    ``record`` is the remap record's path (tmp_path/remap-pending unless
+    given), which a second start in another directory can share with a first.
 
     The account is dev, with ``ids`` (1000:1000 unless given) and the home
     ``home`` (/home/dev unless given), which this does not make; ``workspace``
@@ -855,7 +859,15 @@ def _run_entrypoint(
         '[ "${FAKE_USERMOD_FAIL-}" != "$fails" ]',
     )
     chowned = shlex.quote(str(tmp_path / "chowned"))
-    stub("gnuchown", f"{logged}\nprintf '%s\\0' \"$@\" >> {chowned}")
+    # find -execdir names each file ./name from its directory; record the path.
+    stub(
+        "gnuchown",
+        f"{logged}\n"
+        "for arg do\n"
+        '    case "$arg" in ./*) arg=$PWD/${arg#./} ;; esac\n'
+        f"    printf '%s\\0' \"$arg\" >> {chowned}\n"
+        "done",
+    )
     real = (
         f'case "$1" in {shlex.quote(str(tmp_path))}/*)'
         f" {shlex.quote(_tool('env'))} > {shlex.quote(str(tmp_path / 'find-env-'))}$$"
@@ -915,6 +927,9 @@ def _run_entrypoint(
                 ),
                 "state_dir=/state": f"state_dir={tmp_path / 'state'}",
                 "tmp_dir=/tmp": f"tmp_dir={tmp_path / 'tmp'}",
+                "remap_record=/var/lib/denbox/remap-pending": (
+                    f"remap_record={record or tmp_path / 'remap-pending'}"
+                ),
                 "mountinfo=/proc/self/mountinfo": f"mountinfo={mountinfo}",
                 "/etc/container-user": str(user_file),
                 # The PATH the entrypoint sets for itself, not the one it
@@ -5867,3 +5882,182 @@ def test_the_image_workflow_checks_id_remapping_and_tmp_cleanup():
         "docker run --rm -e DENBOX_CLEAN_TMP=1 -v denbox-tmp:/tmp denbox"
         " sh -c '[ ! -e /tmp/leftover ]'"
     ) in run
+
+
+# --- a remap that a start did not finish, and the walks' -execdir -------------
+
+
+@_needs("sh", "env")
+def test_entrypoint_finishes_a_remap_that_an_earlier_start_did_not(tmp_path):
+    # A start stopped between usermod and the end of the walks (docker stop,
+    # a walk that failed) leaves the account with its new IDs and files with
+    # the old ones; the next start's comparison of the two found nothing to
+    # do, and the files kept the old IDs for good.
+    record = tmp_path / "remap-pending"
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    env = {"HOST_UID": "501", "HOST_GID": "20"}
+    result, calls = _run_entrypoint(
+        first, uid=0, env={**env, "FAKE_FIND_FAIL": "/home/dev"}, record=record
+    )
+    assert result.returncode != 0
+    assert _calls(calls, "usermod") == _usermod_calls(501, 20)
+    assert record.read_text(encoding="utf-8") == "1000 1000 501 20\n"
+    # The next start: the account has 501:20, and nothing else to do.
+    result, calls = _run_entrypoint(
+        second, uid=0, env=env, ids=(501, 20), record=record
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        "container-entrypoint: an earlier start was stopped while it re-owned"
+        " /home/dev from 1000:1000 to 501:20; finishing that first"
+    ) in result.stderr.splitlines()
+    walks = [
+        call for call in _calls(calls, "find") if call.startswith("find /home/dev ")
+    ]
+    assert len(walks) == 1, _calls(calls, "find")
+    assert " -uid 1000 -o -gid 1000 " in walks[0] and " --from=1000 501 " in walks[0]
+    assert not _calls(calls, "usermod")
+    assert not record.exists()
+    assert "HOME=/home/dev" in result.stdout.splitlines()
+
+
+@_needs("sh", "env")
+def test_entrypoint_drops_the_record_of_a_start_stopped_before_usermod(tmp_path):
+    # The account still has the old IDs: there is nothing to finish, and the
+    # remap runs as on any first start.
+    record = tmp_path / "remap-pending"
+    record.write_text("1000 1000 501 20\n", encoding="utf-8")
+    result, calls = _run_entrypoint(
+        tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}
+    )
+    assert result.returncode == 0, result.stderr
+    assert "finishing that first" not in result.stderr
+    assert _calls(calls, "usermod") == _usermod_calls(501, 20)
+    assert not record.exists()
+
+
+@_needs("sh", "env")
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (
+            "1000 1000 777 777\n",
+            "says dev went from 1000:1000 to 777:777, but it has 501:20",
+        ),
+        ("1000 1000\n", "does not hold four IDs"),
+        ("1000 1000 501 20 more\n", "does not hold four IDs"),
+    ],
+)
+def test_entrypoint_stops_on_a_remap_record_it_cannot_act_on(
+    tmp_path, content, message
+):
+    record = tmp_path / "remap-pending"
+    record.write_text(content, encoding="utf-8")
+    result, calls = _run_entrypoint(
+        tmp_path, uid=0, env={"HOST_UID": "501", "HOST_GID": "20"}, ids=(501, 20)
+    )
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert "check the owners in /home/dev, then remove it" in result.stderr
+    assert not _calls(calls, "usermod") and not _calls(calls, "find")
+    assert record.exists()
+
+
+@_needs("sh", "env")
+def test_entrypoint_re_owns_each_file_from_its_own_directory(tmp_path):
+    # find -execdir runs chown from the file's directory on its name there, so
+    # a directory of the walk that another process swaps for a symbolic link
+    # while the walk runs cannot send the change into a mount point the walk
+    # left out; with -exec, chown resolved the whole path again.
+    state = tmp_path / "state"
+    state.mkdir()
+    result, calls = _run_entrypoint(
+        tmp_path,
+        uid=0,
+        env={"HOST_UID": "501", "HOST_GID": "20"},
+        mounts=("/workspace", str(state)),
+    )
+    assert result.returncode == 0, result.stderr
+    walks = [
+        call for call in _calls(calls, "find") if " -uid 1000 -o -gid 1000 " in call
+    ]
+    assert [call.split(" ", 2)[1] for call in walks] == ["/home/dev", str(state)]
+    for walk in walks:
+        assert " -exec " not in walk, walk
+        assert walk.count(" -execdir ") == 2, walk
+
+
+@_needs_linux()
+def test_state_link_moves_nothing_that_changed_while_it_was_copied(tmp_path):
+    # A run by hand, with a program writing into the path meanwhile: what it
+    # wrote after the copy began is not in the copy, and the old transfer
+    # deleted it with the rest of the home's directory.
+    roots = _Roots(tmp_path)
+    roots.image_list("d .config/tool\n")
+    source = roots.home / ".config" / "tool"
+    source.mkdir(parents=True)
+    (source / "settings").write_text("one\n", encoding="utf-8")
+    late = source / "late"
+    path = roots.fake(
+        "cp",
+        f'{shlex.quote(_tool("cp"))} "$@" && echo two > {shlex.quote(str(late))}\n',
+    )
+    result = roots.run(PATH=path)
+    assert result.returncode == 1
+    assert re.search(
+        rf"^state-link: {re.escape(str(source))}: changed while it was being copied"
+        r" \(.+\), so nothing of it moved; stop the programs that write there,"
+        r" then run state-link again$",
+        result.stderr,
+        flags=re.MULTILINE,
+    ), result.stderr
+    # The home keeps the directory whole, the volume got no copy, and the
+    # staging directory and the stamp are gone.
+    assert not source.is_symlink()
+    assert (source / "settings").read_text(encoding="utf-8") == "one\n"
+    assert late.read_text(encoding="utf-8") == "two\n"
+    assert not (roots.volume / ".config" / "tool").exists()
+    assert not (roots.volume / ".denbox-staging").exists()
+    # The next run, with nothing writing there, moves all of it.
+    result = roots.run()
+    assert (result.returncode, result.stderr) == (0, "")
+    assert roots.linked(".config/tool")
+    assert (roots.volume / ".config" / "tool" / "late").read_text(
+        encoding="utf-8"
+    ) == "two\n"
+
+
+@_needs_linux()
+def test_state_link_goes_on_when_it_cannot_make_the_copy_stamp(tmp_path):
+    # The stamp is a redirection on the special builtin ":", whose failure
+    # ends a non-interactive dash unless command strips the builtin's status:
+    # a home that cannot take the stamp ended the run before the next entry.
+    if os.geteuid() == 0:
+        pytest.skip("root writes into any directory")
+    roots = _Roots(tmp_path)
+    roots.image_list("d .config/tool\nF .tool_history\n")
+    (roots.home / ".config" / "tool").mkdir(parents=True)
+    (roots.home / ".tool_history").write_text("x\n", encoding="utf-8")
+    roots.home.chmod(0o500)
+    try:
+        result = roots.run()
+    finally:
+        roots.home.chmod(0o700)
+    assert result.returncode == 1
+    lines = result.stderr.splitlines()
+    stamp = re.compile(
+        rf"^state-link: {re.escape(str(roots.home / '.config' / 'tool'))}:"
+        rf" could not make {re.escape(str(roots.home))}/\.denbox-copy-stamp\.\d+$"
+    )
+    assert any(stamp.match(line) for line in lines), result.stderr
+    # The run went on to the next entry, whose parent the home is.
+    assert any(
+        line.endswith(": this user cannot read and remove all of it")
+        and str(roots.home / ".tool_history") in line
+        for line in lines
+    ), result.stderr
+    assert (roots.home / ".config" / "tool").is_dir()
+    assert not (roots.home / ".config" / "tool").is_symlink()
+    assert not (roots.volume / ".config" / "tool").exists()
