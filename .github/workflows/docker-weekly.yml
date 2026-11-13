@@ -30,8 +30,15 @@ defaults:
 
 jobs:
   scan:
-    name: dev image (cold build + Trivy scan)
+    name: dev image ${{ matrix.ubuntu }} (cold build + Trivy scan)
     runs-on: ubuntu-latest
+    # One job per Ubuntu release the Dockerfile builds on; the image without
+    # den is the first layers of the image with den, so the scan of the
+    # latter covers both.
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["26.04", "24.04"]
     # The sum of the step budgets below plus a few minutes for the rest.
     timeout-minutes: 215
     steps:
@@ -61,6 +68,7 @@ jobs:
         with:
           context: docker/ubuntu
           file: docker/ubuntu/Dockerfile
+          build-args: UBUNTU=${{ matrix.ubuntu }}
           tags: denbox
           load: true
           no-cache: true
@@ -149,7 +157,7 @@ jobs:
           ISSUE_TITLE: dev image weekly scan failed
         run: |
           run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          body="[Run $GITHUB_RUN_ID]($run_url) ($GITHUB_EVENT_NAME on $GITHUB_REF_NAME, $GITHUB_SHA): the build and scan job ended with \`$SCAN_RESULT\`. Its log shows the build error or Trivy's table of findings."
+          body="[Run $GITHUB_RUN_ID]($run_url) ($GITHUB_EVENT_NAME on $GITHUB_REF_NAME, $GITHUB_SHA): the build and scan jobs ended with \`$SCAN_RESULT\`. The log of the failed job (one per Ubuntu release) shows the build error or Trivy's table of findings."
           # Failures pile up as comments on one open issue with this exact title.
           number=$(gh issue list --state open --limit 500 --json number,title |
             jq -r --arg title "$ISSUE_TITLE" 'map(select(.title == $title))[0].number // empty')
