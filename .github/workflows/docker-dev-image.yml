@@ -28,7 +28,7 @@ jobs:
     name: dev image (build + HOME/PATH checks)
     runs-on: ubuntu-latest
     # The sum of the step budgets below plus a few minutes for the rest.
-    timeout-minutes: 210
+    timeout-minutes: 220
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # A cold build keeps every layer, the Rust tools' cargo target cache and
@@ -183,7 +183,7 @@ jobs:
             fi
           }
           # The image's list, /etc/denbox/state-paths.d/denbox.list.
-          paths='.ssh .gitconfig .zsh_history .bash_history .config/gh .config/rclone .local/share/zoxide .local/share/powershell/PSReadLine .config/den .config/denbox .vscode-server'
+          paths='.ssh .gitconfig .zsh_history .bash_history .config/gh .config/rclone .local/share/zoxide .local/share/powershell/PSReadLine .config/denbox .vscode-server .config/den'
           linked='for p in '"$paths"'; do
             t=$(readlink "/home/dev/$p") && [ "$t" = "/state/home/$p" ] \
               || { echo "/home/dev/$p: ${t:-not a link}"; exit 1; }
@@ -322,6 +322,62 @@ jobs:
           check 'DENBOX_CLEAN_TMP=1 empties the /tmp volume' \
             docker run --rm -e DENBOX_CLEAN_TMP=1 -v denbox-tmp:/tmp denbox sh -c '[ ! -e /tmp/leftover ]'
           docker volume rm denbox-tmp
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::$failed check(s) failed"
+            exit 1
+          fi
+      # The image without den (--target base): the same runtime, drop-ins and
+      # tools, no den CLI and no den shell setup. The build comes out of the
+      # builder's cache of the build above.
+      - name: Check the image without den
+        timeout-minutes: 10
+        run: |
+          # The commands in single quotes run in the container's shells.
+          # shellcheck disable=SC2016
+          docker buildx build --load -t denbox-base --target base \
+            -f docker/ubuntu/Dockerfile docker/ubuntu
+          system_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          user_path=/home/dev/.nvm/current/bin:/home/dev/.local/bin:/home/dev/.cargo/bin:$system_path
+          failed=0
+          # check LABEL PATTERN COMMAND...: COMMAND exits 0 and the last line
+          # of its output matches the glob PATTERN.
+          check() {
+            local label=$1 pattern=$2 out got status=0
+            shift 2
+            out=$("$@" 2>"$RUNNER_TEMP/base.err") || status=$?
+            got=$(printf '%s\n' "$out" | tail -n 1)
+            got=${got%"${got##*[![:space:]]}"}
+            # shellcheck disable=SC2053 # PATTERN is a glob on purpose
+            if [ "$status" -eq 0 ] && [[ $got == $pattern ]]; then
+              echo "ok    $label: $got"
+            else
+              echo "::error::$label: exit status $status, got '$got', want '$pattern'"
+              printf '%s\n' "$out"
+              cat "$RUNNER_TEMP/base.err"
+              failed=$((failed + 1))
+            fi
+          }
+          check 'base: no den on dev PATH' none \
+            docker run --rm denbox-base zsh -lc 'command -v den || echo none'
+          check 'base: denbox.list without den.list' ok \
+            docker run --rm denbox-base sh -c '[ ! -e /etc/denbox/state-paths.d/den.list ] && [ -e /etc/denbox/state-paths.d/denbox.list ] && echo ok'
+          # No den: Ubuntu's /etc/zsh/zshrc runs compinit for dev, and zshenv
+          # gives dev the history defaults den's init.zsh would have set.
+          check 'base: Ubuntu compinit ran for dev' 'compdef: function' \
+            docker run --rm denbox-base zsh -ic 'whence -w compdef'
+          check 'base: HISTFILE and SAVEHIST without den' '/home/dev/.zsh_history 8192' \
+            docker run --rm denbox-base zsh -ic 'print -r -- "$HISTFILE $SAVEHIST"'
+          check 'base: dev HOME and PATH from the entrypoint' "/home/dev $user_path" \
+            docker run --rm denbox-base sh -c 'echo "$HOME $PATH"'
+          check 'base: the image ENV for root' "/root $system_path" \
+            docker run --rm --entrypoint sh denbox-base -c 'echo "$HOME $PATH"'
+          check 'base: the tools are there' '/home/dev/*' \
+            docker run --rm denbox-base zsh -lc 'uv --version >/dev/null && rg --version >/dev/null && whence -p uv'
+          # The image with den: den.list, and the compinit den's init.zsh runs.
+          check 'den: den.list' ok \
+            docker run --rm denbox sh -c '[ -e /etc/denbox/state-paths.d/den.list ] && echo ok'
+          check 'den: skip_global_compinit for dev' 1 \
+            docker run --rm denbox zsh -ic 'print -r -- "${skip_global_compinit-unset}"'
           if [ "$failed" -ne 0 ]; then
             echo "::error::$failed check(s) failed"
             exit 1
