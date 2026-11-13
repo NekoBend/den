@@ -9,16 +9,23 @@ and no den skills: add those in an image of your own (see
 
 ## What the image contains
 
-The build runs in five stages. Earlier stages change least, so an update near
+The build runs in six stages. Earlier stages change least, so an update near
 the end (a new den, a new installer release) does not recompile the Rust tools.
 
 | Stage | Contents |
 | --- | --- |
-| `system` | apt base (build-essential, git, curl, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked) |
+| `system` | apt base (build-essential, git, curl, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked, its group named `dev` too) |
 | `rust-tools` | rustup and Rust (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, fzf, nvm + Node.js 26 (LTS), npm |
 | `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
-| `workspace` | den (`uv tool install` from a BuildKit git source of `main`), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself, with the state volume's linking (see [What survives where](#what-survives-where)) |
+| `den-src` | den's source tree at `DEN_REF`, a BuildKit git source; a `scratch` stage the `workspace` stage mounts, nothing of it ends up in the image |
+| `workspace` | den (`uv tool install` from the `den-src` mount), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself, with the state volume's linking (see [What survives where](#what-survives-where)) |
+
+The installers that run as `dev` leave its startup files alone: rustup gets
+`--no-modify-path`, nvm's installer `PROFILE=/dev/null`, and the uv, ty and
+ruff installers skip the edit when `~/.local/bin` is on `PATH` already, as it
+is in the build. `dev` starts with Ubuntu's stock `.profile` and `.bashrc`,
+plus the lines `den install shell` adds.
 
 User tools live under `/home/dev` (`~/.local/bin`, `~/.cargo/bin`,
 `~/.nvm/current/bin`). They are on `dev`'s `PATH`, not the image's, and the
@@ -161,7 +168,7 @@ default is the release pinned in the Dockerfile (see [Versions](#versions)).
 
 | ARG | Default | Meaning |
 | --- | --- | --- |
-| `BASE_IMAGE` | `ubuntu:26.04` with its digest | Base image, by tag and digest. The apt steps assume Ubuntu (`ubuntu.sources`). |
+| `BASE_IMAGE` | `ubuntu:26.04` with its digest | Base image, by tag and digest. The apt steps assume Ubuntu (`ubuntu.sources`), and the last stage installs 26.04's `gnu-coreutils` package, whose `gnuchown`, `gnutimeout`, `gnustat` and `gnumkdir` the entrypoint runs: an older Ubuntu, which ships GNU coreutils under the plain names and has no such package, does not build as it is. |
 | `APT_HTTP_PIPELINING` | `1` | `1` leaves apt's HTTP pipelining on, as apt ships it. `0` turns it off for every `apt-get` in the build, and in the container too (`/etc/apt/apt.conf.d/90-no-http-pipelining`): on some networks `apt-get update` fails with `Hash Sum mismatch` while the same files download intact without pipelining. |
 | `USERNAME` | `dev` | Account name. The entrypoint reads it from `/etc/container-user`. |
 | `USER_UID` | `1000` | Nonzero UID for the account. On Ubuntu, UID 1000 reuses the stock `ubuntu` account and renames it. The build fails if any other account already has the UID. |
