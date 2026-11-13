@@ -65,6 +65,14 @@ if account=$(getent passwd "$USER_UID"); then
 else
     useradd --uid "$USER_UID" --gid "$USER_GID" --create-home --shell /bin/zsh "$USERNAME"
 fi
+# The stock account's group is named ubuntu too: give it the account's name,
+# so that id and ls show the account's files as dev:dev. Another USER_GID got
+# a group of that name above; a group of the account's name that exists with
+# another GID keeps its name.
+group_name=$(getent group "$USER_GID") && group_name=${group_name%%:*}
+if [[ "$group_name" == ubuntu && "$USERNAME" != ubuntu ]] && ! getent group "$USERNAME" >/dev/null; then
+    groupmod --new-name "$USERNAME" ubuntu
+fi
 usermod --password '!' "$USERNAME"
 install -d -o "$USER_UID" -g "$USER_GID" -m 0755 \
     /workspace "/home/$USERNAME/.local" "/home/$USERNAME/.local/bin" "/home/$USERNAME/.cache"
@@ -235,8 +243,12 @@ ENV NVM_DIR="${HOME}/.nvm"
 # Build setting: exact nvm release, including the v prefix.
 # renovate: datasource=github-releases depName=nvm-sh/nvm
 ARG NVM_VERSION=v0.41.0
+# PROFILE=/dev/null keeps nvm's installer from appending its loader to a
+# startup file of the user's (with no SHELL in the build it picks ~/.profile):
+# the loader costs every login shell about 60 ms, and ~/.nvm/current/bin is
+# on the user's PATH already.
 RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o /tmp/nvm.sh && \
-    bash /tmp/nvm.sh && rm /tmp/nvm.sh
+    PROFILE=/dev/null bash /tmp/nvm.sh && rm /tmp/nvm.sh
 # Build setting: an exact Node.js release, which nvm installs and makes the
 # default. It comes after nvm's installer, which installs the Node.js release
 # a NODE_VERSION in its environment names.
@@ -273,6 +285,9 @@ USER root
 # root step uses root's home and a PATH of root-owned system directories.
 ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN <<'INSTALL_UTILITIES_DEPS'
+# Ubuntu's sources file names http mirrors. Every apt-get from here on goes
+# over https; the first one, in the system stage, had to fetch ca-certificates,
+# which https needs, and apt's signature check covers its downloads.
 sed -i 's,http://,https://,g' /etc/apt/sources.list.d/ubuntu.sources
 apt-get update
 # Test, lint and review tools (bats runs tests/agents; shellcheck, lua5.4, jq),
