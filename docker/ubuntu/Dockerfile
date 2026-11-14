@@ -213,7 +213,7 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://astral.sh/uv/${UV_V
 # fzf from its GitHub release, checked against the release's checksums file.
 # Build setting: an exact fzf release without the v prefix.
 # renovate: datasource=github-releases depName=junegunn/fzf extractVersion=^v(?<version>.+)$
-ARG FZF_VERSION=0.74.5
+ARG FZF_VERSION=0.75.0
 RUN <<'INSTALL_FZF'
 version=$FZF_VERSION
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected fzf version: '$version'" >&2; exit 1; }
