@@ -5,7 +5,14 @@ on in: Ubuntu 26.04 with an unprivileged `dev` user, the language toolchains,
 command-line tools, and den with its shell setup. It ships no coding-agent CLI
 and no den skills: add those in an image of your own (see
 [Adding your own tools](#adding-your-own-tools)). The build fetches den's
-`main` branch from GitHub, so it reads nothing from the checkout.
+`main` branch from GitHub, so it reads nothing from the checkout. The same
+Dockerfile also builds the image without den (`--target base`): the runtime,
+the tools and the drop-ins, for a shell setup of your own (see
+[The image without den](#the-image-without-den)).
+
+The images are named `denbox`, with the Ubuntu release and the variant in the
+tag: `denbox:26.04` is the image with den, which `denbox:latest` and a plain
+`denbox` also name, and `denbox:26.04-base` the one without.
 
 ## What the image contains
 
@@ -18,8 +25,9 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 | `rust-tools` | rustup and Rust (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, fzf, nvm + Node.js 26 (LTS), npm |
 | `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
-| `den-src` | den's source tree at `DEN_REF`, a BuildKit git source; a `scratch` stage the `workspace` stage mounts, nothing of it ends up in the image |
-| `workspace` | den (`uv tool install` from the `den-src` mount), then `den install shell --force --bin --zsh-plugins`; tzdata, GNU coreutils for the entrypoint, and the entrypoint itself, with the state volume's linking (see [What survives where](#what-survives-where)) |
+| `den-src` | den's source tree at `DEN_REF`, a BuildKit git source; a `scratch` stage the `den` stage mounts, nothing of it ends up in the image |
+| `base` | tzdata, GNU coreutils for the entrypoint, and the entrypoint itself, with the state volume's linking and the drop-in directories (see [What survives where](#what-survives-where)); the image without den (`--target base`) |
+| `den` | den (`uv tool install` from the `den-src` mount), then `den install shell --force --bin --zsh-plugins`, and den's own state-path list `den.list`; the default target |
 
 The installers that run as `dev` leave its startup files alone: rustup gets
 `--no-modify-path`, nvm's installer `PROFILE=/dev/null`, and the uv, ty and
@@ -59,6 +67,13 @@ From the repository root:
 docker buildx build --pull --load -t denbox -f docker/ubuntu/Dockerfile docker/ubuntu
 ```
 
+For the image without den, add `--target base` and name it so:
+
+```sh
+docker buildx build --pull --load -t denbox:26.04-base --target base \
+  -f docker/ubuntu/Dockerfile docker/ubuntu
+```
+
 The context directory is never read, so any small directory works. To give
 `dev` your host IDs at build time, so the container never has to remap them,
 add `--build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)"`. Do this
@@ -72,22 +87,23 @@ so a rebuild reuses them. The base image and the tools are pinned to exact
 versions ([Versions](#versions) lists what is not), so a rebuild installs the
 same releases, with `--no-cache` too; a fix in one of them arrives as a
 version update. After a security fix in an apt package, rebuild with the
-`--no-cache-filter workspace` below. Either way, start a new container from
+`--no-cache-filter base` below. Either way, start a new container from
 the new image: a running container keeps the binaries it started with. What
 a new container keeps is in [What survives where](#what-survives-where).
 
 den is the exception: each build resolves den's `main` to a commit, so a
-rebuild after `main` moves redoes the `workspace` stage and nothing before it.
-To redo that stage when `main` has not moved, for example to pick up new
-releases of den's Python dependencies or updates of the apt packages, add
-`--no-cache-filter workspace`; the Rust tools are not recompiled. The stage
-runs `apt-get upgrade`, so this also brings the updates for the apt packages
-that the earlier stages installed. The zsh plugins den installs are pinned to
-commits in den itself, so they change only when `main` does.
+rebuild after `main` moves redoes the `den` stage and nothing before it. To
+redo the `base` stage, and the `den` stage on it, when `main` has not moved,
+for example to pick up updates of the apt packages or new releases of den's
+Python dependencies, add `--no-cache-filter base`; the Rust tools are not
+recompiled. The `base` stage runs `apt-get upgrade`, so this also brings the
+updates for the apt packages that the earlier stages installed. The zsh
+plugins den installs are pinned to commits in den itself, so they change only
+when `main` does.
 
 To hold den at a commit you have reviewed instead of following `main`, add
 `--build-arg DEN_REF=<commit>`; a tag or another branch works too. A full
-commit hash stays put, so the `workspace` stage does not rebuild when `main`
+commit hash stays put, so the `den` stage does not rebuild when `main`
 moves. To see what you would take by moving it, read
 `https://github.com/NekoBend/den/compare/<commit>...main`.
 
@@ -127,7 +143,7 @@ Remove the tags you no longer want with `docker image rm denbox:<stamp>`.
 image by tag and digest (`BASE_IMAGE`), the Dockerfile syntax image on its
 first line by version and digest, and each tool by a `*_VERSION` build arg.
 apt packages are not pinned: they come from Ubuntu's archive as it is when
-the build runs, and the `workspace` stage's `apt-get upgrade` brings their
+the build runs, and the `base` stage's `apt-get upgrade` brings their
 updates. den is `main` (see above). yazi follows its own releases: yazi-build,
 pinned by `YAZI_BUILD_VERSION`, builds the release yazi's `shipped` tag names
 when the step runs.
@@ -294,10 +310,12 @@ the image does not ship one.
 
 ### zsh completion
 
-For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1`, so den's quick
-`compinit` runs. Without it, Ubuntu's `/etc/zsh/zshrc` would run a full one
-before `init.zsh` (which then runs none of its own), a few ms more for every
-shell. den's `compinit -C` reuses `~/.zcompdump` as it is while the dump is
+For `dev`, `/etc/zsh/zshenv` sets `skip_global_compinit=1` while den's
+`~/.config/shell/init.zsh` is there, so den's quick `compinit` runs. Without
+it, Ubuntu's `/etc/zsh/zshrc` would run a full one before `init.zsh` (which
+then runs none of its own), a few ms more for every shell; in the image
+without den, Ubuntu's is the one that runs. den's `compinit -C` reuses
+`~/.zcompdump` as it is while the dump is
 less than a day old and `compaudit` finds nothing wrong in `fpath`; otherwise
 the full `compinit -i` runs, which takes in completion functions added since
 (an apt package, a new tool) and leaves out those in directories others may
@@ -305,11 +323,35 @@ write to ([zsh completion](../shell/README.md#zsh-completion) in
 `shell/README.md` has the rules). To have new functions at once, run `reload`,
 which deletes the dump. A new container starts without one.
 
+## The image without den
+
+`--target base` stops the build before den: the same Ubuntu, `dev`, tools,
+entrypoint, drop-in directories and state volume handling, without the den
+CLI and without den's shell setup (its aliases and functions, the zsh
+plugins, starship and zoxide in the prompt, its pwsh profile). It is the base
+for an image with a shell setup of your own: put that setup in
+`/etc/denbox/user-env.d` and `user-init.d`, or install it as `dev` in your
+Dockerfile (see [Adding your own tools](#adding-your-own-tools)). What differs
+for `dev`:
+
+- `~/.profile` and `~/.bashrc` are Ubuntu's stock files, and there is no
+  `~/.zshrc`: zsh starts with Ubuntu's `/etc/zsh/zshrc`, which runs its
+  `compinit`, and in a terminal offers its new-user setup until a `.zshrc`
+  exists.
+- `/etc/zsh/zshenv` gives `dev` `HISTFILE=~/.zsh_history`, `HISTSIZE` and
+  `SAVEHIST` (8192) when nothing has set them, so the history goes to the
+  file the state volume keeps; a `.zshrc` can set its own.
+- The state lists have no `.config/den` entry: that one comes with the `den`
+  stage, in `/etc/denbox/state-paths.d/den.list`.
+- `uv`, Node.js, the Rust tools and the rest are there as in the image with
+  den; `den` is not.
+
 ## Adding your own tools
 
 The image leaves out the coding-agent CLIs (Claude Code, Codex and the like)
 and den's skills. Add those, and any other tool you want, in an image of your
-own built `FROM` this one:
+own built `FROM` this one (or `FROM denbox:26.04-base`, for one with a shell
+setup of your own):
 
 ```dockerfile
 # syntax=docker/dockerfile:1
@@ -723,7 +765,8 @@ to). With compose, name `<project>_denbox-state` there instead of `denbox-state`
 as for the backup: for a name it does not find, `docker run` re-owns a new,
 empty volume and says nothing.
 
-The image's list, `/etc/denbox/state-paths.d/denbox.list`:
+The image's list, `/etc/denbox/state-paths.d/denbox.list`, and, in the image
+with den, its `den.list`:
 
 | Entry | Holds |
 | --- | --- |
@@ -734,9 +777,9 @@ The image's list, `/etc/denbox/state-paths.d/denbox.list`:
 | `d .config/rclone` | rclone's remotes |
 | `d .local/share/zoxide` | zoxide's directory list |
 | `d .local/share/powershell/PSReadLine` | pwsh's history |
-| `d .config/den` | den's proxy profiles and snippets |
 | `d .config/denbox` | this environment's own list (below) |
 | `d .vscode-server` | the VS Code Server and the extensions VS Code installs, when it attaches as `dev` (see [VS Code](#vs-code)) |
+| `d .config/den` (`den.list`) | den's proxy profiles and snippets |
 
 zsh, bash and pwsh keep their history files as links: `/etc/zsh/zshenv`
 turns zsh's `HIST_SAVE_BY_COPY` off for `dev` while `~/.zsh_history` is a link

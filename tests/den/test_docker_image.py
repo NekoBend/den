@@ -440,7 +440,7 @@ def _source_block(
     euid: int,
     home: str,
     user: str,
-    histfile: str = "",
+    histfile: str | None = None,
     extra: tuple[str, ...] = (),
     inherited_path: str = SYSTEM_PATH,
     shell_flags: tuple[str, ...] = (),
@@ -452,7 +452,7 @@ def _source_block(
     Returns HOME, PATH, skip_global_compinit, HISTFILE and USER, then the
     variables ``extra`` names ("unset" for one that is not set). ``histfile``
     stands in for the HISTFILE bash sets from HOME before it reads its startup
-    files.
+    files, or is a HISTFILE set on purpose ("" for one set empty).
     """
     user_file = tmp_path / "container-user"
     user_file.write_text(f"{user}\n", encoding="utf-8")
@@ -477,7 +477,7 @@ def _source_block(
         "unset skip_global_compinit HISTFILE USER LOGNAME"
         + "".join(f" {name}" for name in extra)
         + "; "
-        + (f"HISTFILE={shlex.quote(histfile)}; " if histfile else "")
+        + (f"HISTFILE={shlex.quote(histfile)}; " if histfile is not None else "")
         + f". {shlex.quote(str(block))}; . {shlex.quote(str(block))}; "
         + after
         + 'printf "%s\\n" "$HOME" "$PATH" "${skip_global_compinit-unset}" '
@@ -550,7 +550,15 @@ def test_zshenv_gives_the_container_user_its_home_back(tmp_path):
     out = _source_block(
         tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home="/root", user=me
     )
-    assert out == [f"/home/{me}", _user_path(f"/home/{me}"), "1", "unset", me]
+    # The block looks for den's init.zsh in the real home it gives back.
+    skip = "1" if os.access(f"/home/{me}/.config/shell/init.zsh", os.R_OK) else "unset"
+    assert out == [
+        f"/home/{me}",
+        _user_path(f"/home/{me}"),
+        skip,
+        f"/home/{me}/.zsh_history",
+        me,
+    ]
 
 
 @_needs("zsh")
@@ -567,17 +575,71 @@ def test_zshenv_gives_no_other_user_the_container_users_home(tmp_path):
 def test_zshenv_skips_ubuntus_global_compinit_for_the_container_user_only(tmp_path):
     # With skip_global_compinit set, Ubuntu's /etc/zsh/zshrc runs no compinit
     # and den's init.zsh runs its quick one instead of that full one.
+    # Only while den's init.zsh is there for ~/.zshrc to source: the image
+    # without den leaves Ubuntu's compinit to run, or dev had no completion.
+    home = tmp_path / "home"
+    (home / ".config" / "shell").mkdir(parents=True)
+    (home / ".config" / "shell" / "init.zsh").write_text("", encoding="utf-8")
+    me = _zsh_username()
+    assert me
+    dev = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home=str(home), user=me
+    )
+    assert dev[2] == "1"
+    bare = str(tmp_path / "bare")
+    without_den = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home=bare, user=me
+    )
+    assert without_den[2] == "unset"
+    other = _source_block(
+        tmp_path,
+        "zsh",
+        "/etc/zsh/zshenv",
+        euid=1000,
+        home=str(home),
+        user=f"{me}-other",
+    )
+    assert other[2] == "unset"
+
+
+@_needs("zsh")
+def test_zshenv_gives_the_container_user_history_defaults(tmp_path):
+    # zsh saves no history until HISTFILE and SAVEHIST are set, which den's
+    # init.zsh does: without den, the .zsh_history the state volume keeps
+    # stayed empty. The defaults give way to what is set already.
     home = str(tmp_path / "home")
     me = _zsh_username()
     assert me
     dev = _source_block(
-        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home=home, user=me
+        tmp_path,
+        "zsh",
+        "/etc/zsh/zshenv",
+        euid=1000,
+        home=home,
+        user=me,
+        extra=("SAVEHIST", "HISTSIZE"),
     )
-    assert dev[2] == "1"
+    assert dev[3] == f"{home}/.zsh_history"
+    assert dev[5:7] == ["8192", "8192"]
+    kept = _source_block(
+        tmp_path,
+        "zsh",
+        "/etc/zsh/zshenv",
+        euid=1000,
+        home=home,
+        user=me,
+        histfile="/elsewhere/history",
+    )
+    assert kept[3] == "/elsewhere/history"
+    # HISTFILE= zsh turns the history off: an empty value is a value.
+    off = _source_block(
+        tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home=home, user=me, histfile=""
+    )
+    assert off[3] == ""
     other = _source_block(
         tmp_path, "zsh", "/etc/zsh/zshenv", euid=1000, home=home, user=f"{me}-other"
     )
-    assert other[2] == "unset"
+    assert other[3] == "unset"
 
 
 @_needs("bash")
@@ -1912,6 +1974,8 @@ def test_the_image_has_no_volume_instruction():
 # --- state-link: the home's paths in the state volume --------------------------
 
 _IMAGE_LIST = "/etc/denbox/state-paths.d/denbox.list"
+# den's own list, which the den stage adds (the image without den has none).
+_DEN_LIST = "/etc/denbox/state-paths.d/den.list"
 # The file in the volume each run holds a lock on, so that runs take turns.
 _LOCK = ".denbox-lock"
 
@@ -1924,12 +1988,17 @@ def _needs_linux() -> pytest.MarkDecorator:
     )
 
 
-def _image_entries() -> list[tuple[str, str]]:
+def _list_entries(target: str) -> list[tuple[str, str]]:
     return [
         (line[0], line[2:])
-        for line in _appended_block(_IMAGE_LIST).splitlines()
+        for line in _appended_block(target).splitlines()
         if line and not line.startswith("#")
     ]
+
+
+def _image_entries() -> list[tuple[str, str]]:
+    """The entries of the image with den: denbox.list, then den.list."""
+    return _list_entries(_IMAGE_LIST) + _list_entries(_DEN_LIST)
 
 
 class _Roots:
@@ -3224,9 +3293,10 @@ def test_the_image_list_keeps_the_logins_and_histories():
         ("d", ".config/rclone"),
         ("d", ".local/share/zoxide"),
         ("d", ".local/share/powershell/PSReadLine"),
-        ("d", ".config/den"),
         ("d", ".config/denbox"),
         ("d", ".vscode-server"),
+        # den's own list, which the den stage adds.
+        ("d", ".config/den"),
     ]
 
 
@@ -3234,6 +3304,7 @@ def test_the_image_list_keeps_the_logins_and_histories():
 def test_the_image_list_is_valid(tmp_path):
     roots = _Roots(tmp_path)
     roots.image_list(_appended_block(_IMAGE_LIST))
+    roots.image_list(_appended_block(_DEN_LIST), name="den.list")
     result = roots.run()
     assert (result.returncode, result.stderr) == (0, "")
     for _, rel in _image_entries():
@@ -3356,7 +3427,11 @@ def test_test_helpers_see_the_whole_dockerfile():
     # The parser must reach the final stage, or the PATH test checks nothing.
     names = [name for name, _, _ in _stages()]
     assert names[0] == "system"
-    assert names[-1] == "workspace"
+    # The runtime (base, the image without den), then den on it, the default.
+    assert "base" in names
+    assert names[-1] == "den"
+    assert re.search(r"^FROM utilities AS base$", _text(), flags=re.MULTILINE)
+    assert re.search(r"^FROM base AS den$", _text(), flags=re.MULTILINE)
 
 
 # --- downloads -----------------------------------------------------------------
@@ -3892,13 +3967,20 @@ def test_rclone_that_its_sha256sums_do_not_vouch_for_is_not_installed(tmp_path, 
 
 
 def test_the_last_stage_upgrades_apt_packages_before_it_changes_their_conffiles():
-    # A refresh build (--no-cache-filter workspace) redoes only the last stage,
-    # so the upgrade there brings the updates for every stage's packages. An
-    # upgrade after the image appends to zshenv, bash.bashrc and zshrc (bash
-    # and zsh conffiles) would stop at dpkg's question about keeping them.
-    last = _stages()[-1][0]
+    # A refresh build (--no-cache-filter base) redoes the runtime stage, and
+    # the den stage on it, so the upgrade there brings the updates for every
+    # stage's packages. An upgrade after the image appends to zshenv,
+    # bash.bashrc and zshrc (bash and zsh conffiles) would stop at dpkg's
+    # question about keeping them.
+    runtime = next(
+        stage
+        for stage, _, _, _, script in _run_scripts()
+        if "cat > /usr/local/bin/container-entrypoint" in script
+    )
     scripts = [
-        (user, script) for stage, user, _, _, script in _run_scripts() if stage == last
+        (user, script)
+        for stage, user, _, _, script in _run_scripts()
+        if stage == runtime
     ]
     upgrades = [
         i
@@ -3906,7 +3988,7 @@ def test_the_last_stage_upgrades_apt_packages_before_it_changes_their_conffiles(
         if re.search(r"apt-get update && .*apt-get upgrade -y", script)
     ]
     assert len(upgrades) == 1, (
-        "the last stage runs no apt-get update && apt-get upgrade -y"
+        "the runtime stage runs no apt-get update && apt-get upgrade -y"
     )
     user, script = scripts[upgrades[0]]
     assert user == "root"
@@ -6061,3 +6143,61 @@ def test_state_link_goes_on_when_it_cannot_make_the_copy_stamp(tmp_path):
     assert (roots.home / ".config" / "tool").is_dir()
     assert not (roots.home / ".config" / "tool").is_symlink()
     assert not (roots.volume / ".config" / "tool").exists()
+
+
+# --- the image without den (--target base) ------------------------------------
+
+
+def test_den_list_comes_with_the_den_stage_only():
+    # The image without den keeps no ~/.config/den: den's own list goes
+    # through the drop-in directory the base stage provides, in the den stage.
+    assert ("d", ".config/den") not in _list_entries(_IMAGE_LIST)
+    assert _list_entries(_DEN_LIST) == [("d", ".config/den")]
+    written = {
+        target: next(
+            stage
+            for stage, *_, script in _run_scripts()
+            if f"cat > {target} <<" in script
+        )
+        for target in (_IMAGE_LIST, _DEN_LIST)
+    }
+    assert written == {_IMAGE_LIST: "base", _DEN_LIST: "den"}
+
+
+def test_the_den_stage_adds_only_den_to_the_runtime():
+    # den's install runs as the user with its tool directories, and the stage
+    # ends as the runtime does: root's HOME and the system PATH, so that a
+    # docker exec starts the same way in both images.
+    den_steps = [
+        (user, env, script)
+        for stage, user, env, _, script in _run_scripts()
+        if stage == "den"
+    ]
+    assert [user for user, _, _ in den_steps] == [
+        f"{_stages()[0][2]['USER_UID']}:{_stages()[0][2]['USER_GID']}",
+        "root",
+    ]
+    install, listing = den_steps
+    assert "uv tool install" in install[2] and "den install shell" in install[2]
+    assert install[1]["PATH"] == _user_path(install[1]["HOME"])
+    assert "state-paths.d/den.list" in listing[2]
+    assert listing[1]["HOME"] == "/root" and listing[1]["PATH"] == SYSTEM_PATH
+
+
+def test_the_image_workflow_checks_the_image_without_den():
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    step = next(s for s in steps if s.get("name") == "Check the image without den")
+    run = step["run"]
+    assert step.get("timeout-minutes", 0) > 0
+    assert "--target base" in run and "-t denbox-base" in run
+    for needle in (
+        "docker run --rm denbox-base zsh -lc 'command -v den || echo none'",
+        "[ ! -e /etc/denbox/state-paths.d/den.list ]",
+        "docker run --rm denbox-base zsh -ic 'whence -w compdef'",
+        "docker run --rm denbox-base zsh -ic 'print -r -- \"$HISTFILE $SAVEHIST\"'",
+        "docker run --rm denbox sh -c '[ -e /etc/denbox/state-paths.d/den.list ]"
+        " && echo ok'",
+        "docker run --rm denbox zsh -ic"
+        " 'print -r -- \"${skip_global_compinit-unset}\"'",
+    ):
+        assert needle in run, needle

@@ -390,14 +390,10 @@ FROM scratch AS den-src
 ARG DEN_REF=main
 ADD https://github.com/NekoBend/den.git#${DEN_REF} /
 
-# 5. Workspace configuration. Updating den does not rebuild the utilities.
-FROM utilities AS workspace
-RUN --mount=type=bind,from=den-src,target=/tmp/den \
-    --mount=type=cache,id=uv-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
-    uv tool install --python /usr/bin/python3 --link-mode copy /tmp/den && \
-    den install shell --force --bin --zsh-plugins
-
-# 6. Runtime entrypoint and defaults.
+# 5. The runtime on the utilities: the entrypoint and its defaults, the state
+# volume's linking and the drop-in directories. This stage is the image
+# without den (--target base); the den stage at the end builds on it.
+FROM utilities AS base
 USER root
 # Every docker exec, root's included, starts with the image's ENV. Give it
 # root's HOME and a PATH of root-owned system directories, so a root exec, with
@@ -409,9 +405,10 @@ ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Build setting: IANA timezone name; also exported to application processes.
 ARG TZ=Asia/Tokyo
 ENV TZ=${TZ}
-# apt-get upgrade runs in this last stage, which a refresh build redoes on its
-# own (--no-cache-filter workspace), so a refresh also brings the updates for
-# the packages that the earlier stages installed. It runs before the next step
+# apt-get upgrade runs in this stage, which a refresh build redoes on its own
+# (--no-cache-filter base, which redoes the den stage too), so a refresh also
+# brings the updates for the packages that the earlier stages installed. It
+# runs before the next step
 # appends to /etc/zsh/zshenv, /etc/bash.bashrc and /etc/zsh/zshrc: those are
 # package conffiles, and an upgrade that met them changed would stop at
 # dpkg's question about keeping them.
@@ -1124,7 +1121,6 @@ d .config/gh
 d .config/rclone
 d .local/share/zoxide
 d .local/share/powershell/PSReadLine
-d .config/den
 d .config/denbox
 d .vscode-server
 STATE_PATHS
@@ -1813,9 +1809,20 @@ else
         if [[ "$HOME" == /root ]]; then
             export HOME="/home/$USERNAME" USER="$USERNAME" LOGNAME="$USERNAME"
         fi
-        # den's init.zsh runs a quick compinit when none ran before it; skip
-        # the full one /etc/zsh/zshrc would run instead.
-        skip_global_compinit=1
+        # den's init.zsh, when it is there for ~/.zshrc to source, runs a
+        # quick compinit when none ran before it: skip the full one
+        # /etc/zsh/zshrc would run instead. Without den (the base image),
+        # Ubuntu's runs, as for any user.
+        if [[ -r "$HOME/.config/shell/init.zsh" ]]; then
+            skip_global_compinit=1
+        fi
+        # zsh saves no history until HISTFILE and SAVEHIST are set, which
+        # den's init.zsh does. These defaults, which a .zshrc overrides, keep
+        # the .zsh_history that the state volume holds written without den.
+        # An empty HISTFILE (HISTFILE= zsh) turns the history off and stays.
+        : "${HISTFILE=$HOME/.zsh_history}"
+        (( SAVEHIST > 0 )) || SAVEHIST=8192
+        (( HISTSIZE >= SAVEHIST )) || HISTSIZE=$SAVEHIST
         # A ~/.zsh_history that is a link into the state volume is rewritten
         # in place. By default, when zsh rewrites the history file (to trim
         # it, or on fc -W) it writes a new file beside the link and renames
@@ -1930,3 +1937,29 @@ WORKDIR /workspace
 USER root
 ENTRYPOINT ["/usr/local/bin/container-entrypoint"]
 CMD ["zsh"]
+
+# 6. den on the runtime: the default target. Each build resolves DEN_REF, so a
+# new commit of den rebuilds this stage alone. The entrypoint, the drop-ins,
+# WORKDIR and CMD come from the base stage as they are.
+FROM base AS den
+# As the user, with its home and tool directories, as the utilities stage left
+# them: uv and den run by name from ~/.local/bin.
+USER ${USER_UID}:${USER_GID}
+ENV HOME=/home/${USERNAME}
+ENV PATH="${NVM_DIR}/current/bin:${HOME}/.local/bin:${HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+RUN --mount=type=bind,from=den-src,target=/tmp/den \
+    --mount=type=cache,id=uv-${TARGETARCH}-${USER_UID}-${USER_GID},target=${HOME}/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    uv tool install --python /usr/bin/python3 --link-mode copy /tmp/den && \
+    den install shell --force --bin --zsh-plugins
+# Back to the runtime's ENV for root (every docker exec starts with the
+# image's), and den's own state-path list, through the drop-in directory the
+# base stage provides: the image without den keeps no ~/.config/den.
+USER root
+ENV HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN <<'INSTALL_DEN_LIST'
+cat > /etc/denbox/state-paths.d/den.list <<'DEN_STATE_PATHS'
+# den, in the image with it: its proxy profiles and snippets.
+d .config/den
+DEN_STATE_PATHS
+chmod 0644 /etc/denbox/state-paths.d/den.list
+INSTALL_DEN_LIST
