@@ -99,6 +99,29 @@ def test_renovate_leaves_the_python_dependencies_alone():
     assert rule["enabled"] is False
 
 
+def test_renovate_keeps_each_ubuntu_base_image_on_its_release():
+    # BASE_IMAGE_2604 and BASE_IMAGE_2404 are one Ubuntu release each: the
+    # Dependency Dashboard proposed "update ubuntu docker tag to v26" for the
+    # 24.04 pin, which would make denbox:24.04 a second 26.04 image. Only the
+    # digest of each pin moves; every tag change is off.
+    rule = next(
+        rule
+        for rule in _config()["packageRules"]
+        if rule.get("matchDepNames") == ["ubuntu"]
+    )
+    assert rule["matchManagers"] == ["dockerfile"]
+    assert rule["matchFileNames"] == ["docker/ubuntu/Dockerfile"]
+    assert set(rule["matchUpdateTypes"]) == {"major", "minor", "patch"}
+    assert "digest" not in rule["matchUpdateTypes"]
+    assert rule["enabled"] is False
+    # Both pins are ubuntu images in that file, so the rule reaches both.
+    dockerfile = (ROOT / "docker" / "ubuntu" / "Dockerfile").read_text(encoding="utf-8")
+    pins = re.findall(
+        r"^ARG BASE_IMAGE_\d{4}=ubuntu:(\d\d\.\d\d)@sha256:", dockerfile, re.MULTILINE
+    )
+    assert sorted(pins) == ["24.04", "26.04"]
+
+
 def _uses_in(node: object) -> Iterator[str]:
     """Every `uses:` value in a parsed workflow, steps and jobs alike."""
     if isinstance(node, dict):

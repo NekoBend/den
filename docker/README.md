@@ -165,7 +165,10 @@ settings in `renovate.json` at the repository root:
   each `*_VERSION` build arg, each GitHub Action the workflows use (those
   are pinned to commit SHAs, with the version in a comment), and the zsh plugins
   den installs (`_ZSH_PLUGINS` in `den/_shell.py`). A new major version gets a
-  pull request of its own.
+  pull request of its own. The two Ubuntu base images are the exception: each
+  is one release, so Renovate updates their digests only, and a move to
+  another release (`BASE_IMAGE_2404` to 26.04, `BASE_IMAGE_2604` to a later
+  one) is a change made by hand.
 - It proposes a release only once it has been out for 7 days
   (`minimumReleaseAge`), so a release that is withdrawn or found broken in its
   first week never reaches the image. Its Dependency Dashboard issue lists the
