@@ -28,7 +28,7 @@ jobs:
     name: dev image (build + HOME/PATH checks)
     runs-on: ubuntu-latest
     # The sum of the step budgets below plus a few minutes for the rest.
-    timeout-minutes: 200
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # A cold build keeps every layer, the Rust tools' cargo target cache and
@@ -252,6 +252,80 @@ jobs:
             echo "::error::$failed check(s) failed"
             exit 1
           fi
+      # docker/README.md's Run table: HOST_UID/HOST_GID other than the build's
+      # give dev those IDs and re-own its home; FIX_WORKSPACE_OWNERSHIP=1 also
+      # re-owns what in /workspace had the old IDs, leaving other owners and
+      # each mount point below it alone; DENBOX_CLEAN_TMP=1 empties a /tmp
+      # volume at the start, and without it the volume is kept.
+      - name: Check ID remapping and /tmp cleanup
+        timeout-minutes: 10
+        run: |
+          # The commands in single quotes run in the container's shells.
+          # shellcheck disable=SC2016
+          failed=0
+          # check LABEL COMMAND...: COMMAND exits 0 and prints no warning of
+          # the entrypoint or of state-link.
+          check() {
+            local label=$1 status=0
+            shift
+            "$@" >"$RUNNER_TEMP/remap.out" 2>&1 || status=$?
+            if [ "$status" -eq 0 ] \
+              && ! grep -Eq '^(container-entrypoint|state-link):' "$RUNNER_TEMP/remap.out"; then
+              echo "ok    $label"
+            else
+              echo "::error::$label: exit status $status"
+              cat "$RUNNER_TEMP/remap.out"
+              failed=$((failed + 1))
+            fi
+          }
+          # A bound workspace with a file of the image's dev (1000), one of
+          # another owner, and a second bind below it with a file of dev's.
+          mkdir "$RUNNER_TEMP/ws" "$RUNNER_TEMP/ws-nested"
+          docker run --rm -v "$RUNNER_TEMP/ws:/x" -v "$RUNNER_TEMP/ws-nested:/y" --entrypoint sh denbox \
+            -c 'touch /x/mine /x/theirs /y/nested && chown 1000:1000 /x/mine /y/nested && chown 2000:2000 /x/theirs'
+          # dev gets the new IDs, its home and the file of the old IDs in
+          # /workspace follow, the other owner's file and the nested bind do
+          # not, and dev can still write its home and run den.
+          status=0
+          docker run --rm -e HOST_UID=1234 -e HOST_GID=1234 -e FIX_WORKSPACE_OWNERSHIP=1 \
+            -v "$RUNNER_TEMP/ws:/workspace" -v "$RUNNER_TEMP/ws-nested:/workspace/nested" \
+            denbox sh -ec '
+              [ "$(id -u):$(id -g)" = 1234:1234 ]
+              [ "$(stat -c %u:%g /home/dev)" = 1234:1234 ]
+              [ "$(stat -c %u:%g /home/dev/.zshrc)" = 1234:1234 ]
+              [ "$(stat -c %u:%g /home/dev/.local/bin/den)" = 1234:1234 ]
+              [ "$(stat -c %u:%g /workspace/mine)" = 1234:1234 ]
+              [ "$(stat -c %u:%g /workspace/theirs)" = 2000:2000 ]
+              [ "$(stat -c %u:%g /workspace/nested/nested)" = 1000:1000 ]
+              touch /home/dev/.cache/remap-probe
+              zsh -lc "den --version" >/dev/null
+            ' >"$RUNNER_TEMP/remap.out" 2>&1 || status=$?
+          if [ "$status" -eq 0 ] \
+            && grep -q '^container-entrypoint: remapping dev from 1000:1000 to 1234:1234 ' "$RUNNER_TEMP/remap.out" \
+            && grep -q '^container-entrypoint: re-owning /workspace from 1000:1000 leaves out each mount point below it and all it holds: /workspace/nested$' "$RUNNER_TEMP/remap.out" \
+            && [ "$(grep -c '^container-entrypoint:' "$RUNNER_TEMP/remap.out")" -eq 2 ] \
+            && ! grep -q '^state-link:' "$RUNNER_TEMP/remap.out"; then
+            echo "ok    HOST_UID/HOST_GID=1234 with FIX_WORKSPACE_OWNERSHIP=1"
+          else
+            echo "::error::HOST_UID/HOST_GID=1234 with FIX_WORKSPACE_OWNERSHIP=1: exit status $status"
+            cat "$RUNNER_TEMP/remap.out"
+            failed=$((failed + 1))
+          fi
+          [ "$(stat -c %u:%g "$RUNNER_TEMP/ws/theirs")" = 2000:2000 ] \
+            && [ "$(stat -c %u:%g "$RUNNER_TEMP/ws-nested/nested")" = 1000:1000 ] \
+            || { echo '::error::the other owner or the nested bind changed on the host'; ls -ln "$RUNNER_TEMP/ws" "$RUNNER_TEMP/ws-nested"; failed=$((failed + 1)); }
+          # A /tmp volume is kept unless DENBOX_CLEAN_TMP=1.
+          docker volume create denbox-tmp
+          docker run --rm -v denbox-tmp:/tmp --entrypoint sh denbox -c 'touch /tmp/leftover'
+          check 'a /tmp volume is kept by default' \
+            docker run --rm -v denbox-tmp:/tmp denbox sh -c '[ -e /tmp/leftover ]'
+          check 'DENBOX_CLEAN_TMP=1 empties the /tmp volume' \
+            docker run --rm -e DENBOX_CLEAN_TMP=1 -v denbox-tmp:/tmp denbox sh -c '[ ! -e /tmp/leftover ]'
+          docker volume rm denbox-tmp
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::$failed check(s) failed"
+            exit 1
+          fi
       - name: Check a build at a commit of den
         timeout-minutes: 10
         run: |
@@ -261,6 +335,16 @@ jobs:
           docker buildx build --load -t denbox-at-commit \
             --build-arg DEN_REF="$ref" -f docker/ubuntu/Dockerfile docker/ubuntu
           docker run --rm denbox-at-commit zsh -lc 'den --version'
+          # A build at a ref den does not have must fail: a Dockerfile that
+          # took main whatever DEN_REF said would pass the check above too.
+          if docker buildx build --build-arg DEN_REF=refs/heads/no-such-ref-for-this-check \
+              -f docker/ubuntu/Dockerfile docker/ubuntu >"$RUNNER_TEMP/no-ref.out" 2>&1; then
+            echo '::error::a build at a ref den does not have did not fail'
+            cat "$RUNNER_TEMP/no-ref.out"
+            exit 1
+          fi
+          grep -i 'no-such-ref-for-this-check' "$RUNNER_TEMP/no-ref.out" >/dev/null \
+            || { echo '::error::the failed build does not name the missing ref'; cat "$RUNNER_TEMP/no-ref.out"; exit 1; }
       - name: Check image drop-ins
         timeout-minutes: 5
         run: |

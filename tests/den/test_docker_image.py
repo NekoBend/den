@@ -3328,6 +3328,13 @@ def test_the_image_workflow_builds_with_a_commit_of_den():
     step = next(s for s in steps if s.get("name") == "Check a build at a commit of den")
     assert step.get("timeout-minutes", 0) > 0
     assert 'DEN_REF="$ref"' in step["run"]
+    # A ref den does not have must fail the build: a Dockerfile that took main
+    # whatever DEN_REF said would pass the build at main's commit as well.
+    assert (
+        "if docker buildx build "
+        "--build-arg DEN_REF=refs/heads/no-such-ref-for-this-check"
+    ) in step["run"]
+    assert "did not fail" in step["run"]
 
 
 def test_test_helpers_see_the_whole_dockerfile():
@@ -5715,3 +5722,148 @@ def test_newline_dropin_names_are_skipped(tmp_path, kind):
     assert not marker.exists()
     assert "/unsafe" not in result.stdout
     assert "name containing a newline" in result.stderr
+
+
+# --- the user's startup files, the stock group, and the CI's remap checks ------
+
+
+def test_nvm_installer_leaves_the_users_startup_files_alone():
+    # nvm's installer appends its loader to a startup file of the user's (with
+    # no SHELL in the build, ~/.profile), which every login shell then ran:
+    # about 60 ms, for a PATH entry the image sets anyway. PROFILE=/dev/null
+    # turns that off.
+    scripts = [script for *_, script in _run_scripts() if "nvm-sh/nvm" in script]
+    assert len(scripts) == 1, scripts
+    assert re.search(r"(^|\s)PROFILE=/dev/null bash /tmp/nvm\.sh(\s|$)", scripts[0]), (
+        scripts[0]
+    )
+
+
+def test_the_readme_lists_every_build_stage():
+    readme = (ROOT / "docker" / "README.md").read_text(encoding="utf-8")
+    for name, _, _ in _stages():
+        assert f"| `{name}` |" in readme, name
+
+
+def _setup_user_calls(
+    tmp_path: Path,
+    *,
+    username: str = "dev",
+    gid: str = "1000",
+    groups: dict[str, str] | None = None,
+) -> list[str]:
+    """Run the SETUP_USER step against stubbed account tools; the call log.
+
+    getent answers from ``groups`` (a GID or a group name -> its line; GID
+    1000 is Ubuntu's ``ubuntu`` group unless overridden) and knows Ubuntu's
+    stock account at UID 1000; every other lookup finds nothing.
+    """
+    groups = {"1000": "ubuntu:x:1000:", **(groups or {})}
+    cases = "\n".join(
+        f'    "group {key}") echo {shlex.quote(line)} ;;'
+        for key, line in groups.items()
+    )
+    getent = (
+        'case "$1 $2" in\n'
+        f"{cases}\n"
+        '    "passwd 1000") echo "ubuntu:x:1000:1000::/home/ubuntu:/bin/bash" ;;\n'
+        "    *) exit 2 ;;\n"
+        "esac"
+    )
+    result, log, _ = _run_install(
+        tmp_path,
+        "SETUP_USER",
+        {},
+        env={"USERNAME": username, "USER_UID": "1000", "USER_GID": gid},
+        stubs={
+            "getent": getent,
+            "groupadd": "",
+            "groupmod": "",
+            "usermod": "",
+            "useradd": "",
+            "install": "",
+            "chmod": "",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    return log.splitlines()
+
+
+@_needs("bash")
+def test_setup_user_gives_the_stock_group_the_accounts_name(tmp_path):
+    # Ubuntu's stock account comes with a group of its name, and the renamed
+    # account keeps that group's GID: ls and id showed dev's files as dev:ubuntu.
+    calls = _setup_user_calls(tmp_path)
+    assert "usermod --login dev ubuntu" in calls
+    assert "groupmod --new-name dev ubuntu" in calls
+    assert calls.index("groupmod --new-name dev ubuntu") > calls.index(
+        "usermod --login dev ubuntu"
+    )
+
+
+@_needs("bash")
+@pytest.mark.parametrize(
+    ("username", "gid", "groups"),
+    [
+        # The account keeps Ubuntu's names.
+        ("ubuntu", "1000", None),
+        # Another GID gets a group named after the account instead.
+        ("dev", "1001", None),
+        # A group of the account's name exists with another GID.
+        ("dev", "1000", {"dev": "dev:x:999:"}),
+    ],
+)
+def test_setup_user_leaves_the_group_name_alone_otherwise(
+    tmp_path, username, gid, groups
+):
+    calls = _setup_user_calls(tmp_path, username=username, gid=gid, groups=groups)
+    assert not any(call.startswith("groupmod ") for call in calls), calls
+    if gid != "1000":
+        assert f"groupadd --gid {gid} {username}" in calls
+
+
+def test_the_image_workflow_checks_id_remapping_and_tmp_cleanup():
+    steps = _workflow()["jobs"]["dev-image"]["steps"]
+    name = "Check ID remapping and /tmp cleanup"
+    step = next(s for s in steps if s.get("name") == name)
+    run = step["run"]
+    assert step.get("timeout-minutes", 0) > 0
+    # Other IDs than the build's, with the workspace walk on, over a bound
+    # workspace that holds a file of the old IDs, one of another owner, and a
+    # second bind below it.
+    assert "-e HOST_UID=1234 -e HOST_GID=1234 -e FIX_WORKSPACE_OWNERSHIP=1" in run
+    assert (
+        '-v "$RUNNER_TEMP/ws:/workspace" -v "$RUNNER_TEMP/ws-nested:/workspace/nested"'
+    ) in run
+    for path, owner in [
+        ("/home/dev", "1234:1234"),
+        ("/home/dev/.zshrc", "1234:1234"),
+        ("/workspace/mine", "1234:1234"),
+        ("/workspace/theirs", "2000:2000"),
+        ("/workspace/nested/nested", "1000:1000"),
+    ]:
+        assert f'[ "$(stat -c %u:%g {path})" = {owner} ]' in run, path
+    # The two lines the entrypoint prints for that start, as it words them,
+    # and nothing else from it.
+    entrypoint = _entrypoint_script()
+    assert "leaves out each mount point below it and all it holds: " in entrypoint
+    assert (
+        "container-entrypoint: remapping $username from $old_uid:$old_gid to"
+    ) in entrypoint
+    assert (
+        "re-owning /workspace from 1000:1000 leaves out each mount point below it"
+        " and all it holds: /workspace/nested$"
+    ) in run
+    assert "container-entrypoint: remapping dev from 1000:1000 to 1234:1234 " in run
+    assert 'grep -c \'^container-entrypoint:\' "$RUNNER_TEMP/remap.out")" -eq 2' in run
+    # The other owner's file and the nested bind are checked on the host too.
+    assert '[ "$(stat -c %u:%g "$RUNNER_TEMP/ws/theirs")" = 2000:2000 ]' in run
+    assert '[ "$(stat -c %u:%g "$RUNNER_TEMP/ws-nested/nested")" = 1000:1000 ]' in run
+    # A /tmp volume is kept by default and emptied with DENBOX_CLEAN_TMP=1.
+    assert (
+        "docker run --rm -v denbox-tmp:/tmp denbox sh -c '[ -e /tmp/leftover ]'"
+    ) in run
+    assert (
+        "docker run --rm -e DENBOX_CLEAN_TMP=1 -v denbox-tmp:/tmp denbox"
+        " sh -c '[ ! -e /tmp/leftover ]'"
+    ) in run
