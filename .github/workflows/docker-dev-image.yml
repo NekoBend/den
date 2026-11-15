@@ -25,8 +25,16 @@ permissions:
 
 jobs:
   dev-image:
-    name: dev image (build + HOME/PATH checks)
+    name: dev image ${{ matrix.ubuntu }} (build + checks)
     runs-on: ubuntu-latest
+    # One job per Ubuntu release the Dockerfile builds on; a failure in one
+    # does not stop the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["26.04", "24.04"]
+    env:
+      UBUNTU: ${{ matrix.ubuntu }}
     # The sum of the step budgets below plus a few minutes for the rest.
     timeout-minutes: 220
     steps:
@@ -44,23 +52,26 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # A cold build compiles every Rust tool; with the layers cached, a rerun
       # redoes only what changed (and den's stage when den's main has moved).
-      # The base image is pinned by digest, so a new base, which makes the
-      # next run cold, comes only with a change to BASE_IMAGE.
+      # The base images are pinned by digest, so a new base, which makes the
+      # next run cold, comes only with a change to BASE_IMAGE_2604 or
+      # BASE_IMAGE_2404.
       # A build cut off before it ends exports no cache, so the budget is for
-      # a cold build. The scope keeps this cache apart from the shell test
-      # image's in ci.yml, which uses the default scope: two images in one
-      # scope overwrite each other's cache. A failed cache export does not
-      # fail the job, so the checks still run.
+      # a cold build. The scope, one per release, keeps this cache apart from
+      # the other release's and from the shell test image's in ci.yml, which
+      # uses the default scope: two images in one scope overwrite each
+      # other's cache. A failed cache export does not fail the job, so the
+      # checks still run.
       - name: Build the dev image
         timeout-minutes: 150
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker/ubuntu
           file: docker/ubuntu/Dockerfile
+          build-args: UBUNTU=${{ matrix.ubuntu }}
           tags: denbox
           load: true
-          cache-from: type=gha,scope=den-dev-image
-          cache-to: type=gha,mode=max,scope=den-dev-image,ignore-error=true
+          cache-from: type=gha,scope=den-dev-image-${{ matrix.ubuntu }}
+          cache-to: type=gha,mode=max,scope=den-dev-image-${{ matrix.ubuntu }},ignore-error=true
       - name: Check HOME and PATH for root and dev
         timeout-minutes: 10
         run: |
@@ -334,7 +345,7 @@ jobs:
         run: |
           # The commands in single quotes run in the container's shells.
           # shellcheck disable=SC2016
-          docker buildx build --load -t denbox-base --target base \
+          docker buildx build --load -t denbox-base --target base --build-arg UBUNTU="$UBUNTU" \
             -f docker/ubuntu/Dockerfile docker/ubuntu
           system_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           user_path=/home/dev/.nvm/current/bin:/home/dev/.local/bin:/home/dev/.cargo/bin:$system_path
@@ -388,12 +399,13 @@ jobs:
           ref=$(git ls-remote https://github.com/NekoBend/den.git refs/heads/main | cut -f1)
           # The builder still holds the layers of the build above; only the
           # workspace stage can differ, when main has just moved.
-          docker buildx build --load -t denbox-at-commit \
+          docker buildx build --load -t denbox-at-commit --build-arg UBUNTU="$UBUNTU" \
             --build-arg DEN_REF="$ref" -f docker/ubuntu/Dockerfile docker/ubuntu
           docker run --rm denbox-at-commit zsh -lc 'den --version'
           # A build at a ref den does not have must fail: a Dockerfile that
           # took main whatever DEN_REF said would pass the check above too.
-          if docker buildx build --build-arg DEN_REF=refs/heads/no-such-ref-for-this-check \
+          if docker buildx build --build-arg UBUNTU="$UBUNTU" \
+              --build-arg DEN_REF=refs/heads/no-such-ref-for-this-check \
               -f docker/ubuntu/Dockerfile docker/ubuntu >"$RUNNER_TEMP/no-ref.out" 2>&1; then
             echo '::error::a build at a ref den does not have did not fail'
             cat "$RUNNER_TEMP/no-ref.out"

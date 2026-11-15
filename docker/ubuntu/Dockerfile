@@ -8,9 +8,16 @@
 # build arg says where Renovate looks up its releases; keep it on the line
 # right above the ARG, which is where Renovate reads it.
 
-# Build setting: the base image, by tag and digest. The apt steps assume Ubuntu.
-ARG BASE_IMAGE=ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
-FROM ${BASE_IMAGE} AS system
+# Build settings: the base images, by tag and digest, one per Ubuntu release
+# the image builds on, and UBUNTU, the release to build: 26.04 or 24.04. The
+# stage named after the release is the one the build starts from; BuildKit
+# pulls only that one. The apt steps assume Ubuntu.
+ARG BASE_IMAGE_2604=ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+ARG BASE_IMAGE_2404=ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
+ARG UBUNTU=26.04
+FROM ${BASE_IMAGE_2604} AS ubuntu-26.04
+FROM ${BASE_IMAGE_2404} AS ubuntu-24.04
+FROM ubuntu-${UBUNTU} AS system
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
@@ -412,13 +419,27 @@ ENV TZ=${TZ}
 # appends to /etc/zsh/zshenv, /etc/bash.bashrc and /etc/zsh/zshrc: those are
 # package conffiles, and an upgrade that met them changed would stop at
 # dpkg's question about keeping them.
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata gnu-coreutils && \
-    test -f "/usr/share/zoneinfo/$TZ" && \
-    ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime && \
-    printf '%s\n' "$TZ" > /etc/timezone && \
-    rm -rf /var/lib/apt/lists/*
+RUN <<'INSTALL_RUNTIME_PACKAGES'
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata
+# The entrypoint and state-link run GNU chown, mkdir, stat and timeout by the
+# names gnuchown, gnumkdir, gnustat and gnutimeout (uutils 0.8.0 chown -h
+# followed directory links). On 26.04, whose coreutils are uutils, those come
+# with the gnu-coreutils package; on 24.04, whose coreutils are GNU, the plain
+# names are those programs, and get the gnu names as links.
+if chown --version | head -n 1 | grep -q 'GNU coreutils'; then
+    for tool in chown mkdir stat timeout; do
+        ln -s "$tool" "/usr/bin/gnu$tool"
+    done
+else
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gnu-coreutils
+fi
+test -f "/usr/share/zoneinfo/$TZ"
+ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
+printf '%s\n' "$TZ" > /etc/timezone
+rm -rf /var/lib/apt/lists/*
+INSTALL_RUNTIME_PACKAGES
 
 RUN <<'INSTALL_ENTRYPOINT'
 # Do not inherit administrative/device groups from Ubuntu's default account.

@@ -1,7 +1,8 @@
 # docker - the dev container image
 
 `docker/ubuntu/Dockerfile` builds the development container this repo is worked
-on in: Ubuntu 26.04 with an unprivileged `dev` user, the language toolchains,
+on in: Ubuntu 26.04 (or 24.04, with `--build-arg UBUNTU=24.04`) with an
+unprivileged `dev` user, the language toolchains,
 command-line tools, and den with its shell setup. It ships no coding-agent CLI
 and no den skills: add those in an image of your own (see
 [Adding your own tools](#adding-your-own-tools)). The build fetches den's
@@ -12,7 +13,8 @@ the tools and the drop-ins, for a shell setup of your own (see
 
 The images are named `denbox`, with the Ubuntu release and the variant in the
 tag: `denbox:26.04` is the image with den, which `denbox:latest` and a plain
-`denbox` also name, and `denbox:26.04-base` the one without.
+`denbox` also name, and `denbox:26.04-base` the one without; `denbox:24.04`
+and `denbox:24.04-base` are the same two on Ubuntu 24.04.
 
 ## What the image contains
 
@@ -21,12 +23,14 @@ the end (a new den, a new installer release) does not recompile the Rust tools.
 
 | Stage | Contents |
 | --- | --- |
+| `ubuntu-26.04` | the base image of the 26.04 build (`BASE_IMAGE_2604`); `UBUNTU` names the one the `system` stage starts from |
+| `ubuntu-24.04` | the base image of the 24.04 build (`BASE_IMAGE_2404`) |
 | `system` | apt base (build-essential, git, curl, zsh, tmux, python3, openssh-client, ...) and the `dev` user (login shell zsh, password locked, its group named `dev` too) |
 | `rust-tools` | rustup and Rust (minimal profile + rustfmt, clippy) and cargo-built CLIs: bat, bottom, du-dust, fd-find, git-delta, gitui, grex, hyperfine, lsd, procs, ripgrep, sd, tealdeer, xh, zoxide, yazi |
 | `tools` | starship, uv, ruff, ty, fzf, nvm + Node.js 26 (LTS), npm |
 | `utilities` | gh, bats, shellcheck, lua5.4, jq, 7z, unrar-free, pigz, pbzip2, zstd, parallel, ffmpeg, rsync; PowerShell (`pwsh`); rclone |
 | `den-src` | den's source tree at `DEN_REF`, a BuildKit git source; a `scratch` stage the `den` stage mounts, nothing of it ends up in the image |
-| `base` | tzdata, GNU coreutils for the entrypoint, and the entrypoint itself, with the state volume's linking and the drop-in directories (see [What survives where](#what-survives-where)); the image without den (`--target base`) |
+| `base` | tzdata, GNU coreutils for the entrypoint (26.04's `gnu-coreutils` package, or links to 24.04's own), and the entrypoint itself, with the state volume's linking and the drop-in directories (see [What survives where](#what-survives-where)); the image without den (`--target base`) |
 | `den` | den (`uv tool install` from the `den-src` mount), then `den install shell --force --bin --zsh-plugins`, and den's own state-path list `den.list`; the default target |
 
 The installers that run as `dev` leave its startup files alone: rustup gets
@@ -73,6 +77,11 @@ For the image without den, add `--target base` and name it so:
 docker buildx build --pull --load -t denbox:26.04-base --target base \
   -f docker/ubuntu/Dockerfile docker/ubuntu
 ```
+
+For Ubuntu 24.04, add `--build-arg UBUNTU=24.04` to either command and name
+the image `denbox:24.04` or `denbox:24.04-base`. Each release has its own
+base image pinned in the Dockerfile (`BASE_IMAGE_2604`, `BASE_IMAGE_2404`),
+and a build pulls only the one it starts from.
 
 The context directory is never read, so any small directory works. To give
 `dev` your host IDs at build time, so the container never has to remap them,
@@ -139,8 +148,9 @@ Remove the tags you no longer want with `docker image rm denbox:<stamp>`.
 
 ### Versions
 
-`docker/ubuntu/Dockerfile` pins every version the image installs: the base
-image by tag and digest (`BASE_IMAGE`), the Dockerfile syntax image on its
+`docker/ubuntu/Dockerfile` pins every version the image installs: the two
+base images by tag and digest (`BASE_IMAGE_2604`, `BASE_IMAGE_2404`), the
+Dockerfile syntax image on its
 first line by version and digest, and each tool by a `*_VERSION` build arg.
 apt packages are not pinned: they come from Ubuntu's archive as it is when
 the build runs, and the `base` stage's `apt-get upgrade` brings their
@@ -151,7 +161,7 @@ when the step runs.
 [Renovate](https://docs.renovatebot.com/) keeps the pins current, with the
 settings in `renovate.json` at the repository root:
 
-- It opens a pull request for each update: the base image, the syntax image,
+- It opens a pull request for each update: each base image, the syntax image,
   each `*_VERSION` build arg, each GitHub Action the workflows use (those
   are pinned to commit SHAs, with the version in a comment), and the zsh plugins
   den installs (`_ZSH_PLUGINS` in `den/_shell.py`). A new major version gets a
@@ -173,9 +183,9 @@ above it, which names where Renovate looks up the releases (a datasource and
 a package name); keep the two together. To bump a version by hand, change the
 build arg's default in the Dockerfile, in the form the table below gives.
 To try another version without a commit, pass it as a build arg, for example
-`--build-arg RIPGREP_VERSION=15.2.0`. For the base image, keep the tag and
+`--build-arg RIPGREP_VERSION=15.2.0`. For a base image, keep the tag and
 take the digest from the `Digest:` line of
-`docker buildx imagetools inspect ubuntu:26.04`.
+`docker buildx imagetools inspect ubuntu:26.04` (or `ubuntu:24.04`).
 
 ### Build ARGs
 
@@ -184,7 +194,9 @@ default is the release pinned in the Dockerfile (see [Versions](#versions)).
 
 | ARG | Default | Meaning |
 | --- | --- | --- |
-| `BASE_IMAGE` | `ubuntu:26.04` with its digest | Base image, by tag and digest. The apt steps assume Ubuntu (`ubuntu.sources`), and the last stage installs 26.04's `gnu-coreutils` package, whose `gnuchown`, `gnutimeout`, `gnustat` and `gnumkdir` the entrypoint runs: an older Ubuntu, which ships GNU coreutils under the plain names and has no such package, does not build as it is. |
+| `UBUNTU` | `26.04` | The Ubuntu release to build on: `26.04` or `24.04`. It names the stage the build starts from, `ubuntu-26.04` or `ubuntu-24.04`. |
+| `BASE_IMAGE_2604` | `ubuntu:26.04` with its digest | The base image of the `26.04` build, by tag and digest. The apt steps assume Ubuntu (`ubuntu.sources`). The `base` stage installs 26.04's `gnu-coreutils` package, whose `gnuchown`, `gnutimeout`, `gnustat` and `gnumkdir` the entrypoint runs. |
+| `BASE_IMAGE_2404` | `ubuntu:24.04` with its digest | The base image of the `24.04` build. Its coreutils are GNU under the plain names, so the `base` stage links the `gnu*` names to them instead. |
 | `APT_HTTP_PIPELINING` | `1` | `1` leaves apt's HTTP pipelining on, as apt ships it. `0` turns it off for every `apt-get` in the build, and in the container too (`/etc/apt/apt.conf.d/90-no-http-pipelining`): on some networks `apt-get update` fails with `Hash Sum mismatch` while the same files download intact without pipelining. |
 | `USERNAME` | `dev` | Account name. The entrypoint reads it from `/etc/container-user`. |
 | `USER_UID` | `1000` | Nonzero UID for the account. On Ubuntu, UID 1000 reuses the stock `ubuntu` account and renames it. The build fails if any other account already has the UID. |
@@ -832,8 +844,9 @@ before the start is over can lose what it puts there; wait for the start as
 
 ## Weekly build and scan
 
-`.github/workflows/docker-weekly.yml` builds the image every Monday at 00:42
-Japan time (Sunday 15:42 UTC) and scans it with
+`.github/workflows/docker-weekly.yml` builds the image on each Ubuntu release
+(26.04 and 24.04, one job each) every Monday at 00:42 Japan time (Sunday
+15:42 UTC) and scans it with
 [Trivy](https://trivy.dev/). The build uses no layer cache, as
 `docker buildx build --pull --no-cache` does, so it fetches today's base
 image, packages and releases. The image stays on the runner; nothing is

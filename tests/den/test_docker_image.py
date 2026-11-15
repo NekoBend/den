@@ -3416,17 +3416,16 @@ def test_the_image_workflow_builds_with_a_commit_of_den():
     assert 'DEN_REF="$ref"' in step["run"]
     # A ref den does not have must fail the build: a Dockerfile that took main
     # whatever DEN_REF said would pass the build at main's commit as well.
-    assert (
-        "if docker buildx build "
-        "--build-arg DEN_REF=refs/heads/no-such-ref-for-this-check"
-    ) in step["run"]
+    assert 'if docker buildx build --build-arg UBUNTU="$UBUNTU"' in step["run"]
+    assert "--build-arg DEN_REF=refs/heads/no-such-ref-for-this-check" in step["run"]
     assert "did not fail" in step["run"]
 
 
 def test_test_helpers_see_the_whole_dockerfile():
     # The parser must reach the final stage, or the PATH test checks nothing.
     names = [name for name, _, _ in _stages()]
-    assert names[0] == "system"
+    # The base image of each release, then system, from the one UBUNTU names.
+    assert names[:3] == ["ubuntu-26.04", "ubuntu-24.04", "system"]
     # The runtime (base, the image without den), then den on it, the default.
     assert "base" in names
     assert names[-1] == "den"
@@ -3985,10 +3984,12 @@ def test_the_last_stage_upgrades_apt_packages_before_it_changes_their_conffiles(
     upgrades = [
         i
         for i, (user, script) in enumerate(scripts)
-        if re.search(r"apt-get update && .*apt-get upgrade -y", script)
+        if re.search(
+            r"apt-get update(?: && |\n).*?apt-get upgrade -y", script, flags=re.DOTALL
+        )
     ]
     assert len(upgrades) == 1, (
-        "the runtime stage runs no apt-get update && apt-get upgrade -y"
+        "the runtime stage runs no apt-get update, then apt-get upgrade -y"
     )
     user, script = scripts[upgrades[0]]
     assert user == "root"
@@ -4083,16 +4084,34 @@ def test_the_base_image_and_the_syntax_image_are_pinned_by_digest():
     assert re.fullmatch(
         r"# syntax=docker/dockerfile:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", lines[0]
     ), lines[0]
-    base = [line for line in lines if line.startswith("ARG BASE_IMAGE=")]
-    assert len(base) == 1, base
-    assert re.fullmatch(r"ARG BASE_IMAGE=ubuntu:\d+\.\d+@sha256:[0-9a-f]{64}", base[0])
+    # One base image per Ubuntu release, each a stage named after it, and
+    # UBUNTU picks the stage the build starts from.
+    for name, release in (("BASE_IMAGE_2604", "26.04"), ("BASE_IMAGE_2404", "24.04")):
+        found = [line for line in lines if line.startswith(f"ARG {name}=")]
+        assert len(found) == 1, (name, found)
+        assert re.fullmatch(
+            rf"ARG {name}=ubuntu:{re.escape(release)}@sha256:[0-9a-f]{{64}}", found[0]
+        ), found[0]
+    assert "ARG UBUNTU=26.04" in lines
     stages: list[str] = []
     for keyword, rest in _instructions():
         if keyword == "FROM":
             image, *alias = rest.split()
-            assert image in {"${BASE_IMAGE}", "scratch", *stages}, rest
+            assert image in {
+                "${BASE_IMAGE_2604}",
+                "${BASE_IMAGE_2404}",
+                "ubuntu-${UBUNTU}",
+                "scratch",
+                *stages,
+            }, rest
             stages += alias[-1:]
-    assert _instructions()[0] == ("ARG", base[0].removeprefix("ARG "))
+    assert stages[:3] == ["ubuntu-26.04", "ubuntu-24.04", "system"]
+    # The three ARGs come before the first FROM, where every FROM can read them.
+    first_from = next(
+        i for i, (keyword, _) in enumerate(_instructions()) if keyword == "FROM"
+    )
+    leading = [rest.split("=", 1)[0] for _, rest in _instructions()[:first_from]]
+    assert leading == ["BASE_IMAGE_2604", "BASE_IMAGE_2404", "UBUNTU"]
 
 
 def test_every_version_build_arg_reaches_a_build_step():
@@ -4400,7 +4419,7 @@ def test_apt_http_pipelining_is_set_before_any_apt_get():
     assert configure, "no RUN <<'CONFIGURE_APT' step"
     assert configure[0] < first_apt
     stage, user, _, _, _ = scripts[configure[0]]
-    assert (stage, user) == (_stages()[0][0], "root")
+    assert (stage, user) == ("system", "root")
 
 
 # --- the CI workflow that builds the image -------------------------------------
@@ -6173,8 +6192,9 @@ def test_the_den_stage_adds_only_den_to_the_runtime():
         for stage, user, env, _, script in _run_scripts()
         if stage == "den"
     ]
+    system_args = next(args for name, _, args in _stages() if name == "system")
     assert [user for user, _, _ in den_steps] == [
-        f"{_stages()[0][2]['USER_UID']}:{_stages()[0][2]['USER_GID']}",
+        f"{system_args['USER_UID']}:{system_args['USER_GID']}",
         "root",
     ]
     install, listing = den_steps
@@ -6201,3 +6221,78 @@ def test_the_image_workflow_checks_the_image_without_den():
         " 'print -r -- \"${skip_global_compinit-unset}\"'",
     ):
         assert needle in run, needle
+
+
+# --- the Ubuntu release: 26.04 or 24.04 ----------------------------------------
+
+
+@_needs("bash")
+@pytest.mark.parametrize(
+    ("coreutils", "links", "package"),
+    [
+        ("chown (uutils coreutils) 0.10.0", False, True),
+        ("chown (GNU coreutils) 9.4", True, False),
+    ],
+    ids=["uutils", "gnu"],
+)
+def test_the_runtime_gets_gnu_coreutils_as_the_release_has_them(
+    tmp_path, coreutils, links, package
+):
+    # 26.04's coreutils are uutils, so the gnu* programs the entrypoint runs
+    # come from the gnu-coreutils package; 24.04's are GNU under the plain
+    # names, which get the gnu* names as links. The step asks chown which.
+    zoneinfo = tmp_path / "zoneinfo"
+    (zoneinfo / "Asia").mkdir(parents=True)
+    (zoneinfo / "Asia" / "Tokyo").touch()
+    result, log, _ = _run_install(
+        tmp_path,
+        "INSTALL_RUNTIME_PACKAGES",
+        {},
+        paths={
+            "/usr/share/zoneinfo": str(zoneinfo),
+            "/etc/localtime": str(tmp_path / "localtime"),
+            "/etc/timezone": str(tmp_path / "timezone"),
+            "/usr/bin/gnu": str(tmp_path / "bin" / "gnu"),
+        },
+        stubs={"chown": f"echo {shlex.quote(coreutils)}", "ln": ""},
+    )
+    assert result.returncode == 0, result.stderr
+    calls = log.splitlines()
+    linked = [
+        call for call in calls if call.startswith("ln -s ") and "/bin/gnu" in call
+    ]
+    expected = [
+        f"ln -s {tool} {tmp_path / 'bin'}/gnu{tool}"
+        for tool in ("chown", "mkdir", "stat", "timeout")
+    ]
+    assert linked == (expected if links else []), calls
+    installs = [call for call in calls if call.startswith("apt-get install")]
+    assert any("gnu-coreutils" in call for call in installs) == package, calls
+    assert (tmp_path / "timezone").read_text(encoding="utf-8") == "Asia/Tokyo\n"
+
+
+def test_the_image_workflows_build_each_ubuntu_release():
+    # One job per release in both workflows, with UBUNTU passed to every build
+    # a job runs: a build without it would be the 26.04 image, cold, on the
+    # 24.04 job.
+    weekly = WORKFLOW.with_name("docker-weekly.yml")
+    for path, name in ((WORKFLOW, "dev-image"), (weekly, "scan")):
+        job = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"][name]
+        assert job["strategy"]["matrix"]["ubuntu"] == ["26.04", "24.04"], path.name
+        assert job["strategy"]["fail-fast"] is False, path.name
+        build = next(s for s in job["steps"] if s.get("name") == "Build the dev image")
+        assert build["with"]["build-args"] == "UBUNTU=${{ matrix.ubuntu }}", path.name
+    job = _workflow()["jobs"]["dev-image"]
+    assert job["env"]["UBUNTU"] == "${{ matrix.ubuntu }}"
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    builds = re.findall(r"docker buildx build[^\n]*(?:\\\n[^\n]*)*", runs)
+    assert len(builds) == 3, builds
+    for build in builds:
+        assert '--build-arg UBUNTU="$UBUNTU"' in build, build
+
+
+def test_the_readme_documents_the_release_build_args():
+    readme = (ROOT / "docker" / "README.md").read_text(encoding="utf-8")
+    for name in ("UBUNTU", "BASE_IMAGE_2604", "BASE_IMAGE_2404"):
+        assert f"| `{name}` |" in readme, name
+    assert "`BASE_IMAGE`" not in readme
