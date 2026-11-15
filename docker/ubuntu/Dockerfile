@@ -447,6 +447,11 @@ mountinfo=/proc/self/mountinfo
 # A home that cannot exist, as nothing can be below the character device
 # /dev/null: the account has it while usermod gives it its new IDs.
 no_home=/dev/null/no-home
+# The record of a remap under way (docker/README.md, HOST_UID): written before
+# usermod gives the account its new IDs, removed once the home and the state
+# volume are re-owned, and read at the next start to finish the walks that a
+# stopped start left undone.
+remap_record=/var/lib/denbox/remap-pending
 # Fixed image paths, patched as literals by the script tests.
 root_hooks=/etc/denbox/init.d
 user_hooks=/etc/denbox/user-init.d
@@ -525,8 +530,13 @@ mount_below() {
 # entrypoint's own) and LC_ALL=C alone; and OPTIND=1 when the environment
 # had OPTIND, which dash sets to 1 and cannot unset. (env -i in front of
 # find would not do: its own exec would take the operands and the whole
-# environment.) Return find's status, or 0 when there is no walk, or 1 when
-# awk cannot name the variables.
+# environment.) chown runs from each file's own directory, on its name there
+# (find -execdir), so a directory of the walk that another process (one of
+# the host's on a bound directory, or another container's on a shared
+# volume) swaps for a symbolic link while the walk runs cannot send the
+# change into a mount point the walk left out; -h keeps the name itself from
+# being followed. Return find's status, or 0 when there is no walk, or 1
+# when awk cannot name the variables.
 reown() (
     set -- "$1" "$old_uid" "$old_gid" "$target_uid" "$target_gid" \
         "$mountinfo" "$unescape_awk"
@@ -617,9 +627,33 @@ reown() (
     [ -z "$ro_left" ] \
         || warn "re-owning $ro_dir from $old_uid:$old_gid leaves out each mount point below it and all it holds: $ro_left"
     find "$ro_dir" -xdev "$@" \( -uid "$old_uid" -o -gid "$old_gid" \) \
-        -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
-        -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
+        -execdir /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
+        -execdir /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} +
 )
+
+# Re-own the home from the old IDs to the new ones, and the state volume when
+# it is mounted: the walks a remap runs once usermod has given the account its
+# new IDs, and the ones a start finishes for a stopped one. A failure in the
+# home's stops the start (set -e); the state volume's is a warning. With a
+# mount point below the volume, which -xdev would not keep the walk out of
+# when it is of the same file system, there is no walk of the volume at all.
+reown_user_files() {
+    reown "$user_home"
+    if [ "$use_state" = 1 ]; then
+        nested_status=0
+        nested=$(mount_below "$state_dir") || nested_status=$?
+        case "$nested_status" in
+            1)
+                find "$state_dir" -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) \
+                    -execdir /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
+                    -execdir /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} + \
+                    || warn "re-owning $state_dir from $old_uid:$old_gid failed part way"
+                ;;
+            0) warn "mount point $nested is below $state_dir, so nothing in $state_dir is re-owned from $old_uid:$old_gid; docker/README.md shows how to re-own a volume once" ;;
+            *) warn "could not read the mount table $mountinfo, so nothing in $state_dir is re-owned from $old_uid:$old_gid; docker/README.md shows how to re-own a volume once" ;;
+        esac
+    fi
+}
 
 # Every candidate is checked before execution; hooks keep the caller's locale.
 run_hooks() (
@@ -708,6 +742,32 @@ if [ "$denbox_state" = 1 ] && own_mount "$state_dir"; then
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
+    # A start stopped between usermod and the end of the walks (a docker stop,
+    # a walk that failed) left the account with its new IDs and files with the
+    # old ones, and the comparison below would find nothing to do: the record
+    # the remap writes before usermod says which IDs the files had. A record
+    # of a start stopped before usermod has nothing to finish.
+    if [ -e "$remap_record" ] || [ -L "$remap_record" ]; then
+        [ ! -L "$remap_record" ] && [ -f "$remap_record" ] \
+            || fail "$remap_record is not a regular file; check the owners in $user_home, then remove it"
+        record_old_uid='' record_old_gid='' record_uid='' record_gid='' record_rest=''
+        IFS=' ' read -r record_old_uid record_old_gid record_uid record_gid record_rest < "$remap_record" || :
+        valid_id "$record_old_uid" && valid_id "$record_old_gid" \
+            && valid_id "$record_uid" && valid_id "$record_gid" && [ -z "$record_rest" ] \
+            || fail "$remap_record does not hold four IDs; check the owners in $user_home, then remove it"
+        if [ "$record_uid:$record_gid" = "$old_uid:$old_gid" ]; then
+            warn "an earlier start was stopped while it re-owned $user_home from $record_old_uid:$record_old_gid to $old_uid:$old_gid; finishing that first"
+            env_uid=$target_uid env_gid=$target_gid
+            old_uid=$record_old_uid old_gid=$record_old_gid
+            target_uid=$record_uid target_gid=$record_gid
+            reown_user_files
+            old_uid=$record_uid old_gid=$record_gid
+            target_uid=$env_uid target_gid=$env_gid
+        elif [ "$record_old_uid:$record_old_gid" != "$old_uid:$old_gid" ]; then
+            fail "$remap_record says $username went from $record_old_uid:$record_old_gid to $record_uid:$record_gid, but it has $old_uid:$old_gid; check the owners in $user_home, then remove it"
+        fi
+        rm -f -- "$remap_record"
+    fi
     if [ "$target_uid:$target_gid" != "$old_uid:$old_gid" ]; then
         if [ "$target_uid" != "$old_uid" ] && getent passwd "$target_uid" >/dev/null; then
             fail 'HOST_UID already belongs to another account'
@@ -735,29 +795,16 @@ if [ "$(id -u)" -eq 0 ]; then
         # that the other account tools take. After a failed second call the
         # account keeps $no_home, and each later start stops at the check of
         # the home above, so the message says to recreate the container.
+        # The record goes first: from here to the end of the walks, a stopped
+        # start leaves files with the old IDs, which the next start finishes.
+        (umask 077 && printf '%s %s %s %s\n' "$old_uid" "$old_gid" "$target_uid" "$target_gid" > "$remap_record") \
+            || fail "Could not write $remap_record"
         usermod --home "$no_home" --uid "$target_uid" --gid "$target_gid" "$username" \
             || fail "Could not give $username the IDs $target_uid:$target_gid"
         usermod --home "$user_home" "$username" \
             || fail "Could not give $username its home $user_home back after its new IDs; recreate the container"
-        reown "$user_home"
-        # The state volume holds the user's files with the old IDs too; the
-        # same walk, which a failure does not stop the start for. With a mount
-        # point below the volume, which -xdev would not keep the walk out of
-        # when it is of the same file system, there is no walk at all.
-        if [ "$use_state" = 1 ]; then
-            nested_status=0
-            nested=$(mount_below "$state_dir") || nested_status=$?
-            case "$nested_status" in
-                1)
-                    find "$state_dir" -xdev \( -uid "$old_uid" -o -gid "$old_gid" \) \
-                        -exec /usr/bin/gnuchown -h --from="$old_uid" "$target_uid" {} + \
-                        -exec /usr/bin/gnuchown -h --from=":$old_gid" ":$target_gid" {} + \
-                        || warn "re-owning $state_dir from $old_uid:$old_gid failed part way"
-                    ;;
-                0) warn "mount point $nested is below $state_dir, so nothing in $state_dir is re-owned from $old_uid:$old_gid; docker/README.md shows how to re-own a volume once" ;;
-                *) warn "could not read the mount table $mountinfo, so nothing in $state_dir is re-owned from $old_uid:$old_gid; docker/README.md shows how to re-own a volume once" ;;
-            esac
-        fi
+        reown_user_files
+        rm -f -- "$remap_record"
     fi
     # A bare workspace needs an owner even when recursive adjustment is disabled.
     if ! mountpoint -q "$workspace_dir"; then
@@ -853,6 +900,8 @@ chmod 0755 /usr/local/bin/container-entrypoint
 # FROM this one could never take one away.
 install -d -o "$USER_UID" -g "$USER_GID" -m 0700 /state
 install -d -m 0755 /etc/denbox /etc/denbox/state-paths.d /usr/local/lib/denbox
+# The entrypoint's own records (the remap under way), root's alone.
+install -d -m 0700 /var/lib/denbox
 install -d -m 0755 /etc/denbox/init.d /etc/denbox/user-init.d \
     /etc/denbox/user-env.d /etc/denbox/user-path.d
 cat > /etc/denbox/user-path.d/denbox.list <<'USER_PATHS'
@@ -1132,8 +1181,10 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 aside=
 where=
 status=0
-# The staging copy a move is making, while it makes it.
+# The staging copy a move is making, while it makes it, and the file whose
+# time says when the copy began.
 copying=
+copy_stamp=
 
 warn() { printf 'state-link: %s\n' "$*" >&2; status=1; }
 # Something this run did that the user should know of, and no failure.
@@ -1151,6 +1202,7 @@ stopped() {
     else
         printf 'state-link: stopped by a signal\n' >&2
     fi
+    [ -z "$copy_stamp" ] || rm -f -- "$copy_stamp"
     exit "$1"
 }
 trap 'stopped 129' HUP
@@ -1355,7 +1407,13 @@ removable() {
 # Move SRC, a path of the home, to DST in the volume, which must not exist;
 # REL, the path below the home, names the staging copy. Copy SRC there, rename
 # the whole copy to DST, and only then remove SRC. A copy that fails is
-# removed again, and SRC stays as it was.
+# removed again, and SRC stays as it was. So does SRC when something in it was
+# written or changed after the copy began (a program that writes there while
+# state-link runs by hand): the copy is not all of it, so it is removed again
+# before it reaches the volume, with a warning, and the next run copies SRC
+# again. That check has a narrow gap of its own (a write between it and the
+# removal of SRC); it is a safeguard, not a substitute for stopping the
+# writers first.
 transfer() {
     if ! removable "$1"; then
         printf 'state-link: %s: this user cannot read and remove all of it\n' "$1" >&2
@@ -1367,10 +1425,32 @@ transfer() {
         printf 'state-link: %s is in the way\n' "$slot" >&2
         return 1
     fi
+    # A file made now, in the home, so on SRC's file system and its clock:
+    # what in SRC is newer than it, by content or by metadata, changed after
+    # the copy began. command keeps a failed redirection from ending the
+    # shell, as it would on the special builtin alone.
+    copy_stamp=$home/.denbox-copy-stamp.$$
+    if ! command : > "$copy_stamp"; then
+        printf 'state-link: %s: could not make %s\n' "$1" "$copy_stamp" >&2
+        copy_stamp=''
+        return 1
+    fi
     copying=$slot
     if ! cp -a -T -- "$1" "$slot"; then
         rm -rf -- "$slot"
-        copying=
+        rm -f -- "$copy_stamp"
+        copying='' copy_stamp=''
+        return 1
+    fi
+    tr_changed=$(find "$1" \( -newer "$copy_stamp" -o -cnewer "$copy_stamp" \) -print -quit 2>&1) \
+        || tr_changed=${tr_changed:-"find failed"}
+    rm -f -- "$copy_stamp"
+    copy_stamp=''
+    if [ -n "$tr_changed" ]; then
+        rm -rf -- "$slot"
+        copying=''
+        printf 'state-link: %s: changed while it was being copied (%s), so nothing of it moved; stop the programs that write there, then run state-link again\n' \
+            "$1" "$tr_changed" >&2
         return 1
     fi
     # -T never moves the copy into a directory at DST, and -n never replaces
@@ -1378,10 +1458,10 @@ transfer() {
     if ! mv -T -n -- "$slot" "$2" || [ -e "$slot" ] || [ -L "$slot" ]; then
         printf 'state-link: %s: could not rename it to %s\n' "$slot" "$2" >&2
         rm -rf -- "$slot"
-        copying=
+        copying=''
         return 1
     fi
-    copying=
+    copying=''
     if ! rm -rf -- "$1"; then
         printf 'state-link: %s: copied to %s, but not all of it could be removed\n' "$1" "$2" >&2
         return 1
