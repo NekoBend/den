@@ -33,6 +33,14 @@
       "matchManagers": ["github-actions"],
       "matchDepTypes": ["uses-with"],
       "enabled": false
+    },
+    {
+      "description": "Each base image of docker/ubuntu/Dockerfile is one Ubuntu release (BASE_IMAGE_2604, BASE_IMAGE_2404): Renovate keeps its digest current, and a move to another release is made by hand. Without this, the 24.04 image's pin is proposed as 26.04.",
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": ["docker/ubuntu/Dockerfile"],
+      "matchDepNames": ["ubuntu"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "enabled": false
     }
   ]
 }
