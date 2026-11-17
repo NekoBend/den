@@ -260,7 +260,7 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "https://raw.githubuserconte
 # default. It comes after nvm's installer, which installs the Node.js release
 # a NODE_VERSION in its environment names.
 # renovate: datasource=node-version depName=node versioning=node
-ARG NODE_VERSION=26.13.0
+ARG NODE_VERSION=26.13.1
 RUN source "$NVM_DIR/nvm.sh" && \
     nvm install "$NODE_VERSION" && \
     nvm alias default "$NODE_VERSION" && \
