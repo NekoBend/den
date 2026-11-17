@@ -341,7 +341,7 @@ INSTALL_GH
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 POWERSHELL_UPDATECHECK=Off
 # Build setting: an exact PowerShell release without the v prefix.
 # renovate: datasource=github-releases depName=PowerShell/PowerShell extractVersion=^v(?<version>.+)$
-ARG PWSH_VERSION=7.6.9
+ARG PWSH_VERSION=7.7.0
 RUN <<'INSTALL_PWSH'
 version=$PWSH_VERSION
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected PowerShell version: '$version'" >&2; exit 1; }
