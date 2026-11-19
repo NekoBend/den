@@ -107,7 +107,7 @@ ARG RUSTUP_USE_CURL=0
 ARG RUSTUP_VERSION=1.29.3
 # Build setting: an exact Rust release.
 # renovate: datasource=rust-version depName=rust
-ARG RUST_VERSION=1.99.1
+ARG RUST_VERSION=1.100.0
 RUN <<'INSTALL_RUST'
 case "$TARGETARCH" in
     amd64) triple=x86_64-unknown-linux-gnu ;;
