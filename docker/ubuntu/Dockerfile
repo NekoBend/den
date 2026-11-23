@@ -12,7 +12,7 @@
 # the image builds on, and UBUNTU, the release to build: 26.04 or 24.04. The
 # stage named after the release is the one the build starts from; BuildKit
 # pulls only that one. The apt steps assume Ubuntu.
-ARG BASE_IMAGE_2604=ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+ARG BASE_IMAGE_2604=ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 ARG BASE_IMAGE_2404=ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
 ARG UBUNTU=26.04
 FROM ${BASE_IMAGE_2604} AS ubuntu-26.04
