@@ -312,7 +312,7 @@ INSTALL_UTILITIES_DEPS
 # came out.
 # Build setting: an exact gh release without the v prefix.
 # renovate: datasource=github-releases depName=cli/cli extractVersion=^v(?<version>.+)$
-ARG GH_VERSION=2.104.0
+ARG GH_VERSION=2.105.0
 RUN <<'INSTALL_GH'
 version=$GH_VERSION
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected gh version: '$version'" >&2; exit 1; }
