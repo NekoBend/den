@@ -145,7 +145,7 @@ ARG DU_DUST_VERSION=1.2.7
 # renovate: datasource=crate depName=fd-find versioning=semver
 ARG FD_FIND_VERSION=10.5.2
 # renovate: datasource=crate depName=git-delta versioning=semver
-ARG GIT_DELTA_VERSION=0.20.1
+ARG GIT_DELTA_VERSION=0.21.1
 # renovate: datasource=crate depName=gitui versioning=semver
 ARG GITUI_VERSION=0.28.1
 # renovate: datasource=crate depName=grex versioning=semver
